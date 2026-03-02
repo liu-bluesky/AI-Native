@@ -2,39 +2,44 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from threading import Lock
 
 from fastapi import HTTPException, Header
 
 from auth import decode_token
+from config import get_settings
 from user_store import UserStore
 from employee_store import EmployeeStore
 from usage_store import UsageStore
 
 DATA_DIR = Path(__file__).parent / "data"
-DEFAULT_DEV_DATABASE_URL = "postgresql://admin:changeme@127.0.0.1:5432/ai_employee"
 
 
-def _build_database_url_from_env() -> str | None:
-    database_url = str(os.environ.get("DATABASE_URL", "")).strip()
-    if database_url:
-        return database_url
+class _StoreProxy:
+    """延迟初始化 store，避免模块导入时立即连库。"""
 
-    host = str(os.environ.get("DB_HOST", "")).strip()
-    port = str(os.environ.get("DB_PORT", "5432")).strip() or "5432"
-    user = str(os.environ.get("DB_USER", "")).strip()
-    password = str(os.environ.get("DB_PASSWORD", "")).strip()
-    db_name = str(os.environ.get("DB_NAME", "")).strip()
-    if not (host and user and password and db_name):
-        return DEFAULT_DEV_DATABASE_URL
-    return f"postgresql://{quote(user)}:{quote(password)}@{host}:{port}/{quote(db_name)}"
+    def __init__(self, factory: Any) -> None:
+        self._factory = factory
+        self._instance: Any = None
+        self._lock = Lock()
+
+    def _get_instance(self) -> Any:
+        if self._instance is not None:
+            return self._instance
+        with self._lock:
+            if self._instance is None:
+                self._instance = self._factory()
+        return self._instance
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._get_instance(), item)
 
 
 def _create_user_store() -> UserStore | Any:
-    backend = str(os.environ.get("CORE_STORE_BACKEND", "postgres")).strip().lower()
+    settings = get_settings()
+    backend = settings.core_store_backend
     if backend == "json":
         return UserStore(DATA_DIR)
     if backend == "postgres":
@@ -45,18 +50,13 @@ def _create_user_store() -> UserStore | Any:
                 "CORE_STORE_BACKEND=postgres 但未安装 PostgreSQL 驱动。"
                 "请安装依赖: psycopg[binary]>=3.2。"
             ) from exc
-        database_url = _build_database_url_from_env()
-        if not database_url:
-            raise RuntimeError(
-                "CORE_STORE_BACKEND=postgres 但未提供有效数据库配置。"
-                "请设置 DATABASE_URL 或 DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME。"
-            )
-        return UserStorePostgres(database_url)
+        return UserStorePostgres(settings.database_url)
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {backend}")
 
 
 def _create_employee_store() -> EmployeeStore | Any:
-    backend = str(os.environ.get("CORE_STORE_BACKEND", "postgres")).strip().lower()
+    settings = get_settings()
+    backend = settings.core_store_backend
     if backend == "json":
         return EmployeeStore(DATA_DIR)
     if backend == "postgres":
@@ -67,18 +67,13 @@ def _create_employee_store() -> EmployeeStore | Any:
                 "CORE_STORE_BACKEND=postgres 但未安装 PostgreSQL 驱动。"
                 "请安装依赖: psycopg[binary]>=3.2。"
             ) from exc
-        database_url = _build_database_url_from_env()
-        if not database_url:
-            raise RuntimeError(
-                "CORE_STORE_BACKEND=postgres 但未提供有效数据库配置。"
-                "请设置 DATABASE_URL 或 DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME。"
-            )
-        return EmployeeStorePostgres(database_url)
+        return EmployeeStorePostgres(settings.database_url)
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {backend}")
 
 
 def _create_usage_store() -> UsageStore | Any:
-    backend = str(os.environ.get("USAGE_STORE_BACKEND", "postgres")).strip().lower()
+    settings = get_settings()
+    backend = settings.usage_store_backend
     if backend == "sqlite":
         return UsageStore(DATA_DIR / "usage.db")
     if backend == "postgres":
@@ -89,19 +84,13 @@ def _create_usage_store() -> UsageStore | Any:
                 "USAGE_STORE_BACKEND=postgres 但未安装 PostgreSQL 驱动。"
                 "请安装依赖: psycopg[binary]>=3.2。"
             ) from exc
-        database_url = _build_database_url_from_env()
-        if not database_url:
-            raise RuntimeError(
-                "USAGE_STORE_BACKEND=postgres 但未提供有效数据库配置。"
-                "请设置 DATABASE_URL 或 DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME。"
-            )
-        return UsageStorePostgres(database_url)
+        return UsageStorePostgres(settings.database_url)
     raise RuntimeError(f"Unsupported USAGE_STORE_BACKEND: {backend}")
 
 
-user_store = _create_user_store()
-employee_store = _create_employee_store()
-usage_store = _create_usage_store()
+user_store = _StoreProxy(_create_user_store)
+employee_store = _StoreProxy(_create_employee_store)
+usage_store = _StoreProxy(_create_usage_store)
 
 
 async def require_auth(authorization: str = Header(None)) -> dict:

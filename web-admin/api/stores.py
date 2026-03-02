@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 from pathlib import Path
+from threading import Lock
 from types import ModuleType
-from urllib.parse import quote
+
+from config import get_settings
 
 _BASE = Path(__file__).resolve().parent.parent.parent
-DEFAULT_DEV_DATABASE_URL = "postgresql://admin:changeme@127.0.0.1:5432/ai_employee"
 
 
 def _load_store(service_name: str) -> ModuleType:
@@ -80,21 +80,6 @@ deserialize_rule = _rules_mod._deserialize_rule
 deserialize_persona = _persona_mod._deserialize_persona
 
 
-def _build_database_url_from_env() -> str | None:
-    database_url = str(os.environ.get("DATABASE_URL", "")).strip()
-    if database_url:
-        return database_url
-
-    host = str(os.environ.get("DB_HOST", "")).strip()
-    port = str(os.environ.get("DB_PORT", "5432")).strip() or "5432"
-    user = str(os.environ.get("DB_USER", "")).strip()
-    password = str(os.environ.get("DB_PASSWORD", "")).strip()
-    db_name = str(os.environ.get("DB_NAME", "")).strip()
-    if not (host and user and password and db_name):
-        return DEFAULT_DEV_DATABASE_URL
-    return f"postgresql://{quote(user)}:{quote(password)}@{host}:{port}/{quote(db_name)}"
-
-
 def _create_json_stores() -> tuple:
     return (
         _skills_mod.SkillStore(_BASE / "mcp-skills" / "knowledge"),
@@ -156,38 +141,44 @@ def _create_postgres_stores(database_url: str) -> tuple:
     )
 
 
-_core_store_backend = str(os.environ.get("CORE_STORE_BACKEND", "postgres")).strip().lower()
-if _core_store_backend == "json":
-    (
-        skill_store,
-        binding_store,
-        rule_store,
-        memory_store,
-        persona_store,
-        snapshot_store,
-        candidate_store,
-        event_store,
-        usage_log_store,
-        sync_store,
-    ) = _create_json_stores()
-elif _core_store_backend == "postgres":
-    _database_url = _build_database_url_from_env()
-    if not _database_url:
-        raise RuntimeError(
-            "CORE_STORE_BACKEND=postgres 但未提供有效数据库配置。"
-            "请设置 DATABASE_URL 或 DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME。"
-        )
-    (
-        skill_store,
-        binding_store,
-        rule_store,
-        memory_store,
-        persona_store,
-        snapshot_store,
-        candidate_store,
-        event_store,
-        usage_log_store,
-        sync_store,
-    ) = _create_postgres_stores(_database_url)
-else:
-    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {_core_store_backend}")
+_store_bundle: tuple | None = None
+_store_bundle_lock = Lock()
+
+
+def _build_store_bundle() -> tuple:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        return _create_json_stores()
+    if settings.core_store_backend == "postgres":
+        return _create_postgres_stores(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
+def _get_store_bundle() -> tuple:
+    global _store_bundle
+    if _store_bundle is not None:
+        return _store_bundle
+    with _store_bundle_lock:
+        if _store_bundle is None:
+            _store_bundle = _build_store_bundle()
+    return _store_bundle
+
+
+class _StoreProxy:
+    def __init__(self, index: int) -> None:
+        self._index = index
+
+    def __getattr__(self, item: str):
+        return getattr(_get_store_bundle()[self._index], item)
+
+
+skill_store = _StoreProxy(0)
+binding_store = _StoreProxy(1)
+rule_store = _StoreProxy(2)
+memory_store = _StoreProxy(3)
+persona_store = _StoreProxy(4)
+snapshot_store = _StoreProxy(5)
+candidate_store = _StoreProxy(6)
+event_store = _StoreProxy(7)
+usage_log_store = _StoreProxy(8)
+sync_store = _StoreProxy(9)
