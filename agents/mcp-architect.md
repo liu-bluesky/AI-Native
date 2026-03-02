@@ -11,7 +11,7 @@
 开始任何架构工作前，必须阅读：
 - `rules/architecture.md` — 架构约束
 - `rules/mcp-service.md` — MCP 服务规范
-- `PROJECT.md` — 项目总览与服务矩阵
+- `docs/00-项目总览/PROJECT.md` — 项目总览与服务矩阵
 
 ## 能力范围
 
@@ -26,5 +26,5 @@
 - 六层架构不可跳层调用
 - MCP 服务间禁止直接 import
 - 跨服务通信只走 mcp-sync
-- 新服务必须在 PROJECT.md 和 mcp-service.md 注册
+- 新服务必须在 docs/00-项目总览/PROJECT.md 和 mcp-service.md 注册
 - 高风险进化候选禁止自动晋升

@@ -188,7 +188,7 @@ learn({
 
 | 规则文件 | 触发条件 |
 |---------|---------|
-| `PROJECT.md` | 首次接触项目时阅读，获取全局上下文 |
+| `docs/00-项目总览/PROJECT.md` | 首次接触项目时阅读，获取全局上下文 |
 | `rules/frontend.md` | 修改 `web-admin/frontend/` 下任何文件前 |
 | `rules/backend.md` | 修改 `web-admin/api/` 或 `mcp-*/` 下任何 .py 文件前 |
 | `rules/ui-design.md` | 涉及样式、布局、新增组件、视觉调整时 |

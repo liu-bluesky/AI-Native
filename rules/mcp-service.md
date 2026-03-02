@@ -118,4 +118,4 @@ MAX_PER_DAY = 5        # 每日自动晋升上限
 - [ ] Tool 返回 dict，错误用 `{"error": "..."}` 格式
 - [ ] Resource URI 遵循命名约定
 - [ ] 在 `web-admin/api/server.py` 中添加代理路由
-- [ ] 在 `PROJECT.md` 的 MCP 服务矩阵中注册
+- [ ] 在 `docs/00-项目总览/PROJECT.md` 的 MCP 服务矩阵中注册

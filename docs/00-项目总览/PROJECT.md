@@ -21,7 +21,21 @@
 
 ```
 ai设计规范/
-├── PROJECT.md                    ← 你在这里
+├── docs/
+│   ├── 00-项目总览/
+│   │   └── PROJECT.md                    ← 你在这里
+│   ├── 10-平台架构设计/
+│   │   └── AI-Native开发平台设计规范.md   ← 基础设施层设计文档
+│   ├── 20-产品应用设计/
+│   │   └── AI-员工工厂设计规范.md         ← 应用层设计文档
+│   ├── 30-专项功能方案/
+│   │   └── 功能分割设计.md
+│   ├── 40-数据存储升级/
+│   │   └── PostgreSQL升级规划.md
+│   └── 反馈驱动规则升级模块/
+│       ├── README.md
+│       ├── 需求文档清单.md
+│       └── PRD-反馈驱动规则升级模块.md
 ├── CLAUDE.md                     ← AI 工具强制规则（Rule Porter）
 ├── rules/                        ← AI 可消费的规则文件体系
 │   ├── frontend.md               ← 前端编码规范
@@ -66,8 +80,6 @@ ai设计规范/
 │           ├── personas/         ← PersonaList, PersonaCreate, PersonaEdit, PersonaDetail
 │           ├── evolution/        ← EvolutionReport, CandidateReview
 │           └── sync/             ← SyncStatus
-├── AI-Native开发平台设计规范.md   ← 基础设施层设计文档
-└── AI-员工工厂设计规范.md         ← 应用层设计文档
 ```
 
 ## MCP 服务矩阵
