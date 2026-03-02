@@ -8,10 +8,12 @@ from fastapi import HTTPException, Header
 from auth import decode_token
 from user_store import UserStore
 from employee_store import EmployeeStore
+from usage_store import UsageStore
 
 DATA_DIR = Path(__file__).parent / "data"
 user_store = UserStore(DATA_DIR)
 employee_store = EmployeeStore(DATA_DIR)
+usage_store = UsageStore(DATA_DIR / "usage.db")
 
 
 async def require_auth(authorization: str = Header(None)) -> dict:

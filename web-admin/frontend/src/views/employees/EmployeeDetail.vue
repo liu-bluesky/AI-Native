@@ -4,6 +4,7 @@
       <h3>员工详情: {{ emp.name }}</h3>
       <div>
         <el-button type="primary" @click="$router.push(`/employees/${route.params.id}/edit`)">编辑</el-button>
+        <el-button @click="$router.push(`/employees/${route.params.id}/usage`)">使用统计</el-button>
         <el-button type="danger" @click="handleDelete">删除</el-button>
         <el-button @click="$router.back()">返回</el-button>
       </div>

@@ -8,7 +8,7 @@
 pip3 install pymysql psycopg2-binary
 ```
 
-### 2. 首次配置（三选一）
+### 2. 首次配置（四选一）
 
 **方式一：连接串（推荐，直接从项目配置复制）**
 ```bash
@@ -31,7 +31,18 @@ python3 skills/db-query/scripts/db_query.py \
   --sql "SHOW TABLES"
 ```
 
-首次执行成功后，配置自动保存到 `skills/db-query/.db-config.json`。
+**方式四：手动参数**
+```bash
+python3 skills/db-query/scripts/db_query.py \
+  --type mysql --host 127.0.0.1 --port 3306 \
+  --user root --password 123456 --database mydb \
+  --sql "SHOW TABLES"
+```
+
+首次执行成功后，配置会保存到技能目录下的对应文件：
+- 默认：`.db-config.json`
+- 传 `--employee-id`：`.db-config-{employee_id}.json`
+- 传 `--api-key`：`.db-config-{api_key}.json`（优先级高于 `--employee-id`）
 
 ### 3. 日常使用
 
@@ -40,6 +51,20 @@ python3 skills/db-query/scripts/db_query.py --sql "SHOW TABLES"
 ```
 
 配置已保存，后续只需 `--sql` 一个参数。
+
+### 4. 隔离配置示例（多用户/多员工）
+
+```bash
+# 员工级隔离
+python3 skills/db-query/scripts/db_query.py \
+  --employee-id emp-8cd60aec \
+  --sql "SHOW TABLES"
+
+# 用户级隔离（优先级更高）
+python3 skills/db-query/scripts/db_query.py \
+  --api-key ak-xxxx \
+  --sql "SHOW TABLES"
+```
 
 ---
 
@@ -60,11 +85,15 @@ python3 skills/db-query/scripts/db_query.py --sql "SHOW TABLES"
 
 | 参数 | 说明 |
 |------|------|
+| `--cd` | 兼容参数，当前实现保留但不改变配置文件实际存储目录 |
+| `--employee-id` | 员工级配置隔离 |
+| `--api-key` | 用户级配置隔离（优先于 `--employee-id`） |
 | `--sql` | SQL 语句（必填） |
 | `--url` | 连接串，支持 JDBC / 标准 URL 格式 |
 | `--env` | .env 文件路径 |
 | `--type` | `mysql`（默认）/ `postgres` |
 | `--host/port/user/password/database` | 手动指定 |
+| `--save` | 兼容参数，当前版本无需显式使用（配置变更会自动保存） |
 | `--allow-write` | 允许写操作（默认只读） |
 | `--limit` | SELECT 最大行数（默认 50） |
 | `--format` | `table`（默认）/ `json` / `csv` |
@@ -98,16 +127,18 @@ python3 skills/db-query/scripts/db_query.py --sql "SHOW TABLES"
 
 ## 配置管理
 
-- 配置文件位置：`skills/db-query/.db-config.json`
+- 配置文件位置：`<db-query技能目录>/.db-config*.json`
+- 命名规则：`--api-key` > `--employee-id` > 默认文件
+- 配置优先级：显式 CLI 参数 > `--env` > `--url` > 已保存配置
 - 首次传参后自动保存，后续免传
 - 连接失败时脚本返回错误信息，更新参数重新执行即可覆盖
 - 重置配置：`--reset --sql ""`
-- **注意**：`.db-config.json` 已加入 `.gitignore`，不会提交到仓库
+- **注意**：`.db-config*.json` 已加入 `.gitignore`，不会提交到仓库
 
 ---
 
 ## 移植到其他项目
 
-1. 复制 `skills/db-query/` 目录（不含 `.db-config.json`）
+1. 复制 `skills/db-query/` 目录（不含 `.db-config*.json`）
 2. `pip3 install pymysql psycopg2-binary`
 3. 首次运行时提供连接信息，自动保存

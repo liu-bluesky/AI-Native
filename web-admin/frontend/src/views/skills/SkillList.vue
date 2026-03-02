@@ -18,10 +18,12 @@
       <el-table-column label="工具数" width="80" align="center">
         <template #default="{ row }">{{ row.tools?.length || 0 }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="240" fixed="right">
+      <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
           <el-button v-if="row.mcp_enabled" text type="success" size="small" @click="showSingleMcpConfig(row)">接入</el-button>
+          <el-button v-if="row.mcp_enabled" text type="warning" size="small" @click="disableMcp(row)">关闭 MCP</el-button>
           <el-button v-else text type="warning" size="small" @click="enableMcp(row)">开启 MCP</el-button>
+          <el-button text type="info" size="small" @click="showConfigs(row)">配置</el-button>
           <el-button text type="primary" size="small" @click="$router.push(`/skills/${row.id}/edit`)">编辑</el-button>
           <el-button text type="success" size="small" @click="handleDownload(row.id, row.name)">下载</el-button>
           <el-button text type="danger" size="small" @click="handleDelete(row.id)">删除</el-button>
@@ -55,6 +57,22 @@
         <el-button @click="showMcpConfig = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="showConfigDialog" :title="configDialogTitle" width="650px">
+      <el-table :data="configList" stripe size="small" v-loading="configLoading">
+        <el-table-column prop="user" label="用户" width="120" />
+        <el-table-column prop="file" label="配置文件" width="220" />
+        <el-table-column label="连接信息">
+          <template #default="{ row }">
+            {{ row.config.type }}://{{ row.config.host }}:{{ row.config.port }}/{{ row.config.database }}
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!configLoading && !configList.length" description="暂无配置" :image-size="60" />
+      <template #footer>
+        <el-button @click="showConfigDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -71,6 +89,10 @@ const mcpDialogTitle = ref('接入 MCP 服务')
 const mcpDialogDesc = ref('该技能已开启独立网络访问，无需本地环境即可挂载：')
 const mcpTab = ref('sse')
 const currentSkill = ref(null)
+const showConfigDialog = ref(false)
+const configDialogTitle = ref('技能配置')
+const configList = ref([])
+const configLoading = ref(false)
 
 const mcpSseConfig = computed(() => {
   if (!currentSkill.value) return ''
@@ -124,6 +146,24 @@ async function enableMcp(skill) {
   }
 }
 
+async function disableMcp(skill) {
+  await ElMessageBox.confirm(`确定关闭技能「${skill.name}」的 MCP 服务？`, '确认')
+  try {
+    loading.value = true
+    await api.put(`/skills/${skill.id}`, { mcp_enabled: false })
+    ElMessage.success('已关闭独立 MCP 服务')
+    await fetchSkills()
+    if (currentSkill.value?.id === skill.id) {
+      showMcpConfig.value = false
+      currentSkill.value = null
+    }
+  } catch {
+    ElMessage.error('关闭 MCP 失败')
+  } finally {
+    loading.value = false
+  }
+}
+
 async function copyActiveMcpConfig() {
   const content = mcpTab.value === 'sse' ? mcpSseConfig.value : mcpHttpConfig.value
   try {
@@ -171,6 +211,21 @@ async function handleDelete(skillId) {
     fetchSkills()
   } catch {
     ElMessage.error('删除失败')
+  }
+}
+
+async function showConfigs(skill) {
+  configDialogTitle.value = `配置: ${skill.name}`
+  configList.value = []
+  showConfigDialog.value = true
+  configLoading.value = true
+  try {
+    const { configs } = await api.get(`/skills/${skill.id}/configs`)
+    configList.value = configs
+  } catch {
+    ElMessage.error('加载配置失败')
+  } finally {
+    configLoading.value = false
   }
 }
 

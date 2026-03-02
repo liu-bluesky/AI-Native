@@ -1,0 +1,18 @@
+{
+  "id": "rule-a6d34a9e",
+  "domain": "admin-tempalte项目",
+  "title": "公共组件库",
+  "content": "---\nname: component-library\ndescription: 项目公共组件库速查技能。触发条件：使用项目公共组件时查阅。提供 ProTable、ComDialog、DictTag 等组件的导入路径和用途速查表。\n---\n\n# 技能：公共组件库\n\n> 触发条件：使用项目公共组件时查阅\n\n---\n\n## 组件速查表\n\n| 组件 | 导入路径 | 用途 |\n|------|---------|------|\n| ProTable | `/@/components/table` | 列表表格 |\n| ComDialog | `/@/components/Dialog` | 弹窗容器 |\n| ComDetail | `/@/components/detail` | 详情展示 |\n| DrawerDetail | `/@/components/drawer/drawer.vue` | 侧边抽屉 |\n| DictTag | `/@/components/DictTag/index.vue` | 字典标签 |\n| selectDict | `/@/components/selectDict` | 字典选择器 |\n| selectCommon | `/@/components/selectV2` | 高级数据选择器 |\n| ImageUpload | `/@/components/ImageUpload` | 图片上传+裁剪 |\n| fileUpload | `/@/components/fileUpload` | 文件上传 |\n| MonacoEditor | `/@/components/MonacoEditor` | 代码编辑器 |\n| ChartReplRenderer | `/@/components/ChartReplRenderer` | 图表REPL渲染 |\n| FormPreview | `/@/components/FormPreview` | 动态表单预览 |\n| Scalebox | `/@/components/Scalebox` | 缩放容器 |\n| IconSelect | `/@/components/IconSelect` | 图标选择器 |\n| Filter | `/@/components/Filter` | 筛选标签管理 |\n",
+  "severity": "recommended",
+  "risk_domain": "low",
+  "version": "1.0.0",
+  "confidence": 0.5,
+  "use_count": 0,
+  "adopt_count": 0,
+  "changelog": [],
+  "bound_employees": [],
+  "mcp_enabled": false,
+  "mcp_service": "",
+  "created_at": "2026-03-02T05:34:10.834065+00:00",
+  "updated_at": "2026-03-02T05:45:03.299308+00:00"
+}
