@@ -1,0 +1,17 @@
+{
+  "id": "db-query",
+  "version": "1.0.0",
+  "name": "db-query",
+  "description": "数据库直连查询技能。触发条件：需要查询表结构、验证数据、执行SQL、新增/修改模块时检查数据库状态。支持 MySQL 和 PostgreSQL。首次使用向用户索要配置后自动持久化，后续直接使用。连接失败时自动提示用户更新配置。",
+  "mcp_service": "",
+  "package_dir": "mcp-skills/knowledge/skill-packages/db-query",
+  "tools": [],
+  "resources": [],
+  "dependencies": [],
+  "tags": [
+    "数据库"
+  ],
+  "mcp_enabled": true,
+  "created_at": "2026-03-01T06:31:45.740361+00:00",
+  "updated_at": "2026-03-02T00:10:45.249899+00:00"
+}

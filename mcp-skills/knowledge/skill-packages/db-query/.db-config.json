@@ -1,0 +1,8 @@
+{
+  "type": "mysql",
+  "host": "152.136.37.16",
+  "port": 13306,
+  "user": "root",
+  "password": "DbX4TrLtfLsZDx3D",
+  "database": "ai_forge"
+}
