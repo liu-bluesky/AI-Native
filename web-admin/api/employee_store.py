@@ -30,6 +30,7 @@ class EmployeeConfig:
     style_hints: list[str] = field(default_factory=list)
     auto_evolve: bool = True
     evolve_threshold: float = 0.8
+    mcp_enabled: bool = True
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 

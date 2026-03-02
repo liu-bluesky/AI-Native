@@ -6,8 +6,11 @@
     "db-query"
   ],
   "rule_domains": [
-    "前端",
-    "UI"
+    "产品",
+    "Ai员工工厂UI设计",
+    "需求追踪",
+    "上下文保护",
+    "admin-tempalte项目"
   ],
   "memory_scope": "project",
   "memory_retention_days": 90,
@@ -23,6 +26,7 @@
   ],
   "auto_evolve": true,
   "evolve_threshold": 0.8,
+  "mcp_enabled": true,
   "created_at": "2026-03-01T07:19:42.286360+00:00",
-  "updated_at": "2026-03-01T07:27:00.836617+00:00"
+  "updated_at": "2026-03-02T06:14:50.374490+00:00"
 }

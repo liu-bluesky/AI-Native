@@ -28,6 +28,7 @@ class EmployeeCreateReq(BaseModel):
     style_hints: list[str] = []
     auto_evolve: bool = True
     evolve_threshold: float = 0.8
+    mcp_enabled: bool = True
 
 
 class EmployeeUpdateReq(BaseModel):
@@ -35,11 +36,15 @@ class EmployeeUpdateReq(BaseModel):
     description: str | None = None
     skills: list[str] | None = None
     rule_domains: list[str] | None = None
+    memory_scope: str | None = None
+    memory_retention_days: int | None = None
     tone: str | None = None
     verbosity: str | None = None
+    language: str | None = None
     style_hints: list[str] | None = None
     auto_evolve: bool | None = None
     evolve_threshold: float | None = None
+    mcp_enabled: bool | None = None
 
 
 class ReviewReq(BaseModel):
@@ -102,6 +107,13 @@ class RuleUpdateReq(BaseModel):
     risk_domain: str | None = None
     mcp_enabled: bool | None = None
     mcp_service: str | None = None
+
+
+# ── Usage ──
+
+class CreateApiKeyReq(BaseModel):
+    developer_name: str
+    created_by: str = ""
 
 
 # ── Persona ──

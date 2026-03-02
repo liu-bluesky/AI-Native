@@ -118,6 +118,9 @@ cd web-admin/api && pip install -e . && python init_admin.py && python server.py
 # 后端（生产模式）
 cd web-admin/api && uvicorn server:app --host 0.0.0.0 --port 8000
 
+# 后端（开放访问，可通过环境变量覆盖）
+cd web-admin/api && API_HOST=0.0.0.0 API_PORT=8000 API_CORS_ALLOW_ORIGINS="*" python server.py
+
 # 前端
 cd web-admin/frontend && npm install && npm run dev
 

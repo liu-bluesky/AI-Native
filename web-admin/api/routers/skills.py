@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Depends, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
 
-from deps import require_auth
+from deps import require_auth, usage_store
 from stores import (
     skill_store, binding_store, serialize_skill, EmployeeSkillBinding,
     Skill, ToolDef, ResourceDef, skills_now_iso,
@@ -424,3 +424,31 @@ async def uninstall_skill(employee_id: str, skill_id: str):
     if not binding_store.remove(employee_id, skill_id):
         raise HTTPException(404, "Binding not found")
     return {"status": "uninstalled", "skill_id": skill_id}
+
+
+@router.get("/skills/{skill_id}/configs")
+async def list_skill_configs(skill_id: str):
+    skill = skill_store.get(skill_id)
+    if skill is None:
+        raise HTTPException(404, f"Skill {skill_id} not found")
+    package_path = _PROJECT_ROOT / skill.package_dir
+    if not package_path.exists():
+        return {"configs": []}
+    configs = []
+    keys_map = {k["key"]: k["developer_name"] for k in usage_store.list_keys()}
+    for f in sorted(package_path.glob(".db-config*.json")):
+        name = f.stem  # e.g. .db-config-ak-xxx
+        try:
+            data = json.loads(f.read_text())
+        except Exception:
+            continue
+        # 识别用户
+        user = "默认"
+        for key_val, dev_name in keys_map.items():
+            if key_val in name:
+                user = dev_name
+                break
+        safe = {k: v for k, v in data.items() if k != "password"}
+        safe["password"] = "***"
+        configs.append({"user": user, "file": f.name, "config": safe})
+    return {"configs": configs}

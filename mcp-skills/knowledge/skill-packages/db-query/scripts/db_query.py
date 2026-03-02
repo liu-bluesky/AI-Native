@@ -7,23 +7,34 @@ import re
 import sys
 import os
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(SCRIPT_DIR, '..', '.db-config.json')
+CONFIG_NAME = '.db-config.json'
+_SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def load_config():
-    path = os.path.normpath(CONFIG_PATH)
+def get_config_path(project_root=None, employee_id=None, api_key=None):
+    root = _SKILL_DIR
+    if api_key:
+        name = f'.db-config-{api_key}.json'
+    elif employee_id:
+        name = f'.db-config-{employee_id}.json'
+    else:
+        name = CONFIG_NAME
+    return os.path.join(root, name)
+
+
+def load_config(project_root=None, employee_id=None, api_key=None):
+    path = get_config_path(project_root, employee_id, api_key)
     if os.path.exists(path):
         with open(path, 'r') as f:
             return json.load(f)
     return None
 
 
-def save_config(cfg):
-    path = os.path.normpath(CONFIG_PATH)
+def save_config(cfg, project_root=None, employee_id=None, api_key=None):
+    path = get_config_path(project_root, employee_id, api_key)
     with open(path, 'w') as f:
         json.dump(cfg, f, indent=2)
-    print(f"Config saved to {path}")
+    print("Config saved.")
 
 
 def parse_env(env_path):
@@ -155,12 +166,12 @@ def connect_db(cfg):
         )
 
 
-def resolve_config(args):
+def resolve_config(args, project_root=None, employee_id=None, api_key=None):
     """Priority: CLI args > --env > saved config. Save if new."""
     cfg = {}
 
     # 1. Try saved config as base
-    saved = load_config()
+    saved = load_config(project_root, employee_id, api_key)
     if saved:
         cfg = saved.copy()
 
@@ -206,7 +217,7 @@ def resolve_config(args):
 
     # Save if different from saved
     if cfg != saved:
-        save_config(cfg)
+        save_config(cfg, project_root, employee_id, api_key)
 
     return cfg
 
@@ -221,6 +232,9 @@ def main():
     p.add_argument('--user', default='root')
     p.add_argument('--password', default='')
     p.add_argument('--database', default='')
+    p.add_argument('--cd', help='Project root directory for config file', default=None)
+    p.add_argument('--employee-id', help='Employee ID for isolated config', default=None)
+    p.add_argument('--api-key', help='API key for user-level config isolation', default=None)
     p.add_argument('--sql', required=True)
     p.add_argument('--allow-write', action='store_true')
     p.add_argument('--limit', type=int, default=50)
@@ -230,13 +244,13 @@ def main():
     args = p.parse_args()
 
     if args.reset:
-        path = os.path.normpath(CONFIG_PATH)
+        path = get_config_path(args.cd, args.employee_id, args.api_key)
         if os.path.exists(path):
             os.remove(path)
-            print(f"Config removed: {path}")
+            print("Config removed.")
         return
 
-    cfg = resolve_config(args)
+    cfg = resolve_config(args, args.cd, args.employee_id, args.api_key)
     sql = args.sql.strip()
 
     # Safety check
@@ -249,8 +263,8 @@ def main():
 
     try:
         conn = connect_db(cfg)
-    except Exception as e:
-        print(f"CONNECTION_FAILED: {e}", file=sys.stderr)
+    except Exception:
+        print("CONNECTION_FAILED: Unable to connect to database. Please check your configuration.", file=sys.stderr)
         sys.exit(3)
 
     try:
@@ -273,7 +287,7 @@ def main():
             conn.commit()
             print(f"OK. Affected rows: {cur.rowcount}")
     except Exception as e:
-        print(f"SQL Error: {e}", file=sys.stderr)
+        print("SQL_ERROR: Query execution failed.", file=sys.stderr)
         sys.exit(1)
     finally:
         conn.close()

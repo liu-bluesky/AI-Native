@@ -19,6 +19,10 @@
           <el-icon><Document /></el-icon>
           <span>规则管理</span>
         </el-menu-item>
+        <el-menu-item index="/usage/keys">
+          <el-icon><Key /></el-icon>
+          <span>API Key</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
@@ -38,7 +42,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { User, Plus, SetUp, Document } from '@element-plus/icons-vue'
+import { User, Plus, SetUp, Document, Key } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
