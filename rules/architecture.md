@@ -84,7 +84,7 @@
 2. 在 `web-admin/api/stores.py` 添加 `_load_store` 调用和 store 实例导出
 3. 在 `web-admin/api/routers/` 下新建对应路由文件
 4. 在 `server.py` 注册新 router
-5. 在 `PROJECT.md` MCP 服务矩阵注册
+5. 在 `docs/00-项目总览/PROJECT.md` MCP 服务矩阵注册
 6. 在 `rules/mcp-service.md` 服务名表注册
 
 ### 新增前端页面

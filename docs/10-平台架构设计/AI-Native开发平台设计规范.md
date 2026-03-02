@@ -1833,5 +1833,5 @@ tool_chain_security:
 
 ### B. 相关文档
 
-- [AI 员工工厂设计规范](./AI-员工工厂设计规范.md) - 完整的 AI 员工平台设计
+- [AI 员工工厂设计规范](../20-产品应用设计/AI-员工工厂设计规范.md) - 完整的 AI 员工平台设计
 - [mcp-rules-engine](./mcp-rules-engine/) - 规则 MCP 服务实现

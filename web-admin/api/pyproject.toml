@@ -9,6 +9,7 @@ dependencies = [
     "pyjwt>=2.8",
     "python-multipart>=0.0.9",
     "fastmcp>=3.0",
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]
