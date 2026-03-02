@@ -1,0 +1,174 @@
+"""记忆管理 MCP 服务入口"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from mcp.server.fastmcp import FastMCP
+
+from store import (
+    MemoryStore, Memory, MemoryType, MemoryScope,
+    Classification, serialize_memory, _now_iso,
+)
+
+DB_PATH = Path(__file__).parent / "memories.db"
+
+mcp = FastMCP("memory-service")
+store = MemoryStore(DB_PATH)
+
+_IDENTITY_TYPES = {
+    MemoryType.LONG_TERM_GOAL, MemoryType.TABOO,
+    MemoryType.STABLE_PREFERENCE, MemoryType.DECISION_PATTERN,
+}
+
+
+def _parse_memory_type(value: str) -> tuple:
+    try:
+        return MemoryType(value), None
+    except ValueError:
+        valid = [e.value for e in MemoryType]
+        return None, {"error": f"Invalid type: {value}. Valid: {valid}"}
+
+
+# ── Tools ──
+
+@mcp.tool()
+def save_memory(
+    employee_id: str, content: str, type: str,
+    importance: float = 0.5,
+) -> dict:
+    """保存一条记忆"""
+    mt, err = _parse_memory_type(type)
+    if err:
+        return err
+    mem = Memory(
+        id=store.new_id(), employee_id=employee_id,
+        type=mt, content=content, importance=importance,
+    )
+    store.save(mem)
+    return {"status": "saved", "memory_id": mem.id}
+
+
+@mcp.tool()
+def recall(employee_id: str, query: str = "", limit: int = 10) -> list[dict]:
+    """检索记忆"""
+    results = store.recall(employee_id, query, limit)
+    return [serialize_memory(m) for m in results]
+
+
+@mcp.tool()
+def forget(memory_id: str) -> dict:
+    """删除一条记忆"""
+    if store.delete(memory_id):
+        return {"status": "deleted", "memory_id": memory_id}
+    return {"error": f"Memory {memory_id} not found"}
+
+
+@mcp.tool()
+def compress_memories(employee_id: str, keep_top: int = 50) -> dict:
+    """压缩记忆：保留重要的，删除低价值的"""
+    deleted = store.compress(employee_id, keep_top)
+    remaining = store.count(employee_id)
+    return {"status": "compressed", "deleted": deleted, "remaining": remaining}
+
+
+@mcp.tool()
+def save_identity_signal(
+    employee_id: str, signal_type: str, content: str,
+    importance: float = 0.9,
+) -> dict:
+    """保存身份信号记忆（数字分身核心）"""
+    mt, err = _parse_memory_type(signal_type)
+    if err:
+        return err
+    if mt not in _IDENTITY_TYPES:
+        valid = [t.value for t in _IDENTITY_TYPES]
+        return {"error": f"Not an identity signal type. Valid: {valid}"}
+    mem = Memory(
+        id=store.new_id(), employee_id=employee_id,
+        type=mt, content=content, importance=importance,
+    )
+    store.save(mem)
+    return {"status": "saved", "memory_id": mem.id, "signal_type": mt.value}
+
+
+@mcp.tool()
+def list_identity_signals(
+    employee_id: str, signal_type: str = "",
+) -> list[dict]:
+    """查询身份信号记忆"""
+    if signal_type:
+        mt, err = _parse_memory_type(signal_type)
+        if err:
+            return err
+        results = store.list_by_employee(employee_id, mt)
+    else:
+        results = []
+        for t in _IDENTITY_TYPES:
+            results.extend(store.list_by_employee(employee_id, t))
+    return [serialize_memory(m) for m in results]
+
+
+@mcp.tool()
+def set_memory_classification(
+    memory_id: str, level: str, purpose_tags: str = "",
+) -> dict:
+    """设置记忆分级与用途标签"""
+    try:
+        Classification(level)
+    except ValueError:
+        valid = [e.value for e in Classification]
+        return {"error": f"Invalid level: {level}. Valid: {valid}"}
+    tags = [t.strip() for t in purpose_tags.split(",") if t.strip()] if purpose_tags else []
+    if store.update_classification(memory_id, level, tags):
+        return {"status": "updated", "memory_id": memory_id}
+    return {"error": f"Memory {memory_id} not found"}
+
+
+# ── Resources ──
+
+@mcp.resource("memory://{employee_id}/all")
+def all_memories(employee_id: str) -> str:
+    """所有记忆"""
+    mems = store.list_by_employee(employee_id)
+    lines = [f"[{m.id}] ({m.type.value}) {m.content[:80]}" for m in mems]
+    return "\n".join(lines) if lines else "暂无记忆"
+
+
+@mcp.resource("memory://{employee_id}/recent")
+def recent_memories(employee_id: str) -> str:
+    """最近记忆"""
+    mems = store.recent(employee_id)
+    lines = [f"[{m.id}] ({m.type.value}) {m.content[:80]}" for m in mems]
+    return "\n".join(lines) if lines else "暂无记忆"
+
+
+@mcp.resource("memory://{employee_id}/important")
+def important_memories(employee_id: str) -> str:
+    """重要记忆"""
+    mems = store.important(employee_id)
+    lines = [f"[{m.id}] importance={m.importance} | {m.content[:80]}" for m in mems]
+    return "\n".join(lines) if lines else "暂无重要记忆"
+
+
+@mcp.resource("memory://{employee_id}/identity-signals")
+def identity_signals(employee_id: str) -> str:
+    """数字分身身份信号"""
+    mems = []
+    for t in _IDENTITY_TYPES:
+        mems.extend(store.list_by_employee(employee_id, t))
+    lines = [f"[{m.type.value}] {m.content}" for m in mems]
+    return "\n".join(lines) if lines else "暂无身份信号"
+
+
+@mcp.resource("memory://{employee_id}/isolation-policy")
+def isolation_policy(employee_id: str) -> str:
+    """隔离策略"""
+    count = store.count(employee_id)
+    return f"员工 {employee_id} | 记忆总数: {count} | 隔离模式: tenant_per_employee"
+
+
+# ── Entry Point ──
+
+if __name__ == "__main__":
+    mcp.run()

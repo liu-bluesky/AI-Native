@@ -1,0 +1,143 @@
+<template>
+  <div v-loading="loading">
+    <div class="toolbar">
+      <h3>记忆管理: {{ employeeId }}</h3>
+      <div class="toolbar-right">
+        <el-input v-model="query" placeholder="搜索记忆" size="small" class="search-input"
+          @keyup.enter="fetchMemories" clearable />
+        <el-button size="small" type="primary" @click="fetchMemories">搜索</el-button>
+        <el-button size="small" @click="$router.back()">返回</el-button>
+      </div>
+    </div>
+
+    <el-row :gutter="16" class="stats-row">
+      <el-col :span="8">
+        <el-statistic title="记忆总数" :value="memCount" />
+      </el-col>
+      <el-col :span="8">
+        <el-button type="warning" size="small" @click="handleCompress">压缩记忆</el-button>
+      </el-col>
+      <el-col :span="8">
+        <el-button size="small" @click="fetchImportant">仅看重要记忆</el-button>
+      </el-col>
+    </el-row>
+
+    <el-table :data="memories" stripe>
+      <el-table-column prop="type" label="类型" width="140" />
+      <el-table-column prop="content" label="内容" show-overflow-tooltip />
+      <el-table-column prop="importance" label="重要度" width="80" align="center" />
+      <el-table-column prop="scope" label="作用域" width="120" />
+      <el-table-column prop="access_count" label="访问" width="70" align="center" />
+      <el-table-column prop="created_at" label="创建时间" width="180" />
+      <el-table-column label="操作" width="80" fixed="right">
+        <template #default="{ row }">
+          <el-button text type="danger" size="small" @click="handleDelete(row.id)">删除</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+
+    <el-empty v-if="!memories.length && !loading" description="暂无记忆" />
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import api from '@/utils/api.js'
+
+const route = useRoute()
+const loading = ref(false)
+const employeeId = computed(() => route.params.id)
+const memories = ref([])
+const memCount = ref(0)
+const query = ref('')
+
+async function fetchMemories() {
+  loading.value = true
+  try {
+    const params = query.value ? `?query=${encodeURIComponent(query.value)}` : ''
+    const data = await api.get(`/memory/${employeeId.value}${params}`)
+    memories.value = data.memories || []
+  } catch {
+    ElMessage.error('加载记忆失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function fetchCount() {
+  try {
+    const data = await api.get(`/memory/${employeeId.value}/count`)
+    memCount.value = data.count || 0
+  } catch { /* ignore */ }
+}
+
+async function fetchImportant() {
+  loading.value = true
+  try {
+    const data = await api.get(`/memory/${employeeId.value}/important`)
+    memories.value = data.memories || []
+  } catch {
+    ElMessage.error('加载失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function handleDelete(memoryId) {
+  await ElMessageBox.confirm('确定删除该记忆？', '确认')
+  try {
+    await api.delete(`/memory/item/${memoryId}`)
+    ElMessage.success('已删除')
+    fetchMemories()
+    fetchCount()
+  } catch {
+    ElMessage.error('删除失败')
+  }
+}
+
+async function handleCompress() {
+  await ElMessageBox.confirm('压缩将保留前50条重要记忆，删除其余。继续？', '压缩记忆')
+  try {
+    const data = await api.post(`/memory/${employeeId.value}/compress`, { keep_top: 50 })
+    ElMessage.success(`已压缩，移除 ${data.removed_count} 条`)
+    fetchMemories()
+    fetchCount()
+  } catch {
+    ElMessage.error('压缩失败')
+  }
+}
+
+onMounted(() => {
+  fetchMemories()
+  fetchCount()
+})
+</script>
+
+<style scoped>
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.toolbar h3 {
+  margin: 0;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.search-input {
+  width: 200px;
+}
+
+.stats-row {
+  margin-bottom: 16px;
+}
+</style>

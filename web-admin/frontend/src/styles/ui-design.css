@@ -1,0 +1,90 @@
+:root {
+  --color-primary-1: #e6f4ff;
+  --color-primary-2: #bae0ff;
+  --color-primary-3: #91caff;
+  --color-primary-4: #69b1ff;
+  --color-primary-5: #4096ff;
+  --color-primary-6: #1677ff;
+  --color-primary-7: #0958d9;
+  --color-primary-8: #003eb3;
+  --color-primary-9: #002c8c;
+  --color-primary-10: #001d66;
+
+  --color-text-primary: rgba(0, 0, 0, 0.88);
+  --color-text-secondary: rgba(0, 0, 0, 0.65);
+  --color-text-tertiary: rgba(0, 0, 0, 0.45);
+  --color-text-quaternary: rgba(0, 0, 0, 0.25);
+
+  --color-border: #d9d9d9;
+  --color-border-secondary: #f0f0f0;
+  --color-bg-container: #ffffff;
+  --color-bg-layout: #f5f5f5;
+  --color-bg-elevated: #ffffff;
+
+  --spacing-xxs: 4px;
+  --spacing-xs: 8px;
+  --spacing-sm: 12px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  --spacing-xxl: 48px;
+
+  --radius-sm: 2px;
+  --radius-base: 4px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* Element Plus Overrides */
+  --el-color-primary: var(--color-primary-6);
+  --el-color-primary-light-3: var(--color-primary-4);
+  --el-color-primary-light-5: var(--color-primary-3);
+  --el-color-primary-light-7: var(--color-primary-2);
+  --el-color-primary-light-8: var(--color-primary-1);
+  --el-color-primary-light-9: var(--color-primary-1);
+  --el-color-primary-dark-2: var(--color-primary-7);
+
+  --el-color-success: #52c41a;
+  --el-color-warning: #faad14;
+  --el-color-danger: #ff4d4f;
+  --el-color-info: #1677ff;
+
+  --el-text-color-primary: var(--color-text-primary);
+  --el-text-color-regular: var(--color-text-secondary);
+  --el-text-color-secondary: var(--color-text-tertiary);
+  --el-text-color-placeholder: var(--color-text-quaternary);
+
+  --el-border-color: var(--color-border);
+  --el-border-color-light: var(--color-border-secondary);
+  --el-border-color-lighter: var(--color-border-secondary);
+
+  --el-bg-color: var(--color-bg-container);
+  --el-bg-color-page: var(--color-bg-layout);
+  --el-bg-color-overlay: var(--color-bg-elevated);
+
+  --el-border-radius-base: var(--radius-base);
+  --el-border-radius-small: var(--radius-sm);
+  --el-border-radius-round: var(--radius-lg);
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--color-text-primary);
+  background: var(--color-bg-layout);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, 'Noto Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji';
+}
+
+h2,
+h3,
+h4,
+h5 {
+  color: var(--color-text-primary);
+}
