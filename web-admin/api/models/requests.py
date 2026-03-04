@@ -29,6 +29,7 @@ class EmployeeCreateReq(BaseModel):
     auto_evolve: bool = True
     evolve_threshold: float = 0.8
     mcp_enabled: bool = True
+    feedback_upgrade_enabled: bool = False
 
 
 class EmployeeUpdateReq(BaseModel):
@@ -45,12 +46,86 @@ class EmployeeUpdateReq(BaseModel):
     auto_evolve: bool | None = None
     evolve_threshold: float | None = None
     mcp_enabled: bool | None = None
+    feedback_upgrade_enabled: bool | None = None
 
 
 class ReviewReq(BaseModel):
     reviewed_by: str
     action: str
     edits: str = ""
+
+
+class FeedbackBugCreateReq(BaseModel):
+    employee_id: str
+    title: str
+    symptom: str
+    expected: str
+    category: str = "general"
+    severity: str = "medium"
+    session_id: str = ""
+    rule_id: str = ""
+    reporter: str = ""
+    source_context: dict = {}
+
+
+class FeedbackCandidateReviewReq(BaseModel):
+    reviewed_by: str
+    action: str
+    comment: str = ""
+    edited_content: str = ""
+    edited_executable_content: str = ""
+
+
+class FeedbackCandidatePublishReq(BaseModel):
+    published_by: str = ""
+    comment: str = ""
+
+
+class FeedbackCandidateRollbackReq(BaseModel):
+    rolled_back_by: str = ""
+    comment: str = ""
+
+
+class FeedbackManualCandidateCreateReq(BaseModel):
+    employee_id: str
+    category: str = "general"
+    proposed_rule_content: str
+    executable_rule_content: str = ""
+    target_rule_id: str = ""
+    risk_level: str = "medium"
+    confidence: float = 0.8
+    feedback_ids: list[str] = []
+    comment: str = ""
+
+
+class FeedbackBugBatchDeleteReq(BaseModel):
+    feedback_ids: list[str]
+    employee_id: str = ""
+
+
+class FeedbackAnalyzeReq(BaseModel):
+    provider_id: str = ""
+    model_name: str = ""
+    temperature: float | None = None
+
+
+class FeedbackBatchAnalyzeReq(BaseModel):
+    feedback_ids: list[str]
+    target_rule_id: str
+    provider_id: str = ""
+    model_name: str = ""
+    temperature: float | None = None
+
+
+class FeedbackReflectionConfigUpdateReq(BaseModel):
+    employee_id: str
+    provider_id: str
+    model_name: str = ""
+    temperature: float = 0.2
+
+
+class FeedbackProjectConfigUpdateReq(BaseModel):
+    enabled: bool
 
 
 class SkillInstallReq(BaseModel):
@@ -64,6 +139,11 @@ class RuleUsageReq(BaseModel):
 
 class CompressReq(BaseModel):
     keep_top: int = 50
+
+
+class MemoryBatchDeleteReq(BaseModel):
+    memory_ids: list[str]
+    employee_id: str = ""
 
 
 # ── Skill ──
@@ -114,6 +194,34 @@ class RuleUpdateReq(BaseModel):
 class CreateApiKeyReq(BaseModel):
     developer_name: str
     created_by: str = ""
+
+
+# ── LLM Provider ──
+
+class LlmProviderCreateReq(BaseModel):
+    name: str
+    provider_type: str = "openai-compatible"
+    base_url: str
+    api_key: str = ""
+    models: list[str] = []
+    default_model: str = ""
+    enabled: bool = True
+    extra_headers: dict = {}
+
+
+class LlmProviderUpdateReq(BaseModel):
+    name: str | None = None
+    provider_type: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    models: list[str] | None = None
+    default_model: str | None = None
+    enabled: bool | None = None
+    extra_headers: dict | None = None
+
+
+class LlmProviderTestReq(BaseModel):
+    model_name: str = ""
 
 
 # ── Persona ──

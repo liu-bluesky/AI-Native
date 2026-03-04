@@ -31,6 +31,7 @@ class EmployeeConfig:
     auto_evolve: bool = True
     evolve_threshold: float = 0.8
     mcp_enabled: bool = True
+    feedback_upgrade_enabled: bool = False
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 

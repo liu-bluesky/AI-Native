@@ -284,6 +284,13 @@
           <el-switch v-model="form.auto_evolve" />
         </el-form-item>
 
+        <el-form-item label="反馈升级">
+          <el-switch v-model="form.feedback_upgrade_enabled" />
+          <div class="field-hint">
+            开启后会在员工 MCP 中暴露反馈闭环工具（提交反馈、反思、审核、发布、回滚）。
+          </div>
+        </el-form-item>
+
         <el-form-item label="入库阈值" v-if="form.auto_evolve">
           <el-slider
             v-model="form.evolve_threshold"
@@ -320,6 +327,9 @@
             }}</el-descriptions-item>
             <el-descriptions-item label="自动学习">{{
               form.auto_evolve ? "开启" : "关闭"
+            }}</el-descriptions-item>
+            <el-descriptions-item label="反馈升级">{{
+              form.feedback_upgrade_enabled ? "开启" : "关闭"
             }}</el-descriptions-item>
           </el-descriptions>
           <div class="preview-tags">
@@ -428,6 +438,7 @@ const form = reactive({
   style_hints: [],
   auto_evolve: true,
   evolve_threshold: 0.8,
+  feedback_upgrade_enabled: false,
 });
 
 const rules = {
@@ -679,6 +690,7 @@ async function fetchDetail() {
     style_hints: employee.style_hints || [],
     auto_evolve: employee.auto_evolve ?? true,
     evolve_threshold: employee.evolve_threshold ?? 0.8,
+    feedback_upgrade_enabled: employee.feedback_upgrade_enabled ?? false,
   });
   refreshPreservedRuleDomains(form.rule_domains);
 }

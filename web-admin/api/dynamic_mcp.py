@@ -17,7 +17,12 @@ from mcp.server.fastmcp import FastMCP
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from deps import employee_store, usage_store
+from feedback_service import get_feedback_service
 from stores import (
+    Classification,
+    Memory,
+    MemoryScope,
+    MemoryType,
     memory_store,
     rule_store,
     serialize_memory,
@@ -33,6 +38,8 @@ _employee_apps = {}
 _employee_app_signatures = {}
 _session_keys: dict[str, tuple[str, str]] = {}  # session_id -> (api_key, developer_name)
 _current_api_key: ContextVar[str] = ContextVar("_current_api_key", default="")
+_current_developer_name: ContextVar[str] = ContextVar("_current_developer_name", default="")
+_EMPLOYEE_MCP_APP_REV = "2026-03-04-sse-post-bridge"
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _EXECUTABLE_SUFFIXES = {".py", ".js"}
 _FASTMCP_HOST = os.environ.get("FASTMCP_HOST", "0.0.0.0")
@@ -254,6 +261,247 @@ def _tool_token(value: str) -> str:
     return text
 
 
+_QUESTION_FIELD_KEYS = {
+    "question",
+    "query",
+    "prompt",
+    "content",
+    "message",
+    "text",
+    "input",
+    "user_input",
+    "symptom",
+    "expected",
+    "title",
+}
+_PROJECT_FIELD_KEYS = {
+    "project",
+    "project_id",
+    "project_name",
+    "workspace",
+    "workspace_id",
+    "repo",
+    "repository",
+}
+_RECALL_EMPLOYEE_MEMORY_LIMIT = 100
+
+
+def _normalize_text(value: str) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _extract_text_nodes(node: object) -> list[str]:
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, list):
+        out: list[str] = []
+        for item in node:
+            out.extend(_extract_text_nodes(item))
+        return out
+    if isinstance(node, dict):
+        out: list[str] = []
+        if isinstance(node.get("text"), str):
+            out.append(node["text"])
+        if isinstance(node.get("content"), (str, list, dict)):
+            out.extend(_extract_text_nodes(node["content"]))
+        return out
+    return []
+
+
+def _join_text_nodes(node: object) -> str:
+    parts = _extract_text_nodes(node)
+    if not parts:
+        return ""
+    return "".join(parts)
+
+
+def _collect_question_values(node: object, key_hint: str = "") -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
+    if isinstance(node, dict):
+        for key, val in node.items():
+            key_name = str(key or "").strip().lower()
+            if isinstance(val, str) and key_name in _QUESTION_FIELD_KEYS:
+                values.append((key_name, val))
+            else:
+                values.extend(_collect_question_values(val, key_name))
+    elif isinstance(node, list):
+        for item in node:
+            values.extend(_collect_question_values(item, key_hint))
+    elif isinstance(node, str) and key_hint in _QUESTION_FIELD_KEYS:
+        values.append((key_hint, node))
+    return values
+
+
+def _collect_project_values(node: object, key_hint: str = "") -> list[str]:
+    values: list[str] = []
+    if isinstance(node, dict):
+        for key, val in node.items():
+            key_name = str(key or "").strip().lower()
+            if isinstance(val, str) and key_name in _PROJECT_FIELD_KEYS:
+                values.append(val)
+            else:
+                values.extend(_collect_project_values(val, key_name))
+    elif isinstance(node, list):
+        for item in node:
+            values.extend(_collect_project_values(item, key_hint))
+    elif isinstance(node, str) and key_hint in _PROJECT_FIELD_KEYS:
+        values.append(node)
+    return values
+
+
+def _normalize_project_name(value: str) -> str:
+    return _normalize_text(value)
+
+
+def _extract_user_questions_from_rpc_payload(rpc_payload: dict) -> tuple[str, str, list[str], str]:
+    method_name = str(rpc_payload.get("method") or "")
+    params = rpc_payload.get("params")
+    if not isinstance(params, dict):
+        return method_name, "", [], ""
+
+    tool_name = ""
+    user_values: list[str] = []
+    context_values: list[str] = []
+    query_values: list[str] = []
+    project_values: list[str] = []
+    if method_name == "tools/call":
+        tool_name = str(params.get("name") or "")
+        arguments = params.get("arguments")
+        parsed_arguments = arguments
+        if isinstance(arguments, str):
+            text = arguments
+            stripped = text.strip()
+            parsed_arguments = None
+            if stripped:
+                try:
+                    candidate = json.loads(stripped)
+                    if isinstance(candidate, (dict, list)):
+                        parsed_arguments = candidate
+                    elif isinstance(candidate, str):
+                        context_values.append(candidate)
+                    else:
+                        context_values.append(text)
+                except Exception:
+                    context_values.append(text)
+            else:
+                context_values.append(text)
+        if parsed_arguments is None:
+            parsed_arguments = {}
+        for key_name, text in _collect_question_values(parsed_arguments):
+            if key_name == "query":
+                query_values.append(text)
+            else:
+                context_values.append(text)
+        project_values.extend(_collect_project_values(parsed_arguments))
+
+    messages = params.get("messages")
+    if isinstance(messages, list):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "").strip().lower()
+            if role == "user":
+                merged = _join_text_nodes(msg.get("content"))
+                if merged:
+                    user_values.append(merged)
+
+    if "message" in params:
+        merged = _join_text_nodes(params.get("message"))
+        if merged:
+            user_values.append(merged)
+    if "content" in params:
+        merged = _join_text_nodes(params.get("content"))
+        if merged:
+            user_values.append(merged)
+    project_values.extend(_collect_project_values(params))
+
+    captured: list[str] = []
+    seen: set[str] = set()
+    for raw in user_values + context_values + query_values:
+        if not isinstance(raw, str):
+            continue
+        text = raw
+        if text == "":
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        captured.append(text)
+    project_name = ""
+    for raw in project_values:
+        project_name = _normalize_project_name(raw)
+        if project_name:
+            break
+    return method_name, tool_name, captured, project_name
+
+
+def _save_auto_user_question_memory(
+    employee_id: str,
+    questions: list[str],
+    source: str,
+    project_name: str = "",
+) -> None:
+    if not questions:
+        return
+    normalized_project_name = _normalize_project_name(project_name) or "default"
+    existing: set[str] = set()
+    try:
+        for mem in memory_store.recent(employee_id, 10):
+            existing.add(
+                f"{_normalize_project_name(str(getattr(mem, 'project_name', '')))}|"
+                f"{str(getattr(mem, 'content', ''))}"
+            )
+    except Exception:
+        existing = set()
+
+    normalized_questions: list[str] = []
+    for question in questions:
+        if not isinstance(question, str) or question == "":
+            continue
+        if question in normalized_questions:
+            continue
+        normalized_questions.append(question)
+    if not normalized_questions:
+        return
+
+    primary_question = normalized_questions[0]
+    primary_norm = _normalize_text(primary_question).lower()
+    auxiliary_queries: list[str] = []
+    for question in normalized_questions[1:]:
+        question_norm = _normalize_text(question).lower()
+        if question_norm == "":
+            continue
+        # query 作为辅助信息记录；若只是主问题的子串，跳过避免噪声。
+        if primary_norm and question_norm in primary_norm:
+            continue
+        if question in auxiliary_queries:
+            continue
+        auxiliary_queries.append(question)
+
+    content = f"[用户提问] {primary_question}"
+    if auxiliary_queries:
+        content = f"{content}\n[辅助query] {' | '.join(auxiliary_queries)}"
+    content_key = f"{normalized_project_name}|{content}"
+    if content_key in existing:
+        return
+    try:
+        memory_store.save(
+            Memory(
+                id=memory_store.new_id(),
+                employee_id=employee_id,
+                type=MemoryType.PROJECT_CONTEXT,
+                content=content,
+                project_name=normalized_project_name,
+                importance=0.55,
+                scope=MemoryScope.EMPLOYEE_PRIVATE,
+                classification=Classification.INTERNAL,
+                purpose_tags=("auto-capture", "user-question", source),
+            )
+        )
+    except Exception:
+        return
+
+
 def _skill_package_path(skill) -> Path | None:
     package_dir = str(getattr(skill, "package_dir", "") or "").strip()
     if not package_dir:
@@ -385,7 +633,8 @@ def _execute_skill_proxy(
 
 def _new_mcp(service_name: str) -> FastMCP:
     """Use non-localhost host to avoid FastMCP localhost-only host header checks on LAN access."""
-    return FastMCP(service_name, host=_FASTMCP_HOST)
+    # Stateless HTTP avoids session-id coupling for clients that POST directly to /sse (bridged to /mcp).
+    return FastMCP(service_name, host=_FASTMCP_HOST, stateless_http=True)
 
 def _create_rule_mcp(rule_id: str):
     r = rule_store.get(rule_id)
@@ -463,6 +712,12 @@ def _create_employee_mcp(employee_id: str):
 
     def _get_employee():
         return employee_store.get(employee_id)
+
+    def _get_feedback_actor() -> str:
+        actor = _current_developer_name.get("").strip()
+        return actor or "unknown"
+
+    feedback_enabled = bool(getattr(employee, "feedback_upgrade_enabled", False)) if employee else False
 
     @mcp.resource(f"employee://{employee_id}/system-policy")
     def system_policy() -> str:
@@ -562,21 +817,16 @@ def _create_employee_mcp(employee_id: str):
         return [serialize_rule(rule) for rule in rules]
 
     @mcp.tool()
-    def recall_employee_memory(query: str = "", limit: int = 10) -> list[dict]:
-        """检索员工记忆，query 为空时按最近记忆返回"""
+    def recall_employee_memory(query: str = "") -> list[dict]:
+        """检索员工记忆（AI 调用固定返回最多 100 条，避免小 limit 截断）"""
         employee = _get_employee()
         if not employee:
             return []
-        try:
-            limit = int(limit)
-        except (TypeError, ValueError):
-            limit = 10
-        limit = max(1, min(limit, 100))
         query = str(query or "").strip()
         if query:
-            memories = memory_store.recall(employee.id, query, limit)
+            memories = memory_store.recall(employee.id, query, _RECALL_EMPLOYEE_MEMORY_LIMIT)
         else:
-            memories = memory_store.recent(employee.id, limit)
+            memories = memory_store.recent(employee.id, _RECALL_EMPLOYEE_MEMORY_LIMIT)
         return [serialize_memory(mem) for mem in memories]
 
     @mcp.tool()
@@ -617,6 +867,211 @@ def _create_employee_mcp(employee_id: str):
                 }
             )
         return tools
+
+    if feedback_enabled:
+        @mcp.tool()
+        def submit_feedback_bug(
+            title: str,
+            symptom: str,
+            expected: str,
+            project_id: str = "default",
+            category: str = "general",
+            severity: str = "medium",
+            session_id: str = "",
+            rule_id: str = "",
+            source_context: dict | None = None,
+        ) -> dict:
+            """提交当前员工的结构化反馈工单（支持项目隔离）"""
+            employee = _get_employee()
+            if not employee:
+                return {"error": "Employee not found"}
+            try:
+                bug = get_feedback_service().create_bug(
+                    project_id=project_id,
+                    payload={
+                        "employee_id": employee_id,
+                        "title": title,
+                        "symptom": symptom,
+                        "expected": expected,
+                        "category": category,
+                        "severity": severity,
+                        "session_id": session_id,
+                        "rule_id": rule_id,
+                        "source_context": source_context or {},
+                    },
+                    actor=_get_feedback_actor(),
+                )
+                return {"status": "created", "bug": bug}
+            except (ValueError, RuntimeError) as exc:
+                return {"error": str(exc)}
+
+        @mcp.tool()
+        def list_feedback_bugs(
+            project_id: str = "default",
+            status: str = "",
+            severity: str = "",
+            limit: int = 20,
+        ) -> list[dict]:
+            """查询当前员工在项目内的反馈工单列表"""
+            employee = _get_employee()
+            if not employee:
+                return []
+            try:
+                return get_feedback_service().list_bugs(
+                    project_id=project_id,
+                    employee_id=employee_id,
+                    status=status,
+                    severity=severity,
+                    limit=limit,
+                )
+            except (ValueError, RuntimeError):
+                return []
+
+        @mcp.tool()
+        def get_feedback_bug_detail(feedback_id: str, project_id: str = "default") -> dict:
+            """查看单条反馈的详情（含反思、候选、审核日志）"""
+            employee = _get_employee()
+            if not employee:
+                return {"error": "Employee not found"}
+            try:
+                detail = get_feedback_service().get_bug_detail(project_id, feedback_id)
+            except LookupError as exc:
+                return {"error": str(exc)}
+            except RuntimeError as exc:
+                return {"error": str(exc)}
+            bug = detail.get("bug") or {}
+            if bug.get("employee_id") != employee_id:
+                return {"error": f"Feedback {feedback_id} does not belong to employee {employee_id}"}
+            return detail
+
+        @mcp.tool()
+        def analyze_feedback_bug(feedback_id: str, project_id: str = "default") -> dict:
+            """触发反馈反思并生成规则升级候选"""
+            employee = _get_employee()
+            if not employee:
+                return {"error": "Employee not found"}
+            detail = get_feedback_bug_detail(feedback_id=feedback_id, project_id=project_id)
+            if detail.get("error"):
+                return detail
+            try:
+                result = get_feedback_service().analyze_bug(project_id, feedback_id)
+                return {"status": "analyzed", **result}
+            except ValueError as exc:
+                return {"error": str(exc)}
+            except LookupError as exc:
+                return {"error": str(exc)}
+            except RuntimeError as exc:
+                return {"error": str(exc)}
+
+        @mcp.tool()
+        def list_feedback_candidates(
+            project_id: str = "default",
+            status: str = "pending",
+            limit: int = 20,
+        ) -> list[dict]:
+            """查询当前员工在项目内的反馈候选规则"""
+            employee = _get_employee()
+            if not employee:
+                return []
+            try:
+                return get_feedback_service().list_candidates(
+                    project_id=project_id,
+                    status=status,
+                    employee_id=employee_id,
+                    limit=limit,
+                )
+            except (ValueError, RuntimeError):
+                return []
+
+        def _find_candidate_in_employee_scope(project_id: str, candidate_id: str) -> dict:
+            candidates = get_feedback_service().list_candidates(
+                project_id=project_id,
+                status="",
+                employee_id=employee_id,
+                limit=200,
+            )
+            for candidate in candidates:
+                if candidate.get("id") == candidate_id:
+                    return candidate
+            return {}
+
+        @mcp.tool()
+        def review_feedback_candidate(
+            candidate_id: str,
+            action: str,
+            project_id: str = "default",
+            comment: str = "",
+            edited_content: str = "",
+            edited_executable_content: str = "",
+        ) -> dict:
+            """审核反馈候选（approve/edit/reject）"""
+            employee = _get_employee()
+            if not employee:
+                return {"error": "Employee not found"}
+            candidate = _find_candidate_in_employee_scope(project_id, candidate_id)
+            if not candidate:
+                return {"error": f"Candidate {candidate_id} not found for employee {employee_id}"}
+            try:
+                updated = get_feedback_service().review_candidate(
+                    project_id=project_id,
+                    candidate_id=candidate_id,
+                    reviewed_by=_get_feedback_actor(),
+                    action=action,
+                    comment=comment,
+                    edited_content=edited_content,
+                    edited_executable_content=edited_executable_content,
+                )
+                return {"status": updated.get("status", ""), "candidate": updated}
+            except (ValueError, LookupError, RuntimeError) as exc:
+                return {"error": str(exc)}
+
+        @mcp.tool()
+        def publish_feedback_candidate(
+            candidate_id: str,
+            project_id: str = "default",
+            comment: str = "",
+        ) -> dict:
+            """发布已审核通过的反馈候选到规则库"""
+            employee = _get_employee()
+            if not employee:
+                return {"error": "Employee not found"}
+            candidate = _find_candidate_in_employee_scope(project_id, candidate_id)
+            if not candidate:
+                return {"error": f"Candidate {candidate_id} not found for employee {employee_id}"}
+            try:
+                updated = get_feedback_service().publish_candidate(
+                    project_id=project_id,
+                    candidate_id=candidate_id,
+                    published_by=_get_feedback_actor(),
+                    comment=comment,
+                )
+                return {"status": "published", "candidate": updated}
+            except (ValueError, LookupError, RuntimeError) as exc:
+                return {"error": str(exc)}
+
+        @mcp.tool()
+        def rollback_feedback_candidate(
+            candidate_id: str,
+            project_id: str = "default",
+            comment: str = "",
+        ) -> dict:
+            """回滚已发布的反馈候选规则版本"""
+            employee = _get_employee()
+            if not employee:
+                return {"error": "Employee not found"}
+            candidate = _find_candidate_in_employee_scope(project_id, candidate_id)
+            if not candidate:
+                return {"error": f"Candidate {candidate_id} not found for employee {employee_id}"}
+            try:
+                updated = get_feedback_service().rollback_candidate(
+                    project_id=project_id,
+                    candidate_id=candidate_id,
+                    rolled_back_by=_get_feedback_actor(),
+                    comment=comment,
+                )
+                return {"status": "rolled_back", "candidate": updated}
+            except (ValueError, LookupError, RuntimeError) as exc:
+                return {"error": str(exc)}
 
     @mcp.tool()
     def invoke_employee_skill_tool(
@@ -735,6 +1190,9 @@ class _EmployeeMcpProxyApp:
         qs = parse_qs(scope.get("query_string", b"").decode())
         api_key = (qs.get("key") or [""])[0]
         session_id = (qs.get("session_id") or [""])[0]
+        project_name_from_query = (
+            (qs.get("project_name") or qs.get("project_id") or qs.get("project") or [""])[0]
+        ).strip()
         is_sse = path.rstrip("/").endswith("/sse")
         is_streamable = path.rstrip("/").endswith("/mcp")
         is_messages = path.rstrip("/").endswith("/messages") or "/messages/" in path
@@ -775,6 +1233,7 @@ class _EmployeeMcpProxyApp:
 
         # 设置当前请求的 api_key 到 contextvar（供技能脚本读取）
         _current_api_key.set(api_key)
+        _current_developer_name.set(developer_name)
 
         # 记录 connection 事件
         if is_sse and method == "GET":
@@ -801,34 +1260,69 @@ class _EmployeeMcpProxyApp:
 
         # 包装 receive 拦截 tools/call
         original_receive = receive
+        request_body_buffer = bytearray()
+        request_body_captured = False
 
         async def tracking_receive():
+            nonlocal request_body_captured
             message = await original_receive()
-            if message.get("type") == "http.request":
-                body = message.get("body", b"")
-                if body:
-                    try:
-                        payload = json.loads(body)
-                        if isinstance(payload, dict) and payload.get("method") == "tools/call":
-                            tool_name = (payload.get("params") or {}).get("name", "")
-                            usage_store.record_event(
-                                employee_id, api_key, developer_name,
-                                "tool_call", tool_name=tool_name, client_ip=client_ip,
-                            )
-                    except Exception:
-                        pass
+            if request_body_captured or message.get("type") != "http.request":
+                return message
+            body = message.get("body", b"")
+            if body:
+                request_body_buffer.extend(body)
+            if message.get("more_body", False):
+                return message
+            if not request_body_buffer:
+                return message
+            request_body_captured = True
+            try:
+                payload = json.loads(bytes(request_body_buffer))
+                rpc_payloads = payload if isinstance(payload, list) else [payload]
+                for rpc_payload in rpc_payloads:
+                    if not isinstance(rpc_payload, dict):
+                        continue
+                    method_name, tool_name, questions, project_name = _extract_user_questions_from_rpc_payload(rpc_payload)
+                    if method_name == "tools/call":
+                        usage_store.record_event(
+                            employee_id, api_key, developer_name,
+                            "tool_call", tool_name=tool_name, client_ip=client_ip,
+                        )
+                    if questions:
+                        source = f"mcp:{method_name or 'unknown'}:{tool_name or '-'}"
+                        _save_auto_user_question_memory(
+                            employee_id,
+                            questions,
+                            source,
+                            project_name=project_name or project_name_from_query or "default",
+                        )
+            except Exception:
+                pass
             return message
 
         signature = (
+            _EMPLOYEE_MCP_APP_REV,
             tuple(employee.skills or []),
             tuple(employee.rule_domains or []),
             bool(getattr(employee, "mcp_enabled", True)),
             employee.updated_at,
         )
-        if employee_id not in _employee_apps or _employee_app_signatures.get(employee_id) != signature:
+        cached_app = _employee_apps.get(employee_id)
+        if (
+            cached_app is None
+            or not isinstance(cached_app, _DualTransportMcpApp)
+            or _employee_app_signatures.get(employee_id) != signature
+        ):
             _employee_apps[employee_id] = _create_employee_mcp(employee_id)
             _employee_app_signatures[employee_id] = signature
-        await _employee_apps[employee_id](scope, tracking_receive, tracking_send)
+        downstream_scope = scope
+        if is_sse and method != "GET":
+            rewritten_path = _replace_path_suffix(str(scope.get("path", "")), "/sse", "/mcp")
+            rewritten_scope = dict(scope)
+            rewritten_scope["path"] = rewritten_path
+            rewritten_scope["raw_path"] = rewritten_path.encode("utf-8")
+            downstream_scope = rewritten_scope
+        await _employee_apps[employee_id](downstream_scope, tracking_receive, tracking_send)
 
 
 rule_mcp_proxy_app = _RuleMcpProxyApp()

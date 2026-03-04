@@ -51,6 +51,7 @@ class Settings:
     api_cors_allow_credentials: bool
     core_store_backend: str
     usage_store_backend: str
+    feedback_upgrade_enabled_global: bool
     database_url: str
 
 
@@ -66,5 +67,6 @@ def get_settings() -> Settings:
         api_cors_allow_credentials=_env_bool("API_CORS_ALLOW_CREDENTIALS", False),
         core_store_backend=str(os.environ.get("CORE_STORE_BACKEND", "postgres")).strip().lower(),
         usage_store_backend=str(os.environ.get("USAGE_STORE_BACKEND", "postgres")).strip().lower(),
+        feedback_upgrade_enabled_global=_env_bool("FEEDBACK_UPGRADE_ENABLED_GLOBAL", True),
         database_url=_build_database_url_from_env(),
     )

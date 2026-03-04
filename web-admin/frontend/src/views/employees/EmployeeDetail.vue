@@ -9,6 +9,19 @@
         <el-button @click="$router.back()">返回</el-button>
       </div>
     </div>
+    <div class="quick-actions" v-if="emp.id">
+      <el-button
+        v-if="emp.feedback_upgrade_enabled"
+        text
+        type="primary"
+        @click="$router.push(`/feedback/${route.params.id}`)"
+      >
+        反馈
+      </el-button>
+      <el-tag v-else size="small" type="info">反馈模块未开启</el-tag>
+      <el-button text @click="$router.push(`/memory/${route.params.id}`)">记忆</el-button>
+      <el-button text @click="$router.push(`/sync/${route.params.id}`)">同步</el-button>
+    </div>
 
     <el-descriptions :column="2" border v-if="emp.id">
       <el-descriptions-item label="ID">{{ emp.id }}</el-descriptions-item>
@@ -20,6 +33,8 @@
       <el-descriptions-item label="记忆作用域">{{ emp.memory_scope }}</el-descriptions-item>
       <el-descriptions-item label="记忆保留">{{ emp.memory_retention_days }} 天</el-descriptions-item>
       <el-descriptions-item label="自动进化">{{ emp.auto_evolve ? '开启' : '关闭' }}</el-descriptions-item>
+      <el-descriptions-item label="MCP 服务">{{ emp.mcp_enabled ? '开启' : '关闭' }}</el-descriptions-item>
+      <el-descriptions-item label="反馈升级">{{ emp.feedback_upgrade_enabled ? '开启' : '关闭' }}</el-descriptions-item>
       <el-descriptions-item label="进化阈值">{{ emp.evolve_threshold }}</el-descriptions-item>
       <el-descriptions-item label="创建时间">{{ emp.created_at }}</el-descriptions-item>
     </el-descriptions>
@@ -144,6 +159,12 @@ onMounted(fetchDetail)
   justify-content: space-between;
   align-items: center;
   margin-bottom: 16px;
+}
+.quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
 .rule-domain-row {

@@ -67,6 +67,7 @@ async def create_employee(req: EmployeeCreateReq):
         auto_evolve=req.auto_evolve,
         evolve_threshold=req.evolve_threshold,
         mcp_enabled=req.mcp_enabled,
+        feedback_upgrade_enabled=req.feedback_upgrade_enabled,
     )
     employee_store.save(emp)
     return {"status": "created", "employee": vars(emp)}
@@ -188,16 +189,34 @@ async def get_employee(employee_id: str):
     return {"employee": vars(emp)}
 
 
-@router.put("/{employee_id}")
-async def update_employee(employee_id: str, req: EmployeeUpdateReq):
+def _apply_employee_update(employee_id: str, req: EmployeeUpdateReq):
     emp = employee_store.get(employee_id)
     if emp is None:
         raise HTTPException(404, f"Employee {employee_id} not found")
-    for field_name, val in req.model_dump(exclude_none=True).items():
+    updates = req.model_dump(exclude_none=True)
+    if not updates:
+        return {"status": "no_change", "employee": vars(emp)}
+    for field_name, val in updates.items():
         setattr(emp, field_name, val)
     emp.updated_at = _now_iso()
     employee_store.save(emp)
     return {"status": "updated", "employee": vars(emp)}
+
+
+@router.put("/{employee_id}")
+async def update_employee(employee_id: str, req: EmployeeUpdateReq):
+    return _apply_employee_update(employee_id, req)
+
+
+@router.patch("/{employee_id}")
+async def patch_employee(employee_id: str, req: EmployeeUpdateReq):
+    return _apply_employee_update(employee_id, req)
+
+
+@router.post("/{employee_id}")
+async def update_employee_compat(employee_id: str, req: EmployeeUpdateReq):
+    """兼容部分工具默认使用 POST 调试更新接口。"""
+    return _apply_employee_update(employee_id, req)
 
 
 @router.delete("/{employee_id}")

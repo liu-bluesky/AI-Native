@@ -59,6 +59,10 @@ ToolDef = _skills_mod.ToolDef
 ResourceDef = _skills_mod.ResourceDef
 Rule = _rules_mod.Rule
 Persona = _persona_mod.Persona
+Memory = _memory_mod.Memory
+MemoryType = _memory_mod.MemoryType
+MemoryScope = _memory_mod.MemoryScope
+Classification = _memory_mod.Classification
 
 Severity = _rules_mod.Severity
 RiskDomain = _rules_mod.RiskDomain

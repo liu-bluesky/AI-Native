@@ -203,3 +203,23 @@ learn({
 | 后端专家 | `agents/backend-expert.md` | Python FastAPI + FastMCP 开发 |
 | MCP 架构师 | `agents/mcp-architect.md` | 服务设计与跨服务架构决策 |
 | 安全审计员 | `agents/security-auditor.md` | 安全审查与合规检查 |
+
+---
+
+## 故障记录（2026-03-04）
+
+### MCP 404：`Session not found`（员工端点）
+
+- 场景：客户端请求 `POST /mcp/employees/emp-8cd60aec/sse?key=...`
+- 现象：返回 `HTTP 404`，错误体为 `{"code":-32600,"message":"Session not found"}`
+- 根因：
+  - `/sse` 的 `POST` 请求被兼容桥接到 `/mcp` 后，底层 streamable-http 为 stateful 模式，要求有效 `Mcp-Session-Id`。
+  - 客户端携带旧/无效会话 ID 时，MCP SDK 按规范直接返回 `404 Session not found`。
+  - 排障过程中出现旧进程未完全替换，导致行为在不同进程间不一致，表现为“时好时坏”。
+- 处理：
+  - 将动态 MCP 初始化改为 `stateless_http=True`，消除对会话 ID 的强依赖。
+  - 保留并加强代理层 `POST /sse -> /mcp` 的强制改写兼容逻辑。
+  - 增加员工子应用修订号，触发缓存重建，避免旧子应用继续处理请求。
+- 预防：
+  - HTTP 客户端优先使用 `/mcp`；SSE 客户端使用 `GET /sse`。
+  - 重启服务时确认 8000 端口仅有一个 API 进程在监听。

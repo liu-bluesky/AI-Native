@@ -50,6 +50,7 @@ class Memory:
     employee_id: str
     type: MemoryType
     content: str
+    project_name: str = ""
     importance: float = 0.5
     scope: MemoryScope = MemoryScope.EMPLOYEE_PRIVATE
     classification: Classification = Classification.INTERNAL
@@ -69,6 +70,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
     id TEXT PRIMARY KEY,
     employee_id TEXT NOT NULL,
+    project_name TEXT DEFAULT '',
     type TEXT NOT NULL,
     content TEXT NOT NULL,
     importance REAL DEFAULT 0.5,
@@ -93,6 +95,7 @@ CREATE INDEX IF NOT EXISTS idx_type ON memories(type);
 def _row_to_memory(row: sqlite3.Row) -> Memory:
     return Memory(
         id=row["id"], employee_id=row["employee_id"],
+        project_name=row["project_name"] if "project_name" in row.keys() else "",
         type=MemoryType(row["type"]), content=row["content"],
         importance=row["importance"], scope=MemoryScope(row["scope"]),
         classification=Classification(row["classification"]),
@@ -110,6 +113,7 @@ def _row_to_memory(row: sqlite3.Row) -> Memory:
 def serialize_memory(m: Memory) -> dict:
     return {
         "id": m.id, "employee_id": m.employee_id,
+        "project_name": m.project_name,
         "type": m.type.value, "content": m.content,
         "importance": m.importance, "scope": m.scope.value,
         "classification": m.classification.value,
@@ -133,6 +137,16 @@ class MemoryStore:
         self._db = sqlite3.connect(str(db_path))
         self._db.row_factory = sqlite3.Row
         self._db.executescript(_SCHEMA)
+        self._ensure_columns()
+
+    def _ensure_columns(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._db.execute("PRAGMA table_info(memories)").fetchall()
+        }
+        if "project_name" not in columns:
+            self._db.execute("ALTER TABLE memories ADD COLUMN project_name TEXT DEFAULT ''")
+            self._db.commit()
 
     def new_id(self) -> str:
         return f"mem-{uuid.uuid4().hex[:8]}"
@@ -140,11 +154,11 @@ class MemoryStore:
     def save(self, m: Memory) -> None:
         self._db.execute(
             """INSERT OR REPLACE INTO memories
-               (id, employee_id, type, content, importance, scope,
+               (id, employee_id, project_name, type, content, importance, scope,
                 classification, purpose_tags, access_count, last_accessed,
                 ttl_days, related_rules, related_memories, created_at, expires_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (m.id, m.employee_id, m.type.value, m.content,
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (m.id, m.employee_id, m.project_name, m.type.value, m.content,
              m.importance, m.scope.value, m.classification.value,
              json.dumps(list(m.purpose_tags)),
              m.access_count, m.last_accessed, m.ttl_days,

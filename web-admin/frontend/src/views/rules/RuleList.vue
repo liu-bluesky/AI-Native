@@ -216,7 +216,7 @@ const mcpHttpConfig = computed(() => {
           args: [
             "-y",
             "@modelcontextprotocol/inspector",
-            `http://localhost:8000/mcp/rules/${currentRule.value.id}/sse`,
+            `http://localhost:8000/mcp/rules/${currentRule.value.id}/mcp`,
           ],
         },
       },
