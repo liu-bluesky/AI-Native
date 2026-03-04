@@ -89,7 +89,20 @@
       "Bash(cd \"/Users/liulantian/self/ai设计规范/web-admin/frontend/src/views\" && mv EmployeeList.vue employees/ && mv EmployeeCreate.vue employees/ && mv EmployeeDetail.vue employees/)",
       "Bash(cd \"/Users/liulantian/self/ai设计规范/web-admin/frontend/src/views\" && mv SkillList.vue skills/ && mv RuleList.vue rules/ && mv MemoryManager.vue memory/ && mv PersonaList.vue personas/)",
       "Bash(cd \"/Users/liulantian/self/ai设计规范/web-admin/frontend/src/views\" && mv EvolutionReport.vue evolution/ && mv CandidateReview.vue evolution/ && mv SyncStatus.vue sync/)",
-      "Bash(cd /Users/liulantian/self/ai设计规范/docker && docker compose up -d postgres)"
+      "Bash(cd /Users/liulantian/self/ai设计规范/docker && docker compose up -d postgres)",
+      "Bash(ls -la /Users/liulantian/self/ai设计规范/web-admin/api/*.sql 2>/dev/null || echo \"No SQL files found\")",
+      "Bash(ls -d /Users/liulantian/self/ai设计规范/mcp-* 2>/dev/null | xargs -n1 basename)",
+      "Bash(done)",
+      "Bash(ls /Users/liulantian/self/ai设计规范/web-admin/api/routers/*.py | xargs basename -s .py)",
+      "Bash(cd /Users/liulantian/self/ai设计规范/web-admin/frontend && npm install marked)",
+      "Bash(npm run build 2>&1 | head -20)",
+      "Bash(python3 -c \"\nwith open\\('/Users/liulantian/self/ai设计规范/web-admin/api/routers/employees.py', 'r', encoding='utf-8'\\) as f:\n    content = f.read\\(\\)\n\n# 替换所有中文引号\ncontent = content.replace\\('\"', '\\\\\"'\\).replace\\('\"', '\\\\\"'\\)\n\nwith open\\('/Users/liulantian/self/ai设计规范/web-admin/api/routers/employees.py', 'w', encoding='utf-8'\\) as f:\n    f.write\\(content\\)\n\nprint\\('Fixed'\\)\n\")",
+      "Bash(python3 -m py_compile /Users/liulantian/self/ai设计规范/web-admin/api/routers/employees.py 2>&1 || echo \"Syntax check failed\")",
+      "Bash(python3 << 'EOF'\nimport re\n\nwith open\\('/Users/liulantian/self/ai设计规范/web-admin/api/routers/employees.py', 'r', encoding='utf-8'\\) as f:\n    content = f.read\\(\\)\n\n# 替换所有类型的中文引号为英文引号\nreplacements = {\n    '\"': '\"',  # 左双引号\n    '\"': '\"',  # 右双引号\n    ''': \"'\",  # 左单引号\n    ''': \"'\",  # 右单引号\n}\n\nfor old, new in replacements.items\\(\\):\n    content = content.replace\\(old, new\\)\n\nwith open\\('/Users/liulantian/self/ai设计规范/web-admin/api/routers/employees.py', 'w', encoding='utf-8'\\) as f:\n    f.write\\(content\\)\n\nprint\\('All quotes fixed'\\)\nEOF)",
+      "Bash(python3 -m py_compile /Users/liulantian/self/ai设计规范/web-admin/api/routers/employees.py && echo \"Syntax OK\")",
+      "Bash(python3 << 'EOF'\nwith open\\('/Users/liulantian/self/ai设计规范/web-admin/api/routers/employees.py', 'rb'\\) as f:\n    content = f.read\\(\\)\n\n# 替换所有 UTF-8 编码的中文引号\ncontent = content.replace\\(b'\\\\xe2\\\\x80\\\\x9c', b'\"'\\)  # U+201C 左双引号\ncontent = content.replace\\(b'\\\\xe2\\\\x80\\\\x9d', b'\"'\\)  # U+201D 右双引号\ncontent = content.replace\\(b'\\\\xe2\\\\x80\\\\x98', b\"'\"\\)  # U+2018 左单引号\ncontent = content.replace\\(b'\\\\xe2\\\\x80\\\\x99', b\"'\"\\)  # U+2019 右单引号\n\nwith open\\('/Users/liulantian/self/ai设计规范/web-admin/api/routers/employees.py', 'wb'\\) as f:\n    f.write\\(content\\)\n\nprint\\('Fixed all UTF-8 quotes'\\)\nEOF)",
+      "Bash(python3 -m py_compile /Users/liulantian/self/ai设计规范/web-admin/api/routers/employees.py && echo \"✓ Syntax OK\")",
+      "Bash(npm run build 2>&1 | head -15)"
     ]
   }
 }
