@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 import requests
+from starlette.concurrency import run_in_threadpool
 
 from config import get_settings
 from llm_provider_store_pg import LlmProviderStorePostgres
@@ -316,6 +317,142 @@ class LlmProviderService:
         }
 
     @staticmethod
+    def _normalize_chat_message_content(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, dict):
+            text = value.get("text")
+            if isinstance(text, str):
+                return text.strip()
+            return str(value).strip()
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                if isinstance(item, str):
+                    text = item.strip()
+                    if text:
+                        parts.append(text)
+                    continue
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+                        continue
+                    if item.get("type") == "text":
+                        item_text = str(item.get("text") or "").strip()
+                        if item_text:
+                            parts.append(item_text)
+            return "\n".join(parts).strip()
+        return str(value or "").strip()
+
+    @classmethod
+    def _normalize_chat_messages(cls, messages: Any) -> list[dict[str, str]]:
+        normalized: list[dict[str, str]] = []
+        for item in messages if isinstance(messages, list) else []:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "user").strip().lower()
+            if role not in {"system", "user", "assistant"}:
+                role = "user"
+            content = cls._normalize_chat_message_content(item.get("content"))
+            if not content:
+                continue
+            normalized.append({"role": role, "content": content})
+        return normalized
+
+    @staticmethod
+    def _messages_to_responses_input(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
+        converted: list[dict[str, Any]] = []
+        for message in messages:
+            converted.append(
+                {
+                    "role": message["role"],
+                    "content": [{"type": "input_text", "text": message["content"]}],
+                }
+            )
+        return converted
+
+    def _chat_completion_sync(
+        self,
+        provider_id: str,
+        model_name: str,
+        messages: list[dict[str, Any]],
+        temperature: float,
+        max_tokens: int,
+        timeout: int,
+    ) -> dict[str, Any]:
+        provider = self.get_provider_raw(provider_id)
+        if provider is None:
+            raise LookupError(f"LLM provider {provider_id} not found")
+        if not bool(provider.get("enabled", True)):
+            raise ValueError(f"LLM provider {provider_id} is disabled")
+
+        chosen_model = str(model_name or "").strip() or self._pick_default_model(provider)
+        if not chosen_model:
+            raise ValueError("model_name is required")
+
+        normalized_messages = self._normalize_chat_messages(messages)
+        if not normalized_messages:
+            raise ValueError("messages is required")
+
+        normalized_temperature = self._clamp_temperature(temperature)
+        try:
+            normalized_max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            normalized_max_tokens = 1024
+        normalized_max_tokens = max(16, min(normalized_max_tokens, 8192))
+
+        if self._is_responses_provider(provider):
+            endpoint = self._build_responses_url(str(provider.get("base_url") or ""))
+            if not endpoint:
+                raise ValueError("provider base_url is empty")
+            body = {
+                "model": chosen_model,
+                "temperature": normalized_temperature,
+                "input": self._messages_to_responses_input(normalized_messages),
+                "max_output_tokens": normalized_max_tokens,
+            }
+            payload = self._request_json("POST", endpoint, self._build_headers(provider), body=body, timeout=timeout)
+        else:
+            endpoint = self._build_chat_completion_url(str(provider.get("base_url") or ""))
+            if not endpoint:
+                raise ValueError("provider base_url is empty")
+            body = {
+                "model": chosen_model,
+                "temperature": normalized_temperature,
+                "messages": normalized_messages,
+                "max_tokens": normalized_max_tokens,
+                "stream": False,
+            }
+            payload = self._request_json("POST", endpoint, self._build_headers(provider), body=body, timeout=timeout)
+
+        return {
+            "content": self._extract_content(payload),
+            "raw": payload,
+            "provider_id": provider_id,
+            "model_name": chosen_model,
+        }
+
+    async def chat_completion(
+        self,
+        provider_id: str,
+        model_name: str,
+        messages: list[dict[str, Any]],
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+        timeout: int = 45,
+    ) -> dict[str, Any]:
+        return await run_in_threadpool(
+            self._chat_completion_sync,
+            provider_id,
+            model_name,
+            messages,
+            temperature,
+            max_tokens,
+            timeout,
+        )
+
+    @staticmethod
     def _build_chat_completion_url(base_url: str) -> str:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/chat/completions"):
@@ -385,6 +522,14 @@ class LlmProviderService:
 
         if not raw.strip():
             return {}
+
+        # 检测流式响应（SSE 格式）
+        if raw.strip().startswith("data:"):
+            content = LlmProviderService._parse_sse_content(raw)
+            if content:
+                return {"choices": [{"message": {"content": content}}]}
+            raise RuntimeError(f"LLM SSE response parse failed: {raw[:300]}")
+
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:

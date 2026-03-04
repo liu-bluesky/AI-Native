@@ -11,12 +11,33 @@
 
 ## 快速启动
 
+### 数据库初始化
+
+**开发环境**（默认使用 JSON 文件存储）：
+```bash
+cd web-admin/api
+pip install -e .
+python init_admin.py  # 自动创建 data/ 目录和管理员账户（admin/123456）
+```
+
+**生产环境**（使用 PostgreSQL）：
+```bash
+# 1. 创建数据库
+createdb ai_employee
+
+# 2. 配置环境变量
+export DATABASE_URL="postgresql://用户名:密码@localhost:5432/ai_employee"
+
+# 3. 初始化（自动建表）
+cd web-admin/api
+pip install -e .
+python init_admin.py  # 首次运行自动创建所有表
+```
+
 ### 后端
 
 ```bash
 cd web-admin/api
-pip install -e .
-python init_admin.py  # 初始化管理员账户
 python server.py      # 开发模式（支持热更新）
 ```
 

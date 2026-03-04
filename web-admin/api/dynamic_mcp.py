@@ -31,6 +31,27 @@ from stores import (
     skill_store,
 )
 
+
+def _load_project_config() -> dict:
+    """从项目根目录读取 .mcp-project.json 配置，不存在则创建"""
+    try:
+        config_path = Path.cwd() / ".mcp-project.json"
+        if config_path.exists():
+            return json.loads(config_path.read_text(encoding="utf-8"))
+        else:
+            # 首次使用，创建示例配置
+            default_config = {
+                "project_id": "default",
+                "project_name": "Default Project",
+                "description": "请修改此文件，设置你的项目名称"
+            }
+            config_path.write_text(json.dumps(default_config, ensure_ascii=False, indent=2), encoding="utf-8")
+            return default_config
+    except Exception:
+        pass
+    return {}
+
+
 # 缓存动态生成的 ASGI App
 _rule_apps = {}
 _skill_apps = {}
@@ -817,17 +838,32 @@ def _create_employee_mcp(employee_id: str):
         return [serialize_rule(rule) for rule in rules]
 
     @mcp.tool()
-    def recall_employee_memory(query: str = "") -> list[dict]:
-        """检索员工记忆（AI 调用固定返回最多 100 条，避免小 limit 截断）"""
+    def recall_employee_memory(query: str = "", project_name: str = "") -> list[dict]:
+        """检索员工记忆（支持项目隔离）
+
+        Args:
+            query: 检索关键词（为空则返回最近记忆）
+            project_name: 项目名称（为空则自动读取 .mcp-project.json）
+        """
         employee = _get_employee()
         if not employee:
             return []
         query = str(query or "").strip()
+
+        # 自动读取项目配置
+        if not project_name:
+            project_config = _load_project_config()
+            project_name = project_config.get("project_name") or "default"
+        project_name = str(project_name).strip()
+
         if query:
             memories = memory_store.recall(employee.id, query, _RECALL_EMPLOYEE_MEMORY_LIMIT)
         else:
             memories = memory_store.recent(employee.id, _RECALL_EMPLOYEE_MEMORY_LIMIT)
-        return [serialize_memory(mem) for mem in memories]
+
+        # 按 project_name 过滤记忆
+        filtered = [m for m in memories if getattr(m, "project_name", "") == project_name]
+        return [serialize_memory(mem) for mem in filtered]
 
     @mcp.tool()
     def get_employee_runtime_context() -> dict:
@@ -874,20 +910,30 @@ def _create_employee_mcp(employee_id: str):
             title: str,
             symptom: str,
             expected: str,
-            project_id: str = "default",
+            project_name: str = "",
             category: str = "general",
             severity: str = "medium",
             session_id: str = "",
             rule_id: str = "",
             source_context: dict | None = None,
         ) -> dict:
-            """提交当前员工的结构化反馈工单（支持项目隔离）"""
+            """提交当前员工的结构化反馈工单（支持项目隔离）
+
+            Args:
+                project_name: 项目名称（为空则自动读取 .mcp-project.json）
+            """
             employee = _get_employee()
             if not employee:
                 return {"error": "Employee not found"}
+
+            # 自动读取项目配置
+            if not project_name:
+                project_config = _load_project_config()
+                project_name = project_config.get("project_name") or "default"
+
             try:
                 bug = get_feedback_service().create_bug(
-                    project_id=project_id,
+                    project_id=project_name,
                     payload={
                         "employee_id": employee_id,
                         "title": title,
