@@ -4,16 +4,30 @@
       <h3>AI 员工列表</h3>
       <el-button type="primary" @click="$router.push('/employees/create')">创建员工</el-button>
     </div>
+    <el-alert
+      class="usage-alert"
+      type="info"
+      :closable="false"
+      show-icon
+      title="功能说明：反馈=提交/反思/发布（需开启反馈升级）；记忆=查看与检索员工记忆（含自动写入的用户提问）；同步=查看同步事件。"
+    />
     <el-table :data="employees" v-loading="loading" stripe>
       <el-table-column prop="id" label="ID" width="140" />
       <el-table-column prop="name" label="名称" width="160" />
       <el-table-column prop="description" label="描述" />
       <el-table-column prop="tone" label="语调" width="100" />
       <el-table-column prop="verbosity" label="风格" width="100" />
+      <el-table-column label="反馈升级" width="100">
+        <template #default="{ row }">
+          <el-tag :type="row.feedback_upgrade_enabled ? 'success' : 'info'" size="small">
+            {{ row.feedback_upgrade_enabled ? "已开" : "已关" }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="技能数" width="80">
         <template #default="{ row }">{{ row.skills?.length || 0 }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="620" fixed="right">
+      <el-table-column label="操作" width="700" fixed="right">
         <template #default="{ row }">
           <el-button text type="primary" @click="$router.push(`/employees/${row.id}`)">详情</el-button>
           <el-button text type="primary" @click="$router.push(`/employees/${row.id}/edit`)">编辑</el-button>
@@ -22,8 +36,30 @@
           <el-button v-else text type="warning" @click="enableEmployeeMcp(row)">开启 MCP</el-button>
           <el-button text type="info" @click="showEmployeeConfigTest(row)">测试</el-button>
           <el-button text type="primary" @click="$router.push(`/employees/${row.id}/usage`)">统计</el-button>
-          <el-button text type="success" @click="$router.push(`/evolution/${row.id}`)">进化</el-button>
-          <el-button text type="warning" @click="$router.push(`/review/${row.id}`)">审核</el-button>
+          <el-button
+            v-if="row.feedback_upgrade_enabled"
+            text
+            type="primary"
+            @click="$router.push(`/feedback/${row.id}`)"
+          >
+            反馈
+          </el-button>
+          <el-button
+            v-if="!row.feedback_upgrade_enabled"
+            text
+            type="primary"
+            @click="enableFeedbackUpgrade(row)"
+          >
+            开启反馈
+          </el-button>
+          <el-button
+            v-else
+            text
+            type="warning"
+            @click="disableFeedbackUpgrade(row)"
+          >
+            关闭反馈
+          </el-button>
           <el-button text @click="$router.push(`/memory/${row.id}`)">记忆</el-button>
           <el-button text @click="$router.push(`/sync/${row.id}`)">同步</el-button>
           <el-button text type="danger" @click="handleDelete(row)">删除</el-button>
@@ -168,7 +204,7 @@ const mcpSseConfig = computed(() => {
     mcpServers: {
       [serverName]: {
         type: 'sse',
-        url: `http://localhost:8000/mcp/employees/${currentEmployee.value.id}/sse?key=YOUR_API_KEY`,
+        url: `http://localhost:8000/mcp/employees/${currentEmployee.value.id}/sse?key=YOUR_API_KEY&project_id=default`,
       },
     },
   }, null, 2)
@@ -184,7 +220,7 @@ const mcpHttpConfig = computed(() => {
         args: [
           '-y',
           '@modelcontextprotocol/inspector',
-          `http://localhost:8000/mcp/employees/${currentEmployee.value.id}/sse?key=YOUR_API_KEY`,
+          `http://localhost:8000/mcp/employees/${currentEmployee.value.id}/mcp?key=YOUR_API_KEY&project_id=default`,
         ],
       },
     },
@@ -268,6 +304,33 @@ async function disableEmployeeMcp(row) {
   }
 }
 
+async function enableFeedbackUpgrade(row) {
+  try {
+    loading.value = true
+    await api.put(`/employees/${row.id}`, { feedback_upgrade_enabled: true })
+    ElMessage.success('已开启反馈升级')
+    await fetchList()
+  } catch (e) {
+    ElMessage.error(e.detail || '开启反馈失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function disableFeedbackUpgrade(row) {
+  await ElMessageBox.confirm(`确定关闭员工「${row.name}」的反馈升级模块？`, '确认')
+  try {
+    loading.value = true
+    await api.put(`/employees/${row.id}`, { feedback_upgrade_enabled: false })
+    ElMessage.success('已关闭反馈升级')
+    await fetchList()
+  } catch (e) {
+    ElMessage.error(e.detail || '关闭反馈失败')
+  } finally {
+    loading.value = false
+  }
+}
+
 function checkTagType(status) {
   return { ok: 'success', warning: 'warning', missing: 'danger' }[status] || 'info'
 }
@@ -319,6 +382,9 @@ onMounted(fetchList)
   justify-content: space-between;
   align-items: center;
   margin-bottom: 16px;
+}
+.usage-alert {
+  margin-bottom: 12px;
 }
 .toolbar h3 { margin: 0; }
 

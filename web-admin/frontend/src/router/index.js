@@ -28,8 +28,12 @@ const routes = [
       { path: 'personas/:id', component: () => import('../views/personas/PersonaDetail.vue') },
       { path: 'sync/:id', component: () => import('../views/sync/SyncStatus.vue') },
       { path: 'usage/keys', component: () => import('../views/usage/ApiKeyList.vue') },
+      { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
       { path: 'evolution/:id', component: () => import('../views/evolution/EvolutionReport.vue') },
       { path: 'review/:id', component: () => import('../views/evolution/CandidateReview.vue') },
+      { path: 'feedback/:id', component: () => import('../views/evolution/FeedbackTicketList.vue') },
+      { path: 'feedback/:id/batch-analyze', component: () => import('../views/evolution/FeedbackBatchAnalyze.vue') },
+      { path: 'feedback/:id/:feedbackId', component: () => import('../views/evolution/FeedbackDetail.vue') },
     ],
   },
 ]

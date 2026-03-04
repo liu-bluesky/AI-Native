@@ -117,7 +117,7 @@ const mcpHttpConfig = computed(() => {
         "args": [
           "-y",
           "@modelcontextprotocol/inspector",
-          `http://localhost:8000/mcp/skills/${currentSkill.value.id}/sse`
+          `http://localhost:8000/mcp/skills/${currentSkill.value.id}/mcp`
         ]
       }
     }

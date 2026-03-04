@@ -301,6 +301,7 @@ class PgMemoryStore(_PgStoreBase):
             employee_id=data["employee_id"],
             type=self._memory_type_cls(data["type"]),
             content=data["content"],
+            project_name=str(data.get("project_name") or ""),
             importance=data.get("importance", 0.5),
             scope=self._memory_scope_cls(data.get("scope", "employee-private")),
             classification=self._classification_cls(data.get("classification", "internal")),
@@ -793,4 +794,3 @@ class PgSyncEventStore(_PgStoreBase):
 
     def new_id(self) -> str:
         return f"sync-{uuid.uuid4().hex[:8]}"
-

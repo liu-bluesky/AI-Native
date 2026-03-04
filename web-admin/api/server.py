@@ -7,7 +7,19 @@ from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
-from routers import init_auth, employees, skills, rules, memory, personas, evolution, sync, usage
+from routers import (
+    init_auth,
+    employees,
+    skills,
+    rules,
+    llm_providers,
+    memory,
+    personas,
+    evolution,
+    sync,
+    usage,
+    feedback_upgrade,
+)
 from dynamic_mcp import employee_mcp_proxy_app, rule_mcp_proxy_app, skill_mcp_proxy_app
 
 
@@ -22,7 +34,19 @@ def create_app() -> FastAPI:
         allow_credentials=settings.api_cors_allow_credentials,
     )
 
-    for r in (init_auth, employees, skills, rules, memory, personas, evolution, sync, usage):
+    for r in (
+        init_auth,
+        employees,
+        skills,
+        rules,
+        llm_providers,
+        memory,
+        personas,
+        evolution,
+        sync,
+        usage,
+        feedback_upgrade,
+    ):
         app.include_router(r.router)
 
     app.mount("/mcp/rules/{rule_id}", rule_mcp_proxy_app)

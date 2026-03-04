@@ -23,6 +23,10 @@
           <el-icon><Key /></el-icon>
           <span>API Key</span>
         </el-menu-item>
+        <el-menu-item index="/llm/providers">
+          <el-icon><SetUp /></el-icon>
+          <span>模型供应商</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>

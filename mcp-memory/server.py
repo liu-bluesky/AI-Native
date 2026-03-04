@@ -20,6 +20,7 @@ _IDENTITY_TYPES = {
     MemoryType.LONG_TERM_GOAL, MemoryType.TABOO,
     MemoryType.STABLE_PREFERENCE, MemoryType.DECISION_PATTERN,
 }
+_USER_QUESTION_PREFIX = "[用户提问]"
 
 
 def _parse_memory_type(value: str) -> tuple:
@@ -30,12 +31,22 @@ def _parse_memory_type(value: str) -> tuple:
         return None, {"error": f"Invalid type: {value}. Valid: {valid}"}
 
 
+def _format_memory_content(content: str, max_len: int = 80) -> str:
+    text = str(content or "")
+    if text.startswith(_USER_QUESTION_PREFIX):
+        return text
+    if len(text) <= max_len:
+        return text
+    return text[:max_len]
+
+
 # ── Tools ──
 
 @mcp.tool()
 def save_memory(
     employee_id: str, content: str, type: str,
     importance: float = 0.5,
+    project_name: str = "",
 ) -> dict:
     """保存一条记忆"""
     mt, err = _parse_memory_type(type)
@@ -44,6 +55,7 @@ def save_memory(
     mem = Memory(
         id=store.new_id(), employee_id=employee_id,
         type=mt, content=content, importance=importance,
+        project_name=str(project_name or "").strip(),
     )
     store.save(mem)
     return {"status": "saved", "memory_id": mem.id}
@@ -76,6 +88,7 @@ def compress_memories(employee_id: str, keep_top: int = 50) -> dict:
 def save_identity_signal(
     employee_id: str, signal_type: str, content: str,
     importance: float = 0.9,
+    project_name: str = "",
 ) -> dict:
     """保存身份信号记忆（数字分身核心）"""
     mt, err = _parse_memory_type(signal_type)
@@ -87,6 +100,7 @@ def save_identity_signal(
     mem = Memory(
         id=store.new_id(), employee_id=employee_id,
         type=mt, content=content, importance=importance,
+        project_name=str(project_name or "").strip(),
     )
     store.save(mem)
     return {"status": "saved", "memory_id": mem.id, "signal_type": mt.value}
@@ -131,7 +145,7 @@ def set_memory_classification(
 def all_memories(employee_id: str) -> str:
     """所有记忆"""
     mems = store.list_by_employee(employee_id)
-    lines = [f"[{m.id}] ({m.type.value}) {m.content[:80]}" for m in mems]
+    lines = [f"[{m.id}] ({m.type.value}) {_format_memory_content(m.content)}" for m in mems]
     return "\n".join(lines) if lines else "暂无记忆"
 
 
@@ -139,7 +153,7 @@ def all_memories(employee_id: str) -> str:
 def recent_memories(employee_id: str) -> str:
     """最近记忆"""
     mems = store.recent(employee_id)
-    lines = [f"[{m.id}] ({m.type.value}) {m.content[:80]}" for m in mems]
+    lines = [f"[{m.id}] ({m.type.value}) {_format_memory_content(m.content)}" for m in mems]
     return "\n".join(lines) if lines else "暂无记忆"
 
 
@@ -147,7 +161,7 @@ def recent_memories(employee_id: str) -> str:
 def important_memories(employee_id: str) -> str:
     """重要记忆"""
     mems = store.important(employee_id)
-    lines = [f"[{m.id}] importance={m.importance} | {m.content[:80]}" for m in mems]
+    lines = [f"[{m.id}] importance={m.importance} | {_format_memory_content(m.content)}" for m in mems]
     return "\n".join(lines) if lines else "暂无重要记忆"
 
 
