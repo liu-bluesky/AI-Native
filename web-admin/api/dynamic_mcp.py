@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, Response
 from mcp.server.fastmcp import FastMCP
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from deps import employee_store, usage_store
+from deps import employee_store, project_store, usage_store
 from feedback_service import get_feedback_service
 from stores import (
     Classification,
@@ -56,11 +56,14 @@ def _load_project_config() -> dict:
 _rule_apps = {}
 _skill_apps = {}
 _employee_apps = {}
+_project_apps = {}
 _employee_app_signatures = {}
+_project_app_signatures = {}
 _session_keys: dict[str, tuple[str, str]] = {}  # session_id -> (api_key, developer_name)
 _current_api_key: ContextVar[str] = ContextVar("_current_api_key", default="")
 _current_developer_name: ContextVar[str] = ContextVar("_current_developer_name", default="")
 _EMPLOYEE_MCP_APP_REV = "2026-03-04-sse-post-bridge"
+_PROJECT_MCP_APP_REV = "2026-03-05-project-mcp-v1"
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _EXECUTABLE_SUFFIXES = {".py", ".js"}
 _FASTMCP_HOST = os.environ.get("FASTMCP_HOST", "0.0.0.0")
@@ -561,6 +564,48 @@ def _discover_skill_proxy_specs(skill) -> list[dict]:
                 }
             )
     return specs
+
+
+def _active_project_member_employees(project_id: str) -> list[tuple[object, object]]:
+    project = project_store.get(project_id)
+    if not project:
+        return []
+    members = []
+    for member in project_store.list_members(project_id):
+        if not bool(getattr(member, "enabled", True)):
+            continue
+        employee = employee_store.get(member.employee_id)
+        if not employee:
+            continue
+        members.append((member, employee))
+    return members
+
+
+def _build_project_proxy_specs(project_id: str) -> tuple[dict[str, dict], dict[str, dict[str, dict]]]:
+    by_scoped_name: dict[str, dict] = {}
+    by_employee_base_name: dict[str, dict[str, dict]] = {}
+    for _member, employee in _active_project_member_employees(project_id):
+        name_counter: dict[str, int] = {}
+        employee_map = by_employee_base_name.setdefault(employee.id, {})
+        for skill_id in employee.skills or []:
+            skill = skill_store.get(skill_id)
+            if not skill:
+                continue
+            for spec in _discover_skill_proxy_specs(skill):
+                base_name = f"{_tool_token(skill.id)}__{_tool_token(spec['entry_name'])}"
+                idx = name_counter.get(base_name, 0) + 1
+                name_counter[base_name] = idx
+                base_key = base_name if idx == 1 else f"{base_name}_{idx}"
+                scoped_name = f"{_tool_token(employee.id)}__{base_key}"
+                wrapped = {
+                    **spec,
+                    "employee_id": employee.id,
+                    "base_tool_name": base_key,
+                    "scoped_tool_name": scoped_name,
+                }
+                by_scoped_name[scoped_name] = wrapped
+                employee_map[base_key] = wrapped
+    return by_scoped_name, by_employee_base_name
 
 
 def _build_cli_args(payload: dict) -> list[str]:
@@ -1151,6 +1196,302 @@ def _create_employee_mcp(employee_id: str):
     )
 
 
+def _create_project_mcp(project_id: str):
+    mcp = _new_mcp(f"project-{project_id}")
+    scoped_proxy_specs, employee_proxy_specs = _build_project_proxy_specs(project_id)
+
+    def _get_project():
+        return project_store.get(project_id)
+
+    def _list_member_pairs() -> list[tuple[object, object]]:
+        return _active_project_member_employees(project_id)
+
+    def _feedback_actor() -> str:
+        actor = _current_developer_name.get("").strip()
+        return actor or "unknown"
+
+    def _member_employee_ids() -> set[str]:
+        return {employee.id for _member, employee in _list_member_pairs()}
+
+    @mcp.resource(f"project://{project_id}/profile")
+    def project_profile() -> str:
+        project = _get_project()
+        if not project:
+            return "Project deleted or unavailable."
+        return (
+            f"[{project.id}] {project.name}\n"
+            f"description: {project.description or '-'}\n"
+            f"mcp_enabled={project.mcp_enabled} "
+            f"feedback_upgrade_enabled={project.feedback_upgrade_enabled}"
+        )
+
+    @mcp.resource(f"project://{project_id}/members")
+    def project_members() -> str:
+        project = _get_project()
+        if not project:
+            return "Project deleted or unavailable."
+        pairs = _list_member_pairs()
+        if not pairs:
+            return "No active project members."
+        lines = []
+        for member, employee in pairs:
+            lines.append(
+                f"- {employee.id}: {employee.name} | role={member.role} enabled={member.enabled}"
+            )
+        return "\n".join(lines)
+
+    @mcp.resource(f"project://{project_id}/proxy-tools")
+    def project_proxy_tools() -> str:
+        project = _get_project()
+        if not project:
+            return "Project deleted or unavailable."
+        if not scoped_proxy_specs:
+            return "No executable skill tools discovered from project members."
+        lines = []
+        for tool_name, spec in sorted(scoped_proxy_specs.items()):
+            lines.append(
+                f"- {tool_name}: {spec['employee_id']} / {spec['skill_id']} / "
+                f"{spec['entry_name']} ({spec['script_type']})"
+            )
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def get_project_profile() -> dict:
+        """获取项目画像配置"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        return asdict(project)
+
+    @mcp.tool()
+    def list_project_members() -> list[dict]:
+        """列出项目成员详情"""
+        project = _get_project()
+        if not project:
+            return []
+        items = []
+        for member, employee in _list_member_pairs():
+            items.append(
+                {
+                    "project_id": project.id,
+                    "employee_id": employee.id,
+                    "employee_name": employee.name,
+                    "role": member.role,
+                    "enabled": bool(member.enabled),
+                    "skills": list(employee.skills or []),
+                    "rule_domains": list(employee.rule_domains or []),
+                }
+            )
+        return items
+
+    @mcp.tool()
+    def get_project_runtime_context() -> dict:
+        """返回项目运行时上下文摘要（成员、技能、规则、记忆统计）"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        pairs = _list_member_pairs()
+        rule_ids: set[str] = set()
+        for _member, employee in pairs:
+            for rule in _query_rules_by_employee(employee):
+                rule_ids.add(rule.id)
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "member_count": len(pairs),
+            "members": [employee.id for _member, employee in pairs],
+            "scoped_proxy_tool_count": len(scoped_proxy_specs),
+            "rule_count": len(rule_ids),
+        }
+
+    @mcp.tool()
+    def recall_project_memory(
+        query: str = "",
+        employee_id: str = "",
+        project_name: str = "",
+        limit: int = 100,
+    ) -> list[dict]:
+        """检索项目记忆（支持项目隔离）"""
+        project = _get_project()
+        if not project:
+            return []
+        query = str(query or "").strip()
+        employee_id = str(employee_id or "").strip()
+        normalized_project_name = str(project_name or "").strip() or str(project.name or "").strip() or "default"
+        max_limit = max(1, min(int(limit), 200))
+
+        member_ids = _member_employee_ids()
+        if employee_id and employee_id not in member_ids:
+            return []
+        targets = [employee_id] if employee_id else sorted(member_ids)
+        memories = []
+        for eid in targets:
+            if query:
+                employee_mems = memory_store.recall(eid, query, _RECALL_EMPLOYEE_MEMORY_LIMIT)
+            else:
+                employee_mems = memory_store.recent(eid, _RECALL_EMPLOYEE_MEMORY_LIMIT)
+            for memory in employee_mems:
+                if str(getattr(memory, "project_name", "")) != normalized_project_name:
+                    continue
+                memories.append(memory)
+        memories = sorted(memories, key=lambda item: str(getattr(item, "created_at", "")), reverse=True)
+        return [serialize_memory(item) for item in memories[:max_limit]]
+
+    @mcp.tool()
+    def submit_project_feedback_bug(
+        employee_id: str,
+        title: str,
+        symptom: str,
+        expected: str,
+        category: str = "general",
+        severity: str = "medium",
+        session_id: str = "",
+        rule_id: str = "",
+        source_context: dict | None = None,
+    ) -> dict:
+        """提交项目下员工反馈工单"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        employee_id_value = str(employee_id or "").strip()
+        if employee_id_value not in _member_employee_ids():
+            return {"error": f"Employee {employee_id_value} is not an active project member"}
+        try:
+            bug = get_feedback_service().create_bug(
+                project_id=project.id,
+                payload={
+                    "employee_id": employee_id_value,
+                    "title": title,
+                    "symptom": symptom,
+                    "expected": expected,
+                    "category": category,
+                    "severity": severity,
+                    "session_id": session_id,
+                    "rule_id": rule_id,
+                    "source_context": source_context or {},
+                },
+                actor=_feedback_actor(),
+            )
+            return {"status": "created", "bug": bug}
+        except (ValueError, RuntimeError, LookupError) as exc:
+            return {"error": str(exc)}
+
+    @mcp.tool()
+    def query_project_rules(keyword: str = "", employee_id: str = "") -> list[dict]:
+        """检索项目成员规则（支持按 employee_id 过滤）"""
+        project = _get_project()
+        if not project:
+            return []
+        employee_id_value = str(employee_id or "").strip()
+        results = []
+        seen: set[str] = set()
+        for _member, employee in _list_member_pairs():
+            if employee_id_value and employee.id != employee_id_value:
+                continue
+            for rule in _query_rules_by_employee(employee, keyword):
+                if rule.id in seen:
+                    continue
+                seen.add(rule.id)
+                results.append(serialize_rule(rule))
+        return results
+
+    @mcp.tool()
+    def list_project_proxy_tools() -> list[dict]:
+        """列出项目成员可执行技能脚本代理工具"""
+        tools = []
+        for tool_name, spec in sorted(scoped_proxy_specs.items()):
+            tools.append(
+                {
+                    "tool_name": tool_name,
+                    "employee_id": spec["employee_id"],
+                    "base_tool_name": spec["base_tool_name"],
+                    "skill_id": spec["skill_id"],
+                    "entry_name": spec["entry_name"],
+                    "script_type": spec["script_type"],
+                    "description": spec["description"],
+                }
+            )
+        return tools
+
+    def _resolve_project_tool_spec(tool_name: str, employee_id: str = "") -> tuple[dict | None, str]:
+        normalized_tool_name = str(tool_name or "").strip()
+        employee_id_value = str(employee_id or "").strip()
+        if not normalized_tool_name:
+            return None, "tool_name is required"
+        if employee_id_value:
+            employee_specs = employee_proxy_specs.get(employee_id_value, {})
+            if normalized_tool_name in employee_specs:
+                return employee_specs[normalized_tool_name], ""
+            scoped_name = f"{_tool_token(employee_id_value)}__{normalized_tool_name}"
+            scoped_spec = scoped_proxy_specs.get(scoped_name)
+            if scoped_spec:
+                return scoped_spec, ""
+            return None, f"Tool not found for employee {employee_id_value}: {normalized_tool_name}"
+
+        if normalized_tool_name in scoped_proxy_specs:
+            return scoped_proxy_specs[normalized_tool_name], ""
+
+        matched = []
+        for specs in employee_proxy_specs.values():
+            if normalized_tool_name in specs:
+                matched.append(specs[normalized_tool_name])
+        if not matched:
+            return None, f"Tool not found: {normalized_tool_name}"
+        if len(matched) > 1:
+            employee_ids = sorted({item["employee_id"] for item in matched})
+            return None, (
+                "Ambiguous tool_name, provide employee_id. "
+                f"Candidates: {employee_ids}"
+            )
+        return matched[0], ""
+
+    @mcp.tool()
+    def invoke_project_skill_tool(
+        tool_name: str,
+        employee_id: str = "",
+        args: dict | None = None,
+        args_json: str = "{}",
+        timeout_sec: int = 30,
+    ) -> dict:
+        """按工具名直接调用项目成员技能脚本（支持 employee_id 消歧）"""
+        spec, err = _resolve_project_tool_spec(tool_name, employee_id)
+        if spec is None:
+            return {"error": err}
+        return _execute_skill_proxy(
+            spec,
+            args=args,
+            args_json=args_json,
+            timeout_sec=timeout_sec,
+            employee_id=spec["employee_id"],
+        )
+
+    for tool_name, spec in sorted(scoped_proxy_specs.items()):
+        def _make_proxy_tool(spec_item: dict):
+            def _proxy_tool(args: dict | None = None, args_json: str = "{}", timeout_sec: int = 30) -> dict:
+                return _execute_skill_proxy(
+                    spec_item,
+                    args=args,
+                    args_json=args_json,
+                    timeout_sec=timeout_sec,
+                    employee_id=spec_item["employee_id"],
+                )
+            _proxy_tool.__name__ = f"project_proxy_{tool_name}"
+            return _proxy_tool
+
+        mcp.tool(
+            name=tool_name,
+            description=(
+                f"Proxy of {spec['employee_id']}:{spec['skill_id']}:{spec['entry_name']}. "
+                "Pass CLI args via args(object) or args_json(string), e.g. args={\"sql\":\"SHOW TABLES\"}."
+            ),
+        )(_make_proxy_tool(spec))
+
+    return _DualTransportMcpApp(
+        _apply_mcp_arguments_compat(mcp.sse_app()),
+        mcp.streamable_http_app(),
+    )
+
+
 class _RuleMcpProxyApp:
     async def __call__(self, scope, receive, send):
         rule_id = scope.get("path_params", {}).get("rule_id")
@@ -1193,6 +1534,190 @@ class _SkillMcpProxyApp:
         if skill_id not in _skill_apps:
             _skill_apps[skill_id] = _create_skill_mcp(skill_id)
         await _skill_apps[skill_id](scope, receive, send)
+
+
+class _ProjectMcpProxyApp:
+    async def __call__(self, scope, receive, send):
+        project_id = scope.get("path_params", {}).get("project_id")
+        if not project_id:
+            response = JSONResponse({"detail": "Missing project_id"}, status_code=400)
+            await response(scope, receive, send)
+            return
+
+        path = str(scope.get("path", ""))
+        if (
+            "/.well-known/oauth-authorization-server" in path
+            or "/.well-known/openid-configuration" in path
+            or "/.well-known/oauth-protected-resource" in path
+        ):
+            response = Response(status_code=204)
+            await response(scope, receive, send)
+            return
+
+        project = project_store.get(project_id)
+        if not project:
+            response = JSONResponse({"detail": "Project not found."}, status_code=404)
+            await response(scope, receive, send)
+            return
+        if not getattr(project, "mcp_enabled", True):
+            response = JSONResponse({"detail": "Project MCP service is disabled."}, status_code=404)
+            await response(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        method = str(scope.get("method", "")).upper()
+        qs = parse_qs(scope.get("query_string", b"").decode())
+        api_key = (qs.get("key") or [""])[0]
+        session_id = (qs.get("session_id") or [""])[0]
+        is_sse = path.rstrip("/").endswith("/sse")
+        is_streamable = path.rstrip("/").endswith("/mcp")
+        is_messages = path.rstrip("/").endswith("/messages") or "/messages/" in path
+
+        if is_sse or is_streamable:
+            if not api_key:
+                response = JSONResponse(
+                    {"detail": "Missing API key. Add ?key=YOUR_API_KEY to the URL."},
+                    status_code=401,
+                )
+                await response(scope, receive, send)
+                return
+            developer_name = usage_store.validate_key(api_key)
+            if not developer_name:
+                response = JSONResponse({"detail": "Invalid or deactivated API key."}, status_code=403)
+                await response(scope, receive, send)
+                return
+        elif is_messages:
+            if session_id and session_id in _session_keys:
+                api_key, developer_name = _session_keys[session_id]
+            else:
+                response = JSONResponse({"detail": "Unauthorized session."}, status_code=401)
+                await response(scope, receive, send)
+                return
+        else:
+            api_key = ""
+            developer_name = ""
+
+        client_ip = ""
+        for header_name, header_val in scope.get("headers", []):
+            if header_name == b"x-forwarded-for":
+                client_ip = header_val.decode().split(",")[0].strip()
+                break
+        if not client_ip:
+            client_addr = scope.get("client")
+            if client_addr:
+                client_ip = client_addr[0]
+
+        _current_api_key.set(api_key)
+        _current_developer_name.set(developer_name)
+
+        usage_scope_id = f"project:{project_id}"
+        if is_sse and method == "GET":
+            usage_store.record_event(usage_scope_id, api_key, developer_name, "connection", client_ip=client_ip)
+
+        original_send = send
+
+        async def tracking_send(message):
+            if is_sse and method == "GET" and message.get("type") == "http.response.body":
+                body = message.get("body", b"")
+                if b"endpoint" in body and b"session_id=" in body:
+                    try:
+                        text = body.decode()
+                        for line in text.split("\n"):
+                            if "session_id=" in line:
+                                sid = line.split("session_id=")[-1].split("&")[0].split("\n")[0].split("\r")[0].strip()
+                                if sid:
+                                    _session_keys[sid] = (api_key, developer_name)
+                                break
+                    except Exception:
+                        pass
+            await original_send(message)
+
+        original_receive = receive
+        request_body_buffer = bytearray()
+        request_body_captured = False
+
+        async def tracking_receive():
+            nonlocal request_body_captured
+            message = await original_receive()
+            if request_body_captured or message.get("type") != "http.request":
+                return message
+            body = message.get("body", b"")
+            if body:
+                request_body_buffer.extend(body)
+            if message.get("more_body", False):
+                return message
+            if not request_body_buffer:
+                return message
+            request_body_captured = True
+            try:
+                payload = json.loads(bytes(request_body_buffer))
+                rpc_payloads = payload if isinstance(payload, list) else [payload]
+                for rpc_payload in rpc_payloads:
+                    if not isinstance(rpc_payload, dict):
+                        continue
+                    method_name, tool_name, _questions, _project_name = _extract_user_questions_from_rpc_payload(rpc_payload)
+                    if method_name == "tools/call":
+                        usage_store.record_event(
+                            usage_scope_id,
+                            api_key,
+                            developer_name,
+                            "tool_call",
+                            tool_name=tool_name,
+                            client_ip=client_ip,
+                        )
+            except Exception:
+                pass
+            return message
+
+        members = project_store.list_members(project_id)
+        active_members = [m for m in members if bool(getattr(m, "enabled", True))]
+        member_signature = tuple(
+            sorted(
+                (
+                    str(getattr(m, "employee_id", "")),
+                    bool(getattr(m, "enabled", True)),
+                    str(getattr(m, "role", "")),
+                )
+                for m in members
+            )
+        )
+        employee_signature = tuple(
+            sorted(
+                (
+                    employee.id,
+                    employee.updated_at,
+                    tuple(employee.skills or []),
+                    tuple(employee.rule_domains or []),
+                )
+                for m in active_members
+                for employee in [employee_store.get(m.employee_id)]
+                if employee is not None
+            )
+        )
+        signature = (
+            _PROJECT_MCP_APP_REV,
+            project.updated_at,
+            bool(getattr(project, "mcp_enabled", True)),
+            member_signature,
+            employee_signature,
+        )
+        cached_app = _project_apps.get(project_id)
+        if (
+            cached_app is None
+            or not isinstance(cached_app, _DualTransportMcpApp)
+            or _project_app_signatures.get(project_id) != signature
+        ):
+            _project_apps[project_id] = _create_project_mcp(project_id)
+            _project_app_signatures[project_id] = signature
+
+        downstream_scope = scope
+        if is_sse and method != "GET":
+            rewritten_path = _replace_path_suffix(str(scope.get("path", "")), "/sse", "/mcp")
+            rewritten_scope = dict(scope)
+            rewritten_scope["path"] = rewritten_path
+            rewritten_scope["raw_path"] = rewritten_path.encode("utf-8")
+            downstream_scope = rewritten_scope
+        await _project_apps[project_id](downstream_scope, tracking_receive, tracking_send)
 
 
 class _EmployeeMcpProxyApp:
@@ -1373,4 +1898,5 @@ class _EmployeeMcpProxyApp:
 
 rule_mcp_proxy_app = _RuleMcpProxyApp()
 skill_mcp_proxy_app = _SkillMcpProxyApp()
+project_mcp_proxy_app = _ProjectMcpProxyApp()
 employee_mcp_proxy_app = _EmployeeMcpProxyApp()

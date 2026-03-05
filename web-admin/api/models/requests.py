@@ -49,6 +49,31 @@ class EmployeeUpdateReq(BaseModel):
     feedback_upgrade_enabled: bool | None = None
 
 
+class ProjectCreateReq(BaseModel):
+    name: str
+    description: str = ""
+    mcp_enabled: bool = True
+    feedback_upgrade_enabled: bool = True
+
+
+class ProjectUpdateReq(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    mcp_enabled: bool | None = None
+    feedback_upgrade_enabled: bool | None = None
+
+
+class ProjectMemberAddReq(BaseModel):
+    employee_id: str
+    role: str = "member"
+    enabled: bool = True
+
+
+class SystemConfigUpdateReq(BaseModel):
+    enable_project_manual_generation: bool | None = None
+    enable_employee_manual_generation: bool | None = None
+
+
 class ReviewReq(BaseModel):
     reviewed_by: str
     action: str

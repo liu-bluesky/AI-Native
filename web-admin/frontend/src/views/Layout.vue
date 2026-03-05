@@ -7,6 +7,14 @@
           <el-icon><User /></el-icon>
           <span>员工管理</span>
         </el-menu-item>
+        <el-menu-item index="/projects">
+          <el-icon><Folder /></el-icon>
+          <span>项目管理</span>
+        </el-menu-item>
+        <el-menu-item index="/system/config">
+          <el-icon><SetUp /></el-icon>
+          <span>系统配置</span>
+        </el-menu-item>
         <el-menu-item index="/employees/create">
           <el-icon><Plus /></el-icon>
           <span>创建员工</span>
@@ -46,7 +54,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { User, Plus, SetUp, Document, Key } from '@element-plus/icons-vue'
+import { User, Folder, Plus, SetUp, Document, Key } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()

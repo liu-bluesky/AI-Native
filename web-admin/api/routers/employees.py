@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends
 
-from deps import require_auth, employee_store
+from deps import require_auth, employee_store, system_config_store
 from employee_store import EmployeeConfig, _now_iso
 from stores import rule_store, skill_store
 from models.requests import EmployeeCreateReq, EmployeeUpdateReq
@@ -308,14 +308,18 @@ async def delete_prompt_history(employee_id: str, record_id: str):
     return {"status": "deleted"}
 
 
+def _assert_employee_manual_generation_enabled() -> None:
+    cfg = system_config_store.get_global()
+    if not bool(getattr(cfg, "enable_employee_manual_generation", False)):
+        raise HTTPException(403, "Employee manual generation is disabled by system config")
+
+
 @router.post("/{employee_id}/generate-manual")
 async def generate_employee_manual(employee_id: str):
     """生成员工使用手册（面向接入方 AI 平台）"""
     from llm_provider_service import get_llm_provider_service
 
-    emp = employee_store.get(employee_id)
-    if emp is None:
-        raise HTTPException(404, f"Employee {employee_id} not found")
+    _assert_employee_manual_generation_enabled()
 
     llm_service = get_llm_provider_service()
     providers = llm_service.list_providers(enabled_only=True)
@@ -324,82 +328,15 @@ async def generate_employee_manual(employee_id: str):
         raise HTTPException(400, "未配置 LLM 提供商")
 
     default_provider = next((p for p in providers if p.get("is_default")), providers[0])
+    template_payload = await get_manual_template(employee_id)
+    template = str(template_payload.get("template") or "").strip()
+    if not template:
+        raise HTTPException(500, "手册模板为空，无法生成使用手册")
 
-    # 获取技能详情
-    bound_skills = []
-    for skill_id in emp.skills or []:
-        skill = skill_store.get(skill_id)
-        if skill:
-            bound_skills.append({"id": skill_id, "name": skill.name, "description": skill.description or ""})
-
-    skills_text = "\n".join(f"- {s['name']}：{s['description']}" for s in bound_skills) if bound_skills else "无"
-    domains_text = "\n".join(f"- {d}" for d in (emp.rule_domains or [])) if emp.rule_domains else "无"
-    style_hints_text = "\n".join(f"- {h}" for h in (emp.style_hints or [])) if emp.style_hints else "无"
-
-    system_prompt = f"""你是技术文档撰写专家。请为 AI 员工生成一份使用手册，面向接入方 AI 平台。
-
-员工信息：
-- ID：{emp.id}
-- 名称：{emp.name}
-- 描述：{emp.description}
-- 语调：{emp.tone}
-- 风格：{emp.verbosity}
-- 语言：{emp.language}
-
-绑定技能：
-{skills_text}
-
-规则领域：
-{domains_text}
-
-风格提示：
-{style_hints_text}
-
-记忆配置：
-- 作用域：{emp.memory_scope}
-- 保留期：{emp.memory_retention_days}天
-
-手册结构：
-1. 员工简介（说明定位、适用场景、核心能力）
-
-2. MCP 接入配置
-   - SSE 方式配置示例（```json 代码块）
-   - HTTP 方式配置示例（```json 代码块）
-
-3. 核心功能
-
-   3.1 技能列表
-   - 列出每个技能的名称和用途
-   - 说明通过 tools/list 可查看完整参数
-
-   3.2 规则领域
-   - 列出每个领域及其适用场景
-   - 说明规则优先级：本地规则 > 员工规则
-
-   3.3 风格约束
-   - 列出风格提示（用于约束回答表达方式）
-
-   3.4 记忆功能
-   - 工具：recall_employee_memory(query, project_id)
-   - 作用域：{emp.memory_scope}
-   - 保留期：{emp.memory_retention_days}天
-   - 使用场景和调用示例（```json 代码块）
-
-   3.5 反馈工单
-   - 工具：submit_feedback_bug(title, symptom, expected, project_id, ...)
-   - 使用场景和调用示例（```json 代码块）
-
-4. 使用建议
-   - project_id 的作用
-   - 推荐工作流
-   - 注意事项
-
-格式要求：
-- 标准 Markdown
-- 所有 JSON 必须用 ```json 代码块
-- 每个章节之间有空行"""
-
-    user_prompt = f"请为员工「{emp.name}」生成使用手册。"
+    system_prompt = (
+        "你是技术文档撰写专家。请严格根据用户提供的手册模板要求生成最终使用手册，"
+        "输出标准 Markdown，不要解释过程。"
+    )
 
     try:
         result = await llm_service.chat_completion(
@@ -407,7 +344,7 @@ async def generate_employee_manual(employee_id: str):
             model_name=default_provider.get("default_model") or "gpt-4",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": template},
             ],
             temperature=0.2,
             max_tokens=2500,
@@ -419,6 +356,7 @@ async def generate_employee_manual(employee_id: str):
         return {
             "status": "success",
             "manual": manual,
+            "template": template,
             "provider": default_provider["name"],
             "model": default_provider.get("default_model") or "gpt-4",
         }
@@ -444,41 +382,152 @@ async def get_manual_template(employee_id: str):
     domains_text = "\n".join(f"- {d}" for d in (emp.rule_domains or [])) if emp.rule_domains else "无"
     style_hints_text = "\n".join(f"- {h}" for h in (emp.style_hints or [])) if emp.style_hints else "无"
 
-    template = f"""请为以下 AI 员工生成一份使用手册，面向接入方 AI 平台。
+    template = f"""请根据以下信息，为"{emp.name}"AI 员工生成一份完整的使用手册。
 
-员工信息：
-- ID：{emp.id}
-- 名称：{emp.name}
-- 描述：{emp.description}
-- 语调：{emp.tone}
-- 风格：{emp.verbosity}
-- 语言：{emp.language}
+## 员工基本信息
 
-绑定技能：
+- **员工 ID**：`{emp.id}`
+- **员工名称**：{emp.name}
+- **员工描述**：{emp.description or "AI 开发助手"}
+- **语调**：{emp.tone}
+- **风格**：{emp.verbosity}
+- **语言**：{emp.language}
+
+## 员工能力
+
+### 绑定技能
 {skills_text}
 
-规则领域：
+### 规则领域
 {domains_text}
 
-风格提示：
+### 风格提示
 {style_hints_text}
 
-记忆配置：
-- 作用域：{emp.memory_scope}
-- 保留期：{emp.memory_retention_days}天
+### 记忆配置
+- **作用域**：{emp.memory_scope}
+- **保留期**：{emp.memory_retention_days}天
 
-手册要求：
-1. 员工简介（定位、适用场景）
-2. MCP 接入配置（SSE 和 HTTP 两种方式，使用 ```json 代码块）
-3. 核心功能：
-   - 技能列表（列出每个技能及用途）
-   - 规则领域（列出每个领域及适用场景）
-   - 风格约束（列出风格提示）
-   - 记忆功能：recall_employee_memory(query, project_id)，作用域 {emp.memory_scope}，保留 {emp.memory_retention_days}天
-   - 反馈工单：submit_feedback_bug(title, symptom, expected, project_id, ...)
-4. 使用建议（project_id 作用、推荐工作流、注意事项）
+---
 
-格式：标准 Markdown，所有 JSON 用 ```json 代码块"""
+## 手册生成要求
+
+**重要：自动记忆规则**
+
+在生成的使用手册中，必须在开头添加以下强制规则：
+
+> **每次对话流程（强制执行）：**
+> 1. 收到用户提问后，先检索相关记忆（`recall_employee_memory`）
+> 2. 解决问题过程中的关键信息会自动保存到记忆系统
+> 3. 问题解决后，系统会自动记录本次对话的要点
+> 
+> **记忆自动保存的内容包括：**
+> - 用户提出的问题
+> - 使用的解决方案
+> - 调用的工具和参数
+> - 遇到的问题和解决方法
+> - 重要的技术决策
+> 
+> **注意：**
+> - 记忆系统会自动工作，无需手动调用保存
+> - 如果遇到重要问题或发现 Bug，可手动提交反馈工单（`submit_feedback_bug`）用于规则进化
+
+请按以下结构生成完整的使用手册：
+
+### 第一部分：员工总览
+
+#### 1. 员工简介
+- **定位**：{emp.name}是什么角色？负责什么工作？
+- **适用场景**：什么时候应该使用这个员工？
+- **能力边界**：员工能做什么，不能做什么？
+
+#### 2. 核心工具说明
+
+逐个说明以下工具的用途、参数、返回值和使用场景：
+
+- **`recall_employee_memory`**：检索员工记忆
+- **`query_employee_rules`**：查询员工规则
+- **`list_employee_tools`**：列出员工可用技能工具
+- **`invoke_employee_skill_tool`**：调用员工技能
+- **`submit_feedback_bug`**：提交反馈问题
+
+---
+
+### 第二部分：员工能力清单
+
+详细说明：
+- 职责定位
+- 核心技能（每个技能的用途和触发条件）
+- 规则领域（每个领域的适用场景）
+- 风格特点（如何影响回答方式）
+- 记忆策略（作用域和保留期）
+
+---
+
+### 第三部分：推荐工作流
+
+#### 标准开发流程
+
+```
+1. 记忆检索 → recall_employee_memory
+2. 规则检索 → query_employee_rules
+3. 技能调用 → invoke_employee_skill_tool
+4. 反馈闭环 → submit_feedback_bug
+```
+
+#### 典型场景示例
+
+提供 2-3 个具体的使用场景，包含完整的工具调用示例。
+
+---
+
+### 第四部分：常见问题与故障排查
+
+#### Q1：记忆检索无结果
+- 排查步骤和解决方案
+
+#### Q2：规则查询返回多条结果
+- 如何选择合适的规则
+
+#### Q3：技能调用参数错误
+- 常见错误和修正方法
+
+#### Q4：反馈提交失败
+- 检查必填参数
+
+---
+
+### 第五部分：最佳实践
+
+#### 1. 参数规范
+- 调用记忆时的参数要求
+- 调用技能时的参数要求
+- 提交反馈时的参数要求
+
+#### 2. 记忆管理
+- 检索策略
+- 记忆自动保存机制
+
+#### 3. 规则遵循
+- 开发前检索规则
+- 遵循最佳实践
+
+#### 4. 技能使用
+- 首次使用注意事项
+- 失败处理建议
+
+---
+
+## 生成要求
+
+1. **语言**：全部使用中文
+2. **格式**：标准 Markdown
+3. **完整性**：必须包含以上所有章节
+4. **实用性**：提供具体的使用场景和示例
+5. **清晰度**：每个工具的用途、参数、返回值都要说明清楚
+
+请开始生成完整的使用手册。"""
+
 
     return {
         "status": "success",
