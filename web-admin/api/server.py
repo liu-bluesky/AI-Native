@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import get_settings
 from routers import (
     init_auth,
+    system_config,
+    projects,
     employees,
     skills,
     rules,
@@ -20,7 +22,12 @@ from routers import (
     usage,
     feedback_upgrade,
 )
-from dynamic_mcp import employee_mcp_proxy_app, rule_mcp_proxy_app, skill_mcp_proxy_app
+from dynamic_mcp import (
+    employee_mcp_proxy_app,
+    project_mcp_proxy_app,
+    rule_mcp_proxy_app,
+    skill_mcp_proxy_app,
+)
 
 
 def create_app() -> FastAPI:
@@ -36,6 +43,8 @@ def create_app() -> FastAPI:
 
     for r in (
         init_auth,
+        system_config,
+        projects,
         employees,
         skills,
         rules,
@@ -51,6 +60,7 @@ def create_app() -> FastAPI:
 
     app.mount("/mcp/rules/{rule_id}", rule_mcp_proxy_app)
     app.mount("/mcp/skills/{skill_id}", skill_mcp_proxy_app)
+    app.mount("/mcp/projects/{project_id}", project_mcp_proxy_app)
     app.mount("/mcp/employees/{employee_id}", employee_mcp_proxy_app)
 
     # Compatibility: some MCP clients probe OAuth/OIDC well-known endpoints even when using API key auth.

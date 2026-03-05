@@ -66,7 +66,7 @@
           <el-button text type="info" @click="showEmployeeConfigTest(row)"
             >测试</el-button
           >
-          <el-button text type="success" @click="copyManualTemplate(row)"
+          <el-button text type="success" @click="showGenerateManual(row)"
             >使用手册</el-button
           >
           <el-button
@@ -353,26 +353,28 @@
         <el-button v-if="generatedPrompt" type="primary" @click="copyPrompt"
           >复制手册</el-button
         >
+        <el-button type="info" @click="copyTemplate">复制提示词模板</el-button>
         <el-button
-          type="info"
-          @click="copyTemplate"
-          >复制提示词模板</el-button
-        >
-        <el-button
+          v-if="employeeManualEnabled"
           type="success"
           :loading="promptLoading"
           @click="runGeneratePrompt"
           >生成使用手册</el-button
         >
+        <el-button v-else type="info" disabled>大模型生成已禁用</el-button>
         <el-button @click="showPromptDialog = false">关闭</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showManualDialog" :title="manualDialogTitle" width="700px">
+    <el-dialog
+      v-model="showManualDialog"
+      :title="manualDialogTitle"
+      width="700px"
+    >
       <div v-loading="manualLoading">
         <el-alert
           v-if="generatedManual"
-          title="使用手册生成成功"
+          title="使用手册模板加载成功"
           type="success"
           show-icon
           :closable="false"
@@ -382,12 +384,23 @@
         <div v-if="generatedManual" class="prompt-content">
           <div class="prompt-rendered" v-html="renderedManualHtml"></div>
         </div>
-        <el-empty v-else description="点击下方按钮生成手册" :image-size="50" />
+        <el-empty
+          v-else
+          description="点击下方按钮加载手册模板"
+          :image-size="50"
+        />
       </div>
 
       <template #footer>
-        <el-button v-if="generatedManual" type="primary" @click="copyManual">复制手册</el-button>
-        <el-button type="success" :loading="manualLoading" @click="runGenerateManual">生成手册</el-button>
+        <el-button v-if="generatedManual" type="primary" @click="copyManual"
+          >复制手册模板</el-button
+        >
+        <el-button
+          type="success"
+          :loading="manualLoading"
+          @click="runGenerateManual"
+          >加载手册模板</el-button
+        >
         <el-button @click="showManualDialog = false">关闭</el-button>
       </template>
     </el-dialog>
@@ -426,10 +439,17 @@ const promptTab = ref("generate");
 const promptHistory = ref([]);
 const historyLoading = ref(false);
 const showManualDialog = ref(false);
-const manualDialogTitle = ref("生成使用手册");
+const manualDialogTitle = ref("使用手册模板");
 const manualLoading = ref(false);
 const manualTargetEmployee = ref(null);
 const generatedManual = ref("");
+const systemConfig = ref({
+  enable_project_manual_generation: false,
+  enable_employee_manual_generation: false,
+});
+const employeeManualEnabled = computed(
+  () => !!systemConfig.value.enable_employee_manual_generation,
+);
 
 const renderedPromptHtml = computed(() => {
   if (!generatedPrompt.value) return "";
@@ -520,6 +540,23 @@ async function fetchList() {
     ElMessage.error("加载失败");
   } finally {
     loading.value = false;
+  }
+}
+
+async function fetchSystemConfig() {
+  try {
+    const data = await api.get("/system-config");
+    systemConfig.value = {
+      enable_project_manual_generation:
+        !!data?.config?.enable_project_manual_generation,
+      enable_employee_manual_generation:
+        !!data?.config?.enable_employee_manual_generation,
+    };
+  } catch {
+    systemConfig.value = {
+      enable_project_manual_generation: false,
+      enable_employee_manual_generation: false,
+    };
   }
 }
 
@@ -662,6 +699,10 @@ async function showEmployeeConfigTest(row) {
 }
 
 async function showGeneratePrompt(row) {
+  if (!employeeManualEnabled.value) {
+    ElMessage.warning("员工手册功能已被系统配置禁用");
+    return;
+  }
   promptTargetEmployee.value = row;
   promptDialogTitle.value = `生成使用手册: ${row.name}`;
   generatedPrompt.value = "";
@@ -708,6 +749,10 @@ async function deleteHistoryPrompt(row) {
 }
 
 async function runGeneratePrompt() {
+  if (!employeeManualEnabled.value) {
+    ElMessage.warning("员工手册功能已被系统配置禁用");
+    return;
+  }
   if (!promptTargetEmployee.value?.id) return;
   promptLoading.value = true;
   try {
@@ -749,7 +794,7 @@ async function copyTemplate() {
 
 async function showGenerateManual(row) {
   manualTargetEmployee.value = row;
-  manualDialogTitle.value = `生成使用手册: ${row.name}`;
+  manualDialogTitle.value = `使用手册模板: ${row.name}`;
   generatedManual.value = "";
   showManualDialog.value = true;
   await runGenerateManual();
@@ -759,13 +804,13 @@ async function runGenerateManual() {
   if (!manualTargetEmployee.value?.id) return;
   manualLoading.value = true;
   try {
-    const data = await api.post(
-      `/employees/${manualTargetEmployee.value.id}/generate-manual`,
+    const data = await api.get(
+      `/employees/${manualTargetEmployee.value.id}/manual-template`,
     );
-    generatedManual.value = data.manual || "";
-    ElMessage.success("使用手册生成成功");
+    generatedManual.value = data.template || "";
+    ElMessage.success("使用手册模板加载成功");
   } catch (e) {
-    ElMessage.error(e.detail || "生成使用手册失败");
+    ElMessage.error(e.detail || "加载使用手册模板失败");
   } finally {
     manualLoading.value = false;
   }
@@ -774,7 +819,7 @@ async function runGenerateManual() {
 async function copyManual() {
   try {
     await navigator.clipboard.writeText(generatedManual.value);
-    ElMessage.success("使用手册已复制到剪贴板");
+    ElMessage.success("手册模板已复制到剪贴板");
   } catch {
     ElMessage.error("复制失败");
   }
@@ -797,24 +842,26 @@ function copyManualTemplate(row) {
 
   // 生成模板内容
   const skillsText = row.skills?.length
-    ? row.skills.map(s => `- ${s.name || s}：${s.description || ''}`).join('\n')
-    : '无';
+    ? row.skills
+        .map((s) => `- ${s.name || s}：${s.description || ""}`)
+        .join("\n")
+    : "无";
   const domainsText = row.rule_domains?.length
-    ? row.rule_domains.map(d => `- ${d}`).join('\n')
-    : '无';
+    ? row.rule_domains.map((d) => `- ${d}`).join("\n")
+    : "无";
   const styleHintsText = row.style_hints?.length
-    ? row.style_hints.map(h => `- ${h}`).join('\n')
-    : '无';
+    ? row.style_hints.map((h) => `- ${h}`).join("\n")
+    : "无";
 
   generatedManual.value = `请为以下 AI 员工生成一份使用手册，面向接入方 AI 平台。
 
 员工信息：
 - ID：${row.id}
 - 名称：${row.name}
-- 描述：${row.description || ''}
-- 语调：${row.tone || ''}
-- 风格：${row.verbosity || ''}
-- 语言：${row.language || ''}
+- 描述：${row.description || ""}
+- 语调：${row.tone || ""}
+- 风格：${row.verbosity || ""}
+- 语言：${row.language || ""}
 
 绑定技能：
 ${skillsText}
@@ -826,7 +873,7 @@ ${domainsText}
 ${styleHintsText}
 
 记忆配置：
-- 作用域：${row.memory_scope || ''}
+- 作用域：${row.memory_scope || ""}
 - 保留期：${row.memory_retention_days || 0}天
 
 手册要求：
@@ -846,7 +893,7 @@ ${styleHintsText}
    - 技能列表（列出每个技能及用途）
    - 规则领域（列出每个领域及适用场景）
    - 风格约束（列出风格提示）
-   - 记忆功能：recall_employee_memory(query, project_name)，作用域 ${row.memory_scope || ''}，保留 ${row.memory_retention_days || 0}天
+   - 记忆功能：recall_employee_memory(query, project_name)，作用域 ${row.memory_scope || ""}，保留 ${row.memory_retention_days || 0}天
      调用示例（\`\`\`json 代码块）：
      {
        "name": "recall_employee_memory",
@@ -877,7 +924,9 @@ ${styleHintsText}
   showManualDialog.value = true;
 }
 
-onMounted(fetchList);
+onMounted(async () => {
+  await Promise.all([fetchList(), fetchSystemConfig()]);
+});
 </script>
 
 <style scoped>

@@ -8,6 +8,9 @@ const routes = [
     component: () => import('../views/Layout.vue'),
     redirect: '/employees',
     children: [
+      { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
+      { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
+      { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
       { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
       { path: 'employees/create', component: () => import('../views/employees/EmployeeForm.vue') },
       { path: 'employees/:id/edit', component: () => import('../views/employees/EmployeeForm.vue') },
