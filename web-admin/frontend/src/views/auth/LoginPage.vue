@@ -23,6 +23,9 @@
           </el-button>
         </el-form-item>
       </el-form>
+      <div class="actions">
+        <el-button text @click="router.replace('/register')">没有账号？去注册</el-button>
+      </div>
     </el-card>
   </div>
 </template>
@@ -32,6 +35,7 @@ import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api.js'
+import { setPermissionArray } from '@/utils/permissions.js'
 
 const router = useRouter()
 const formRef = ref(null)
@@ -47,10 +51,11 @@ async function handleLogin() {
   await formRef.value.validate()
   loading.value = true
   try {
-    const { token, username, role } = await api.post('/auth/login', form)
+    const { token, username, role, permissions } = await api.post('/auth/login', form)
     localStorage.setItem('token', token)
     localStorage.setItem('username', username)
     localStorage.setItem('role', role || 'user')
+    setPermissionArray(permissions || [])
     ElMessage.success('登录成功')
     await router.replace('/employees')
   } catch {
@@ -83,5 +88,10 @@ async function handleLogin() {
 
 .login-btn {
   width: 100%;
+}
+
+.actions {
+  display: flex;
+  justify-content: center;
 }
 </style>

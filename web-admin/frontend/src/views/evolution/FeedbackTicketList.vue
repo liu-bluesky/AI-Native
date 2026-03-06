@@ -30,9 +30,7 @@
           <el-select
             v-model="projectId"
             filterable
-            allow-create
-            default-first-option
-            placeholder="输入或选择项目名称"
+            placeholder="请选择项目"
             class="project-input"
             @change="persistProject"
           >
@@ -474,43 +472,71 @@ const availableReflectionModels = computed(() => {
   return reflectionOptions.value.filter((item) => String(item.provider_id || '').trim() === providerId)
 })
 
+function normalizeProjectId(value) {
+  return String(value || '').trim()
+}
+
 function persistProject() {
-  const nextValue = String(projectId.value || '').trim() || 'default'
-  projectId.value = nextValue
-  localStorage.setItem('project_id', nextValue)
-  upsertProjectOption(nextValue)
-  localStorage.setItem('feedback_project_names', JSON.stringify(projectOptions.value.map((item) => item.value)))
+  const nextValue = normalizeProjectId(projectId.value)
+  const fallback = projectOptions.value[0]?.value || 'default'
+  const selected = nextValue && projectOptions.value.some((item) => item.value === nextValue)
+    ? nextValue
+    : fallback
+  projectId.value = selected
+  localStorage.setItem('project_id', selected)
   fetchProjectConfig()
   fetchReflectionConfig()
   fetchBugs()
   fetchSummary()
 }
 
-function loadProjectOptions() {
-  const base = ['default']
-  const current = String(projectId.value || '').trim()
-  const raw = localStorage.getItem('feedback_project_names') || '[]'
-  let stored = []
+async function fetchProjectOptions() {
+  const current = normalizeProjectId(projectId.value)
   try {
-    const parsed = JSON.parse(raw)
-    stored = Array.isArray(parsed) ? parsed.map((item) => String(item || '').trim()).filter(Boolean) : []
-  } catch {
-    stored = []
-  }
-  const merged = [...base, ...stored, current].filter(Boolean)
-  const seen = new Set()
-  projectOptions.value = merged.filter((item) => {
-    if (seen.has(item)) return false
-    seen.add(item)
-    return true
-  }).slice(0, 20).map((item) => ({ label: item, value: item }))
-}
+    const data = await api.get('/projects')
+    const projects = Array.isArray(data.projects) ? data.projects : []
+    const options = projects
+      .map((item) => {
+        const id = normalizeProjectId(item.id)
+        if (!id) return null
+        const name = normalizeProjectId(item.name)
+        return {
+          value: id,
+          label: name ? `${name} (${id})` : id,
+        }
+      })
+      .filter(Boolean)
+    if (current && !options.some((item) => item.value === current)) {
+      options.unshift({ value: current, label: current })
+    }
+    projectOptions.value = options.length ? options : [{ value: 'default', label: 'default' }]
 
-function upsertProjectOption(name) {
-  const value = String(name || '').trim()
-  if (!value) return
-  const current = projectOptions.value.map((item) => item.value).filter((item) => item !== value)
-  projectOptions.value = [{ label: value, value }, ...current.map((item) => ({ label: item, value: item }))].slice(0, 20)
+    if (!current) {
+      projectId.value = projectOptions.value[0].value
+      localStorage.setItem('project_id', projectId.value)
+      return
+    }
+
+    const matchedByName = projects.find((item) => normalizeProjectId(item.name) === current)
+    if (matchedByName) {
+      const matchedId = normalizeProjectId(matchedByName.id)
+      if (matchedId) {
+        projectId.value = matchedId
+        localStorage.setItem('project_id', matchedId)
+      }
+      return
+    }
+
+    if (!projectOptions.value.some((item) => item.value === current)) {
+      projectId.value = projectOptions.value[0].value
+      localStorage.setItem('project_id', projectId.value)
+    }
+  } catch {
+    const fallback = current || 'default'
+    projectId.value = fallback
+    projectOptions.value = [{ value: fallback, label: fallback }]
+    localStorage.setItem('project_id', fallback)
+  }
 }
 
 function formatCategory(value) {
@@ -893,7 +919,7 @@ async function submitManualUpgrade() {
 }
 
 onMounted(async () => {
-  loadProjectOptions()
+  await fetchProjectOptions()
   await fetchRuleOptions()
   await fetchReflectionConfig()
   await fetchProjectConfig()

@@ -23,6 +23,20 @@
       <el-form-item label="允许生成员工手册">
         <el-switch v-model="form.enable_employee_manual_generation" />
       </el-form-item>
+
+      <el-form-item label="单次对话最大上传文件数" prop="chat_upload_max_limit">
+        <el-input-number v-model="form.chat_upload_max_limit" :min="1" :max="20" />
+        <div class="field-desc" style="font-size: 12px; color: var(--el-text-color-secondary); margin-left: 8px;">
+          限制AI对话中一次最多可上传的文件数量
+        </div>
+      </el-form-item>
+
+      <el-form-item label="模型默认 Max Tokens" prop="chat_max_tokens">
+        <el-input-number v-model="form.chat_max_tokens" :min="128" :max="8192" :step="64" />
+        <div class="field-desc" style="font-size: 12px; color: var(--el-text-color-secondary); margin-left: 8px;">
+          控制 AI 对话默认最大输出长度（128~8192）
+        </div>
+      </el-form-item>
     </el-form>
   </div>
 </template>
@@ -38,6 +52,8 @@ const saving = ref(false);
 const form = ref({
   enable_project_manual_generation: false,
   enable_employee_manual_generation: false,
+  chat_upload_max_limit: 6,
+  chat_max_tokens: 512,
 });
 
 async function fetchConfig() {
@@ -49,6 +65,8 @@ async function fetchConfig() {
         !!data?.config?.enable_project_manual_generation,
       enable_employee_manual_generation:
         !!data?.config?.enable_employee_manual_generation,
+      chat_upload_max_limit: Number(data?.config?.chat_upload_max_limit || 6),
+      chat_max_tokens: Number(data?.config?.chat_max_tokens || 512),
     };
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "加载系统配置失败");
@@ -65,6 +83,8 @@ async function saveConfig() {
         !!form.value.enable_project_manual_generation,
       enable_employee_manual_generation:
         !!form.value.enable_employee_manual_generation,
+      chat_upload_max_limit: Number(form.value.chat_upload_max_limit || 6),
+      chat_max_tokens: Number(form.value.chat_max_tokens || 512),
     });
     ElMessage.success("系统配置已保存");
   } catch (err) {

@@ -15,6 +15,34 @@ class LoginReq(BaseModel):
     password: str
 
 
+class RegisterReq(BaseModel):
+    username: str
+    password: str
+
+
+class UserCreateReq(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+
+
+class UserPasswordUpdateReq(BaseModel):
+    password: str
+
+
+class RoleCreateReq(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    permissions: list[str] = []
+
+
+class RoleUpdateReq(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    permissions: list[str] | None = None
+
+
 class EmployeeCreateReq(BaseModel):
     name: str
     description: str = ""
@@ -52,6 +80,7 @@ class EmployeeUpdateReq(BaseModel):
 class ProjectCreateReq(BaseModel):
     name: str
     description: str = ""
+    workspace_path: str = ""
     mcp_enabled: bool = True
     feedback_upgrade_enabled: bool = True
 
@@ -59,6 +88,7 @@ class ProjectCreateReq(BaseModel):
 class ProjectUpdateReq(BaseModel):
     name: str | None = None
     description: str | None = None
+    workspace_path: str | None = None
     mcp_enabled: bool | None = None
     feedback_upgrade_enabled: bool | None = None
 
@@ -69,9 +99,24 @@ class ProjectMemberAddReq(BaseModel):
     enabled: bool = True
 
 
+class ProjectChatReq(BaseModel):
+    message: str = ""
+    employee_id: str = ""
+    history: list[dict] = []
+    provider_id: str = ""
+    model_name: str = ""
+    temperature: float = 0.2
+    max_tokens: int | None = None
+    attachment_names: list[str] = []
+    images: list[str] = []
+
+
 class SystemConfigUpdateReq(BaseModel):
     enable_project_manual_generation: bool | None = None
     enable_employee_manual_generation: bool | None = None
+    enable_user_register: bool | None = None
+    chat_upload_max_limit: int | None = None
+    chat_max_tokens: int | None = None
 
 
 class ReviewReq(BaseModel):
@@ -218,7 +263,6 @@ class RuleUpdateReq(BaseModel):
 
 class CreateApiKeyReq(BaseModel):
     developer_name: str
-    created_by: str = ""
 
 
 # ── LLM Provider ──

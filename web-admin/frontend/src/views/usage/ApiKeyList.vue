@@ -2,7 +2,7 @@
   <div v-loading="loading">
     <div class="toolbar">
       <h3>API Key 管理</h3>
-      <el-button type="primary" @click="showCreate = true">创建 Key</el-button>
+      <el-button v-if="canCreateKey" type="primary" @click="showCreate = true">创建 Key</el-button>
     </div>
 
     <el-table :data="keys" stripe>
@@ -19,7 +19,14 @@
       <el-table-column prop="created_at" label="创建时间" />
       <el-table-column label="操作" width="100" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="row.is_active" text type="danger" @click="handleDeactivate(row)">停用</el-button>
+          <el-button
+            v-if="row.is_active && canDeactivateKey"
+            text
+            type="danger"
+            @click="handleDeactivate(row)"
+          >
+            停用
+          </el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -29,9 +36,6 @@
       <el-form :model="form" label-position="top">
         <el-form-item label="用户姓名" required>
           <el-input v-model="form.developer_name" placeholder="输入用户姓名" />
-        </el-form-item>
-        <el-form-item label="创建人">
-          <el-input v-model="form.created_by" placeholder="可选" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -43,15 +47,18 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { hasPermission } from '@/utils/permissions.js'
 
 const loading = ref(false)
 const keys = ref([])
 const showCreate = ref(false)
 const creating = ref(false)
-const form = reactive({ developer_name: '', created_by: '' })
+const form = reactive({ developer_name: '' })
+const canCreateKey = computed(() => hasPermission('button.apikey.create'))
+const canDeactivateKey = computed(() => hasPermission('button.apikey.deactivate'))
 
 async function fetchKeys() {
   loading.value = true
@@ -76,7 +83,6 @@ async function handleCreate() {
     ElMessage.success(`Key 已创建: ${result.key}`)
     showCreate.value = false
     form.developer_name = ''
-    form.created_by = ''
     fetchKeys()
   } catch {
     ElMessage.error('创建失败')

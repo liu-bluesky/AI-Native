@@ -21,6 +21,8 @@ from routers import (
     sync,
     usage,
     feedback_upgrade,
+    users,
+    roles,
 )
 from dynamic_mcp import (
     employee_mcp_proxy_app,
@@ -55,6 +57,8 @@ def create_app() -> FastAPI:
         sync,
         usage,
         feedback_upgrade,
+        users,
+        roles,
     ):
         app.include_router(r.router)
 

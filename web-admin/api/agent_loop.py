@@ -1,0 +1,262 @@
+import asyncio
+import json
+import logging
+import re
+from typing import AsyncGenerator
+from starlette.concurrency import run_in_threadpool
+from dynamic_mcp import invoke_project_skill_tool_runtime, query_project_rules_runtime
+
+logger = logging.getLogger(__name__)
+
+
+_INTENT_ONLY_PATTERNS = (
+    r"^\s*(我先|我会先|我去|我来|让我先|先帮你|正在|稍等)",
+    r"(查一下|查询一下|先查|先检索|马上返回|稍后返回)",
+)
+
+
+def _is_intent_only_response(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if len(value) > 180:
+        return False
+    for pattern in _INTENT_ONLY_PATTERNS:
+        if re.search(pattern, value):
+            return True
+    return False
+
+
+def _parse_tool_arguments(raw: str) -> tuple[dict, str]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}, "{}"
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}, "{}"
+    if isinstance(parsed, dict):
+        if "args_json" in parsed:
+            inner = parsed.get("args_json")
+            if isinstance(inner, str):
+                try:
+                    inner_parsed = json.loads(inner)
+                    if isinstance(inner_parsed, dict):
+                        return inner_parsed, json.dumps(inner_parsed, ensure_ascii=False)
+                except Exception:
+                    return {}, "{}"
+            if isinstance(inner, dict):
+                return inner, json.dumps(inner, ensure_ascii=False)
+            return {}, "{}"
+        return parsed, json.dumps(parsed, ensure_ascii=False)
+    return {}, "{}"
+
+
+async def run_agent_loop(
+    llm_service,
+    provider_id: str,
+    model_name: str,
+    messages: list[dict],
+    tools: list[dict],
+    temperature: float,
+    max_tokens: int,
+    project_id: str,
+    employee_id: str,
+    cancel_event: asyncio.Event,
+) -> AsyncGenerator[dict, None]:
+    """Agent Loop that handles tool calls."""
+    loop_count = 0
+    max_loops = 20
+    completed = False
+    intent_retry_used = False
+    
+    # Track full response text for saving to history (clean, no UI markers)
+    final_full_content = ""
+    # Track display content with UI markers (for frontend only)
+    display_content = ""
+    
+    while loop_count < max_loops:
+        if cancel_event.is_set():
+            yield {"type": "done", "content": "\n\n[已停止生成]"}
+            completed = True
+            break
+            
+        loop_count += 1
+        
+        # Construct tools in the format expected by the LLM
+        formatted_tools = []
+        if tools:
+            for t in tools:
+                parameters_schema = t.get("parameters_schema") if isinstance(t, dict) else None
+                if not isinstance(parameters_schema, dict):
+                    parameters_schema = {
+                        "type": "object",
+                        "properties": {
+                            "args_json": {
+                                "type": "string",
+                                "description": "JSON string containing all arguments for the tool"
+                            }
+                        },
+                        "required": []
+                    }
+                formatted_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": t["tool_name"],
+                        "description": t.get("description", "A project agent tool"),
+                        "parameters": parameters_schema
+                    }
+                })
+        
+        # Start streaming
+        loop_content = ""
+        tool_calls_buffer = {}
+        
+        try:
+            async for chunk in llm_service.chat_completion_stream(
+                provider_id=provider_id,
+                model_name=model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=120,
+                tools=formatted_tools if formatted_tools else None
+            ):
+                if cancel_event.is_set():
+                    yield {"type": "done", "content": "\n\n[已停止生成]"}
+                    completed = True
+                    return
+                    
+                if isinstance(chunk, dict):
+                    # Handle tool calls
+                    if "tool_calls" in chunk:
+                        for tc in chunk["tool_calls"]:
+                            idx = tc.get("index", 0)
+                            if idx not in tool_calls_buffer:
+                                tool_calls_buffer[idx] = {
+                                    "id": tc.get("id", ""),
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""}
+                                }
+                            if tc.get("id"):
+                                tool_calls_buffer[idx]["id"] = tc["id"]
+                            func = tc.get("function", {})
+                            if func.get("name"):
+                                tool_calls_buffer[idx]["function"]["name"] += func["name"]
+                            if func.get("arguments"):
+                                tool_calls_buffer[idx]["function"]["arguments"] += func["arguments"]
+                    elif "content" in chunk and chunk["content"]:
+                        content = chunk["content"]
+                        loop_content += content
+                        yield {"type": "delta", "content": content}
+                elif isinstance(chunk, str):
+                    loop_content += chunk
+                    yield {"type": "delta", "content": chunk}
+
+            final_full_content += loop_content
+            display_content += loop_content
+                    
+        except asyncio.CancelledError:
+            yield {"type": "done", "content": "\n\n[已停止生成]"}
+            completed = True
+            break
+        except Exception as e:
+            logger.error(f"Error in LLM stream: {e}")
+            yield {"type": "error", "message": f"模型调用失败: {str(e)}"}
+            completed = True
+            break
+            
+        # Process tool calls if any
+        if tool_calls_buffer:
+            # We need to add the assistant message with tool calls to the history
+            assistant_msg = {
+                "role": "assistant",
+                "content": loop_content or None,
+                "tool_calls": list(tool_calls_buffer.values())
+            }
+            messages.append(assistant_msg)
+            
+            for tc in tool_calls_buffer.values():
+                if cancel_event.is_set():
+                    break
+                    
+                tool_name = tc["function"]["name"]
+                args_str = tc["function"]["arguments"]
+                yield {"type": "tool_start", "tool_name": tool_name}
+                
+                args_payload, args_json = _parse_tool_arguments(args_str)
+                    
+                # Execute tool
+                try:
+                    if tool_name == "query_project_rules":
+                        tool_result = await run_in_threadpool(
+                            query_project_rules_runtime,
+                            project_id,
+                            str(args_payload.get("keyword") or ""),
+                            str(args_payload.get("employee_id") or employee_id or ""),
+                        )
+                    elif tool_name == "query_project_members":
+                        from dynamic_mcp import query_project_members_runtime
+                        tool_result = await run_in_threadpool(
+                            query_project_members_runtime,
+                            project_id,
+                        )
+                    else:
+                        tool_result = await run_in_threadpool(
+                            invoke_project_skill_tool_runtime,
+                            project_id=project_id,
+                            tool_name=tool_name,
+                            employee_id=employee_id,
+                            args=args_payload,
+                            args_json=args_json,
+                            timeout_sec=60
+                        )
+                    
+                    result_str = json.dumps(tool_result, ensure_ascii=False)
+                    yield {"type": "tool_result", "tool_name": tool_name, "content": result_str}
+                    # UI markers only for display, not saved to history
+                    display_content += f"\n\n> ⚡️ 正在调用技能: `{tool_name}`...\n\n> ✅ 技能 `{tool_name}` 调用完成\n\n"
+
+                    # Add tool response to messages
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", ""),
+                        "name": tool_name,
+                        "content": result_str
+                    })
+                except Exception as e:
+                    error_msg = f"工具执行失败: {str(e)}"
+                    yield {"type": "tool_result", "tool_name": tool_name, "content": error_msg}
+                    # UI markers only for display, not saved to history
+                    display_content += f"\n\n> ⚡️ 正在调用技能: `{tool_name}`...\n\n> ❌ 技能 `{tool_name}` 执行失败: {error_msg}\n\n"
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", ""),
+                        "name": tool_name,
+                        "content": error_msg
+                    })
+        else:
+            # No tools called: if answer is only an action promise, retry once for a direct result.
+            if tools and not intent_retry_used and _is_intent_only_response(loop_content):
+                intent_retry_used = True
+                messages.append({"role": "assistant", "content": loop_content})
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "你上一条回复只有行动承诺（例如“我先查一下”），但用户要的是结果。"
+                            "请在本轮直接给出查询结果；如果确实查不到，明确说明原因并给可执行下一步。"
+                            "不要再输出“我先查/稍等/正在查询”这类句子。"
+                        ),
+                    }
+                )
+                continue
+            yield {"type": "done", "content": final_full_content}
+            completed = True
+            break
+
+    if not completed and not cancel_event.is_set():
+        logger.warning("Agent loop reached max iterations without completion: max_loops=%s", max_loops)
+        fallback = final_full_content.strip()
+        notice = f"达到最大处理轮次({max_loops})，为避免无限循环已自动暂停，请补充更具体的问题后继续。"
+        yield {"type": "done", "content": f"{fallback}\n\n[{notice}]".strip(), "display_content": f"{display_content}\n\n[{notice}]".strip()}

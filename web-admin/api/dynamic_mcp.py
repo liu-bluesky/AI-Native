@@ -608,6 +608,212 @@ def _build_project_proxy_specs(project_id: str) -> tuple[dict[str, dict], dict[s
     return by_scoped_name, by_employee_base_name
 
 
+def _resolve_project_proxy_tool_spec(
+    project_id: str,
+    tool_name: str,
+    employee_id: str = "",
+) -> tuple[dict | None, str]:
+    scoped_proxy_specs, employee_proxy_specs = _build_project_proxy_specs(project_id)
+    normalized_tool_name = str(tool_name or "").strip()
+    employee_id_value = str(employee_id or "").strip()
+    if not normalized_tool_name:
+        return None, "tool_name is required"
+
+    if employee_id_value:
+        employee_specs = employee_proxy_specs.get(employee_id_value, {})
+        if normalized_tool_name in employee_specs:
+            return employee_specs[normalized_tool_name], ""
+        scoped_name = f"{_tool_token(employee_id_value)}__{normalized_tool_name}"
+        scoped_spec = scoped_proxy_specs.get(scoped_name)
+        if scoped_spec:
+            return scoped_spec, ""
+        return None, f"Tool not found for employee {employee_id_value}: {normalized_tool_name}"
+
+    if normalized_tool_name in scoped_proxy_specs:
+        return scoped_proxy_specs[normalized_tool_name], ""
+
+    matched: list[dict] = []
+    for specs in employee_proxy_specs.values():
+        if normalized_tool_name in specs:
+            matched.append(specs[normalized_tool_name])
+    if not matched:
+        return None, f"Tool not found: {normalized_tool_name}"
+    if len(matched) > 1:
+        employee_ids = sorted({item["employee_id"] for item in matched})
+        return None, f"Ambiguous tool_name, provide employee_id. Candidates: {employee_ids}"
+    return matched[0], ""
+
+
+def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> list[dict]:
+    """列出项目技能代理工具，供非 MCP 路径（如聊天路由）复用。"""
+    scoped_proxy_specs, employee_proxy_specs = _build_project_proxy_specs(project_id)
+    employee_id_value = str(employee_id or "").strip()
+    tools: list[dict] = []
+    if employee_id_value:
+        specs = employee_proxy_specs.get(employee_id_value, {})
+        for base_tool_name, spec in sorted(specs.items()):
+            tools.append(
+                {
+                    "tool_name": base_tool_name,
+                    "employee_id": spec["employee_id"],
+                    "base_tool_name": spec["base_tool_name"],
+                    "scoped_tool_name": spec["scoped_tool_name"],
+                    "skill_id": spec["skill_id"],
+                    "entry_name": spec["entry_name"],
+                    "script_type": spec["script_type"],
+                    "description": spec["description"],
+                }
+            )
+    else:
+        for scoped_tool_name, spec in sorted(scoped_proxy_specs.items()):
+            tools.append(
+                {
+                    "tool_name": scoped_tool_name,
+                    "employee_id": spec["employee_id"],
+                    "base_tool_name": spec["base_tool_name"],
+                    "scoped_tool_name": spec["scoped_tool_name"],
+                    "skill_id": spec["skill_id"],
+                    "entry_name": spec["entry_name"],
+                    "script_type": spec["script_type"],
+                    "description": spec["description"],
+                }
+            )
+
+    existing_names = {str(item.get("tool_name") or "") for item in tools}
+    if "query_project_rules" not in existing_names:
+        tools.append(
+            {
+                "tool_name": "query_project_rules",
+                "employee_id": employee_id_value,
+                "base_tool_name": "query_project_rules",
+                "scoped_tool_name": "query_project_rules",
+                "skill_id": "__builtin__",
+                "entry_name": "query_project_rules",
+                "script_type": "builtin",
+                "description": "检索项目规则内容，可按 keyword 与 employee_id 过滤。",
+                "builtin": True,
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {
+                        "keyword": {
+                            "type": "string",
+                            "description": "用于检索规则的关键词，如“UI设计”或“数据库设计”。",
+                        },
+                        "employee_id": {
+                            "type": "string",
+                            "description": "可选，指定项目成员 employee_id 进行过滤。",
+                        },
+                    },
+                    "required": [],
+                },
+            }
+        )
+    if "query_project_members" not in existing_names:
+        tools.append(
+            {
+                "tool_name": "query_project_members",
+                "employee_id": employee_id_value,
+                "base_tool_name": "query_project_members",
+                "scoped_tool_name": "query_project_members",
+                "skill_id": "__builtin__",
+                "entry_name": "query_project_members",
+                "script_type": "builtin",
+                "description": "查询项目的成员列表，返回成员的姓名、ID、角色等信息。",
+                "builtin": True,
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            }
+        )
+    return tools
+
+
+def query_project_rules_runtime(project_id: str, keyword: str = "", employee_id: str = "") -> list[dict]:
+    """查询项目规则（内置工具）"""
+    project = project_store.get(project_id)
+    if project is None:
+        return []
+    keyword_lower = str(keyword or "").strip().lower()
+    employee_id_value = str(employee_id or "").strip()
+    results = []
+    for rule in rule_store.list_by_project(project_id):
+        if employee_id_value:
+            domains = [str(d or "").strip() for d in (rule.domains or [])]
+            if employee_id_value not in domains:
+                continue
+        if keyword_lower:
+            title_lower = str(rule.title or "").lower()
+            content_lower = str(rule.content or "").lower()
+            if keyword_lower not in title_lower and keyword_lower not in content_lower:
+                continue
+        results.append(serialize_rule(rule))
+    return results
+
+
+def query_project_members_runtime(project_id: str) -> dict:
+    """查询项目成员列表（内置工具）"""
+    from deps import employee_store
+    project = project_store.get(project_id)
+    if project is None:
+        return {"error": f"项目 {project_id} 不存在"}
+    members = []
+    for member in project_store.list_members(project_id):
+        employee = employee_store.get(member.employee_id)
+        members.append({
+            "employee_id": member.employee_id,
+            "employee_name": getattr(employee, "name", "") if employee else "",
+            "role": member.role,
+            "joined_at": member.joined_at,
+        })
+    return {"project_id": project_id, "project_name": project.name, "members": members, "total": len(members)}
+    """检索项目成员规则（运行时复用，供聊天 Agent 直接调用）。"""
+    keyword_value = str(keyword or "").strip()
+    employee_id_value = str(employee_id or "").strip()
+    results: list[dict] = []
+    seen: set[str] = set()
+    for _member, employee in _active_project_member_employees(project_id):
+        if employee_id_value and str(getattr(employee, "id", "")) != employee_id_value:
+            continue
+        for rule in _query_rules_by_employee(employee, keyword_value):
+            rule_id = str(getattr(rule, "id", "") or "")
+            if rule_id and rule_id in seen:
+                continue
+            if rule_id:
+                seen.add(rule_id)
+            results.append(serialize_rule(rule))
+    return results
+
+
+def invoke_project_skill_tool_runtime(
+    project_id: str,
+    tool_name: str,
+    employee_id: str = "",
+    args: dict | None = None,
+    args_json: str = "{}",
+    timeout_sec: int = 30,
+) -> dict:
+    """执行项目成员技能脚本，供非 MCP 路径（如聊天路由）复用。"""
+    spec, err = _resolve_project_proxy_tool_spec(project_id, tool_name, employee_id)
+    if spec is None:
+        return {"error": err}
+    result = _execute_skill_proxy(
+        spec,
+        args=args,
+        args_json=args_json,
+        timeout_sec=timeout_sec,
+        employee_id=spec["employee_id"],
+    )
+    if isinstance(result, dict):
+        return {
+            "tool_name": str(spec.get("base_tool_name") or tool_name),
+            "employee_id": str(spec.get("employee_id") or employee_id),
+            **result,
+        }
+    return {"result": result}
+
+
 def _build_cli_args(payload: dict) -> list[str]:
     argv: list[str] = []
     for key, value in payload.items():
@@ -1025,7 +1231,11 @@ def _create_employee_mcp(employee_id: str):
             if not employee:
                 return {"error": "Employee not found"}
             try:
-                detail = get_feedback_service().get_bug_detail(project_id, feedback_id)
+                detail = get_feedback_service().get_bug_detail(
+                    project_id,
+                    feedback_id,
+                    employee_id=employee_id,
+                )
             except LookupError as exc:
                 return {"error": str(exc)}
             except RuntimeError as exc:
@@ -1045,7 +1255,11 @@ def _create_employee_mcp(employee_id: str):
             if detail.get("error"):
                 return detail
             try:
-                result = get_feedback_service().analyze_bug(project_id, feedback_id)
+                result = get_feedback_service().analyze_bug(
+                    project_id,
+                    feedback_id,
+                    employee_id=employee_id,
+                )
                 return {"status": "analyzed", **result}
             except ValueError as exc:
                 return {"error": str(exc)}
@@ -1111,6 +1325,7 @@ def _create_employee_mcp(employee_id: str):
                     comment=comment,
                     edited_content=edited_content,
                     edited_executable_content=edited_executable_content,
+                    employee_id=employee_id,
                 )
                 return {"status": updated.get("status", ""), "candidate": updated}
             except (ValueError, LookupError, RuntimeError) as exc:
@@ -1135,6 +1350,7 @@ def _create_employee_mcp(employee_id: str):
                     candidate_id=candidate_id,
                     published_by=_get_feedback_actor(),
                     comment=comment,
+                    employee_id=employee_id,
                 )
                 return {"status": "published", "candidate": updated}
             except (ValueError, LookupError, RuntimeError) as exc:
@@ -1159,6 +1375,7 @@ def _create_employee_mcp(employee_id: str):
                     candidate_id=candidate_id,
                     rolled_back_by=_get_feedback_actor(),
                     comment=comment,
+                    employee_id=employee_id,
                 )
                 return {"status": "rolled_back", "candidate": updated}
             except (ValueError, LookupError, RuntimeError) as exc:
@@ -1336,6 +1553,56 @@ def _create_project_mcp(project_id: str):
                 memories.append(memory)
         memories = sorted(memories, key=lambda item: str(getattr(item, "created_at", "")), reverse=True)
         return [serialize_memory(item) for item in memories[:max_limit]]
+
+    @mcp.tool()
+    def save_project_memory(
+        employee_id: str,
+        content: str,
+        type: str = "project-context",
+        importance: float = 0.6,
+        project_name: str = "",
+    ) -> dict:
+        """向项目下指定员工写入记忆"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        employee_id_value = str(employee_id or "").strip()
+        if employee_id_value not in _member_employee_ids():
+            return {"error": f"Employee {employee_id_value} is not an active project member"}
+        content_value = str(content or "").strip()
+        if not content_value:
+            return {"error": "content is required"}
+        memory_type_value = str(type or "").strip() or "project-context"
+        try:
+            memory_type = MemoryType(memory_type_value)
+        except ValueError:
+            return {"error": f"Invalid type: {memory_type_value}. Valid: {[item.value for item in MemoryType]}"}
+        try:
+            importance_value = float(importance)
+        except (TypeError, ValueError):
+            return {"error": "importance must be a number"}
+        importance_value = max(0.0, min(1.0, importance_value))
+        normalized_project_name = str(project_name or "").strip() or str(project.name or "").strip() or "default"
+        memory = Memory(
+            id=memory_store.new_id(),
+            employee_id=employee_id_value,
+            type=memory_type,
+            content=content_value,
+            project_name=normalized_project_name,
+            importance=importance_value,
+            scope=MemoryScope.EMPLOYEE_PRIVATE,
+            classification=Classification.INTERNAL,
+            purpose_tags=("project-mcp", "manual-write"),
+        )
+        memory_store.save(memory)
+        return {
+            "status": "saved",
+            "memory_id": memory.id,
+            "employee_id": employee_id_value,
+            "project_name": normalized_project_name,
+            "type": memory_type.value,
+            "importance": importance_value,
+        }
 
     @mcp.tool()
     def submit_project_feedback_bug(

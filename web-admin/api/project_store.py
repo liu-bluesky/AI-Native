@@ -18,6 +18,7 @@ class ProjectConfig:
     id: str
     name: str
     description: str = ""
+    workspace_path: str = ""
     mcp_enabled: bool = True
     feedback_upgrade_enabled: bool = True
     created_at: str = field(default_factory=_now_iso)

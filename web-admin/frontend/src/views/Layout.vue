@@ -2,39 +2,76 @@
   <el-container class="layout">
     <el-aside width="200px" class="aside">
       <div class="logo">AI 员工工厂</div>
-      <el-menu :default-active="route.path" router class="menu">
-        <el-menu-item index="/employees">
-          <el-icon><User /></el-icon>
-          <span>员工管理</span>
-        </el-menu-item>
-        <el-menu-item index="/projects">
-          <el-icon><Folder /></el-icon>
-          <span>项目管理</span>
-        </el-menu-item>
-        <el-menu-item index="/system/config">
-          <el-icon><SetUp /></el-icon>
-          <span>系统配置</span>
-        </el-menu-item>
-        <el-menu-item index="/employees/create">
-          <el-icon><Plus /></el-icon>
-          <span>创建员工</span>
-        </el-menu-item>
-        <el-menu-item index="/skills">
-          <el-icon><SetUp /></el-icon>
-          <span>技能目录</span>
-        </el-menu-item>
-        <el-menu-item index="/rules">
-          <el-icon><Document /></el-icon>
-          <span>规则管理</span>
-        </el-menu-item>
-        <el-menu-item index="/usage/keys">
-          <el-icon><Key /></el-icon>
-          <span>API Key</span>
-        </el-menu-item>
-        <el-menu-item index="/llm/providers">
-          <el-icon><SetUp /></el-icon>
-          <span>模型供应商</span>
-        </el-menu-item>
+      <el-menu
+        :default-active="route.path"
+        :default-openeds="defaultOpeneds"
+        router
+        class="menu"
+      >
+        <el-sub-menu index="group-org">
+          <template #title>
+            <el-icon><User /></el-icon>
+            <span>组织管理</span>
+          </template>
+          <el-menu-item v-if="canMenu('menu.projects')" index="/projects">
+            <el-icon><Folder /></el-icon>
+            <span>项目管理</span>
+          </el-menu-item>
+          <el-menu-item v-if="canMenu('menu.employees')" index="/employees">
+            <el-icon><User /></el-icon>
+            <span>员工管理</span>
+          </el-menu-item>
+          <el-menu-item v-if="canMenu('menu.employees.create')" index="/employees/create">
+            <el-icon><Plus /></el-icon>
+            <span>创建员工</span>
+          </el-menu-item>
+          <el-menu-item v-if="canMenu('menu.users')" index="/users">
+            <el-icon><UserFilled /></el-icon>
+            <span>用户管理</span>
+          </el-menu-item>
+          <el-menu-item v-if="canMenu('menu.roles')" index="/roles">
+            <el-icon><Document /></el-icon>
+            <span>角色管理</span>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="group-capability">
+          <template #title>
+            <el-icon><Document /></el-icon>
+            <span>能力中心</span>
+          </template>
+          <el-menu-item v-if="canMenu('menu.ai.chat')" index="/ai/chat">
+            <el-icon><ChatDotRound /></el-icon>
+            <span>AI 对话</span>
+          </el-menu-item>
+          <el-menu-item v-if="canMenu('menu.skills')" index="/skills">
+            <el-icon><SetUp /></el-icon>
+            <span>技能目录</span>
+          </el-menu-item>
+          <el-menu-item v-if="canMenu('menu.rules')" index="/rules">
+            <el-icon><Document /></el-icon>
+            <span>规则管理</span>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="group-system">
+          <template #title>
+            <el-icon><SetUp /></el-icon>
+            <span>系统设置</span>
+          </template>
+          <el-menu-item v-if="canMenu('menu.system.config')" index="/system/config">
+            <el-icon><SetUp /></el-icon>
+            <span>系统配置</span>
+          </el-menu-item>
+          <el-menu-item v-if="canMenu('menu.llm.providers')" index="/llm/providers">
+            <el-icon><SetUp /></el-icon>
+            <span>模型供应商</span>
+          </el-menu-item>
+          <el-menu-item v-if="canMenu('menu.usage.keys')" index="/usage/keys">
+            <el-icon><Key /></el-icon>
+            <span>API Key</span>
+          </el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
     <el-container>
@@ -54,15 +91,23 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { User, Folder, Plus, SetUp, Document, Key } from '@element-plus/icons-vue'
+import { User, UserFilled, Folder, Plus, SetUp, Document, Key, ChatDotRound } from '@element-plus/icons-vue'
+import { clearPermissionArray, hasPermission } from '@/utils/permissions.js'
 
 const route = useRoute()
 const router = useRouter()
 const username = computed(() => localStorage.getItem('username') || 'admin')
+const defaultOpeneds = ['group-org', 'group-capability', 'group-system']
+
+function canMenu(permissionKey) {
+  return hasPermission(permissionKey)
+}
 
 function logout() {
   localStorage.removeItem('token')
   localStorage.removeItem('username')
+  localStorage.removeItem('role')
+  clearPermissionArray()
   router.replace('/login')
 }
 </script>

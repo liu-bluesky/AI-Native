@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import asdict, replace
+from collections.abc import AsyncIterator
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+import asyncio
+from agent_loop import run_agent_loop
 
-from deps import employee_store, project_store, require_auth, system_config_store
+from ai_decision import ai_decide_action, execute_db_query, recommend_better_project
+from auth import decode_token
+from deps import employee_store, project_chat_store, project_store, require_auth, role_store, system_config_store
 from feedback_service import get_feedback_service
-from models.requests import ProjectCreateReq, ProjectMemberAddReq, ProjectUpdateReq
+from models.requests import ProjectChatReq, ProjectCreateReq, ProjectMemberAddReq, ProjectUpdateReq
+from project_chat_store import ProjectChatMessage
 from project_store import ProjectConfig, ProjectMember, _now_iso
+from role_permissions import has_permission
 from stores import skill_store
 
 router = APIRouter(prefix="/api/projects", dependencies=[Depends(require_auth)])
@@ -62,6 +73,248 @@ def _assert_project_manual_generation_enabled() -> None:
         raise HTTPException(403, "Project manual generation is disabled by system config")
 
 
+def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
+    role_id = str(auth_payload.get("role") or "").strip().lower()
+    role = role_store.get(role_id)
+    permissions = getattr(role, "permissions", [])
+    if not has_permission(permissions, permission_key):
+        raise HTTPException(403, f"Permission denied: {permission_key}")
+
+
+def _serialize_chat_employee_profile(member: ProjectMember, employee: Any, skills: list[dict]) -> dict[str, Any]:
+    skill_ids = [
+        str(item.get("id") or "").strip()
+        for item in (skills or [])
+        if str(item.get("id") or "").strip()
+    ]
+    skill_names = [
+        str(item.get("name") or item.get("id") or "").strip()
+        for item in (skills or [])
+        if str(item.get("name") or item.get("id") or "").strip()
+    ]
+    if not skill_ids:
+        skill_ids = [str(item).strip() for item in (getattr(employee, "skills", []) or []) if str(item).strip()]
+    if not skill_names:
+        skill_names = skill_ids
+    return {
+        "id": str(getattr(employee, "id", "")),
+        "name": str(getattr(employee, "name", "")),
+        "description": str(getattr(employee, "description", "")),
+        "role": str(getattr(member, "role", "member") or "member"),
+        "enabled": bool(getattr(member, "enabled", True)),
+        "skills": skill_ids,
+        "skill_names": skill_names,
+        "rule_domains": [str(item).strip() for item in (getattr(employee, "rule_domains", []) or []) if str(item).strip()],
+        "tone": str(getattr(employee, "tone", "") or ""),
+        "verbosity": str(getattr(employee, "verbosity", "") or ""),
+        "language": str(getattr(employee, "language", "") or ""),
+        "mcp_enabled": bool(getattr(employee, "mcp_enabled", False)),
+        "feedback_upgrade_enabled": bool(getattr(employee, "feedback_upgrade_enabled", False)),
+    }
+
+
+def _project_chat_employee_candidates(project_id: str) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for item in _project_member_details(project_id):
+        member = item["member"]
+        employee = item["employee"]
+        if not bool(getattr(member, "enabled", True)):
+            continue
+        candidates.append(_serialize_chat_employee_profile(member, employee, item.get("skills") or []))
+    return candidates
+
+
+def _resolve_project_chat_employee(project_id: str, expected_employee_id: str = "") -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    candidates = _project_chat_employee_candidates(project_id)
+    if not candidates:
+        return None, []
+    expected = str(expected_employee_id or "").strip()
+    if expected:
+        matched = next((item for item in candidates if item["id"] == expected), None)
+        if matched is None:
+            raise ValueError(f"employee_id is not an enabled member of project {project_id}: {expected}")
+        return matched, candidates
+    role_priority = {"owner": 0, "lead": 1, "primary": 2, "admin": 3, "member": 9}
+    ordered = sorted(
+        candidates,
+        key=lambda item: (
+            int(role_priority.get(str(item.get("role") or "").strip().lower(), 8)),
+            str(item.get("id") or ""),
+        ),
+    )
+    return ordered[0], candidates
+
+
+def _pick_chat_provider(provider_id: str) -> tuple[dict, list[dict]]:
+    from llm_provider_service import get_llm_provider_service
+
+    llm_service = get_llm_provider_service()
+    providers = llm_service.list_providers(enabled_only=True)
+    if not providers:
+        raise HTTPException(400, "未配置可用的 LLM 提供商")
+    expected = str(provider_id or "").strip()
+    if expected:
+        selected = next((item for item in providers if str(item.get("id") or "") == expected), None)
+        if selected is None:
+            raise HTTPException(404, f"LLM provider not found: {expected}")
+        return selected, providers
+    default_provider = next((item for item in providers if bool(item.get("is_default"))), providers[0])
+    return default_provider, providers
+
+
+def _normalize_chat_history(history: list[dict] | None) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for item in history or []:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        normalized.append({"role": role, "content": content})
+    return normalized[-20:]
+
+
+def _normalize_image_inputs(images: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    for item in images or []:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        lower = value.lower()
+        if re.match(r"^data:image/[a-z0-9.+-]+;base64,", lower):
+            normalized.append(value)
+            continue
+        if lower.startswith("http://") or lower.startswith("https://"):
+            normalized.append(value)
+    return normalized
+
+
+def _build_project_chat_messages(
+    project: ProjectConfig,
+    user_message: str,
+    history: list[dict] | None,
+    images: list[str] | None = None,
+    selected_employee: dict[str, Any] | None = None,
+    tools: list[dict] | None = None,
+) -> list[dict[str, Any]]:
+    workspace_info = ""
+    if project.workspace_path:
+        workspace_info = f"\n\n当前项目工作区路径: {project.workspace_path}\n请在此目录下进行代码开发和文件操作。"
+
+    tool_names = [t.get("tool_name", "") for t in (tools or [])] if tools else []
+    tool_list_text = f"可用工具({len(tool_names)}个): {', '.join(tool_names)}" if tool_names else "当前无可用工具"
+
+    system_prompt = (
+        f"你是项目开发助手。请使用简洁中文回复，并结合项目上下文给出可执行建议。{workspace_info}\n\n"
+        f"**{tool_list_text}**\n\n"
+        "**工具调用规则（强制执行）**：\n"
+        "1. 用户要求查询数据时，**立即调用对应工具**，无需询问或说明意图\n"
+        "2. 例如：\"返回成员信息\" → 直接调用 query_project_members\n"
+        "3. 调用工具后，基于返回数据给出清晰摘要\n"
+        "4. 若无合适工具，明确告知\"当前无可用工具完成此操作\"\n"
+        "5. 工具执行失败时，说明原因并给下一步建议"
+    )
+    if selected_employee:
+        system_prompt += (
+            f"\n当前执行员工：{selected_employee.get('name') or selected_employee.get('id')} "
+            f"({selected_employee.get('id')})，"
+            f"skills={', '.join(selected_employee.get('skill_names') or []) or '-'}，"
+            f"rule_domains={', '.join(selected_employee.get('rule_domains') or []) or '-'}。"
+        )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "system",
+            "content": (
+                f"当前项目: id={project.id}, name={project.name}, description={project.description or '-'}"
+            ),
+        },
+        *_normalize_chat_history(history),
+    ]
+    normalized_images = _normalize_image_inputs(images)
+    if normalized_images:
+        content = [{"type": "text", "text": user_message or "请基于图片给建议。"}]
+        for img in normalized_images:
+            content.append({"type": "image_url", "image_url": {"url": img}})
+        messages.append({"role": "user", "content": content})
+    else:
+        messages.append({"role": "user", "content": user_message})
+    return messages
+
+
+def _resolve_chat_max_tokens(request_max_tokens: int | None) -> int:
+    cfg = system_config_store.get_global()
+    configured = int(getattr(cfg, "chat_max_tokens", 512) or 512)
+    configured = max(128, min(configured, 8192))
+    if request_max_tokens is None:
+        return configured
+    try:
+        request_value = int(request_max_tokens)
+    except (TypeError, ValueError):
+        return configured
+    if request_value <= 0:
+        return configured
+    return max(128, min(request_value, 8192))
+
+
+def _current_username(auth_payload: dict) -> str:
+    username = str(auth_payload.get("sub") or "").strip()
+    return username or "unknown"
+
+
+def _append_chat_record(
+    *,
+    project_id: str,
+    username: str,
+    role: str,
+    content: str,
+    attachments: list[str] | None = None,
+    images: list[str] | None = None,
+) -> None:
+    text = str(content or "").strip()
+    if not text:
+        return
+    try:
+        project_chat_store.append_message(
+            ProjectChatMessage(
+                project_id=project_id,
+                username=username,
+                role=role,
+                content=text,
+                attachments=attachments or [],
+                images=images or [],
+            )
+        )
+    except Exception:
+        pass
+
+
+def _extract_ws_auth_payload(websocket: WebSocket) -> dict | None:
+    token = str(websocket.query_params.get("token") or "").strip()
+    if token:
+        payload = decode_token(token)
+        if payload is not None:
+            return payload
+    auth_header = str(websocket.headers.get("authorization") or "").strip()
+    if auth_header.startswith("Bearer "):
+        return decode_token(auth_header[7:])
+    return None
+
+
+def _chunk_text(content: str, chunk_size: int = 42) -> list[str]:
+    text = str(content or "")
+    if not text:
+        return []
+    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+
+def _sse_payload(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 @router.get("")
 async def list_projects():
     projects = project_store.list_all()
@@ -74,6 +327,7 @@ async def create_project(req: ProjectCreateReq):
         id=project_store.new_id(),
         name=str(req.name or "").strip(),
         description=req.description,
+        workspace_path=str(req.workspace_path or "").strip(),
         mcp_enabled=req.mcp_enabled,
         feedback_upgrade_enabled=req.feedback_upgrade_enabled,
     )
@@ -90,6 +344,57 @@ async def get_project(project_id: str):
     if project is None:
         raise HTTPException(404, f"Project {project_id} not found")
     return {"project": _serialize_project(project)}
+
+
+@router.post("/{project_id}/smart-query")
+async def smart_query_project(project_id: str, request: dict):
+    """AI 智能查询端点：自动决策调用数据库或工具"""
+    from dynamic_mcp import list_project_proxy_tools_runtime
+    from llm_provider_service import get_llm_provider_service
+    from starlette.concurrency import run_in_threadpool
+    import json
+
+    project = project_store.get(project_id)
+    if project is None:
+        raise HTTPException(404, f"Project {project_id} not found")
+
+    user_message = request.get("message", "")
+    if not user_message:
+        raise HTTPException(400, "message is required")
+
+    llm_service = get_llm_provider_service()
+    providers = llm_service.list_providers(enabled_only=True)
+    if not providers:
+        raise HTTPException(400, "No LLM provider configured")
+
+    provider = providers[0]
+    provider_id = provider.get("id", "")
+    model_name = provider.get("default_model", "")
+
+    tools = list_project_proxy_tools_runtime(project_id, "")
+    decision = await ai_decide_action(llm_service, provider_id, model_name, user_message, project_id, tools)
+
+    if not decision or decision.get("action") == "chat":
+        return {"status": "no_action", "message": "请使用普通对话"}
+
+    action = decision.get("action")
+
+    if action == "query_db":
+        result = await run_in_threadpool(execute_db_query, decision.get("query", ""))
+        return {"status": "ok", "action": "query_db", "result": result, "reason": decision.get("reason")}
+
+    if action == "call_tool":
+        from dynamic_mcp import invoke_project_skill_tool_runtime
+        tool_result = await run_in_threadpool(
+            invoke_project_skill_tool_runtime, project_id, decision.get("tool", ""), "", decision.get("args", {}), "{}", 60
+        )
+        return {"status": "ok", "action": "call_tool", "result": tool_result, "reason": decision.get("reason")}
+
+    if action == "recommend_project":
+        recommendation = recommend_better_project(user_message, project_id)
+        return {"status": "ok", "action": "recommend_project", "result": recommendation}
+
+    return {"status": "unknown_action"}
 
 
 def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
@@ -125,6 +430,10 @@ async def patch_project(project_id: str, req: ProjectUpdateReq):
 async def delete_project(project_id: str):
     if not project_store.delete(project_id):
         raise HTTPException(404, f"Project {project_id} not found")
+    try:
+        project_chat_store.clear_project(project_id)
+    except Exception:
+        pass
     return {"status": "deleted", "project_id": project_id}
 
 
@@ -186,6 +495,341 @@ async def remove_project_member(project_id: str, employee_id: str):
     if not project_store.remove_member(project_id, employee_id):
         raise HTTPException(404, f"Employee {employee_id} is not a member of project {project_id}")
     return {"status": "deleted", "project_id": project_id, "employee_id": employee_id}
+
+
+@router.get("/{project_id}/chat/providers")
+async def list_project_chat_providers(project_id: str, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    project = project_store.get(project_id)
+    if project is None:
+        raise HTTPException(404, f"Project {project_id} not found")
+    selected_provider, providers = _pick_chat_provider("")
+    default_employee, candidates = _resolve_project_chat_employee(project_id, "")
+    return {
+        "project_id": project_id,
+        "providers": providers,
+        "default_provider_id": str(selected_provider.get("id") or ""),
+        "default_model_name": str(selected_provider.get("default_model") or ""),
+        "employees": candidates,
+        "default_employee_id": str((default_employee or {}).get("id") or ""),
+    }
+
+
+@router.get("/{project_id}/chat/history")
+async def list_project_chat_history(
+    project_id: str,
+    limit: int = 200,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    project = project_store.get(project_id)
+    if project is None:
+        raise HTTPException(404, f"Project {project_id} not found")
+    username = _current_username(auth_payload)
+    records = project_chat_store.list_messages(project_id, username, limit=limit)
+    return {"messages": [asdict(item) for item in records]}
+
+
+@router.delete("/{project_id}/chat/history")
+async def clear_project_chat_history(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    project = project_store.get(project_id)
+    if project is None:
+        raise HTTPException(404, f"Project {project_id} not found")
+    username = _current_username(auth_payload)
+    removed = project_chat_store.clear_messages(project_id, username)
+    return {"status": "cleared", "removed_count": int(removed)}
+
+
+@router.websocket("/{project_id}/chat/ws")
+async def ws_project_chat(project_id: str, websocket: WebSocket):
+    from llm_provider_service import get_llm_provider_service
+
+    auth_payload = _extract_ws_auth_payload(websocket)
+    if auth_payload is None:
+        await websocket.close(code=4401, reason="Missing or invalid token")
+        return
+    try:
+        _ensure_permission(auth_payload, "menu.ai.chat")
+    except HTTPException:
+        await websocket.close(code=4403, reason="Permission denied")
+        return
+
+    project = project_store.get(project_id)
+    if project is None:
+        await websocket.close(code=4404, reason=f"Project {project_id} not found")
+        return
+
+    await websocket.accept()
+    username = _current_username(auth_payload)
+    await websocket.send_json(
+        {
+            "type": "ready",
+            "project_id": project_id,
+            "message": "connected",
+        }
+    )
+    llm_service = get_llm_provider_service()
+
+    active_tasks: dict[str, asyncio.Task] = {}
+    cancel_events: dict[str, asyncio.Event] = {}
+
+    async def handle_request(payload: dict):
+        nonlocal active_tasks, cancel_events
+        request_id = str(payload.get("request_id") or "").strip()
+        if str(payload.get("type") or "").strip().lower() == "ping":
+            await websocket.send_json({"type": "pong", "request_id": request_id})
+            return
+
+        if str(payload.get("type") or "").strip().lower() == "cancel":
+            if request_id in cancel_events:
+                cancel_events[request_id].set()
+            return
+
+        try:
+            req = ProjectChatReq.model_validate(payload)
+        except Exception as exc:
+            await websocket.send_json({"type": "error", "request_id": request_id, "message": f"Invalid payload: {str(exc)}"})
+            return
+
+        user_message = str(req.message or "").strip()
+        normalized_images = _normalize_image_inputs(req.images)
+        attachment_names = [str(name or "").strip() for name in (req.attachment_names or []) if str(name or "").strip()]
+        if not user_message and not normalized_images and not attachment_names:
+            await websocket.send_json({"type": "error", "request_id": request_id, "message": "message is required"})
+            return
+
+        effective_user_message = user_message
+        if not effective_user_message and attachment_names:
+            effective_user_message = f"我上传了附件：{', '.join(attachment_names)}。请先给我处理建议。"
+        elif not effective_user_message and normalized_images:
+            effective_user_message = "请基于我上传的图片给建议。"
+        record_content = user_message or ("（发送了图片）" if normalized_images else "（发送了附件）")
+        _append_chat_record(
+            project_id=project_id, username=username, role="user", content=record_content,
+            attachments=attachment_names, images=normalized_images,
+        )
+
+        cancel_event = asyncio.Event()
+        cancel_events[request_id] = cancel_event
+
+        try:
+            selected_provider, _ = _pick_chat_provider(req.provider_id)
+            provider_id = str(selected_provider.get("id") or "")
+            model_name = str(req.model_name or "").strip() or str(selected_provider.get("default_model") or "")
+            if not model_name:
+                raise ValueError("model_name is required")
+            selected_employee, _ = _resolve_project_chat_employee(project_id, req.employee_id)
+            max_tokens = _resolve_chat_max_tokens(req.max_tokens)
+            temperature = float(req.temperature if req.temperature is not None else 0.2)
+            temperature = max(0.0, min(temperature, 2.0))
+
+            # Fetch tools
+            from dynamic_mcp import list_project_proxy_tools_runtime
+            employee_id_val = str((selected_employee or {}).get("id") or "")
+            tools = list_project_proxy_tools_runtime(project_id, employee_id_val)
+
+            messages = _build_project_chat_messages(
+                project, effective_user_message, req.history, normalized_images,
+                selected_employee=selected_employee, tools=tools,
+            )
+            
+        except Exception as exc:
+            await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
+            return
+
+        await websocket.send_json({
+            "type": "start", "request_id": request_id, "project_id": project_id,
+            "provider_id": provider_id, "model_name": model_name,
+            "employee_id": employee_id_val,
+            "employee_name": str((selected_employee or {}).get("name") or ""),
+        })
+
+        try:
+            final_answer = ""
+            stream_error = ""
+            async for chunk_data in run_agent_loop(
+                llm_service=llm_service, provider_id=provider_id, model_name=model_name,
+                messages=messages, tools=tools, temperature=temperature, max_tokens=max_tokens,
+                project_id=project_id, employee_id=employee_id_val, cancel_event=cancel_event
+            ):
+                chunk_data["request_id"] = request_id
+                await websocket.send_json(chunk_data)
+                if chunk_data.get("type") == "done":
+                    # Use clean content for history, display_content for frontend
+                    final_answer = chunk_data.get("content", "")
+                if chunk_data.get("type") == "error":
+                    stream_error = str(chunk_data.get("message") or "未知错误")
+
+            if stream_error:
+                _append_chat_record(
+                    project_id=project_id, username=username, role="assistant", content=f"对话失败：{stream_error}",
+                )
+            else:
+                _append_chat_record(
+                    project_id=project_id, username=username, role="assistant", content=final_answer or "模型未返回有效内容。",
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            _append_chat_record(
+                project_id=project_id, username=username, role="assistant", content=f"对话失败：{str(exc)}",
+            )
+            await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
+        finally:
+            cancel_events.pop(request_id, None)
+            active_tasks.pop(request_id, None)
+
+    while True:
+        try:
+            payload = await websocket.receive_json()
+            if not isinstance(payload, dict):
+                await websocket.send_json({"type": "error", "message": "Invalid payload type"})
+                continue
+                
+            request_id = str(payload.get("request_id") or "").strip()
+            if payload.get("type") == "cancel":
+                if request_id in cancel_events:
+                    cancel_events[request_id].set()
+                continue
+                
+            task = asyncio.create_task(handle_request(payload))
+            if request_id:
+                active_tasks[request_id] = task
+                
+        except WebSocketDisconnect:
+            for ev in cancel_events.values():
+                ev.set()
+            for t in active_tasks.values():
+                t.cancel()
+            break
+        except Exception:
+            await websocket.send_json({"type": "error", "message": "Invalid JSON payload"})
+            continue
+
+@router.post("/{project_id}/chat/stream")
+async def stream_project_chat(
+    project_id: str,
+    req: ProjectChatReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    from llm_provider_service import get_llm_provider_service
+
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    project = project_store.get(project_id)
+    if project is None:
+        raise HTTPException(404, f"Project {project_id} not found")
+    username = _current_username(auth_payload)
+
+    user_message = str(req.message or "").strip()
+    normalized_images = _normalize_image_inputs(req.images)
+    attachment_names = [str(name or "").strip() for name in (req.attachment_names or []) if str(name or "").strip()]
+    if not user_message and not normalized_images and not attachment_names:
+        raise HTTPException(400, "message is required")
+
+    effective_user_message = user_message
+    if not effective_user_message and attachment_names:
+        effective_user_message = f"我上传了附件：{', '.join(attachment_names)}。请先给我处理建议。"
+    elif not effective_user_message and normalized_images:
+        effective_user_message = "请基于我上传的图片给建议。"
+    record_content = user_message or ("（发送了图片）" if normalized_images else "（发送了附件）")
+    _append_chat_record(
+        project_id=project_id,
+        username=username,
+        role="user",
+        content=record_content,
+        attachments=attachment_names,
+        images=normalized_images,
+    )
+
+    selected_provider, _ = _pick_chat_provider(req.provider_id)
+    provider_id = str(selected_provider.get("id") or "")
+    model_name = str(req.model_name or "").strip() or str(selected_provider.get("default_model") or "")
+    if not model_name:
+        raise HTTPException(400, "model_name is required")
+    try:
+        selected_employee, _ = _resolve_project_chat_employee(project_id, req.employee_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    max_tokens = _resolve_chat_max_tokens(req.max_tokens)
+    temperature = float(req.temperature if req.temperature is not None else 0.2)
+    temperature = max(0.0, min(temperature, 2.0))
+
+    from dynamic_mcp import list_project_proxy_tools_runtime
+    employee_id_val = str((selected_employee or {}).get("id") or "")
+    tools = list_project_proxy_tools_runtime(project_id, employee_id_val)
+
+    llm_service = get_llm_provider_service()
+    messages = _build_project_chat_messages(
+        project,
+        effective_user_message,
+        req.history,
+        normalized_images,
+        selected_employee=selected_employee,
+        tools=tools,
+    )
+
+    async def event_stream() -> AsyncIterator[str]:
+        yield _sse_payload(
+            "message",
+            {
+                "type": "start",
+                "project_id": project_id,
+                "provider_id": provider_id,
+                "model_name": model_name,
+                "employee_id": str((selected_employee or {}).get("id") or ""),
+                "employee_name": str((selected_employee or {}).get("name") or ""),
+            },
+        )
+        try:
+            result = await llm_service.chat_completion(
+                provider_id=provider_id,
+                model_name=model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=120,
+            )
+            answer = str(result.get("content") or "").strip() or "模型未返回有效内容。"
+            for part in _chunk_text(answer):
+                yield _sse_payload("message", {"type": "delta", "content": part})
+            yield _sse_payload(
+                "message",
+                {
+                    "type": "done",
+                    "content": answer,
+                    "provider_id": provider_id,
+                    "model_name": model_name,
+                },
+            )
+            _append_chat_record(
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=answer,
+            )
+        except Exception as exc:
+            _append_chat_record(
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=f"对话失败：{str(exc)}",
+            )
+            yield _sse_payload("message", {"type": "error", "message": str(exc)})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/{project_id}/generate-manual")

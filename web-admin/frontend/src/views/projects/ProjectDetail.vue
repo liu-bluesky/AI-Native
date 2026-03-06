@@ -3,6 +3,10 @@
     <div class="toolbar">
       <h3>项目详情</h3>
       <div class="toolbar-actions">
+        <el-button type="warning" @click="openEditDialog">编辑项目</el-button>
+        <el-button v-if="canOpenProjectChat" type="primary" @click="openProjectChat"
+          >AI 对话</el-button
+        >
         <el-button
           type="success"
           :loading="manualLoading"
@@ -28,6 +32,9 @@
       }}</el-descriptions-item>
       <el-descriptions-item label="项目名称">{{
         project.name
+      }}</el-descriptions-item>
+      <el-descriptions-item label="工作区路径" :span="2">{{
+        project.workspace_path || "-"
       }}</el-descriptions-item>
       <el-descriptions-item label="MCP">
         <el-tag :type="project.mcp_enabled ? 'success' : 'info'">
@@ -91,6 +98,84 @@
 
     <div class="block">
       <div class="block-header">
+        <h4>项目记忆</h4>
+      </div>
+      <div class="memory-filters">
+        <el-input
+          v-model="memoryFilters.query"
+          clearable
+          placeholder="按内容关键词筛选"
+          style="width: 240px"
+          @keyup.enter="fetchProjectMemories"
+        />
+        <el-select
+          v-model="memoryFilters.employeeId"
+          clearable
+          filterable
+          placeholder="全部员工"
+          style="width: 220px"
+        >
+          <el-option
+            v-for="item in members"
+            :key="item.employee_id"
+            :label="`${item.employee_name || item.employee_id} (${item.employee_id})`"
+            :value="item.employee_id"
+          />
+        </el-select>
+        <el-select
+          v-model="memoryFilters.type"
+          clearable
+          placeholder="全部类型"
+          style="width: 180px"
+        >
+          <el-option
+            v-for="item in memoryTypeOptions"
+            :key="item.value"
+            :label="item.label"
+            :value="item.value"
+          />
+        </el-select>
+        <el-select v-model="memoryFilters.limit" style="width: 140px">
+          <el-option
+            v-for="size in memoryLimitOptions"
+            :key="size"
+            :label="`每人 ${size} 条`"
+            :value="size"
+          />
+        </el-select>
+        <el-button type="primary" :loading="memoryLoading" @click="fetchProjectMemories"
+          >筛选</el-button
+        >
+        <el-button :disabled="memoryLoading" @click="resetMemoryFilters"
+          >重置</el-button
+        >
+      </div>
+
+      <el-table :data="filteredMemoryRows" stripe v-loading="memoryLoading">
+        <el-table-column prop="employee_name" label="员工" width="180">
+          <template #default="{ row }">
+            <span>{{ row.employee_name || row.employee_id }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="employee_id" label="员工 ID" width="150" />
+        <el-table-column prop="type" label="类型" width="150">
+          <template #default="{ row }">
+            {{ getMemoryTypeLabel(row.type) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="content" label="内容" min-width="320" show-overflow-tooltip />
+        <el-table-column prop="importance" label="重要度" width="90" />
+        <el-table-column prop="scope" label="作用域" width="140" />
+        <el-table-column prop="created_at" label="创建时间" min-width="180" />
+      </el-table>
+      <el-empty
+        v-if="!filteredMemoryRows.length && !memoryLoading"
+        description="暂无匹配的项目记忆"
+      />
+    </div>
+
+    <div class="block">
+      <div class="block-header">
         <h4>项目 MCP 地址</h4>
       </div>
       <el-descriptions :column="1" border>
@@ -143,6 +228,34 @@
         <el-button type="primary" :loading="saving" @click="addMember"
           >保存</el-button
         >
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showEditDialog" title="编辑项目" width="520px">
+      <el-form :model="editForm" label-width="110px">
+        <el-form-item label="项目名称" required>
+          <el-input v-model="editForm.name" />
+        </el-form-item>
+        <el-form-item label="项目描述">
+          <el-input v-model="editForm.description" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="工作区路径">
+          <el-input v-model="editForm.workspace_path" placeholder="可手动输入或点击选择目录">
+            <template #append>
+              <el-button @click="selectWorkspaceDirectory">选择目录</el-button>
+            </template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="启用 MCP">
+          <el-switch v-model="editForm.mcp_enabled" />
+        </el-form-item>
+        <el-form-item label="反馈升级">
+          <el-switch v-model="editForm.feedback_upgrade_enabled" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showEditDialog = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="saveEdit">保存</el-button>
       </template>
     </el-dialog>
 
@@ -203,6 +316,7 @@ import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import api from "@/utils/api.js";
+import { hasPermission } from "@/utils/permissions.js";
 
 const route = useRoute();
 const projectId = String(route.params.id || "");
@@ -210,6 +324,7 @@ const projectId = String(route.params.id || "");
 const loading = ref(false);
 const saving = ref(false);
 const showAddDialog = ref(false);
+const showEditDialog = ref(false);
 const showManualDialog = ref(false);
 const manualDialogTitle = ref("项目手册");
 const manualLoading = ref(false);
@@ -219,15 +334,42 @@ const systemConfig = ref({
   enable_project_manual_generation: false,
   enable_employee_manual_generation: false,
 });
+const memoryLoading = ref(false);
 
 const project = ref({});
 const members = ref([]);
 const employeeOptions = ref([]);
+const projectMemories = ref([]);
+const memoryLimitOptions = [20, 50, 100];
+const MEMORY_TYPE_LABELS = {
+  "project-context": "项目上下文",
+  "user-preference": "用户偏好",
+  "key-event": "关键事件",
+  "learned-pattern": "学习模式",
+  "long-term-goal": "长期目标",
+  taboo: "禁忌项",
+  "stable-preference": "稳定偏好",
+  "decision-pattern": "决策模式",
+};
+const memoryFilters = ref({
+  query: "",
+  employeeId: "",
+  type: "",
+  limit: 20,
+});
 
 const addForm = ref({
   employee_ids: [],
   role: "member",
   enabled: true,
+});
+
+const editForm = ref({
+  name: "",
+  description: "",
+  workspace_path: "",
+  mcp_enabled: true,
+  feedback_upgrade_enabled: true,
 });
 
 const memberIdSet = computed(() => {
@@ -249,6 +391,7 @@ const availableEmployeeOptions = computed(() => {
 const projectManualEnabled = computed(
   () => !!systemConfig.value.enable_project_manual_generation,
 );
+const canOpenProjectChat = computed(() => hasPermission("button.project.chat"));
 
 const renderedManualHtml = computed(() => {
   if (!generatedManual.value) return "";
@@ -257,6 +400,38 @@ const renderedManualHtml = computed(() => {
   } catch {
     return generatedManual.value.replace(/\n/g, "<br>");
   }
+});
+
+const memberNameMap = computed(() => {
+  const result = new Map();
+  (members.value || []).forEach((item) => {
+    const id = String(item.employee_id || "").trim();
+    if (!id) return;
+    result.set(id, String(item.employee_name || "").trim());
+  });
+  return result;
+});
+
+const memoryTypeOptions = computed(() => {
+  const rawTypes = Array.from(
+    new Set(
+      (projectMemories.value || [])
+        .map((item) => String(item.type || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  return rawTypes.map((type) => ({
+    value: type,
+    label: MEMORY_TYPE_LABELS[type] || type,
+  }));
+});
+
+const filteredMemoryRows = computed(() => {
+  const selectedType = String(memoryFilters.value.type || "").trim();
+  if (!selectedType) return projectMemories.value || [];
+  return (projectMemories.value || []).filter(
+    (item) => String(item.type || "").trim() === selectedType,
+  );
 });
 
 function resetAddForm() {
@@ -303,6 +478,94 @@ async function fetchSystemConfig() {
   }
 }
 
+function normalizeMemory(memory, employeeId = "") {
+  const currentEmployeeId = String(memory?.employee_id || employeeId || "").trim();
+  return {
+    id: String(memory?.id || ""),
+    employee_id: currentEmployeeId,
+    employee_name: memberNameMap.value.get(currentEmployeeId) || "",
+    project_name: String(memory?.project_name || ""),
+    type: String(memory?.type || ""),
+    content: String(memory?.content || ""),
+    importance: Number(memory?.importance ?? 0),
+    scope: String(memory?.scope || ""),
+    created_at: String(memory?.created_at || ""),
+  };
+}
+
+function getMemoryTypeLabel(type) {
+  const key = String(type || "").trim();
+  return MEMORY_TYPE_LABELS[key] || key || "-";
+}
+
+async function fetchProjectMemories() {
+  memoryLoading.value = true;
+  try {
+    const currentMembers = (members.value || [])
+      .map((item) => String(item.employee_id || "").trim())
+      .filter(Boolean);
+    if (!currentMembers.length) {
+      projectMemories.value = [];
+      return;
+    }
+
+    const query = String(memoryFilters.value.query || "").trim();
+    const limitValue = Number(memoryFilters.value.limit || 20);
+    const safeLimit = Number.isFinite(limitValue) && limitValue > 0 ? limitValue : 20;
+    const selectedEmployeeId = String(memoryFilters.value.employeeId || "").trim();
+    const targetEmployeeIds = selectedEmployeeId
+      ? [selectedEmployeeId]
+      : currentMembers;
+
+    const responses = await Promise.allSettled(
+      targetEmployeeIds.map(async (employeeId) => {
+        const params = { limit: safeLimit };
+        if (query) {
+          params.query = query;
+        }
+        const data = await api.get(`/memory/${employeeId}`, { params });
+        return (data.memories || []).map((item) => normalizeMemory(item, employeeId));
+      }),
+    );
+
+    const failedCount = responses.filter((item) => item.status === "rejected").length;
+    if (failedCount > 0) {
+      ElMessage.warning(`部分员工记忆加载失败（${failedCount} 个）`);
+    }
+
+    const currentProjectName = String(project.value?.name || "").trim();
+    const memoryMap = new Map();
+    responses.forEach((item) => {
+      if (item.status !== "fulfilled") return;
+      item.value.forEach((memory) => {
+        if (currentProjectName && memory.project_name !== currentProjectName) return;
+        const key = String(memory.id || `${memory.employee_id}_${memory.created_at}`);
+        if (!memoryMap.has(key)) {
+          memoryMap.set(key, memory);
+        }
+      });
+    });
+    projectMemories.value = Array.from(memoryMap.values()).sort((a, b) =>
+      String(b.created_at || "").localeCompare(String(a.created_at || "")),
+    );
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "加载项目记忆失败");
+    projectMemories.value = [];
+  } finally {
+    memoryLoading.value = false;
+  }
+}
+
+async function resetMemoryFilters() {
+  memoryFilters.value = {
+    query: "",
+    employeeId: "",
+    type: "",
+    limit: 20,
+  };
+  await fetchProjectMemories();
+}
+
 async function refresh() {
   loading.value = true;
   try {
@@ -312,6 +575,7 @@ async function refresh() {
       fetchEmployees(),
       fetchSystemConfig(),
     ]);
+    await fetchProjectMemories();
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "加载失败");
   } finally {
@@ -319,9 +583,82 @@ async function refresh() {
   }
 }
 
+function openProjectChat() {
+  const currentProjectId = String(project.value?.id || projectId || "").trim();
+  if (!currentProjectId) {
+    ElMessage.warning("当前项目 ID 无效");
+    return;
+  }
+  localStorage.setItem("project_id", currentProjectId);
+  const target = `/ai/chat?project_id=${encodeURIComponent(currentProjectId)}`;
+  window.location.hash = `#${target}`;
+}
+
 function openAddMember() {
   resetAddForm();
   showAddDialog.value = true;
+}
+
+function openEditDialog() {
+  editForm.value = {
+    name: project.value.name || "",
+    description: project.value.description || "",
+    workspace_path: project.value.workspace_path || "",
+    mcp_enabled: project.value.mcp_enabled ?? true,
+    feedback_upgrade_enabled: project.value.feedback_upgrade_enabled ?? true,
+  };
+  showEditDialog.value = true;
+}
+
+async function selectWorkspaceDirectory() {
+  const picked = await pickWorkspaceDirectory(editForm.value.workspace_path);
+  if (picked === null) return;
+  editForm.value.workspace_path = picked;
+}
+
+async function pickWorkspaceDirectory(currentPath = "") {
+  if (typeof window.showDirectoryPicker === "function") {
+    try {
+      const result = await window.showDirectoryPicker();
+      return String(result?.name || "").trim();
+    } catch (err) {
+      if (err?.name === "AbortError") return null;
+    }
+  }
+  try {
+    const { value } = await ElMessageBox.prompt(
+      "当前环境不支持系统目录选择，请手动输入工作区路径。",
+      "填写工作区路径",
+      {
+        inputValue: String(currentPath || ""),
+        inputPlaceholder: "/Users/yourname/project",
+        confirmButtonText: "确定",
+        cancelButtonText: "取消",
+      }
+    );
+    return String(value || "").trim();
+  } catch {
+    return null;
+  }
+}
+
+async function saveEdit() {
+  const name = String(editForm.value.name || "").trim();
+  if (!name) {
+    ElMessage.warning("请输入项目名称");
+    return;
+  }
+  saving.value = true;
+  try {
+    await api.put(`/projects/${projectId}`, editForm.value);
+    ElMessage.success("项目已更新");
+    showEditDialog.value = false;
+    await fetchProject();
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "更新失败");
+  } finally {
+    saving.value = false;
+  }
 }
 
 async function showGenerateProjectManual() {
@@ -414,6 +751,7 @@ async function addMember() {
     ).length;
     const failCount = results.length - successCount;
     await fetchMembers();
+    await fetchProjectMemories();
     if (failCount === 0) {
       const extra = skipped.length ? `，已忽略重复 ${skipped.length} 人` : "";
       ElMessage.success(`成功添加 ${successCount} 人${extra}`);
@@ -442,6 +780,7 @@ async function removeMember(row) {
     await api.delete(`/projects/${projectId}/members/${row.employee_id}`);
     ElMessage.success("成员已移除");
     await fetchMembers();
+    await fetchProjectMemories();
   } catch {
     ElMessage.error("移除失败");
   }
@@ -480,6 +819,13 @@ onMounted(refresh);
 
 .block-header h4 {
   margin: 0;
+}
+
+.memory-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
 code {

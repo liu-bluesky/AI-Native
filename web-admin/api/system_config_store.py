@@ -17,6 +17,9 @@ class SystemConfig:
     id: str = "global"
     enable_project_manual_generation: bool = False
     enable_employee_manual_generation: bool = False
+    enable_user_register: bool = True
+    chat_upload_max_limit: int = 6
+    chat_max_tokens: int = 512
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 

@@ -61,3 +61,15 @@ class UserStorePostgres:
             cur.execute("SELECT COUNT(*) AS cnt FROM users")
             row = cur.fetchone()
         return bool(row and int(row["cnt"]) > 0)
+
+    def list_all(self) -> list[User]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT payload FROM users ORDER BY username ASC")
+            rows = cur.fetchall() or []
+        return [User(**row["payload"]) for row in rows]
+
+    def delete(self, username: str) -> bool:
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE username = %s", (username,))
+            deleted = cur.rowcount > 0
+        return deleted

@@ -6,6 +6,7 @@ import json
 import hashlib
 import hmac
 import os
+import re
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from datetime import datetime, timezone
@@ -43,8 +44,15 @@ class UserStore:
         self._dir = data_dir / "users"
         self._dir.mkdir(parents=True, exist_ok=True)
 
+    def _normalize_username(self, username: str) -> str:
+        value = str(username or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,63}", value):
+            raise ValueError("Invalid username")
+        return value
+
     def _path(self, username: str) -> Path:
-        return self._dir / f"{username}.json"
+        normalized = self._normalize_username(username)
+        return self._dir / f"{normalized}.json"
 
     def save(self, user: User) -> None:
         self._path(user.username).write_text(
@@ -59,3 +67,20 @@ class UserStore:
 
     def has_any(self) -> bool:
         return any(self._dir.glob("*.json"))
+
+    def list_all(self) -> list[User]:
+        users: list[User] = []
+        for path in sorted(self._dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+                users.append(User(**data))
+            except Exception:
+                continue
+        return users
+
+    def delete(self, username: str) -> bool:
+        p = self._path(username)
+        if not p.exists():
+            return False
+        p.unlink()
+        return True

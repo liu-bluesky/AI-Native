@@ -36,7 +36,9 @@
       <el-table-column prop="project_name" label="项目" width="140" show-overflow-tooltip>
         <template #default="{ row }">{{ row.project_name || '-' }}</template>
       </el-table-column>
-      <el-table-column prop="type" label="类型" width="140" />
+      <el-table-column prop="type" label="类型" width="140">
+        <template #default="{ row }">{{ getMemoryTypeLabel(row.type) }}</template>
+      </el-table-column>
       <el-table-column prop="content" label="内容" show-overflow-tooltip />
       <el-table-column prop="importance" label="重要度" width="80" align="center" />
       <el-table-column prop="scope" label="作用域" width="120" />
@@ -66,6 +68,21 @@ const memories = ref([])
 const selectedMemoryIds = ref([])
 const memCount = ref(0)
 const query = ref('')
+const MEMORY_TYPE_LABELS = {
+  'project-context': '项目上下文',
+  'user-preference': '用户偏好',
+  'key-event': '关键事件',
+  'learned-pattern': '学习模式',
+  'long-term-goal': '长期目标',
+  taboo: '禁忌项',
+  'stable-preference': '稳定偏好',
+  'decision-pattern': '决策模式',
+}
+
+function getMemoryTypeLabel(type) {
+  const key = String(type || '').trim()
+  return MEMORY_TYPE_LABELS[key] || key || '-'
+}
 
 async function fetchMemories() {
   loading.value = true

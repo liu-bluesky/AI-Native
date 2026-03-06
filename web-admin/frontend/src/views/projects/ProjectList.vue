@@ -7,7 +7,10 @@
 
     <el-table :data="projects" stripe>
       <el-table-column prop="id" label="项目 ID" width="150" />
-      <el-table-column prop="name" label="项目名称" width="220" show-overflow-tooltip />
+      <el-table-column prop="name" label="项目名称" width="180" show-overflow-tooltip />
+      <el-table-column prop="workspace_path" label="工作区路径" width="220" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.workspace_path || '-' }}</template>
+      </el-table-column>
       <el-table-column prop="description" label="描述" show-overflow-tooltip />
       <el-table-column label="成员数" width="90" align="center">
         <template #default="{ row }">{{ row.member_count || 0 }}</template>
@@ -16,7 +19,7 @@
         <template #default="{ row }">
           <el-switch
             :model-value="!!row.mcp_enabled"
-            @change="(val) => updateProject(row, { mcp_enabled: !!val }, val ? '已开启项目 MCP' : '已关闭项目 MCP')"
+            @change="(val) => patchProjectFlags(row, { mcp_enabled: !!val }, val ? '已开启项目 MCP' : '已关闭项目 MCP')"
           />
         </template>
       </el-table-column>
@@ -24,13 +27,14 @@
         <template #default="{ row }">
           <el-switch
             :model-value="!!row.feedback_upgrade_enabled"
-            @change="(val) => updateProject(row, { feedback_upgrade_enabled: !!val }, val ? '已开启反馈升级' : '已关闭反馈升级')"
+            @change="(val) => patchProjectFlags(row, { feedback_upgrade_enabled: !!val }, val ? '已开启反馈升级' : '已关闭反馈升级')"
           />
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="260" fixed="right">
+      <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
           <el-button text type="primary" size="small" @click="$router.push(`/projects/${row.id}`)">详情</el-button>
+          <el-button text type="warning" size="small" @click="openEdit(row)">编辑</el-button>
           <el-button text type="success" size="small" @click="showMcpConfig(row)">接入</el-button>
           <el-button text type="danger" size="small" @click="removeProject(row)">删除</el-button>
         </template>
@@ -52,6 +56,13 @@
             placeholder="项目说明（可选）"
           />
         </el-form-item>
+        <el-form-item label="工作区路径">
+          <el-input v-model="createForm.workspace_path" placeholder="可手动输入或点击选择目录">
+            <template #append>
+              <el-button @click="selectWorkspaceDirectory">选择目录</el-button>
+            </template>
+          </el-input>
+        </el-form-item>
         <el-form-item label="启用 MCP">
           <el-switch v-model="createForm.mcp_enabled" />
         </el-form-item>
@@ -62,6 +73,34 @@
       <template #footer>
         <el-button @click="showCreateDialog = false">取消</el-button>
         <el-button type="primary" :loading="creating" @click="createProject">创建</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showEditDialog" title="编辑项目" width="520px">
+      <el-form :model="editForm" label-width="110px">
+        <el-form-item label="项目名称" required>
+          <el-input v-model="editForm.name" />
+        </el-form-item>
+        <el-form-item label="项目描述">
+          <el-input v-model="editForm.description" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="工作区路径">
+          <el-input v-model="editForm.workspace_path" placeholder="可手动输入或点击选择目录">
+            <template #append>
+              <el-button @click="selectEditWorkspaceDirectory">选择目录</el-button>
+            </template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="启用 MCP">
+          <el-switch v-model="editForm.mcp_enabled" />
+        </el-form-item>
+        <el-form-item label="反馈升级">
+          <el-switch v-model="editForm.feedback_upgrade_enabled" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showEditDialog = false">取消</el-button>
+        <el-button type="primary" :loading="updating" @click="updateProject">保存</el-button>
       </template>
     </el-dialog>
 
@@ -93,12 +132,24 @@ import api from '@/utils/api.js'
 
 const loading = ref(false)
 const creating = ref(false)
+const updating = ref(false)
 const projects = ref([])
 
 const showCreateDialog = ref(false)
+const showEditDialog = ref(false)
 const createForm = ref({
   name: '',
   description: '',
+  workspace_path: '',
+  mcp_enabled: true,
+  feedback_upgrade_enabled: true,
+})
+
+const editForm = ref({
+  id: '',
+  name: '',
+  description: '',
+  workspace_path: '',
   mcp_enabled: true,
   feedback_upgrade_enabled: true,
 })
@@ -149,10 +200,86 @@ function openCreate() {
   createForm.value = {
     name: '',
     description: '',
+    workspace_path: '',
     mcp_enabled: true,
     feedback_upgrade_enabled: true,
   }
   showCreateDialog.value = true
+}
+
+async function selectWorkspaceDirectory() {
+  const picked = await pickWorkspaceDirectory(createForm.value.workspace_path)
+  if (picked === null) return
+  createForm.value.workspace_path = picked
+}
+
+function openEdit(project) {
+  editForm.value = {
+    id: project.id,
+    name: project.name || '',
+    description: project.description || '',
+    workspace_path: project.workspace_path || '',
+    mcp_enabled: project.mcp_enabled ?? true,
+    feedback_upgrade_enabled: project.feedback_upgrade_enabled ?? true,
+  }
+  showEditDialog.value = true
+}
+
+async function selectEditWorkspaceDirectory() {
+  const picked = await pickWorkspaceDirectory(editForm.value.workspace_path)
+  if (picked === null) return
+  editForm.value.workspace_path = picked
+}
+
+async function pickWorkspaceDirectory(currentPath = '') {
+  if (typeof window.showDirectoryPicker === 'function') {
+    try {
+      const result = await window.showDirectoryPicker()
+      return String(result?.name || '').trim()
+    } catch (err) {
+      if (err?.name === 'AbortError') return null
+    }
+  }
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '当前环境不支持系统目录选择，请手动输入工作区路径。',
+      '填写工作区路径',
+      {
+        inputValue: String(currentPath || ''),
+        inputPlaceholder: '/Users/yourname/project',
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+      },
+    )
+    return String(value || '').trim()
+  } catch {
+    return null
+  }
+}
+
+async function updateProject() {
+  const name = String(editForm.value.name || '').trim()
+  if (!name) {
+    ElMessage.warning('请输入项目名称')
+    return
+  }
+  updating.value = true
+  try {
+    await api.put(`/projects/${editForm.value.id}`, {
+      name: editForm.value.name,
+      description: editForm.value.description,
+      workspace_path: editForm.value.workspace_path,
+      mcp_enabled: editForm.value.mcp_enabled,
+      feedback_upgrade_enabled: editForm.value.feedback_upgrade_enabled,
+    })
+    ElMessage.success('项目已更新')
+    showEditDialog.value = false
+    await fetchProjects()
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || '更新失败')
+  } finally {
+    updating.value = false
+  }
 }
 
 function showMcpConfig(project) {
@@ -194,6 +321,7 @@ async function createProject() {
     await api.post('/projects', {
       name,
       description: createForm.value.description,
+      workspace_path: createForm.value.workspace_path,
       mcp_enabled: !!createForm.value.mcp_enabled,
       feedback_upgrade_enabled: !!createForm.value.feedback_upgrade_enabled,
     })
@@ -207,7 +335,7 @@ async function createProject() {
   }
 }
 
-async function updateProject(row, payload, successMessage) {
+async function patchProjectFlags(row, payload, successMessage) {
   try {
     await api.patch(`/projects/${row.id}`, payload)
     ElMessage.success(successMessage)

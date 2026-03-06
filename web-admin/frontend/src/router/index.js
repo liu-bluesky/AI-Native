@@ -1,13 +1,18 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { hasPermission, pathPermission } from '@/utils/permissions.js'
 
 const routes = [
   { path: '/init', component: () => import('../views/auth/InitPage.vue') },
   { path: '/login', component: () => import('../views/auth/LoginPage.vue') },
+  { path: '/register', component: () => import('../views/auth/RegisterPage.vue') },
   {
     path: '/',
     component: () => import('../views/Layout.vue'),
     redirect: '/employees',
     children: [
+      { path: 'ai/chat', component: () => import('../views/projects/ProjectChat.vue') },
+      { path: 'users', component: () => import('../views/users/UserList.vue') },
+      { path: 'roles', component: () => import('../views/users/RoleList.vue') },
       { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
       { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
       { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
@@ -44,6 +49,50 @@ const routes = [
 const router = createRouter({
   history: createWebHashHistory(),
   routes,
+})
+
+const PUBLIC_PATHS = new Set(['/init', '/login', '/register'])
+const FALLBACK_PATHS = [
+  '/ai/chat',
+  '/employees',
+  '/projects',
+  '/users',
+  '/roles',
+  '/skills',
+  '/rules',
+  '/system/config',
+  '/usage/keys',
+]
+
+function getFallbackPath() {
+  return FALLBACK_PATHS.find((path) => {
+    const permission = pathPermission(path)
+    return !permission || hasPermission(permission)
+  }) || '/login'
+}
+
+router.beforeEach((to) => {
+  const token = localStorage.getItem('token')
+  const isPublic = PUBLIC_PATHS.has(to.path)
+
+  if (!token && !isPublic) {
+    return '/login'
+  }
+
+  if (token && (to.path === '/login' || to.path === '/register')) {
+    return getFallbackPath()
+  }
+
+  const requiredPermission = pathPermission(to.path)
+  if (requiredPermission && !hasPermission(requiredPermission)) {
+    const fallback = getFallbackPath()
+    if (fallback === to.path) {
+      return '/login'
+    }
+    return fallback
+  }
+
+  return true
 })
 
 export default router

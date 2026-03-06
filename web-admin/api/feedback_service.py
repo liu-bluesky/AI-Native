@@ -181,6 +181,24 @@ class FeedbackService:
         if not bool(getattr(employee, "feedback_upgrade_enabled", False)):
             raise ValueError(f"Employee {employee_id} has feedback upgrade disabled")
 
+    @staticmethod
+    def _is_default_project_token(value: str) -> bool:
+        token = str(value or "").strip().lower()
+        return token in {"", "default", "default-project", "default project"}
+
+    @staticmethod
+    def _standalone_project_id(employee_id: str) -> str:
+        return f"standalone:{employee_id}"
+
+    def _resolve_project_id(self, project_id: str, employee_id: str = "") -> str:
+        project_id_value = str(project_id or "").strip()
+        employee_id_value = str(employee_id or "").strip()
+        if project_id_value and not self._is_default_project_token(project_id_value):
+            return project_id_value
+        if employee_id_value:
+            return self._standalone_project_id(employee_id_value)
+        return project_id_value
+
     def _assert_project_feedback_enabled(self, project_id: str) -> None:
         if not self._feedback_enabled_global:
             raise ValueError("Feedback upgrade is globally disabled")
@@ -199,7 +217,6 @@ class FeedbackService:
         return cfg
 
     def create_bug(self, project_id: str, payload: dict[str, Any], actor: str = "") -> dict[str, Any]:
-        self._assert_project_feedback_enabled(project_id)
         severity = str(payload.get("severity") or "medium").strip().lower()
         if severity not in _ALLOWED_SEVERITY:
             raise ValueError(f"Invalid severity: {severity}")
@@ -209,6 +226,8 @@ class FeedbackService:
         expected = str(payload.get("expected") or "").strip()
         if not employee_id or not title or not symptom or not expected:
             raise ValueError("employee_id/title/symptom/expected are required")
+        project_id_value = self._resolve_project_id(project_id, employee_id)
+        self._assert_project_feedback_enabled(project_id_value)
         self._ensure_employee_feedback_enabled(employee_id)
 
         req_payload = dict(payload)
@@ -216,7 +235,7 @@ class FeedbackService:
         req_payload["category"] = self._normalize_category(str(req_payload.get("category") or "general"))
         if not str(req_payload.get("reporter") or "").strip():
             req_payload["reporter"] = actor or "unknown"
-        return self._store.create_bug(project_id, req_payload)
+        return self._store.create_bug(project_id_value, req_payload)
 
     def list_bugs(
         self,
@@ -228,8 +247,9 @@ class FeedbackService:
         severity: str = "",
         limit: int = 50,
     ) -> list[dict[str, Any]]:
+        project_id_value = self._resolve_project_id(project_id, employee_id)
         try:
-            self._assert_project_feedback_enabled(project_id)
+            self._assert_project_feedback_enabled(project_id_value)
         except ValueError:
             return []
         if employee_id:
@@ -238,7 +258,7 @@ class FeedbackService:
             except (LookupError, ValueError):
                 return []
         return self._store.list_bugs(
-            project_id=project_id,
+            project_id=project_id_value,
             employee_id=employee_id,
             category=self._normalize_category(category) if str(category or "").strip() else "",
             rule_id=str(rule_id or "").strip(),
@@ -305,14 +325,15 @@ class FeedbackService:
                 row["sample_titles"].append(title)
         return sorted(grouped.values(), key=lambda item: (-item["total"], item["category"]))
 
-    def get_bug_detail(self, project_id: str, feedback_id: str) -> dict[str, Any]:
-        bug = self._store.get_bug(project_id, feedback_id)
+    def get_bug_detail(self, project_id: str, feedback_id: str, employee_id: str = "") -> dict[str, Any]:
+        project_id_value = self._resolve_project_id(project_id, employee_id)
+        bug = self._store.get_bug(project_id_value, feedback_id)
         if bug is None:
             raise LookupError(f"Feedback bug {feedback_id} not found")
-        candidates = self._store.list_candidates(project_id, feedback_id=feedback_id, limit=50)
+        candidates = self._store.list_candidates(project_id_value, feedback_id=feedback_id, limit=50)
         candidate_ids = [str(item.get("id") or "").strip() for item in candidates if str(item.get("id") or "").strip()]
-        reviews = self._store.list_reviews_by_feedback(project_id, feedback_id, limit=100)
-        related_reviews = self._store.list_reviews_by_candidate_ids(project_id, candidate_ids, limit=100)
+        reviews = self._store.list_reviews_by_feedback(project_id_value, feedback_id, limit=100)
+        related_reviews = self._store.list_reviews_by_candidate_ids(project_id_value, candidate_ids, limit=100)
         merged_reviews: list[dict[str, Any]] = []
         seen_review_ids: set[str] = set()
         for item in reviews + related_reviews:
@@ -325,7 +346,7 @@ class FeedbackService:
         merged_reviews.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
         return {
             "bug": bug,
-            "analysis": self._store.get_analysis(project_id, feedback_id),
+            "analysis": self._store.get_analysis(project_id_value, feedback_id),
             "candidates": candidates,
             "reviews": merged_reviews[:100],
         }
@@ -334,13 +355,14 @@ class FeedbackService:
         feedback_id_value = str(feedback_id or "").strip()
         if not feedback_id_value:
             raise ValueError("feedback_id is required")
-        bug = self._store.get_bug(project_id, feedback_id_value)
+        employee_id_value = str(employee_id or "").strip()
+        project_id_value = self._resolve_project_id(project_id, employee_id_value)
+        bug = self._store.get_bug(project_id_value, feedback_id_value)
         if bug is None:
             raise LookupError(f"Feedback bug {feedback_id_value} not found")
-        employee_id_value = str(employee_id or "").strip()
         if employee_id_value and str(bug.get("employee_id") or "") != employee_id_value:
             raise ValueError(f"Feedback bug {feedback_id_value} does not belong to employee {employee_id_value}")
-        deleted = self._store.delete_bug(project_id, feedback_id_value)
+        deleted = self._store.delete_bug(project_id_value, feedback_id_value)
         if not deleted.get("deleted_bug"):
             raise RuntimeError(f"Failed to delete feedback bug {feedback_id_value}")
         return {"feedback_id": feedback_id_value, **deleted}
@@ -366,16 +388,17 @@ class FeedbackService:
         missing_ids: list[str] = []
         skipped_ids: list[str] = []
         employee_id_value = str(employee_id or "").strip()
+        project_id_value = self._resolve_project_id(project_id, employee_id_value)
 
         for feedback_id in normalized_ids:
-            bug = self._store.get_bug(project_id, feedback_id)
+            bug = self._store.get_bug(project_id_value, feedback_id)
             if bug is None:
                 missing_ids.append(feedback_id)
                 continue
             if employee_id_value and str(bug.get("employee_id") or "") != employee_id_value:
                 skipped_ids.append(feedback_id)
                 continue
-            deleted = self._store.delete_bug(project_id, feedback_id)
+            deleted = self._store.delete_bug(project_id_value, feedback_id)
             if deleted.get("deleted_bug"):
                 deleted_items.append({"feedback_id": feedback_id, **deleted})
             else:
@@ -498,10 +521,11 @@ class FeedbackService:
         payload: dict[str, Any],
         actor: str = "",
     ) -> dict[str, Any]:
-        self._assert_project_feedback_enabled(project_id)
         employee_id = str(payload.get("employee_id") or "").strip()
         if not employee_id:
             raise ValueError("employee_id is required")
+        project_id_value = self._resolve_project_id(project_id, employee_id)
+        self._assert_project_feedback_enabled(project_id_value)
         self._ensure_employee_feedback_enabled(employee_id)
 
         proposed_rule_content = str(payload.get("proposed_rule_content") or "").strip()
@@ -514,7 +538,7 @@ class FeedbackService:
         feedback_id = feedback_ids[0]
         bugs: list[dict[str, Any]] = []
         for item in feedback_ids:
-            bug_item = self._store.get_bug(project_id, item)
+            bug_item = self._store.get_bug(project_id_value, item)
             if bug_item is None:
                 raise LookupError(f"Feedback bug {item} not found")
             if str(bug_item.get("employee_id") or "") != employee_id:
@@ -540,7 +564,7 @@ class FeedbackService:
             confidence = 0.8
         confidence = max(0.0, min(confidence, 1.0))
         active_candidate = self._find_active_group_candidate(
-            project_id=project_id,
+            project_id=project_id_value,
             employee_id=employee_id,
             category=category,
             target_rule_id=target_rule_id,
@@ -550,7 +574,7 @@ class FeedbackService:
             + feedback_ids
         )
         grouped_bugs = self._collect_group_bugs(
-            project_id=project_id,
+            project_id=project_id_value,
             feedback_ids=combined_feedback_ids,
             employee_id=employee_id,
             category=category,
@@ -561,7 +585,7 @@ class FeedbackService:
 
         executable_rule_content = str(payload.get("executable_rule_content") or "").strip()
         if not executable_rule_content:
-            analysis = self._store.get_analysis(project_id, feedback_id)
+            analysis = self._store.get_analysis(project_id_value, feedback_id)
             executable_rule_content = self._build_executable_rule_content(
                 bugs=grouped_bugs,
                 analysis=analysis,
@@ -585,7 +609,7 @@ class FeedbackService:
         }
         if active_candidate:
             candidate = self._store.patch_candidate(
-                project_id,
+                project_id_value,
                 active_candidate["id"],
                 candidate_payload,
             )
@@ -593,12 +617,12 @@ class FeedbackService:
                 raise RuntimeError("Failed to update candidate")
         else:
             candidate = self._store.create_candidate(
-                project_id,
+                project_id_value,
                 feedback_id,
                 candidate_payload,
             )
         for item in combined_feedback_ids:
-            self._store.patch_bug(project_id, item, {"status": "pending_review"})
+            self._store.patch_bug(project_id_value, item, {"status": "pending_review"})
         return candidate
 
     def analyze_bug(
@@ -606,26 +630,28 @@ class FeedbackService:
         project_id: str,
         feedback_id: str,
         analyze_options: dict[str, Any] | None = None,
+        employee_id: str = "",
     ) -> dict[str, Any]:
-        self._assert_project_feedback_enabled(project_id)
-        bug = self._store.get_bug(project_id, feedback_id)
+        project_id_value = self._resolve_project_id(project_id, employee_id)
+        self._assert_project_feedback_enabled(project_id_value)
+        bug = self._store.get_bug(project_id_value, feedback_id)
         if bug is None:
             raise LookupError(f"Feedback bug {feedback_id} not found")
         self._ensure_employee_feedback_enabled(str(bug.get("employee_id") or ""))
 
-        self._store.patch_bug(project_id, feedback_id, {"status": "analyzing"})
+        self._store.patch_bug(project_id_value, feedback_id, {"status": "analyzing"})
         reflection, used_model = self._build_reflection_by_model(
-            project_id=project_id,
+            project_id=project_id_value,
             bug=bug,
             analyze_options=analyze_options,
         )
-        analysis = self._store.upsert_analysis(project_id, feedback_id, reflection)
+        analysis = self._store.upsert_analysis(project_id_value, feedback_id, reflection)
 
         employee_id = str(bug.get("employee_id") or "").strip()
         category = self._normalize_category(str(bug.get("category") or "general"))
         target_rule_id = self._normalize_rule_id(str(bug.get("rule_id") or ""))
         active_candidate = self._find_active_group_candidate(
-            project_id=project_id,
+            project_id=project_id_value,
             employee_id=employee_id,
             category=category,
             target_rule_id=target_rule_id,
@@ -635,7 +661,7 @@ class FeedbackService:
             + [feedback_id]
         )
         grouped_bugs = self._collect_group_bugs(
-            project_id=project_id,
+            project_id=project_id_value,
             feedback_ids=merged_feedback_ids,
             employee_id=employee_id,
             category=category,
@@ -647,7 +673,7 @@ class FeedbackService:
         candidate_payload = self._build_candidate_payload(grouped_bugs, analysis)
         if active_candidate:
             candidate = self._store.patch_candidate(
-                project_id,
+                project_id_value,
                 active_candidate["id"],
                 {
                     "proposed_rule_content": candidate_payload["proposed_rule_content"],
@@ -660,14 +686,14 @@ class FeedbackService:
                 },
             )
         else:
-            candidate = self._store.create_candidate(project_id, feedback_id, candidate_payload)
+            candidate = self._store.create_candidate(project_id_value, feedback_id, candidate_payload)
 
         if candidate is None:
             raise RuntimeError("Failed to generate candidate")
         for bug_item in grouped_bugs:
             bug_id = str(bug_item.get("id") or "").strip()
             if bug_id:
-                self._store.patch_bug(project_id, bug_id, {"status": "pending_review"})
+                self._store.patch_bug(project_id_value, bug_id, {"status": "pending_review"})
         return {"analysis": analysis, "candidate": candidate, "used_model": used_model}
 
     def analyze_bugs_batch(
@@ -675,15 +701,17 @@ class FeedbackService:
         project_id: str,
         feedback_ids: list[str],
         analyze_options: dict[str, Any] | None = None,
+        employee_id: str = "",
     ) -> dict[str, Any]:
-        self._assert_project_feedback_enabled(project_id)
+        project_id_value = self._resolve_project_id(project_id, employee_id)
+        self._assert_project_feedback_enabled(project_id_value)
         normalized_ids = self._normalize_feedback_ids(feedback_ids)
         if not normalized_ids:
             raise ValueError("feedback_ids is required")
 
         bugs: list[dict[str, Any]] = []
         for feedback_id in normalized_ids:
-            bug = self._store.get_bug(project_id, feedback_id)
+            bug = self._store.get_bug(project_id_value, feedback_id)
             if bug is None:
                 raise LookupError(f"Feedback bug {feedback_id} not found")
             bugs.append(bug)
@@ -718,7 +746,7 @@ class FeedbackService:
         )
 
         aggregate_bug = self._store.create_bug(
-            project_id,
+            project_id_value,
             {
                 "employee_id": employee_id,
                 "category": category,
@@ -736,24 +764,24 @@ class FeedbackService:
                 },
             },
         )
-        self._store.patch_bug(project_id, aggregate_bug["id"], {"status": "analyzing"})
+        self._store.patch_bug(project_id_value, aggregate_bug["id"], {"status": "analyzing"})
 
         reflection, used_model = self._build_reflection_by_model(
-            project_id=project_id,
+            project_id=project_id_value,
             bug=merged_bug,
             analyze_options=analyze_options,
         )
 
-        analysis = self._store.upsert_analysis(project_id, aggregate_bug["id"], reflection)
+        analysis = self._store.upsert_analysis(project_id_value, aggregate_bug["id"], reflection)
         candidate_payload = self._build_candidate_payload([merged_bug], analysis)
         candidate_payload["target_rule_id"] = target_rule_id
         candidate_payload["feedback_ids"] = [aggregate_bug["id"]]
         candidate_payload["source_feedback_ids"] = normalized_ids
 
-        existing = self._store.list_candidates(project_id, feedback_id=aggregate_bug["id"], limit=1)
+        existing = self._store.list_candidates(project_id_value, feedback_id=aggregate_bug["id"], limit=1)
         if existing:
             candidate = self._store.patch_candidate(
-                project_id,
+                project_id_value,
                 existing[0]["id"],
                 {
                     "proposed_rule_content": candidate_payload["proposed_rule_content"],
@@ -767,14 +795,14 @@ class FeedbackService:
                 },
             )
         else:
-            candidate = self._store.create_candidate(project_id, aggregate_bug["id"], candidate_payload)
+            candidate = self._store.create_candidate(project_id_value, aggregate_bug["id"], candidate_payload)
 
         if candidate is None:
             raise RuntimeError("Failed to generate candidate")
-        self._store.patch_bug(project_id, aggregate_bug["id"], {"status": "pending_review"})
+        self._store.patch_bug(project_id_value, aggregate_bug["id"], {"status": "pending_review"})
         return {
             "analysis": analysis,
-            "bug": self._store.get_bug(project_id, aggregate_bug["id"]) or aggregate_bug,
+            "bug": self._store.get_bug(project_id_value, aggregate_bug["id"]) or aggregate_bug,
             "candidate": candidate,
             "used_model": used_model,
             "feedback_ids": normalized_ids,
@@ -788,8 +816,9 @@ class FeedbackService:
         feedback_id: str = "",
         limit: int = 50,
     ) -> list[dict[str, Any]]:
+        project_id_value = self._resolve_project_id(project_id, employee_id)
         try:
-            self._assert_project_feedback_enabled(project_id)
+            self._assert_project_feedback_enabled(project_id_value)
         except ValueError:
             return []
         if employee_id:
@@ -798,7 +827,7 @@ class FeedbackService:
             except (LookupError, ValueError):
                 return []
         return self._store.list_candidates(
-            project_id=project_id,
+            project_id=project_id_value,
             status=status,
             employee_id=employee_id,
             feedback_id=feedback_id,
@@ -814,15 +843,20 @@ class FeedbackService:
         comment: str = "",
         edited_content: str = "",
         edited_executable_content: str = "",
+        employee_id: str = "",
     ) -> dict[str, Any]:
-        self._assert_project_feedback_enabled(project_id)
+        project_id_value = self._resolve_project_id(project_id, employee_id)
+        self._assert_project_feedback_enabled(project_id_value)
         action_value = str(action or "").strip().lower()
         if action_value not in _ALLOWED_REVIEW_ACTION:
             raise ValueError(f"Invalid action: {action}")
 
-        candidate = self._store.get_candidate(project_id, candidate_id)
+        candidate = self._store.get_candidate(project_id_value, candidate_id)
         if candidate is None:
             raise LookupError(f"Candidate {candidate_id} not found")
+        employee_id_value = str(employee_id or "").strip()
+        if employee_id_value and str(candidate.get("employee_id") or "").strip() != employee_id_value:
+            raise ValueError(f"Candidate {candidate_id} does not belong to employee {employee_id_value}")
         self._ensure_employee_feedback_enabled(str(candidate.get("employee_id") or ""))
 
         updates: dict[str, Any] = {
@@ -841,12 +875,12 @@ class FeedbackService:
             if str(edited_executable_content or "").strip():
                 updates["executable_rule_content"] = edited_executable_content
 
-        updated = self._store.patch_candidate(project_id, candidate_id, updates)
+        updated = self._store.patch_candidate(project_id_value, candidate_id, updates)
         if updated is None:
             raise LookupError(f"Candidate {candidate_id} not found")
 
         self._store.create_review(
-            project_id,
+            project_id_value,
             candidate["feedback_id"],
             candidate_id,
             {
@@ -865,11 +899,16 @@ class FeedbackService:
         candidate_id: str,
         published_by: str = "",
         comment: str = "",
+        employee_id: str = "",
     ) -> dict[str, Any]:
-        self._assert_project_feedback_enabled(project_id)
-        candidate = self._store.get_candidate(project_id, candidate_id)
+        project_id_value = self._resolve_project_id(project_id, employee_id)
+        self._assert_project_feedback_enabled(project_id_value)
+        candidate = self._store.get_candidate(project_id_value, candidate_id)
         if candidate is None:
             raise LookupError(f"Candidate {candidate_id} not found")
+        employee_id_value = str(employee_id or "").strip()
+        if employee_id_value and str(candidate.get("employee_id") or "").strip() != employee_id_value:
+            raise ValueError(f"Candidate {candidate_id} does not belong to employee {employee_id_value}")
         self._ensure_employee_feedback_enabled(str(candidate.get("employee_id") or ""))
         if candidate.get("status") != "approved":
             raise ValueError("Only approved candidates can be published")
@@ -889,7 +928,7 @@ class FeedbackService:
             )
             rule_store.save(updated_rule)
         else:
-            bug = self._store.get_bug(project_id, str(candidate.get("feedback_id") or ""))
+            bug = self._store.get_bug(project_id_value, str(candidate.get("feedback_id") or ""))
             category = self._normalize_category(str(candidate.get("category") or "general"))
             title_seed = str((bug or {}).get("title") or f"{category} upgrade").strip()
             new_rule = Rule(
@@ -905,7 +944,7 @@ class FeedbackService:
             target_rule_id = new_rule.id
 
         updated = self._store.patch_candidate(
-            project_id,
+            project_id_value,
             candidate_id,
             {
                 "status": "published",
@@ -919,7 +958,7 @@ class FeedbackService:
             raise LookupError(f"Candidate {candidate_id} not found")
 
         for feedback_id in self._candidate_feedback_ids(candidate):
-            self._store.patch_bug(project_id, feedback_id, {"status": "closed"})
+            self._store.patch_bug(project_id_value, feedback_id, {"status": "closed"})
         return updated
 
     def rollback_candidate(
@@ -928,11 +967,16 @@ class FeedbackService:
         candidate_id: str,
         rolled_back_by: str = "",
         comment: str = "",
+        employee_id: str = "",
     ) -> dict[str, Any]:
-        self._assert_project_feedback_enabled(project_id)
-        candidate = self._store.get_candidate(project_id, candidate_id)
+        project_id_value = self._resolve_project_id(project_id, employee_id)
+        self._assert_project_feedback_enabled(project_id_value)
+        candidate = self._store.get_candidate(project_id_value, candidate_id)
         if candidate is None:
             raise LookupError(f"Candidate {candidate_id} not found")
+        employee_id_value = str(employee_id or "").strip()
+        if employee_id_value and str(candidate.get("employee_id") or "").strip() != employee_id_value:
+            raise ValueError(f"Candidate {candidate_id} does not belong to employee {employee_id_value}")
         self._ensure_employee_feedback_enabled(str(candidate.get("employee_id") or ""))
         if candidate.get("status") != "published":
             raise ValueError("Only published candidates can be rolled back")
@@ -947,7 +991,7 @@ class FeedbackService:
             rule_store.save(restored)
 
         updated = self._store.patch_candidate(
-            project_id,
+            project_id_value,
             candidate_id,
             {
                 "status": "rolled_back",
@@ -959,7 +1003,7 @@ class FeedbackService:
             raise LookupError(f"Candidate {candidate_id} not found")
 
         for feedback_id in self._candidate_feedback_ids(candidate):
-            self._store.patch_bug(project_id, feedback_id, {"status": "pending_review"})
+            self._store.patch_bug(project_id_value, feedback_id, {"status": "pending_review"})
         return updated
 
 

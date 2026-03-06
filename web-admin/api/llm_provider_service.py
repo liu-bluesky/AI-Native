@@ -452,6 +452,97 @@ class LlmProviderService:
             timeout,
         )
 
+    async def chat_completion_stream(
+        self,
+        provider_id: str,
+        model_name: str,
+        messages: list[dict[str, Any]],
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+        timeout: int = 120,
+        tools: list[dict[str, Any]] | None = None,
+    ):
+        provider = self.get_provider_raw(provider_id)
+        if provider is None:
+            raise LookupError(f"LLM provider {provider_id} not found")
+        if not bool(provider.get("enabled", True)):
+            raise ValueError(f"LLM provider {provider_id} is disabled")
+
+        chosen_model = str(model_name or "").strip() or self._pick_default_model(provider)
+        if not chosen_model:
+            raise ValueError("model_name is required")
+
+        normalized_messages = self._normalize_chat_messages(messages)
+        if not normalized_messages:
+            raise ValueError("messages is required")
+
+        normalized_temperature = self._clamp_temperature(temperature)
+        try:
+            normalized_max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            normalized_max_tokens = 1024
+        normalized_max_tokens = max(16, min(normalized_max_tokens, 8192))
+
+        if self._is_responses_provider(provider):
+            raise ValueError(f"Provider {provider_id} uses 'responses' mode which does not support streaming. Please use chat_completion() instead.")
+
+        endpoint = self._build_chat_completion_url(str(provider.get("base_url") or ""))
+        if not endpoint:
+            raise ValueError("provider base_url is empty")
+
+        body = {
+            "model": chosen_model,
+            "temperature": normalized_temperature,
+            "messages": normalized_messages,
+            "max_tokens": normalized_max_tokens,
+            "stream": True,
+        }
+        if tools:
+            body["tools"] = tools
+
+        async for chunk in self._stream_request(endpoint, self._build_headers(provider), body, timeout):
+            yield chunk
+
+    @staticmethod
+    async def _stream_request(url: str, headers: dict[str, str], body: dict[str, Any], timeout: int = 120):
+        import httpx
+        import json
+        import logging
+        logger = logging.getLogger(__name__)
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", url, headers=headers, json=body) as resp:
+                if resp.status_code >= 400:
+                    error_text = await resp.aread()
+                    raise RuntimeError(f"LLM stream request failed: HTTP {resp.status_code} {error_text.decode()[:300]}")
+
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line or line == "data: [DONE]":
+                        continue
+                    if line.startswith("data: "):
+                        try:
+                            data = json.loads(line[6:])
+                            choice = data.get("choices", [{}])[0]
+                            delta = choice.get("delta", {})
+                            finish_reason = choice.get("finish_reason")
+
+                            # Build result dict
+                            result = {}
+                            if "content" in delta and delta["content"]:
+                                result["content"] = delta["content"]
+                            if "tool_calls" in delta:
+                                result["tool_calls"] = delta["tool_calls"]
+                            if finish_reason:
+                                result["finish_reason"] = finish_reason
+
+                            if result:
+                                yield result
+                        except (json.JSONDecodeError, IndexError, KeyError) as e:
+                            logger.warning(f"Failed to parse SSE line: {line[:100]}, error: {e}")
+                            continue
+
+
     @staticmethod
     def _build_chat_completion_url(base_url: str) -> str:
         base = str(base_url or "").strip().rstrip("/")

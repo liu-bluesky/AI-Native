@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { clearPermissionArray } from './permissions.js'
 
 const api = axios.create({ baseURL: '/api' })
 
@@ -17,6 +18,9 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem('token')
+      localStorage.removeItem('role')
+      localStorage.removeItem('username')
+      clearPermissionArray()
       window.location.hash = '#/login'
     }
     return Promise.reject(err.response?.data || err)

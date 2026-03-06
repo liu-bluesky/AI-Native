@@ -6,6 +6,7 @@
 import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from './utils/api.js'
+import { clearPermissionArray, setPermissionArray } from './utils/permissions.js'
 
 const router = useRouter()
 
@@ -17,8 +18,26 @@ onMounted(async () => {
       return
     }
     const token = localStorage.getItem('token')
-    if (!token && router.currentRoute.value.path !== '/login') {
+    const currentPath = router.currentRoute.value.path
+    const publicPaths = new Set(['/login', '/register'])
+    if (!token && !publicPaths.has(currentPath)) {
       router.replace('/login')
+      return
+    }
+    if (token) {
+      try {
+        const data = await api.get('/auth/me')
+        localStorage.setItem('username', data?.username || '')
+        localStorage.setItem('role', data?.role || 'user')
+        setPermissionArray(data?.permissions || [])
+      } catch {
+        localStorage.removeItem('token')
+        localStorage.removeItem('username')
+        localStorage.removeItem('role')
+        clearPermissionArray()
+        router.replace('/login')
+        return
+      }
     }
   } catch {
     router.replace('/login')
