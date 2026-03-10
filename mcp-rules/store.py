@@ -153,6 +153,11 @@ class RuleStore:
         return [_deserialize_rule(json.loads(p.read_text()))
                 for p in sorted(self._dir.glob("*.json"))]
 
+    def list_by_project(self, project_id: str) -> list[Rule]:
+        """兼容接口：当前规则模型未按 project 维度存储，先返回全量规则。"""
+        _ = project_id
+        return self.list_all()
+
     def query(self, keyword: str, domain: str = None) -> list[Rule]:
         kw = keyword.lower()
         results = []

@@ -240,16 +240,10 @@ async def run_agent_loop(
             if tools and not intent_retry_used and _is_intent_only_response(loop_content):
                 intent_retry_used = True
                 messages.append({"role": "assistant", "content": loop_content})
-                messages.append(
-                    {
-                        "role": "system",
-                        "content": (
-                            "你上一条回复只有行动承诺（例如“我先查一下”），但用户要的是结果。"
-                            "请在本轮直接给出查询结果；如果确实查不到，明确说明原因并给可执行下一步。"
-                            "不要再输出“我先查/稍等/正在查询”这类句子。"
-                        ),
-                    }
-                )
+                messages.append({
+                    "role": "system",
+                    "content": "你上一条回复只有行动承诺，但用户要的是结果。请在本轮直接给出查询结果；如果确实查不到，明确说明原因并给可执行下一步。不要再输出意图性句子。"
+                })
                 continue
             yield {"type": "done", "content": final_full_content}
             completed = True

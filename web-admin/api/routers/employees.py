@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends
 
@@ -20,6 +21,173 @@ _TOOL_SUFFIXES = {".py", ".js"}
 
 def _normalize_domain(value: str) -> str:
     return str(value or "").strip().lower()
+
+
+def _normalize_tokens(values: list[str] | None) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for item in values or []:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(value)
+    return normalized
+
+
+def _build_rule_lookup() -> tuple[dict[str, Any], dict[str, list[Any]]]:
+    by_id: dict[str, Any] = {}
+    by_domain: dict[str, list[Any]] = {}
+    for rule in rule_store.list_all():
+        rid = str(getattr(rule, "id", "") or "").strip()
+        if rid:
+            by_id[rid] = rule
+        domain_key = _normalize_domain(getattr(rule, "domain", ""))
+        if not domain_key:
+            continue
+        by_domain.setdefault(domain_key, []).append(rule)
+    for items in by_domain.values():
+        items.sort(key=lambda r: (str(getattr(r, "title", "") or ""), str(getattr(r, "id", "") or "")))
+    return by_id, by_domain
+
+
+def _resolve_rule_ids_and_domains(
+    *,
+    rule_ids: list[str] | None,
+    rule_domains: list[str] | None,
+) -> tuple[list[str], list[str]]:
+    normalized_rule_ids = _normalize_tokens(rule_ids)
+    normalized_rule_domains = _normalize_tokens(rule_domains)
+    by_id, by_domain = _build_rule_lookup()
+
+    if normalized_rule_ids:
+        derived_domains: list[str] = []
+        seen_domain_keys: set[str] = set()
+        for rule_id in normalized_rule_ids:
+            rule = by_id.get(rule_id)
+            if rule is None:
+                continue
+            domain = str(getattr(rule, "domain", "") or "").strip()
+            key = _normalize_domain(domain)
+            if not key or key in seen_domain_keys:
+                continue
+            seen_domain_keys.add(key)
+            derived_domains.append(domain)
+        # rule_ids 是主绑定来源，rule_domains 由 rule_ids 聚合得到。
+        return normalized_rule_ids, derived_domains
+
+    derived_rule_ids: list[str] = []
+    seen_rule_ids: set[str] = set()
+    for domain in normalized_rule_domains:
+        key = _normalize_domain(domain)
+        for rule in by_domain.get(key, []):
+            rid = str(getattr(rule, "id", "") or "").strip()
+            if not rid or rid in seen_rule_ids:
+                continue
+            seen_rule_ids.add(rid)
+            derived_rule_ids.append(rid)
+    return derived_rule_ids, normalized_rule_domains
+
+
+def _extract_rule_ids_and_domains_from_bindings(
+    rule_bindings: list[dict[str, Any] | str] | None,
+) -> tuple[list[str], list[str]]:
+    rule_ids: list[str] = []
+    rule_domains: list[str] = []
+    for item in rule_bindings or []:
+        if isinstance(item, str):
+            value = str(item or "").strip()
+            if value:
+                rule_ids.append(value)
+            continue
+        if not isinstance(item, dict):
+            continue
+        rule_id = str(item.get("id", "") or "").strip()
+        domain = str(item.get("domain", "") or "").strip()
+        if rule_id:
+            rule_ids.append(rule_id)
+            continue
+        if domain:
+            rule_domains.append(domain)
+    return _normalize_tokens(rule_ids), _normalize_tokens(rule_domains)
+
+
+def _resolve_request_rule_payload(
+    *,
+    rule_bindings: list[dict[str, Any] | str] | None,
+    rule_ids: list[str] | None,
+    rule_domains: list[str] | None,
+) -> tuple[list[str], list[str]]:
+    binding_rule_ids, binding_rule_domains = _extract_rule_ids_and_domains_from_bindings(rule_bindings)
+    if binding_rule_ids or binding_rule_domains or (rule_bindings is not None):
+        return _resolve_rule_ids_and_domains(
+            rule_ids=binding_rule_ids if binding_rule_ids else None,
+            rule_domains=binding_rule_domains,
+        )
+    return _resolve_rule_ids_and_domains(rule_ids=rule_ids, rule_domains=rule_domains)
+
+
+def _resolve_employee_rule_bindings(emp: EmployeeConfig) -> tuple[list[str], list[str], list[dict[str, str]], str]:
+    raw_rule_ids = _normalize_tokens(getattr(emp, "rule_ids", []) or [])
+    raw_rule_domains = _normalize_tokens(getattr(emp, "rule_domains", []) or [])
+    by_id, by_domain = _build_rule_lookup()
+    bindings: list[dict[str, str]] = []
+
+    if raw_rule_ids:
+        for rule_id in raw_rule_ids:
+            rule = by_id.get(rule_id)
+            if rule is None:
+                bindings.append({"id": rule_id, "title": f"{rule_id}（规则不存在）", "domain": ""})
+                continue
+            bindings.append(
+                {
+                    "id": str(getattr(rule, "id", "") or ""),
+                    "title": str(getattr(rule, "title", "") or ""),
+                    "domain": str(getattr(rule, "domain", "") or ""),
+                }
+            )
+        _, normalized_domains = _resolve_rule_ids_and_domains(rule_ids=raw_rule_ids, rule_domains=raw_rule_domains)
+        return raw_rule_ids, normalized_domains, bindings, "rule_ids"
+
+    seen_ids: set[str] = set()
+    inferred_ids: list[str] = []
+    for domain in raw_rule_domains:
+        key = _normalize_domain(domain)
+        for rule in by_domain.get(key, []):
+            rid = str(getattr(rule, "id", "") or "").strip()
+            if not rid or rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+            inferred_ids.append(rid)
+            bindings.append(
+                {
+                    "id": rid,
+                    "title": str(getattr(rule, "title", "") or ""),
+                    "domain": str(getattr(rule, "domain", "") or ""),
+                }
+            )
+    return inferred_ids, raw_rule_domains, bindings, "rule_domains_legacy"
+
+
+def _serialize_employee_payload(emp: EmployeeConfig) -> dict[str, Any]:
+    payload = dict(vars(emp))
+    payload.pop("rule_ids", None)
+    payload.pop("rule_domains", None)
+    skill_names: list[str] = []
+    for skill_id in payload.get("skills", []) or []:
+        sid = str(skill_id or "").strip()
+        if not sid:
+            continue
+        skill = skill_store.get(sid)
+        name = str(getattr(skill, "name", "") or "").strip() if skill else ""
+        skill_names.append(name or sid)
+    payload["skill_names"] = skill_names
+    _rule_ids, _rule_domains, rule_bindings, _rule_binding_mode = _resolve_employee_rule_bindings(emp)
+    payload["rule_bindings"] = rule_bindings
+    return payload
 
 
 def _scan_skill_entries(skill) -> tuple[int, list[str]]:
@@ -49,17 +217,24 @@ def _scan_skill_entries(skill) -> tuple[int, list[str]]:
 @router.get("")
 async def list_employees():
     employees = employee_store.list_all()
-    return {"employees": [vars(e) for e in employees]}
+    return {"employees": [_serialize_employee_payload(e) for e in employees]}
 
 
 @router.post("")
 async def create_employee(req: EmployeeCreateReq):
+    rule_bindings_input = req.rule_bindings if "rule_bindings" in req.model_fields_set else None
+    rule_ids, rule_domains = _resolve_request_rule_payload(
+        rule_bindings=rule_bindings_input,
+        rule_ids=req.rule_ids,
+        rule_domains=req.rule_domains,
+    )
     emp = EmployeeConfig(
         id=employee_store.new_id(),
         name=req.name,
         description=req.description,
         skills=req.skills,
-        rule_domains=req.rule_domains,
+        rule_ids=rule_ids,
+        rule_domains=rule_domains,
         memory_scope=req.memory_scope,
         memory_retention_days=req.memory_retention_days,
         tone=req.tone,
@@ -72,7 +247,7 @@ async def create_employee(req: EmployeeCreateReq):
         feedback_upgrade_enabled=req.feedback_upgrade_enabled,
     )
     employee_store.save(emp)
-    return {"status": "created", "employee": vars(emp)}
+    return {"status": "created", "employee": _serialize_employee_payload(emp)}
 
 
 @router.get("/{employee_id}/config-test")
@@ -125,12 +300,41 @@ async def test_employee_config(employee_id: str):
             }
         )
 
+    rule_ids, effective_domains, _bindings, rule_binding_mode = _resolve_employee_rule_bindings(emp)
     all_rules = rule_store.list_all()
+    rule_by_id = {str(getattr(item, "id", "") or "").strip(): item for item in all_rules}
+    rule_id_checks = []
+    matched_rule_ids = 0
+    for rule_id in rule_ids:
+        rule = rule_by_id.get(rule_id)
+        if rule is None:
+            rule_id_checks.append(
+                {
+                    "rule_id": rule_id,
+                    "status": "missing",
+                    "title": "",
+                    "domain": "",
+                    "message": "规则不存在或已删除",
+                }
+            )
+            blocking_issues.append(f"规则缺失: {rule_id}")
+            continue
+        matched_rule_ids += 1
+        rule_id_checks.append(
+            {
+                "rule_id": rule_id,
+                "status": "ok",
+                "title": str(getattr(rule, "title", "") or ""),
+                "domain": str(getattr(rule, "domain", "") or ""),
+                "message": "规则可用",
+            }
+        )
+
     domain_checks = []
     matched_domains = 0
     total_matched_rules = 0
 
-    for domain in emp.rule_domains or []:
+    for domain in effective_domains:
         key = _normalize_domain(domain)
         matched = [r for r in all_rules if _normalize_domain(r.domain) == key]
         total_matched_rules += len(matched)
@@ -155,8 +359,8 @@ async def test_employee_config(employee_id: str):
 
     if not (emp.skills or []):
         warning_issues.append("员工未绑定任何技能")
-    if not (emp.rule_domains or []):
-        warning_issues.append("员工未绑定任何规则领域")
+    if not rule_ids and not effective_domains:
+        warning_issues.append("员工未绑定任何规则（rule_ids 或 rule_domains）")
 
     is_healthy = len(blocking_issues) == 0
     overall_status = "healthy" if is_healthy else "failed"
@@ -172,10 +376,14 @@ async def test_employee_config(employee_id: str):
             "skills_total": len(emp.skills or []),
             "skills_available": skills_available,
             "skills_executable": executable_skills,
-            "rule_domains_total": len(emp.rule_domains or []),
+            "rule_binding_mode": rule_binding_mode,
+            "rule_ids_total": len(rule_ids),
+            "rule_ids_matched": matched_rule_ids,
+            "rule_domains_total": len(effective_domains),
             "rule_domains_matched": matched_domains,
             "rules_total_matched": total_matched_rules,
         },
+        "rule_ids": rule_id_checks,
         "skills": skill_checks,
         "rule_domains": domain_checks,
         "blocking_issues": blocking_issues,
@@ -188,7 +396,7 @@ async def get_employee(employee_id: str):
     emp = employee_store.get(employee_id)
     if emp is None:
         raise HTTPException(404, f"Employee {employee_id} not found")
-    return {"employee": vars(emp)}
+    return {"employee": _serialize_employee_payload(emp)}
 
 
 def _apply_employee_update(employee_id: str, req: EmployeeUpdateReq):
@@ -197,12 +405,38 @@ def _apply_employee_update(employee_id: str, req: EmployeeUpdateReq):
         raise HTTPException(404, f"Employee {employee_id} not found")
     updates = req.model_dump(exclude_none=True)
     if not updates:
-        return {"status": "no_change", "employee": vars(emp)}
+        return {"status": "no_change", "employee": _serialize_employee_payload(emp)}
+
+    rule_bindings_input = updates.pop("rule_bindings", None) if "rule_bindings" in updates else None
+    rule_ids_input = updates.pop("rule_ids", None) if "rule_ids" in updates else None
+    rule_domains_input = updates.pop("rule_domains", None) if "rule_domains" in updates else None
+    if rule_bindings_input is not None:
+        resolved_rule_ids, resolved_rule_domains = _resolve_request_rule_payload(
+            rule_bindings=rule_bindings_input,
+            rule_ids=None,
+            rule_domains=None,
+        )
+        emp.rule_ids = resolved_rule_ids
+        emp.rule_domains = resolved_rule_domains
+    elif rule_ids_input is not None or rule_domains_input is not None:
+        if rule_ids_input is None and rule_domains_input is not None:
+            source_rule_ids = None
+        else:
+            source_rule_ids = rule_ids_input if rule_ids_input is not None else getattr(emp, "rule_ids", [])
+        source_rule_domains = rule_domains_input if rule_domains_input is not None else emp.rule_domains
+        resolved_rule_ids, resolved_rule_domains = _resolve_request_rule_payload(
+            rule_bindings=None,
+            rule_ids=source_rule_ids,
+            rule_domains=source_rule_domains,
+        )
+        emp.rule_ids = resolved_rule_ids
+        emp.rule_domains = resolved_rule_domains
+
     for field_name, val in updates.items():
         setattr(emp, field_name, val)
     emp.updated_at = _now_iso()
     employee_store.save(emp)
-    return {"status": "updated", "employee": vars(emp)}
+    return {"status": "updated", "employee": _serialize_employee_payload(emp)}
 
 
 @router.put("/{employee_id}")
@@ -245,11 +479,13 @@ async def test_employee_mcp(employee_id: str):
     issues = []
     if not (emp.skills or []):
         issues.append("未绑定技能")
-    if not (emp.rule_domains or []):
-        issues.append("未绑定规则领域")
+    rule_ids, rule_domains, _bindings, _mode = _resolve_employee_rule_bindings(emp)
+    if not rule_ids and not rule_domains:
+        issues.append("未绑定规则")
 
     skill_count = len(emp.skills or [])
-    rule_domain_count = len(emp.rule_domains or [])
+    rule_count = len(rule_ids)
+    rule_domain_count = len(rule_domains)
 
     if issues:
         return {
@@ -257,14 +493,16 @@ async def test_employee_mcp(employee_id: str):
             "message": f"MCP 已开启，但配置不完整: {', '.join(issues)}",
             "mcp_enabled": True,
             "skill_count": skill_count,
+            "rule_count": rule_count,
             "rule_domain_count": rule_domain_count,
         }
 
     return {
         "status": "success",
-        "message": f"MCP 配置完整：{skill_count} 个技能，{rule_domain_count} 个规则领域",
+        "message": f"MCP 配置完整：{skill_count} 个技能，{rule_count} 条规则，{rule_domain_count} 个规则领域",
         "mcp_enabled": True,
         "skill_count": skill_count,
+        "rule_count": rule_count,
         "rule_domain_count": rule_domain_count,
     }
 
@@ -379,7 +617,12 @@ async def get_manual_template(employee_id: str):
             bound_skills.append({"id": skill_id, "name": skill.name, "description": skill.description or ""})
 
     skills_text = "\n".join(f"- {s['name']}：{s['description']}" for s in bound_skills) if bound_skills else "无"
-    domains_text = "\n".join(f"- {d}" for d in (emp.rule_domains or [])) if emp.rule_domains else "无"
+    rule_ids, rule_domains, rule_bindings, _rule_mode = _resolve_employee_rule_bindings(emp)
+    titles_text = "\n".join(
+        f"- {item['title']} ({item['id']}) / {item['domain'] or '未知领域'}"
+        for item in rule_bindings
+    ) if rule_bindings else "无"
+    domains_text = "\n".join(f"- {d}" for d in rule_domains) if rule_domains else "无"
     style_hints_text = "\n".join(f"- {h}" for h in (emp.style_hints or [])) if emp.style_hints else "无"
 
     template = f"""请根据以下信息，为"{emp.name}"AI 员工生成一份完整的使用手册。
@@ -398,7 +641,10 @@ async def get_manual_template(employee_id: str):
 ### 绑定技能
 {skills_text}
 
-### 规则领域
+### 绑定规则标题
+{titles_text}
+
+### 规则领域（聚合）
 {domains_text}
 
 ### 风格提示

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -47,6 +49,8 @@ class EmployeeCreateReq(BaseModel):
     name: str
     description: str = ""
     skills: list[str] = []
+    rule_bindings: list[dict[str, Any] | str] = []
+    rule_ids: list[str] = []
     rule_domains: list[str] = []
     memory_scope: str = "project"
     memory_retention_days: int = 90
@@ -64,6 +68,8 @@ class EmployeeUpdateReq(BaseModel):
     name: str | None = None
     description: str | None = None
     skills: list[str] | None = None
+    rule_bindings: list[dict[str, Any] | str] | None = None
+    rule_ids: list[str] | None = None
     rule_domains: list[str] | None = None
     memory_scope: str | None = None
     memory_retention_days: int | None = None
@@ -101,7 +107,12 @@ class ProjectMemberAddReq(BaseModel):
 
 class ProjectChatReq(BaseModel):
     message: str = ""
+    chat_mode: str = "system"
+    external_agent_type: str = "codex_cli"
+    external_agent_sandbox_mode: str | None = None
+    external_agent_sandbox_mode_explicit: bool | None = None
     employee_id: str = ""
+    employee_ids: list[str] = []
     history: list[dict] = []
     provider_id: str = ""
     model_name: str = ""
@@ -109,6 +120,53 @@ class ProjectChatReq(BaseModel):
     max_tokens: int | None = None
     attachment_names: list[str] = []
     images: list[str] = []
+    enabled_project_tool_names: list[str] = []
+    auto_use_tools: bool | None = None
+    tool_priority: list[str] = []
+    max_tool_calls_per_round: int | None = None
+    max_loop_rounds: int | None = None
+    max_tool_rounds: int | None = None
+    repeated_tool_call_threshold: int | None = None
+    tool_only_threshold: int | None = None
+    tool_budget_strategy: str | None = None
+    history_limit: int | None = None
+    tool_timeout_sec: int | None = None
+    tool_retry_count: int | None = None
+    allow_shell_tools: bool | None = None
+    allow_file_write_tools: bool | None = None
+    answer_style: str | None = None
+    prefer_conclusion_first: bool | None = None
+    system_prompt: str | None = None
+
+
+class ProjectChatSettingsUpdateReq(BaseModel):
+    settings: dict[str, Any]
+
+
+class ExternalMcpModuleCreateReq(BaseModel):
+    name: str
+    description: str = ""
+    endpoint_http: str = ""
+    endpoint_sse: str = ""
+    auth_type: str = "none"
+    project_id: str = ""
+    enabled: bool = True
+
+
+class ExternalMcpModuleUpdateReq(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    endpoint_http: str | None = None
+    endpoint_sse: str | None = None
+    auth_type: str | None = None
+    project_id: str | None = None
+    enabled: bool | None = None
+
+
+class ExternalMcpModuleTestReq(BaseModel):
+    endpoint_http: str = ""
+    endpoint_sse: str = ""
+    timeout_sec: int = 8
 
 
 class SystemConfigUpdateReq(BaseModel):
@@ -247,6 +305,7 @@ class RuleCreateReq(BaseModel):
     risk_domain: str = "low"
     mcp_enabled: bool = False
     mcp_service: str = ""
+    bound_employees: list[str] = []
 
 
 class RuleUpdateReq(BaseModel):
@@ -257,6 +316,7 @@ class RuleUpdateReq(BaseModel):
     risk_domain: str | None = None
     mcp_enabled: bool | None = None
     mcp_service: str | None = None
+    bound_employees: list[str] | None = None
 
 
 # ── Usage ──

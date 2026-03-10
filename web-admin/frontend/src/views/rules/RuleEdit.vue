@@ -46,6 +46,29 @@
         </div>
       </el-form-item>
 
+      <el-form-item label="绑定员工">
+        <el-select
+          v-model="form.bound_employees"
+          class="select-wide"
+          multiple
+          filterable
+          clearable
+          collapse-tags
+          collapse-tags-tooltip
+          placeholder="可选，直接绑定到员工"
+        >
+          <el-option
+            v-for="item in employees"
+            :key="item.id"
+            :label="`${item.name || item.id} (${item.id})`"
+            :value="item.id"
+          />
+        </el-select>
+        <div class="field-hint">
+          修改后会同步更新员工的规则标题绑定（rule_ids）。
+        </div>
+      </el-form-item>
+
       <el-form-item>
         <el-button type="primary" :loading="saving" @click="handleSave">保存</el-button>
         <el-button @click="$router.back()">取消</el-button>
@@ -65,6 +88,7 @@ const router = useRouter()
 const formRef = ref(null)
 const loading = ref(false)
 const saving = ref(false)
+const employees = ref([])
 
 const form = reactive({
   domain: '',
@@ -74,6 +98,7 @@ const form = reactive({
   risk_domain: 'low',
   mcp_enabled: false,
   mcp_service: '',
+  bound_employees: [],
 })
 
 const rules = {
@@ -94,11 +119,21 @@ async function fetchDetail() {
       risk_domain: rule.risk_domain || 'low',
       mcp_enabled: rule.mcp_enabled || false,
       mcp_service: rule.mcp_service || '',
+      bound_employees: Array.isArray(rule.bound_employees) ? rule.bound_employees : [],
     })
   } catch {
     ElMessage.error('加载失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function fetchEmployees() {
+  try {
+    const data = await api.get('/employees')
+    employees.value = data.employees || []
+  } catch {
+    employees.value = []
   }
 }
 
@@ -116,12 +151,18 @@ async function handleSave() {
   }
 }
 
-onMounted(fetchDetail)
+onMounted(async () => {
+  await Promise.all([fetchDetail(), fetchEmployees()])
+})
 </script>
 
 <style scoped>
 .form-wrap {
   max-width: 600px;
+}
+
+.select-wide {
+  width: 100%;
 }
 
 .field-hint {

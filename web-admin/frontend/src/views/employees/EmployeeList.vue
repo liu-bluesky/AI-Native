@@ -846,9 +846,18 @@ function copyManualTemplate(row) {
         .map((s) => `- ${s.name || s}：${s.description || ""}`)
         .join("\n")
     : "无";
-  const domainsText = row.rule_domains?.length
-    ? row.rule_domains.map((d) => `- ${d}`).join("\n")
-    : "无";
+  const domainsText = (() => {
+    const seen = new Set();
+    const domains = [];
+    for (const item of row.rule_bindings || []) {
+      const domain = String(item?.domain || "").trim();
+      const key = domain.toLowerCase();
+      if (!domain || seen.has(key)) continue;
+      seen.add(key);
+      domains.push(domain);
+    }
+    return domains.length ? domains.map((d) => `- ${d}`).join("\n") : "无";
+  })();
   const styleHintsText = row.style_hints?.length
     ? row.style_hints.map((h) => `- ${h}`).join("\n")
     : "无";

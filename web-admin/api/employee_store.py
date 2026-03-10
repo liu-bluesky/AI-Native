@@ -20,6 +20,7 @@ class EmployeeConfig:
     name: str
     description: str = ""
     skills: list[str] = field(default_factory=list)
+    rule_ids: list[str] = field(default_factory=list)
     rule_domains: list[str] = field(default_factory=list)
     memory_scope: str = "project"
     memory_retention_days: int = 90

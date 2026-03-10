@@ -219,6 +219,11 @@ class PgRuleStore(_PgStoreBase):
             rows = cur.fetchall()
         return [self._deserialize_rule(r["payload"]) for r in rows]
 
+    def list_by_project(self, project_id: str) -> list[Any]:
+        """兼容接口：当前规则模型未按 project 维度存储，先返回全量规则。"""
+        _ = project_id
+        return self.list_all()
+
     def query(self, keyword: str, domain: str = None) -> list[Any]:
         kw = f"%{keyword.lower()}%"
         if domain:

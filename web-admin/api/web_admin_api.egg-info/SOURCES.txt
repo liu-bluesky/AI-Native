@@ -1,0 +1,6 @@
+pyproject.toml
+web_admin_api.egg-info/PKG-INFO
+web_admin_api.egg-info/SOURCES.txt
+web_admin_api.egg-info/dependency_links.txt
+web_admin_api.egg-info/requires.txt
+web_admin_api.egg-info/top_level.txt

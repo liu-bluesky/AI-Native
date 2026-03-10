@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import os
 import re
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -55,15 +55,21 @@ class UserStore:
         return self._dir / f"{normalized}.json"
 
     def save(self, user: User) -> None:
+        payload = {
+            "username": user.username,
+            "password_hash": user.password_hash,
+            "role": user.role,
+            "created_at": user.created_at,
+        }
         self._path(user.username).write_text(
-            json.dumps(asdict(user), ensure_ascii=False, indent=2))
+            json.dumps(payload, ensure_ascii=False, indent=2))
 
     def get(self, username: str) -> User | None:
         p = self._path(username)
         if not p.exists():
             return None
         data = json.loads(p.read_text())
-        return User(**data)
+        return self._to_user(data)
 
     def has_any(self) -> bool:
         return any(self._dir.glob("*.json"))
@@ -73,7 +79,7 @@ class UserStore:
         for path in sorted(self._dir.glob("*.json")):
             try:
                 data = json.loads(path.read_text())
-                users.append(User(**data))
+                users.append(self._to_user(data))
             except Exception:
                 continue
         return users
@@ -84,3 +90,11 @@ class UserStore:
             return False
         p.unlink()
         return True
+
+    def _to_user(self, data: dict) -> User:
+        return User(
+            username=str(data.get("username") or ""),
+            password_hash=str(data.get("password_hash") or ""),
+            role=str(data.get("role") or "user"),
+            created_at=str(data.get("created_at") or _now_iso()),
+        )

@@ -40,19 +40,24 @@
     </el-descriptions>
 
     <h4 class="section-title">技能</h4>
-    <el-tag v-for="s in emp.skills" :key="s" class="inline-tag">{{ s }}</el-tag>
+    <el-tag
+      v-for="(s, idx) in (emp.skill_names?.length ? emp.skill_names : emp.skills)"
+      :key="`${s}-${idx}`"
+      class="inline-tag"
+    >
+      {{ s }}
+    </el-tag>
     <el-empty v-if="!emp.skills?.length" description="暂无技能" :image-size="60" />
 
-    <h4 class="section-title">规则领域</h4>
-    <div v-if="emp.rule_domains?.length">
-      <div v-for="d in emp.rule_domains" :key="d" class="rule-domain-row">
-        <el-tag type="warning">{{ d }}</el-tag>
-        <span class="rule-domain-text">
-          {{ domainRuleTitles(d).join(' / ') || '该领域暂无规则标题' }}
-        </span>
+    <h4 class="section-title">绑定规则标题</h4>
+    <div v-if="emp.rule_bindings?.length">
+      <div v-for="rule in emp.rule_bindings" :key="rule.id" class="rule-domain-row">
+        <el-tag type="warning">{{ rule.title || rule.id }}</el-tag>
+        <span class="rule-domain-text">{{ rule.domain || '未知领域' }}</span>
+        <span class="rule-id-text">{{ rule.id }}</span>
       </div>
     </div>
-    <el-empty v-if="!emp.rule_domains?.length" description="暂无规则" :image-size="60" />
+    <el-empty v-if="!emp.rule_bindings?.length" description="暂无规则" :image-size="60" />
 
     <h4 class="section-title">风格提示</h4>
     <div v-if="displayStyleHints.length" class="style-hint-panel">
@@ -81,7 +86,6 @@ const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
 const emp = reactive({})
-const rulesByDomain = ref({})
 
 const displayStyleHints = computed(() => {
   const seen = new Set()
@@ -95,43 +99,11 @@ const displayStyleHints = computed(() => {
   return normalized
 })
 
-function buildRulesByDomain(rules) {
-  const grouped = {}
-  for (const rule of rules) {
-    const domain = String(rule.domain || '').trim()
-    const title = rule.title || ''
-    if (!domain || !title) continue
-    if (!grouped[domain]) grouped[domain] = []
-    if (!grouped[domain].includes(title)) grouped[domain].push(title)
-  }
-  return grouped
-}
-
-function normalizeDomain(domain) {
-  return String(domain || '').trim().toLowerCase()
-}
-
-function domainRuleTitles(domain) {
-  const direct = rulesByDomain.value[domain]
-  if (direct?.length) return direct.slice(0, 3)
-  const target = normalizeDomain(domain)
-  for (const [k, titles] of Object.entries(rulesByDomain.value)) {
-    if (normalizeDomain(k) === target) {
-      return titles.slice(0, 3)
-    }
-  }
-  return []
-}
-
 async function fetchDetail() {
   loading.value = true
   try {
-    const [{ employee }, rulesRes] = await Promise.all([
-      api.get(`/employees/${route.params.id}`),
-      api.get('/rules'),
-    ])
+    const { employee } = await api.get(`/employees/${route.params.id}`)
     Object.assign(emp, employee)
-    rulesByDomain.value = buildRulesByDomain(rulesRes.rules || [])
   } catch {
     ElMessage.error('加载失败')
   } finally {
@@ -177,6 +149,11 @@ onMounted(fetchDetail)
 .rule-domain-text {
   color: var(--color-text-secondary);
   font-size: 13px;
+}
+
+.rule-id-text {
+  color: var(--color-text-tertiary);
+  font-size: 12px;
 }
 
 .style-hint-panel {

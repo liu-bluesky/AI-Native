@@ -16,6 +16,7 @@ from employee_store import EmployeeStore
 from project_store import ProjectStore
 from project_chat_store import ProjectChatStore
 from system_config_store import SystemConfigStore
+from external_mcp_store import ExternalMcpStore
 from usage_store import UsageStore
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -160,6 +161,23 @@ def _create_usage_store() -> UsageStore | Any:
     raise RuntimeError(f"Unsupported USAGE_STORE_BACKEND: {backend}")
 
 
+def _create_external_mcp_store() -> ExternalMcpStore | Any:
+    settings = get_settings()
+    backend = settings.core_store_backend
+    if backend == "json":
+        return ExternalMcpStore(DATA_DIR)
+    if backend == "postgres":
+        try:
+            from external_mcp_store_pg import ExternalMcpStorePostgres
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "CORE_STORE_BACKEND=postgres 但未安装 PostgreSQL 驱动。"
+                "请安装依赖: psycopg[binary]>=3.2。"
+            ) from exc
+        return ExternalMcpStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {backend}")
+
+
 user_store = _StoreProxy(_create_user_store)
 role_store = _StoreProxy(_create_role_store)
 employee_store = _StoreProxy(_create_employee_store)
@@ -167,6 +185,7 @@ project_store = _StoreProxy(_create_project_store)
 project_chat_store = _StoreProxy(_create_project_chat_store)
 system_config_store = _StoreProxy(_create_system_config_store)
 usage_store = _StoreProxy(_create_usage_store)
+external_mcp_store = _StoreProxy(_create_external_mcp_store)
 
 
 async def require_auth(

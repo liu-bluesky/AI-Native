@@ -23,6 +23,7 @@ from routers import (
     feedback_upgrade,
     users,
     roles,
+    mcp_modules,
 )
 from dynamic_mcp import (
     employee_mcp_proxy_app,
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
         feedback_upgrade,
         users,
         roles,
+        mcp_modules,
     ):
         app.include_router(r.router)
 

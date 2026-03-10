@@ -58,6 +58,7 @@ class ProjectChatStorePostgres:
                     username=str(payload.get("username") or username),
                     role=str(payload.get("role") or "assistant"),
                     content=str(payload.get("content") or ""),
+                    display_mode=str(payload.get("display_mode") or "").strip(),
                     attachments=_normalize_attachments(payload.get("attachments")),
                     images=_normalize_attachments(payload.get("images")),
                     created_at=str(payload.get("created_at") or _now_iso()),
@@ -78,6 +79,7 @@ class ProjectChatStorePostgres:
             username=username,
             role=role,
             content=content,
+            display_mode=str(message.display_mode or "").strip(),
             attachments=_normalize_attachments(message.attachments),
             images=_normalize_attachments(message.images),
             created_at=str(message.created_at or _now_iso()),
@@ -110,4 +112,3 @@ class ProjectChatStorePostgres:
                 (project_id,),
             )
             return int(cur.rowcount or 0)
-

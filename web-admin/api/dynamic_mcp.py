@@ -4,19 +4,22 @@ from __future__ import annotations
 import asyncio
 from contextvars import ContextVar
 from dataclasses import asdict
+from datetime import timedelta
 import json
 import os
 from pathlib import Path
+import secrets
 import subprocess
 import sys
 
+import requests
 from urllib.parse import parse_qs
 
 from fastapi.responses import JSONResponse, Response
 from mcp.server.fastmcp import FastMCP
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from deps import employee_store, project_store, usage_store
+from deps import employee_store, external_mcp_store, project_store, usage_store
 from feedback_service import get_feedback_service
 from stores import (
     Classification,
@@ -59,6 +62,8 @@ _employee_apps = {}
 _project_apps = {}
 _employee_app_signatures = {}
 _project_app_signatures = {}
+_external_mcp_tool_cache: dict[str, list[dict]] = {}
+_external_mcp_tool_signatures: dict[str, tuple] = {}
 _session_keys: dict[str, tuple[str, str]] = {}  # session_id -> (api_key, developer_name)
 _current_api_key: ContextVar[str] = ContextVar("_current_api_key", default="")
 _current_developer_name: ContextVar[str] = ContextVar("_current_developer_name", default="")
@@ -261,18 +266,159 @@ def _normalize_domain(value: str) -> str:
 
 
 def _query_rules_by_employee(employee, keyword: str = "") -> list:
+    rule_ids = [str(item or "").strip() for item in (getattr(employee, "rule_ids", []) or []) if str(item or "").strip()]
+    kw = str(keyword or "").strip().lower()
+    if rule_ids:
+        seen: set[str] = set()
+        results = []
+        for rule_id in rule_ids:
+            if rule_id in seen:
+                continue
+            seen.add(rule_id)
+            rule = rule_store.get(rule_id)
+            if rule is None:
+                continue
+            if kw and kw not in rule.title.lower() and kw not in rule.content.lower():
+                continue
+            results.append(rule)
+        return results
+
     domains = {_normalize_domain(d) for d in employee.rule_domains or [] if str(d).strip()}
     if not domains:
         return []
-    kw = str(keyword or "").strip().lower()
     results = []
     for rule in rule_store.list_all():
-        if domains and _normalize_domain(rule.domain) not in domains:
+        if _normalize_domain(rule.domain) not in domains:
             continue
         if kw and kw not in rule.title.lower() and kw not in rule.content.lower():
             continue
         results.append(rule)
     return results
+
+
+def _employee_rule_summary(employee, limit: int = 50) -> list[dict[str, str]]:
+    rules = _query_rules_by_employee(employee)
+    rule_bindings: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+
+    for rule in rules:
+        if len(rule_bindings) >= limit:
+            break
+        rid = str(getattr(rule, "id", "") or "").strip()
+        if not rid or rid in seen_ids:
+            continue
+        seen_ids.add(rid)
+        rule_bindings.append(
+            {
+                "id": rid,
+                "title": str(getattr(rule, "title", "") or "").strip(),
+                "domain": str(getattr(rule, "domain", "") or "").strip(),
+            }
+        )
+    return rule_bindings
+
+
+def _employee_skill_summary(employee) -> tuple[list[str], list[str]]:
+    skill_ids: list[str] = []
+    skill_names: list[str] = []
+    seen: set[str] = set()
+    for item in getattr(employee, "skills", []) or []:
+        skill_id = str(item or "").strip()
+        if not skill_id or skill_id in seen:
+            continue
+        seen.add(skill_id)
+        skill_ids.append(skill_id)
+        skill = skill_store.get(skill_id)
+        skill_name = str(getattr(skill, "name", "") or "").strip() or skill_id
+        skill_names.append(skill_name)
+    if not skill_names:
+        skill_names = list(skill_ids)
+    return skill_ids, skill_names
+
+
+def _serialize_project_member_profile(
+    member,
+    employee,
+    *,
+    project_id: str,
+    rule_limit: int,
+) -> dict:
+    employee_id = str(getattr(member, "employee_id", "") or "").strip()
+    if employee is None:
+        return {
+            "project_id": project_id,
+            "employee_id": employee_id,
+            "id": employee_id,
+            "employee_name": "",
+            "name": "",
+            "description": "",
+            "role": str(getattr(member, "role", "member") or "member"),
+            "enabled": bool(getattr(member, "enabled", True)),
+            "joined_at": str(getattr(member, "joined_at", "") or ""),
+            "skills": [],
+            "skill_names": [],
+            "rule_bindings": [],
+            "tone": "",
+            "verbosity": "",
+            "language": "",
+            "mcp_enabled": False,
+            "feedback_upgrade_enabled": False,
+            "employee_exists": False,
+        }
+
+    resolved_employee_id = str(getattr(employee, "id", "") or employee_id).strip()
+    employee_name = str(getattr(employee, "name", "") or "").strip()
+    skill_ids, skill_names = _employee_skill_summary(employee)
+    rule_bindings = _employee_rule_summary(employee, limit=rule_limit)
+    return {
+        "project_id": project_id,
+        "employee_id": resolved_employee_id,
+        "id": resolved_employee_id,
+        "employee_name": employee_name,
+        "name": employee_name,
+        "description": str(getattr(employee, "description", "") or ""),
+        "role": str(getattr(member, "role", "member") or "member"),
+        "enabled": bool(getattr(member, "enabled", True)),
+        "joined_at": str(getattr(member, "joined_at", "") or ""),
+        "skills": skill_ids,
+        "skill_names": skill_names,
+        "rule_bindings": rule_bindings,
+        "tone": str(getattr(employee, "tone", "") or ""),
+        "verbosity": str(getattr(employee, "verbosity", "") or ""),
+        "language": str(getattr(employee, "language", "") or ""),
+        "mcp_enabled": bool(getattr(employee, "mcp_enabled", False)),
+        "feedback_upgrade_enabled": bool(getattr(employee, "feedback_upgrade_enabled", False)),
+        "employee_exists": True,
+    }
+
+
+def list_project_member_profiles_runtime(
+    project_id: str,
+    *,
+    include_disabled: bool = True,
+    include_missing: bool = True,
+    rule_limit: int = 30,
+) -> list[dict]:
+    """构建项目成员统一画像，供 MCP 与聊天等路径复用。"""
+    project = project_store.get(project_id)
+    if project is None:
+        return []
+    profiles: list[dict] = []
+    for member in project_store.list_members(project_id):
+        if not include_disabled and not bool(getattr(member, "enabled", True)):
+            continue
+        employee = employee_store.get(member.employee_id)
+        if employee is None and not include_missing:
+            continue
+        profiles.append(
+            _serialize_project_member_profile(
+                member,
+                employee,
+                project_id=project_id,
+                rule_limit=rule_limit,
+            )
+        )
+    return profiles
 
 
 def _tool_token(value: str) -> str:
@@ -581,6 +727,268 @@ def _active_project_member_employees(project_id: str) -> list[tuple[object, obje
     return members
 
 
+def _list_visible_external_mcp_modules(project_id: str) -> list[object]:
+    visible: list[object] = []
+    project_id_value = str(project_id or "").strip()
+    for module in external_mcp_store.list_all():
+        if not bool(getattr(module, "enabled", True)):
+            continue
+        module_project_id = str(getattr(module, "project_id", "") or "").strip()
+        if module_project_id and module_project_id != project_id_value:
+            continue
+        visible.append(module)
+    return visible
+
+
+def _external_mcp_signature(module: object) -> tuple:
+    return (
+        str(getattr(module, "updated_at", "") or ""),
+        str(getattr(module, "endpoint_http", "") or ""),
+        str(getattr(module, "endpoint_sse", "") or ""),
+        str(getattr(module, "project_id", "") or ""),
+        bool(getattr(module, "enabled", True)),
+    )
+
+
+def _external_mcp_candidate_endpoints(module: object) -> list[tuple[str, str]]:
+    endpoints: list[tuple[str, str]] = []
+    endpoint_http = str(getattr(module, "endpoint_http", "") or "").strip()
+    endpoint_sse = str(getattr(module, "endpoint_sse", "") or "").strip()
+    if endpoint_http:
+        endpoints.append(("http", endpoint_http))
+    if endpoint_sse:
+        endpoints.append(("sse", endpoint_sse))
+    return endpoints
+
+
+def _external_mcp_request(url: str, method: str, params: dict | None = None, timeout_sec: int = 15) -> dict:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": f"ext-{secrets.token_hex(4)}",
+        "method": method,
+    }
+    if params is not None:
+        payload["params"] = params
+    response = requests.post(
+        url,
+        json=payload,
+        headers={
+            "Accept": "application/json, text/event-stream;q=0.9, */*;q=0.8",
+            "Content-Type": "application/json",
+        },
+        timeout=(3, timeout_sec),
+    )
+    status_code = int(response.status_code)
+    if status_code >= 400:
+        raise RuntimeError(f"HTTP {status_code}: {response.text[:300]}")
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise RuntimeError(f"Invalid JSON response: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("Invalid JSON-RPC response body")
+    if data.get("error"):
+        error = data.get("error")
+        if isinstance(error, dict):
+            raise RuntimeError(str(error.get("message") or error))
+        raise RuntimeError(str(error))
+    return data
+
+
+def _normalize_parameters_schema(schema: object) -> dict:
+    if isinstance(schema, dict) and str(schema.get("type") or "").strip():
+        return schema
+    if isinstance(schema, dict):
+        normalized = dict(schema)
+        normalized.setdefault("type", "object")
+        normalized.setdefault("properties", {})
+        return normalized
+    return {"type": "object", "properties": {}}
+
+
+def _extract_external_mcp_tools_payload(module: object, timeout_sec: int = 15) -> list[dict]:
+    errors: list[str] = []
+    module_name = str(getattr(module, "name", "") or getattr(module, "id", "") or "external")
+    module_id = str(getattr(module, "id", "") or "")
+    for transport, endpoint in _external_mcp_candidate_endpoints(module):
+        try:
+            payload = _external_mcp_request(endpoint, "tools/list", {}, timeout_sec=timeout_sec)
+            result = payload.get("result")
+            tools = result.get("tools") if isinstance(result, dict) else None
+            if not isinstance(tools, list):
+                raise RuntimeError("tools/list missing tools array")
+            items: list[dict] = []
+            for tool in tools:
+                if not isinstance(tool, dict):
+                    continue
+                remote_name = str(tool.get("name") or "").strip()
+                if not remote_name:
+                    continue
+                tool_name = f"external__{_tool_token(module_id or module_name)}__{_tool_token(remote_name)}"
+                items.append(
+                    {
+                        "tool_name": tool_name,
+                        "remote_tool_name": remote_name,
+                        "module_id": module_id,
+                        "module_name": module_name,
+                        "employee_id": "",
+                        "base_tool_name": remote_name,
+                        "scoped_tool_name": tool_name,
+                        "entry_name": remote_name,
+                        "script_type": f"external_{transport}",
+                        "description": f"外部 MCP[{module_name}]：{str(tool.get('description') or remote_name)}",
+                        "parameters_schema": _normalize_parameters_schema(tool.get("inputSchema") or tool.get("parameters")),
+                        "module_type": "external_mcp_tool",
+                        "builtin": False,
+                    }
+                )
+            return items
+        except Exception as exc:
+            errors.append(f"{transport}:{exc}")
+    if errors:
+        return [
+            {
+                "tool_name": f"external__{_tool_token(module_id or module_name)}__unavailable",
+                "remote_tool_name": "",
+                "module_id": module_id,
+                "module_name": module_name,
+                "employee_id": "",
+                "base_tool_name": "",
+                "scoped_tool_name": "",
+                "entry_name": "",
+                "script_type": "external_error",
+                "description": f"外部 MCP[{module_name}] 暂不可用：{' | '.join(errors)}",
+                "parameters_schema": {"type": "object", "properties": {}},
+                "module_type": "external_mcp_tool",
+                "builtin": False,
+                "disabled": True,
+            }
+        ]
+    return []
+
+
+def list_project_external_tools_runtime(project_id: str) -> list[dict]:
+    tools: list[dict] = []
+    for module in _list_visible_external_mcp_modules(project_id):
+        module_id = str(getattr(module, "id", "") or "")
+        signature = _external_mcp_signature(module)
+        cached = _external_mcp_tool_cache.get(module_id)
+        if cached is None or _external_mcp_tool_signatures.get(module_id) != signature:
+            cached = _extract_external_mcp_tools_payload(module)
+            _external_mcp_tool_cache[module_id] = cached
+            _external_mcp_tool_signatures[module_id] = signature
+        tools.extend(item for item in cached if not bool(item.get("disabled")))
+    return tools
+
+
+def _resolve_external_tool_spec(project_id: str, tool_name: str) -> tuple[dict | None, str]:
+    normalized_tool_name = str(tool_name or "").strip()
+    if not normalized_tool_name:
+        return None, "tool_name is required"
+    for item in list_project_external_tools_runtime(project_id):
+        if str(item.get("tool_name") or "").strip() == normalized_tool_name:
+            return item, ""
+    return None, f"External tool not found: {normalized_tool_name}"
+
+
+def invoke_external_mcp_tool_runtime(
+    project_id: str,
+    tool_name: str,
+    args: dict | None = None,
+    args_json: str = "{}",
+    timeout_sec: int = 30,
+) -> dict:
+    spec, err = _resolve_external_tool_spec(project_id, tool_name)
+    if spec is None:
+        return {"error": err}
+
+    if args is not None:
+        if not isinstance(args, dict):
+            return {"error": "args must be an object"}
+        payload = args
+    else:
+        try:
+            payload = json.loads(args_json or "{}")
+        except Exception as exc:
+            return {"error": f"Invalid args_json: {exc}"}
+        if not isinstance(payload, dict):
+            return {"error": "args_json must be a JSON object"}
+
+    try:
+        timeout_value = max(3, min(int(timeout_sec), 120))
+    except (TypeError, ValueError):
+        timeout_value = 30
+
+    module_id = str(spec.get("module_id") or "")
+    module = external_mcp_store.get(module_id) if module_id else None
+    if module is None:
+        return {"error": f"External MCP module {module_id or '-'} not found"}
+
+    errors: list[str] = []
+    for _transport, endpoint in _external_mcp_candidate_endpoints(module):
+        try:
+            rpc_payload = _external_mcp_request(
+                endpoint,
+                "tools/call",
+                {
+                    "name": str(spec.get("remote_tool_name") or tool_name),
+                    "arguments": payload,
+                },
+                timeout_sec=timeout_value,
+            )
+            result = rpc_payload.get("result")
+            if isinstance(result, dict) and bool(result.get("isError")):
+                return {
+                    "error": _join_text_nodes(result.get("content")) or str(result),
+                    "tool_name": tool_name,
+                    "module_id": module_id,
+                    "module_name": str(spec.get("module_name") or ""),
+                    "remote_tool_name": str(spec.get("remote_tool_name") or tool_name),
+                }
+            response = {
+                "tool_name": tool_name,
+                "module_id": module_id,
+                "module_name": str(spec.get("module_name") or ""),
+                "remote_tool_name": str(spec.get("remote_tool_name") or tool_name),
+                "result": result,
+            }
+            if isinstance(result, dict):
+                text = _join_text_nodes(result.get("content"))
+                if text:
+                    response["text"] = text
+            return response
+        except Exception as exc:
+            errors.append(str(exc))
+    return {"error": f"External MCP call failed: {' | '.join(errors)}"}
+
+
+def invoke_project_tool_runtime(
+    project_id: str,
+    tool_name: str,
+    employee_id: str = "",
+    args: dict | None = None,
+    args_json: str = "{}",
+    timeout_sec: int = 30,
+) -> dict:
+    spec, _ = _resolve_external_tool_spec(project_id, tool_name)
+    if spec is not None:
+        return invoke_external_mcp_tool_runtime(
+            project_id=project_id,
+            tool_name=tool_name,
+            args=args,
+            args_json=args_json,
+            timeout_sec=timeout_sec,
+        )
+    return invoke_project_skill_tool_runtime(
+        project_id=project_id,
+        tool_name=tool_name,
+        employee_id=employee_id,
+        args=args,
+        args_json=args_json,
+        timeout_sec=timeout_sec,
+    )
+
+
 def _build_project_proxy_specs(project_id: str) -> tuple[dict[str, dict], dict[str, dict[str, dict]]]:
     by_scoped_name: dict[str, dict] = {}
     by_employee_base_name: dict[str, dict[str, dict]] = {}
@@ -727,7 +1135,286 @@ def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> 
                 },
             }
         )
+    if "search_project_context" not in existing_names:
+        tools.append(
+            {
+                "tool_name": "search_project_context",
+                "employee_id": employee_id_value,
+                "base_tool_name": "search_project_context",
+                "scoped_tool_name": "search_project_context",
+                "skill_id": "__builtin__",
+                "entry_name": "search_project_context",
+                "script_type": "builtin",
+                "description": (
+                    "统一检索项目上下文，支持按 scope/keyword/employee_id 查询"
+                    "项目信息、成员详情、规则内容、MCP 模块。"
+                ),
+                "builtin": True,
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {
+                        "scope": {
+                            "type": "string",
+                            "description": "检索范围：all/project/members/rules/mcp，默认 all。",
+                        },
+                        "keyword": {
+                            "type": "string",
+                            "description": "可选，关键词过滤。",
+                        },
+                        "employee_id": {
+                            "type": "string",
+                            "description": "可选，按员工 ID 过滤成员与规则。",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "每类结果最大返回条数，默认 20，范围 1-100。",
+                        },
+                    },
+                    "required": [],
+                },
+            }
+        )
     return tools
+
+
+def query_project_mcp_modules_runtime(project_id: str, keyword: str = "", limit: int = 20) -> dict:
+    """查询项目可见 MCP 模块（内置工具）"""
+    project = project_store.get(project_id)
+    if project is None:
+        return {"error": f"项目 {project_id} 不存在"}
+
+    keyword_lower = str(keyword or "").strip().lower()
+    try:
+        limit_value = int(limit)
+    except (TypeError, ValueError):
+        limit_value = 20
+    limit_value = max(1, min(limit_value, 100))
+
+    def _matches(values: list[str]) -> bool:
+        if not keyword_lower:
+            return True
+        for value in values:
+            if keyword_lower in str(value or "").strip().lower():
+                return True
+        return False
+
+    project_related: list[dict] = []
+    for item in list_project_proxy_tools_runtime(project_id, ""):
+        tool_name = str(item.get("tool_name") or "").strip()
+        if not tool_name:
+            continue
+        values = [
+            tool_name,
+            str(item.get("description") or ""),
+            str(item.get("skill_id") or ""),
+            str(item.get("entry_name") or ""),
+        ]
+        if not _matches(values):
+            continue
+        project_related.append(
+            {
+                "name": tool_name,
+                "module_type": "builtin_tool" if bool(item.get("builtin")) else "project_skill_tool",
+                "tool_name": tool_name,
+                "employee_id": str(item.get("employee_id") or ""),
+                "description": str(item.get("description") or ""),
+            }
+        )
+    project_related = project_related[:limit_value]
+
+    system_global: list[dict] = []
+    for item in project_store.list_all():
+        if not bool(getattr(item, "mcp_enabled", True)):
+            continue
+        name = str(getattr(item, "name", "") or getattr(item, "id", "") or "")
+        values = [name, str(getattr(item, "description", "") or ""), str(getattr(item, "id", "") or ""), "project_mcp_service"]
+        if not _matches(values):
+            continue
+        system_global.append(
+            {
+                "name": name,
+                "module_type": "project_mcp_service",
+                "resource_id": str(getattr(item, "id", "") or ""),
+            }
+        )
+
+    for item in employee_store.list_all():
+        if not bool(getattr(item, "mcp_enabled", True)):
+            continue
+        name = str(getattr(item, "name", "") or getattr(item, "id", "") or "")
+        values = [name, str(getattr(item, "description", "") or ""), str(getattr(item, "id", "") or ""), "employee_mcp_service"]
+        if not _matches(values):
+            continue
+        system_global.append(
+            {
+                "name": name,
+                "module_type": "employee_mcp_service",
+                "resource_id": str(getattr(item, "id", "") or ""),
+            }
+        )
+
+    for item in skill_store.list_all():
+        if not bool(getattr(item, "mcp_enabled", False)):
+            continue
+        name = str(getattr(item, "name", "") or getattr(item, "id", "") or "")
+        values = [name, str(getattr(item, "description", "") or ""), str(getattr(item, "id", "") or ""), "skill_mcp_service"]
+        if not _matches(values):
+            continue
+        system_global.append(
+            {
+                "name": name,
+                "module_type": "skill_mcp_service",
+                "resource_id": str(getattr(item, "id", "") or ""),
+            }
+        )
+
+    for item in rule_store.list_all():
+        if not bool(getattr(item, "mcp_enabled", False)):
+            continue
+        name = str(getattr(item, "title", "") or getattr(item, "id", "") or "")
+        values = [name, str(getattr(item, "content", "") or ""), str(getattr(item, "id", "") or ""), "rule_mcp_service"]
+        if not _matches(values):
+            continue
+        system_global.append(
+            {
+                "name": name,
+                "module_type": "rule_mcp_service",
+                "resource_id": str(getattr(item, "id", "") or ""),
+            }
+        )
+    system_global = system_global[:limit_value]
+
+    external_modules: list[dict] = []
+    for item in external_mcp_store.list_all():
+        if not bool(getattr(item, "enabled", True)):
+            continue
+        module_project_id = str(getattr(item, "project_id", "") or "").strip()
+        if module_project_id and module_project_id != project_id:
+            continue
+        name = str(getattr(item, "name", "") or getattr(item, "id", "") or "")
+        values = [
+            name,
+            str(getattr(item, "description", "") or ""),
+            str(getattr(item, "endpoint_http", "") or ""),
+            str(getattr(item, "endpoint_sse", "") or ""),
+            "external_mcp_service",
+        ]
+        if not _matches(values):
+            continue
+        external_modules.append(
+            {
+                "name": name,
+                "module_type": "external_mcp_service",
+                "project_id": module_project_id,
+                "endpoint_http": str(getattr(item, "endpoint_http", "") or ""),
+                "endpoint_sse": str(getattr(item, "endpoint_sse", "") or ""),
+            }
+        )
+    external_modules = external_modules[:limit_value]
+
+    return {
+        "project_id": project_id,
+        "project_name": str(getattr(project, "name", "") or ""),
+        "system": {
+            "project_related": project_related,
+            "system_global": system_global,
+        },
+        "external": {"modules": external_modules},
+        "summary": {
+            "system_project_related_total": len(project_related),
+            "system_global_total": len(system_global),
+            "external_total": len(external_modules),
+        },
+    }
+
+
+def search_project_context_runtime(
+    project_id: str,
+    scope: str = "all",
+    keyword: str = "",
+    employee_id: str = "",
+    limit: int = 20,
+) -> dict:
+    """统一检索项目上下文（内置工具）"""
+    project = project_store.get(project_id)
+    if project is None:
+        return {"error": f"项目 {project_id} 不存在"}
+
+    scope_value = str(scope or "all").strip().lower() or "all"
+    if scope_value not in {"all", "project", "members", "rules", "mcp"}:
+        return {"error": f"Invalid scope: {scope_value}. Valid: ['all','project','members','rules','mcp']"}
+
+    keyword_value = str(keyword or "").strip()
+    keyword_lower = keyword_value.lower()
+    employee_id_value = str(employee_id or "").strip()
+    try:
+        limit_value = int(limit)
+    except (TypeError, ValueError):
+        limit_value = 20
+    limit_value = max(1, min(limit_value, 100))
+
+    def _matches_text(values: list[str]) -> bool:
+        if not keyword_lower:
+            return True
+        for value in values:
+            if keyword_lower in str(value or "").strip().lower():
+                return True
+        return False
+
+    result: dict[str, object] = {
+        "project_id": project_id,
+        "scope": scope_value,
+        "keyword": keyword_value,
+        "employee_id": employee_id_value,
+    }
+
+    if scope_value in {"all", "project"}:
+        result["project"] = {
+            "id": project_id,
+            "name": str(getattr(project, "name", "") or ""),
+            "description": str(getattr(project, "description", "") or ""),
+            "workspace_path": str(getattr(project, "workspace_path", "") or ""),
+            "mcp_enabled": bool(getattr(project, "mcp_enabled", True)),
+            "feedback_upgrade_enabled": bool(getattr(project, "feedback_upgrade_enabled", False)),
+        }
+
+    if scope_value in {"all", "members"}:
+        profiles = list_project_member_profiles_runtime(
+            project_id,
+            include_disabled=True,
+            include_missing=True,
+            rule_limit=50,
+        )
+        filtered_profiles: list[dict] = []
+        for item in profiles:
+            item_employee_id = str(item.get("employee_id") or "").strip()
+            if employee_id_value and item_employee_id != employee_id_value:
+                continue
+            rule_bindings = list(item.get("rule_bindings") or [])
+            values = [
+                item_employee_id,
+                str(item.get("name") or ""),
+                str(item.get("description") or ""),
+                " ".join(str(v or "") for v in (item.get("skill_names") or [])),
+                " ".join(str(v.get("title") or v.get("id") or "") for v in rule_bindings),
+                " ".join(str(v.get("domain") or "") for v in rule_bindings),
+            ]
+            if not _matches_text(values):
+                continue
+            filtered_profiles.append(item)
+        result["members"] = filtered_profiles[:limit_value]
+        result["members_total"] = len(filtered_profiles)
+
+    if scope_value in {"all", "rules"}:
+        rules = query_project_rules_runtime(project_id, keyword=keyword_value, employee_id=employee_id_value)
+        result["rules"] = rules[:limit_value]
+        result["rules_total"] = len(rules)
+
+    if scope_value in {"all", "mcp"}:
+        mcp_modules = query_project_mcp_modules_runtime(project_id, keyword=keyword_value, limit=limit_value)
+        result["mcp_modules"] = mcp_modules
+
+    return result
 
 
 def query_project_rules_runtime(project_id: str, keyword: str = "", employee_id: str = "") -> list[dict]:
@@ -735,55 +1422,70 @@ def query_project_rules_runtime(project_id: str, keyword: str = "", employee_id:
     project = project_store.get(project_id)
     if project is None:
         return []
-    keyword_lower = str(keyword or "").strip().lower()
+    keyword_value = str(keyword or "").strip()
+    keyword_lower = keyword_value.lower()
     employee_id_value = str(employee_id or "").strip()
-    results = []
-    for rule in rule_store.list_by_project(project_id):
-        if employee_id_value:
-            domains = [str(d or "").strip() for d in (rule.domains or [])]
-            if employee_id_value not in domains:
+    selected_employees = []
+    for member in project_store.list_members(project_id):
+        member_employee_id = str(getattr(member, "employee_id", "") or "").strip()
+        if not member_employee_id:
+            continue
+        if employee_id_value and member_employee_id != employee_id_value:
+            continue
+        employee = employee_store.get(member_employee_id)
+        if employee is None:
+            continue
+        selected_employees.append(employee)
+
+    results: list[dict] = []
+    seen_rule_ids: set[str] = set()
+    for employee in selected_employees:
+        for rule in _query_rules_by_employee(employee, keyword_value):
+            rid = str(getattr(rule, "id", "") or "").strip()
+            if rid and rid in seen_rule_ids:
                 continue
-        if keyword_lower:
-            title_lower = str(rule.title or "").lower()
-            content_lower = str(rule.content or "").lower()
-            if keyword_lower not in title_lower and keyword_lower not in content_lower:
-                continue
+            if rid:
+                seen_rule_ids.add(rid)
+            results.append(serialize_rule(rule))
+
+    if results:
+        return results
+
+    if employee_id_value:
+        return []
+
+    # 兜底：当项目成员未绑定规则时，按关键词检索全局规则库，避免空返回。
+    fallback_rules = (
+        rule_store.query(keyword_value)
+        if keyword_value and hasattr(rule_store, "query")
+        else rule_store.list_all()
+    )
+    for rule in fallback_rules:
+        title_lower = str(getattr(rule, "title", "") or "").lower()
+        content_lower = str(getattr(rule, "content", "") or "").lower()
+        if keyword_lower and keyword_lower not in title_lower and keyword_lower not in content_lower:
+            continue
+        rid = str(getattr(rule, "id", "") or "").strip()
+        if rid and rid in seen_rule_ids:
+            continue
+        if rid:
+            seen_rule_ids.add(rid)
         results.append(serialize_rule(rule))
     return results
 
 
 def query_project_members_runtime(project_id: str) -> dict:
     """查询项目成员列表（内置工具）"""
-    from deps import employee_store
     project = project_store.get(project_id)
     if project is None:
         return {"error": f"项目 {project_id} 不存在"}
-    members = []
-    for member in project_store.list_members(project_id):
-        employee = employee_store.get(member.employee_id)
-        members.append({
-            "employee_id": member.employee_id,
-            "employee_name": getattr(employee, "name", "") if employee else "",
-            "role": member.role,
-            "joined_at": member.joined_at,
-        })
+    members = list_project_member_profiles_runtime(
+        project_id,
+        include_disabled=True,
+        include_missing=True,
+        rule_limit=20,
+    )
     return {"project_id": project_id, "project_name": project.name, "members": members, "total": len(members)}
-    """检索项目成员规则（运行时复用，供聊天 Agent 直接调用）。"""
-    keyword_value = str(keyword or "").strip()
-    employee_id_value = str(employee_id or "").strip()
-    results: list[dict] = []
-    seen: set[str] = set()
-    for _member, employee in _active_project_member_employees(project_id):
-        if employee_id_value and str(getattr(employee, "id", "")) != employee_id_value:
-            continue
-        for rule in _query_rules_by_employee(employee, keyword_value):
-            rule_id = str(getattr(rule, "id", "") or "")
-            if rule_id and rule_id in seen:
-                continue
-            if rule_id:
-                seen.add(rule_id)
-            results.append(serialize_rule(rule))
-    return results
 
 
 def invoke_project_skill_tool_runtime(
@@ -795,6 +1497,80 @@ def invoke_project_skill_tool_runtime(
     timeout_sec: int = 30,
 ) -> dict:
     """执行项目成员技能脚本，供非 MCP 路径（如聊天路由）复用。"""
+    normalized_tool_name = str(tool_name or "").strip()
+    employee_id_value = str(employee_id or "").strip()
+
+    if normalized_tool_name == "query_project_rules":
+        payload: dict = {}
+        if args is not None:
+            if not isinstance(args, dict):
+                return {"error": "args must be an object"}
+            payload = args
+        else:
+            try:
+                payload = json.loads(args_json or "{}")
+            except Exception as exc:
+                return {"error": f"Invalid args_json: {exc}"}
+            if not isinstance(payload, dict):
+                return {"error": "args_json must be a JSON object"}
+        keyword = str(payload.get("keyword") or "").strip()
+        target_employee_id = str(payload.get("employee_id") or employee_id_value).strip()
+        result = query_project_rules_runtime(
+            project_id=project_id,
+            keyword=keyword,
+            employee_id=target_employee_id,
+        )
+        return {
+            "tool_name": "query_project_rules",
+            "employee_id": target_employee_id,
+            "result": result,
+            "total": len(result),
+        }
+
+    if normalized_tool_name == "query_project_members":
+        result = query_project_members_runtime(project_id)
+        if isinstance(result, dict):
+            return {
+                "tool_name": "query_project_members",
+                "employee_id": employee_id_value,
+                **result,
+            }
+        return {
+            "tool_name": "query_project_members",
+            "employee_id": employee_id_value,
+            "result": result,
+        }
+
+    if normalized_tool_name == "search_project_context":
+        payload: dict = {}
+        if args is not None:
+            if not isinstance(args, dict):
+                return {"error": "args must be an object"}
+            payload = args
+        else:
+            try:
+                payload = json.loads(args_json or "{}")
+            except Exception as exc:
+                return {"error": f"Invalid args_json: {exc}"}
+            if not isinstance(payload, dict):
+                return {"error": "args_json must be a JSON object"}
+        scope_value = str(payload.get("scope") or "all").strip()
+        keyword_value = str(payload.get("keyword") or "").strip()
+        target_employee_id = str(payload.get("employee_id") or employee_id_value).strip()
+        limit_value = payload.get("limit", 20)
+        result = search_project_context_runtime(
+            project_id=project_id,
+            scope=scope_value,
+            keyword=keyword_value,
+            employee_id=target_employee_id,
+            limit=limit_value,
+        )
+        return {
+            "tool_name": "search_project_context",
+            "employee_id": target_employee_id,
+            **result,
+        }
+
     spec, err = _resolve_project_proxy_tool_spec(project_id, tool_name, employee_id)
     if spec is None:
         return {"error": err}
@@ -1062,7 +1838,11 @@ def _create_employee_mcp(employee_id: str):
         employee = _get_employee()
         if not employee:
             return {"error": "Employee not found"}
-        return asdict(employee)
+        payload = asdict(employee)
+        payload.pop("rule_ids", None)
+        payload.pop("rule_domains", None)
+        payload["rule_bindings"] = _employee_rule_summary(employee, limit=200)
+        return payload
 
     @mcp.tool()
     def list_employee_skills() -> list[dict]:
@@ -1122,7 +1902,7 @@ def _create_employee_mcp(employee_id: str):
         employee = _get_employee()
         if not employee:
             return {"error": "Employee not found"}
-        rules = _query_rules_by_employee(employee)
+        rule_bindings = _employee_rule_summary(employee, limit=200)
         return {
             "employee_id": employee.id,
             "name": employee.name,
@@ -1132,8 +1912,8 @@ def _create_employee_mcp(employee_id: str):
             "style_hints": list(employee.style_hints or []),
             "skills": list(employee.skills or []),
             "proxy_tools": sorted(proxy_specs_by_name.keys()),
-            "rule_domains": list(employee.rule_domains or []),
-            "rule_count": len(rules),
+            "rule_bindings": rule_bindings,
+            "rule_count": len(rule_bindings),
             "memory_count": memory_store.count(employee.id),
             "auto_evolve": employee.auto_evolve,
             "evolve_threshold": employee.evolve_threshold,
@@ -1416,6 +2196,7 @@ def _create_employee_mcp(employee_id: str):
 def _create_project_mcp(project_id: str):
     mcp = _new_mcp(f"project-{project_id}")
     scoped_proxy_specs, employee_proxy_specs = _build_project_proxy_specs(project_id)
+    external_tool_specs = list_project_external_tools_runtime(project_id)
 
     def _get_project():
         return project_store.get(project_id)
@@ -1472,6 +2253,20 @@ def _create_project_mcp(project_id: str):
             )
         return "\n".join(lines)
 
+    @mcp.resource(f"project://{project_id}/external-mcp-tools")
+    def project_external_tools() -> str:
+        project = _get_project()
+        if not project:
+            return "Project deleted or unavailable."
+        if not external_tool_specs:
+            return "No external MCP tools available."
+        lines = []
+        for item in external_tool_specs:
+            lines.append(
+                f"- {item['tool_name']}: {item.get('module_name', '-')} / {item.get('remote_tool_name', '-')}"
+            )
+        return "\n".join(lines)
+
     @mcp.tool()
     def get_project_profile() -> dict:
         """获取项目画像配置"""
@@ -1486,20 +2281,12 @@ def _create_project_mcp(project_id: str):
         project = _get_project()
         if not project:
             return []
-        items = []
-        for member, employee in _list_member_pairs():
-            items.append(
-                {
-                    "project_id": project.id,
-                    "employee_id": employee.id,
-                    "employee_name": employee.name,
-                    "role": member.role,
-                    "enabled": bool(member.enabled),
-                    "skills": list(employee.skills or []),
-                    "rule_domains": list(employee.rule_domains or []),
-                }
-            )
-        return items
+        return list_project_member_profiles_runtime(
+            project.id,
+            include_disabled=False,
+            include_missing=False,
+            rule_limit=30,
+        )
 
     @mcp.tool()
     def get_project_runtime_context() -> dict:
@@ -1680,6 +2467,26 @@ def _create_project_mcp(project_id: str):
             )
         return tools
 
+    @mcp.tool()
+    def list_external_mcp_tools() -> list[dict]:
+        """列出当前项目可用的外部 MCP 工具"""
+        return list_project_external_tools_runtime(project_id)
+
+    @mcp.tool()
+    def invoke_external_mcp_tool(
+        tool_name: str,
+        arguments: dict | None = None,
+        timeout_sec: int = 30,
+    ) -> dict:
+        """调用当前项目配置的外部 MCP 工具"""
+        return invoke_external_mcp_tool_runtime(
+            project_id=project_id,
+            tool_name=tool_name,
+            args=arguments,
+            args_json=json.dumps(arguments or {}, ensure_ascii=False),
+            timeout_sec=timeout_sec,
+        )
+
     def _resolve_project_tool_spec(tool_name: str, employee_id: str = "") -> tuple[dict | None, str]:
         normalized_tool_name = str(tool_name or "").strip()
         employee_id_value = str(employee_id or "").strip()
@@ -1752,6 +2559,33 @@ def _create_project_mcp(project_id: str):
                 "Pass CLI args via args(object) or args_json(string), e.g. args={\"sql\":\"SHOW TABLES\"}."
             ),
         )(_make_proxy_tool(spec))
+
+    for external_spec in external_tool_specs:
+        scoped_tool_name = str(external_spec.get("tool_name") or "").strip()
+        remote_tool_name = str(external_spec.get("remote_tool_name") or "").strip()
+        if not scoped_tool_name or not remote_tool_name:
+            continue
+
+        def _make_external_proxy(tool_name_value: str):
+            def _proxy_tool(arguments: dict | None = None, timeout_sec: int = 30) -> dict:
+                return invoke_external_mcp_tool_runtime(
+                    project_id=project_id,
+                    tool_name=tool_name_value,
+                    args=arguments,
+                    args_json=json.dumps(arguments or {}, ensure_ascii=False),
+                    timeout_sec=timeout_sec,
+                )
+
+            _proxy_tool.__name__ = f"project_external_{tool_name_value}"
+            return _proxy_tool
+
+        mcp.tool(
+            name=scoped_tool_name,
+            description=(
+                f"Proxy of external MCP {external_spec.get('module_name', '-')}:{remote_tool_name}. "
+                "Pass remote tool arguments via arguments(object)."
+            ),
+        )(_make_external_proxy(scoped_tool_name))
 
     return _DualTransportMcpApp(
         _apply_mcp_arguments_compat(mcp.sse_app()),
@@ -1954,11 +2788,24 @@ class _ProjectMcpProxyApp:
                     employee.id,
                     employee.updated_at,
                     tuple(employee.skills or []),
-                    tuple(employee.rule_domains or []),
+                    tuple(employee.rule_ids or []),
                 )
                 for m in active_members
                 for employee in [employee_store.get(m.employee_id)]
                 if employee is not None
+            )
+        )
+        external_signature = tuple(
+            sorted(
+                (
+                    str(getattr(module, "id", "") or ""),
+                    str(getattr(module, "updated_at", "") or ""),
+                    str(getattr(module, "endpoint_http", "") or ""),
+                    str(getattr(module, "endpoint_sse", "") or ""),
+                    str(getattr(module, "project_id", "") or ""),
+                    bool(getattr(module, "enabled", True)),
+                )
+                for module in _list_visible_external_mcp_modules(project_id)
             )
         )
         signature = (
@@ -1967,6 +2814,7 @@ class _ProjectMcpProxyApp:
             bool(getattr(project, "mcp_enabled", True)),
             member_signature,
             employee_signature,
+            external_signature,
         )
         cached_app = _project_apps.get(project_id)
         if (
@@ -2141,7 +2989,7 @@ class _EmployeeMcpProxyApp:
         signature = (
             _EMPLOYEE_MCP_APP_REV,
             tuple(employee.skills or []),
-            tuple(employee.rule_domains or []),
+            tuple(employee.rule_ids or []),
             bool(getattr(employee, "mcp_enabled", True)),
             employee.updated_at,
         )

@@ -53,6 +53,19 @@ class Settings:
     usage_store_backend: str
     feedback_upgrade_enabled_global: bool
     database_url: str
+    # Redis
+    redis_host: str
+    redis_port: int
+    redis_db: int
+    # 会话
+    session_ttl: int
+    max_messages: int
+    compression_threshold: int
+    # 工具
+    tool_timeout: int
+    max_tool_retries: int
+    # 外部 Agent
+    external_agent_codex_bin: str
 
 
 @lru_cache(maxsize=1)
@@ -69,4 +82,13 @@ def get_settings() -> Settings:
         usage_store_backend=str(os.environ.get("USAGE_STORE_BACKEND", "postgres")).strip().lower(),
         feedback_upgrade_enabled_global=_env_bool("FEEDBACK_UPGRADE_ENABLED_GLOBAL", True),
         database_url=_build_database_url_from_env(),
+        redis_host=os.environ.get("REDIS_HOST", "localhost"),
+        redis_port=int(os.environ.get("REDIS_PORT", "6379")),
+        redis_db=int(os.environ.get("REDIS_DB", "0")),
+        session_ttl=int(os.environ.get("SESSION_TTL", "3600")),
+        max_messages=int(os.environ.get("MAX_MESSAGES", "20")),
+        compression_threshold=int(os.environ.get("COMPRESSION_THRESHOLD", "15")),
+        tool_timeout=int(os.environ.get("TOOL_TIMEOUT", "60")),
+        max_tool_retries=int(os.environ.get("MAX_TOOL_RETRIES", "3")),
+        external_agent_codex_bin=str(os.environ.get("EXTERNAL_AGENT_CODEX_BIN", "")).strip(),
     )

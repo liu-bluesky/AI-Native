@@ -37,6 +37,7 @@ class ProjectChatMessage:
     username: str
     role: str
     content: str
+    display_mode: str = ""
     attachments: list[str] = field(default_factory=list)
     images: list[str] = field(default_factory=list)
     id: str = field(default_factory=lambda: f"chat-{uuid.uuid4().hex[:12]}")
@@ -79,6 +80,7 @@ class ProjectChatStore:
                     username=str(raw.get("username") or username),
                     role=role,
                     content=content,
+                    display_mode=str(raw.get("display_mode") or "").strip(),
                     attachments=_normalize_attachments(raw.get("attachments")),
                     images=_normalize_attachments(raw.get("images")),
                     created_at=str(raw.get("created_at") or _now_iso()),
@@ -115,6 +117,7 @@ class ProjectChatStore:
             username=username,
             role=role,
             content=content,
+            display_mode=str(message.display_mode or "").strip(),
             attachments=_normalize_attachments(message.attachments),
             images=_normalize_attachments(message.images),
             created_at=str(message.created_at or _now_iso()),
@@ -148,4 +151,3 @@ class ProjectChatStore:
         count = len(list(project_dir.glob("*.json")))
         shutil.rmtree(project_dir, ignore_errors=True)
         return count
-

@@ -33,8 +33,8 @@
     </div>
 
     <el-table :data="rules" stripe>
-      <el-table-column prop="domain" label="领域" />
       <el-table-column prop="title" label="标题" show-overflow-tooltip />
+      <el-table-column prop="domain" label="领域" />
 
       <el-table-column prop="severity" label="级别" width="100">
         <template #default="{ row }">
@@ -52,6 +52,12 @@
       <el-table-column
         prop="use_count"
         label="使用次数"
+        width="90"
+        align="center"
+      />
+      <el-table-column
+        prop="bound_employee_count"
+        label="绑定员工"
         width="90"
         align="center"
       />
@@ -244,7 +250,10 @@ async function enableMcp(rule) {
 }
 
 async function disableMcp(rule) {
-  await ElMessageBox.confirm(`确定关闭规则「${rule.title}」的 MCP 服务？`, "确认");
+  await ElMessageBox.confirm(
+    `确定关闭规则「${rule.title}」的 MCP 服务？`,
+    "确认",
+  );
   try {
     loading.value = true;
     await api.put(`/rules/${rule.id}`, { mcp_enabled: false });

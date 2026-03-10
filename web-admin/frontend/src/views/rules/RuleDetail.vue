@@ -26,6 +26,19 @@
     <h4 class="section-title">规则内容</h4>
     <div class="rule-content" v-if="rule.content">{{ rule.content }}</div>
     <el-empty v-else description="暂无内容" :image-size="60" />
+
+    <h4 class="section-title">绑定员工</h4>
+    <div v-if="boundEmployeeRows.length" class="bound-rows">
+      <el-tag
+        v-for="item in boundEmployeeRows"
+        :key="item.id"
+        class="bound-tag"
+        type="warning"
+      >
+        {{ item.name }} ({{ item.id }})
+      </el-tag>
+    </div>
+    <el-empty v-else description="暂无绑定员工" :image-size="60" />
   </div>
 </template>
 
@@ -39,6 +52,8 @@ const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
 const rule = reactive({})
+const employeesById = ref(new Map())
+const boundEmployeeRows = ref([])
 
 function sevColor(s) {
   return { required: 'danger', recommended: 'warning', optional: 'info' }[s] || 'info'
@@ -49,10 +64,31 @@ async function fetchDetail() {
   try {
     const data = await api.get(`/rules/${route.params.id}`)
     Object.assign(rule, data.rule)
+    const ids = Array.isArray(data?.rule?.bound_employees) ? data.rule.bound_employees : []
+    boundEmployeeRows.value = ids.map((id) => ({
+      id,
+      name: employeesById.value.get(id) || id,
+    }))
   } catch {
     ElMessage.error('加载失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function fetchEmployees() {
+  try {
+    const data = await api.get('/employees')
+    const rows = Array.isArray(data?.employees) ? data.employees : []
+    const map = new Map()
+    for (const item of rows) {
+      const id = String(item?.id || '').trim()
+      if (!id) continue
+      map.set(id, String(item?.name || id))
+    }
+    employeesById.value = map
+  } catch {
+    employeesById.value = new Map()
   }
 }
 
@@ -67,7 +103,10 @@ async function handleDelete() {
   }
 }
 
-onMounted(fetchDetail)
+onMounted(async () => {
+  await fetchEmployees()
+  await fetchDetail()
+})
 </script>
 
 <style scoped>
@@ -89,5 +128,15 @@ onMounted(fetchDetail)
 
 .section-title {
   margin-top: 20px;
+}
+
+.bound-rows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bound-tag {
+  margin-right: 0;
 }
 </style>

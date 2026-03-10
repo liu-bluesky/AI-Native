@@ -196,6 +196,16 @@
       </el-descriptions>
     </div>
 
+    <div class="block">
+      <div class="block-header">
+        <h4>外部 MCP</h4>
+      </div>
+      <ExternalMcpManager
+        :project-id="project.id || projectId"
+        tip="项目侧也可直接维护外部 MCP；该配置会与 AI 对话页共用。"
+      />
+    </div>
+
     <el-dialog v-model="showAddDialog" title="添加项目成员" width="520px">
       <el-form :model="addForm" label-width="100px">
         <el-form-item label="员工" required>
@@ -315,6 +325,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
+import ExternalMcpManager from "@/components/ExternalMcpManager.vue";
 import api from "@/utils/api.js";
 import { hasPermission } from "@/utils/permissions.js";
 
@@ -589,7 +600,6 @@ function openProjectChat() {
     ElMessage.warning("当前项目 ID 无效");
     return;
   }
-  localStorage.setItem("project_id", currentProjectId);
   const target = `/ai/chat?project_id=${encodeURIComponent(currentProjectId)}`;
   window.location.hash = `#${target}`;
 }

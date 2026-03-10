@@ -92,6 +92,30 @@ class LlmProviderService:
             temp = 0.2
         return max(0.0, min(temp, 2.0))
 
+    @staticmethod
+    def _requires_tool_role_compat(provider: dict[str, Any]) -> bool:
+        # Some OpenAI-compatible gateways (e.g. Codex bridge) reject role=tool.
+        base_url = str(provider.get("base_url") or "").strip().lower()
+        return "code.newcli.com/codex" in base_url
+
+    @staticmethod
+    def _convert_tool_role_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        converted: list[dict[str, Any]] = []
+        for item in messages:
+            if str(item.get("role") or "").strip().lower() != "tool":
+                converted.append(item)
+                continue
+            tool_call_id = str(item.get("tool_call_id") or "").strip()
+            content = str(item.get("content") or "")
+            prefix = f"[tool_result:{tool_call_id}]" if tool_call_id else "[tool_result]"
+            converted.append(
+                {
+                    "role": "user",
+                    "content": f"{prefix}\n{content}",
+                }
+            )
+        return converted
+
     def _validate_create_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         name = str(payload.get("name") or "").strip()
         if not name:
@@ -346,28 +370,52 @@ class LlmProviderService:
         return str(value or "").strip()
 
     @classmethod
-    def _normalize_chat_messages(cls, messages: Any) -> list[dict[str, str]]:
-        normalized: list[dict[str, str]] = []
+    def _normalize_chat_messages(cls, messages: Any) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
         for item in messages if isinstance(messages, list) else []:
             if not isinstance(item, dict):
                 continue
             role = str(item.get("role") or "user").strip().lower()
-            if role not in {"system", "user", "assistant"}:
+            if role not in {"system", "user", "assistant", "tool"}:
                 role = "user"
-            content = cls._normalize_chat_message_content(item.get("content"))
-            if not content:
+            
+            if role == "tool":
+                normalized.append({
+                    "role": role,
+                    "tool_call_id": str(item.get("tool_call_id") or ""),
+                    "content": str(item.get("content") or "")
+                })
                 continue
-            normalized.append({"role": role, "content": content})
+                
+            if role == "assistant" and "tool_calls" in item:
+                msg = {"role": role, "tool_calls": item.get("tool_calls")}
+                content = item.get("content")
+                if content:
+                    msg["content"] = str(content)
+                normalized.append(msg)
+                continue
+
+            content = item.get("content")
+            if isinstance(content, list):
+                normalized.append({"role": role, "content": content})
+                continue
+
+            str_content = cls._normalize_chat_message_content(content)
+            if not str_content:
+                continue
+            normalized.append({"role": role, "content": str_content})
         return normalized
 
     @staticmethod
-    def _messages_to_responses_input(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
+    def _messages_to_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         converted: list[dict[str, Any]] = []
         for message in messages:
+            content = message.get("content")
+            text_content = str(content) if isinstance(content, list) else str(content or "")
             converted.append(
                 {
                     "role": message["role"],
-                    "content": [{"type": "input_text", "text": message["content"]}],
+                    "content": [{"type": "input_text", "text": text_content}],
                 }
             )
         return converted
@@ -392,6 +440,8 @@ class LlmProviderService:
             raise ValueError("model_name is required")
 
         normalized_messages = self._normalize_chat_messages(messages)
+        if self._requires_tool_role_compat(provider):
+            normalized_messages = self._convert_tool_role_messages(normalized_messages)
         if not normalized_messages:
             raise ValueError("messages is required")
 
@@ -473,6 +523,8 @@ class LlmProviderService:
             raise ValueError("model_name is required")
 
         normalized_messages = self._normalize_chat_messages(messages)
+        if self._requires_tool_role_compat(provider):
+            normalized_messages = self._convert_tool_role_messages(normalized_messages)
         if not normalized_messages:
             raise ValueError("messages is required")
 
@@ -509,6 +561,27 @@ class LlmProviderService:
         import json
         import logging
         logger = logging.getLogger(__name__)
+        tool_index_by_call_id: dict[str, int] = {}
+        next_tool_index = 0
+
+        def _normalize_arguments(value: Any) -> str:
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (dict, list)):
+                try:
+                    return json.dumps(value, ensure_ascii=False)
+                except Exception:
+                    return str(value)
+            return str(value or "")
+
+        def _tool_index(call_id: str) -> int:
+            nonlocal next_tool_index
+            existing = tool_index_by_call_id.get(call_id)
+            if existing is not None:
+                return existing
+            tool_index_by_call_id[call_id] = next_tool_index
+            next_tool_index += 1
+            return tool_index_by_call_id[call_id]
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", url, headers=headers, json=body) as resp:
@@ -531,8 +604,44 @@ class LlmProviderService:
                             result = {}
                             if "content" in delta and delta["content"]:
                                 result["content"] = delta["content"]
-                            if "tool_calls" in delta:
-                                result["tool_calls"] = delta["tool_calls"]
+                            tool_calls: list[dict[str, Any]] = []
+                            if "tool_calls" in delta and isinstance(delta["tool_calls"], list):
+                                tool_calls.extend(delta["tool_calls"])
+
+                            # Compatibility: some upstreams emit tool calls in top-level/item fields
+                            # instead of OpenAI-style delta.tool_calls.
+                            item = data.get("item")
+                            if isinstance(item, dict):
+                                call_id = str(item.get("call_id") or "").strip()
+                                status = str(item.get("status") or "").strip().lower()
+                                if call_id and status == "completed":
+                                    tool_calls.append(
+                                        {
+                                            "index": _tool_index(call_id),
+                                            "id": call_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": str(item.get("name") or "").strip(),
+                                                "arguments": _normalize_arguments(item.get("arguments")),
+                                            },
+                                        }
+                                    )
+
+                            top_call_id = str(data.get("call_id") or "").strip()
+                            if top_call_id and ("arguments" in data or "name" in data):
+                                tool_calls.append(
+                                    {
+                                        "index": _tool_index(top_call_id),
+                                        "id": top_call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": str(data.get("name") or "").strip(),
+                                            "arguments": _normalize_arguments(data.get("arguments")),
+                                        },
+                                    }
+                                )
+                            if tool_calls:
+                                result["tool_calls"] = tool_calls
                             if finish_reason:
                                 result["finish_reason"] = finish_reason
 

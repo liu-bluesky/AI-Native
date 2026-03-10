@@ -7,7 +7,7 @@ import json
 from psycopg import connect
 from psycopg.rows import dict_row
 
-from user_store import User
+from user_store import User, _now_iso
 
 
 class UserStorePostgres:
@@ -26,6 +26,14 @@ class UserStorePostgres:
                 );
                 """
             )
+
+    def _to_user(self, payload: dict) -> User:
+        return User(
+            username=str(payload.get("username") or ""),
+            password_hash=str(payload.get("password_hash") or ""),
+            role=str(payload.get("role") or "user"),
+            created_at=str(payload.get("created_at") or _now_iso()),
+        )
 
     def save(self, user: User) -> None:
         payload = json.dumps(
@@ -54,7 +62,7 @@ class UserStorePostgres:
             row = cur.fetchone()
         if row is None:
             return None
-        return User(**row["payload"])
+        return self._to_user(row["payload"])
 
     def has_any(self) -> bool:
         with self._conn.cursor() as cur:
@@ -66,7 +74,7 @@ class UserStorePostgres:
         with self._conn.cursor() as cur:
             cur.execute("SELECT payload FROM users ORDER BY username ASC")
             rows = cur.fetchall() or []
-        return [User(**row["payload"]) for row in rows]
+        return [self._to_user(row["payload"]) for row in rows]
 
     def delete(self, username: str) -> bool:
         with self._conn.cursor() as cur:

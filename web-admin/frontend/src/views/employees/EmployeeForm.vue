@@ -146,7 +146,7 @@
             </el-button>
           </div>
           <div class="field-hint">
-            同一字段内完成筛选与绑定：领域仅用于筛选，实际绑定的是规则标题；系统会自动归并保存领域。
+            同一字段内完成筛选与绑定：领域仅用于筛选，实际提交字段为 rule_bindings。
             <span class="count-text">当前可选 {{ filteredRules.length }} 条。</span>
           </div>
           <div
@@ -182,22 +182,6 @@
           </div>
           <span v-else class="preview-empty">未选择</span>
           <div class="field-hint">支持完整查看已选规则，避免标签折叠导致信息不全。</div>
-        </el-form-item>
-
-        <el-form-item label="保存领域">
-          <div class="selected-line">
-            <el-tag
-              v-for="domain in form.rule_domains"
-              :key="domain"
-              size="small"
-              type="warning"
-              class="selected-tag"
-            >
-              {{ domain }}
-            </el-tag>
-            <span v-if="!form.rule_domains.length" class="preview-empty">未选择</span>
-          </div>
-          <div class="field-hint">后端当前按领域保存，领域由已选规则自动计算。</div>
         </el-form-item>
 
         <el-form-item label="记忆作用域">
@@ -320,7 +304,7 @@
               selectedRuleIds.length
             }}</el-descriptions-item>
             <el-descriptions-item label="规则领域数">{{
-              form.rule_domains.length
+              selectedRuleDomains.length
             }}</el-descriptions-item>
             <el-descriptions-item label="记忆作用域">{{
               form.memory_scope
@@ -363,14 +347,14 @@
           <div class="preview-tags">
             <span class="preview-label">规则领域：</span>
             <el-tag
-              v-for="domain in form.rule_domains"
+              v-for="domain in selectedRuleDomains"
               :key="domain"
               size="small"
               class="preview-tag"
             >
               {{ domain }}
             </el-tag>
-            <span v-if="!form.rule_domains.length" class="preview-empty"
+            <span v-if="!selectedRuleDomains.length" class="preview-empty"
               >未选择</span
             >
           </div>
@@ -396,7 +380,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed, watch } from "vue";
+import { ref, reactive, onMounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
@@ -423,13 +407,12 @@ const availableSkills = ref([]);
 const availableRules = ref([]);
 const ruleDomainFilters = ref([]);
 const selectedRuleIds = ref([]);
-const preservedRuleDomains = ref([]);
+const initialRuleIds = ref([]);
 
 const form = reactive({
   name: "",
   description: "",
   skills: [],
-  rule_domains: [],
   memory_scope: "project",
   memory_retention_days: 90,
   tone: "professional",
@@ -488,22 +471,21 @@ function normalizeStyleHints(hints) {
   return result;
 }
 
-function refreshPreservedRuleDomains(domains = []) {
-  const knownDomains = new Set(
-    availableRules.value
-      .map((rule) => normalizeDomain(rule.domain))
-      .filter(Boolean)
-  );
-  const seen = new Set();
-  const preserved = [];
-  for (const domain of domains || []) {
-    const text = String(domain || "").trim();
-    const normalized = normalizeDomain(text);
-    if (!normalized || knownDomains.has(normalized) || seen.has(normalized)) continue;
-    seen.add(normalized);
-    preserved.push(text);
+function extractRuleIdsFromBindings(ruleBindings) {
+  if (!Array.isArray(ruleBindings)) return [];
+  const ids = [];
+  for (const item of ruleBindings) {
+    if (typeof item === "string") {
+      const ruleId = String(item || "").trim();
+      if (ruleId) ids.push(ruleId);
+      continue;
+    }
+    if (item && typeof item === "object") {
+      const ruleId = String(item.id || "").trim();
+      if (ruleId) ids.push(ruleId);
+    }
   }
-  preservedRuleDomains.value = preserved;
+  return Array.from(new Set(ids));
 }
 
 function ensureOptionCoverage() {
@@ -525,12 +507,6 @@ const availableDomains = computed(() => {
     if (!domain || seen.has(normalized)) continue;
     seen.add(normalized);
     domains.push(domain);
-  }
-  for (const existingDomain of form.rule_domains || []) {
-    const normalized = normalizeDomain(existingDomain);
-    if (!existingDomain || seen.has(normalized)) continue;
-    seen.add(normalized);
-    domains.push(existingDomain);
   }
   return domains;
 });
@@ -555,6 +531,19 @@ const selectedRuleTitles = computed(() =>
   selectedRules.value.map((rule) => rule.title)
 );
 
+const selectedRuleDomains = computed(() => {
+  const seen = new Set();
+  const domains = [];
+  for (const rule of selectedRules.value) {
+    const domain = String(rule?.domain || "").trim();
+    const normalized = normalizeDomain(domain);
+    if (!domain || seen.has(normalized)) continue;
+    seen.add(normalized);
+    domains.push(domain);
+  }
+  return domains;
+});
+
 const ruleSelectOptions = computed(() => {
   const map = new Map();
   for (const rule of filteredRules.value) {
@@ -571,47 +560,6 @@ const ruleSelectPlaceholder = computed(() =>
     ? "规则加载中..."
     : `从系统规则中选择标题（当前可选 ${filteredRules.value.length} 条）`
 );
-
-function collectRuleDomainsByRuleIds(ruleIds) {
-  const seen = new Set();
-  const domains = [];
-  for (const ruleId of ruleIds) {
-    const rule = ruleMap.value.get(ruleId);
-    const domain = String(rule?.domain || "").trim();
-    const normalized = normalizeDomain(domain);
-    if (!domain || seen.has(normalized)) continue;
-    seen.add(normalized);
-    domains.push(domain);
-  }
-  return domains;
-}
-
-function syncRuleDomainsFromSelectedRules() {
-  const domains = collectRuleDomainsByRuleIds(selectedRuleIds.value);
-  const seen = new Set(domains.map((domain) => normalizeDomain(domain)));
-  for (const preservedDomain of preservedRuleDomains.value) {
-    const normalized = normalizeDomain(preservedDomain);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    domains.push(preservedDomain);
-  }
-  form.rule_domains = domains;
-}
-
-watch(selectedRuleIds, syncRuleDomainsFromSelectedRules, { immediate: true });
-
-function hydrateSelectedRulesFromDomains(domains = []) {
-  if (!domains.length) return;
-  const targets = new Set(domains.map(normalizeDomain).filter(Boolean));
-  selectedRuleIds.value = availableRules.value
-    .filter((rule) => targets.has(normalizeDomain(rule.domain)))
-    .map((rule) => rule.id);
-  if (!ruleDomainFilters.value.length) {
-    ruleDomainFilters.value = availableDomains.value.filter((domain) =>
-      targets.has(normalizeDomain(domain))
-    );
-  }
-}
 
 async function nextStep() {
   if (currentStep.value === 0) {
@@ -681,7 +629,6 @@ async function fetchDetail() {
     name: employee.name || "",
     description: employee.description || "",
     skills: employee.skills || [],
-    rule_domains: employee.rule_domains || [],
     memory_scope: employee.memory_scope || "project",
     memory_retention_days: employee.memory_retention_days ?? 90,
     tone: employee.tone || "professional",
@@ -692,7 +639,7 @@ async function fetchDetail() {
     evolve_threshold: employee.evolve_threshold ?? 0.8,
     feedback_upgrade_enabled: employee.feedback_upgrade_enabled ?? false,
   });
-  refreshPreservedRuleDomains(form.rule_domains);
+  initialRuleIds.value = extractRuleIdsFromBindings(employee.rule_bindings);
 }
 
 async function fetchSelectionOptions() {
@@ -712,8 +659,27 @@ async function fetchSelectionOptions() {
       domain: String(rule.domain || "").trim(),
     }));
     ensureOptionCoverage();
-    refreshPreservedRuleDomains(form.rule_domains);
-    hydrateSelectedRulesFromDomains(form.rule_domains);
+    if (initialRuleIds.value.length) {
+      const knownRuleIds = new Set(availableRules.value.map((rule) => rule.id));
+      for (const ruleId of initialRuleIds.value) {
+        if (knownRuleIds.has(ruleId)) continue;
+        availableRules.value.push({
+          id: ruleId,
+          title: `${ruleId} (历史配置)`,
+          domain: "",
+        });
+        knownRuleIds.add(ruleId);
+      }
+      selectedRuleIds.value = Array.from(
+        new Set(initialRuleIds.value.map((item) => String(item || "").trim()).filter(Boolean))
+      );
+      if (!ruleDomainFilters.value.length && selectedRuleDomains.value.length) {
+        const targetDomains = new Set(selectedRuleDomains.value.map(normalizeDomain));
+        ruleDomainFilters.value = availableDomains.value.filter((domain) =>
+          targetDomains.has(normalizeDomain(domain))
+        );
+      }
+    }
   } finally {
     optionsLoading.value = false;
   }
@@ -723,10 +689,16 @@ async function handleSubmit() {
   await formRef.value.validate();
   submitting.value = true;
   try {
-    syncRuleDomainsFromSelectedRules();
     const payload = {
       ...form,
-      rule_domains: [...form.rule_domains],
+      rule_bindings: selectedRuleIds.value.map((ruleId) => {
+        const rule = ruleMap.value.get(ruleId);
+        return {
+          id: ruleId,
+          title: String(rule?.title || "").trim(),
+          domain: String(rule?.domain || "").trim(),
+        };
+      }),
       style_hints: normalizeStyleHints(form.style_hints),
     };
     if (isEdit.value) {
