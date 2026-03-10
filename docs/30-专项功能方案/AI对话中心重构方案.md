@@ -571,7 +571,7 @@ class ToolExecutor:
             return {"error": f"Tool {tool_name} failed: {str(e)}"}
 
     async def _execute_tool(self, tool_name: str, args: dict) -> dict:
-        from dynamic_mcp import invoke_project_skill_tool_runtime
+        from services.dynamic_mcp_runtime import invoke_project_skill_tool_runtime
         from starlette.concurrency import run_in_threadpool
         result = await run_in_threadpool(
             invoke_project_skill_tool_runtime,
@@ -1027,9 +1027,9 @@ A：不需要。WebSocket 协议保持不变，前端无感知。
 ```python
 # web-admin/api/routers/projects.py
 
-from conversation_manager import ConversationManager
-from agent_orchestrator import AgentOrchestrator
-from tool_executor import ToolExecutor
+from services.conversation_manager import ConversationManager
+from services.agent_orchestrator import AgentOrchestrator
+from services.tool_executor import ToolExecutor
 import redis.asyncio as redis
 
 # 初始化（应用启动时）
@@ -1052,7 +1052,7 @@ async def ws_project_chat(websocket: WebSocket, project_id: str):
         session_id = await conv_manager.create_session(project_id, employee_id)
         
         # 获取工具列表
-        from dynamic_mcp import list_project_proxy_tools_runtime
+        from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
         tools = list_project_proxy_tools_runtime(project_id, employee_id)
         
         # 创建编排器
@@ -1502,7 +1502,7 @@ config = AppConfig()
 ```python
 # conversation_manager.py
 
-from config import config
+from core.config import config
 
 class ConversationManager:
     def __init__(self, redis_client: redis.Redis):

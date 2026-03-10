@@ -6,8 +6,8 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from deps import require_auth
-from llm_provider_service import get_llm_provider_service
+from core.deps import require_auth
+from services.llm_provider_service import get_llm_provider_service
 from models.requests import LlmProviderCreateReq, LlmProviderTestReq, LlmProviderUpdateReq
 
 router = APIRouter(prefix="/api/llm", dependencies=[Depends(require_auth)])

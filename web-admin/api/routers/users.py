@@ -6,10 +6,10 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from deps import require_auth, role_store, user_store
+from core.deps import require_auth, role_store, user_store
 from models.requests import UserCreateReq, UserPasswordUpdateReq
-from role_permissions import has_permission
-from user_store import User, hash_password
+from core.role_permissions import has_permission
+from stores.json.user_store import User, hash_password
 
 router = APIRouter(prefix="/api/users", dependencies=[Depends(require_auth)])
 

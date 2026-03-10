@@ -1,6 +1,7 @@
 # AI 员工工厂
 
 uvicorn server:app --host 192.168.1.126 --port 8000
+EXTERNAL_AGENT_RUNNER_URL=http://127.0.0.1:3931 uvicorn server:app --host 0.0.0.0 --port 8000
 基于 MCP（Model Context Protocol）的 AI-Native 开发平台。用户可自由组合 Skills + Rules + Memory + Persona 创建多个 AI 员工，通过进化引擎实现"越用越聪明"。
 
 ## 技术栈
@@ -101,8 +102,7 @@ MIT
 
 🔴 核心问题诊断
 
-1. 假流式（Fake Streaming）问题  
-
+1. 假流式（Fake Streaming）问题
 
 问题位置：llm_provider_service.py:486-489
 

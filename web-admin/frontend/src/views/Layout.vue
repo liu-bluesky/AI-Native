@@ -80,7 +80,7 @@
         <el-button text @click="logout">退出</el-button>
       </el-header>
       <el-main>
-        <div class="page-content">
+        <div class="page-content" :class="{ 'is-chat-page': isChatRoute }">
           <router-view />
         </div>
       </el-main>
@@ -98,6 +98,7 @@ const route = useRoute()
 const router = useRouter()
 const username = computed(() => localStorage.getItem('username') || 'admin')
 const defaultOpeneds = ['group-org', 'group-capability', 'group-system']
+const isChatRoute = computed(() => route.path === '/ai/chat')
 
 function canMenu(permissionKey) {
   return hasPermission(permissionKey)
@@ -157,6 +158,9 @@ function logout() {
   padding: 20px;
   background: var(--color-bg-layout);
   overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .page-content {
@@ -166,5 +170,15 @@ function logout() {
   min-height: calc(100% - 40px);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   box-sizing: border-box;
+}
+
+.page-content.is-chat-page {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 </style>

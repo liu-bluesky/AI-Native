@@ -61,9 +61,9 @@ def main() -> None:
     data_dir = api_dir / "data"
     sys.path.insert(0, str(api_dir))
 
-    from employee_store import EmployeeStore
-    from employee_store_pg import EmployeeStorePostgres
-    from stores_pg import (
+    from stores.json.employee_store import EmployeeStore
+    from stores.postgres.employee_store import EmployeeStorePostgres
+    from stores.postgres.mcp_bridge import (
         PgBindingStore,
         PgCandidateStore,
         PgEventStore,
@@ -75,8 +75,8 @@ def main() -> None:
         PgSyncEventStore,
         PgUsageLogStore,
     )
-    from user_store import UserStore
-    from user_store_pg import UserStorePostgres
+    from stores.json.user_store import UserStore
+    from stores.postgres.user_store import UserStorePostgres
 
     skills_mod = _load_store_module(project_root, "skills")
     rules_mod = _load_store_module(project_root, "rules")

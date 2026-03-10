@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Depends
 
-from deps import require_auth
-from stores import memory_store, serialize_memory
+from core.deps import require_auth
+from stores.mcp_bridge import memory_store, serialize_memory
 from models.requests import CompressReq, MemoryBatchDeleteReq
 
 router = APIRouter(prefix="/api/memory", dependencies=[Depends(require_auth)])

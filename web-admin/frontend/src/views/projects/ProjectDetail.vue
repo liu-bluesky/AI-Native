@@ -628,12 +628,7 @@ async function selectWorkspaceDirectory() {
 
 async function pickWorkspaceDirectory(currentPath = "") {
   if (typeof window.showDirectoryPicker === "function") {
-    try {
-      const result = await window.showDirectoryPicker();
-      return String(result?.name || "").trim();
-    } catch (err) {
-      if (err?.name === "AbortError") return null;
-    }
+    ElMessage.info("浏览器安全限制下无法直接读取目录绝对路径，请粘贴完整路径。");
   }
   try {
     const { value } = await ElMessageBox.prompt(

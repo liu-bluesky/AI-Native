@@ -6,10 +6,10 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from auth import create_token
-from deps import require_auth, role_store, system_config_store, user_store
-from role_permissions import resolve_role_permissions
-from user_store import User, hash_password, verify_password
+from core.auth import create_token
+from core.deps import require_auth, role_store, system_config_store, user_store
+from core.role_permissions import resolve_role_permissions
+from stores.json.user_store import User, hash_password, verify_password
 from models.requests import InitSetupReq, LoginReq, RegisterReq
 
 router = APIRouter(prefix="/api")

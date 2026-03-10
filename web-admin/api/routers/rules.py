@@ -6,9 +6,9 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from dataclasses import replace
 
-from deps import employee_store, require_auth
-from employee_store import _now_iso
-from stores import rule_store, serialize_rule, Rule, Severity, RiskDomain, rules_now_iso
+from core.deps import employee_store, require_auth
+from stores.json.employee_store import _now_iso
+from stores.mcp_bridge import rule_store, serialize_rule, Rule, Severity, RiskDomain, rules_now_iso
 from models.requests import RuleUsageReq, RuleCreateReq, RuleUpdateReq
 
 router = APIRouter(prefix="/api/rules", dependencies=[Depends(require_auth)])

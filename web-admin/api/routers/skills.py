@@ -15,8 +15,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Depends, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
 
-from deps import require_auth, usage_store
-from stores import (
+from core.deps import require_auth, usage_store
+from stores.mcp_bridge import (
     skill_store, binding_store, serialize_skill, EmployeeSkillBinding,
     Skill, ToolDef, ResourceDef, skills_now_iso,
 )

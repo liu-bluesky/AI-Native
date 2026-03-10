@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from deps import require_auth
-from stores import sync_store, serialize_sync_event
+from core.deps import require_auth
+from stores.mcp_bridge import sync_store, serialize_sync_event
 
 router = APIRouter(prefix="/api/sync", dependencies=[Depends(require_auth)])
 

@@ -1,6 +1,6 @@
 """监控端点"""
 from fastapi import APIRouter
-from observability import metrics
+from core.observability import metrics
 
 router = APIRouter(prefix="/api/metrics")
 

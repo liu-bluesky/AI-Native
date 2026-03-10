@@ -7,11 +7,11 @@ from typing import Any
 from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends
 
-from deps import require_auth, employee_store, system_config_store
-from employee_store import EmployeeConfig, _now_iso
-from stores import rule_store, skill_store
+from core.deps import require_auth, employee_store, system_config_store
+from stores.json.employee_store import EmployeeConfig, _now_iso
+from stores.mcp_bridge import rule_store, skill_store
 from models.requests import EmployeeCreateReq, EmployeeUpdateReq
-from config import get_settings
+from core.config import get_settings
 
 router = APIRouter(prefix="/api/employees", dependencies=[Depends(require_auth)])
 
@@ -511,7 +511,7 @@ async def test_employee_mcp(employee_id: str):
 @router.get("/{employee_id}/prompt-history")
 async def get_prompt_history(employee_id: str, limit: int = 20):
     """获取员工提示词生成历史"""
-    from prompt_history_store_pg import PromptHistoryStorePostgres
+    from stores.postgres.prompt_history_store import PromptHistoryStorePostgres
 
     emp = employee_store.get(employee_id)
     if emp is None:
@@ -529,7 +529,7 @@ async def get_prompt_history(employee_id: str, limit: int = 20):
 @router.delete("/{employee_id}/prompt-history/{record_id}")
 async def delete_prompt_history(employee_id: str, record_id: str):
     """删除提示词历史记录"""
-    from prompt_history_store_pg import PromptHistoryStorePostgres
+    from stores.postgres.prompt_history_store import PromptHistoryStorePostgres
 
     emp = employee_store.get(employee_id)
     if emp is None:
@@ -555,7 +555,7 @@ def _assert_employee_manual_generation_enabled() -> None:
 @router.post("/{employee_id}/generate-manual")
 async def generate_employee_manual(employee_id: str):
     """生成员工使用手册（面向接入方 AI 平台）"""
-    from llm_provider_service import get_llm_provider_service
+    from services.llm_provider_service import get_llm_provider_service
 
     _assert_employee_manual_generation_enabled()
 

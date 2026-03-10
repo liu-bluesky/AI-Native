@@ -124,8 +124,8 @@ web-admin/api/
 
 ```python
 from fastapi import APIRouter, Depends
-from deps import require_auth
-from stores import xxx_store, serialize_xxx
+from core.deps import require_auth
+from stores.mcp_bridge import xxx_store, serialize_xxx
 
 router = APIRouter(prefix="/api/xxx", dependencies=[Depends(require_auth)])
 

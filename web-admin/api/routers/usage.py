@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from deps import require_auth, role_store, usage_store
+from core.deps import require_auth, role_store, usage_store
 from models.requests import CreateApiKeyReq
-from role_permissions import has_permission
+from core.role_permissions import has_permission
 
 router = APIRouter(prefix="/api/usage", dependencies=[Depends(require_auth)])
 

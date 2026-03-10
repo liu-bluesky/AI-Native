@@ -10,8 +10,8 @@ import requests
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from deps import external_mcp_store, require_auth
-from external_mcp_store import ExternalMcpModule, _now_iso
+from core.deps import external_mcp_store, require_auth
+from stores.json.external_mcp_store import ExternalMcpModule, _now_iso
 from models.requests import ExternalMcpModuleCreateReq, ExternalMcpModuleTestReq, ExternalMcpModuleUpdateReq
 
 router = APIRouter(prefix="/api/mcp/modules", dependencies=[Depends(require_auth)])

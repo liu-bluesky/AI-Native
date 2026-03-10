@@ -6,9 +6,9 @@ from dataclasses import asdict, replace as dc_replace
 
 from fastapi import APIRouter, HTTPException, Depends
 
-from deps import require_auth
-from employee_store import _now_iso
-from stores import (
+from core.deps import require_auth
+from stores.json.employee_store import _now_iso
+from stores.mcp_bridge import (
     candidate_store, event_store, usage_log_store,
     serialize_candidate,
 )

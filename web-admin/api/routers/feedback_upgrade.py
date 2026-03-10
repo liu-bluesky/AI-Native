@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
-from deps import require_auth
-from feedback_service import get_feedback_service
-from llm_provider_service import get_llm_provider_service
+from core.deps import require_auth
+from services.feedback_service import get_feedback_service
+from services.llm_provider_service import get_llm_provider_service
 from models.requests import (
     FeedbackAnalyzeReq,
     FeedbackBatchAnalyzeReq,

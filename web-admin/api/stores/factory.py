@@ -1,0 +1,178 @@
+"""web-admin API store factory and lazy proxies."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from threading import Lock
+from typing import Any, Callable
+
+from core.config import get_settings
+
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+
+class _StoreProxy:
+    def __init__(self, factory: Callable[[], Any]) -> None:
+        self._factory = factory
+        self._instance: Any = None
+        self._lock = Lock()
+
+    def _get_instance(self) -> Any:
+        if self._instance is not None:
+            return self._instance
+        with self._lock:
+            if self._instance is None:
+                self._instance = self._factory()
+        return self._instance
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._get_instance(), item)
+
+
+def _missing_driver(setting_name: str) -> RuntimeError:
+    return RuntimeError(
+        f"{setting_name}=postgres 但未安装 PostgreSQL 驱动。"
+        "请安装依赖: psycopg[binary]>=3.2。"
+    )
+
+
+def _create_user_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import UserStore
+
+        return UserStore(DATA_DIR)
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.user_store import UserStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return UserStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
+def _create_employee_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import EmployeeStore
+
+        return EmployeeStore(DATA_DIR)
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.employee_store import EmployeeStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return EmployeeStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
+def _create_role_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import RoleStore
+
+        return RoleStore(DATA_DIR)
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.role_store import RoleStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return RoleStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
+def _create_project_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import ProjectStore
+
+        return ProjectStore(DATA_DIR)
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.project_store import ProjectStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return ProjectStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
+def _create_project_chat_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import ProjectChatStore
+
+        return ProjectChatStore(DATA_DIR)
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.project_chat_store import ProjectChatStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return ProjectChatStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
+def _create_system_config_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import SystemConfigStore
+
+        return SystemConfigStore(DATA_DIR)
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.system_config_store import SystemConfigStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return SystemConfigStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
+def _create_external_mcp_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import ExternalMcpStore
+
+        return ExternalMcpStore(DATA_DIR)
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.external_mcp_store import ExternalMcpStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return ExternalMcpStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
+def _create_usage_store() -> Any:
+    settings = get_settings()
+    if settings.usage_store_backend == "sqlite":
+        from stores.json import UsageStore
+
+        return UsageStore(DATA_DIR / "usage.db")
+    if settings.usage_store_backend == "postgres":
+        try:
+            from stores.postgres.usage_store import UsageStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("USAGE_STORE_BACKEND") from exc
+        return UsageStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported USAGE_STORE_BACKEND: {settings.usage_store_backend}")
+
+
+user_store = _StoreProxy(_create_user_store)
+role_store = _StoreProxy(_create_role_store)
+employee_store = _StoreProxy(_create_employee_store)
+project_store = _StoreProxy(_create_project_store)
+project_chat_store = _StoreProxy(_create_project_chat_store)
+system_config_store = _StoreProxy(_create_system_config_store)
+usage_store = _StoreProxy(_create_usage_store)
+external_mcp_store = _StoreProxy(_create_external_mcp_store)
+
+
+__all__ = [
+    "user_store",
+    "role_store",
+    "employee_store",
+    "project_store",
+    "project_chat_store",
+    "system_config_store",
+    "usage_store",
+    "external_mcp_store",
+]

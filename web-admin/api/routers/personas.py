@@ -6,8 +6,8 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from dataclasses import replace
 
-from deps import require_auth
-from stores import (
+from core.deps import require_auth
+from stores.mcp_bridge import (
     persona_store, snapshot_store, serialize_persona,
     Persona, DecisionPolicy, DriftControl, persona_now_iso,
 )

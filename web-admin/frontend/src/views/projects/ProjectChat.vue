@@ -26,6 +26,14 @@
             运行标识 {{ externalAgentInfo.runtime_model_name }}
           </el-tag>
           <el-tag
+            v-if="isExternalAgentMode"
+            :type="externalAgentInfo.execution_mode === 'runner' ? 'success' : 'info'"
+            size="small"
+            effect="plain"
+          >
+            {{ externalAgentInfo.execution_mode === 'runner' ? '宿主 Runner' : 'API 本地执行' }}
+          </el-tag>
+          <el-tag
             v-if="isExternalAgentMode && externalAgentInfo.thread_id"
             size="small"
             effect="plain"
@@ -51,6 +59,38 @@
       </div>
 
       <div
+        v-if="isExternalAgentMode && !workspacePathConfigured"
+        class="workspace-guide-banner workspace-guide-banner--warning"
+      >
+        <div class="workspace-guide-content">
+          <div class="workspace-guide-title">当前项目未配置工作区路径</div>
+          <div class="workspace-guide-text">
+            外部 Agent 只有拿到项目绝对路径后，才能像命令行一样在该目录创建文件、修改代码和执行命令。
+          </div>
+        </div>
+        <div class="workspace-guide-actions">
+          <el-button @click="promptProjectWorkspacePath">填写路径</el-button>
+          <el-button type="primary" @click="showSettingsDialog = true">打开设置</el-button>
+        </div>
+      </div>
+
+      <div
+        v-else-if="isExternalAgentMode && workspacePathDirty"
+        class="workspace-guide-banner workspace-guide-banner--info"
+      >
+        <div class="workspace-guide-content">
+          <div class="workspace-guide-title">工作区路径有未保存修改</div>
+          <div class="workspace-guide-text">
+            当前输入框里的路径还没保存，外部 Agent 仍然会使用旧的工作目录。
+          </div>
+        </div>
+        <div class="workspace-guide-actions">
+          <el-button @click="promptProjectWorkspacePath">继续填写</el-button>
+          <el-button type="primary" :loading="workspacePathSaving" @click="saveProjectWorkspacePath">保存路径</el-button>
+        </div>
+      </div>
+
+      <div
         v-if="isExternalAgentMode"
         class="terminal-panel"
         :class="{ 'is-collapsed': !terminalPanelExpanded }"
@@ -67,6 +107,14 @@
               @click="clearTerminalPanel"
               :disabled="!terminalPanelLines.length"
             >清空</el-button>
+            <el-button
+              v-if="externalAgentInfo.supports_terminal_mirror"
+              text
+              size="small"
+              @click="terminalDebugInputVisible = !terminalDebugInputVisible"
+            >
+              {{ terminalDebugInputVisible ? '隐藏调试输入' : '调试输入' }}
+            </el-button>
             <el-button text size="small" @click="terminalPanelExpanded = !terminalPanelExpanded">
               {{ terminalPanelExpanded ? '收起' : '展开' }}
             </el-button>
@@ -75,11 +123,14 @@
         <div v-show="terminalPanelExpanded" ref="terminalPanelRef" class="terminal-panel-body">
           <pre class="terminal-panel-pre">{{ terminalPanelText }}</pre>
         </div>
-        <div v-show="terminalPanelExpanded" class="terminal-panel-footer">
+        <div
+          v-show="terminalPanelExpanded && terminalDebugInputVisible && externalAgentInfo.supports_terminal_mirror"
+          class="terminal-panel-footer"
+        >
           <el-input
             v-model="terminalPanelInput"
             size="small"
-            placeholder="直接发送到真实 Codex 终端镜像，Enter 发送"
+            :placeholder="`直接发送到 ${externalAgentDisplayLabel} 终端镜像，Enter 发送`"
             @keyup.enter.prevent="sendTerminalMirrorInput"
           />
           <el-button size="small" @click="startTerminalMirror" :disabled="!externalAgentInfo.thread_id">
@@ -481,7 +532,7 @@
                 <span class="label-with-tooltip">
                   运行模式
                   <el-tooltip
-                    content="系统对话走内置 Provider；外部 Agent 直接托管 Codex CLI PTY 会话。"
+                    content="系统对话走内置 Provider；外部 Agent 可切换不同 CLI 适配器。"
                     placement="top"
                   >
                     <el-icon class="label-icon"><InfoFilled /></el-icon>
@@ -504,22 +555,55 @@
                 <span class="label-with-tooltip">
                   外部 Agent
                   <el-tooltip
-                    content="第一阶段固定接入 Codex CLI。"
+                    content="选择要托管到聊天框里的外部 CLI 智能体。"
                     placement="top"
                   >
                     <el-icon class="label-icon"><InfoFilled /></el-icon>
                   </el-tooltip>
                 </span>
               </template>
+              <div class="full-width">
+                <el-select
+                  v-model="projectChatSettings.external_agent_type"
+                  class="full-width"
+                >
+                  <el-option
+                    v-for="item in externalAgentOptions"
+                    :key="item.agent_type"
+                    :label="`${item.label}${item.implemented ? '' : '（待接入）'}`"
+                    :value="item.agent_type"
+                  />
+                </el-select>
+                <div
+                  v-if="!externalAgentInfo.implemented && externalAgentInfo.reason"
+                  class="workspace-path-hint"
+                >
+                  当前状态：{{ externalAgentInfo.reason }}
+                </div>
+              </div>
+            </el-form-item>
+
+            <el-form-item v-if="isExternalAgentMode">
+              <template #label>
+                <span class="label-with-tooltip">
+                  Agent 状态
+                </span>
+              </template>
               <div class="full-width external-agent-meta">
                 <div class="external-agent-row">
-                  <span>类型：{{ externalAgentInfo.label || 'Codex CLI' }}</span>
+                  <span>类型：{{ externalAgentDisplayLabel }}</span>
                   <el-tag
-                    :type="externalAgentInfo.available ? 'success' : 'warning'"
+                    :type="externalAgentInfo.available ? 'success' : externalAgentInfo.installed ? 'warning' : 'info'"
                     size="small"
                     effect="plain"
                   >
-                    {{ externalAgentInfo.available ? '可用' : '未发现' }}
+                    {{
+                      externalAgentInfo.available
+                        ? '可用'
+                        : externalAgentInfo.installed
+                          ? '已安装待接入'
+                          : '未发现'
+                    }}
                   </el-tag>
                 </div>
                 <div class="external-agent-row external-agent-command">
@@ -529,7 +613,7 @@
                   来源：{{ externalAgentInfo.command_source === 'system' ? '系统 PATH' : externalAgentInfo.command_source === 'override' ? '手动覆盖' : '未找到' }}
                 </div>
                 <div class="external-agent-row external-agent-command">
-                  运行标识：{{ externalAgentInfo.runtime_model_name || 'codex-cli' }}
+                  运行标识：{{ externalAgentRuntimeLabel }}
                 </div>
                 <div class="external-agent-row external-agent-command">
                   精确模型：{{ externalAgentInfo.exact_model_name || '当前未暴露' }}
@@ -548,6 +632,21 @@
                 </div>
                 <div class="external-agent-row external-agent-command">
                   沙箱：{{ externalAgentInfo.sandbox_mode || 'workspace-write' }}
+                </div>
+                <div class="external-agent-row external-agent-command">
+                  执行模式：{{ externalAgentInfo.execution_mode === 'runner' ? '宿主 Runner' : 'API 本地进程' }}
+                </div>
+                <div
+                  v-if="externalAgentInfo.runner_url"
+                  class="external-agent-row external-agent-command"
+                >
+                  Runner：{{ externalAgentInfo.runner_url }}
+                </div>
+                <div
+                  v-if="externalAgentInfo.materialized_by"
+                  class="external-agent-row external-agent-command"
+                >
+                  上下文写入：{{ externalAgentInfo.materialized_by }}
                 </div>
                 <div
                   v-if="externalAgentInfo.support_dir"
@@ -623,23 +722,43 @@
                 <span class="label-with-tooltip">
                   工作区路径
                   <el-tooltip
-                    content="外部 Agent 启动时会将此路径作为 Codex CLI 的工作目录。"
+                    content="外部 Agent 启动时会将此路径作为 CLI 工作目录。请填写项目绝对路径。"
                     placement="top"
                   >
                     <el-icon class="label-icon"><InfoFilled /></el-icon>
                   </el-tooltip>
                 </span>
               </template>
-              <el-input
-                :model-value="externalAgentInfo.workspace_path || '未配置'"
-                readonly
-                class="full-width"
-              />
+              <div class="workspace-path-editor">
+                <el-input
+                  v-model="workspacePathDraft"
+                  class="full-width"
+                  placeholder="/Users/yourname/project"
+                />
+                <div class="workspace-path-actions">
+                  <el-button @click="promptProjectWorkspacePath">填写路径</el-button>
+                  <el-button @click="testProjectWorkspacePath" :loading="workspacePathTesting">测试工作区</el-button>
+                  <el-button
+                    type="primary"
+                    :loading="workspacePathSaving"
+                    @click="saveProjectWorkspacePath"
+                  >保存路径</el-button>
+                </div>
+                <div class="workspace-path-hint">
+                  当前会话会按这里的绝对路径启动；保存后，聊天框里的外部 Agent 就会在该目录执行。
+                  <template v-if="externalAgentInfo.execution_mode">
+                    当前执行模式：{{ externalAgentInfo.execution_mode === 'runner' ? '宿主 Runner' : 'API 本地进程' }}。
+                  </template>
+                  <template v-if="externalAgentInfo.workspace_access?.reason">
+                    当前探测结果：{{ externalAgentInfo.workspace_access.reason }}
+                  </template>
+                </div>
+              </div>
             </el-form-item>
 
             <el-alert
               v-if="isExternalAgentMode && !externalAgentInfo.available"
-              title="未检测到 Codex CLI，保存设置后仍无法正常启动外部 Agent。"
+              title="当前选中的外部 Agent 不可用，保存设置后仍无法正常启动。"
               type="warning"
               :closable="false"
               show-icon
@@ -718,7 +837,7 @@
                 type="textarea"
                 v-model="systemPrompt"
                 :rows="3"
-                :placeholder="isExternalAgentMode ? '补充给 Codex CLI 的启动上下文...' : '你是项目开发助手...'"
+                :placeholder="isExternalAgentMode ? `补充给 ${externalAgentDisplayLabel} 的启动上下文...` : '你是项目开发助手...'"
                 class="full-width"
               />
             </el-form-item>
@@ -1296,6 +1415,8 @@ const CHAT_SETTINGS_DEFAULTS = {
 const loading = ref(false);
 const chatLoading = ref(false);
 const settingsSaving = ref(false);
+const workspacePathSaving = ref(false);
+const workspacePathTesting = ref(false);
 
 const projects = ref([]);
 const chatModes = ref([
@@ -1312,13 +1433,22 @@ const externalAgentInfo = ref({
   command_source: "missing",
   runtime_model_name: "codex-cli",
   exact_model_name: "",
+  execution_mode: "local",
+  runner_url: "",
+  materialized_by: "",
   available: false,
+  installed: false,
+  implemented: true,
+  reason: "",
+  supports_terminal_mirror: true,
+  supports_workspace_write: true,
   ready: false,
   session_id: "",
   thread_id: "",
   sandbox_mode: "workspace-write",
   workspace_path: "",
   sandbox_modes: ["read-only", "workspace-write"],
+  agent_types: [],
 });
 const mcpModules = ref({
   system: { project_related: [], system_global: [] },
@@ -1344,6 +1474,7 @@ const showSettingsDialog = ref(false);
 const activeSystemScope = ref("project_related");
 const selectedProjectToolNames = ref([]);
 const projectChatSettings = ref({ ...CHAT_SETTINGS_DEFAULTS });
+const workspacePathDraft = ref("");
 const singleRoundAnswerOnly = ref(false);
 const externalMcpTotal = ref(0);
 
@@ -1362,6 +1493,7 @@ const terminalPanelRef = ref(null);
 const terminalPanelStatus = ref("idle");
 const terminalPanelInput = ref("");
 const terminalMirrorConnected = ref(false);
+const terminalDebugInputVisible = ref(false);
 
 const maxUploadLimit = ref(6);
 const chatMaxTokens = ref(512);
@@ -1385,16 +1517,47 @@ const chatModeLabel = computed(() =>
 );
 const wsStatusText = computed(() => (wsConnected.value ? "已连接" : "未连接"));
 const wsStatusType = computed(() => (wsConnected.value ? "success" : "info"));
+const workspacePathResolved = computed(() =>
+  String(externalAgentInfo.value.workspace_path || "").trim(),
+);
+const workspacePathDraftNormalized = computed(() =>
+  String(workspacePathDraft.value || "").trim(),
+);
+const workspacePathConfigured = computed(
+  () => !!workspacePathResolved.value,
+);
+const workspacePathDirty = computed(() => {
+  if (!isExternalAgentMode.value) return false;
+  return workspacePathDraftNormalized.value !== workspacePathResolved.value;
+});
+const externalAgentDisplayLabel = computed(() =>
+  String(externalAgentInfo.value.label || "外部 Agent").trim() || "外部 Agent",
+);
+const externalAgentRuntimeLabel = computed(() =>
+  String(
+    externalAgentInfo.value.runtime_model_name ||
+      externalAgentInfo.value.agent_type ||
+      "external-agent",
+  ).trim() || "external-agent",
+);
+const externalAgentOptions = computed(() =>
+  Array.isArray(externalAgentInfo.value.agent_types)
+    ? externalAgentInfo.value.agent_types
+    : [],
+);
+
 const composerPlaceholder = computed(() =>
   isExternalAgentMode.value
-    ? "向 Codex CLI 发送输入，按 Enter 发送，Shift + Enter 换行。"
+    ? `向${externalAgentDisplayLabel.value}发送输入，按 Enter 发送，Shift + Enter 换行。`
     : "输入你的问题，按 Enter 发送，Shift + Enter 换行。支持粘贴图片。",
 );
 const composerHintText = computed(() => {
   if (!isExternalAgentMode.value) return "按 Enter 发送";
-  if (externalAgentWarmupLoading.value) return "Codex CLI 预热中...";
-  if (externalAgentInfo.value.ready) return "Codex CLI 已就绪，Enter 直接发送";
-  return "Enter 发送到 Codex CLI";
+  if (!workspacePathConfigured.value) return "先配置项目工作区路径";
+  if (workspacePathDirty.value) return "工作区路径有未保存修改";
+  if (externalAgentWarmupLoading.value) return `${externalAgentDisplayLabel.value} 预热中...`;
+  if (externalAgentInfo.value.ready) return `${externalAgentDisplayLabel.value} 已就绪，Enter 直接发送`;
+  return `Enter 发送到 ${externalAgentDisplayLabel.value}`;
 });
 const shortThreadId = computed(() => {
   const value = String(externalAgentInfo.value.thread_id || '').trim();
@@ -1733,7 +1896,15 @@ function normalizeExternalAgentInfo(raw) {
     command_source: String(source.command_source || "missing").trim() || "missing",
     runtime_model_name: String(source.runtime_model_name || source.model_name || "codex-cli").trim() || "codex-cli",
     exact_model_name: String(source.exact_model_name || "").trim(),
+    execution_mode: String(source.execution_mode || "local").trim() || "local",
+    runner_url: String(source.runner_url || "").trim(),
+    materialized_by: String(source.materialized_by || "").trim(),
     available: Boolean(source.available),
+    installed: Boolean(source.installed ?? source.available),
+    implemented: Boolean(source.implemented ?? true),
+    reason: String(source.reason || "").trim(),
+    supports_terminal_mirror: Boolean(source.supports_terminal_mirror ?? true),
+    supports_workspace_write: Boolean(source.supports_workspace_write ?? true),
     ready: Boolean(source.ready),
     session_id: String(
       source.session_id || source.agent_session_id || "",
@@ -1754,10 +1925,45 @@ function normalizeExternalAgentInfo(raw) {
           written: Boolean(item?.written),
         }))
       : [],
+    workspace_access:
+      source.workspace_access && typeof source.workspace_access === "object"
+        ? {
+            configured: Boolean(source.workspace_access.configured),
+            exists: Boolean(source.workspace_access.exists),
+            is_dir: Boolean(source.workspace_access.is_dir),
+            read_ok: Boolean(source.workspace_access.read_ok),
+            write_ok: Boolean(source.workspace_access.write_ok),
+            source: String(source.workspace_access.source || "").trim(),
+            sandbox_mode:
+              String(
+                source.workspace_access.sandbox_mode || source.sandbox_mode || "workspace-write",
+              ).trim() || "workspace-write",
+            reason: String(source.workspace_access.reason || "").trim(),
+          }
+        : {
+            configured: false,
+            exists: false,
+            is_dir: false,
+            read_ok: false,
+            write_ok: false,
+            source: "",
+            sandbox_mode: String(source.sandbox_mode || "workspace-write").trim() || "workspace-write",
+            reason: "",
+          },
     sandbox_modes: normalizeStringList(
       source.sandbox_modes || ["read-only", "workspace-write"],
       10,
     ),
+    agent_types: Array.isArray(source.agent_types)
+      ? source.agent_types.map((item) => ({
+          agent_type: String(item?.agent_type || "codex_cli").trim(),
+          label: String(item?.label || item?.agent_type || "外部 Agent").trim(),
+          available: Boolean(item?.available),
+          installed: Boolean(item?.installed ?? item?.available),
+          implemented: Boolean(item?.implemented ?? true),
+          reason: String(item?.reason || "").trim(),
+        }))
+      : [],
   };
 }
 
@@ -1796,7 +2002,11 @@ function normalizeProjectChatSettings(raw) {
       chatMode === "external_agent"
         ? "external_agent"
         : CHAT_SETTINGS_DEFAULTS.chat_mode,
-    external_agent_type: "codex_cli",
+    external_agent_type: ["codex_cli", "claude_cli", "gemini_cli"].includes(
+      String(source.external_agent_type || CHAT_SETTINGS_DEFAULTS.external_agent_type).trim(),
+    )
+      ? String(source.external_agent_type || CHAT_SETTINGS_DEFAULTS.external_agent_type).trim()
+      : CHAT_SETTINGS_DEFAULTS.external_agent_type,
     external_agent_sandbox_mode: effectiveSandboxMode,
     external_agent_sandbox_mode_explicit: sandboxModeExplicit,
     selected_employee_ids: selectedEmployeeIds,
@@ -1910,6 +2120,7 @@ function resetTerminalPanel() {
   terminalPanelStatus.value = 'idle';
   terminalPanelInput.value = "";
   terminalMirrorConnected.value = false;
+  terminalDebugInputVisible.value = false;
   scrollTerminalPanelBottom();
 }
 
@@ -1925,7 +2136,7 @@ async function startTerminalMirror() {
     type: "terminal_mirror_start",
     request_id: `mirror-start-${Date.now()}`,
     chat_mode: "external_agent",
-    external_agent_type: "codex_cli",
+    external_agent_type: String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
     external_agent_sandbox_mode:
       projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
     external_agent_sandbox_mode_explicit: true,
@@ -1956,7 +2167,7 @@ async function sendTerminalMirrorInput() {
     type: "terminal_mirror_input",
     request_id: `mirror-input-${Date.now()}`,
     chat_mode: "external_agent",
-    external_agent_type: "codex_cli",
+    external_agent_type: String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
     external_agent_sandbox_mode:
       projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
     external_agent_sandbox_mode_explicit: true,
@@ -2352,6 +2563,7 @@ async function fetchProvidersByProject(projectId) {
     chatMaxTokens.value = CHAT_SETTINGS_DEFAULTS.max_tokens;
     void stopTerminalMirror().catch(() => {});
     resetTerminalPanel();
+    workspacePathDraft.value = "";
     return;
   }
   const data = await api.get(
@@ -2369,6 +2581,7 @@ async function fetchProvidersByProject(projectId) {
   providers.value = data.providers || [];
   projectEmployees.value = data.employees || [];
   externalAgentInfo.value = normalizeExternalAgentInfo(data?.external_agent || {});
+  workspacePathDraft.value = String(data?.workspace_path || data?.external_agent?.workspace_path || "").trim();
   mcpModules.value = normalizeMcpModules(data.mcp_modules || {});
   externalMcpTotal.value = Number(
     data?.mcp_modules?.summary?.external_total ||
@@ -2444,7 +2657,7 @@ function buildProjectChatSettingsPayload() {
   return normalizeProjectChatSettings({
     ...projectChatSettings.value,
     chat_mode: String(selectedChatMode.value || "system").trim(),
-    external_agent_type: "codex_cli",
+    external_agent_type: String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
     external_agent_sandbox_mode: String(
       projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
     ).trim(),
@@ -2681,10 +2894,35 @@ function handleSocketMessage(eventData) {
               written: Boolean(item?.written),
             }))
           : externalAgentInfo.value.support_files,
+        execution_mode: String(
+          eventData?.execution_mode || externalAgentInfo.value.execution_mode || "local",
+        ).trim(),
+        runner_url: String(
+          eventData?.runner_url || externalAgentInfo.value.runner_url || "",
+        ).trim(),
+        materialized_by: String(
+          eventData?.materialized_by || externalAgentInfo.value.materialized_by || "",
+        ).trim(),
+        workspace_access:
+          eventData?.workspace_access && typeof eventData.workspace_access === "object"
+            ? {
+                configured: Boolean(eventData.workspace_access.configured),
+                exists: Boolean(eventData.workspace_access.exists),
+                is_dir: Boolean(eventData.workspace_access.is_dir),
+                read_ok: Boolean(eventData.workspace_access.read_ok),
+                write_ok: Boolean(eventData.workspace_access.write_ok),
+                source: String(eventData.workspace_access.source || "").trim(),
+                sandbox_mode:
+                  String(
+                    eventData.workspace_access.sandbox_mode || eventData?.sandbox_mode || "workspace-write",
+                  ).trim() || "workspace-write",
+                reason: String(eventData.workspace_access.reason || "").trim(),
+              }
+            : externalAgentInfo.value.workspace_access,
       });
       appendTerminalLog(
         row,
-        `# Codex CLI 已连接 · sandbox=${String(eventData?.sandbox_mode || "workspace-write").trim()} · thread=${String(eventData?.thread_id || "-").trim() || "-"}`,
+        `# ${externalAgentDisplayLabel.value} 已连接 · sandbox=${String(eventData?.sandbox_mode || "workspace-write").trim()} · thread=${String(eventData?.thread_id || "-").trim() || "-"}`,
       );
     }
     return;
@@ -2845,12 +3083,94 @@ function rejectPendingAgentPrepares(reason) {
 function buildExternalAgentWarmupKey(projectId) {
   return JSON.stringify({
     projectId: String(projectId || "").trim(),
+    agentType: String(
+      projectChatSettings.value.external_agent_type || "codex_cli",
+    ).trim(),
     sandboxMode: String(
       projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
     ).trim(),
     systemPrompt: String(systemPrompt.value || "").trim(),
     employeeIds: normalizeStringList(selectedEmployeeIds.value || []),
   });
+}
+
+async function promptProjectWorkspacePath() {
+  const currentValue = String(
+    workspacePathDraft.value || externalAgentInfo.value.workspace_path || "",
+  ).trim();
+  try {
+    const { value } = await ElMessageBox.prompt(
+      "请填写当前项目的绝对路径，外部 Agent 会在这个目录里执行写文件和命令。",
+      "设置工作区路径",
+      {
+        inputValue: currentValue,
+        inputPlaceholder: "/Users/yourname/project",
+        confirmButtonText: "确定",
+        cancelButtonText: "取消",
+      },
+    );
+    workspacePathDraft.value = String(value || "").trim();
+  } catch {
+    return;
+  }
+}
+
+async function saveProjectWorkspacePath() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  const workspacePath = String(workspacePathDraft.value || "").trim();
+  workspacePathSaving.value = true;
+  try {
+    await api.put(`/projects/${encodeURIComponent(projectId)}`, {
+      workspace_path: workspacePath,
+    });
+    await fetchProvidersByProject(projectId);
+    externalAgentWarmupKey.value = "";
+    externalAgentInfo.value = normalizeExternalAgentInfo({
+      ...externalAgentInfo.value,
+      ready: false,
+      session_id: "",
+      thread_id: "",
+      workspace_path: workspacePath,
+    });
+    ElMessage.success(workspacePath ? "工作区路径已保存" : "已清空工作区路径");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存工作区路径失败");
+  } finally {
+    workspacePathSaving.value = false;
+  }
+}
+
+async function testProjectWorkspacePath() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  if (!externalAgentInfo.value.available) {
+    ElMessage.error("当前选中的外部 Agent 不可用，无法测试工作区");
+    return;
+  }
+  if (!workspacePathDraftNormalized.value && !workspacePathResolved.value) {
+    ElMessage.warning("请先填写工作区绝对路径");
+    return;
+  }
+  workspacePathTesting.value = true;
+  try {
+    if (workspacePathDirty.value || !workspacePathConfigured.value) {
+      await saveProjectWorkspacePath();
+    }
+    await fetchProvidersByProject(projectId);
+    await prepareExternalAgentSession({ force: true, silent: false });
+    ElMessage.success("工作区可用，外部 Agent 已按该目录完成预热");
+  } catch (err) {
+    ElMessage.error(err?.message || "工作区测试失败");
+  } finally {
+    workspacePathTesting.value = false;
+  }
 }
 
 async function prepareExternalAgentSession({ force = false, silent = true } = {}) {
@@ -2884,7 +3204,7 @@ async function prepareExternalAgentSession({ force = false, silent = true } = {}
       type: "agent_prepare",
       request_id: requestId,
       chat_mode: "external_agent",
-      external_agent_type: "codex_cli",
+      external_agent_type: String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
       external_agent_sandbox_mode:
         projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
       external_agent_sandbox_mode_explicit: true,
@@ -2992,7 +3312,7 @@ async function doSend() {
 
   if (isExternalAgentMode.value) {
     if (!externalAgentInfo.value.available) {
-      ElMessage.error("未检测到 Codex CLI，无法启动外部 Agent 模式");
+      ElMessage.error("当前选中的外部 Agent 不可用，无法启动外部 Agent 模式");
       return;
     }
     if (!String(externalAgentInfo.value.workspace_path || "").trim()) {
@@ -3095,7 +3415,7 @@ async function doSend() {
     const requestPayload = {
       request_id: requestId,
       chat_mode: selectedChatMode.value || "system",
-      external_agent_type: "codex_cli",
+      external_agent_type: String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
       external_agent_sandbox_mode:
         projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
       external_agent_sandbox_mode_explicit: true,
@@ -3195,6 +3515,27 @@ async function doSend() {
     scrollToBottom();
   }
 }
+
+watch(
+  () => String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
+  () => {
+    const nextType = String(projectChatSettings.value.external_agent_type || "codex_cli").trim();
+    const option = (externalAgentOptions.value || []).find((item) => item.agent_type === nextType) || {};
+    externalAgentWarmupKey.value = "";
+    externalAgentWarmupLoading.value = false;
+    terminalDebugInputVisible.value = false;
+    externalAgentInfo.value = normalizeExternalAgentInfo({
+      ...externalAgentInfo.value,
+      ...option,
+      agent_type: nextType,
+      label: String(option.label || nextType).trim(),
+      ready: false,
+      session_id: "",
+      thread_id: "",
+    });
+    resetTerminalPanel();
+  },
+);
 
 watch(selectedChatMode, async (value) => {
   if (String(value || "").trim() !== "external_agent") {
@@ -3560,7 +3901,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  height: calc(100vh - 148px);
+  height: 100%;
+  overflow: hidden;
 }
 
 .chat-main {
@@ -3578,6 +3920,7 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 32px 24px;
   scroll-behavior: smooth;
 }
@@ -3616,6 +3959,7 @@ onUnmounted(() => {
 
 .message-content-wrapper {
   max-width: 80%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -3645,6 +3989,8 @@ onUnmounted(() => {
   line-height: 1.6;
   font-size: 14px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .message-text {
@@ -3803,6 +4149,8 @@ onUnmounted(() => {
   display: flex;
   justify-content: center;
   border-top: 1px solid var(--el-border-color-lighter);
+  position: relative;
+  z-index: 1;
 }
 
 .chat-input-wrapper {
@@ -3961,6 +4309,69 @@ onUnmounted(() => {
   background: var(--el-fill-color-light);
   border-radius: 8px;
   font-size: 12px;
+}
+
+.workspace-guide-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  margin-bottom: 12px;
+}
+
+.workspace-guide-banner--warning {
+  border: 1px solid var(--el-color-warning-light-5);
+  background: var(--el-color-warning-light-9);
+}
+
+.workspace-guide-banner--info {
+  border: 1px solid var(--el-color-primary-light-5);
+  background: var(--el-color-primary-light-9);
+}
+
+.workspace-guide-content {
+  min-width: 0;
+}
+
+.workspace-guide-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.workspace-guide-text {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-regular);
+}
+
+.workspace-guide-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.workspace-path-editor {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workspace-path-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.workspace-path-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
 }
 
 .external-agent-support-item code {

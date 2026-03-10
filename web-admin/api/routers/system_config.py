@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from deps import require_auth, system_config_store
+from core.deps import require_auth, system_config_store
 from models.requests import SystemConfigUpdateReq
 
 router = APIRouter(prefix="/api/system-config", dependencies=[Depends(require_auth)])

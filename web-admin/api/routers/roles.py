@@ -7,10 +7,10 @@ from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from deps import require_auth, role_store, user_store
+from core.deps import require_auth, role_store, user_store
 from models.requests import RoleCreateReq, RoleUpdateReq
-from role_permissions import has_permission, permission_catalog, resolve_role_permissions
-from role_store import RoleConfig
+from core.role_permissions import has_permission, permission_catalog, resolve_role_permissions
+from stores.json.role_store import RoleConfig
 
 router = APIRouter(prefix="/api/roles", dependencies=[Depends(require_auth)])
 

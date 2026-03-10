@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from pathlib import Path
 from dataclasses import asdict, replace
 from collections.abc import AsyncIterator
 from typing import Any
@@ -12,16 +13,16 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 import asyncio
-from agent_orchestrator import AgentOrchestrator
-from conversation_manager import ConversationManager
-from redis_client import get_redis_client
-from config import get_settings
+from services.agent_orchestrator import AgentOrchestrator
+from services.conversation_manager import ConversationManager
+from core.redis_client import get_redis_client
+from core.config import get_settings
 
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
-from auth import decode_token
-from deps import employee_store, external_mcp_store, project_chat_store, project_store, require_auth, role_store, system_config_store, usage_store
-from feedback_service import get_feedback_service
-from external_agent_service import ExternalAgentSession, detect_external_agent_risk_signals, has_meaningful_workspace_changes, prepare_external_agent_workspace_context, resolve_codex_cli_status
+from core.auth import decode_token
+from core.deps import employee_store, external_mcp_store, project_chat_store, project_store, require_auth, role_store, system_config_store, usage_store
+from services.feedback_service import get_feedback_service
+from services.external_agent_service import ExternalAgentSession, create_external_agent_session, detect_external_agent_risk_signals, has_meaningful_workspace_changes, list_external_agent_statuses, materialize_external_agent_workspace_context_async, normalize_external_agent_type, prepare_external_agent_workspace_context, probe_workspace_access, probe_workspace_access_effective_async, resolve_external_agent_status
 from models.requests import (
     ProjectChatReq,
     ProjectChatSettingsUpdateReq,
@@ -29,10 +30,10 @@ from models.requests import (
     ProjectMemberAddReq,
     ProjectUpdateReq,
 )
-from project_chat_store import ProjectChatMessage
-from project_store import ProjectConfig, ProjectMember, _now_iso
-from role_permissions import has_permission
-from stores import rule_store, skill_store
+from stores.json.project_chat_store import ProjectChatMessage
+from stores.json.project_store import ProjectConfig, ProjectMember, _now_iso
+from core.role_permissions import has_permission
+from stores.mcp_bridge import rule_store, skill_store
 
 router = APIRouter(prefix="/api/projects", dependencies=[Depends(require_auth)])
 
@@ -146,7 +147,7 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     chat_mode = str(source.get("chat_mode", settings["chat_mode"]) or "").strip().lower()
     settings["chat_mode"] = chat_mode if chat_mode in {"system", "external_agent"} else settings["chat_mode"]
     agent_type = str(source.get("external_agent_type", settings["external_agent_type"]) or "").strip().lower()
-    settings["external_agent_type"] = agent_type if agent_type in {"codex_cli"} else settings["external_agent_type"]
+    settings["external_agent_type"] = normalize_external_agent_type(agent_type)
     sandbox_mode_explicit = _coerce_bool(source.get("external_agent_sandbox_mode_explicit"), settings["external_agent_sandbox_mode_explicit"])
     sandbox_mode = str(source.get("external_agent_sandbox_mode", settings["external_agent_sandbox_mode"]) or "").strip().lower()
     normalized_sandbox_mode = sandbox_mode if sandbox_mode in {"read-only", "workspace-write"} else settings["external_agent_sandbox_mode"]
@@ -302,7 +303,7 @@ def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
 
 
 def _project_chat_employee_candidates(project_id: str) -> list[dict[str, Any]]:
-    from dynamic_mcp import list_project_member_profiles_runtime
+    from services.dynamic_mcp_runtime import list_project_member_profiles_runtime
 
     profiles = list_project_member_profiles_runtime(
         project_id,
@@ -381,7 +382,7 @@ def _resolve_project_chat_employees(
 
 
 def _pick_chat_provider(provider_id: str) -> tuple[dict, list[dict]]:
-    from llm_provider_service import get_llm_provider_service
+    from services.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
     providers = llm_service.list_providers(enabled_only=True)
@@ -409,7 +410,7 @@ def _project_tool_display_name(tool_name: str) -> str:
 
 
 def _build_project_related_mcp_modules(project_id: str) -> list[dict[str, Any]]:
-    from dynamic_mcp import list_project_proxy_tools_runtime
+    from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
 
     candidates = _project_chat_employee_candidates(project_id)
     employee_name_map = {
@@ -683,7 +684,7 @@ def _collect_runtime_tools(
     allow_shell_tools: bool,
     allow_file_write_tools: bool,
 ) -> list[dict[str, Any]]:
-    from dynamic_mcp import list_project_external_tools_runtime, list_project_proxy_tools_runtime
+    from services.dynamic_mcp_runtime import list_project_external_tools_runtime, list_project_proxy_tools_runtime
 
     internal_tools = list_project_proxy_tools_runtime(project_id, "")
     internal_tools = _filter_project_tools_by_employee_ids(internal_tools, selected_employee_ids)
@@ -1034,7 +1035,7 @@ def _build_tool_probe_reply(
     *,
     explicit_filter: bool,
 ) -> str:
-    from dynamic_mcp import list_project_proxy_tools_runtime
+    from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
 
     tools = list_project_proxy_tools_runtime(project_id, employee_id)
     tools = _filter_project_tools_by_names(
@@ -1126,7 +1127,7 @@ async def create_project(req: ProjectCreateReq):
         id=project_store.new_id(),
         name=str(req.name or "").strip(),
         description=req.description,
-        workspace_path=str(req.workspace_path or "").strip(),
+        workspace_path=_normalize_workspace_path_for_save(req.workspace_path),
         mcp_enabled=req.mcp_enabled,
         feedback_upgrade_enabled=req.feedback_upgrade_enabled,
     )
@@ -1148,8 +1149,8 @@ async def get_project(project_id: str):
 @router.post("/{project_id}/smart-query")
 async def smart_query_project(project_id: str, request: dict):
     """AI 智能查询端点：自动决策调用数据库或工具"""
-    from dynamic_mcp import list_project_proxy_tools_runtime
-    from llm_provider_service import get_llm_provider_service
+    from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
+    from services.llm_provider_service import get_llm_provider_service
     from starlette.concurrency import run_in_threadpool
     import json
 
@@ -1170,7 +1171,7 @@ async def smart_query_project(project_id: str, request: dict):
     provider_id = provider.get("id", "")
     model_name = provider.get("default_model", "")
 
-    from dynamic_mcp import invoke_project_tool_runtime, list_project_external_tools_runtime, list_project_proxy_tools_runtime
+    from services.dynamic_mcp_runtime import invoke_project_tool_runtime, list_project_external_tools_runtime, list_project_proxy_tools_runtime
 
     tools = list_project_proxy_tools_runtime(project_id, "") + list_project_external_tools_runtime(project_id)
     decision = await ai_decide_action(llm_service, provider_id, model_name, user_message, project_id, tools)
@@ -1197,6 +1198,18 @@ async def smart_query_project(project_id: str, request: dict):
     return {"status": "unknown_action"}
 
 
+def _normalize_workspace_path_for_save(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        raise HTTPException(400, "workspace_path 必须是绝对路径，例如 /Users/name/project")
+    if not candidate.exists() or not candidate.is_dir():
+        raise HTTPException(400, f"workspace_path 不存在或不是目录：{candidate}")
+    return str(candidate.resolve())
+
+
 def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
     project = project_store.get(project_id)
     if project is None:
@@ -1208,6 +1221,8 @@ def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
         updates["name"] = str(updates["name"] or "").strip()
         if not updates["name"]:
             raise HTTPException(400, "name cannot be empty")
+    if "workspace_path" in updates:
+        updates["workspace_path"] = _normalize_workspace_path_for_save(updates.get("workspace_path"))
     updates["updated_at"] = _now_iso()
     updated = replace(project, **updates)
     project_store.save(updated)
@@ -1239,7 +1254,7 @@ async def delete_project(project_id: str):
 
 @router.get("/{project_id}/members")
 async def list_project_members(project_id: str):
-    from dynamic_mcp import list_project_member_profiles_runtime
+    from services.dynamic_mcp_runtime import list_project_member_profiles_runtime
 
     project = project_store.get(project_id)
     if project is None:
@@ -1329,7 +1344,8 @@ async def list_project_chat_providers(project_id: str, auth_payload: dict = Depe
     default_employee, candidates = _resolve_project_chat_employee(project_id, "")
     mcp_modules = _build_chat_mcp_modules(project_id)
     chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
-    external_agent = resolve_codex_cli_status()
+    selected_external_agent_type = normalize_external_agent_type(str(chat_settings.get("external_agent_type") or "codex_cli"))
+    external_agent = resolve_external_agent_status(selected_external_agent_type)
     external_agent_bridge = _build_external_agent_mcp_bridge(project, create_if_missing=False)
     external_agent_context = prepare_external_agent_workspace_context(
         project_id=project_id,
@@ -1347,6 +1363,11 @@ async def list_project_chat_providers(project_id: str, auth_payload: dict = Depe
         mcp_bridge=external_agent_bridge,
         write_files=False,
     )
+    effective_workspace_access = await probe_workspace_access_effective_async(
+        str(project.workspace_path or "").strip(),
+        str(chat_settings.get("external_agent_sandbox_mode") or "workspace-write").strip() or "workspace-write",
+    )
+
     return {
         "project_id": project_id,
         "workspace_path": str(project.workspace_path or ""),
@@ -1370,6 +1391,8 @@ async def list_project_chat_providers(project_id: str, auth_payload: dict = Depe
             "mcp_bridge_enabled": bool(external_agent_bridge.get("enabled")),
             "mcp_bridge_reason": str(external_agent_bridge.get("reason") or ""),
             "mcp_server_name": str(external_agent_bridge.get("server_name") or ""),
+            "workspace_access": effective_workspace_access or external_agent_context.get("workspace_access") or probe_workspace_access(str(project.workspace_path or ""), str(chat_settings.get("external_agent_sandbox_mode") or "workspace-write")),
+            "agent_types": list_external_agent_statuses(),
         },
     }
 
@@ -1457,7 +1480,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
     cancel_events: dict[str, asyncio.Event] = {}
     approval_waiters: dict[str, asyncio.Future] = {}
     review_waiters: dict[str, asyncio.Future] = {}
-    external_session: ExternalAgentSession | None = None
+    external_session: Any = None
 
     async def ensure_external_agent_session(req: ProjectChatReq) -> dict[str, Any]:
         nonlocal external_session
@@ -1474,6 +1497,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             if str(item.get("id") or "")
         ]
         employee_id_val = selected_employee_ids[0] if len(selected_employee_ids) == 1 else ""
+        agent_type = normalize_external_agent_type(str(runtime_settings.get("external_agent_type") or "codex_cli"))
         sandbox_mode = str(runtime_settings.get("external_agent_sandbox_mode") or "workspace-write").strip().lower() or "workspace-write"
         external_agent_bridge = _build_external_agent_mcp_bridge(project, create_if_missing=True)
         approval_risks = detect_external_agent_risk_signals(str(req.message or "").strip())
@@ -1497,8 +1521,9 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             candidate_preview=candidate_preview,
             system_prompt=str(runtime_settings.get("system_prompt") or "").strip(),
             mcp_bridge=external_agent_bridge,
-            write_files=True,
+            write_files=False,
         )
+        external_agent_context = await materialize_external_agent_workspace_context_async(external_agent_context)
         startup_context = str(external_agent_context.get("startup_context") or "").strip() or _build_external_agent_startup_context(
             project,
             candidates=candidates,
@@ -1509,6 +1534,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         session_overrides = list(external_agent_bridge.get("config_overrides") or [])
         if (
             external_session is None
+            or str(getattr(external_session, "agent_type", "codex_cli") or "codex_cli") != agent_type
             or external_session.workspace_path != str(project.workspace_path or "").strip()
             or external_session.sandbox_mode != sandbox_mode
             or list(getattr(external_session, "codex_config_overrides", []) or []) != session_overrides
@@ -1516,28 +1542,30 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         ):
             if external_session is not None:
                 await external_session.close()
-            external_session = ExternalAgentSession(
+            external_session = create_external_agent_session(
                 project_id=project_id,
                 project_name=str(project.name or "").strip(),
                 username=username,
                 workspace_path=str(project.workspace_path or "").strip(),
                 startup_context=startup_context,
+                agent_type=agent_type,
                 sandbox_mode=sandbox_mode,
                 codex_config_overrides=session_overrides,
             )
         await external_session.prepare_session()
-        codex_status = resolve_codex_cli_status()
+        agent_status = resolve_external_agent_status(agent_type)
         return {
             "runtime_settings": runtime_settings,
             "selected_employee": selected_employee,
             "selected_employee_ids": selected_employee_ids,
             "employee_id_val": employee_id_val,
+            "agent_type": agent_type,
             "sandbox_mode": sandbox_mode,
             "external_agent_context": external_agent_context,
             "external_agent_bridge": external_agent_bridge,
             "approval_risks": approval_risks,
             "session": external_session,
-            "codex_status": codex_status,
+            "agent_status": agent_status,
         }
 
     async def handle_request(payload: dict):
@@ -1605,7 +1633,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 session = external_meta["session"]
                 external_agent_context = external_meta["external_agent_context"]
                 external_agent_bridge = external_meta["external_agent_bridge"]
-                codex_status = external_meta["codex_status"]
+                agent_status = external_meta["agent_status"]
+                agent_type = str(external_meta.get("agent_type") or "codex_cli")
                 sandbox_mode = str(external_meta.get("sandbox_mode") or "workspace-write")
                 await websocket.send_json(
                     {
@@ -1613,20 +1642,31 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "request_id": request_id,
                         "project_id": project_id,
                         "chat_mode": "external_agent",
-                        "agent_type": "codex_cli",
+                        "agent_type": agent_type,
                         "agent_session_id": session.session_id,
                         "thread_id": session.thread_id,
                         "workspace_path": str(project.workspace_path or ""),
                         "sandbox_mode": sandbox_mode,
-                        "model_name": "codex-cli",
+                        "model_name": str(agent_status.get("runtime_model_name") or agent_type),
+                        "label": str(agent_status.get("label") or agent_type),
                         "support_dir": str(external_agent_context.get("support_dir") or ""),
                         "support_files": list(external_agent_context.get("support_files") or []),
+                        "workspace_access": external_agent_context.get("workspace_access") or probe_workspace_access(str(project.workspace_path or ""), sandbox_mode),
                         "mcp_bridge_enabled": bool(external_agent_bridge.get("enabled")),
                         "mcp_server_name": str(external_agent_bridge.get("server_name") or ""),
                         "mcp_bridge_reason": str(external_agent_bridge.get("reason") or ""),
-                        "command": str(codex_status.get("command") or ""),
-                        "resolved_command": str(codex_status.get("resolved_command") or ""),
-                        "command_source": str(codex_status.get("command_source") or "missing"),
+                        "command": str(agent_status.get("command") or ""),
+                        "resolved_command": str(agent_status.get("resolved_command") or ""),
+                        "command_source": str(agent_status.get("command_source") or "missing"),
+                        "execution_mode": str(agent_status.get("execution_mode") or "local"),
+                        "runner_url": str(agent_status.get("runner_url") or ""),
+                        "implemented": bool(agent_status.get("implemented")),
+                        "installed": bool(agent_status.get("installed")),
+                        "reason": str(agent_status.get("reason") or ""),
+                        "supports_terminal_mirror": bool(agent_status.get("supports_terminal_mirror")),
+                        "supports_workspace_write": bool(agent_status.get("supports_workspace_write")),
+                        "agent_types": list_external_agent_statuses(),
+                        "materialized_by": str(external_agent_context.get("materialized_by") or ""),
                     }
                 )
             except Exception as exc:
@@ -1675,7 +1715,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 selected_employee = external_meta.get("selected_employee")
                 selected_employee_ids = list(external_meta.get("selected_employee_ids") or [])
                 employee_id_val = str(external_meta.get("employee_id_val") or "")
-                codex_status = external_meta.get("codex_status") or {}
+                agent_status = external_meta.get("agent_status") or {}
                 if approval_risks:
                     approval_id = f"approval-{uuid.uuid4().hex[:10]}"
                     approval_future = asyncio.get_running_loop().create_future()
@@ -1736,12 +1776,12 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "project_id": project_id,
                         "provider_id": "",
                         "chat_mode": "external_agent",
-                        "agent_type": "codex_cli",
+                        "agent_type": str(external_session.agent_type or "codex_cli"),
                         "agent_session_id": external_session.session_id,
                         "thread_id": external_session.thread_id,
                         "workspace_path": str(project.workspace_path or ""),
                         "sandbox_mode": sandbox_mode,
-                        "model_name": "codex-cli",
+                        "model_name": str(resolve_external_agent_status(getattr(external_session, "agent_type", "codex_cli")).get("runtime_model_name") or getattr(external_session, "agent_type", "codex_cli")),
                         "support_dir": str(external_agent_context.get("support_dir") or ""),
                         "support_files": list(external_agent_context.get("support_files") or []),
                         "mcp_bridge_enabled": bool(external_agent_bridge.get("enabled")),
@@ -1751,9 +1791,18 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "employee_name": str((selected_employee or {}).get("name") or ""),
                         "employee_ids": selected_employee_ids,
                         "tools_enabled": False,
-                        "command": str(codex_status.get("command") or ""),
-                        "resolved_command": str(codex_status.get("resolved_command") or ""),
-                        "command_source": str(codex_status.get("command_source") or "missing"),
+                        "command": str(agent_status.get("command") or ""),
+                        "resolved_command": str(agent_status.get("resolved_command") or ""),
+                        "command_source": str(agent_status.get("command_source") or "missing"),
+                        "label": str(agent_status.get("label") or getattr(external_session, "agent_type", "codex_cli")),
+                        "execution_mode": str(agent_status.get("execution_mode") or "local"),
+                        "runner_url": str(agent_status.get("runner_url") or ""),
+                        "implemented": bool(agent_status.get("implemented")),
+                        "installed": bool(agent_status.get("installed")),
+                        "reason": str(agent_status.get("reason") or ""),
+                        "supports_terminal_mirror": bool(agent_status.get("supports_terminal_mirror")),
+                        "supports_workspace_write": bool(agent_status.get("supports_workspace_write")),
+                        "agent_types": list_external_agent_statuses(),
                     }
                 )
                 final_output = ""
@@ -1966,7 +2015,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         })
 
         try:
-            from llm_provider_service import get_llm_provider_service
+            from services.llm_provider_service import get_llm_provider_service
 
             final_answer = ""
             stream_error = ""
@@ -2082,7 +2131,7 @@ async def stream_project_chat(
     req: ProjectChatReq,
     auth_payload: dict = Depends(require_auth),
 ):
-    from llm_provider_service import get_llm_provider_service
+    from services.llm_provider_service import get_llm_provider_service
 
     _ensure_permission(auth_payload, "menu.ai.chat")
     project = project_store.get(project_id)
@@ -2338,7 +2387,7 @@ async def stream_project_chat(
 @router.post("/{project_id}/generate-manual")
 async def generate_project_manual(project_id: str):
     """生成项目使用手册（面向接入方 AI 平台）"""
-    from llm_provider_service import get_llm_provider_service
+    from services.llm_provider_service import get_llm_provider_service
 
     _assert_project_manual_generation_enabled()
 
