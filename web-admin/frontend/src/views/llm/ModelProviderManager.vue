@@ -52,9 +52,10 @@
         </template>
       </el-table-column>
       <el-table-column prop="updated_at" label="更新时间" min-width="200" />
-      <el-table-column label="操作" width="260" fixed="right">
+      <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
           <el-button text type="success" :loading="testingProviderId === row.id" @click="testConnection(row)">测试连接</el-button>
+          <el-button text type="warning" @click="openDuplicate(row)">复制</el-button>
           <el-button text type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button text type="danger" @click="removeProvider(row)">删除</el-button>
         </template>
@@ -62,7 +63,7 @@
     </el-table>
     <el-empty v-if="!loading && !providers.length" description="暂无模型供应商" :image-size="60" />
 
-    <el-dialog v-model="showDialog" :title="editingId ? '编辑模型供应商' : '新增模型供应商'" width="720px">
+    <el-dialog v-model="showDialog" :title="dialogTitle()" width="720px">
       <el-form :model="form" label-width="120px">
         <el-form-item label="供应商名称" required>
           <el-input v-model="form.name" placeholder="例如：OpenAI 主账号" />
@@ -82,7 +83,7 @@
             v-model="form.api_key"
             type="password"
             show-password
-            placeholder="编辑时留空表示不修改"
+            :placeholder="apiKeyPlaceholder()"
           />
         </el-form-item>
         <el-form-item label="模型列表">
@@ -126,6 +127,7 @@ const saving = ref(false)
 const providers = ref([])
 const showDialog = ref(false)
 const editingId = ref('')
+const dialogMode = ref('create')
 const testingProviderId = ref('')
 const connectionResultByProvider = reactive({})
 const testModelByProvider = reactive({})
@@ -159,24 +161,54 @@ function resetForm() {
   form.extra_headers_text = ''
 }
 
+function buildDuplicateName(name) {
+  const base = String(name || '').trim()
+  return base ? `${base} 副本` : '供应商副本'
+}
+
+function populateForm(row, { duplicate = false } = {}) {
+  form.name = duplicate ? buildDuplicateName(row?.name) : String(row?.name || '')
+  form.provider_type = String(row?.provider_type || 'openai-compatible')
+  form.base_url = String(row?.base_url || '')
+  form.api_key = ''
+  form.models_text = Array.isArray(row?.models) ? row.models.join(', ') : ''
+  form.default_model = String(row?.default_model || '')
+  form.enabled = row?.enabled !== false
+  const headers = row?.extra_headers && typeof row.extra_headers === 'object' ? row.extra_headers : {}
+  form.extra_headers_text = Object.keys(headers).length ? JSON.stringify(headers, null, 2) : ''
+}
+
 function openCreate() {
+  dialogMode.value = 'create'
   editingId.value = ''
   resetForm()
   showDialog.value = true
 }
 
 function openEdit(row) {
+  dialogMode.value = 'edit'
   editingId.value = String(row.id || '')
-  form.name = String(row.name || '')
-  form.provider_type = String(row.provider_type || 'openai-compatible')
-  form.base_url = String(row.base_url || '')
-  form.api_key = ''
-  form.models_text = Array.isArray(row.models) ? row.models.join(', ') : ''
-  form.default_model = String(row.default_model || '')
-  form.enabled = row.enabled !== false
-  const headers = row.extra_headers && typeof row.extra_headers === 'object' ? row.extra_headers : {}
-  form.extra_headers_text = Object.keys(headers).length ? JSON.stringify(headers, null, 2) : ''
+  populateForm(row)
   showDialog.value = true
+}
+
+function openDuplicate(row) {
+  dialogMode.value = 'duplicate'
+  editingId.value = ''
+  populateForm(row, { duplicate: true })
+  showDialog.value = true
+}
+
+function dialogTitle() {
+  if (dialogMode.value === 'edit') return '编辑模型供应商'
+  if (dialogMode.value === 'duplicate') return '复制模型供应商'
+  return '新增模型供应商'
+}
+
+function apiKeyPlaceholder() {
+  if (dialogMode.value === 'edit') return '编辑时留空表示不修改'
+  if (dialogMode.value === 'duplicate') return '出于安全原因不会复制 API Key，请按需填写'
+  return '例如：sk-...'
 }
 
 function parseHeaders() {
@@ -247,7 +279,7 @@ async function submitForm() {
       ElMessage.success('更新成功')
     } else {
       await api.post('/llm/providers', payload)
-      ElMessage.success('创建成功')
+      ElMessage.success(dialogMode.value === 'duplicate' ? '复制创建成功' : '创建成功')
     }
     showDialog.value = false
     fetchProviders()
