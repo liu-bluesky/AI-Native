@@ -3,7 +3,8 @@
 ## 目录说明
 
 - `docker-compose.yml`：本地一键启动编排（`postgres` + `api` + `frontend`）
-- `.env`：数据库环境变量
+- `.env`：本地 Docker 配置
+- `.env.example`：Docker 配置模板
 - `Dockerfile.api`：后端 API 镜像构建
 - `Dockerfile.frontend`：前端镜像构建
 - `nginx.conf`：前端 Nginx 反向代理配置
@@ -82,7 +83,13 @@ docker compose down -v
 
 ## 环境变量
 
-编辑 `docker/.env`：
+先复制模板：
+
+```bash
+cp docker/.env.example docker/.env
+```
+
+再编辑 `docker/.env`：
 
 - `DB_USER`
 - `DB_PASSWORD`
@@ -103,6 +110,7 @@ docker compose up -d --build
 - 存储后端可通过环境变量切换：
 - `CORE_STORE_BACKEND=postgres|json`
 - `USAGE_STORE_BACKEND=postgres|sqlite`
+- `api` 服务容器内部统一使用 `DATABASE_URL` 连接 PostgreSQL；`DB_*` 变量只用于 Compose 拼接数据库连接和初始化 Postgres 容器。
 - `web-admin/api` 本地开发默认值已调整为 PostgreSQL：
 - 默认后端：`CORE_STORE_BACKEND=postgres`、`USAGE_STORE_BACKEND=postgres`
 - 默认连接：`postgresql://admin:changeme@127.0.0.1:5432/ai_employee`

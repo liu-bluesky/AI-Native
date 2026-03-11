@@ -412,6 +412,7 @@ import { ref, computed, onMounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import api from "@/utils/api.js";
+import { buildRuntimeUrl } from "@/utils/runtime-url.js";
 
 const employees = ref([]);
 const loading = ref(false);
@@ -477,7 +478,9 @@ const mcpSseConfig = computed(() => {
       mcpServers: {
         [serverName]: {
           type: "sse",
-          url: `http://localhost:8000/mcp/employees/${currentEmployee.value.id}/sse?key=YOUR_API_KEY&project_id=default`,
+          url: buildRuntimeUrl(
+            `/mcp/employees/${currentEmployee.value.id}/sse?key=YOUR_API_KEY&project_id=default`,
+          ),
         },
       },
     },
@@ -497,7 +500,9 @@ const mcpHttpConfig = computed(() => {
           args: [
             "-y",
             "@modelcontextprotocol/inspector",
-            `http://localhost:8000/mcp/employees/${currentEmployee.value.id}/mcp?key=YOUR_API_KEY&project_id=default`,
+            buildRuntimeUrl(
+              `/mcp/employees/${currentEmployee.value.id}/mcp?key=YOUR_API_KEY&project_id=default`,
+            ),
           ],
         },
       },

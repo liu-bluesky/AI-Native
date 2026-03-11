@@ -30,11 +30,6 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: ${DB_USER:-admin}
-      DB_PASSWORD: ${DB_PASSWORD:-changeme}
-      DB_NAME: ${DB_NAME:-ai_employee}
       CORE_STORE_BACKEND: ${CORE_STORE_BACKEND:-postgres}
       USAGE_STORE_BACKEND: ${USAGE_STORE_BACKEND:-postgres}
       DATABASE_URL: postgresql://${DB_USER:-admin}:${DB_PASSWORD:-changeme}@postgres:5432/${DB_NAME:-ai_employee}

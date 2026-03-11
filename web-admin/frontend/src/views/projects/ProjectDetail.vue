@@ -180,18 +180,10 @@
       </div>
       <el-descriptions :column="1" border>
         <el-descriptions-item label="SSE">
-          <code
-            >http://localhost:8000/mcp/projects/{{
-              project.id
-            }}/sse?key=YOUR_API_KEY</code
-          >
+          <code>{{ projectMcpSseUrl }}</code>
         </el-descriptions-item>
         <el-descriptions-item label="HTTP">
-          <code
-            >http://localhost:8000/mcp/projects/{{
-              project.id
-            }}/mcp?key=YOUR_API_KEY</code
-          >
+          <code>{{ projectMcpHttpUrl }}</code>
         </el-descriptions-item>
       </el-descriptions>
     </div>
@@ -328,6 +320,7 @@ import { marked } from "marked";
 import ExternalMcpManager from "@/components/ExternalMcpManager.vue";
 import api from "@/utils/api.js";
 import { hasPermission } from "@/utils/permissions.js";
+import { buildRuntimeUrl } from "@/utils/runtime-url.js";
 
 const route = useRoute();
 const projectId = String(route.params.id || "");
@@ -403,6 +396,14 @@ const projectManualEnabled = computed(
   () => !!systemConfig.value.enable_project_manual_generation,
 );
 const canOpenProjectChat = computed(() => hasPermission("button.project.chat"));
+const projectMcpSseUrl = computed(() => {
+  if (!project.value?.id) return "";
+  return buildRuntimeUrl(`/mcp/projects/${project.value.id}/sse?key=YOUR_API_KEY`);
+});
+const projectMcpHttpUrl = computed(() => {
+  if (!project.value?.id) return "";
+  return buildRuntimeUrl(`/mcp/projects/${project.value.id}/mcp?key=YOUR_API_KEY`);
+});
 
 const renderedManualHtml = computed(() => {
   if (!generatedManual.value) return "";

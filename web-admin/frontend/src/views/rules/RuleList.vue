@@ -159,6 +159,7 @@
 import { ref, onMounted, computed } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/utils/api.js";
+import { buildRuntimeUrl } from "@/utils/runtime-url.js";
 
 const loading = ref(false);
 const rules = ref([]);
@@ -202,7 +203,7 @@ const mcpSseConfig = computed(() => {
       mcpServers: {
         [serviceName]: {
           type: "sse",
-          url: `http://localhost:8000/mcp/rules/${currentRule.value.id}/sse`,
+          url: buildRuntimeUrl(`/mcp/rules/${currentRule.value.id}/sse`),
         },
       },
     },
@@ -222,7 +223,7 @@ const mcpHttpConfig = computed(() => {
           args: [
             "-y",
             "@modelcontextprotocol/inspector",
-            `http://localhost:8000/mcp/rules/${currentRule.value.id}/mcp`,
+            buildRuntimeUrl(`/mcp/rules/${currentRule.value.id}/mcp`),
           ],
         },
       },
