@@ -5,41 +5,18 @@
     <div class="chat-main">
       <div class="chat-header">
         <div class="chat-header-left">
-          <h2>AI 对话中心</h2>
-          <el-tag size="small" effect="plain">{{ chatModeLabel }}</el-tag>
-          <el-tag :type="wsStatusType" size="small" effect="light">{{
-            wsStatusText
-          }}</el-tag>
-          <el-tag
-            v-if="isExternalAgentMode"
-            :type="externalAgentInfo.ready ? 'success' : (externalAgentWarmupLoading ? 'warning' : 'info')"
-            size="small"
-            effect="light"
-          >
-            {{ externalAgentInfo.ready ? '会话已就绪' : (externalAgentWarmupLoading ? '会话预热中' : '会话未就绪') }}
-          </el-tag>
-          <el-tag
-            v-if="isExternalAgentMode && externalAgentInfo.runtime_model_name"
-            size="small"
-            effect="plain"
-          >
-            运行标识 {{ externalAgentInfo.runtime_model_name }}
-          </el-tag>
-          <el-tag
-            v-if="isExternalAgentMode"
-            :type="externalAgentInfo.execution_mode === 'runner' ? 'success' : 'info'"
-            size="small"
-            effect="plain"
-          >
-            {{ externalAgentInfo.execution_mode === 'runner' ? '宿主 Runner' : 'API 本地执行' }}
-          </el-tag>
-          <el-tag
-            v-if="isExternalAgentMode && externalAgentInfo.thread_id"
-            size="small"
-            effect="plain"
-          >
-            Thread {{ shortThreadId }}
-          </el-tag>
+          <div class="chat-title-block">
+            <h2>AI 对话中心</h2>
+            <div class="chat-title-subtext">
+              {{ chatHeaderSubtext }}
+            </div>
+          </div>
+          <div class="chat-status-pills">
+            <el-tag size="small" effect="plain">{{ chatModeLabel }}</el-tag>
+            <el-tag :type="chatHeaderStatusType" size="small" effect="light">
+              {{ chatHeaderStatusText }}
+            </el-tag>
+          </div>
         </div>
         <div class="chat-header-right">
           <el-button
@@ -90,65 +67,27 @@
         </div>
       </div>
 
-      <div
-        v-if="isExternalAgentMode"
-        class="terminal-panel"
-        :class="{ 'is-collapsed': !terminalPanelExpanded }"
-      >
-        <div class="terminal-panel-header">
-          <div class="terminal-panel-title">
-            <span>终端过程</span>
-            <el-tag size="small" effect="plain">{{ terminalPanelStatusText }}</el-tag>
-          </div>
-          <div class="terminal-panel-actions">
-            <el-button
-              text
-              size="small"
-              @click="clearTerminalPanel"
-              :disabled="!terminalPanelLines.length"
-            >清空</el-button>
-            <el-button
-              v-if="externalAgentInfo.supports_terminal_mirror"
-              text
-              size="small"
-              @click="terminalDebugInputVisible = !terminalDebugInputVisible"
-            >
-              {{ terminalDebugInputVisible ? '隐藏调试输入' : '调试输入' }}
-            </el-button>
-            <el-button text size="small" @click="terminalPanelExpanded = !terminalPanelExpanded">
-              {{ terminalPanelExpanded ? '收起' : '展开' }}
-            </el-button>
-          </div>
-        </div>
-        <div v-show="terminalPanelExpanded" ref="terminalPanelRef" class="terminal-panel-body">
-          <pre class="terminal-panel-pre">{{ terminalPanelText }}</pre>
-        </div>
-        <div
-          v-show="terminalPanelExpanded && terminalDebugInputVisible && externalAgentInfo.supports_terminal_mirror"
-          class="terminal-panel-footer"
-        >
-          <el-input
-            v-model="terminalPanelInput"
-            size="small"
-            :placeholder="`直接发送到 ${externalAgentDisplayLabel} 终端镜像，Enter 发送`"
-            @keyup.enter.prevent="sendTerminalMirrorInput"
-          />
-          <el-button size="small" @click="startTerminalMirror" :disabled="!externalAgentInfo.thread_id">
-            连接镜像
-          </el-button>
-          <el-button size="small" type="primary" @click="sendTerminalMirrorInput" :disabled="!terminalPanelInput.trim()">
-            发送
-          </el-button>
-        </div>
-      </div>
-
       <div class="chat-messages" ref="messagesContainer">
-        <el-empty
-          v-if="!messages.length"
-          description="选择项目并开始你的对话吧 ✨"
-          :image-size="120"
-        />
-        <div v-else class="message-list-inner">
+        <div class="message-list-inner">
+          <div v-if="!messages.length" class="chat-empty-state">
+            <div class="chat-empty-badge">{{ chatModeLabel }}</div>
+            <div class="chat-empty-title">开始一轮新的对话</div>
+            <div class="chat-empty-text">
+              {{ emptyStateText }}
+            </div>
+            <div class="chat-empty-actions">
+              <button
+                v-for="prompt in starterPrompts"
+                :key="prompt"
+                type="button"
+                class="chat-empty-action"
+                @click="applyStarterPrompt(prompt)"
+              >
+                {{ prompt }}
+              </button>
+            </div>
+          </div>
+          <template v-else>
           <div
             v-for="(item, idx) in messages"
             :key="idx"
@@ -159,14 +98,12 @@
                 :size="36"
                 :class="item.role === 'user' ? 'avatar-user' : 'avatar-ai'"
               >
-                {{ item.role === "user" ? "U" : "AI" }}
+                {{ avatarLabel(item) }}
               </el-avatar>
             </div>
             <div class="message-content-wrapper">
               <div class="message-meta">
-                <span class="role-name">{{
-                  item.role === "user" ? "You" : "Assistant"
-                }}</span>
+                <span class="role-name">{{ messageRoleName(item) }}</span>
                 <span
                   v-if="item.time || item.created_at"
                   class="message-time"
@@ -174,10 +111,41 @@
                 >
               </div>
               <div class="message-bubble">
-                <pre
-                  v-if="item.displayMode === 'terminal'"
-                  class="message-text message-text-terminal"
-                >{{ formatTerminalMessage(item, idx) }}</pre>
+                <template v-if="item.displayMode === 'terminal'">
+                  <div
+                    v-if="terminalLogLines(item).length"
+                    class="message-process"
+                  >
+                    <button
+                      type="button"
+                      class="message-process-toggle"
+                      @click="item.processExpanded = !item.processExpanded"
+                    >
+                      <span>
+                        思考过程
+                        <span class="message-process-count">
+                          {{ terminalLogLines(item).length }} 条
+                        </span>
+                      </span>
+                      <span class="message-process-meta">
+                        {{ item.processExpanded ? '收起' : '展开' }}
+                      </span>
+                    </button>
+                    <pre
+                      v-show="item.processExpanded"
+                      class="message-text message-text-terminal message-process-pre"
+                    >{{ formatTerminalLogs(item) }}</pre>
+                  </div>
+                  <div
+                    class="message-text"
+                    v-html="
+                      formatContent(item.content) ||
+                      (chatLoading && idx === messages.length - 1
+                        ? '思考中...'
+                        : '')
+                    "
+                  ></div>
+                </template>
                 <div
                   v-else
                   class="message-text"
@@ -281,8 +249,28 @@
                   </div>
                 </div>
               </div>
+              <div v-if="item.role !== 'user'" class="message-actions">
+                <el-button
+                  text
+                  size="small"
+                  class="message-action-button"
+                  @click="copyMessageMarkdown(item)"
+                >
+                  复制 Markdown
+                </el-button>
+                <el-button
+                  v-if="terminalLogLines(item).length"
+                  text
+                  size="small"
+                  class="message-action-button"
+                  @click="copyMessageMarkdown(item, { includeProcess: true })"
+                >
+                  复制含过程
+                </el-button>
+              </div>
             </div>
           </div>
+          </template>
         </div>
       </div>
 
@@ -316,14 +304,16 @@
           <el-input
             v-model="draftText"
             type="textarea"
-            :autosize="{ minRows: 1, maxRows: 6 }"
+            :autosize="{ minRows: 2, maxRows: 8 }"
             :placeholder="composerPlaceholder"
             resize="none"
             :disabled="chatLoading"
-            @keydown.enter.exact.prevent="doSend"
             @focus="inputFocused = true"
-            @blur="inputFocused = false"
-            @paste="handlePaste"
+            @blur="handleEditorBlur"
+            @keydown="handleEditorKeydown"
+            @paste="handleEditorPaste"
+            @compositionstart="handleEditorCompositionStart"
+            @compositionend="handleEditorCompositionEnd"
             class="chat-textarea"
           />
 
@@ -379,6 +369,7 @@
               </el-tooltip>
               <el-button
                 v-else
+                class="send-message-button"
                 type="primary"
                 :disabled="!canSend"
                 @click="doSend"
@@ -402,6 +393,18 @@
     class="custom-settings-dialog"
   >
     <div class="settings-dialog-body">
+      <div class="settings-summary-card">
+        <div class="settings-summary-title">当前真正会影响回答的配置</div>
+        <div class="settings-summary-text">
+          基础设置决定项目、执行模式、模型或外部 Agent；生成回答控制输出风格；工具与约束控制 MCP、工具开关和调用上限。
+          <template v-if="isExternalAgentMode">
+            当前是外部 Agent 模式，模型供应商和模型版本不会参与本轮请求。
+          </template>
+          <template v-else>
+            当前是系统对话模式，外部 Agent 和工作区配置不会参与本轮请求。
+          </template>
+        </div>
+      </div>
       <el-tabs tab-position="left" class="settings-tabs">
         <el-tab-pane label="基础设置">
           <el-form
@@ -589,105 +592,116 @@
                   Agent 状态
                 </span>
               </template>
-              <div class="full-width external-agent-meta">
-                <div class="external-agent-row">
-                  <span>类型：{{ externalAgentDisplayLabel }}</span>
-                  <el-tag
-                    :type="externalAgentInfo.available ? 'success' : externalAgentInfo.installed ? 'warning' : 'info'"
-                    size="small"
-                    effect="plain"
-                  >
-                    {{
-                      externalAgentInfo.available
-                        ? '可用'
-                        : externalAgentInfo.installed
-                          ? '已安装待接入'
-                          : '未发现'
-                    }}
-                  </el-tag>
-                </div>
-                <div class="external-agent-row external-agent-command">
-                  命令：{{ externalAgentInfo.resolved_command || externalAgentInfo.command || 'codex' }}
-                </div>
-                <div class="external-agent-row external-agent-command">
-                  来源：{{ externalAgentInfo.command_source === 'system' ? '系统 PATH' : externalAgentInfo.command_source === 'override' ? '手动覆盖' : '未找到' }}
-                </div>
-                <div class="external-agent-row external-agent-command">
-                  运行标识：{{ externalAgentRuntimeLabel }}
-                </div>
-                <div class="external-agent-row external-agent-command">
-                  精确模型：{{ externalAgentInfo.exact_model_name || '当前未暴露' }}
-                </div>
-                <div
-                  v-if="externalAgentInfo.thread_id"
-                  class="external-agent-row external-agent-command"
+              <div class="full-width external-agent-status-card">
+                <button
+                  type="button"
+                  class="external-agent-status-toggle"
+                  @click="agentStatusExpanded = !agentStatusExpanded"
                 >
-                  Thread：{{ externalAgentInfo.thread_id }}
-                </div>
-                <div
-                  v-if="externalAgentInfo.session_id"
-                  class="external-agent-row external-agent-command"
-                >
-                  Session：{{ externalAgentInfo.session_id }}
-                </div>
-                <div class="external-agent-row external-agent-command">
-                  沙箱：{{ externalAgentInfo.sandbox_mode || 'workspace-write' }}
-                </div>
-                <div class="external-agent-row external-agent-command">
-                  执行模式：{{ externalAgentInfo.execution_mode === 'runner' ? '宿主 Runner' : 'API 本地进程' }}
-                </div>
-                <div
-                  v-if="externalAgentInfo.runner_url"
-                  class="external-agent-row external-agent-command"
-                >
-                  Runner：{{ externalAgentInfo.runner_url }}
-                </div>
-                <div
-                  v-if="externalAgentInfo.materialized_by"
-                  class="external-agent-row external-agent-command"
-                >
-                  上下文写入：{{ externalAgentInfo.materialized_by }}
-                </div>
-                <div
-                  v-if="externalAgentInfo.support_dir"
-                  class="external-agent-row external-agent-command"
-                >
-                  上下文目录：{{ externalAgentInfo.support_dir }}
-                </div>
-                <div class="external-agent-row">
-                  <span>
-                    项目 MCP：
-                    {{
-                      externalAgentInfo.mcp_bridge_enabled
-                        ? `已注入 (${externalAgentInfo.mcp_server_name || 'project_mcp'})`
-                        : '未注入'
-                    }}
+                  <div class="external-agent-status-head">
+                    <span class="external-agent-status-title">
+                      {{ externalAgentStatusSummary }}
+                    </span>
+                    <div class="external-agent-status-tags">
+                      <el-tag
+                        :type="externalAgentInfo.available ? 'success' : externalAgentInfo.installed ? 'warning' : 'info'"
+                        size="small"
+                        effect="plain"
+                      >
+                        {{ externalAgentAvailabilityLabel }}
+                      </el-tag>
+                      <el-tag
+                        :type="externalAgentInfo.ready ? 'success' : 'info'"
+                        size="small"
+                        effect="plain"
+                      >
+                        {{ externalAgentInfo.ready ? '已就绪' : '未就绪' }}
+                      </el-tag>
+                    </div>
+                  </div>
+                  <span class="external-agent-status-meta">
+                    {{ agentStatusExpanded ? '收起详情' : '展开详情' }}
                   </span>
-                  <el-tag
-                    :type="externalAgentInfo.mcp_bridge_enabled ? 'success' : 'warning'"
-                    size="small"
-                    effect="plain"
-                  >
-                    {{ externalAgentInfo.mcp_bridge_enabled ? '可调用项目工具' : '暂不可用' }}
-                  </el-tag>
-                </div>
-                <div
-                  v-if="externalAgentInfo.mcp_bridge_reason && !externalAgentInfo.mcp_bridge_enabled"
-                  class="external-agent-row external-agent-command"
-                >
-                  原因：{{ externalAgentInfo.mcp_bridge_reason }}
-                </div>
-                <div
-                  v-if="externalAgentInfo.support_files?.length"
-                  class="external-agent-support-list"
-                >
+                </button>
+
+                <div v-show="agentStatusExpanded" class="external-agent-meta">
+                  <div class="external-agent-row external-agent-command">
+                    命令：{{ externalAgentInfo.resolved_command || externalAgentInfo.command || 'codex' }}
+                  </div>
+                  <div class="external-agent-row external-agent-command">
+                    来源：{{ externalAgentInfo.command_source === 'system' ? '系统 PATH' : externalAgentInfo.command_source === 'override' ? '手动覆盖' : '未找到' }}
+                  </div>
+                  <div class="external-agent-row external-agent-command">
+                    运行标识：{{ externalAgentRuntimeLabel }}
+                  </div>
+                  <div class="external-agent-row external-agent-command">
+                    精确模型：{{ externalAgentInfo.exact_model_name || '当前未暴露' }}
+                  </div>
                   <div
-                    v-for="item in externalAgentInfo.support_files"
-                    :key="`${item.kind}-${item.path}`"
-                    class="external-agent-support-item"
+                    v-if="externalAgentInfo.thread_id"
+                    class="external-agent-row external-agent-command"
                   >
-                    <span>{{ item.label }}</span>
-                    <code>{{ item.path }}</code>
+                    Thread：{{ externalAgentInfo.thread_id }}
+                  </div>
+                  <div
+                    v-if="externalAgentInfo.session_id"
+                    class="external-agent-row external-agent-command"
+                  >
+                    Session：{{ externalAgentInfo.session_id }}
+                  </div>
+                  <div
+                    v-if="externalAgentInfo.runner_url"
+                    class="external-agent-row external-agent-command"
+                  >
+                    Runner：{{ externalAgentInfo.runner_url }}
+                  </div>
+                  <div
+                    v-if="externalAgentInfo.materialized_by"
+                    class="external-agent-row external-agent-command"
+                  >
+                    上下文写入：{{ externalAgentInfo.materialized_by }}
+                  </div>
+                  <div
+                    v-if="externalAgentInfo.support_dir"
+                    class="external-agent-row external-agent-command"
+                  >
+                    上下文目录：{{ externalAgentInfo.support_dir }}
+                  </div>
+                  <div class="external-agent-row">
+                    <span>
+                      项目 MCP：
+                      {{
+                        externalAgentInfo.mcp_bridge_enabled
+                          ? `已注入 (${externalAgentInfo.mcp_server_name || 'project_mcp'})`
+                          : '未注入'
+                      }}
+                    </span>
+                    <el-tag
+                      :type="externalAgentInfo.mcp_bridge_enabled ? 'success' : 'warning'"
+                      size="small"
+                      effect="plain"
+                    >
+                      {{ externalAgentInfo.mcp_bridge_enabled ? '可调用项目工具' : '暂不可用' }}
+                    </el-tag>
+                  </div>
+                  <div
+                    v-if="externalAgentInfo.mcp_bridge_reason && !externalAgentInfo.mcp_bridge_enabled"
+                    class="external-agent-row external-agent-command"
+                  >
+                    原因：{{ externalAgentInfo.mcp_bridge_reason }}
+                  </div>
+                  <div
+                    v-if="externalAgentInfo.support_files?.length"
+                    class="external-agent-support-list"
+                  >
+                    <div
+                      v-for="item in externalAgentInfo.support_files"
+                      :key="`${item.kind}-${item.path}`"
+                      class="external-agent-support-item"
+                    >
+                      <span>{{ item.label }}</span>
+                      <code>{{ item.path }}</code>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -864,7 +878,7 @@
           </el-form>
         </el-tab-pane>
 
-        <el-tab-pane label="生成控制">
+        <el-tab-pane label="生成回答">
           <el-form
             label-position="left"
             label-width="160px"
@@ -955,7 +969,7 @@
           </el-form>
         </el-tab-pane>
 
-        <el-tab-pane label="工具策略 (MCP)">
+        <el-tab-pane label="工具与约束">
           <el-form
             label-position="left"
             label-width="160px"
@@ -1111,16 +1125,9 @@
                 </el-tab-pane>
               </el-tabs>
             </el-form-item>
-          </el-form>
-        </el-tab-pane>
 
-        <el-tab-pane label="执行安全">
-          <el-form
-            label-position="left"
-            label-width="160px"
-            class="settings-form"
-            size="default"
-          >
+            <div class="settings-section-title">执行限制</div>
+
             <el-form-item>
               <template #label>
                 <span class="label-with-tooltip">
@@ -1149,21 +1156,6 @@
                 </span>
               </template>
               <el-switch v-model="projectChatSettings.allow_file_write_tools" />
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  高风险二次确认
-                  <el-tooltip
-                    content="AI 在执行可能破坏系统的工具前，是否需要人工二次授权。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-switch v-model="projectChatSettings.high_risk_tool_confirm" />
             </el-form-item>
 
             <el-form-item>
@@ -1205,16 +1197,9 @@
                 class="full-width"
               />
             </el-form-item>
-          </el-form>
-        </el-tab-pane>
 
-        <el-tab-pane label="高级策略">
-          <el-form
-            label-position="left"
-            label-width="160px"
-            class="settings-form"
-            size="default"
-          >
+            <div class="settings-section-title">调度上限</div>
+
             <el-form-item>
               <template #label>
                 <span class="label-with-tooltip">
@@ -1295,6 +1280,13 @@
                 <el-option label="直接停止 (Stop)" value="stop" />
               </el-select>
             </el-form-item>
+
+            <div class="settings-subtle-card">
+              <div class="settings-subtle-title">暂时降权的配置</div>
+              <div class="settings-subtle-text">
+                `高风险二次确认` 当前只做配置保存，主执行链还没有完全按这个开关分流，所以先不放在主要设置项里，避免误导。
+              </div>
+            </div>
           </el-form>
         </el-tab-pane>
       </el-tabs>
@@ -1477,6 +1469,7 @@ const projectChatSettings = ref({ ...CHAT_SETTINGS_DEFAULTS });
 const workspacePathDraft = ref("");
 const singleRoundAnswerOnly = ref(false);
 const externalMcpTotal = ref(0);
+const agentStatusExpanded = ref(false);
 
 const wsConnected = ref(false);
 const wsClient = ref(null);
@@ -1533,6 +1526,11 @@ const workspacePathDirty = computed(() => {
 const externalAgentDisplayLabel = computed(() =>
   String(externalAgentInfo.value.label || "外部 Agent").trim() || "外部 Agent",
 );
+const externalAgentAvailabilityLabel = computed(() => {
+  if (externalAgentInfo.value.available) return "可用";
+  if (externalAgentInfo.value.installed) return "已安装待接入";
+  return "未发现";
+});
 const externalAgentRuntimeLabel = computed(() =>
   String(
     externalAgentInfo.value.runtime_model_name ||
@@ -1540,11 +1538,80 @@ const externalAgentRuntimeLabel = computed(() =>
       "external-agent",
   ).trim() || "external-agent",
 );
+const externalAgentStatusSummary = computed(() => {
+  const parts = [
+    externalAgentDisplayLabel.value,
+    externalAgentRuntimeLabel.value,
+    externalAgentInfo.value.execution_mode === "runner" ? "宿主 Runner" : "本地执行",
+    String(externalAgentInfo.value.sandbox_mode || "workspace-write").trim() || "workspace-write",
+  ];
+  if (externalAgentInfo.value.thread_id) {
+    parts.push(`Thread ${shortThreadId.value}`);
+  }
+  return parts.filter(Boolean).join(" · ");
+});
+const chatHeaderStatusText = computed(() => {
+  if (!isExternalAgentMode.value) return wsStatusText.value;
+  if (!workspacePathConfigured.value) return "未配置工作区";
+  if (workspacePathDirty.value) return "工作区未保存";
+  if (externalAgentWarmupLoading.value) return "预热中";
+  if (externalAgentInfo.value.ready) return "已就绪";
+  return "未就绪";
+});
+const chatHeaderStatusType = computed(() => {
+  if (!isExternalAgentMode.value) return wsStatusType.value;
+  if (!workspacePathConfigured.value || workspacePathDirty.value) return "warning";
+  if (externalAgentWarmupLoading.value) return "warning";
+  if (externalAgentInfo.value.ready) return "success";
+  return "info";
+});
+const chatHeaderSubtext = computed(() => {
+  if (!isExternalAgentMode.value) {
+    const provider = String(
+      selectedProviderId.value || defaultProviderId.value || "",
+    ).trim();
+    const model = String(selectedModelName.value || defaultModelName.value || "",).trim();
+    if (provider && model) return `${provider} · ${model}`;
+    if (model) return `当前模型 ${model}`;
+    return "系统对话";
+  }
+  const parts = [
+    `${externalAgentDisplayLabel.value} 对话`,
+    externalAgentRuntimeLabel.value,
+    externalAgentInfo.value.execution_mode === "runner" ? "宿主 Runner" : "本地执行",
+  ];
+  if (shortThreadId.value) {
+    parts.push(`Thread ${shortThreadId.value}`);
+  }
+  return parts.filter(Boolean).join(" · ");
+});
 const externalAgentOptions = computed(() =>
   Array.isArray(externalAgentInfo.value.agent_types)
     ? externalAgentInfo.value.agent_types
     : [],
 );
+const starterPrompts = computed(() => {
+  if (isExternalAgentMode.value) {
+    return [
+      "先帮我审一下当前项目结构",
+      "读取工作区并总结关键模块",
+      "先看代码再给修改建议",
+    ];
+  }
+  return [
+    "帮我分析这个项目的当前问题",
+    "先给一个实现方案",
+    "把需求拆成可执行步骤",
+  ];
+});
+const emptyStateText = computed(() => {
+  if (isExternalAgentMode.value) {
+    return workspacePathConfigured.value
+      ? `当前会话会把消息发送给 ${externalAgentDisplayLabel.value}，你可以直接让它查看代码、修改文件或执行工作区内任务。`
+      : `先配置项目工作区路径，然后就可以像在 ${externalAgentDisplayLabel.value} 里直接下任务一样使用。`;
+  }
+  return "选择项目后，你可以直接提问、上传附件，或让系统基于项目上下文给方案与实现建议。";
+});
 
 const composerPlaceholder = computed(() =>
   isExternalAgentMode.value
@@ -1552,12 +1619,12 @@ const composerPlaceholder = computed(() =>
     : "输入你的问题，按 Enter 发送，Shift + Enter 换行。支持粘贴图片。",
 );
 const composerHintText = computed(() => {
-  if (!isExternalAgentMode.value) return "按 Enter 发送";
+  if (!isExternalAgentMode.value) return "Enter 发送，Shift + Enter 换行";
   if (!workspacePathConfigured.value) return "先配置项目工作区路径";
   if (workspacePathDirty.value) return "工作区路径有未保存修改";
   if (externalAgentWarmupLoading.value) return `${externalAgentDisplayLabel.value} 预热中...`;
-  if (externalAgentInfo.value.ready) return `${externalAgentDisplayLabel.value} 已就绪，Enter 直接发送`;
-  return `Enter 发送到 ${externalAgentDisplayLabel.value}`;
+  if (externalAgentInfo.value.ready) return `${externalAgentDisplayLabel.value} 已就绪，Enter 发送，Shift + Enter 换行`;
+  return `Enter 发送到 ${externalAgentDisplayLabel.value}，Shift + Enter 换行`;
 });
 const shortThreadId = computed(() => {
   const value = String(externalAgentInfo.value.thread_id || '').trim();
@@ -1653,6 +1720,7 @@ const fileTypeOptions = computed(() =>
 
 const messagesContainer = ref(null);
 const draftText = ref("");
+const editorComposing = ref(false);
 const uploadFiles = ref([]);
 const inputFocused = ref(false);
 const isDragging = ref(false);
@@ -2190,23 +2258,89 @@ function appendTerminalLog(row, text) {
   appendTerminalPanelLine(line);
 }
 
-function formatTerminalMessage(item, idx) {
-  const logs = Array.isArray(item?.terminalLog)
+function terminalLogLines(item) {
+  return Array.isArray(item?.terminalLog)
     ? item.terminalLog.map((line) => String(line || "").trim()).filter(Boolean)
     : [];
-  const answer = String(item?.content || "").trim();
-  if (logs.length && answer) {
-    return `${logs.join("\n")}\n\n${answer}`;
+}
+
+function formatTerminalLogs(item) {
+  return terminalLogLines(item).join("\n");
+}
+
+function messageRoleName(item) {
+  if (String(item?.role || "").trim() === "user") return "You";
+  if (String(item?.displayMode || "").trim() === "terminal") {
+    return externalAgentDisplayLabel.value;
   }
-  if (logs.length) {
-    return logs.join("\n");
+  return "Assistant";
+}
+
+function avatarLabel(item) {
+  if (String(item?.role || "").trim() === "user") return "U";
+  const source = String(
+    String(item?.displayMode || "").trim() === "terminal"
+      ? externalAgentDisplayLabel.value
+      : "AI",
+  ).trim();
+  return source.slice(0, 1).toUpperCase() || "A";
+}
+
+function buildMessageMarkdown(item, options = {}) {
+  const includeProcess = Boolean(options?.includeProcess);
+  const parts = [];
+  const content = String(item?.content || "").trim();
+  const logs = formatTerminalLogs(item).trim();
+
+  if (includeProcess && logs) {
+    parts.push(["## 思考过程", "```text", logs, "```"].join("\n"));
   }
-  if (answer) {
-    return answer;
+  if (content) {
+    parts.push(content);
+  } else if (!parts.length && logs) {
+    parts.push(["```text", logs, "```"].join("\n"));
   }
-  return chatLoading.value && idx === messages.value.length - 1
-    ? "等待外部 Agent 输出..."
-    : "";
+  return parts.join("\n\n").trim();
+}
+
+async function writeClipboardText(text) {
+  const value = String(text || "");
+  if (!value.trim()) {
+    throw new Error("empty");
+  }
+  if (navigator?.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "readonly");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const ok = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!ok) {
+    throw new Error("copy_failed");
+  }
+}
+
+async function copyMessageMarkdown(item, options = {}) {
+  const content = buildMessageMarkdown(item, options);
+  if (!content) {
+    ElMessage.warning("当前消息暂无可复制内容");
+    return;
+  }
+  try {
+    await writeClipboardText(content);
+    ElMessage.success(
+      options?.includeProcess ? "已复制 Markdown（含思考过程）" : "已复制 Markdown",
+    );
+  } catch {
+    ElMessage.error("复制失败");
+  }
 }
 
 function scrollToBottom() {
@@ -2293,6 +2427,10 @@ function attachmentTypeLabel(attachment) {
   return attachment?.kind === "image" ? "图片" : "文档";
 }
 
+function applyStarterPrompt(prompt) {
+  draftText.value = String(prompt || "").trim();
+}
+
 function handleFileChange(file) {
   const raw = file.raw;
   if (!raw) return;
@@ -2338,6 +2476,30 @@ function handleDrop(e) {
   }
 }
 
+function handleEditorCompositionStart() {
+  editorComposing.value = true;
+}
+
+function handleEditorCompositionEnd() {
+  editorComposing.value = false;
+}
+
+function handleEditorBlur() {
+  inputFocused.value = false;
+}
+
+function handleEditorKeydown(event) {
+  const nativeEvent = event;
+  const isImeComposing =
+    editorComposing.value ||
+    Boolean(nativeEvent?.isComposing) ||
+    Number(nativeEvent?.keyCode || 0) === 229;
+  if (event.key === "Enter" && !event.shiftKey && !isImeComposing) {
+    event.preventDefault();
+    void doSend();
+  }
+}
+
 function handlePaste(event) {
   if (!event.clipboardData || !event.clipboardData.items) return;
 
@@ -2355,6 +2517,10 @@ function handlePaste(event) {
       }
     }
   }
+}
+
+function handleEditorPaste(event) {
+  handlePaste(event);
 }
 
 function removeFile(index) {
@@ -2724,6 +2890,7 @@ function mapHistoryMessage(item) {
     content: String(item?.content || ""),
     displayMode: String(item?.display_mode || "").trim(),
     terminalLog: [],
+    processExpanded: false,
     audit: null,
     images: images,
     attachments,
@@ -3385,6 +3552,7 @@ async function doSend() {
     content: "",
     displayMode: isExternalAgentMode.value ? "terminal" : "",
     terminalLog: [],
+    processExpanded: false,
     audit: null,
     time: nowText(),
   });
@@ -3539,6 +3707,7 @@ watch(
 
 watch(selectedChatMode, async (value) => {
   if (String(value || "").trim() !== "external_agent") {
+    agentStatusExpanded.value = false;
     externalAgentWarmupLoading.value = false;
     externalAgentWarmupKey.value = "";
     externalAgentInfo.value = {
@@ -3590,6 +3759,7 @@ watch(selectedProjectId, async (value) => {
   void stopTerminalMirror().catch(() => {});
   resetTerminalPanel();
   try {
+    agentStatusExpanded.value = false;
     await fetchProvidersByProject(projectId);
     await fetchChatHistory(projectId);
     if (selectedChatMode.value === "external_agent") {
@@ -3635,22 +3805,45 @@ onUnmounted(() => {
 .chat-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  padding: 16px 24px;
-  background: var(--el-bg-color);
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  align-items: flex-start;
+  gap: 16px;
+  padding: 18px 28px 16px;
+  background: rgba(255, 255, 255, 0.72);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(18px);
   z-index: 10;
 }
 
 .chat-header-left {
   display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.chat-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.chat-title-subtext {
+  font-size: 13px;
+  line-height: 1.4;
+  color: #64748b;
+}
+
+.chat-status-pills {
+  display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 2px;
 }
 
 .terminal-panel {
-  flex-shrink: 0;
-  margin: 16px 24px 0;
+  width: 100%;
   border: 1px solid #1f2937;
   border-radius: 14px;
   background: #0b1220;
@@ -3694,6 +3887,16 @@ onUnmounted(() => {
   padding: 14px;
 }
 
+.terminal-panel-hint {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #bfdbfe;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .terminal-panel-pre {
   margin: 0;
   white-space: pre-wrap;
@@ -3716,15 +3919,22 @@ onUnmounted(() => {
 
 .chat-header-left h2 {
   margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #0f172a;
 }
 
 .chat-header-right {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
+}
+
+.chat-header-right :deep(.el-button) {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: rgba(255, 255, 255, 0.86);
 }
 
 .settings-dialog-body {
@@ -3733,12 +3943,61 @@ onUnmounted(() => {
   padding: 8px 16px;
 }
 
+.settings-summary-card {
+  margin: 4px 0 14px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.98));
+}
+
+.settings-summary-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.settings-summary-text {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: #475569;
+}
+
 .settings-form {
   flex: 1;
 }
 
 .settings-form .el-form-item {
   margin-bottom: 20px;
+}
+
+.settings-section-title {
+  margin: 6px 0 14px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.settings-subtle-card {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px dashed rgba(148, 163, 184, 0.32);
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.settings-subtle-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.settings-subtle-text {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #64748b;
 }
 
 .settings-form :deep(.el-form-item__label) {
@@ -3909,7 +4168,9 @@ onUnmounted(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--el-bg-color);
+  background:
+    radial-gradient(circle at top, rgba(16, 163, 127, 0.08), transparent 30%),
+    linear-gradient(180deg, #f7f8fa 0%, #f3f5f7 100%);
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -3921,22 +4182,93 @@ onUnmounted(() => {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 32px 24px;
+  padding: 28px 24px 32px;
   scroll-behavior: smooth;
+}
+
+.chat-empty-state {
+  width: 100%;
+  max-width: 760px;
+  margin: auto;
+  padding: 24px 8px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.chat-empty-badge {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chat-empty-title {
+  margin-top: 16px;
+  font-size: 34px;
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: #0f172a;
+}
+
+.chat-empty-text {
+  margin-top: 12px;
+  max-width: 640px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #64748b;
+}
+
+.chat-empty-actions {
+  margin-top: 24px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+.chat-empty-action {
+  padding: 11px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.82);
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.chat-empty-action:hover {
+  transform: translateY(-1px);
+  border-color: rgba(37, 99, 235, 0.24);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
 }
 
 .message-list-inner {
   display: flex;
   flex-direction: column;
-  gap: 32px;
-  max-width: 840px;
+  gap: 28px;
+  max-width: 900px;
   margin: 0 auto;
+  width: 100%;
 }
 
 .message-row {
   display: flex;
-  gap: 20px;
+  gap: 14px;
   align-items: flex-start;
+}
+
+.message-row-process {
+  align-items: stretch;
 }
 
 .message-row.is-user {
@@ -3948,21 +4280,32 @@ onUnmounted(() => {
 }
 
 .avatar-user {
-  background: var(--el-color-primary);
-  font-weight: bold;
+  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
+  font-weight: 700;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.18);
 }
 
 .avatar-ai {
-  background: #10a37f;
-  font-weight: bold;
+  background: linear-gradient(135deg, #0f172a 0%, #10a37f 100%);
+  font-weight: 700;
+  box-shadow: 0 10px 24px rgba(16, 163, 127, 0.18);
 }
 
 .message-content-wrapper {
-  max-width: 80%;
+  max-width: 82%;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+}
+
+.message-content-wrapper-process {
+  max-width: 100%;
+  width: 100%;
+}
+
+.message-row.is-ai .message-content-wrapper {
+  max-width: min(100%, 820px);
 }
 
 .message-row.is-user .message-content-wrapper {
@@ -3974,23 +4317,42 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: var(--el-text-color-secondary);
+  color: #64748b;
 }
 
 .role-name {
-  font-weight: 600;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.message-time {
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.message-row:hover .message-time {
+  opacity: 1;
 }
 
 .message-bubble {
-  padding: 14px 18px;
-  border-radius: 12px;
-  background: var(--el-fill-color-light);
-  color: var(--el-text-color-primary);
+  padding: 18px 20px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
   line-height: 1.6;
-  font-size: 14px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+  font-size: 15px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  box-shadow: 0 10px 32px rgba(15, 23, 42, 0.05);
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.message-row.message-row-process .message-bubble.message-bubble-process {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
 }
 
 .message-text {
@@ -4007,18 +4369,87 @@ onUnmounted(() => {
   line-height: 1.5;
 }
 
+.message-process {
+  margin-bottom: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.92));
+  overflow: hidden;
+}
+
+.message-process-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border: 0;
+  background: transparent;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.message-process-count {
+  margin-left: 6px;
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.message-process-meta {
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.message-process-pre {
+  padding: 0 14px 14px;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.message-row.is-ai:hover .message-actions,
+.message-actions:focus-within {
+  opacity: 1;
+}
+
+.message-action-button {
+  color: #64748b;
+  border-radius: 999px;
+  padding: 0 8px;
+}
+
+.message-action-button:hover {
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.04);
+}
+
 .message-audit {
   margin-top: 12px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.96);
+  border: 1px solid rgba(148, 163, 184, 0.18);
 }
 
 .message-audit-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--el-text-color-primary);
+  color: #0f172a;
 }
 
 .message-audit-section {
@@ -4027,7 +4458,7 @@ onUnmounted(() => {
 
 .message-audit-label {
   font-size: 12px;
-  color: var(--el-text-color-secondary);
+  color: #64748b;
   margin-bottom: 6px;
 }
 
@@ -4039,7 +4470,7 @@ onUnmounted(() => {
 
 .message-audit-text {
   font-size: 12px;
-  color: var(--el-text-color-regular);
+  color: #334155;
 }
 
 .message-audit-pre {
@@ -4048,7 +4479,7 @@ onUnmounted(() => {
   word-break: break-word;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--el-text-color-regular);
+  color: #334155;
   font-family:
     ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
 }
@@ -4073,7 +4504,7 @@ onUnmounted(() => {
   line-height: 1.5;
 }
 .message-text :deep(code) {
-  background: var(--el-fill-color-dark);
+  background: rgba(15, 23, 42, 0.08);
   padding: 3px 6px;
   border-radius: 6px;
   font-family:
@@ -4087,10 +4518,11 @@ onUnmounted(() => {
 }
 
 .message-row.is-user .message-bubble {
-  background: var(--el-color-primary);
+  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
   color: #ffffff;
-  border-bottom-right-radius: 4px;
-  box-shadow: 0 4px 12px rgba(var(--el-color-primary-rgb), 0.2);
+  border-bottom-right-radius: 6px;
+  border-color: transparent;
+  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.22);
 }
 
 .message-row.is-user .message-text :deep(code) {
@@ -4099,10 +4531,11 @@ onUnmounted(() => {
 }
 
 .message-row.is-ai .message-bubble {
-  border-bottom-left-radius: 4px;
-  background: #ffffff;
-  border: 1px solid var(--el-border-color-lighter);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+  padding: 4px 0 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .message-images {
@@ -4144,33 +4577,33 @@ onUnmounted(() => {
 
 .chat-composer {
   flex-shrink: 0;
-  padding: 24px;
-  background: var(--el-bg-color);
+  padding: 18px 24px 24px;
+  background: linear-gradient(180deg, rgba(243, 245, 247, 0) 0%, rgba(243, 245, 247, 0.92) 24%, rgba(243, 245, 247, 1) 100%);
   display: flex;
   justify-content: center;
-  border-top: 1px solid var(--el-border-color-lighter);
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
   position: relative;
   z-index: 1;
 }
 
 .chat-input-wrapper {
   width: 100%;
-  max-width: 840px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 16px;
-  background: var(--el-fill-color-blank);
+  max-width: 900px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.96);
   transition:
     border-color 0.2s,
     box-shadow 0.2s,
     background-color 0.2s;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 22px 48px rgba(15, 23, 42, 0.08);
   display: flex;
   flex-direction: column;
 }
 
 .chat-input-wrapper.is-focused {
-  border-color: var(--el-color-primary);
-  box-shadow: 0 4px 16px rgba(var(--el-color-primary-rgb), 0.15);
+  border-color: rgba(37, 99, 235, 0.45);
+  box-shadow: 0 24px 52px rgba(37, 99, 235, 0.12);
 }
 
 .chat-input-wrapper.is-dragover {
@@ -4259,33 +4692,51 @@ onUnmounted(() => {
   border: none !important;
   box-shadow: none !important;
   background: transparent !important;
-  padding: 12px 16px;
-  font-size: 14px;
+  padding: 16px 18px 10px;
+  font-size: 15px;
+  line-height: 1.65;
   resize: none;
+}
+
+.chat-textarea :deep(.el-textarea__inner)::placeholder {
+  color: #94a3b8;
 }
 
 .input-footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 12px;
+  padding: 8px 14px 14px;
 }
 
 .footer-left {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding-left: 2px;
 }
 
 .footer-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  margin-left: auto;
 }
 
 .hint-text {
   font-size: 12px;
-  color: var(--el-text-color-placeholder);
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.send-message-button {
+  width: 36px;
+  height: 36px;
+  box-shadow: 0 10px 20px rgba(37, 99, 235, 0.18);
+}
+
+.send-message-button:disabled {
+  box-shadow: none;
 }
 
 .external-agent-meta {
@@ -4293,6 +4744,54 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 8px;
   color: var(--el-text-color-regular);
+}
+
+.external-agent-status-card {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.92);
+  overflow: hidden;
+}
+
+.external-agent-status-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.external-agent-status-head {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.external-agent-status-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.external-agent-status-tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.external-agent-status-meta {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #64748b;
 }
 
 .external-agent-support-list {
@@ -4318,7 +4817,7 @@ onUnmounted(() => {
   gap: 12px;
   padding: 12px 14px;
   border-radius: 12px;
-  margin-bottom: 12px;
+  margin: 16px 24px 0;
 }
 
 .workspace-guide-banner--warning {
@@ -4398,5 +4897,74 @@ onUnmounted(() => {
   border-radius: 999px;
   padding: 8px 14px;
   font-weight: 600;
+}
+
+@media (max-width: 960px) {
+  .chat-header {
+    padding: 16px 16px 14px;
+  }
+
+  .chat-status-pills {
+    gap: 6px;
+  }
+
+  .chat-messages {
+    padding: 20px 14px 24px;
+  }
+
+  .chat-empty-title {
+    font-size: 28px;
+  }
+
+  .chat-composer {
+    padding: 14px 14px 16px;
+  }
+
+  .message-content-wrapper,
+  .message-row.is-ai .message-content-wrapper {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .chat-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .chat-header-right {
+    justify-content: flex-end;
+  }
+
+  .message-row {
+    gap: 10px;
+  }
+
+  .message-avatar {
+    display: none;
+  }
+
+  .message-bubble {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .message-actions {
+    opacity: 1;
+    flex-wrap: wrap;
+  }
+
+  .message-time {
+    opacity: 1;
+  }
+
+  .input-footer {
+    align-items: flex-end;
+    gap: 10px;
+  }
+
+  .hint-text {
+    display: none;
+  }
 }
 </style>

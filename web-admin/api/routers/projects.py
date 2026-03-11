@@ -904,6 +904,7 @@ def _extract_ws_auth_payload(websocket: WebSocket) -> dict | None:
 def _build_external_agent_startup_context(
     project: ProjectConfig,
     *,
+    agent_label: str,
     candidates: list[dict[str, Any]],
     selected_employees: list[dict[str, Any]],
     system_prompt: str,
@@ -917,12 +918,12 @@ def _build_external_agent_startup_context(
     ]
     lines = [
         "你正在 AI 设计规范平台托管的外部 Agent 会话中运行。",
-        "当前 Agent：Codex CLI。",
+        f"当前 Agent：{agent_label or '外部 Agent'}。",
         f"当前项目：{project.name} ({project.id})。",
         f"工作目录：{project.workspace_path or '-'}。",
         f"沙箱模式：{sandbox_mode}。",
         "请优先使用中文输出，保持结论清晰、行动明确。",
-        "当前阶段不接入平台审批流，也未桥接平台技能 MCP；请仅基于本地工作区与 Codex 自身能力完成任务。",
+        "当前阶段不接入平台审批流，也未桥接平台技能 MCP；请仅基于本地工作区与当前外部 Agent CLI 自身能力完成任务。",
         "如需修改文件或执行命令，请严格限制在当前工作区范围内。",
     ]
     if project.description:
@@ -1353,6 +1354,7 @@ async def list_project_chat_providers(project_id: str, auth_payload: dict = Depe
         project_description=str(project.description or "").strip(),
         workspace_path=str(project.workspace_path or "").strip(),
         sandbox_mode=str(chat_settings.get("external_agent_sandbox_mode") or "workspace-write").strip() or "workspace-write",
+        agent_type=selected_external_agent_type,
         selected_employee_names=[],
         candidate_preview=[
             f"{str(item.get('name') or item.get('id') or '').strip()}({str(item.get('role') or 'member').strip() or 'member'})"
@@ -1517,6 +1519,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             project_description=str(project.description or "").strip(),
             workspace_path=str(project.workspace_path or "").strip(),
             sandbox_mode=sandbox_mode,
+            agent_type=agent_type,
             selected_employee_names=selected_employee_names,
             candidate_preview=candidate_preview,
             system_prompt=str(runtime_settings.get("system_prompt") or "").strip(),
@@ -1524,8 +1527,10 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             write_files=False,
         )
         external_agent_context = await materialize_external_agent_workspace_context_async(external_agent_context)
+        agent_status = resolve_external_agent_status(agent_type)
         startup_context = str(external_agent_context.get("startup_context") or "").strip() or _build_external_agent_startup_context(
             project,
+            agent_label=str(agent_status.get("label") or agent_type),
             candidates=candidates,
             selected_employees=selected_employees,
             system_prompt=str(runtime_settings.get("system_prompt") or "").strip(),
@@ -1553,7 +1558,6 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 codex_config_overrides=session_overrides,
             )
         await external_session.prepare_session()
-        agent_status = resolve_external_agent_status(agent_type)
         return {
             "runtime_settings": runtime_settings,
             "selected_employee": selected_employee,

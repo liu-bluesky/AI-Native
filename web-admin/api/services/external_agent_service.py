@@ -1,4 +1,4 @@
-"""外部 Agent PTY 会话（MVP：Codex CLI）"""
+"""外部 Agent 会话与终端镜像适配。"""
 
 from __future__ import annotations
 
@@ -25,6 +25,30 @@ _ANSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 _OSC_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)", re.DOTALL)
 _SUPPORT_DIRNAME = ".ai-employee"
 _MIRROR_DIRNAME = "context-mirror"
+_GEMINI_DIRNAME = ".gemini"
+_GEMINI_RUNTIME_HOME_DIRNAME = "gemini-home"
+_GEMINI_AUTH_ENV_KEYS = (
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_GENAI_USE_GCA",
+)
+_GEMINI_PASSTHROUGH_ENV_KEYS = (
+    "GOOGLE_GEMINI_BASE_URL",
+    "GOOGLE_VERTEX_BASE_URL",
+    "GEMINI_MODEL",
+    "GEMINI_API_KEY_AUTH_MECHANISM",
+    "GOOGLE_GENAI_API_VERSION",
+)
+_GEMINI_RUNTIME_COPY_FILENAMES = (
+    "oauth_creds.json",
+    "google_accounts.json",
+    "installation_id",
+    "mcp-oauth-tokens.json",
+    "mcp-oauth-tokens-v2.json",
+)
 _RISK_RULES: list[dict[str, Any]] = [
     {
         "id": "delete_force",
@@ -90,9 +114,9 @@ _EXTERNAL_AGENT_SPECS: dict[str, dict[str, Any]] = {
         "override_attr": "external_agent_gemini_bin",
         "runtime_model_name": "gemini-cli",
         "supports_terminal_mirror": False,
-        "supports_workspace_write": False,
-        "implemented": False,
-        "reason": "后端适配层待接入",
+        "supports_workspace_write": True,
+        "implemented": True,
+        "reason": "",
     },
 }
 
@@ -164,6 +188,108 @@ def _safe_token(value: str, *, max_len: int = 80) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
     cleaned = cleaned.strip("._-") or "unknown"
     return cleaned[:max_len]
+
+
+def _parse_simple_env_file(path: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    try:
+        content = path.read_text(encoding="utf-8")
+    except Exception:
+        return result
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if value[:1] == value[-1:] and value[:1] in {"'", '"'}:
+            value = value[1:-1]
+        result[key] = value
+    return result
+
+
+def _gemini_runtime_home_path(workspace_path: str) -> Path:
+    workspace = Path(str(workspace_path or "").strip()).expanduser()
+    return workspace / _SUPPORT_DIRNAME / _GEMINI_RUNTIME_HOME_DIRNAME
+
+
+def _gemini_runtime_user_dir(workspace_path: str) -> Path:
+    return _gemini_runtime_home_path(workspace_path) / _GEMINI_DIRNAME
+
+
+def _gemini_host_user_dir() -> Path:
+    return Path.home() / _GEMINI_DIRNAME
+
+
+def _build_gemini_workspace_settings(bridge: dict[str, Any] | None) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    bridge_payload = bridge if isinstance(bridge, dict) else {}
+    server_name = str(bridge_payload.get("server_name") or "").strip()
+    server_url = str(bridge_payload.get("url") or "").strip()
+    if bool(bridge_payload.get("enabled")) and server_name and server_url:
+        payload["mcpServers"] = {
+            server_name: {
+                "type": "sse",
+                "url": server_url,
+            }
+        }
+    return payload
+
+
+def _resolve_gemini_auth_env() -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    for key in _GEMINI_AUTH_ENV_KEYS:
+        value = str(os.environ.get(key) or "").strip()
+        if value:
+            resolved[key] = value
+    env_path = _gemini_host_user_dir() / ".env"
+    if env_path.is_file():
+        file_env = _parse_simple_env_file(env_path)
+        for key in _GEMINI_AUTH_ENV_KEYS:
+            value = str(file_env.get(key) or "").strip()
+            if value and key not in resolved:
+                resolved[key] = value
+    return resolved
+
+
+def _resolve_gemini_passthrough_env() -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    for key in _GEMINI_PASSTHROUGH_ENV_KEYS:
+        value = str(os.environ.get(key) or "").strip()
+        if value:
+            resolved[key] = value
+    env_path = _gemini_host_user_dir() / ".env"
+    if env_path.is_file():
+        file_env = _parse_simple_env_file(env_path)
+        for key in _GEMINI_PASSTHROUGH_ENV_KEYS:
+            value = str(file_env.get(key) or "").strip()
+            if value and key not in resolved:
+                resolved[key] = value
+    return resolved
+
+
+def _detect_gemini_auth_mode(workspace_path: str) -> str:
+    auth_env = _resolve_gemini_auth_env()
+    if str(auth_env.get("GEMINI_API_KEY") or "").strip():
+        return "gemini-api-key"
+    if str(auth_env.get("GOOGLE_GENAI_USE_VERTEXAI") or "").strip().lower() == "true":
+        return "vertex-ai"
+    if str(auth_env.get("GOOGLE_API_KEY") or "").strip():
+        return "vertex-ai"
+    if str(auth_env.get("GOOGLE_CLOUD_PROJECT") or "").strip() and str(auth_env.get("GOOGLE_CLOUD_LOCATION") or "").strip():
+        return "vertex-ai"
+    runtime_user_dir = _gemini_runtime_user_dir(workspace_path)
+    host_user_dir = _gemini_host_user_dir()
+    if (runtime_user_dir / "oauth_creds.json").is_file() or (host_user_dir / "oauth_creds.json").is_file():
+        return "oauth-personal"
+    return ""
 
 
 def _clean_terminal_output(text: str) -> str:
@@ -512,7 +638,7 @@ def _build_generated_agents_content(
         "## 会话定位",
         f"- 当前项目：`{project_name}` (`{project_id}`)",
         f"- 工作目录：`{workspace_path or '-'}`",
-        f"- 外部 Agent：`Codex CLI`",
+        "- 外部 Agent：`由聊天设置中当前选定的 CLI 负责执行`",
         f"- 沙箱模式：`{sandbox_mode}`",
         "- 当前阶段：仅做外部 Agent 托管，不启用平台审批流，不桥接平台 MCP 技能。",
         "- 行为边界：如需修改文件或运行命令，请限制在当前工作区范围内。",
@@ -574,7 +700,7 @@ def _build_generated_startup_context(
     bridge = mcp_bridge if isinstance(mcp_bridge, dict) else {}
     if bool(bridge.get("enabled")) and str(bridge.get("server_name") or "").strip():
         lines.append(
-            f"本次 Codex 会话已自动注入项目 MCP Server：`{str(bridge.get('server_name') or '').strip()}`。"
+            f"本次外部 Agent 会话已自动注入项目 MCP Server：`{str(bridge.get('server_name') or '').strip()}`。"
         )
     elif str(bridge.get("reason") or "").strip():
         lines.append(f"项目 MCP 未注入：{str(bridge.get('reason') or '').strip()}。")
@@ -594,6 +720,7 @@ def prepare_external_agent_workspace_context(
     project_description: str,
     workspace_path: str,
     sandbox_mode: str,
+    agent_type: str = "codex_cli",
     selected_employee_names: list[str] | None = None,
     candidate_preview: list[str] | None = None,
     system_prompt: str = "",
@@ -616,6 +743,7 @@ def prepare_external_agent_workspace_context(
             "label": str(item.get("label") or source.name),
             "source_path": str(source),
             "path": _display_path(workspace, target) if workspace_path else str(target),
+            "materialize_path": str(target),
             "written": False,
         }
         materialize_copies.append(
@@ -639,6 +767,8 @@ def prepare_external_agent_workspace_context(
     generated_agents_path = support_dir / "AGENTS.generated.md"
     generated_startup_path = support_dir / "STARTUP_CONTEXT.generated.md"
     generated_mcp_path = support_dir / "CODEX_MCP.generated.toml"
+    generated_gemini_settings_path = workspace / _GEMINI_DIRNAME / "settings.json"
+    generated_gemini_user_settings_path = _gemini_runtime_user_dir(workspace_path) / "settings.json"
 
     agents_content = _build_generated_agents_content(
         project_id=project_id,
@@ -666,12 +796,14 @@ def prepare_external_agent_workspace_context(
             "kind": "generated_agents",
             "label": "生成的 AGENTS 文件",
             "path": _display_path(workspace, generated_agents_path) if workspace_path else str(generated_agents_path),
+            "materialize_path": str(generated_agents_path),
             "written": False,
         },
         {
             "kind": "generated_startup_context",
             "label": "生成的启动上下文文件",
             "path": _display_path(workspace, generated_startup_path) if workspace_path else str(generated_startup_path),
+            "materialize_path": str(generated_startup_path),
             "written": False,
         },
         *mirrored_files,
@@ -685,6 +817,7 @@ def prepare_external_agent_workspace_context(
         {"kind": "generated_agents", "path": str(generated_agents_path), "content": agents_content},
         {"kind": "generated_startup_context", "path": str(generated_startup_path), "content": startup_context + "\n"},
     ]
+    normalized_agent_type = normalize_external_agent_type(agent_type)
     if bool(bridge.get("enabled")) and bridge_server_name and bridge_url:
         mcp_content = (
             f"[mcp_servers.{bridge_server_name}]\n"
@@ -696,11 +829,57 @@ def prepare_external_agent_workspace_context(
             2,
             {
                 "kind": "generated_mcp_config",
-                "label": "生成的 Codex MCP 配置",
+                "label": "生成的外部 Agent MCP 配置",
                 "path": _display_path(workspace, generated_mcp_path) if workspace_path else str(generated_mcp_path),
+                "materialize_path": str(generated_mcp_path),
                 "written": False,
             },
         )
+    if normalized_agent_type == "gemini_cli":
+        gemini_workspace_settings = json.dumps(
+            _build_gemini_workspace_settings(bridge),
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
+        materialize_files.append(
+            {
+                "kind": "generated_gemini_workspace_settings",
+                "path": str(generated_gemini_settings_path),
+                "content": gemini_workspace_settings,
+            }
+        )
+        materialize_files.append(
+            {
+                "kind": "generated_gemini_user_settings",
+                "path": str(generated_gemini_user_settings_path),
+                "content": "{}\n",
+            }
+        )
+        support_files.insert(
+            2,
+            {
+                "kind": "generated_gemini_workspace_settings",
+                "label": "生成的 Gemini 工作区配置",
+                "path": _display_path(workspace, generated_gemini_settings_path) if workspace_path else str(generated_gemini_settings_path),
+                "materialize_path": str(generated_gemini_settings_path),
+                "written": False,
+            },
+        )
+        host_gemini_dir = _gemini_host_user_dir()
+        runtime_gemini_dir = _gemini_runtime_user_dir(workspace_path)
+        for filename in _GEMINI_RUNTIME_COPY_FILENAMES:
+            source = host_gemini_dir / filename
+            if not source.is_file():
+                continue
+            target = runtime_gemini_dir / filename
+            materialize_copies.append(
+                {
+                    "kind": "gemini_runtime_copy",
+                    "source_path": str(source),
+                    "target_path": str(target),
+                    "path": _display_path(workspace, target) if workspace_path else str(target),
+                }
+            )
 
     if write_files:
         try:
@@ -821,21 +1000,8 @@ async def materialize_external_agent_workspace_context_async(context: dict[str, 
         return payload
 
     for item in support_files:
-        kind = str(item.get("kind") or "").strip()
-        path = str(item.get("path") or "").strip()
-        absolute_path = ""
-        if kind == "generated_agents":
-            absolute_path = next((str(entry.get("path") or "").strip() for entry in files if str(entry.get("kind") or "") == "generated_agents"), "")
-            result = file_results.get(absolute_path)
-        elif kind == "generated_startup_context":
-            absolute_path = next((str(entry.get("path") or "").strip() for entry in files if str(entry.get("kind") or "") == "generated_startup_context"), "")
-            result = file_results.get(absolute_path)
-        elif kind == "generated_mcp_config":
-            absolute_path = next((str(entry.get("path") or "").strip() for entry in files if str(entry.get("kind") or "") == "generated_mcp_config"), "")
-            result = file_results.get(absolute_path)
-        else:
-            absolute_path = next((str(entry.get("target_path") or "").strip() for entry in copies if path == str(entry.get("path") or "").strip()), "")
-            result = copy_results.get(absolute_path)
+        materialize_path = str(item.get("materialize_path") or "").strip()
+        result = file_results.get(materialize_path) or copy_results.get(materialize_path)
         if not isinstance(result, dict):
             continue
         item["written"] = bool(result.get("written"))
@@ -927,6 +1093,15 @@ class ExternalAgentSession:
             raise RuntimeError(
                 f"未找到系统 {label} 命令，请先确认电脑已安装且 PATH 可用；仅在特殊部署场景下再配置对应 *_BIN 环境变量"
             )
+        if self.agent_type == "gemini_cli":
+            auth_mode = _detect_gemini_auth_mode(self.workspace_path)
+            if not auth_mode:
+                raise RuntimeError(
+                    "Gemini CLI 未检测到可用认证。请先满足以下任一条件后再使用："
+                    "1) 在当前用户环境变量或 `~/.gemini/.env` 中提供 `GEMINI_API_KEY`；"
+                    "2) 完成 Gemini CLI 的 Google 登录；"
+                    "3) 配置 Vertex AI 所需的 `GOOGLE_API_KEY` 或 `GOOGLE_CLOUD_PROJECT/GOOGLE_CLOUD_LOCATION`。"
+                )
         self._command = command
         if not self._session_started:
             self._session_started = True
@@ -1719,6 +1894,13 @@ def _claude_permission_mode(sandbox_mode: str) -> str:
     return "acceptEdits"
 
 
+def _gemini_approval_mode(sandbox_mode: str) -> str:
+    mode = str(sandbox_mode or "workspace-write").strip().lower()
+    if mode == "read-only":
+        return "plan"
+    return "auto_edit"
+
+
 class ClaudeExternalAgentSession(ExternalAgentSession):
     def __init__(self, **kwargs: Any) -> None:
         kwargs["agent_type"] = "claude_cli"
@@ -1731,6 +1913,7 @@ class ClaudeExternalAgentSession(ExternalAgentSession):
         cmd = [
             self._command,
             "-p",
+            prompt,
             "--verbose",
             "--output-format",
             "stream-json",
@@ -1744,7 +1927,6 @@ class ClaudeExternalAgentSession(ExternalAgentSession):
             cmd.extend(["--add-dir", self.workspace_path])
         if self._startup_context:
             cmd.extend(["--append-system-prompt", self._startup_context])
-        cmd.append(prompt)
         return cmd
 
     async def _prepare_session_locked(self) -> str:
@@ -1938,8 +2120,363 @@ class ClaudeExternalAgentSession(ExternalAgentSession):
         return final_content, stderr_lines, interrupted
 
 
+class GeminiExternalAgentSession(ExternalAgentSession):
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["agent_type"] = "gemini_cli"
+        super().__init__(**kwargs)
+
+    def _build_gemini_exec_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env["TERM"] = env.get("TERM") or "xterm-256color"
+        env["NO_COLOR"] = "1"
+        runtime_home = _gemini_runtime_home_path(self.workspace_path)
+        env["HOME"] = str(runtime_home)
+        env["USERPROFILE"] = str(runtime_home)
+        for key, value in _resolve_gemini_auth_env().items():
+            if value and not str(env.get(key) or "").strip():
+                env[key] = value
+        for key, value in _resolve_gemini_passthrough_env().items():
+            if value and not str(env.get(key) or "").strip():
+                env[key] = value
+        if not str(env.get("GOOGLE_GENAI_USE_VERTEXAI") or "").strip():
+            if str(env.get("GOOGLE_API_KEY") or "").strip() or (
+                str(env.get("GOOGLE_CLOUD_PROJECT") or "").strip()
+                and str(env.get("GOOGLE_CLOUD_LOCATION") or "").strip()
+            ):
+                env["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
+        if not str(env.get("GOOGLE_GENAI_USE_GCA") or "").strip():
+            runtime_user_dir = _gemini_runtime_user_dir(self.workspace_path)
+            if (runtime_user_dir / "oauth_creds.json").is_file():
+                env["GOOGLE_GENAI_USE_GCA"] = "true"
+        return env
+
+    def _build_exec_command(self, prompt: str, *, resume: bool) -> list[str]:
+        effective_prompt = str(prompt or "").strip()
+        if self._startup_context and not (resume and self._thread_id):
+            effective_prompt = (
+                f"{self._startup_context}\n\n"
+                "请记住以上上下文，并在本次会话后续持续沿用。\n\n"
+                f"{effective_prompt}"
+            ).strip()
+        cmd = [
+            self._command,
+            "--output-format",
+            "stream-json",
+            "--approval-mode",
+            _gemini_approval_mode(self.sandbox_mode),
+        ]
+        if resume and self._thread_id:
+            cmd.extend(["--resume", self._thread_id])
+        if self.workspace_path:
+            cmd.extend(["--include-directories", self.workspace_path])
+        cmd.extend(["-p", effective_prompt])
+        return cmd
+
+    async def _prepare_session_locked(self) -> str:
+        await self.ensure_started()
+        return self._thread_id
+
+    async def start_terminal_mirror(self, on_event=None) -> None:
+        raise RuntimeError("Gemini CLI 当前接入的是 stream-json 模式，暂不支持终端镜像")
+
+    async def write_terminal_input(self, text: str) -> None:
+        raise RuntimeError("Gemini CLI 当前未启用终端镜像输入")
+
+    async def stop_terminal_mirror(self) -> None:
+        return
+
+    async def _handle_gemini_stream_event(
+        self,
+        payload: dict[str, Any],
+        final_content: str,
+        on_event=None,
+    ) -> str:
+        event_type = str(payload.get("type") or "").strip().lower()
+        if event_type == "init":
+            session_id = str(payload.get("session_id") or self._thread_id or "").strip()
+            if session_id:
+                self._thread_id = session_id
+            if on_event is not None and self._thread_id:
+                await on_event({
+                    "type": "status",
+                    "stage": "thread_started",
+                    "message": f"已连接到 Gemini 会话 {self._thread_id}",
+                    "thread_id": self._thread_id,
+                })
+            return final_content
+        if event_type == "message":
+            role = str(payload.get("role") or "").strip().lower()
+            if role == "user":
+                return final_content
+            content = _extract_text_payload(payload.get("content") or payload)
+            if not content:
+                return final_content
+            if bool(payload.get("delta")):
+                if on_event is not None:
+                    await on_event({"type": "delta", "content": content, "thread_id": self._thread_id})
+                return final_content + content
+            updated, delta = _compute_incremental_text(final_content, content)
+            if delta and on_event is not None:
+                await on_event({"type": "delta", "content": delta, "thread_id": self._thread_id})
+            return updated
+        if event_type == "tool_use":
+            if on_event is not None:
+                tool_name = str(payload.get("tool_name") or payload.get("name") or "tool").strip()
+                parameters = payload.get("parameters")
+                command = tool_name
+                if parameters not in (None, "", {}, []):
+                    try:
+                        command = f"{tool_name} {json.dumps(parameters, ensure_ascii=False)}"
+                    except Exception:
+                        command = f"{tool_name} {str(parameters)}"
+                await on_event({"type": "command_start", "command": command, "thread_id": self._thread_id})
+            return final_content
+        if event_type == "tool_result":
+            if on_event is not None:
+                output_preview = _summarize_command_output(
+                    _extract_text_payload(payload.get("output") or payload.get("result") or payload)
+                )
+                await on_event({
+                    "type": "command_result",
+                    "command": str(payload.get("tool_name") or payload.get("tool_id") or "tool").strip(),
+                    "exit_code": None,
+                    "status": str(payload.get("status") or "").strip() or "success",
+                    "output_preview": output_preview,
+                    "thread_id": self._thread_id,
+                })
+            return final_content
+        if event_type == "error":
+            message = _extract_text_payload(payload) or str(payload.get("message") or "Gemini CLI 执行失败")
+            severity = str(payload.get("severity") or "error").strip().lower()
+            if severity in {"warning", "info"}:
+                if on_event is not None and message:
+                    await on_event({"type": "stderr", "message": message, "thread_id": self._thread_id})
+                return final_content
+            raise RuntimeError(message)
+        if event_type == "result":
+            stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+            if on_event is not None and stats:
+                await on_event({"type": "usage", "usage": stats, "thread_id": self._thread_id})
+            status = str(payload.get("status") or "").strip().lower()
+            if status and status not in {"success", "ok"}:
+                message = _extract_text_payload(payload) or str(payload.get("message") or status)
+                raise RuntimeError(message)
+            return final_content
+        return final_content
+
+    async def _run_gemini_turn_via_runner(
+        self,
+        cmd: list[str],
+        env: dict[str, str],
+        *,
+        cancel_event: asyncio.Event | None = None,
+        on_event=None,
+    ) -> tuple[str, list[str], bool]:
+        runner_url = _runner_base_url()
+        if not runner_url:
+            raise RuntimeError("未配置 EXTERNAL_AGENT_RUNNER_URL")
+        self._append_log({"ts": _now_iso(), "type": "request_start", "cmd": cmd, "resume": bool(self._thread_id), "thread_id": self._thread_id, "execution_mode": "runner"})
+        stderr_lines: list[str] = []
+        final_content = ""
+        interrupted = False
+        async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
+            async with client.stream("POST", f"{runner_url}/exec/stream", json={"cmd": cmd, "cwd": self.workspace_path, "env": env}) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if cancel_event is not None and cancel_event.is_set() and not interrupted:
+                        interrupted = True
+                        await self._terminate_active_process()
+                    raw_line = str(line or "").strip()
+                    if not raw_line:
+                        continue
+                    try:
+                        runner_event = json.loads(raw_line)
+                    except Exception:
+                        continue
+                    event_type = str(runner_event.get("type") or "").strip()
+                    if event_type == "started":
+                        self._runner_exec_id = str(runner_event.get("exec_id") or "").strip()
+                        if on_event is not None:
+                            await on_event({"type": "status", "stage": "turn_started", "message": "Gemini CLI 正在处理请求…", "thread_id": self._thread_id})
+                        continue
+                    if event_type == "stderr":
+                        text = _clean_terminal_output(str(runner_event.get("data") or "")).strip()
+                        if text:
+                            stderr_lines.append(text)
+                            self._append_log({"ts": _now_iso(), "type": "stderr", "content": text, "thread_id": self._thread_id})
+                            if on_event is not None:
+                                await on_event({"type": "stderr", "message": text, "thread_id": self._thread_id})
+                        continue
+                    if event_type == "exit":
+                        break
+                    if event_type != "stdout":
+                        continue
+                    raw = _clean_terminal_output(str(runner_event.get("data") or "")).strip()
+                    if not raw:
+                        continue
+                    self.last_active_at = _now_iso()
+                    self._append_log({"ts": self.last_active_at, "type": "exec_event_raw", "content": raw, "thread_id": self._thread_id})
+                    try:
+                        payload = json.loads(raw)
+                    except Exception:
+                        updated, delta = _compute_incremental_text(final_content, raw)
+                        final_content = updated
+                        if delta and on_event is not None:
+                            await on_event({"type": "delta", "content": delta, "thread_id": self._thread_id})
+                        continue
+                    final_content = await self._handle_gemini_stream_event(payload, final_content, on_event=on_event)
+        self._runner_exec_id = ""
+        return final_content, stderr_lines, interrupted
+
+    async def _run_exec_turn(
+        self,
+        prompt: str,
+        *,
+        resume: bool,
+        cancel_event: asyncio.Event | None = None,
+        on_event=None,
+    ) -> tuple[str, list[str], bool]:
+        cmd = self._build_exec_command(prompt, resume=resume)
+        env = self._build_gemini_exec_env()
+        if _runner_base_url():
+            return await self._run_gemini_turn_via_runner(cmd, env, cancel_event=cancel_event, on_event=on_event)
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=self.workspace_path,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self._active_process = process
+        self._append_log({"ts": _now_iso(), "type": "request_start", "cmd": cmd, "resume": resume, "thread_id": self._thread_id})
+        stderr_lines: list[str] = []
+        final_content = ""
+        interrupted = False
+        stderr_task = asyncio.create_task(self._read_exec_stderr(process.stderr, stderr_lines, on_event=on_event))
+        try:
+            if on_event is not None:
+                await on_event({"type": "status", "stage": "turn_started", "message": "Gemini CLI 正在处理请求…", "thread_id": self._thread_id})
+            while True:
+                if cancel_event is not None and cancel_event.is_set() and not interrupted:
+                    interrupted = True
+                    await self._terminate_active_process()
+                try:
+                    line = await asyncio.wait_for(process.stdout.readline(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    if process.returncode is not None:
+                        break
+                    continue
+                if not line:
+                    if process.returncode is not None:
+                        break
+                    continue
+                raw = _clean_terminal_output(line.decode("utf-8", errors="ignore")).strip()
+                if not raw:
+                    continue
+                self.last_active_at = _now_iso()
+                self._append_log({"ts": self.last_active_at, "type": "exec_event_raw", "content": raw, "thread_id": self._thread_id})
+                try:
+                    payload = json.loads(raw)
+                except Exception:
+                    updated, delta = _compute_incremental_text(final_content, raw)
+                    final_content = updated
+                    if delta and on_event is not None:
+                        await on_event({"type": "delta", "content": delta, "thread_id": self._thread_id})
+                    continue
+                final_content = await self._handle_gemini_stream_event(payload, final_content, on_event=on_event)
+            await process.wait()
+            await stderr_task
+        finally:
+            if not stderr_task.done():
+                stderr_task.cancel()
+            self._active_process = None
+        return final_content, stderr_lines, interrupted
+
+    async def send_prompt(
+        self,
+        user_prompt: str,
+        cancel_event: asyncio.Event | None = None,
+        approval_context: dict[str, Any] | None = None,
+        history: list[dict[str, Any]] | None = None,
+    ):
+        prompt = self._compose_prompt(user_prompt, history)
+        if not prompt.strip():
+            raise RuntimeError("消息不能为空")
+
+        async with self._send_lock:
+            await self.ensure_started()
+            self.last_active_at = _now_iso()
+            prompt_risks = _collect_risk_signals(user_prompt)
+            before_diff_summary = collect_workspace_diff_summary(self.workspace_path)
+            self._append_log(
+                {
+                    "ts": self.last_active_at,
+                    "type": "user_input",
+                    "content": prompt,
+                    "thread_id": self._thread_id,
+                }
+            )
+            if prompt_risks:
+                self._append_log({"ts": self.last_active_at, "type": "risk_signals", "source": "user_prompt", "items": prompt_risks})
+
+            event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+            async def capture_event(event: dict[str, Any]) -> None:
+                if not isinstance(event, dict):
+                    return
+                await event_queue.put(event)
+
+            turn_task = asyncio.create_task(
+                self._run_exec_turn(
+                    prompt,
+                    resume=bool(self._thread_id),
+                    cancel_event=cancel_event,
+                    on_event=capture_event,
+                )
+            )
+            await event_queue.put({"type": "status", "stage": "request_started", "message": "外部 Agent 已接入，开始执行…", "thread_id": self._thread_id})
+            while True:
+                if turn_task.done() and event_queue.empty():
+                    break
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
+                if isinstance(event, dict):
+                    yield event
+            final_content, stderr_lines, interrupted = await turn_task
+
+            if interrupted and not final_content:
+                final_content = "已停止生成。"
+            if not final_content:
+                stderr_text = "\n".join(stderr_lines[-8:]).strip()
+                if stderr_text:
+                    raise RuntimeError(stderr_text)
+                raise RuntimeError("外部 Agent 未返回有效内容")
+
+            output_risks = _collect_risk_signals(final_content)
+            after_diff_summary = collect_workspace_diff_summary(self.workspace_path)
+            approval_info = approval_context if isinstance(approval_context, dict) else {}
+            audit_payload = {
+                "risk_signals": prompt_risks,
+                "output_risk_signals": output_risks,
+                "approval_required": bool(prompt_risks),
+                "approval_mode": str(approval_info.get("mode") or ("websocket_confirm" if prompt_risks else "none")),
+                "approval_status": str(approval_info.get("status") or ("approved" if prompt_risks else "not_required")),
+                "before_diff_summary": before_diff_summary,
+                "after_diff_summary": after_diff_summary,
+                "thread_id": self._thread_id,
+            }
+            self._append_log({"ts": _now_iso(), "type": "request_audit", "audit": audit_payload, "thread_id": self._thread_id})
+            yield {"type": "audit", "audit": audit_payload, "thread_id": self._thread_id}
+            self._append_log({"ts": _now_iso(), "type": "request_done", "content": final_content, "thread_id": self._thread_id})
+            yield {"type": "done", "content": final_content, "thread_id": self._thread_id}
+
+
 def create_external_agent_session(**kwargs: Any) -> ExternalAgentSession:
     agent_type = normalize_external_agent_type(kwargs.get("agent_type"))
     if agent_type == "claude_cli":
         return ClaudeExternalAgentSession(**kwargs)
+    if agent_type == "gemini_cli":
+        return GeminiExternalAgentSession(**kwargs)
     return ExternalAgentSession(**kwargs)
