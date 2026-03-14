@@ -98,10 +98,12 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
-import { hasPermission } from '@/utils/permissions.js'
+import { getFallbackPath, hasPermission, setPermissionArray } from '@/utils/permissions.js'
 
+const router = useRouter()
 const loading = ref(false)
 const saving = ref(false)
 const roles = ref([])
@@ -202,6 +204,13 @@ async function refresh() {
   }
 }
 
+async function refreshCurrentSessionPermissions() {
+  const data = await api.get('/auth/me')
+  localStorage.setItem('username', data?.username || '')
+  localStorage.setItem('role', data?.role || 'user')
+  setPermissionArray(data?.permissions || [])
+}
+
 async function submitRole() {
   await formRef.value.validate()
   saving.value = true
@@ -221,8 +230,13 @@ async function submitRole() {
     } else {
       await api.post('/roles', payload)
     }
+    await refreshCurrentSessionPermissions()
     ElMessage.success('角色保存成功')
     showDialog.value = false
+    if (!hasPermission('menu.roles')) {
+      await router.replace(getFallbackPath())
+      return
+    }
     await refresh()
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || '角色保存失败')

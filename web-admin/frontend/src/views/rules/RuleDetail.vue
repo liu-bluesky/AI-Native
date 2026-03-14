@@ -3,8 +3,14 @@
     <div class="toolbar">
       <h3>规则详情: {{ rule.title }}</h3>
       <div>
-        <el-button type="primary" @click="$router.push(`/rules/${route.params.id}/edit`)">编辑</el-button>
-        <el-button type="danger" @click="handleDelete">删除</el-button>
+        <el-button
+          type="primary"
+          :disabled="!canManageRecord(rule)"
+          @click="$router.push(`/rules/${route.params.id}/edit`)"
+        >
+          编辑
+        </el-button>
+        <el-button type="danger" :disabled="!canManageRecord(rule)" @click="handleDelete">删除</el-button>
         <el-button @click="$router.back()">返回</el-button>
       </div>
     </div>
@@ -20,6 +26,7 @@
       <el-descriptions-item label="置信度">{{ rule.confidence }}</el-descriptions-item>
       <el-descriptions-item label="使用次数">{{ rule.use_count }}</el-descriptions-item>
       <el-descriptions-item label="版本">{{ rule.version }}</el-descriptions-item>
+      <el-descriptions-item label="创建人">{{ formatRecordOwner(rule) }}</el-descriptions-item>
       <el-descriptions-item label="创建时间">{{ rule.created_at }}</el-descriptions-item>
     </el-descriptions>
 
@@ -47,6 +54,11 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import {
+  canManageRecord,
+  formatRecordOwner,
+  getOwnershipDeniedMessage,
+} from '@/utils/ownership.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -93,6 +105,10 @@ async function fetchEmployees() {
 }
 
 async function handleDelete() {
+  if (!canManageRecord(rule)) {
+    ElMessage.warning(getOwnershipDeniedMessage(rule, '删除'))
+    return
+  }
   await ElMessageBox.confirm(`确定删除规则「${rule.title}」？`, '确认')
   try {
     await api.delete(`/rules/${route.params.id}`)

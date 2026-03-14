@@ -27,8 +27,8 @@ def _normalize_role_id(raw: str) -> str:
 def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
     role_id = str(auth_payload.get("role") or "").strip().lower()
     role = role_store.get(role_id)
-    role_permissions = getattr(role, "permissions", [])
-    if not has_permission(role_permissions, permission_key):
+    role_permissions = getattr(role, "permissions", None)
+    if not has_permission(role_permissions, permission_key, role_id=role_id):
         raise HTTPException(403, f"Permission denied: {permission_key}")
 
 

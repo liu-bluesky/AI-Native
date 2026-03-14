@@ -8,7 +8,7 @@
 - Element Plus 2.9+（中文 locale：zh-CN）
 - vue-router 4.5+（hash 模式）
 - axios 1.7+（封装于 `utils/api.js`）
-- Vite 构建，开发端口 3000，API 代理到 localhost:8000
+- Vite 构建，开发端口 3000，`/api` 与 `/mcp` 代理到 `vite.config.js` 解析出的 API 地址
 
 ## 组件结构
 
@@ -99,11 +99,14 @@ async function fetchList() {
 const routes = [
   { path: '/init', component: () => import('../views/auth/InitPage.vue') },
   { path: '/login', component: () => import('../views/auth/LoginPage.vue') },
+  { path: '/register', component: () => import('../views/auth/RegisterPage.vue') },
   {
     path: '/',
     component: () => import('../views/Layout.vue'),
     redirect: '/employees',
     children: [
+      { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
+      { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
       { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
       { path: 'employees/:id', component: () => import('../views/employees/EmployeeDetail.vue') },
     ],
@@ -118,6 +121,7 @@ views/
 ├── Layout.vue              ← 全局布局（不归属任何域）
 ├── auth/                   ← 认证相关
 ├── employees/              ← 员工管理
+├── projects/               ← 项目列表 / 详情 / 聊天
 ├── skills/                 ← 技能管理
 ├── rules/                  ← 规则管理
 ├── memory/                 ← 记忆管理
@@ -125,6 +129,13 @@ views/
 ├── evolution/              ← 进化引擎 + 候选审核
 └── sync/                   ← 同步状态
 ```
+
+当前还包含这些视图域：
+
+- `llm/`：模型供应商管理
+- `system/`：系统配置
+- `usage/`：API Key 等使用控制
+- `users/`：用户与角色
 
 ### 命名约定
 
@@ -190,7 +201,7 @@ function severityColor(sev) {
 当前项目不使用 Vuex/Pinia，状态管理策略：
 
 - 组件内状态：`ref` / `reactive`
-- 跨页面状态：`localStorage`（token、username）
+- 跨页面状态：`localStorage`（token、username、role、permissions）
 - 服务端状态：每次进入页面 `onMounted` 重新拉取
 
 ## 样式规范

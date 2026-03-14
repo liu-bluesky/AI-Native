@@ -8,11 +8,11 @@
 ┌─────────────────────────────────┐
 │  用户界面层  (Vue 3 SPA)         │  ← 只与 API 网关通信
 ├─────────────────────────────────┤
-│  API 网关层  (FastAPI)           │  ← 聚合全部 Store，JWT 鉴权
+│  API 网关层  (FastAPI)           │  ← 聚合 Core Store / MCP Bridge / 动态 MCP Proxy
 ├─────────────────────────────────┤
 │  MCP 服务层  (6 × FastMCP)      │  ← 独立进程，各自 Store
 ├─────────────────────────────────┤
-│  数据存储层  (JSON / SQLite)     │  ← 每服务独占数据目录
+│  数据存储层  (JSON / SQLite / PostgreSQL) │ ← Core Store 与 MCP Store 按 backend 切换
 ├─────────────────────────────────┤
 │  进化引擎层  (mcp-evolution)     │  ← 消费使用日志，产出候选规则
 ├─────────────────────────────────┤
@@ -25,8 +25,10 @@
 | 调用方 → 被调用方 | 协议 | 约束 |
 |-------------------|------|------|
 | 前端 → API 网关 | HTTP + JWT Bearer | 所有请求经 axios 拦截器附加 token |
-| API 网关 → Store | 直接 Python import | 网关是唯一允许跨服务 import 的层 |
+| API 网关 → Core Store | `stores/factory.py` 懒加载代理 | 统一经 `core/deps.py` 暴露 |
+| API 网关 → MCP Store | `stores/mcp_bridge.py` importlib 桥接 | 仅聚合层允许跨 `mcp-*` import |
 | MCP 服务 → Store | 同进程调用 | 每个服务只访问自己的 Store |
+| API 网关 → 外部 MCP / 动态代理 | HTTP / Streamable HTTP / SSE | 统一经 `services/dynamic_mcp_*` 处理 |
 | 进化引擎 → 使用日志 | UsageLogStore | 只读消费，不修改原始日志 |
 | 同步层 → AI 员工 | SyncEvent 推送 | 异步通知，不阻塞调用方 |
 
@@ -35,7 +37,7 @@
 ### 查询流
 
 ```
-用户操作 → 前端 axios → /api/{domain}/* → Store.get/list → JSON/SQLite → 响应
+用户操作 → 前端 axios → /api/{domain}/* → router → Store/Service → JSON/SQLite/PostgreSQL → 响应
 ```
 
 ### 反馈流
@@ -62,6 +64,7 @@
 ### 数据隔离
 
 - 每个 MCP 服务独占 `knowledge/` 目录，禁止跨服务读写
+- `web-admin/api/data/` 仅承载网关侧 Core Store 数据，不直接替代 `mcp-* / knowledge/`
 - Memory 服务支持 4 级分类：public / internal / confidential / restricted
 - 记忆作用域隔离：employee-private / team-shared / global-verified
 
@@ -81,22 +84,22 @@
 ### 新增 MCP 服务
 
 1. 在 `mcp-{name}/` 下创建标准目录结构
-2. 在 `web-admin/api/stores.py` 添加 `_load_store` 调用和 store 实例导出
-3. 在 `web-admin/api/routers/` 下新建对应路由文件
-4. 在 `server.py` 注册新 router
+2. 在 `web-admin/api/stores/mcp_bridge.py` 添加 `_load_store("{name}")`、序列化函数和代理实例
+3. 如需网关管理入口，在 `web-admin/api/routers/` 下新建对应路由文件
+4. 在 `web-admin/api/core/server.py` 注册 router 或动态 MCP 挂载点
 5. 在 `docs/00-项目总览/PROJECT.md` MCP 服务矩阵注册
 6. 在 `rules/mcp-service.md` 服务名表注册
 
 ### 新增前端页面
 
-1. 在 `views/{domain}/` 下创建 `XxxYyy.vue`（PascalCase）
-2. 在 `router/index.js` 的 Layout children 中注册路由
-3. 如需侧边栏入口，在 `Layout.vue` 的 `el-menu` 中添加菜单项
+1. 在 `web-admin/frontend/src/views/{domain}/` 下创建 `XxxYyy.vue`（PascalCase）
+2. 在 `web-admin/frontend/src/router/index.js` 的 Layout children 中注册路由
+3. 如需侧边栏入口，在 `web-admin/frontend/src/views/Layout.vue` 的 `el-menu` 中添加菜单项
 4. 遵循 `rules/frontend.md` 和 `rules/ui-design.md`
 
 ### 新增 API 端点
 
 1. 在 `web-admin/api/routers/` 对应域文件中添加路由
-2. 受保护路由通过 Router 级 `dependencies=[Depends(require_auth)]` 自动鉴权
+2. 受保护路由通过 Router 级 `dependencies=[Depends(require_auth)]` 或显式 `Depends(require_auth)` 鉴权
 3. 请求体用 `models/requests.py` 中的 Pydantic BaseModel
 4. 列表响应包裹在具名字段中

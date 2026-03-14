@@ -82,6 +82,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api.js'
+import { canManageRecord, getOwnershipDeniedMessage } from '@/utils/ownership.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -111,6 +112,11 @@ async function fetchDetail() {
   loading.value = true
   try {
     const { rule } = await api.get(`/rules/${route.params.id}`)
+    if (!canManageRecord(rule)) {
+      ElMessage.warning(getOwnershipDeniedMessage(rule, '编辑'))
+      router.replace(`/rules/${route.params.id}`)
+      return false
+    }
     Object.assign(form, {
       domain: rule.domain || '',
       title: rule.title || '',
@@ -121,8 +127,10 @@ async function fetchDetail() {
       mcp_service: rule.mcp_service || '',
       bound_employees: Array.isArray(rule.bound_employees) ? rule.bound_employees : [],
     })
+    return true
   } catch {
     ElMessage.error('加载失败')
+    return false
   } finally {
     loading.value = false
   }
@@ -152,7 +160,9 @@ async function handleSave() {
 }
 
 onMounted(async () => {
-  await Promise.all([fetchDetail(), fetchEmployees()])
+  const ok = await fetchDetail()
+  if (!ok) return
+  await fetchEmployees()
 })
 </script>
 

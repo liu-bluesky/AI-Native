@@ -56,12 +56,26 @@ class UsageStore:
         self._db.commit()
         return {"key": key, "developer_name": developer_name, "created_by": created_by, "created_at": now}
 
-    def list_keys(self) -> list[dict]:
-        rows = self._db.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
+    def list_keys(self, created_by: str | None = None) -> list[dict]:
+        owner = str(created_by or "").strip()
+        if owner:
+            rows = self._db.execute(
+                "SELECT * FROM api_keys WHERE created_by = ? ORDER BY created_at DESC",
+                (owner,),
+            ).fetchall()
+        else:
+            rows = self._db.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
         return [dict(r) for r in rows]
 
-    def deactivate_key(self, key: str) -> bool:
-        cur = self._db.execute("UPDATE api_keys SET is_active = 0 WHERE key = ?", (key,))
+    def deactivate_key(self, key: str, created_by: str | None = None) -> bool:
+        owner = str(created_by or "").strip()
+        if owner:
+            cur = self._db.execute(
+                "UPDATE api_keys SET is_active = 0 WHERE key = ? AND created_by = ?",
+                (key, owner),
+            )
+        else:
+            cur = self._db.execute("UPDATE api_keys SET is_active = 0 WHERE key = ?", (key,))
         self._db.commit()
         return cur.rowcount > 0
 

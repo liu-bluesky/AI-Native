@@ -11,6 +11,9 @@
       <el-table-column prop="workspace_path" label="工作区路径" width="220" show-overflow-tooltip>
         <template #default="{ row }">{{ row.workspace_path || '-' }}</template>
       </el-table-column>
+      <el-table-column prop="ai_entry_file" label="AI 入口文件" width="220" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.ai_entry_file || '-' }}</template>
+      </el-table-column>
       <el-table-column prop="description" label="描述" show-overflow-tooltip />
       <el-table-column label="成员数" width="90" align="center">
         <template #default="{ row }">{{ row.member_count || 0 }}</template>
@@ -63,6 +66,13 @@
             </template>
           </el-input>
         </el-form-item>
+        <el-form-item label="AI 入口文件">
+          <el-input v-model="createForm.ai_entry_file" placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md">
+            <template #append>
+              <el-button @click="selectCreateAiEntryFile">选择文件</el-button>
+            </template>
+          </el-input>
+        </el-form-item>
         <el-form-item label="启用 MCP">
           <el-switch v-model="createForm.mcp_enabled" />
         </el-form-item>
@@ -88,6 +98,13 @@
           <el-input v-model="editForm.workspace_path" placeholder="可手动输入或点击选择目录">
             <template #append>
               <el-button @click="selectEditWorkspaceDirectory">选择目录</el-button>
+            </template>
+          </el-input>
+        </el-form-item>
+        <el-form-item label="AI 入口文件">
+          <el-input v-model="editForm.ai_entry_file" placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md">
+            <template #append>
+              <el-button @click="selectEditAiEntryFile">选择文件</el-button>
             </template>
           </el-input>
         </el-form-item>
@@ -130,6 +147,11 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
 import { buildRuntimeUrl } from '@/utils/runtime-url.js'
+import {
+  pickWorkspaceDirectory as openWorkspaceDirectoryPicker,
+  pickWorkspaceFile as openWorkspaceFilePicker,
+  toWorkspaceRelativePath,
+} from '@/utils/workspace-picker.js'
 
 const loading = ref(false)
 const creating = ref(false)
@@ -142,6 +164,7 @@ const createForm = ref({
   name: '',
   description: '',
   workspace_path: '',
+  ai_entry_file: '',
   mcp_enabled: true,
   feedback_upgrade_enabled: true,
 })
@@ -151,6 +174,7 @@ const editForm = ref({
   name: '',
   description: '',
   workspace_path: '',
+  ai_entry_file: '',
   mcp_enabled: true,
   feedback_upgrade_enabled: true,
 })
@@ -202,6 +226,7 @@ function openCreate() {
     name: '',
     description: '',
     workspace_path: '',
+    ai_entry_file: '',
     mcp_enabled: true,
     feedback_upgrade_enabled: true,
   }
@@ -214,12 +239,22 @@ async function selectWorkspaceDirectory() {
   createForm.value.workspace_path = picked
 }
 
+async function selectCreateAiEntryFile() {
+  const picked = await pickAiEntryFile(
+    createForm.value.ai_entry_file,
+    createForm.value.workspace_path,
+  )
+  if (picked === null) return
+  createForm.value.ai_entry_file = picked
+}
+
 function openEdit(project) {
   editForm.value = {
     id: project.id,
     name: project.name || '',
     description: project.description || '',
     workspace_path: project.workspace_path || '',
+    ai_entry_file: project.ai_entry_file || '',
     mcp_enabled: project.mcp_enabled ?? true,
     feedback_upgrade_enabled: project.feedback_upgrade_enabled ?? true,
   }
@@ -232,25 +267,29 @@ async function selectEditWorkspaceDirectory() {
   editForm.value.workspace_path = picked
 }
 
+async function selectEditAiEntryFile() {
+  const picked = await pickAiEntryFile(
+    editForm.value.ai_entry_file,
+    editForm.value.workspace_path,
+  )
+  if (picked === null) return
+  editForm.value.ai_entry_file = picked
+}
+
 async function pickWorkspaceDirectory(currentPath = '') {
-  if (typeof window.showDirectoryPicker === 'function') {
-    ElMessage.info('浏览器安全限制下无法直接读取目录绝对路径，请粘贴完整路径。')
-  }
-  try {
-    const { value } = await ElMessageBox.prompt(
-      '当前环境不支持系统目录选择，请手动输入工作区路径。',
-      '填写工作区路径',
-      {
-        inputValue: String(currentPath || ''),
-        inputPlaceholder: '/Users/yourname/project',
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-      },
-    )
-    return String(value || '').trim()
-  } catch {
-    return null
-  }
+  return await openWorkspaceDirectoryPicker(currentPath, {
+    title: '选择项目工作区目录',
+  })
+}
+
+async function pickAiEntryFile(currentPath = '', workspacePath = '') {
+  const picked = await openWorkspaceFilePicker(currentPath, {
+    title: '选择 AI 入口文件',
+    placeholder: '.ai/ENTRY.md',
+    basePath: workspacePath,
+  })
+  if (picked === null) return null
+  return toWorkspaceRelativePath(picked, workspacePath) || String(picked || '').trim()
 }
 
 async function updateProject() {
@@ -265,6 +304,7 @@ async function updateProject() {
       name: editForm.value.name,
       description: editForm.value.description,
       workspace_path: editForm.value.workspace_path,
+      ai_entry_file: editForm.value.ai_entry_file,
       mcp_enabled: editForm.value.mcp_enabled,
       feedback_upgrade_enabled: editForm.value.feedback_upgrade_enabled,
     })
@@ -318,6 +358,7 @@ async function createProject() {
       name,
       description: createForm.value.description,
       workspace_path: createForm.value.workspace_path,
+      ai_entry_file: createForm.value.ai_entry_file,
       mcp_enabled: !!createForm.value.mcp_enabled,
       feedback_upgrade_enabled: !!createForm.value.feedback_upgrade_enabled,
     })

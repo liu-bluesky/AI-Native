@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
-from core.deps import require_auth
+from core.deps import project_store, require_auth, role_store
+from core.role_permissions import resolve_role_permissions
 from services.feedback_service import get_feedback_service
 from services.llm_provider_service import get_llm_provider_service
 from models.requests import (
@@ -23,9 +24,25 @@ from models.requests import (
 router = APIRouter(prefix="/api/projects/{project_id}/feedback")
 
 
-def _assert_project_access(project_id: str, x_project_id: str | None) -> None:
+def _is_admin_like(auth_payload: dict) -> bool:
+    role_id = str(auth_payload.get("role") or "").strip().lower()
+    role = role_store.get(role_id)
+    permissions = getattr(role, "permissions", [])
+    return "*" in set(resolve_role_permissions(permissions, role_id))
+
+
+def _assert_project_access(project_id: str, auth_payload: dict, x_project_id: str | None) -> None:
     if x_project_id and x_project_id != project_id:
         raise HTTPException(403, "Project mismatch")
+    project = project_store.get(project_id)
+    if project is None:
+        raise HTTPException(404, f"Project {project_id} not found")
+    if _is_admin_like(auth_payload):
+        return
+    username = str(auth_payload.get("sub") or "").strip()
+    member = project_store.get_user_member(project_id, username) if username else None
+    if member is None or not bool(getattr(member, "enabled", True)):
+        raise HTTPException(403, f"Project access denied: {project_id}")
 
 
 @router.post("/bugs")
@@ -35,7 +52,7 @@ async def create_feedback_bug(
     auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         bug = get_feedback_service().create_bug(
             project_id,
@@ -58,10 +75,10 @@ async def list_feedback_bugs(
     status: str = "",
     severity: str = "",
     limit: int = 50,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     bugs = get_feedback_service().list_bugs(
         project_id=project_id,
         employee_id=employee_id,
@@ -82,10 +99,10 @@ async def summarize_feedback_bugs(
     status: str = "",
     severity: str = "",
     limit: int = 500,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     summary = get_feedback_service().summarize_bugs_by_category(
         project_id=project_id,
         employee_id=employee_id,
@@ -101,10 +118,10 @@ async def summarize_feedback_bugs(
 async def batch_delete_feedback_bugs(
     project_id: str,
     req: FeedbackBugBatchDeleteReq,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         result = get_feedback_service().delete_bugs(
             project_id=project_id,
@@ -120,10 +137,10 @@ async def batch_delete_feedback_bugs(
 async def get_feedback_bug_detail(
     project_id: str,
     feedback_id: str,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         return get_feedback_service().get_bug_detail(project_id, feedback_id)
     except LookupError as exc:
@@ -135,10 +152,10 @@ async def delete_feedback_bug(
     project_id: str,
     feedback_id: str,
     employee_id: str = "",
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         result = get_feedback_service().delete_bug(
             project_id=project_id,
@@ -159,10 +176,10 @@ async def analyze_feedback_bug(
     project_id: str,
     feedback_id: str,
     req: FeedbackAnalyzeReq | None = None,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         result = get_feedback_service().analyze_bug(
             project_id,
@@ -182,10 +199,10 @@ async def analyze_feedback_bug(
 async def analyze_feedback_bugs_batch(
     project_id: str,
     req: FeedbackBatchAnalyzeReq,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         result = get_feedback_service().analyze_bugs_batch(
             project_id=project_id,
@@ -212,10 +229,10 @@ async def list_feedback_candidates(
     status: str = "pending",
     employee_id: str = "",
     limit: int = 50,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     candidates = get_feedback_service().list_candidates(
         project_id=project_id,
         status=status,
@@ -230,10 +247,10 @@ async def review_feedback_candidate(
     project_id: str,
     candidate_id: str,
     req: FeedbackCandidateReviewReq,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         updated = get_feedback_service().review_candidate(
             project_id=project_id,
@@ -256,10 +273,10 @@ async def publish_feedback_candidate(
     project_id: str,
     candidate_id: str,
     req: FeedbackCandidatePublishReq,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         updated = get_feedback_service().publish_candidate(
             project_id=project_id,
@@ -279,10 +296,10 @@ async def rollback_feedback_candidate(
     project_id: str,
     candidate_id: str,
     req: FeedbackCandidateRollbackReq,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         updated = get_feedback_service().rollback_candidate(
             project_id=project_id,
@@ -304,7 +321,7 @@ async def create_manual_feedback_candidate(
     auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         candidate = get_feedback_service().create_manual_candidate(
             project_id=project_id,
@@ -321,10 +338,10 @@ async def create_manual_feedback_candidate(
 @router.get("/config")
 async def get_feedback_project_config(
     project_id: str,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     return {"config": get_feedback_service().get_project_config(project_id)}
 
 
@@ -332,10 +349,10 @@ async def get_feedback_project_config(
 async def get_feedback_reflection_config(
     project_id: str,
     employee_id: str,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     employee_id_value = str(employee_id or "").strip()
     if not employee_id_value:
         raise HTTPException(400, "employee_id is required")
@@ -349,10 +366,10 @@ async def get_feedback_reflection_config(
 async def update_feedback_reflection_config(
     project_id: str,
     req: FeedbackReflectionConfigUpdateReq,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         config = get_llm_provider_service().upsert_reflection_config(
             project_id=project_id,
@@ -372,10 +389,10 @@ async def update_feedback_reflection_config(
 async def update_feedback_project_config(
     project_id: str,
     req: FeedbackProjectConfigUpdateReq,
-    _: dict = Depends(require_auth),
+    auth_payload: dict = Depends(require_auth),
     x_project_id: str | None = Header(default=None, alias="X-Project-Id"),
 ):
-    _assert_project_access(project_id, x_project_id)
+    _assert_project_access(project_id, auth_payload, x_project_id)
     try:
         config = get_feedback_service().update_project_config(project_id, enabled=req.enabled)
     except ValueError as exc:

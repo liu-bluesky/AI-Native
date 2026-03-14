@@ -46,6 +46,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api.js'
+import { canManageRecord, getOwnershipDeniedMessage } from '@/utils/ownership.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -70,6 +71,11 @@ async function fetchDetail() {
   loading.value = true
   try {
     const { skill } = await api.get(`/skills/${route.params.id}`)
+    if (!canManageRecord(skill)) {
+      ElMessage.warning(getOwnershipDeniedMessage(skill, '编辑'))
+      router.replace(`/skills/${route.params.id}`)
+      return
+    }
     Object.assign(form, {
       name: skill.name || '',
       version: skill.version || '1.0.0',

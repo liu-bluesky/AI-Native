@@ -2,13 +2,21 @@
   <div v-loading="loading">
     <div class="toolbar">
       <h3>技能目录</h3>
-      <el-button type="primary" size="small" @click="$router.push('/skills/create')">导入技能</el-button>
+      <div class="toolbar-actions">
+        <el-button size="small" @click="$router.push('/skill-resources')">浏览技能资源</el-button>
+        <el-button type="primary" size="small" @click="$router.push('/skills/create')">导入技能</el-button>
+      </div>
     </div>
 
     <el-table :data="skills" stripe>
       <el-table-column prop="name" label="名称" />
       <el-table-column prop="description" label="描述" show-overflow-tooltip />
       <el-table-column prop="version" label="版本" width="90" />
+      <el-table-column label="创建人" width="120">
+        <template #default="{ row }">
+          {{ formatRecordOwner(row) }}
+        </template>
+      </el-table-column>
       <el-table-column prop="mcp_service" label="MCP 服务" width="140" />
       <el-table-column label="标签" width="200">
         <template #default="{ row }">
@@ -21,12 +29,12 @@
       <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
           <el-button v-if="row.mcp_enabled" text type="success" size="small" @click="showSingleMcpConfig(row)">接入</el-button>
-          <el-button v-if="row.mcp_enabled" text type="warning" size="small" @click="disableMcp(row)">关闭 MCP</el-button>
-          <el-button v-else text type="warning" size="small" @click="enableMcp(row)">开启 MCP</el-button>
+          <el-button v-if="row.mcp_enabled" text type="warning" size="small" :disabled="!canManageRow(row)" @click="disableMcp(row)">关闭 MCP</el-button>
+          <el-button v-else text type="warning" size="small" :disabled="!canManageRow(row)" @click="enableMcp(row)">开启 MCP</el-button>
           <el-button text type="info" size="small" @click="showConfigs(row)">配置</el-button>
-          <el-button text type="primary" size="small" @click="$router.push(`/skills/${row.id}/edit`)">编辑</el-button>
+          <el-button text type="primary" size="small" :disabled="!canManageRow(row)" @click="$router.push(`/skills/${row.id}/edit`)">编辑</el-button>
           <el-button text type="success" size="small" @click="handleDownload(row.id, row.name)">下载</el-button>
-          <el-button text type="danger" size="small" @click="handleDelete(row.id)">删除</el-button>
+          <el-button text type="danger" size="small" :disabled="!canManageRow(row)" @click="handleDelete(row.id)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -80,6 +88,11 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import {
+  canManageRecord,
+  formatRecordOwner,
+  getOwnershipDeniedMessage,
+} from '@/utils/ownership.js'
 import { buildRuntimeUrl } from '@/utils/runtime-url.js'
 
 const loading = ref(false)
@@ -129,6 +142,10 @@ function showSingleMcpConfig(skill) {
   currentSkill.value = skill
   mcpDialogTitle.value = `独立技能接入: ${skill.name}`
   showMcpConfig.value = true
+}
+
+function canManageRow(row) {
+  return canManageRecord(row)
 }
 
 async function enableMcp(skill) {
@@ -205,6 +222,11 @@ async function handleDownload(skillId, skillName) {
 }
 
 async function handleDelete(skillId) {
+  const row = skills.value.find((item) => item.id === skillId)
+  if (row && !canManageRow(row)) {
+    ElMessage.warning(getOwnershipDeniedMessage(row, '删除'))
+    return
+  }
   await ElMessageBox.confirm('确定删除该技能？', '确认')
   try {
     await api.delete(`/skills/${skillId}`)
@@ -241,6 +263,11 @@ onMounted(fetchSkills)
   margin-bottom: 16px;
 }
 .toolbar h3 { margin: 0; }
+
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
 
 .tag-item {
   margin-right: 6px;

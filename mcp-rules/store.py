@@ -74,6 +74,7 @@ class Rule:
     bound_employees: tuple[str, ...] = ()
     mcp_enabled: bool = False
     mcp_service: str = ""
+    created_by: str = ""
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -115,6 +116,7 @@ def _deserialize_rule(data: dict) -> Rule:
         bound_employees=tuple(data.get("bound_employees", [])),
         mcp_enabled=data.get("mcp_enabled", False),
         mcp_service=data.get("mcp_service", ""),
+        created_by=data.get("created_by", ""),
         created_at=data.get("created_at", _now_iso()),
         updated_at=data.get("updated_at", _now_iso()),
     )

@@ -3,8 +3,14 @@
     <div class="toolbar">
       <h3>技能详情: {{ skill.name }}</h3>
       <div>
-        <el-button type="primary" @click="$router.push(`/skills/${route.params.id}/edit`)">编辑</el-button>
-        <el-button type="danger" @click="handleDelete">删除</el-button>
+        <el-button
+          type="primary"
+          :disabled="!canManageRecord(skill)"
+          @click="$router.push(`/skills/${route.params.id}/edit`)"
+        >
+          编辑
+        </el-button>
+        <el-button type="danger" :disabled="!canManageRecord(skill)" @click="handleDelete">删除</el-button>
         <el-button @click="$router.back()">返回</el-button>
       </div>
     </div>
@@ -15,6 +21,7 @@
       <el-descriptions-item label="版本">{{ skill.version }}</el-descriptions-item>
       <el-descriptions-item label="MCP 服务">{{ skill.mcp_service || '-' }}</el-descriptions-item>
       <el-descriptions-item label="描述" :span="2">{{ skill.description || '-' }}</el-descriptions-item>
+      <el-descriptions-item label="创建人">{{ formatRecordOwner(skill) }}</el-descriptions-item>
       <el-descriptions-item label="创建时间">{{ skill.created_at }}</el-descriptions-item>
       <el-descriptions-item label="更新时间">{{ skill.updated_at }}</el-descriptions-item>
     </el-descriptions>
@@ -44,6 +51,11 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import {
+  canManageRecord,
+  formatRecordOwner,
+  getOwnershipDeniedMessage,
+} from '@/utils/ownership.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -63,6 +75,10 @@ async function fetchDetail() {
 }
 
 async function handleDelete() {
+  if (!canManageRecord(skill)) {
+    ElMessage.warning(getOwnershipDeniedMessage(skill, '删除'))
+    return
+  }
   await ElMessageBox.confirm(`确定删除技能「${skill.name}」？`, '确认')
   try {
     await api.delete(`/skills/${route.params.id}`)

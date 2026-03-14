@@ -35,6 +35,11 @@
     <el-table :data="rules" stripe>
       <el-table-column prop="title" label="标题" show-overflow-tooltip />
       <el-table-column prop="domain" label="领域" />
+      <el-table-column label="创建人" width="120">
+        <template #default="{ row }">
+          {{ formatRecordOwner(row) }}
+        </template>
+      </el-table-column>
 
       <el-table-column prop="severity" label="级别" width="100">
         <template #default="{ row }">
@@ -77,6 +82,7 @@
             text
             type="warning"
             size="small"
+            :disabled="!canManageRow(row)"
             @click="disableMcp(row)"
             >关闭 MCP</el-button
           >
@@ -85,6 +91,7 @@
             text
             type="warning"
             size="small"
+            :disabled="!canManageRow(row)"
             @click="enableMcp(row)"
             >开启 MCP</el-button
           >
@@ -99,6 +106,7 @@
             text
             type="primary"
             size="small"
+            :disabled="!canManageRow(row)"
             @click="$router.push(`/rules/${row.id}/edit`)"
             >编辑</el-button
           >
@@ -106,6 +114,7 @@
             text
             type="danger"
             size="small"
+            :disabled="!canManageRow(row)"
             @click="handleDelete(row.id)"
             >删除</el-button
           >
@@ -159,6 +168,11 @@
 import { ref, onMounted, computed } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/utils/api.js";
+import {
+  canManageRecord,
+  formatRecordOwner,
+  getOwnershipDeniedMessage,
+} from "@/utils/ownership.js";
 import { buildRuntimeUrl } from "@/utils/runtime-url.js";
 
 const loading = ref(false);
@@ -313,6 +327,10 @@ function sevColor(s) {
   );
 }
 
+function canManageRow(row) {
+  return canManageRecord(row);
+}
+
 async function fetchDomains() {
   try {
     const data = await api.get("/rules/domains");
@@ -350,6 +368,11 @@ async function doSearch() {
 }
 
 async function handleDelete(ruleId) {
+  const row = rules.value.find((item) => item.id === ruleId);
+  if (row && !canManageRow(row)) {
+    ElMessage.warning(getOwnershipDeniedMessage(row, "删除"));
+    return;
+  }
   await ElMessageBox.confirm("确定删除该规则？", "确认");
   try {
     await api.delete(`/rules/${ruleId}`);

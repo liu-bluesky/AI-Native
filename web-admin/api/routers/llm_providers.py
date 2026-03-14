@@ -6,26 +6,46 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.deps import require_auth
+from core.deps import ensure_any_permission, ensure_permission, require_auth
 from services.llm_provider_service import get_llm_provider_service
 from models.requests import LlmProviderCreateReq, LlmProviderTestReq, LlmProviderUpdateReq
+
+def _require_llm_provider_permission(auth_payload: dict = Depends(require_auth)) -> None:
+    ensure_permission(auth_payload, "menu.llm.providers")
+
+
+def _require_llm_provider_read_permission(auth_payload: dict = Depends(require_auth)) -> None:
+    ensure_any_permission(auth_payload, ["menu.llm.providers", "menu.ai.chat"])
+
 
 router = APIRouter(prefix="/api/llm", dependencies=[Depends(require_auth)])
 
 
 @router.get("/providers")
-async def list_llm_providers(enabled_only: bool = False):
+async def list_llm_providers(
+    enabled_only: bool = False,
+    auth_payload: dict = Depends(require_auth),
+):
+    if enabled_only:
+        _require_llm_provider_read_permission(auth_payload)
+    else:
+        _require_llm_provider_permission(auth_payload)
     providers = get_llm_provider_service().list_providers(enabled_only=enabled_only)
     return {"providers": providers}
 
 
 @router.get("/providers/options")
-async def list_reflection_options():
+async def list_reflection_options(
+    _: None = Depends(_require_llm_provider_permission),
+):
     return get_llm_provider_service().list_reflection_options()
 
 
 @router.post("/providers")
-async def create_llm_provider(req: LlmProviderCreateReq):
+async def create_llm_provider(
+    req: LlmProviderCreateReq,
+    _: None = Depends(_require_llm_provider_permission),
+):
     try:
         provider = get_llm_provider_service().create_provider(req.model_dump())
     except ValueError as exc:
@@ -34,7 +54,11 @@ async def create_llm_provider(req: LlmProviderCreateReq):
 
 
 @router.patch("/providers/{provider_id}")
-async def update_llm_provider(provider_id: str, req: LlmProviderUpdateReq):
+async def update_llm_provider(
+    provider_id: str,
+    req: LlmProviderUpdateReq,
+    _: None = Depends(_require_llm_provider_permission),
+):
     updates = req.model_dump(exclude_unset=True)
     try:
         provider = get_llm_provider_service().update_provider(provider_id, updates)
@@ -46,14 +70,21 @@ async def update_llm_provider(provider_id: str, req: LlmProviderUpdateReq):
 
 
 @router.delete("/providers/{provider_id}")
-async def delete_llm_provider(provider_id: str):
+async def delete_llm_provider(
+    provider_id: str,
+    _: None = Depends(_require_llm_provider_permission),
+):
     if not get_llm_provider_service().delete_provider(provider_id):
         raise HTTPException(404, f"LLM provider {provider_id} not found")
     return {"status": "deleted", "provider_id": provider_id}
 
 
 @router.post("/providers/{provider_id}/test")
-async def test_llm_provider(provider_id: str, req: LlmProviderTestReq):
+async def test_llm_provider(
+    provider_id: str,
+    req: LlmProviderTestReq,
+    _: None = Depends(_require_llm_provider_permission),
+):
     try:
         result = get_llm_provider_service().test_provider_connection(
             provider_id=provider_id,

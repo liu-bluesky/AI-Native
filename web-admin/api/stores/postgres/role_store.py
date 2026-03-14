@@ -7,7 +7,7 @@ import json
 from psycopg import connect
 from psycopg.rows import dict_row
 
-from core.role_permissions import DEFAULT_USER_PERMISSION_KEYS, resolve_role_permissions
+from core.role_permissions import resolve_role_permissions
 from stores.json.role_store import RoleConfig, _now_iso, default_roles
 
 
@@ -33,11 +33,6 @@ class RoleStorePostgres:
         for item in default_roles():
             existing = self.get(item.id)
             if existing is not None:
-                if item.id == "user" and bool(existing.built_in):
-                    merged = sorted(set(existing.permissions or []) | set(DEFAULT_USER_PERMISSION_KEYS))
-                    if merged != sorted(existing.permissions or []):
-                        existing.permissions = merged
-                        self.save(existing)
                 continue
             self.save(item)
 

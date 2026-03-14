@@ -3,9 +3,15 @@
     <div class="toolbar">
       <h3>员工详情: {{ emp.name }}</h3>
       <div>
-        <el-button type="primary" @click="$router.push(`/employees/${route.params.id}/edit`)">编辑</el-button>
+        <el-button
+          v-if="canUpdateEmployeeEntry"
+          type="primary"
+          @click="$router.push(`/employees/${route.params.id}/edit`)"
+        >
+          编辑
+        </el-button>
         <el-button @click="$router.push(`/employees/${route.params.id}/usage`)">使用统计</el-button>
-        <el-button type="danger" @click="handleDelete">删除</el-button>
+        <el-button v-if="canDeleteEmployeeEntry" type="danger" @click="handleDelete">删除</el-button>
         <el-button @click="$router.back()">返回</el-button>
       </div>
     </div>
@@ -27,6 +33,7 @@
       <el-descriptions-item label="ID">{{ emp.id }}</el-descriptions-item>
       <el-descriptions-item label="名称">{{ emp.name }}</el-descriptions-item>
       <el-descriptions-item label="描述" :span="2">{{ emp.description || '-' }}</el-descriptions-item>
+      <el-descriptions-item label="核心目标" :span="2">{{ emp.goal || '-' }}</el-descriptions-item>
       <el-descriptions-item label="语调">{{ emp.tone }}</el-descriptions-item>
       <el-descriptions-item label="风格">{{ emp.verbosity }}</el-descriptions-item>
       <el-descriptions-item label="语言">{{ emp.language }}</el-descriptions-item>
@@ -36,6 +43,7 @@
       <el-descriptions-item label="MCP 服务">{{ emp.mcp_enabled ? '开启' : '关闭' }}</el-descriptions-item>
       <el-descriptions-item label="反馈升级">{{ emp.feedback_upgrade_enabled ? '开启' : '关闭' }}</el-descriptions-item>
       <el-descriptions-item label="进化阈值">{{ emp.evolve_threshold }}</el-descriptions-item>
+      <el-descriptions-item label="创建人">{{ formatRecordOwner(emp) }}</el-descriptions-item>
       <el-descriptions-item label="创建时间">{{ emp.created_at }}</el-descriptions-item>
     </el-descriptions>
 
@@ -73,6 +81,23 @@
       </div>
     </div>
     <el-empty v-else description="暂无风格提示" :image-size="60" />
+
+    <h4 class="section-title">默认工作流</h4>
+    <div v-if="displayWorkflow.length" class="style-hint-panel">
+      <div class="style-hint-list">
+        <div v-for="(h, i) in displayWorkflow" :key="`${h}-${i}`" class="style-hint-item">
+          <span class="style-hint-index">{{ i + 1 }}</span>
+          <span class="style-hint-text">{{ h }}</span>
+        </div>
+      </div>
+    </div>
+    <el-empty v-else description="暂无默认工作流" :image-size="60" />
+
+    <h4 class="section-title">工具使用策略</h4>
+    <div v-if="emp.tool_usage_policy" class="style-hint-panel">
+      <div class="style-hint-text">{{ emp.tool_usage_policy }}</div>
+    </div>
+    <el-empty v-else description="暂无工具使用策略" :image-size="60" />
   </div>
 </template>
 
@@ -81,16 +106,35 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import {
+  formatRecordOwner,
+  getOwnershipDeniedMessage,
+} from '@/utils/ownership.js'
+import { canDeleteEmployee, canUpdateEmployee } from '@/utils/employee-permissions.js'
 
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
 const emp = reactive({})
+const canUpdateEmployeeEntry = computed(() => canUpdateEmployee(emp))
+const canDeleteEmployeeEntry = computed(() => canDeleteEmployee(emp))
 
 const displayStyleHints = computed(() => {
   const seen = new Set()
   const normalized = []
   for (const item of emp.style_hints || []) {
+    const value = String(item || '').trim()
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    normalized.push(value)
+  }
+  return normalized
+})
+
+const displayWorkflow = computed(() => {
+  const seen = new Set()
+  const normalized = []
+  for (const item of emp.default_workflow || []) {
     const value = String(item || '').trim()
     if (!value || seen.has(value)) continue
     seen.add(value)
@@ -112,6 +156,10 @@ async function fetchDetail() {
 }
 
 async function handleDelete() {
+  if (!canDeleteEmployeeEntry.value) {
+    ElMessage.warning(getOwnershipDeniedMessage(emp, '删除'))
+    return
+  }
   await ElMessageBox.confirm(`确定删除员工「${emp.name}」？`, '确认')
   try {
     await api.delete(`/employees/${route.params.id}`)

@@ -2,7 +2,7 @@
   <div>
     <div class="toolbar">
       <h3>AI 员工列表</h3>
-      <el-button type="primary" @click="$router.push('/employees/create')"
+      <el-button v-if="canCreateEmployeeEntry" type="primary" @click="$router.push('/employees/create')"
         >创建员工</el-button
       >
     </div>
@@ -13,10 +13,19 @@
       show-icon
       title="功能说明：反馈=提交/反思/发布（需开启反馈升级）；记忆=查看与检索员工记忆（含自动写入的用户提问）；同步=查看同步事件。"
     />
-    <el-table :data="employees" v-loading="loading" stripe>
+    <el-table :data="employees" v-loading="loading" stripe class="employee-table">
       <el-table-column prop="id" label="ID" width="140" />
       <el-table-column prop="name" label="名称" width="160" />
-      <el-table-column prop="description" label="描述" />
+      <el-table-column label="创建人" width="120">
+        <template #default="{ row }">
+          {{ formatRecordOwner(row) }}
+        </template>
+      </el-table-column>
+      <el-table-column label="描述" min-width="220" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span class="employee-description-cell">{{ row.description || "-" }}</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="tone" label="语调" width="100" />
       <el-table-column prop="verbosity" label="风格" width="100" />
       <el-table-column label="反馈升级" width="100">
@@ -34,80 +43,91 @@
       </el-table-column>
       <el-table-column label="操作" width="800" fixed="right">
         <template #default="{ row }">
-          <el-button
-            text
-            type="primary"
-            @click="$router.push(`/employees/${row.id}`)"
-            >详情</el-button
-          >
-          <el-button
-            text
-            type="primary"
-            @click="$router.push(`/employees/${row.id}/edit`)"
-            >编辑</el-button
-          >
-          <el-button
-            v-if="row.mcp_enabled"
-            text
-            type="success"
-            @click="showEmployeeMcpConfig(row)"
-            >接入</el-button
-          >
-          <el-button
-            v-if="row.mcp_enabled"
-            text
-            type="warning"
-            @click="disableEmployeeMcp(row)"
-            >关闭 MCP</el-button
-          >
-          <el-button v-else text type="warning" @click="enableEmployeeMcp(row)"
-            >开启 MCP</el-button
-          >
-          <el-button text type="info" @click="showEmployeeConfigTest(row)"
-            >测试</el-button
-          >
-          <el-button text type="success" @click="showGenerateManual(row)"
-            >使用手册</el-button
-          >
-          <el-button
-            text
-            type="primary"
-            @click="$router.push(`/employees/${row.id}/usage`)"
-            >统计</el-button
-          >
-          <el-button
-            v-if="row.feedback_upgrade_enabled"
-            text
-            type="primary"
-            @click="$router.push(`/feedback/${row.id}`)"
-          >
-            反馈
-          </el-button>
-          <el-button
-            v-if="!row.feedback_upgrade_enabled"
-            text
-            type="primary"
-            @click="enableFeedbackUpgrade(row)"
-          >
-            开启反馈
-          </el-button>
-          <el-button
-            v-else
-            text
-            type="warning"
-            @click="disableFeedbackUpgrade(row)"
-          >
-            关闭反馈
-          </el-button>
-          <el-button text @click="$router.push(`/memory/${row.id}`)"
-            >记忆</el-button
-          >
-          <el-button text @click="$router.push(`/sync/${row.id}`)"
-            >同步</el-button
-          >
-          <el-button text type="danger" @click="handleDelete(row)"
-            >删除</el-button
-          >
+          <div class="employee-actions-cell">
+            <el-button
+              text
+              type="primary"
+              @click="$router.push(`/employees/${row.id}`)"
+              >详情</el-button
+            >
+            <el-button
+              v-if="canUpdateRow(row)"
+              text
+              type="primary"
+              @click="$router.push(`/employees/${row.id}/edit`)"
+              >编辑</el-button
+            >
+            <el-button
+              v-if="row.mcp_enabled"
+              text
+              type="success"
+              @click="showEmployeeMcpConfig(row)"
+              >接入</el-button
+            >
+            <el-button
+              v-if="row.mcp_enabled && canUpdateRow(row)"
+              text
+              type="warning"
+              @click="disableEmployeeMcp(row)"
+              >关闭 MCP</el-button
+            >
+            <el-button
+              v-else-if="canUpdateRow(row)"
+              text
+              type="warning"
+              @click="enableEmployeeMcp(row)"
+              >开启 MCP</el-button
+            >
+            <el-button text type="info" @click="showEmployeeConfigTest(row)"
+              >测试</el-button
+            >
+            <el-button text type="success" @click="showGenerateManual(row)"
+              >使用手册</el-button
+            >
+            <el-button
+              text
+              type="primary"
+              @click="$router.push(`/employees/${row.id}/usage`)"
+              >统计</el-button
+            >
+            <el-button
+              v-if="row.feedback_upgrade_enabled"
+              text
+              type="primary"
+              @click="$router.push(`/feedback/${row.id}`)"
+            >
+              反馈
+            </el-button>
+            <el-button
+              v-if="!row.feedback_upgrade_enabled && canUpdateRow(row)"
+              text
+              type="primary"
+              @click="enableFeedbackUpgrade(row)"
+            >
+              开启反馈
+            </el-button>
+            <el-button
+              v-else-if="canUpdateRow(row)"
+              text
+              type="warning"
+              @click="disableFeedbackUpgrade(row)"
+            >
+              关闭反馈
+            </el-button>
+            <el-button text @click="$router.push(`/memory/${row.id}`)"
+              >记忆</el-button
+            >
+            <el-button text @click="$router.push(`/sync/${row.id}`)"
+              >同步</el-button
+            >
+            <el-button
+              v-if="canDeleteRow(row)"
+              text
+              type="danger"
+              @click="handleDelete(row)"
+              >删除</el-button
+            >
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -412,6 +432,15 @@ import { ref, computed, onMounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import api from "@/utils/api.js";
+import {
+  formatRecordOwner,
+  getOwnershipDeniedMessage,
+} from "@/utils/ownership.js";
+import {
+  canCreateEmployee,
+  canDeleteEmployee,
+  canUpdateEmployee,
+} from "@/utils/employee-permissions.js";
 import { buildRuntimeUrl } from "@/utils/runtime-url.js";
 
 const employees = ref([]);
@@ -536,6 +565,20 @@ const mcpTestAlertType = computed(() => {
   return "error";
 });
 
+const canCreateEmployeeEntry = computed(() => canCreateEmployee());
+
+function canManageRow(row) {
+  return canUpdateRow(row);
+}
+
+function canUpdateRow(row) {
+  return canUpdateEmployee(row);
+}
+
+function canDeleteRow(row) {
+  return canDeleteEmployee(row);
+}
+
 async function fetchList() {
   loading.value = true;
   try {
@@ -566,6 +609,10 @@ async function fetchSystemConfig() {
 }
 
 async function handleDelete(row) {
+  if (!canDeleteRow(row)) {
+    ElMessage.warning(getOwnershipDeniedMessage(row, "删除"));
+    return;
+  }
   await ElMessageBox.confirm(`确定删除员工「${row.name}」？`, "确认");
   try {
     await api.delete(`/employees/${row.id}`);
@@ -584,6 +631,10 @@ function showEmployeeMcpConfig(row) {
 }
 
 async function enableEmployeeMcp(row) {
+  if (!canUpdateRow(row)) {
+    ElMessage.warning(getOwnershipDeniedMessage(row, "编辑"));
+    return;
+  }
   try {
     loading.value = true;
     await api.put(`/employees/${row.id}`, { mcp_enabled: true });
@@ -599,6 +650,10 @@ async function enableEmployeeMcp(row) {
 }
 
 async function disableEmployeeMcp(row) {
+  if (!canUpdateRow(row)) {
+    ElMessage.warning(getOwnershipDeniedMessage(row, "编辑"));
+    return;
+  }
   await ElMessageBox.confirm(
     `确定关闭员工「${row.name}」的 MCP 服务？`,
     "确认",
@@ -620,6 +675,10 @@ async function disableEmployeeMcp(row) {
 }
 
 async function enableFeedbackUpgrade(row) {
+  if (!canUpdateRow(row)) {
+    ElMessage.warning(getOwnershipDeniedMessage(row, "编辑"));
+    return;
+  }
   try {
     loading.value = true;
     await api.put(`/employees/${row.id}`, { feedback_upgrade_enabled: true });
@@ -633,6 +692,10 @@ async function enableFeedbackUpgrade(row) {
 }
 
 async function disableFeedbackUpgrade(row) {
+  if (!canUpdateRow(row)) {
+    ElMessage.warning(getOwnershipDeniedMessage(row, "编辑"));
+    return;
+  }
   await ElMessageBox.confirm(
     `确定关闭员工「${row.name}」的反馈升级模块？`,
     "确认",
@@ -953,6 +1016,33 @@ onMounted(async () => {
 .usage-alert {
   margin-bottom: 12px;
 }
+
+.employee-description-cell {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.employee-actions-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  scrollbar-width: thin;
+}
+
+.employee-actions-cell :deep(.el-button) {
+  margin-left: 0;
+}
+
+.employee-table :deep(.el-table__cell) {
+  vertical-align: middle;
+}
+
 .toolbar h3 {
   margin: 0;
 }

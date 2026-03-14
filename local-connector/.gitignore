@@ -1,0 +1,7 @@
+node_modules/
+logs/
+.connector-state.json
+.bootstrapped
+desktop/runtime/
+desktop/dist/
+.DS_Store

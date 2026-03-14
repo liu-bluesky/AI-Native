@@ -6,12 +6,20 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from dataclasses import replace
 
-from core.deps import employee_store, require_auth
+from core.ownership import assert_can_manage_record, current_username, ownership_payload
+from core.deps import employee_store, ensure_permission, require_auth
 from stores.json.employee_store import _now_iso
 from stores.mcp_bridge import rule_store, serialize_rule, Rule, Severity, RiskDomain, rules_now_iso
 from models.requests import RuleUsageReq, RuleCreateReq, RuleUpdateReq
 
-router = APIRouter(prefix="/api/rules", dependencies=[Depends(require_auth)])
+def _require_rules_permission(auth_payload: dict = Depends(require_auth)) -> None:
+    ensure_permission(auth_payload, "menu.rules")
+
+
+router = APIRouter(
+    prefix="/api/rules",
+    dependencies=[Depends(require_auth), Depends(_require_rules_permission)],
+)
 
 
 def _normalize_tokens(values: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -133,7 +141,7 @@ def _refresh_employee_domains_for_rule(rule_id: str) -> None:
         employee_store.save(emp)
 
 
-def _serialize_rule_payload(rule: Rule) -> dict:
+def _serialize_rule_payload(rule: Rule, auth_payload: dict | None = None) -> dict:
     payload = serialize_rule(rule)
     bound_ids = _employees_having_rule(rule.id)
     name_map = {
@@ -144,13 +152,14 @@ def _serialize_rule_payload(rule: Rule) -> dict:
     payload["bound_employees"] = bound_ids
     payload["bound_employee_count"] = len(bound_ids)
     payload["bound_employee_names"] = [name_map.get(eid) or eid for eid in bound_ids]
+    payload.update(ownership_payload(rule, auth_payload))
     return payload
 
 
 @router.get("")
-async def list_rules():
+async def list_rules(auth_payload: dict = Depends(require_auth)):
     rules = rule_store.list_all()
-    return {"rules": [_serialize_rule_payload(r) for r in rules]}
+    return {"rules": [_serialize_rule_payload(r, auth_payload) for r in rules]}
 
 
 @router.get("/domains")
@@ -159,23 +168,29 @@ async def rule_domains():
 
 
 @router.get("/search")
-async def search_rules(keyword: str = "", domain: str = None):
+async def search_rules(
+    keyword: str = "",
+    domain: str = None,
+    auth_payload: dict = Depends(require_auth),
+):
     results = rule_store.query(keyword, domain)
-    return {"rules": [_serialize_rule_payload(r) for r in results]}
+    return {"rules": [_serialize_rule_payload(r, auth_payload) for r in results]}
 
 
 @router.get("/{rule_id}")
-async def get_rule(rule_id: str):
+async def get_rule(rule_id: str, auth_payload: dict = Depends(require_auth)):
     r = rule_store.get(rule_id)
     if r is None:
         raise HTTPException(404, f"Rule {rule_id} not found")
-    return {"rule": _serialize_rule_payload(r)}
+    return {"rule": _serialize_rule_payload(r, auth_payload)}
 
 
 @router.delete("/{rule_id}")
-async def delete_rule(rule_id: str):
-    if rule_store.get(rule_id) is None:
+async def delete_rule(rule_id: str, auth_payload: dict = Depends(require_auth)):
+    rule = rule_store.get(rule_id)
+    if rule is None:
         raise HTTPException(404, f"Rule {rule_id} not found")
+    assert_can_manage_record(rule, auth_payload, "规则")
     _remove_rule_from_all_employees(rule_id)
     if not rule_store.delete(rule_id):
         raise HTTPException(404, f"Rule {rule_id} not found")
@@ -189,7 +204,7 @@ async def record_rule_usage(rule_id: str, req: RuleUsageReq):
 
 
 @router.post("")
-async def create_rule(req: RuleCreateReq):
+async def create_rule(req: RuleCreateReq, auth_payload: dict = Depends(require_auth)):
     bound_employees = tuple(_sanitize_bound_employees(req.bound_employees))
     rule = Rule(
         id=rule_store.new_id(),
@@ -201,18 +216,20 @@ async def create_rule(req: RuleCreateReq):
         bound_employees=bound_employees,
         mcp_enabled=req.mcp_enabled,
         mcp_service=req.mcp_service,
+        created_by=current_username(auth_payload),
     )
     rule_store.save(rule)
     _sync_rule_to_employee_bindings(rule.id, list(bound_employees))
     refreshed = rule_store.get(rule.id) or rule
-    return {"status": "created", "rule": _serialize_rule_payload(refreshed)}
+    return {"status": "created", "rule": _serialize_rule_payload(refreshed, auth_payload)}
 
 
 @router.put("/{rule_id}")
-async def update_rule(rule_id: str, req: RuleUpdateReq):
+async def update_rule(rule_id: str, req: RuleUpdateReq, auth_payload: dict = Depends(require_auth)):
     r = rule_store.get(rule_id)
     if r is None:
         raise HTTPException(404, f"Rule {rule_id} not found")
+    assert_can_manage_record(r, auth_payload, "规则")
     updates = req.model_dump(exclude_unset=True)
     if "severity" in updates:
         updates["severity"] = Severity(updates["severity"])
@@ -231,4 +248,4 @@ async def update_rule(rule_id: str, req: RuleUpdateReq):
     if domain_updated:
         _refresh_employee_domains_for_rule(rule_id)
     refreshed = rule_store.get(rule_id) or updated
-    return {"status": "updated", "rule": _serialize_rule_payload(refreshed)}
+    return {"status": "updated", "rule": _serialize_rule_payload(refreshed, auth_payload)}

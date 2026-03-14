@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,184 @@ from pathlib import Path
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+DEFAULT_PROMPTS_CHAT_URL = "https://prompts.chat/api/mcp"
+DEFAULT_VETT_BASE_URL = "https://vett.sh/api/v1"
+DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT = (
+    "基于员工职责、目标、技能建议和 prompts.chat MCP 相关能力，为员工自动补全 1 到 3 条可直接落地的执行规则。"
+    "优先生成问题排查、输出规范、风险控制、技术选型相关规则；规则内容必须具体、可执行、可绑定。"
+)
+
+
+def default_employee_external_skill_sites() -> list[dict[str, object]]:
+    return [
+        {
+            "id": "frontend-ui",
+            "title": "UI 与界面一致性",
+            "description": "适合界面审美、排版层级、交互一致性和设计系统类员工。",
+            "url": "https://vett.sh/skills/clawhub.ai/ivangdavila/ui",
+        },
+        {
+            "id": "frontend-css",
+            "title": "CSS 与样式工程化",
+            "description": "适合布局系统、响应式、动画和样式治理类员工。",
+            "url": "https://vett.sh/skills/clawhub.ai/ivangdavila/css",
+        },
+        {
+            "id": "frontend-vue",
+            "title": "Vue 深度应用",
+            "description": "适合 Vue 组件设计、Composition API 和工程实践类员工。",
+            "url": "https://vett.sh/skills/clawhub.ai/ivangdavila/vue",
+        },
+        {
+            "id": "frontend-browser",
+            "title": "浏览器调试与性能排查",
+            "description": "适合 Chrome DevTools、渲染链路和性能定位类员工。",
+            "url": "https://vett.sh/skills/clawhub.ai/ivangdavila/chrome",
+        },
+        {
+            "id": "frontend-architecture",
+            "title": "架构设计与技术选型",
+            "description": "适合系统拆分、边界设计、技术取舍和演进治理类员工。",
+            "url": "https://vett.sh/skills/clawhub.ai/ivangdavila/software-architect",
+        },
+        {
+            "id": "frontend-nodejs",
+            "title": "JavaScript / Node.js 工程实践",
+            "description": "适合 JS 工具链、构建脚本、运行时治理和工程交付类员工。",
+            "url": "https://vett.sh/skills/clawhub.ai/ivangdavila/nodejs",
+        },
+    ]
+
+
+def default_system_mcp_config() -> dict[str, object]:
+    return {
+        "mcpServers": {
+            "prompts.chat": {
+                "url": DEFAULT_PROMPTS_CHAT_URL,
+                "enabled": True,
+            }
+        }
+    }
+
+
+def default_skill_registry_sources() -> dict[str, object]:
+    return {
+        "vett": {
+            "enabled": True,
+            "base_url": DEFAULT_VETT_BASE_URL,
+            "timeout_ms": 10000,
+            "risk_policy": {
+                "allow": ["none", "low", "medium"],
+                "review": ["high"],
+                "deny": ["critical"],
+            },
+        }
+    }
+
+
+def normalize_system_mcp_config(value: object) -> dict[str, object]:
+    normalized = deepcopy(default_system_mcp_config())
+    if not isinstance(value, dict):
+        return normalized
+
+    merged = dict(value)
+    servers: dict[str, dict[str, object]] = {}
+    raw_servers = value.get("mcpServers")
+    if isinstance(raw_servers, dict):
+        for raw_name, raw_server in raw_servers.items():
+            name = str(raw_name or "").strip()
+            if not name or not isinstance(raw_server, dict):
+                continue
+            servers[name] = dict(raw_server)
+
+    prompts_chat = dict(servers.get("prompts.chat") or {})
+    prompts_chat["url"] = str(prompts_chat.get("url") or DEFAULT_PROMPTS_CHAT_URL).strip() or DEFAULT_PROMPTS_CHAT_URL
+    prompts_chat["enabled"] = bool(prompts_chat.get("enabled", True))
+    servers["prompts.chat"] = prompts_chat
+    for name, server in list(servers.items()):
+        normalized_server = dict(server)
+        normalized_server["enabled"] = bool(normalized_server.get("enabled", True))
+        if "url" in normalized_server:
+            normalized_server["url"] = str(normalized_server.get("url") or "").strip()
+        servers[name] = normalized_server
+    merged["mcpServers"] = servers
+    normalized.update(merged)
+    return normalized
+
+
+def normalize_employee_external_skill_sites(value: object) -> list[dict[str, object]]:
+    defaults = default_employee_external_skill_sites()
+    if not isinstance(value, list):
+        return defaults
+
+    normalized: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw_item in value:
+        if not isinstance(raw_item, dict):
+            continue
+        item_id = str(raw_item.get("id") or "").strip()[:80]
+        title = str(raw_item.get("title") or "").strip()[:120]
+        description = str(raw_item.get("description") or "").strip()[:280]
+        url = str(raw_item.get("url") or "").strip()[:500]
+        dedupe_key = (item_id or title or url).lower()
+        if not dedupe_key or dedupe_key in seen or not url:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(
+            {
+                "id": item_id or f"site-{len(normalized) + 1}",
+                "title": title or "未命名站点",
+                "description": description,
+                "url": url,
+            }
+        )
+        if len(normalized) >= 20:
+            break
+    return normalized
+
+
+def normalize_skill_registry_sources(value: object) -> dict[str, object]:
+    defaults = deepcopy(default_skill_registry_sources())
+    if not isinstance(value, dict):
+        return defaults
+
+    normalized = deepcopy(defaults)
+    raw_vett = value.get("vett")
+    if not isinstance(raw_vett, dict):
+        return normalized
+
+    vett = dict(raw_vett)
+    base_url = str(vett.get("base_url") or DEFAULT_VETT_BASE_URL).strip() or DEFAULT_VETT_BASE_URL
+    try:
+        timeout_ms = int(vett.get("timeout_ms") or 10000)
+    except (TypeError, ValueError):
+        timeout_ms = 10000
+    timeout_ms = max(1000, min(60000, timeout_ms))
+
+    raw_policy = vett.get("risk_policy")
+    default_policy = defaults["vett"]["risk_policy"]
+    normalized_policy: dict[str, list[str]] = {}
+    for key in ("allow", "review", "deny"):
+        source_values = raw_policy.get(key) if isinstance(raw_policy, dict) else default_policy.get(key)
+        items: list[str] = []
+        seen: set[str] = set()
+        for item in source_values if isinstance(source_values, list) else []:
+            text = str(item or "").strip().lower()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            items.append(text)
+        normalized_policy[key] = items or list(default_policy.get(key) or [])
+
+    normalized["vett"] = {
+        "enabled": bool(vett.get("enabled", True)),
+        "base_url": base_url.rstrip("/"),
+        "timeout_ms": timeout_ms,
+        "risk_policy": normalized_policy,
+    }
+    return normalized
 
 
 @dataclass
@@ -20,8 +199,49 @@ class SystemConfig:
     enable_user_register: bool = True
     chat_upload_max_limit: int = 6
     chat_max_tokens: int = 512
+    default_chat_system_prompt: str = ""
+    employee_auto_rule_generation_enabled: bool = True
+    employee_auto_rule_generation_source_filters: list[str] = field(
+        default_factory=lambda: ["prompts_chat_curated"]
+    )
+    employee_auto_rule_generation_max_count: int = 3
+    employee_auto_rule_generation_prompt: str = DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT
+    employee_external_skill_sites: list[dict[str, object]] = field(
+        default_factory=default_employee_external_skill_sites
+    )
+    skill_registry_sources: dict[str, object] = field(
+        default_factory=default_skill_registry_sources
+    )
+    mcp_config: dict[str, object] = field(default_factory=default_system_mcp_config)
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
+
+    def __post_init__(self) -> None:
+        self.default_chat_system_prompt = str(self.default_chat_system_prompt or "").strip()[:8000]
+        self.employee_auto_rule_generation_source_filters = [
+            str(item or "").strip()
+            for item in (self.employee_auto_rule_generation_source_filters or [])
+            if str(item or "").strip()
+        ][:12] or ["prompts_chat_curated"]
+        try:
+            self.employee_auto_rule_generation_max_count = int(
+                self.employee_auto_rule_generation_max_count or 3
+            )
+        except (TypeError, ValueError):
+            self.employee_auto_rule_generation_max_count = 3
+        self.employee_auto_rule_generation_max_count = max(
+            1, min(6, self.employee_auto_rule_generation_max_count)
+        )
+        self.employee_auto_rule_generation_prompt = str(
+            self.employee_auto_rule_generation_prompt or DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT
+        ).strip()[:8000] or DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT
+        self.employee_external_skill_sites = normalize_employee_external_skill_sites(
+            self.employee_external_skill_sites
+        )
+        self.skill_registry_sources = normalize_skill_registry_sources(
+            self.skill_registry_sources
+        )
+        self.mcp_config = normalize_system_mcp_config(self.mcp_config)
 
 
 class SystemConfigStore:

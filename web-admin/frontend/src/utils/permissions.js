@@ -1,4 +1,7 @@
+import { ref } from 'vue'
+
 const PERMISSION_STORAGE_KEY = 'permissions'
+const permissionStateVersion = ref(0)
 
 const PATH_PERMISSION_MAP = [
   { prefix: '/ai/chat', permission: 'menu.ai.chat' },
@@ -7,11 +10,34 @@ const PATH_PERMISSION_MAP = [
   { prefix: '/projects', permission: 'menu.projects' },
   { prefix: '/employees/create', permission: 'menu.employees.create' },
   { prefix: '/employees', permission: 'menu.employees' },
+  { prefix: '/skill-resources', permission: 'menu.skills' },
   { prefix: '/skills', permission: 'menu.skills' },
   { prefix: '/rules', permission: 'menu.rules' },
   { prefix: '/system/config', permission: 'menu.system.config' },
   { prefix: '/llm/providers', permission: 'menu.llm.providers' },
   { prefix: '/usage/keys', permission: 'menu.usage.keys' },
+]
+
+const LEGACY_USER_PERMISSION_KEYS = new Set([
+  'menu.ai.chat',
+  'menu.projects',
+  'menu.employees',
+  'menu.employees.create',
+  'button.project.chat',
+  'button.employees.update',
+  'button.employees.delete',
+])
+const FALLBACK_PATHS = [
+  '/ai/chat',
+  '/employees',
+  '/projects',
+  '/skill-resources',
+  '/users',
+  '/roles',
+  '/skills',
+  '/rules',
+  '/system/config',
+  '/usage/keys',
 ]
 
 function parsePermissionArray(rawValue) {
@@ -31,9 +57,7 @@ function legacyUserFallback(permissionKey) {
   const role = String(localStorage.getItem('role') || 'user').toLowerCase()
   if (role === 'admin') return true
   if (role !== 'user') return false
-  if (permissionKey === 'menu.users' || permissionKey === 'menu.roles') return false
-  if (permissionKey.startsWith('button.users.') || permissionKey.startsWith('button.roles.')) return false
-  return true
+  return LEGACY_USER_PERMISSION_KEYS.has(permissionKey)
 }
 
 export function getPermissionArray() {
@@ -45,17 +69,22 @@ export function setPermissionArray(values) {
     .map((item) => String(item || '').trim())
     .filter(Boolean)
   localStorage.setItem(PERMISSION_STORAGE_KEY, JSON.stringify(Array.from(new Set(normalized))))
+  permissionStateVersion.value += 1
 }
 
 export function clearPermissionArray() {
   localStorage.removeItem(PERMISSION_STORAGE_KEY)
+  permissionStateVersion.value += 1
 }
 
 export function hasPermission(permissionKey) {
+  permissionStateVersion.value
   const target = String(permissionKey || '').trim()
   if (!target) return true
+  if (localStorage.getItem(PERMISSION_STORAGE_KEY) === null) {
+    return legacyUserFallback(target)
+  }
   const permissions = getPermissionArray()
-  if (!permissions.length) return legacyUserFallback(target)
   if (permissions.includes('*')) return true
   return permissions.includes(target)
 }
@@ -67,4 +96,11 @@ export function pathPermission(path) {
     (item) => currentPath === item.prefix || currentPath.startsWith(`${item.prefix}/`),
   )
   return matched?.permission || ''
+}
+
+export function getFallbackPath() {
+  return FALLBACK_PATHS.find((path) => {
+    const permission = pathPermission(path)
+    return !permission || hasPermission(permission)
+  }) || '/login'
 }

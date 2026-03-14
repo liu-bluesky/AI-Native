@@ -20,13 +20,12 @@ from threading import Lock
 from typing import Any
 
 from core.config import get_settings
+from services.local_connector_service import connector_headers
 
 _ANSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 _OSC_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)", re.DOTALL)
-_SUPPORT_DIRNAME = ".ai-employee"
-_MIRROR_DIRNAME = "context-mirror"
 _GEMINI_DIRNAME = ".gemini"
-_GEMINI_RUNTIME_HOME_DIRNAME = "gemini-home"
+_GEMINI_RUNTIME_HOME_DIRNAME = ".gemini-home"
 _GEMINI_AUTH_ENV_KEYS = (
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
@@ -217,7 +216,7 @@ def _parse_simple_env_file(path: Path) -> dict[str, str]:
 
 def _gemini_runtime_home_path(workspace_path: str) -> Path:
     workspace = Path(str(workspace_path or "").strip()).expanduser()
-    return workspace / _SUPPORT_DIRNAME / _GEMINI_RUNTIME_HOME_DIRNAME
+    return workspace / _GEMINI_RUNTIME_HOME_DIRNAME
 
 
 def _gemini_runtime_user_dir(workspace_path: str) -> Path:
@@ -393,7 +392,7 @@ def _run_git_command(workspace: str, args: list[str]) -> tuple[bool, str]:
 
 
 def _git_workspace_scope_args() -> list[str]:
-    return ["--", ".", f":(exclude){_SUPPORT_DIRNAME}/**"]
+    return ["--", ".", f":(exclude){_GEMINI_RUNTIME_HOME_DIRNAME}/**"]
 
 
 def _diff_summary_signature(summary: dict[str, Any] | None) -> tuple[Any, ...]:
@@ -458,11 +457,28 @@ def _runner_base_url() -> str:
 
 async def probe_workspace_access_effective_async(workspace_path: str, sandbox_mode: str = "workspace-write") -> dict[str, Any]:
     runner_url = _runner_base_url()
+    return await probe_workspace_access_effective_with_runner_async(
+        workspace_path,
+        sandbox_mode,
+        runner_url=runner_url,
+        extra_headers=None,
+    )
+
+
+async def probe_workspace_access_effective_with_runner_async(
+    workspace_path: str,
+    sandbox_mode: str = "workspace-write",
+    *,
+    runner_url: str = "",
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    runner_url = str(runner_url or "").strip().rstrip("/")
     if runner_url:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
                     f"{runner_url}/probe-workspace",
+                    headers=extra_headers or {},
                     json={"workspace_path": str(workspace_path or ""), "sandbox_mode": str(sandbox_mode or "workspace-write")},
                 )
                 response.raise_for_status()
@@ -478,18 +494,6 @@ async def probe_workspace_access_effective_async(workspace_path: str, sandbox_mo
     fallback = probe_workspace_access(workspace_path, sandbox_mode)
     fallback.setdefault("source", "local")
     return fallback
-
-
-def _find_context_root(workspace: Path) -> Path:
-    candidates = [workspace, *list(workspace.parents)]
-    for candidate in candidates:
-        if (
-            (candidate / "CLAUDE.md").exists()
-            or (candidate / "rules").is_dir()
-            or (candidate / "docs" / "00-项目总览" / "PROJECT.md").exists()
-        ):
-            return candidate
-    return workspace
 
 
 def _display_path(base: Path, target: Path) -> str:
@@ -543,17 +547,14 @@ def probe_workspace_access(workspace_path: str, sandbox_mode: str = "workspace-w
         "write_ok": False,
         "sandbox_mode": mode,
         "path": str(workspace),
-        "support_dir": str(workspace / _SUPPORT_DIRNAME),
         "reason": "",
     }
     if mode != "workspace-write":
         result["reason"] = "当前请求的是只读模式(read-only)"
         return result
 
-    support_dir = workspace / _SUPPORT_DIRNAME
-    probe_file = support_dir / f".write-probe-{uuid.uuid4().hex}.tmp"
+    probe_file = workspace / f".write-probe-{uuid.uuid4().hex}.tmp"
     try:
-        support_dir.mkdir(parents=True, exist_ok=True)
         probe_file.write_text("ok", encoding="utf-8")
         try:
             probe_file.unlink()
@@ -570,149 +571,6 @@ def _copy_text_file(source: Path, target: Path) -> None:
     target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
 
-def _collect_context_sources(context_root: Path) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-
-    def add_file(kind: str, label: str, source: Path) -> None:
-        if not source.exists() or not source.is_file():
-            return
-        items.append({"kind": kind, "label": label, "source": source})
-
-    add_file("workspace_claude", "平台规则总入口", context_root / "CLAUDE.md")
-    add_file(
-        "project_overview",
-        "项目总览",
-        context_root / "docs" / "00-项目总览" / "PROJECT.md",
-    )
-    add_file("workspace_agents", "工作区 AGENTS", context_root / "AGENTS.md")
-
-    rules_dir = context_root / "rules"
-    if rules_dir.is_dir():
-        for rule_file in sorted(rules_dir.glob("*.md")):
-            items.append(
-                {
-                    "kind": "rule",
-                    "label": f"规则：{rule_file.stem}",
-                    "source": rule_file,
-                }
-            )
-
-    agents_dir = context_root / "agents"
-    if agents_dir.is_dir():
-        for agent_file in sorted(agents_dir.glob("*.md")):
-            items.append(
-                {
-                    "kind": "agent_profile",
-                    "label": f"智能体：{agent_file.stem}",
-                    "source": agent_file,
-                }
-            )
-    return items
-
-
-def _mirror_target_path(mirror_root: Path, context_root: Path, source: Path) -> Path:
-    try:
-        relative = source.relative_to(context_root)
-    except ValueError:
-        relative = Path(source.name)
-    return mirror_root / relative
-
-
-def _build_generated_agents_content(
-    *,
-    project_id: str,
-    project_name: str,
-    project_description: str,
-    workspace_path: str,
-    sandbox_mode: str,
-    selected_employee_names: list[str],
-    candidate_preview: list[str],
-    mirrored_files: list[dict[str, Any]],
-) -> str:
-    lines = [
-        "# AGENTS.generated.md",
-        "",
-        "> 由 AI 设计规范平台自动生成，供外部 Agent 会话读取。",
-        "> 如与工作区原生 `AGENTS.md` 冲突，以工作区原生文件优先；本文件作为补充上下文。",
-        "",
-        "## 会话定位",
-        f"- 当前项目：`{project_name}` (`{project_id}`)",
-        f"- 工作目录：`{workspace_path or '-'}`",
-        "- 外部 Agent：`由聊天设置中当前选定的 CLI 负责执行`",
-        f"- 沙箱模式：`{sandbox_mode}`",
-        "- 当前阶段：仅做外部 Agent 托管，不启用平台审批流，不桥接平台 MCP 技能。",
-        "- 行为边界：如需修改文件或运行命令，请限制在当前工作区范围内。",
-    ]
-    if project_description:
-        lines.append(f"- 项目说明：{project_description}")
-    if selected_employee_names:
-        lines.append(f"- 当前选定成员：{', '.join(selected_employee_names)}")
-    elif candidate_preview:
-        lines.append(f"- 项目成员参考：{', '.join(candidate_preview)}")
-
-    lines.extend(
-        [
-            "",
-            "## 建议阅读顺序",
-            "1. 先读工作区原生 `AGENTS.md`（如果存在）",
-            "2. 再读本文件所在目录下的 `STARTUP_CONTEXT.generated.md`",
-            "3. 然后按需阅读镜像过来的规则、项目总览、智能体定义文件",
-            "",
-            "## 镜像上下文文件",
-        ]
-    )
-    if mirrored_files:
-        for item in mirrored_files:
-            lines.append(f"- `{item['path']}`：{item['label']}")
-    else:
-        lines.append("- 暂无可镜像的项目上下文文件")
-    lines.extend(
-        [
-            "",
-            "## 开发建议",
-            "- 优先给出结论，再说明操作步骤。",
-            "- 涉及代码修改时，先快速确认影响范围，再动手。",
-            "- 若工作区内已有规则/设计文档，优先遵循，不要擅自改造架构。",
-        ]
-    )
-    return "\n".join(lines).strip() + "\n"
-
-
-def _build_generated_startup_context(
-    *,
-    project_name: str,
-    project_id: str,
-    sandbox_mode: str,
-    workspace_path: str,
-    generated_agents_path: str,
-    mirrored_files: list[dict[str, Any]],
-    system_prompt: str,
-    mcp_bridge: dict[str, Any] | None,
-) -> str:
-    lines = [
-        "你正在 AI 设计规范平台托管的外部 Agent 会话中运行。",
-        f"当前项目：{project_name} ({project_id})。",
-        f"工作目录：{workspace_path or '-'}。",
-        f"沙箱模式：{sandbox_mode}。",
-        "请优先使用中文输出，先给结论，再给步骤。",
-        f"请先阅读 `{generated_agents_path}`。",
-    ]
-    bridge = mcp_bridge if isinstance(mcp_bridge, dict) else {}
-    if bool(bridge.get("enabled")) and str(bridge.get("server_name") or "").strip():
-        lines.append(
-            f"本次外部 Agent 会话已自动注入项目 MCP Server：`{str(bridge.get('server_name') or '').strip()}`。"
-        )
-    elif str(bridge.get("reason") or "").strip():
-        lines.append(f"项目 MCP 未注入：{str(bridge.get('reason') or '').strip()}。")
-    if mirrored_files:
-        lines.append("如需更多上下文，可继续查看以下镜像文件：")
-        for item in mirrored_files[:12]:
-            lines.append(f"- `{item['path']}`：{item['label']}")
-    if system_prompt:
-        lines.append(f"补充上下文：{system_prompt}")
-    return "\n".join(lines).strip()
-
-
 def prepare_external_agent_workspace_context(
     *,
     project_id: str,
@@ -726,115 +584,18 @@ def prepare_external_agent_workspace_context(
     system_prompt: str = "",
     mcp_bridge: dict[str, Any] | None = None,
     write_files: bool = False,
+    skill_resource_directory: str = "",
 ) -> dict[str, Any]:
     workspace = Path(str(workspace_path or "").strip())
-    context_root = _find_context_root(workspace) if workspace_path else workspace
-    support_dir = workspace / _SUPPORT_DIRNAME
-    mirror_root = support_dir / _MIRROR_DIRNAME
-    source_files = _collect_context_sources(context_root) if workspace_path else []
-    mirrored_files: list[dict[str, Any]] = []
-    materialize_copies: list[dict[str, Any]] = []
-
-    for item in source_files:
-        source = item["source"]
-        target = _mirror_target_path(mirror_root, context_root, source)
-        entry = {
-            "kind": str(item.get("kind") or "file"),
-            "label": str(item.get("label") or source.name),
-            "source_path": str(source),
-            "path": _display_path(workspace, target) if workspace_path else str(target),
-            "materialize_path": str(target),
-            "written": False,
-        }
-        materialize_copies.append(
-            {
-                "kind": str(item.get("kind") or "file"),
-                "source_path": str(source),
-                "target_path": str(target),
-                "path": entry["path"],
-            }
-        )
-        if write_files:
-            try:
-                _copy_text_file(source, target)
-                entry["written"] = True
-            except Exception as exc:
-                entry["error"] = str(exc)
-        mirrored_files.append(entry)
-
-    selected_names = [str(item or "").strip() for item in (selected_employee_names or []) if str(item or "").strip()]
-    candidate_names = [str(item or "").strip() for item in (candidate_preview or []) if str(item or "").strip()]
-    generated_agents_path = support_dir / "AGENTS.generated.md"
-    generated_startup_path = support_dir / "STARTUP_CONTEXT.generated.md"
-    generated_mcp_path = support_dir / "CODEX_MCP.generated.toml"
-    generated_gemini_settings_path = workspace / _GEMINI_DIRNAME / "settings.json"
-    generated_gemini_user_settings_path = _gemini_runtime_user_dir(workspace_path) / "settings.json"
-
-    agents_content = _build_generated_agents_content(
-        project_id=project_id,
-        project_name=project_name,
-        project_description=project_description,
-        workspace_path=workspace_path,
-        sandbox_mode=sandbox_mode,
-        selected_employee_names=selected_names,
-        candidate_preview=candidate_names,
-        mirrored_files=mirrored_files,
-    )
-    startup_context = _build_generated_startup_context(
-        project_name=project_name,
-        project_id=project_id,
-        sandbox_mode=sandbox_mode,
-        workspace_path=workspace_path,
-        generated_agents_path=_display_path(workspace, generated_agents_path) if workspace_path else str(generated_agents_path),
-        mirrored_files=mirrored_files,
-        system_prompt=system_prompt,
-        mcp_bridge=mcp_bridge,
-    )
-
-    support_files = [
-        {
-            "kind": "generated_agents",
-            "label": "生成的 AGENTS 文件",
-            "path": _display_path(workspace, generated_agents_path) if workspace_path else str(generated_agents_path),
-            "materialize_path": str(generated_agents_path),
-            "written": False,
-        },
-        {
-            "kind": "generated_startup_context",
-            "label": "生成的启动上下文文件",
-            "path": _display_path(workspace, generated_startup_path) if workspace_path else str(generated_startup_path),
-            "materialize_path": str(generated_startup_path),
-            "written": False,
-        },
-        *mirrored_files,
-    ]
-
     bridge = mcp_bridge if isinstance(mcp_bridge, dict) else {}
     bridge_server_name = str(bridge.get("server_name") or "").strip()
-    bridge_url = str(bridge.get("url") or "").strip()
-    mcp_content = ""
-    materialize_files: list[dict[str, Any]] = [
-        {"kind": "generated_agents", "path": str(generated_agents_path), "content": agents_content},
-        {"kind": "generated_startup_context", "path": str(generated_startup_path), "content": startup_context + "\n"},
-    ]
+    materialize_copies: list[dict[str, Any]] = []
+    generated_gemini_settings_path = workspace / _GEMINI_DIRNAME / "settings.json"
+    generated_gemini_user_settings_path = _gemini_runtime_user_dir(workspace_path) / "settings.json"
+    startup_context = ""
+    support_files: list[dict[str, Any]] = []
+    materialize_files: list[dict[str, Any]] = []
     normalized_agent_type = normalize_external_agent_type(agent_type)
-    if bool(bridge.get("enabled")) and bridge_server_name and bridge_url:
-        mcp_content = (
-            f"[mcp_servers.{bridge_server_name}]\n"
-            f'type = "sse"\n'
-            f'url = {json.dumps(bridge_url, ensure_ascii=False)}\n'
-        )
-        materialize_files.append({"kind": "generated_mcp_config", "path": str(generated_mcp_path), "content": mcp_content})
-        support_files.insert(
-            2,
-            {
-                "kind": "generated_mcp_config",
-                "label": "生成的外部 Agent MCP 配置",
-                "path": _display_path(workspace, generated_mcp_path) if workspace_path else str(generated_mcp_path),
-                "materialize_path": str(generated_mcp_path),
-                "written": False,
-            },
-        )
     if normalized_agent_type == "gemini_cli":
         gemini_workspace_settings = json.dumps(
             _build_gemini_workspace_settings(bridge),
@@ -882,32 +643,28 @@ def prepare_external_agent_workspace_context(
             )
 
     if write_files:
-        try:
-            generated_agents_path.parent.mkdir(parents=True, exist_ok=True)
-            generated_agents_path.write_text(agents_content, encoding="utf-8")
-            support_files[0]["written"] = True
-        except Exception as exc:
-            support_files[0]["error"] = str(exc)
-        try:
-            generated_startup_path.parent.mkdir(parents=True, exist_ok=True)
-            generated_startup_path.write_text(startup_context + "\n", encoding="utf-8")
-            support_files[1]["written"] = True
-        except Exception as exc:
-            support_files[1]["error"] = str(exc)
-        if mcp_content:
-            mcp_entry = next((item for item in support_files if item.get("kind") == "generated_mcp_config"), None)
+        for item in support_files:
+            materialize_path = Path(str(item.get("materialize_path") or "").strip())
+            content = next(
+                (
+                    str(materialize_item.get("content") or "")
+                    for materialize_item in materialize_files
+                    if str(materialize_item.get("path") or "").strip() == str(materialize_path)
+                ),
+                None,
+            )
+            if content is None:
+                continue
             try:
-                generated_mcp_path.parent.mkdir(parents=True, exist_ok=True)
-                generated_mcp_path.write_text(mcp_content, encoding="utf-8")
-                if mcp_entry is not None:
-                    mcp_entry["written"] = True
+                materialize_path.parent.mkdir(parents=True, exist_ok=True)
+                materialize_path.write_text(content, encoding="utf-8")
+                item["written"] = True
             except Exception as exc:
-                if mcp_entry is not None:
-                    mcp_entry["error"] = str(exc)
+                item["error"] = str(exc)
 
     return {
-        "context_root": str(context_root) if workspace_path else "",
-        "support_dir": _display_path(workspace, support_dir) if workspace_path else str(support_dir),
+        "context_root": "",
+        "support_dir": "",
         "support_files": support_files,
         "startup_context": startup_context,
         "workspace_access": probe_workspace_access(workspace_path, sandbox_mode),
@@ -925,9 +682,18 @@ def prepare_external_agent_workspace_context(
 
 
 async def materialize_external_agent_workspace_context_async(context: dict[str, Any] | None) -> dict[str, Any]:
+    return await materialize_external_agent_workspace_context_with_runner_async(context)
+
+
+async def materialize_external_agent_workspace_context_with_runner_async(
+    context: dict[str, Any] | None,
+    *,
+    runner_url: str = "",
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     payload = dict(context or {})
     materialization = payload.get("materialization") if isinstance(payload.get("materialization"), dict) else {}
-    runner_url = _runner_base_url()
+    runner_url = str(runner_url or _runner_base_url() or "").strip().rstrip("/")
     if not materialization:
         payload["materialized_by"] = "local"
         return payload
@@ -946,6 +712,7 @@ async def materialize_external_agent_workspace_context_async(context: dict[str, 
             async with httpx.AsyncClient(timeout=20.0) as client:
                 response = await client.post(
                     f"{runner_url}/workspace/materialize",
+                    headers=extra_headers or {},
                     json={
                         "workspace_path": materialization.get("workspace_path") or "",
                         "sandbox_mode": materialization.get("sandbox_mode") or "workspace-write",
@@ -1024,6 +791,8 @@ class ExternalAgentSession:
         agent_type: str = "codex_cli",
         sandbox_mode: str = "workspace-write",
         codex_config_overrides: list[str] | None = None,
+        runner_url_override: str = "",
+        runner_headers: dict[str, str] | None = None,
     ) -> None:
         self.project_id = str(project_id or "").strip()
         self.project_name = str(project_name or "").strip()
@@ -1038,6 +807,12 @@ class ExternalAgentSession:
             for item in (codex_config_overrides or [])
             if str(item or "").strip()
         ]
+        self.runner_url_override = str(runner_url_override or "").strip().rstrip("/")
+        self.runner_headers = {
+            str(key or "").strip(): str(value or "").strip()
+            for key, value in (runner_headers or {}).items()
+            if str(key or "").strip()
+        }
         self.session_id = f"agent-{uuid.uuid4().hex[:10]}"
         self.started_at = _now_iso()
         self.last_active_at = self.started_at
@@ -1066,15 +841,36 @@ class ExternalAgentSession:
     def thread_id(self) -> str:
         return self._thread_id
 
+    def _effective_runner_url(self) -> str:
+        return self.runner_url_override or _runner_base_url()
+
+    def _effective_runner_headers(self) -> dict[str, str]:
+        return dict(self.runner_headers or {})
+
+    def _workspace_diff_summary(self) -> dict[str, Any]:
+        if self.runner_url_override:
+            return {"enabled": False, "reason": "本地连接器模式暂不支持远程 Git 差异摘要"}
+        return collect_workspace_diff_summary(self.workspace_path)
+
     async def ensure_started(self) -> None:
         if self._closed:
             raise RuntimeError("外部 Agent 会话已关闭")
         if not self.workspace_path:
             raise RuntimeError("项目未配置 workspace_path，无法启动外部 Agent")
-        workspace = Path(self.workspace_path)
-        if not workspace.exists() or not workspace.is_dir():
-            raise RuntimeError(f"workspace_path 不存在或不可用：{self.workspace_path}")
-        access = await probe_workspace_access_effective_async(self.workspace_path, self.sandbox_mode)
+        runner_url = self._effective_runner_url()
+        if not runner_url:
+            workspace = Path(self.workspace_path)
+            if not workspace.exists() or not workspace.is_dir():
+                raise RuntimeError(f"workspace_path 不存在或不可用：{self.workspace_path}")
+        access = await probe_workspace_access_effective_with_runner_async(
+            self.workspace_path,
+            self.sandbox_mode,
+            runner_url=runner_url,
+            extra_headers=self._effective_runner_headers(),
+        )
+        if not bool(access.get("read_ok")):
+            reason = str(access.get("reason") or "未知原因")
+            raise RuntimeError(f"工作区不可用：{reason}")
         if self.sandbox_mode == "workspace-write" and not bool(access.get("write_ok")):
             reason = str(access.get("reason") or "未知原因")
             raise RuntimeError(
@@ -1083,17 +879,22 @@ class ExternalAgentSession:
             )
 
         agent_status = resolve_external_agent_status(self.agent_type)
+        spec = dict(_EXTERNAL_AGENT_SPECS.get(self.agent_type) or _EXTERNAL_AGENT_SPECS["codex_cli"])
         if not bool(agent_status.get("implemented")):
             label = str(agent_status.get("label") or self.agent_type)
             reason = str(agent_status.get("reason") or "该外部 Agent 尚未完成后端适配").strip()
             raise RuntimeError(f"{label} 当前还不能直接用于对话框会话：{reason}")
-        command = str(agent_status.get("resolved_command") or agent_status.get("command") or "").strip()
+        command = (
+            str(spec.get("binary_name") or "").strip()
+            if runner_url
+            else str(agent_status.get("resolved_command") or agent_status.get("command") or "").strip()
+        )
         if not command:
             label = str(agent_status.get("label") or self.agent_type)
             raise RuntimeError(
                 f"未找到系统 {label} 命令，请先确认电脑已安装且 PATH 可用；仅在特殊部署场景下再配置对应 *_BIN 环境变量"
             )
-        if self.agent_type == "gemini_cli":
+        if self.agent_type == "gemini_cli" and not runner_url:
             auth_mode = _detect_gemini_auth_mode(self.workspace_path)
             if not auth_mode:
                 raise RuntimeError(
@@ -1136,6 +937,7 @@ class ExternalAgentSession:
             f"- thread_id: {self._thread_id or '-'}",
             f"- workspace_path: {self.workspace_path or '-'}",
             f"- sandbox_mode: {self.sandbox_mode or '-'}",
+            f"- execution_mode: {'local_connector' if self.runner_url_override else ('runner' if _runner_base_url() else 'local')}",
             f"- command_source: {str(command_status.get('command_source') or 'missing')}",
             f"- command_path: {str(command_status.get('resolved_command') or command_status.get('command') or '-')}",
             f"- runtime_label: {str(command_status.get('runtime_model_name') or self.agent_type)}",
@@ -1226,10 +1028,14 @@ class ExternalAgentSession:
         runner_session_id = self._runner_mirror_session_id
         self._runner_mirror_session_id = ""
         self._mirror_startup_acked = False
-        if runner_session_id and _runner_base_url():
+        runner_url = self._effective_runner_url()
+        if runner_session_id and runner_url:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    await client.post(f"{_runner_base_url()}/pty/close/{runner_session_id}")
+                    await client.post(
+                        f"{runner_url}/pty/close/{runner_session_id}",
+                        headers=self._effective_runner_headers(),
+                    )
             except Exception:
                 pass
         if process is not None and process.returncode is None:
@@ -1255,12 +1061,16 @@ class ExternalAgentSession:
                 pass
 
     async def _pump_terminal_mirror_via_runner(self, session_id: str, on_event=None) -> None:
-        runner_url = _runner_base_url()
+        runner_url = self._effective_runner_url()
         if not runner_url:
             return
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
-                async with client.stream("GET", f"{runner_url}/pty/stream/{session_id}") as response:
+                async with client.stream(
+                    "GET",
+                    f"{runner_url}/pty/stream/{session_id}",
+                    headers=self._effective_runner_headers(),
+                ) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():
                         raw = str(line or "").strip()
@@ -1277,7 +1087,11 @@ class ExternalAgentSession:
                                 self._mirror_startup_acked = True
                                 try:
                                     async with httpx.AsyncClient(timeout=10.0) as ack_client:
-                                        await ack_client.post(f"{runner_url}/pty/input/{session_id}", json={"content": "\r\r"})
+                                        await ack_client.post(
+                                            f"{runner_url}/pty/input/{session_id}",
+                                            headers=self._effective_runner_headers(),
+                                            json={"content": "\r\r"},
+                                        )
                                 except Exception:
                                     pass
                             stripped = cleaned.strip()
@@ -1347,9 +1161,14 @@ class ExternalAgentSession:
             cmd = self._build_resume_tui_command()
             env = os.environ.copy()
             env["TERM"] = env.get("TERM") or "xterm-256color"
-            if _runner_base_url():
+            runner_url = self._effective_runner_url()
+            if runner_url:
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.post(f"{_runner_base_url()}/pty/open", json={"cmd": cmd, "cwd": self.workspace_path, "env": env})
+                    response = await client.post(
+                        f"{runner_url}/pty/open",
+                        headers=self._effective_runner_headers(),
+                        json={"cmd": cmd, "cwd": self.workspace_path, "env": env},
+                    )
                     response.raise_for_status()
                     payload = response.json()
                     self._runner_mirror_session_id = str(payload.get("session_id") or "").strip()
@@ -1383,9 +1202,14 @@ class ExternalAgentSession:
         if not payload.strip():
             return
         async with self._send_lock:
-            if self._runner_mirror_session_id and _runner_base_url():
+            runner_url = self._effective_runner_url()
+            if self._runner_mirror_session_id and runner_url:
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.post(f"{_runner_base_url()}/pty/input/{self._runner_mirror_session_id}", json={"content": payload})
+                    response = await client.post(
+                        f"{runner_url}/pty/input/{self._runner_mirror_session_id}",
+                        headers=self._effective_runner_headers(),
+                        json={"content": payload},
+                    )
                     response.raise_for_status()
                 self._append_log({"ts": _now_iso(), "type": "terminal_mirror_input", "content": payload, "thread_id": self._thread_id})
                 return
@@ -1426,11 +1250,14 @@ class ExternalAgentSession:
     async def _terminate_active_process(self) -> None:
         self._append_log({"ts": _now_iso(), "type": "interrupt", "thread_id": self._thread_id})
         if self._runner_exec_id:
-            runner_url = _runner_base_url()
+            runner_url = self._effective_runner_url()
             if runner_url:
                 try:
                     async with httpx.AsyncClient(timeout=10.0) as client:
-                        await client.post(f"{runner_url}/exec/cancel/{self._runner_exec_id}")
+                        await client.post(
+                            f"{runner_url}/exec/cancel/{self._runner_exec_id}",
+                            headers=self._effective_runner_headers(),
+                        )
                 except Exception:
                     pass
                 return
@@ -1455,7 +1282,7 @@ class ExternalAgentSession:
         cancel_event: asyncio.Event | None = None,
         on_event=None,
     ) -> tuple[str, list[str], bool]:
-        runner_url = _runner_base_url()
+        runner_url = self._effective_runner_url()
         if not runner_url:
             raise RuntimeError("未配置 EXTERNAL_AGENT_RUNNER_URL")
         self._append_log({"ts": _now_iso(), "type": "request_start", "cmd": cmd, "resume": True, "thread_id": self._thread_id, "execution_mode": "runner"})
@@ -1466,6 +1293,7 @@ class ExternalAgentSession:
             async with client.stream(
                 "POST",
                 f"{runner_url}/exec/stream",
+                headers=self._effective_runner_headers(),
                 json={"cmd": cmd, "cwd": self.workspace_path, "env": env},
             ) as response:
                 response.raise_for_status()
@@ -1575,7 +1403,7 @@ class ExternalAgentSession:
         env = os.environ.copy()
         env["TERM"] = env.get("TERM") or "xterm-256color"
         env["NO_COLOR"] = "1"
-        if _runner_base_url():
+        if self._effective_runner_url():
             return await self._run_exec_turn_via_runner(cmd, env, cancel_event=cancel_event, on_event=on_event)
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -1766,7 +1594,7 @@ class ExternalAgentSession:
                 await self._prepare_session_locked()
             self.last_active_at = _now_iso()
             prompt_risks = _collect_risk_signals(user_prompt)
-            before_diff_summary = collect_workspace_diff_summary(self.workspace_path)
+            before_diff_summary = self._workspace_diff_summary()
             self._append_log(
                 {
                     "ts": self.last_active_at,
@@ -1814,7 +1642,7 @@ class ExternalAgentSession:
                 raise RuntimeError("外部 Agent 未返回有效内容")
 
             output_risks = _collect_risk_signals(final_content)
-            after_diff_summary = collect_workspace_diff_summary(self.workspace_path)
+            after_diff_summary = self._workspace_diff_summary()
             approval_info = approval_context if isinstance(approval_context, dict) else {}
             audit_payload = {
                 "risk_signals": prompt_risks,
@@ -1997,7 +1825,7 @@ class ClaudeExternalAgentSession(ExternalAgentSession):
         cancel_event: asyncio.Event | None = None,
         on_event=None,
     ) -> tuple[str, list[str], bool]:
-        runner_url = _runner_base_url()
+        runner_url = self._effective_runner_url()
         if not runner_url:
             raise RuntimeError("未配置 EXTERNAL_AGENT_RUNNER_URL")
         self._append_log({"ts": _now_iso(), "type": "request_start", "cmd": cmd, "resume": True, "thread_id": self._thread_id, "execution_mode": "runner"})
@@ -2005,7 +1833,12 @@ class ClaudeExternalAgentSession(ExternalAgentSession):
         final_content = ""
         interrupted = False
         async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
-            async with client.stream("POST", f"{runner_url}/exec/stream", json={"cmd": cmd, "cwd": self.workspace_path, "env": env}) as response:
+            async with client.stream(
+                "POST",
+                f"{runner_url}/exec/stream",
+                headers=self._effective_runner_headers(),
+                json={"cmd": cmd, "cwd": self.workspace_path, "env": env},
+            ) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if cancel_event is not None and cancel_event.is_set() and not interrupted:
@@ -2065,7 +1898,7 @@ class ClaudeExternalAgentSession(ExternalAgentSession):
         env = os.environ.copy()
         env["TERM"] = env.get("TERM") or "xterm-256color"
         env["NO_COLOR"] = "1"
-        if _runner_base_url():
+        if self._effective_runner_url():
             return await self._run_claude_turn_via_runner(cmd, env, cancel_event=cancel_event, on_event=on_event)
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -2272,7 +2105,7 @@ class GeminiExternalAgentSession(ExternalAgentSession):
         cancel_event: asyncio.Event | None = None,
         on_event=None,
     ) -> tuple[str, list[str], bool]:
-        runner_url = _runner_base_url()
+        runner_url = self._effective_runner_url()
         if not runner_url:
             raise RuntimeError("未配置 EXTERNAL_AGENT_RUNNER_URL")
         self._append_log({"ts": _now_iso(), "type": "request_start", "cmd": cmd, "resume": bool(self._thread_id), "thread_id": self._thread_id, "execution_mode": "runner"})
@@ -2280,7 +2113,12 @@ class GeminiExternalAgentSession(ExternalAgentSession):
         final_content = ""
         interrupted = False
         async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
-            async with client.stream("POST", f"{runner_url}/exec/stream", json={"cmd": cmd, "cwd": self.workspace_path, "env": env}) as response:
+            async with client.stream(
+                "POST",
+                f"{runner_url}/exec/stream",
+                headers=self._effective_runner_headers(),
+                json={"cmd": cmd, "cwd": self.workspace_path, "env": env},
+            ) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if cancel_event is not None and cancel_event.is_set() and not interrupted:
@@ -2338,7 +2176,7 @@ class GeminiExternalAgentSession(ExternalAgentSession):
     ) -> tuple[str, list[str], bool]:
         cmd = self._build_exec_command(prompt, resume=resume)
         env = self._build_gemini_exec_env()
-        if _runner_base_url():
+        if self._effective_runner_url():
             return await self._run_gemini_turn_via_runner(cmd, env, cancel_event=cancel_event, on_event=on_event)
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -2407,7 +2245,7 @@ class GeminiExternalAgentSession(ExternalAgentSession):
             await self.ensure_started()
             self.last_active_at = _now_iso()
             prompt_risks = _collect_risk_signals(user_prompt)
-            before_diff_summary = collect_workspace_diff_summary(self.workspace_path)
+            before_diff_summary = self._workspace_diff_summary()
             self._append_log(
                 {
                     "ts": self.last_active_at,
@@ -2455,7 +2293,7 @@ class GeminiExternalAgentSession(ExternalAgentSession):
                 raise RuntimeError("外部 Agent 未返回有效内容")
 
             output_risks = _collect_risk_signals(final_content)
-            after_diff_summary = collect_workspace_diff_summary(self.workspace_path)
+            after_diff_summary = self._workspace_diff_summary()
             approval_info = approval_context if isinstance(approval_context, dict) else {}
             audit_payload = {
                 "risk_signals": prompt_risks,
@@ -2471,7 +2309,6 @@ class GeminiExternalAgentSession(ExternalAgentSession):
             yield {"type": "audit", "audit": audit_payload, "thread_id": self._thread_id}
             self._append_log({"ts": _now_iso(), "type": "request_done", "content": final_content, "thread_id": self._thread_id})
             yield {"type": "done", "content": final_content, "thread_id": self._thread_id}
-
 
 def create_external_agent_session(**kwargs: Any) -> ExternalAgentSession:
     agent_type = normalize_external_agent_type(kwargs.get("agent_type"))

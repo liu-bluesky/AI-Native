@@ -71,15 +71,29 @@ class UsageStorePostgres:
             )
         return {"key": key, "developer_name": developer_name, "created_by": created_by, "created_at": now}
 
-    def list_keys(self) -> list[dict]:
+    def list_keys(self, created_by: str | None = None) -> list[dict]:
+        owner = str(created_by or "").strip()
         with self._conn.cursor() as cur:
-            cur.execute("SELECT * FROM api_keys ORDER BY created_at DESC")
+            if owner:
+                cur.execute(
+                    "SELECT * FROM api_keys WHERE created_by = %s ORDER BY created_at DESC",
+                    (owner,),
+                )
+            else:
+                cur.execute("SELECT * FROM api_keys ORDER BY created_at DESC")
             rows = cur.fetchall()
         return [_normalize_row(r) for r in rows]
 
-    def deactivate_key(self, key: str) -> bool:
+    def deactivate_key(self, key: str, created_by: str | None = None) -> bool:
+        owner = str(created_by or "").strip()
         with self._conn.cursor() as cur:
-            cur.execute("UPDATE api_keys SET is_active = FALSE WHERE key = %s", (key,))
+            if owner:
+                cur.execute(
+                    "UPDATE api_keys SET is_active = FALSE WHERE key = %s AND created_by = %s",
+                    (key, owner),
+                )
+            else:
+                cur.execute("UPDATE api_keys SET is_active = FALSE WHERE key = %s", (key,))
             return cur.rowcount > 0
 
     def validate_key(self, key: str) -> str | None:
@@ -197,4 +211,3 @@ class UsageStorePostgres:
             "by_tool": by_tool,
             "recent": recent,
         }
-

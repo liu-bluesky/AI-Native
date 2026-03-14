@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Local Connector Desktop</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand__mark">LC</div>
+        <div>
+          <h1>Local Connector</h1>
+          <p>桌面连接器控制台</p>
+        </div>
+      </div>
+      <div class="sidebar__actions">
+        <button id="startBtn" class="button button--primary">启动连接器</button>
+        <button id="stopBtn" class="button">停止连接器</button>
+        <button id="statusBtn" class="button">打开本地状态页</button>
+        <button id="logsBtn" class="button">打开日志目录</button>
+        <button id="dataBtn" class="button">打开数据目录</button>
+        <button id="rootBtn" class="button">打开程序目录</button>
+      </div>
+      <div class="sidebar__tips">
+        <h2>使用说明</h2>
+        <p>1. 点击“启动连接器”。</p>
+        <p>2. 启动后查看右侧“配对状态”和“心跳状态”。</p>
+        <p>3. 如果失败，直接看下方运行日志。</p>
+      </div>
+    </aside>
+    <main class="content">
+      <section class="hero">
+        <div>
+          <div id="runBadge" class="pill pill--idle">未启动</div>
+          <h2>本地连接器桌面端</h2>
+          <p id="heroText">适合普通用户的一键启动和状态查看界面。</p>
+        </div>
+        <div class="hero__meta">
+          <div class="hero__meta-item">
+            <span class="meta-label">本地地址</span>
+            <span id="statusUrl">http://127.0.0.1:3931</span>
+          </div>
+          <div class="hero__meta-item">
+            <span class="meta-label">根目录</span>
+            <span id="rootDir">-</span>
+          </div>
+          <div class="hero__meta-item">
+            <span class="meta-label">数据目录</span>
+            <span id="dataDir">-</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="cards">
+        <article class="card">
+          <h3>服务状态</h3>
+          <div class="status-grid">
+            <div><span class="meta-label">运行中</span><strong id="runningValue">否</strong></div>
+            <div><span class="meta-label">PID</span><strong id="pidValue">-</strong></div>
+            <div><span class="meta-label">平台</span><strong id="platformValue">-</strong></div>
+            <div><span class="meta-label">版本</span><strong id="versionValue">-</strong></div>
+          </div>
+        </article>
+        <article class="card">
+          <h3>配对状态</h3>
+          <div class="status-grid">
+            <div><span class="meta-label">是否已配对</span><strong id="pairedValue">-</strong></div>
+            <div><span class="meta-label">所属用户</span><strong id="ownerValue">-</strong></div>
+            <div><span class="meta-label">连接器 ID</span><strong id="connectorIdValue">-</strong></div>
+            <div><span class="meta-label">平台地址</span><strong id="platformUrlValue">-</strong></div>
+          </div>
+        </article>
+        <article class="card">
+          <h3>心跳状态</h3>
+          <div class="status-grid">
+            <div><span class="meta-label">最近心跳</span><strong id="heartbeatAtValue">-</strong></div>
+            <div><span class="meta-label">心跳错误</span><strong id="heartbeatErrorValue">-</strong></div>
+            <div><span class="meta-label">Codex</span><strong id="codexValue">-</strong></div>
+            <div><span class="meta-label">本地模型桥接</span><strong id="llmValue">-</strong></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="log-panel">
+        <div class="log-panel__head">
+          <h3>运行日志</h3>
+          <button id="clearLogBtn" class="button button--ghost">清空视图</button>
+        </div>
+        <pre id="logOutput" class="log-output">等待启动...</pre>
+      </section>
+    </main>
+  </div>
+  <script src="./renderer.js"></script>
+</body>
+
+</html>

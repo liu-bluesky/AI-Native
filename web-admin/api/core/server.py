@@ -10,8 +10,10 @@ from core.config import get_settings
 from routers import (
     init_auth,
     system_config,
+    local_connectors,
     projects,
     employees,
+    skill_resources,
     skills,
     rules,
     llm_providers,
@@ -47,8 +49,10 @@ def create_app() -> FastAPI:
     for r in (
         init_auth,
         system_config,
+        local_connectors,
         projects,
         employees,
+        skill_resources,
         skills,
         rules,
         llm_providers,

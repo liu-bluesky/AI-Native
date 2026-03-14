@@ -18,7 +18,9 @@ def _now_iso() -> str:
 class EmployeeConfig:
     id: str
     name: str
+    created_by: str = ""
     description: str = ""
+    goal: str = ""
     skills: list[str] = field(default_factory=list)
     rule_ids: list[str] = field(default_factory=list)
     rule_domains: list[str] = field(default_factory=list)
@@ -29,6 +31,8 @@ class EmployeeConfig:
     verbosity: str = "concise"
     language: str = "zh-CN"
     style_hints: list[str] = field(default_factory=list)
+    default_workflow: list[str] = field(default_factory=list)
+    tool_usage_policy: str = ""
     auto_evolve: bool = True
     evolve_threshold: float = 0.8
     mcp_enabled: bool = True

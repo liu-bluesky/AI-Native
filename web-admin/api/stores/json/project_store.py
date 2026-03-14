@@ -19,6 +19,7 @@ class ProjectConfig:
     name: str
     description: str = ""
     workspace_path: str = ""
+    ai_entry_file: str = ""
     mcp_enabled: bool = True
     feedback_upgrade_enabled: bool = True
     chat_settings: dict[str, object] = field(default_factory=dict)
@@ -35,18 +36,32 @@ class ProjectMember:
     joined_at: str = field(default_factory=_now_iso)
 
 
+@dataclass
+class ProjectUserMember:
+    project_id: str
+    username: str
+    role: str = "member"
+    enabled: bool = True
+    joined_at: str = field(default_factory=_now_iso)
+
+
 class ProjectStore:
     def __init__(self, data_dir: Path) -> None:
         self._projects_dir = data_dir / "projects"
         self._projects_dir.mkdir(parents=True, exist_ok=True)
         self._members_dir = data_dir / "project-members"
         self._members_dir.mkdir(parents=True, exist_ok=True)
+        self._user_members_dir = data_dir / "project-user-members"
+        self._user_members_dir.mkdir(parents=True, exist_ok=True)
 
     def _project_path(self, project_id: str) -> Path:
         return self._projects_dir / f"{project_id}.json"
 
     def _members_path(self, project_id: str) -> Path:
         return self._members_dir / f"{project_id}.json"
+
+    def _user_members_path(self, project_id: str) -> Path:
+        return self._user_members_dir / f"{project_id}.json"
 
     def save(self, project: ProjectConfig) -> None:
         self._project_path(project.id).write_text(
@@ -74,6 +89,9 @@ class ProjectStore:
         members_path = self._members_path(project_id)
         if members_path.exists():
             members_path.unlink()
+        user_members_path = self._user_members_path(project_id)
+        if user_members_path.exists():
+            user_members_path.unlink()
         return True
 
     def new_id(self) -> str:
@@ -111,3 +129,50 @@ class ProjectStore:
             encoding="utf-8",
         )
         return True
+
+    def remove_employee_from_all_projects(self, employee_id: str) -> list[str]:
+        removed_project_ids: list[str] = []
+        for project in self.list_all():
+            if self.remove_member(project.id, employee_id):
+                removed_project_ids.append(project.id)
+        return removed_project_ids
+
+    def list_user_members(self, project_id: str) -> list[ProjectUserMember]:
+        path = self._user_members_path(project_id)
+        if not path.exists():
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return [ProjectUserMember(**item) for item in data]
+
+    def get_user_member(self, project_id: str, username: str) -> ProjectUserMember | None:
+        for member in self.list_user_members(project_id):
+            if member.username == username:
+                return member
+        return None
+
+    def upsert_user_member(self, member: ProjectUserMember) -> None:
+        items = self.list_user_members(member.project_id)
+        updated = [m for m in items if m.username != member.username]
+        updated.append(member)
+        self._user_members_path(member.project_id).write_text(
+            json.dumps([asdict(item) for item in updated], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def remove_user_member(self, project_id: str, username: str) -> bool:
+        items = self.list_user_members(project_id)
+        updated = [item for item in items if item.username != username]
+        if len(updated) == len(items):
+            return False
+        self._user_members_path(project_id).write_text(
+            json.dumps([asdict(item) for item in updated], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return True
+
+    def remove_user_from_all_projects(self, username: str) -> list[str]:
+        removed_project_ids: list[str] = []
+        for project in self.list_all():
+            if self.remove_user_member(project.id, username):
+                removed_project_ids.append(project.id)
+        return removed_project_ids

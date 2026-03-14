@@ -90,7 +90,7 @@ URI 命名约定：
 ## 服务间隔离
 
 - 每个 MCP 服务独立运行，拥有独立的 `store.py` 和 `knowledge/` 目录
-- 服务间禁止直接 import（唯一例外：`web-admin/api/server.py` 聚合层）
+- 服务间禁止直接 import（唯一例外：`web-admin/api/stores/mcp_bridge.py` 聚合层）
 - 跨服务通信通过 `mcp-sync` 的 `push_update` 工具
 
 ## 进化引擎约束
@@ -117,5 +117,7 @@ MAX_PER_DAY = 5        # 每日自动晋升上限
 - [ ] Store 类继承统一模式（见 `rules/backend.md`）
 - [ ] Tool 返回 dict，错误用 `{"error": "..."}` 格式
 - [ ] Resource URI 遵循命名约定
-- [ ] 在 `web-admin/api/server.py` 中添加代理路由
+- [ ] 在 `web-admin/api/stores/mcp_bridge.py` 中注册 Store 桥接与序列化导出
+- [ ] 如需 HTTP 管理入口，在 `web-admin/api/routers/` 下增加对应 router
+- [ ] 在 `web-admin/api/core/server.py` 中注册 router 或挂载动态 MCP proxy
 - [ ] 在 `docs/00-项目总览/PROJECT.md` 的 MCP 服务矩阵中注册

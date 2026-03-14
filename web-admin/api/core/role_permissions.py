@@ -20,6 +20,8 @@ MENU_PERMISSION_ITEMS = [
 
 BUTTON_PERMISSION_ITEMS = [
     {"key": "button.project.chat", "label": "项目详情-AI对话"},
+    {"key": "button.employees.update", "label": "员工管理-编辑员工"},
+    {"key": "button.employees.delete", "label": "员工管理-删除员工"},
     {"key": "button.users.create", "label": "用户管理-新增用户"},
     {"key": "button.users.update_password", "label": "用户管理-重置密码"},
     {"key": "button.users.delete", "label": "用户管理-删除用户"},
@@ -44,6 +46,8 @@ DEFAULT_USER_PERMISSION_KEYS = sorted(
         "menu.llm.providers",
         "menu.usage.keys",
         "button.project.chat",
+        "button.employees.update",
+        "button.employees.delete",
         "button.apikey.create",
         "button.apikey.deactivate",
     }
@@ -72,20 +76,20 @@ def normalize_permissions(values: Iterable[str] | None) -> list[str]:
 
 def resolve_role_permissions(role_permissions: Iterable[str] | None, role_id: str = "") -> list[str]:
     normalized = normalize_permissions(role_permissions)
-    if "*" in normalized:
-        return ["*"]
     role_token = str(role_id or "").strip().lower()
-    if normalized:
-        return normalized
     if role_token == "admin":
         return ["*"]
+    if "*" in normalized:
+        return ["*"]
+    if role_permissions is not None:
+        return normalized
     if role_token == "user":
         return list(DEFAULT_USER_PERMISSION_KEYS)
     return []
 
 
-def has_permission(permission_list: Iterable[str] | None, permission_key: str) -> bool:
-    normalized = resolve_role_permissions(permission_list)
+def has_permission(permission_list: Iterable[str] | None, permission_key: str, role_id: str = "") -> bool:
+    normalized = resolve_role_permissions(permission_list, role_id=role_id)
     if "*" in normalized:
         return True
     target = str(permission_key or "").strip()

@@ -6,7 +6,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.deps import require_auth, role_store, user_store
+from core.deps import project_store, require_auth, role_store, user_store
 from models.requests import UserCreateReq, UserPasswordUpdateReq
 from core.role_permissions import has_permission
 from stores.json.user_store import User, hash_password
@@ -26,8 +26,8 @@ def _sanitize_username(value: str) -> str:
 def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
     role_id = str(auth_payload.get("role") or "").strip().lower()
     role = role_store.get(role_id)
-    role_permissions = getattr(role, "permissions", [])
-    if not has_permission(role_permissions, permission_key):
+    role_permissions = getattr(role, "permissions", None)
+    if not has_permission(role_permissions, permission_key, role_id=role_id):
         raise HTTPException(403, f"Permission denied: {permission_key}")
 
 
@@ -130,4 +130,8 @@ async def delete_user(username: str, auth_payload: dict = Depends(require_auth))
             raise HTTPException(400, "Cannot delete the last admin")
     if not user_store.delete(normalized_username):
         raise HTTPException(404, "User not found")
+    try:
+        project_store.remove_user_from_all_projects(normalized_username)
+    except Exception:
+        pass
     return {"status": "deleted", "username": normalized_username}

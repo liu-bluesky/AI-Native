@@ -92,10 +92,8 @@ def _probe_workspace_access(workspace_path: str, sandbox_mode: str = "workspace-
     if mode != "workspace-write":
         result["reason"] = "当前请求的是只读模式(read-only)"
         return result
-    support_dir = workspace / ".ai-employee"
-    probe_file = support_dir / f".write-probe-{uuid.uuid4().hex}.tmp"
+    probe_file = workspace / f".write-probe-{uuid.uuid4().hex}.tmp"
     try:
-        support_dir.mkdir(parents=True, exist_ok=True)
         probe_file.write_text("ok", encoding="utf-8")
         try:
             probe_file.unlink()

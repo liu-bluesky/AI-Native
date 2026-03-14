@@ -29,6 +29,17 @@
           />
           <div class="field-hint">用于团队识别员工职责，不填也可创建。</div>
         </el-form-item>
+        <el-form-item label="核心目标">
+          <el-input
+            v-model="form.goal"
+            type="textarea"
+            :rows="3"
+            placeholder="例如：优先把模糊需求收敛成可执行方案，并给出风险与边界。"
+          />
+          <div class="field-hint">
+            定义该员工判断任务和输出结果时最优先追求的目标。
+          </div>
+        </el-form-item>
       </template>
 
       <template v-else-if="currentStep === 1">
@@ -264,6 +275,60 @@
           <div class="field-hint">获取方式：可从团队写作规范、评审高频意见、优秀历史回复中提炼。</div>
         </el-form-item>
 
+        <el-form-item label="默认工作流">
+          <div class="field-hint style-hint-desc">
+            定义该员工处理任务时优先遵循的步骤顺序。
+          </div>
+          <div class="style-preset-row">
+            <el-tag
+              v-for="preset in workflowPresets"
+              :key="preset"
+              class="style-preset-tag"
+              :type="form.default_workflow.includes(preset) ? 'success' : 'info'"
+              @click="addWorkflowPreset(preset)"
+            >
+              {{ preset }}
+            </el-tag>
+          </div>
+          <div
+            v-for="(step, i) in form.default_workflow"
+            :key="`workflow-${i}`"
+            class="hint-row"
+          >
+            <el-input
+              v-model="form.default_workflow[i]"
+              size="small"
+              placeholder="例如：先确认目标与约束"
+            />
+            <el-button
+              text
+              type="danger"
+              size="small"
+              @click="removeWorkflowStep(i)"
+              >删除</el-button
+            >
+          </div>
+          <el-button
+            text
+            type="primary"
+            size="small"
+            @click="addWorkflowRow()"
+            >+ 添加步骤</el-button
+          >
+        </el-form-item>
+
+        <el-form-item label="工具使用策略">
+          <el-input
+            v-model="form.tool_usage_policy"
+            type="textarea"
+            :rows="4"
+            placeholder="例如：遇到项目上下文、规则、MCP、真实配置时优先查工具，不要凭空假设。"
+          />
+          <div class="field-hint">
+            用来约束员工何时主动调用技能、规则或 MCP 工具。
+          </div>
+        </el-form-item>
+
         <el-form-item label="自动学习">
           <el-switch v-model="form.auto_evolve" />
         </el-form-item>
@@ -293,6 +358,9 @@
           <el-descriptions :column="2" size="small" border>
             <el-descriptions-item label="名称">{{
               form.name || "-"
+            }}</el-descriptions-item>
+            <el-descriptions-item label="核心目标">{{
+              form.goal || "-"
             }}</el-descriptions-item>
             <el-descriptions-item label="语调">{{
               form.tone
@@ -358,6 +426,20 @@
               >未选择</span
             >
           </div>
+          <div class="preview-tags">
+            <span class="preview-label">默认工作流：</span>
+            <el-tag
+              v-for="step in normalizedWorkflow"
+              :key="step"
+              size="small"
+              class="preview-tag"
+            >
+              {{ step }}
+            </el-tag>
+            <span v-if="!normalizedWorkflow.length" class="preview-empty"
+              >未设置</span
+            >
+          </div>
         </el-card>
       </template>
 
@@ -384,6 +466,8 @@ import { ref, reactive, onMounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
+import { getOwnershipDeniedMessage } from "@/utils/ownership.js";
+import { canCreateEmployee, canUpdateEmployee } from "@/utils/employee-permissions.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -412,6 +496,7 @@ const initialRuleIds = ref([]);
 const form = reactive({
   name: "",
   description: "",
+  goal: "",
   skills: [],
   memory_scope: "project",
   memory_retention_days: 90,
@@ -419,6 +504,8 @@ const form = reactive({
   verbosity: "concise",
   language: "zh-CN",
   style_hints: [],
+  default_workflow: [],
+  tool_usage_policy: "",
   auto_evolve: true,
   evolve_threshold: 0.8,
   feedback_upgrade_enabled: false,
@@ -434,6 +521,14 @@ const styleHintPresets = [
   "标注风险与前置条件",
   "给出可执行命令示例",
   "默认使用简洁中文",
+];
+
+const workflowPresets = [
+  "先确认目标与约束",
+  "先检索上下文再判断",
+  "先给结论再展开步骤",
+  "先标风险再给建议",
+  "结尾补充下一步行动",
 ];
 
 const selectedSkillLabels = computed(() => {
@@ -470,6 +565,20 @@ function normalizeStyleHints(hints) {
   }
   return result;
 }
+
+function normalizeWorkflow(steps) {
+  const seen = new Set();
+  const result = [];
+  for (const item of steps || []) {
+    const value = String(item || "").trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+const normalizedWorkflow = computed(() => normalizeWorkflow(form.default_workflow));
 
 function extractRuleIdsFromBindings(ruleBindings) {
   if (!Array.isArray(ruleBindings)) return [];
@@ -621,13 +730,32 @@ function addStyleHintPreset(preset) {
   form.style_hints.push(preset);
 }
 
+function addWorkflowRow() {
+  form.default_workflow.push("");
+}
+
+function removeWorkflowStep(index) {
+  form.default_workflow.splice(index, 1);
+}
+
+function addWorkflowPreset(preset) {
+  if (form.default_workflow.includes(preset)) return;
+  form.default_workflow.push(preset);
+}
+
 async function fetchDetail() {
   const employeeId = String(route.params.id || "");
-  if (!employeeId) return;
+  if (!employeeId) return true;
   const { employee } = await api.get(`/employees/${employeeId}`);
+  if (!canUpdateEmployee(employee)) {
+    ElMessage.warning(getOwnershipDeniedMessage(employee, "编辑"));
+    await router.replace(`/employees/${employeeId}`);
+    return false;
+  }
   Object.assign(form, {
     name: employee.name || "",
     description: employee.description || "",
+    goal: employee.goal || "",
     skills: employee.skills || [],
     memory_scope: employee.memory_scope || "project",
     memory_retention_days: employee.memory_retention_days ?? 90,
@@ -635,11 +763,14 @@ async function fetchDetail() {
     verbosity: employee.verbosity || "concise",
     language: employee.language || "zh-CN",
     style_hints: employee.style_hints || [],
+    default_workflow: employee.default_workflow || [],
+    tool_usage_policy: employee.tool_usage_policy || "",
     auto_evolve: employee.auto_evolve ?? true,
     evolve_threshold: employee.evolve_threshold ?? 0.8,
     feedback_upgrade_enabled: employee.feedback_upgrade_enabled ?? false,
   });
   initialRuleIds.value = extractRuleIdsFromBindings(employee.rule_bindings);
+  return true;
 }
 
 async function fetchSelectionOptions() {
@@ -700,6 +831,7 @@ async function handleSubmit() {
         };
       }),
       style_hints: normalizeStyleHints(form.style_hints),
+      default_workflow: normalizeWorkflow(form.default_workflow),
     };
     if (isEdit.value) {
       const employeeId = String(route.params.id || "");
@@ -721,8 +853,14 @@ async function handleSubmit() {
 onMounted(async () => {
   pageLoading.value = true;
   try {
+    if (!isEdit.value && !canCreateEmployee()) {
+      ElMessage.warning("当前角色没有创建员工权限");
+      await router.replace("/employees");
+      return;
+    }
     if (isEdit.value) {
-      await fetchDetail();
+      const ok = await fetchDetail();
+      if (!ok) return;
     }
     await fetchSelectionOptions();
   } catch {

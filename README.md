@@ -48,39 +48,13 @@ python init_admin.py
 python server.py
 ```
 
-如需走外部 Agent Runner，可在 `web-admin/api/.env` 里追加：
-
-```env
-EXTERNAL_AGENT_RUNNER_URL=http://127.0.0.1:3931
-```
+当前版本外部 Agent 已统一切到“本地连接器”模式，不再推荐配置 `EXTERNAL_AGENT_RUNNER_URL`，也不再建议通过旧 Runner 启动脚本托管外部 Agent。
 
 说明：
 
-- 这不是外部 Agent 的必填配置。大多数本机开发场景下，如果 `codex` / `claude` / `gemini` 这类 CLI 已经安装好且命令能直接在当前机器执行，就不需要配置它。
-- 不配置时，`web-admin/api` 会直接在当前运行环境里拉起外部 Agent CLI，这属于“本地执行”模式。
-- 配置后，`web-admin/api` 不再自己直接执行 CLI，而是把执行请求转发给一个单独的 Runner 服务，这属于“Runner 托管”模式。
-
-什么情况下才需要配：
-
-- `web-admin/api` 跑在 Docker 容器里，但外部 Agent CLI 装在宿主机（你的真实电脑系统）上，没有装进容器里。
-- 你希望把外部 Agent 的执行能力单独托管出去，便于多人共用同一台执行机器。
-- 你需要更稳定的宿主机级能力，例如工作区探测、流式执行、PTY 终端镜像等。
-
-“宿主机 / 容器分离”是什么意思：
-
-- 宿主机：你的真实电脑系统，例如 macOS。
-- 容器：Docker 里的隔离运行环境。
-- 如果 API 在容器里，而 `codex` 命令只装在宿主机里，那么容器里的 API 通常看不到这个命令；这时就需要通过 `EXTERNAL_AGENT_RUNNER_URL` 把执行请求转发到宿主机上的 Runner。
-
-可以这样理解：
-
-- 不配 `EXTERNAL_AGENT_RUNNER_URL`：API 自己执行外部 Agent CLI。
-- 配了 `EXTERNAL_AGENT_RUNNER_URL`：API 把执行请求交给 Runner 服务。
-
-建议：
-
-- 个人本机直接开发：通常不需要配置。
-- Docker 跑 API、CLI 不在同一环境、或准备做多人共享：再配置。
+- 普通系统对话仍然直接走平台模型。
+- 外部 Agent 一律通过用户自己的本地连接器执行。
+- 如果需要代码工作区、本地命令或本地大模型，请先安装并配对 Local Connector。
 
 ### 2. Docker 启动整套服务
 
@@ -139,6 +113,7 @@ ai设计规范/
 ├── docs/
 ├── rules/
 ├── agents/
+├── local-connector/
 ├── mcp-skills/
 ├── mcp-rules/
 ├── mcp-memory/
@@ -155,6 +130,7 @@ ai设计规范/
 
 - [项目总览](docs/00-项目总览/PROJECT.md)
 - [Docker 使用说明](docker/README.md)
+- [本地连接器说明](local-connector/README.md)
 - [编码规范](rules/)
 
 ## License

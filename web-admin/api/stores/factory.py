@@ -141,6 +141,21 @@ def _create_external_mcp_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_local_connector_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import LocalConnectorStore
+
+        return LocalConnectorStore(DATA_DIR)
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.local_connector_store import LocalConnectorStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return LocalConnectorStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_usage_store() -> Any:
     settings = get_settings()
     if settings.usage_store_backend == "sqlite":
@@ -164,6 +179,7 @@ project_chat_store = _StoreProxy(_create_project_chat_store)
 system_config_store = _StoreProxy(_create_system_config_store)
 usage_store = _StoreProxy(_create_usage_store)
 external_mcp_store = _StoreProxy(_create_external_mcp_store)
+local_connector_store = _StoreProxy(_create_local_connector_store)
 
 
 __all__ = [
@@ -175,4 +191,5 @@ __all__ = [
     "system_config_store",
     "usage_store",
     "external_mcp_store",
+    "local_connector_store",
 ]

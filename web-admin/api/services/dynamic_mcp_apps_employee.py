@@ -39,6 +39,18 @@ def _new_mcp(service_name: str) -> FastMCP:
     return FastMCP(service_name, host=_FASTMCP_HOST, stateless_http=True)
 
 
+def _tool_token(value: str) -> str:
+    text = "".join(
+        ch if ch.isalnum() else "_" for ch in str(value or "").strip().lower()
+    )
+    text = "_".join(part for part in text.split("_") if part)
+    if not text:
+        return "tool"
+    if text[0].isdigit():
+        return f"t_{text}"
+    return text
+
+
 def create_employee_mcp(
     employee_id: str,
     *,
@@ -86,13 +98,17 @@ def create_employee_mcp(
         if not employee:
             return "Employee deleted or unavailable."
         style = " / ".join(employee.style_hints or []) or "none"
+        workflow = " / ".join(employee.default_workflow or []) or "none"
         return (
             f"[{employee.id}] {employee.name}\n"
             f"description: {employee.description or '-'}\n"
+            f"goal={employee.goal or '-'}\n"
             f"tone={employee.tone} verbosity={employee.verbosity} language={employee.language}\n"
             f"memory_scope={employee.memory_scope} retention_days={employee.memory_retention_days}\n"
             f"auto_evolve={employee.auto_evolve} evolve_threshold={employee.evolve_threshold}\n"
-            f"style_hints: {style}"
+            f"style_hints: {style}\n"
+            f"default_workflow: {workflow}\n"
+            f"tool_usage_policy: {employee.tool_usage_policy or '-'}"
         )
 
     @mcp.resource(f"employee://{employee_id}/skills")
@@ -214,10 +230,13 @@ def create_employee_mcp(
         return {
             "employee_id": employee.id,
             "name": employee.name,
+            "goal": employee.goal,
             "tone": employee.tone,
             "verbosity": employee.verbosity,
             "language": employee.language,
             "style_hints": list(employee.style_hints or []),
+            "default_workflow": list(employee.default_workflow or []),
+            "tool_usage_policy": employee.tool_usage_policy,
             "skills": list(employee.skills or []),
             "proxy_tools": sorted(proxy_specs_by_name.keys()),
             "rule_bindings": rule_bindings,
@@ -499,5 +518,3 @@ def create_employee_mcp(
         _apply_mcp_arguments_compat(mcp.sse_app()),
         mcp.streamable_http_app(),
     )
-
-

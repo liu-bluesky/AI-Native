@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from core.deps import require_auth, role_store, usage_store
 from models.requests import CreateApiKeyReq
-from core.role_permissions import has_permission
+from core.role_permissions import has_permission, resolve_role_permissions
 
 router = APIRouter(prefix="/api/usage", dependencies=[Depends(require_auth)])
 
@@ -13,9 +13,20 @@ router = APIRouter(prefix="/api/usage", dependencies=[Depends(require_auth)])
 def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
     role_id = str(auth_payload.get("role") or "").strip().lower()
     role = role_store.get(role_id)
-    role_permissions = getattr(role, "permissions", [])
-    if not has_permission(role_permissions, permission_key):
+    role_permissions = getattr(role, "permissions", None)
+    if not has_permission(role_permissions, permission_key, role_id=role_id):
         raise HTTPException(403, f"Permission denied: {permission_key}")
+
+
+def _current_username(auth_payload: dict) -> str:
+    return str(auth_payload.get("sub") or "").strip()
+
+
+def _is_admin_like(auth_payload: dict) -> bool:
+    role_id = str(auth_payload.get("role") or "").strip().lower()
+    role = role_store.get(role_id)
+    role_permissions = getattr(role, "permissions", None)
+    return "*" in set(resolve_role_permissions(role_permissions, role_id=role_id))
 
 
 @router.post("/keys")
@@ -31,13 +42,16 @@ async def create_key(req: CreateApiKeyReq, auth_payload: dict = Depends(require_
 @router.get("/keys")
 async def list_keys(auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.usage.keys")
-    return {"keys": usage_store.list_keys()}
+    if _is_admin_like(auth_payload):
+        return {"keys": usage_store.list_keys()}
+    return {"keys": usage_store.list_keys(created_by=_current_username(auth_payload))}
 
 
 @router.delete("/keys/{key}")
 async def deactivate_key(key: str, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "button.apikey.deactivate")
-    if not usage_store.deactivate_key(key):
+    owner = None if _is_admin_like(auth_payload) else _current_username(auth_payload)
+    if not usage_store.deactivate_key(key, created_by=owner):
         raise HTTPException(404, "Key not found")
     return {"ok": True}
 

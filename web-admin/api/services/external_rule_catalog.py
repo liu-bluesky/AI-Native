@@ -1,0 +1,81 @@
+"""Static external rule catalogs used for employee rule suggestion."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+EXTERNAL_RULE_CATALOG: list[dict[str, Any]] = [
+    {
+        "id": "prompts-chat-frontend-root-cause",
+        "title": "前端问题先定位根因再改代码",
+        "domain": "前端排查",
+        "content": "处理前端问题时，先复现、定位根因、确认影响范围，再给出最小改动方案。禁止在未确认原因前盲改样式、状态流或接口调用。",
+        "summary": "强调先定位根因，再动手修改。",
+        "source_id": "prompts_chat_curated",
+        "source_label": "prompts.chat / curated",
+        "source_url": "https://prompts.chat/api/mcp",
+        "industries": ["frontend", "web", "browser", "engineering"],
+        "keywords": ["debug", "troubleshoot", "root-cause", "frontend", "browser", "排查", "根因", "调试", "前端"],
+    },
+    {
+        "id": "prompts-chat-no-fabrication",
+        "title": "禁止臆造接口与运行结果",
+        "domain": "工程约束",
+        "content": "涉及接口、配置、日志、浏览器行为、构建结果时，必须基于现有代码或可验证结果回答；不确定就明确说明，不得编造字段、响应或执行结果。",
+        "summary": "防止编造接口字段和执行结果。",
+        "source_id": "prompts_chat_curated",
+        "source_label": "prompts.chat / curated",
+        "source_url": "https://prompts.chat/api/mcp",
+        "industries": ["engineering", "frontend", "web", "architecture"],
+        "keywords": ["api", "interface", "verify", "result", "工程", "接口", "验证", "不要编造"],
+    },
+    {
+        "id": "prompts-chat-conclusion-first",
+        "title": "先给结论，再给依据和步骤",
+        "domain": "输出规范",
+        "content": "输出方案时先给明确结论，再补充依据、风险和执行步骤。避免长篇铺垫后才给答案，避免把用户埋在过程细节里。",
+        "summary": "要求结论优先、结构清晰。",
+        "source_id": "prompts_chat_curated",
+        "source_label": "prompts.chat / curated",
+        "source_url": "https://prompts.chat/api/mcp",
+        "industries": ["frontend", "web", "engineering", "architecture", "ui"],
+        "keywords": ["conclusion", "summary", "output", "结构化", "结论", "步骤", "输出"],
+    },
+    {
+        "id": "prompts-chat-ui-consistency",
+        "title": "界面改动必须兼顾一致性与响应式",
+        "domain": "UI 规范",
+        "content": "涉及界面调整时，必须同时考虑桌面端与移动端表现、间距体系、排版层级和交互一致性。不能只修局部截图而破坏整体样式语言。",
+        "summary": "用于 UI 和样式类员工。",
+        "source_id": "prompts_chat_curated",
+        "source_label": "prompts.chat / curated",
+        "source_url": "https://prompts.chat/api/mcp",
+        "industries": ["frontend", "web", "ui"],
+        "keywords": ["ui", "responsive", "mobile", "desktop", "consistency", "界面", "响应式", "一致性", "样式"],
+    },
+    {
+        "id": "prompts-chat-architecture-tradeoff",
+        "title": "技术选型必须说明取舍",
+        "domain": "架构决策",
+        "content": "给出技术方案或架构选型时，必须说明为什么选、为什么不选、成本、风险和适用边界，不能只给单一偏好结论。",
+        "summary": "适合架构和技术选型类员工。",
+        "source_id": "prompts_chat_curated",
+        "source_label": "prompts.chat / curated",
+        "source_url": "https://prompts.chat/api/mcp",
+        "industries": ["architecture", "engineering", "web"],
+        "keywords": ["architecture", "tradeoff", "design", "selection", "选型", "架构", "取舍", "风险"],
+    },
+    {
+        "id": "prompts-chat-performance-verify",
+        "title": "性能优化必须给验证方式",
+        "domain": "性能优化",
+        "content": "提出性能优化建议时，必须附带度量方式、预期收益和回归验证步骤，不能只给抽象建议而没有验证闭环。",
+        "summary": "适合浏览器性能、前端性能和工程优化。",
+        "source_id": "prompts_chat_curated",
+        "source_label": "prompts.chat / curated",
+        "source_url": "https://prompts.chat/api/mcp",
+        "industries": ["frontend", "web", "browser", "engineering"],
+        "keywords": ["performance", "optimize", "measure", "verify", "性能", "优化", "验证", "回归"],
+    },
+]

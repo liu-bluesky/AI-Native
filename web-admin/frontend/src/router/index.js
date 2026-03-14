@@ -1,5 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { hasPermission, pathPermission } from '@/utils/permissions.js'
+import { getFallbackPath, hasPermission, pathPermission } from '@/utils/permissions.js'
 
 const routes = [
   { path: '/init', component: () => import('../views/auth/InitPage.vue') },
@@ -8,7 +8,7 @@ const routes = [
   {
     path: '/',
     component: () => import('../views/Layout.vue'),
-    redirect: '/employees',
+    redirect: '/ai/chat',
     children: [
       { path: 'ai/chat', component: () => import('../views/projects/ProjectChat.vue') },
       { path: 'users', component: () => import('../views/users/UserList.vue') },
@@ -21,6 +21,8 @@ const routes = [
       { path: 'employees/:id/edit', component: () => import('../views/employees/EmployeeForm.vue') },
       { path: 'employees/:id/usage', component: () => import('../views/employees/EmployeeUsage.vue') },
       { path: 'employees/:id', component: () => import('../views/employees/EmployeeDetail.vue') },
+      { path: 'skill-resources', component: () => import('../views/skills/SkillResourceList.vue') },
+      { path: 'skill-resources/:source/:slug(.*)', component: () => import('../views/skills/SkillResourceDetail.vue') },
       { path: 'skills', component: () => import('../views/skills/SkillList.vue') },
       { path: 'skills/create', component: () => import('../views/skills/SkillCreate.vue') },
       { path: 'skills/:id/edit', component: () => import('../views/skills/SkillEdit.vue') },
@@ -52,25 +54,6 @@ const router = createRouter({
 })
 
 const PUBLIC_PATHS = new Set(['/init', '/login', '/register'])
-const FALLBACK_PATHS = [
-  '/ai/chat',
-  '/employees',
-  '/projects',
-  '/users',
-  '/roles',
-  '/skills',
-  '/rules',
-  '/system/config',
-  '/usage/keys',
-]
-
-function getFallbackPath() {
-  return FALLBACK_PATHS.find((path) => {
-    const permission = pathPermission(path)
-    return !permission || hasPermission(permission)
-  }) || '/login'
-}
-
 router.beforeEach((to) => {
   const token = localStorage.getItem('token')
   const isPublic = PUBLIC_PATHS.has(to.path)

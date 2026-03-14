@@ -9,7 +9,7 @@ from dataclasses import asdict
 from psycopg import connect
 from psycopg.rows import dict_row
 
-from stores.json.project_store import ProjectConfig, ProjectMember
+from stores.json.project_store import ProjectConfig, ProjectMember, ProjectUserMember
 
 
 class ProjectStorePostgres:
@@ -37,6 +37,17 @@ class ProjectStorePostgres:
 
                 CREATE INDEX IF NOT EXISTS idx_project_members_project
                 ON project_members (project_id, joined_at DESC);
+
+                CREATE TABLE IF NOT EXISTS project_user_members (
+                    project_id TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    payload JSONB NOT NULL,
+                    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (project_id, username)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_project_user_members_project
+                ON project_user_members (project_id, joined_at DESC);
                 """
             )
 
@@ -71,6 +82,7 @@ class ProjectStorePostgres:
         with self._conn.transaction():
             with self._conn.cursor() as cur:
                 cur.execute("DELETE FROM project_members WHERE project_id = %s", (project_id,))
+                cur.execute("DELETE FROM project_user_members WHERE project_id = %s", (project_id,))
                 cur.execute("DELETE FROM projects WHERE id = %s", (project_id,))
                 return cur.rowcount > 0
 
@@ -117,3 +129,62 @@ class ProjectStorePostgres:
                 (project_id, employee_id),
             )
             return cur.rowcount > 0
+
+    def remove_employee_from_all_projects(self, employee_id: str) -> list[str]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM project_members WHERE employee_id = %s RETURNING project_id",
+                (employee_id,),
+            )
+            rows = cur.fetchall()
+        return [str(row["project_id"]) for row in rows if str(row.get("project_id") or "").strip()]
+
+    def list_user_members(self, project_id: str) -> list[ProjectUserMember]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT payload FROM project_user_members WHERE project_id = %s ORDER BY joined_at DESC",
+                (project_id,),
+            )
+            rows = cur.fetchall()
+        return [ProjectUserMember(**row["payload"]) for row in rows]
+
+    def get_user_member(self, project_id: str, username: str) -> ProjectUserMember | None:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT payload FROM project_user_members WHERE project_id = %s AND username = %s",
+                (project_id, username),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return ProjectUserMember(**row["payload"])
+
+    def upsert_user_member(self, member: ProjectUserMember) -> None:
+        payload = json.dumps(asdict(member), ensure_ascii=False)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO project_user_members (project_id, username, payload, joined_at)
+                VALUES (%s, %s, %s::jsonb, %s)
+                ON CONFLICT (project_id, username) DO UPDATE
+                SET payload = EXCLUDED.payload, joined_at = EXCLUDED.joined_at
+                """,
+                (member.project_id, member.username, payload, member.joined_at),
+            )
+
+    def remove_user_member(self, project_id: str, username: str) -> bool:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM project_user_members WHERE project_id = %s AND username = %s",
+                (project_id, username),
+            )
+            return cur.rowcount > 0
+
+    def remove_user_from_all_projects(self, username: str) -> list[str]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM project_user_members WHERE username = %s RETURNING project_id",
+                (username,),
+            )
+            rows = cur.fetchall()
+        return [str(row["project_id"]) for row in rows if str(row.get("project_id") or "").strip()]

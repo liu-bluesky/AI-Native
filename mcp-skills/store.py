@@ -43,6 +43,7 @@ class Skill:
     name: str
     description: str
     mcp_service: str
+    created_by: str = ""
     package_dir: str = ""
     tools: tuple[ToolDef, ...] = ()
     resources: tuple[ResourceDef, ...] = ()
@@ -77,6 +78,7 @@ def _deserialize_skill(data: dict) -> Skill:
         id=data["id"], version=data["version"],
         name=data["name"], description=data["description"],
         mcp_service=data.get("mcp_service", ""),
+        created_by=data.get("created_by", ""),
         package_dir=data.get("package_dir", data.get("source_dir", "")),
         tools=tuple(ToolDef(**t) for t in data.get("tools", [])),
         resources=tuple(ResourceDef(**r) for r in data.get("resources", [])),
