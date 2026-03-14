@@ -1,382 +1,847 @@
 <template>
   <div class="chat-layout" v-loading="loading">
-    <!-- Sidebar: Settings -->
-    <!-- Main Chat Area -->
     <div class="chat-main">
-      <div class="chat-header">
-        <div class="chat-header-left">
-          <div class="chat-title-block">
-            <h2>AI 对话中心</h2>
-            <div class="chat-title-subtext">
-              {{ chatHeaderSubtext }}
-            </div>
-          </div>
-          <div class="chat-status-pills">
-            <el-tag size="small" effect="plain">{{ chatModeLabel }}</el-tag>
-            <el-tag :type="chatHeaderStatusType" size="small" effect="light">
-              {{ chatHeaderStatusText }}
-            </el-tag>
-          </div>
-        </div>
-        <div class="chat-header-right">
-          <el-button
-            @click="showSettingsDialog = true"
-            :icon="Setting"
-            circle
-          />
-          <el-button
-            plain
-            @click="clearMessages"
-            :disabled="chatLoading || !messages.length"
-            :icon="Delete"
-            circle
-            title="清空会话"
-          />
-        </div>
-      </div>
-
-      <div
-        v-if="isExternalAgentMode && !workspacePathConfigured"
-        class="workspace-guide-banner workspace-guide-banner--warning"
-      >
-        <div class="workspace-guide-content">
-          <div class="workspace-guide-title">当前项目未配置工作区路径</div>
-          <div class="workspace-guide-text">
-            外部 Agent 只有拿到项目绝对路径后，才能像命令行一样在该目录创建文件、修改代码和执行命令。
-          </div>
-        </div>
-        <div class="workspace-guide-actions">
-          <el-button @click="promptProjectWorkspacePath">填写路径</el-button>
-          <el-button type="primary" @click="showSettingsDialog = true">打开设置</el-button>
-        </div>
-      </div>
-
-      <div
-        v-else-if="isExternalAgentMode && workspacePathDirty"
-        class="workspace-guide-banner workspace-guide-banner--info"
-      >
-        <div class="workspace-guide-content">
-          <div class="workspace-guide-title">工作区路径有未保存修改</div>
-          <div class="workspace-guide-text">
-            当前输入框里的路径还没保存，外部 Agent 仍然会使用旧的工作目录。
-          </div>
-        </div>
-        <div class="workspace-guide-actions">
-          <el-button @click="promptProjectWorkspacePath">继续填写</el-button>
-          <el-button type="primary" :loading="workspacePathSaving" @click="saveProjectWorkspacePath">保存路径</el-button>
-        </div>
-      </div>
-
-      <div class="chat-messages" ref="messagesContainer">
-        <div class="message-list-inner">
-          <div v-if="!messages.length" class="chat-empty-state">
-            <div class="chat-empty-badge">{{ chatModeLabel }}</div>
-            <div class="chat-empty-title">开始一轮新的对话</div>
-            <div class="chat-empty-text">
-              {{ emptyStateText }}
-            </div>
-            <div class="chat-empty-actions">
-              <button
-                v-for="prompt in starterPrompts"
-                :key="prompt"
-                type="button"
-                class="chat-empty-action"
-                @click="applyStarterPrompt(prompt)"
-              >
-                {{ prompt }}
-              </button>
-            </div>
-          </div>
-          <template v-else>
-          <div
-            v-for="(item, idx) in messages"
-            :key="idx"
-            :class="['message-row', item.role === 'user' ? 'is-user' : 'is-ai']"
-          >
-            <div class="message-avatar">
-              <el-avatar
-                :size="36"
-                :class="item.role === 'user' ? 'avatar-user' : 'avatar-ai'"
-              >
-                {{ avatarLabel(item) }}
-              </el-avatar>
-            </div>
-            <div class="message-content-wrapper">
-              <div class="message-meta">
-                <span class="role-name">{{ messageRoleName(item) }}</span>
-                <span
-                  v-if="item.time || item.created_at"
-                  class="message-time"
-                  >{{ item.time || item.created_at }}</span
-                >
+      <div class="chat-shell">
+        <aside class="chat-conversation-sidebar">
+          <div class="chat-sidebar-brand-panel">
+            <div class="chat-sidebar-brand">
+              <div class="chat-sidebar-brand__mark">AI</div>
+              <div>
+                <div class="chat-sidebar-brand__name">AI 对话</div>
+                <div class="chat-sidebar-brand__meta">项目会话</div>
               </div>
-              <div class="message-bubble">
-                <template v-if="item.displayMode === 'terminal'">
-                  <div
-                    v-if="terminalLogLines(item).length"
-                    class="message-process"
+            </div>
+            <el-button
+              class="chat-page-settings-button"
+              @click="openSettingsCenter('chat')"
+              :icon="Setting"
+              circle
+            />
+          </div>
+
+          <div class="chat-sidebar-project-card">
+            <div class="chat-sidebar-card__label">项目</div>
+            <el-dropdown
+              class="chat-project-dropdown"
+              trigger="click"
+              placement="bottom-start"
+              @command="handleProjectCommand"
+            >
+              <button
+                type="button"
+                class="chat-project-switcher"
+                :class="{ 'is-empty': !selectedProjectId }"
+                ref="projectSwitcherRef"
+              >
+                <span class="chat-project-switcher__name">
+                  {{ currentProjectLabel }}
+                </span>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu
+                  class="chat-project-switcher-menu"
+                  :style="projectSwitcherMenuStyle"
+                >
+                  <el-dropdown-item v-if="!projects.length" disabled>
+                    <div class="chat-project-option chat-project-option--empty">
+                      <span class="chat-project-option__name">暂无项目</span>
+                    </div>
+                  </el-dropdown-item>
+                  <el-dropdown-item
+                    v-for="item in projects"
+                    :key="item.id"
+                    :command="item.id"
                   >
+                    <div class="chat-project-option">
+                      <span class="chat-project-option__name">{{
+                        item.name
+                      }}</span>
+                    </div>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
+
+          <div class="chat-conversation-sidebar__actions">
+            <el-button
+              class="chat-new-conversation-button"
+              @click="handleCreateNewConversation"
+              :loading="creatingChatSession"
+              :icon="DocumentCopy"
+            >
+              新对话
+            </el-button>
+            <el-button
+              text
+              class="chat-clear-current-button"
+              @click="clearMessages"
+              :disabled="chatLoading || !currentChatSessionId"
+            >
+              清空对话
+            </el-button>
+          </div>
+
+          <div class="chat-session-panel">
+            <div class="chat-session-panel__head">
+              <div class="chat-session-panel__title">最近对话</div>
+            </div>
+
+            <div class="chat-session-strip">
+              <div
+                v-if="groupedChatSessions.length"
+                class="chat-session-groups"
+              >
+                <div
+                  v-for="group in groupedChatSessions"
+                  :key="group.label"
+                  class="chat-session-group"
+                >
+                  <div class="chat-session-group__title">{{ group.label }}</div>
+                  <div class="chat-session-list">
                     <button
+                      v-for="session in group.items"
+                      :key="session.id"
                       type="button"
-                      class="message-process-toggle"
-                      @click="item.processExpanded = !item.processExpanded"
+                      class="chat-session-chip"
+                      :class="{
+                        'is-active': currentChatSessionId === session.id,
+                      }"
+                      @click="selectChatSession(session.id)"
                     >
-                      <span>
-                        思考过程
-                        <span class="message-process-count">
-                          {{ terminalLogLines(item).length }} 条
+                      <div class="chat-session-chip__row">
+                        <span class="chat-session-chip__title">
+                          {{ session.title }}
                         </span>
-                      </span>
-                      <span class="message-process-meta">
-                        {{ item.processExpanded ? '收起' : '展开' }}
+                        <el-button
+                          text
+                          size="small"
+                          class="chat-session-chip__delete"
+                          :icon="Delete"
+                          :loading="deletingChatSessionId === session.id"
+                          @click.stop="deleteChatSession(session)"
+                        />
+                      </div>
+                      <span class="chat-session-chip__meta">
+                        {{ formatChatSessionMeta(session) }}
                       </span>
                     </button>
-                    <pre
-                      v-show="item.processExpanded"
-                      class="message-text message-text-terminal message-process-pre"
-                    >{{ formatTerminalLogs(item) }}</pre>
-                  </div>
-                  <div
-                    class="message-text"
-                    v-html="
-                      formatContent(item.content) ||
-                      (chatLoading && idx === messages.length - 1
-                        ? '思考中...'
-                        : '')
-                    "
-                  ></div>
-                </template>
-                <div
-                  v-else
-                  class="message-text"
-                  v-html="
-                    formatContent(item.content) ||
-                    (chatLoading && idx === messages.length - 1
-                      ? '思考中...'
-                      : '')
-                  "
-                ></div>
-                <!-- Images -->
-                <div v-if="extractImages(item).length" class="message-images">
-                  <el-image
-                    v-for="(img, imageIndex) in extractImages(item)"
-                    :key="imageIndex"
-                    :src="img"
-                    class="preview-image"
-                    fit="cover"
-                    :preview-src-list="extractImages(item)"
-                    :initial-index="imageIndex"
-                    preview-teleported
-                  />
-                </div>
-                <div
-                  v-if="extractAttachments(item).length"
-                  class="message-attachments"
-                >
-                  <div
-                    v-for="(attachment, attachmentIndex) in extractAttachments(
-                      item,
-                    )"
-                    :key="`att-${idx}-${attachmentIndex}`"
-                    class="attachment-item"
-                  >
-                    <el-tag
-                      size="small"
-                      :type="attachmentTagType(attachment.kind)"
-                      effect="plain"
-                    >
-                      {{ attachmentTypeLabel(attachment) }}
-                    </el-tag>
-                    <span class="attachment-name">{{ attachment.name }}</span>
-                  </div>
-                </div>
-                <div v-if="item.audit" class="message-audit">
-                  <div class="message-audit-title">执行审计</div>
-                  <div
-                    v-if="item.audit.risk_signals?.length"
-                    class="message-audit-section"
-                  >
-                    <div class="message-audit-label">高风险提示</div>
-                    <div class="message-audit-tags">
-                      <el-tag
-                        v-for="risk in item.audit.risk_signals"
-                        :key="`risk-${risk.id}-${risk.snippet}`"
-                        size="small"
-                        type="danger"
-                        effect="plain"
-                      >
-                        {{ risk.label }}
-                      </el-tag>
-                    </div>
-                  </div>
-                  <div class="message-audit-section">
-                    <div class="message-audit-label">工作区变更</div>
-                    <template v-if="item.audit.after_diff_summary?.enabled">
-                      <div class="message-audit-text">
-                        改动文件数：{{ item.audit.after_diff_summary.changed_file_count }}
-                      </div>
-                      <pre
-                        v-if="item.audit.after_diff_summary.diff_stat"
-                        class="message-audit-pre"
-                      >{{ item.audit.after_diff_summary.diff_stat }}</pre>
-                      <pre
-                        v-else-if="item.audit.after_diff_summary.status_lines?.length"
-                        class="message-audit-pre"
-                      >{{ item.audit.after_diff_summary.status_lines.join('\n') }}</pre>
-                      <div v-else class="message-audit-text">暂无 Git 变更</div>
-                    </template>
-                    <div v-else class="message-audit-text">
-                      {{ item.audit.after_diff_summary?.reason || '当前工作区不是 Git 仓库' }}
-                    </div>
-                  </div>
-                  <div
-                    v-if="item.audit.file_review_status && item.audit.file_review_status !== 'not_required'"
-                    class="message-audit-section"
-                  >
-                    <div class="message-audit-label">变更审查</div>
-                    <div class="message-audit-tags">
-                      <el-tag
-                        size="small"
-                        :type="getFileReviewStatusMeta(item.audit.file_review_status).type"
-                        effect="plain"
-                      >
-                        {{ getFileReviewStatusMeta(item.audit.file_review_status).label }}
-                      </el-tag>
-                    </div>
-                    <div class="message-audit-text">
-                      {{ getFileReviewStatusMeta(item.audit.file_review_status).text }}
-                    </div>
                   </div>
                 </div>
               </div>
-              <div v-if="item.role !== 'user'" class="message-actions">
-                <el-button
-                  text
-                  size="small"
-                  class="message-action-button"
-                  @click="copyMessageMarkdown(item)"
-                >
-                  复制 Markdown
-                </el-button>
-                <el-button
-                  v-if="terminalLogLines(item).length"
-                  text
-                  size="small"
-                  class="message-action-button"
-                  @click="copyMessageMarkdown(item, { includeProcess: true })"
-                >
-                  复制含过程
-                </el-button>
-              </div>
-            </div>
-          </div>
-          </template>
-        </div>
-      </div>
-
-      <!-- Composer Area -->
-      <div class="chat-composer">
-        <div
-          class="chat-input-wrapper"
-          :class="{ 'is-focused': inputFocused, 'is-dragover': isDragging }"
-          @dragover.prevent="handleDragOver"
-          @dragleave.prevent="handleDragLeave"
-          @drop.prevent="handleDrop"
-        >
-          <div v-if="uploadFiles.length > 0" class="upload-preview-area">
-            <div
-              v-for="(file, idx) in uploadFiles"
-              :key="idx"
-              class="preview-item"
-            >
-              <img v-if="file.url" :src="file.url" class="preview-img" />
-              <div v-else class="preview-doc">
-                <el-icon :size="24"><Document /></el-icon>
-                <span class="doc-name">{{ file.name }}</span>
-                <span class="doc-type">{{ formatFileType(file.name) }}</span>
-              </div>
-              <div class="remove-mask" @click="removeFile(idx)">
-                <el-icon><Delete /></el-icon>
-              </div>
+              <div v-else class="chat-session-empty">暂无历史会话</div>
             </div>
           </div>
 
-          <el-input
-            v-model="draftText"
-            type="textarea"
-            :autosize="{ minRows: 2, maxRows: 8 }"
-            :placeholder="composerPlaceholder"
-            resize="none"
-            :disabled="chatLoading"
-            @focus="inputFocused = true"
-            @blur="handleEditorBlur"
-            @keydown="handleEditorKeydown"
-            @paste="handleEditorPaste"
-            @compositionstart="handleEditorCompositionStart"
-            @compositionend="handleEditorCompositionEnd"
-            class="chat-textarea"
-          />
-
-          <div class="input-footer">
-            <div class="footer-left">
-              <el-upload
-                action="#"
-                :auto-upload="false"
-                :show-file-list="false"
-                accept="image/*"
-                :multiple="true"
-                :on-change="handleFileChange"
-                :disabled="chatLoading || isExternalAgentMode"
-              >
-                <el-tooltip content="添加图片" placement="top">
-                  <el-button text circle
-                    ><el-icon><Picture /></el-icon
-                  ></el-button>
-                </el-tooltip>
-              </el-upload>
-              <el-upload
-                action="#"
-                :auto-upload="false"
-                :show-file-list="false"
-                accept=".wps,.doc,.docx,.pdf,.txt,.csv,.xlsx,.xls"
-                :multiple="true"
-                :on-change="handleFileChange"
-                :disabled="chatLoading || isExternalAgentMode"
-              >
-                <el-tooltip content="添加文档" placement="top">
-                  <el-button text circle
-                    ><el-icon><Document /></el-icon
-                  ></el-button>
-                </el-tooltip>
-              </el-upload>
-            </div>
-            <div class="footer-right">
-              <span class="hint-text">{{ composerHintText }}</span>
-              <el-tooltip
-                v-if="chatLoading"
-                content="暂停当前回答"
-                placement="top"
-              >
-                <el-button
-                  class="pause-generation-button"
-                  type="danger"
-                  plain
-                  @click="stopGeneration"
-                >
-                  <el-icon><VideoPause /></el-icon>
-                  <span>暂停</span>
-                </el-button>
-              </el-tooltip>
+          <div class="chat-sidebar-footer">
+            <div class="chat-sidebar-user">
+              <div class="chat-sidebar-user__avatar">
+                {{ currentUsernameInitial }}
+              </div>
+              <div class="chat-sidebar-user__meta">
+                <div class="chat-sidebar-user__name">{{ currentUsername }}</div>
+                <div class="chat-sidebar-user__role">当前账号</div>
+              </div>
               <el-button
-                v-else
-                class="send-message-button"
-                type="primary"
-                :disabled="!canSend"
-                @click="doSend"
-                circle
+                text
+                class="chat-sidebar-user__logout"
+                @click="logoutFromChat"
+                >退出</el-button
               >
-                <el-icon><Promotion /></el-icon>
+            </div>
+          </div>
+        </aside>
+
+        <div class="chat-stage">
+          <div class="chat-context-bar">
+          <div class="chat-context-bar__meta">
+              <span>{{
+                hasSelectedProject ? currentProjectLabel : "通用对话"
+              }}</span>
+              <span>{{ chatModeLabel }}</span>
+              <span>
+                {{
+                  isExternalAgentMode
+                    ? externalAgentDisplayLabel
+                    : currentModelSummary
+                }}
+              </span>
+              <span>{{ chatHeaderStatusText }}</span>
+            </div>
+            <div class="chat-context-bar__actions">
+              <el-button
+                size="small"
+                plain
+                class="chat-context-bar__action-button"
+                @click="openSkillResourceCenter"
+              >
+                技能资源
               </el-button>
+            </div>
+          </div>
+          <div
+            v-if="externalAgentConnectorRequired"
+            class="workspace-guide-banner workspace-guide-banner--warning"
+          >
+            <div class="workspace-guide-content">
+              <div class="workspace-guide-title">请先选择本地连接器</div>
+              <div class="workspace-guide-text">
+                外部 Agent
+                已统一改为本地连接器模式。先选择一台在线连接器，再配置该电脑上的工作区路径。
+              </div>
+            </div>
+            <div class="workspace-guide-actions">
+              <el-button type="primary" @click="openSettingsCenter('chat')"
+                >打开设置</el-button
+              >
+            </div>
+          </div>
+
+          <div
+            v-else-if="isExternalAgentMode && !workspacePathConfigured"
+            class="workspace-guide-banner workspace-guide-banner--warning"
+          >
+            <div class="workspace-guide-content">
+              <div class="workspace-guide-title">
+                当前连接器未配置工作区路径
+              </div>
+              <div class="workspace-guide-text">
+                外部 Agent
+                只有拿到项目绝对路径后，才能像命令行一样在该目录创建文件、修改代码和执行命令。
+              </div>
+            </div>
+            <div class="workspace-guide-actions">
+              <el-button @click="promptProjectWorkspacePath"
+                >选择目录</el-button
+              >
+              <el-button type="primary" @click="openSettingsCenter('chat')"
+                >打开设置</el-button
+              >
+            </div>
+          </div>
+
+          <div
+            v-else-if="isExternalAgentMode && workspacePathDirty"
+            class="workspace-guide-banner workspace-guide-banner--info"
+          >
+            <div class="workspace-guide-content">
+              <div class="workspace-guide-title">工作区路径有未保存修改</div>
+              <div class="workspace-guide-text">
+                当前输入框里的路径还没保存，外部 Agent 仍然会使用旧的工作目录。
+              </div>
+            </div>
+            <div class="workspace-guide-actions">
+              <el-button @click="promptProjectWorkspacePath"
+                >继续填写</el-button
+              >
+              <el-button
+                type="primary"
+                :loading="workspacePathSaving"
+                @click="saveProjectWorkspacePath"
+                >保存路径</el-button
+              >
+            </div>
+          </div>
+
+          <div class="chat-messages-shell">
+            <div
+              class="chat-messages"
+              ref="messagesContainer"
+              @click="handleMessageAreaClick"
+            >
+              <div class="message-list-inner">
+                <div v-if="!messages.length" class="chat-empty-state">
+                  <div class="chat-empty-state__hero">
+                    <div class="chat-empty-title">{{ emptyStateTitle }}</div>
+                  </div>
+                  <div v-if="starterPrompts.length" class="chat-empty-actions">
+                    <button
+                      v-for="prompt in starterPrompts"
+                      :key="prompt"
+                      type="button"
+                      class="chat-empty-action"
+                      @click="applyStarterPrompt(prompt)"
+                    >
+                      {{ prompt }}
+                    </button>
+                  </div>
+                </div>
+                <template v-else>
+                  <div
+                    v-for="(item, idx) in messages"
+                    :key="idx"
+                    :class="[
+                      'message-row',
+                      item.role === 'user' ? 'is-user' : 'is-ai',
+                    ]"
+                  >
+                    <div class="message-avatar">
+                      <el-avatar
+                        :size="36"
+                        :class="
+                          item.role === 'user' ? 'avatar-user' : 'avatar-ai'
+                        "
+                      >
+                        {{ avatarLabel(item) }}
+                      </el-avatar>
+                    </div>
+                    <div class="message-content-wrapper">
+                      <div class="message-meta">
+                        <span class="role-name">{{
+                          messageRoleName(item)
+                        }}</span>
+                        <span
+                          v-if="item.time || item.created_at"
+                          class="message-time"
+                          >{{ item.time || item.created_at }}</span
+                        >
+                      </div>
+                      <div
+                        :class="[
+                          'message-bubble',
+                          isInlineEditingMessage(idx)
+                            ? 'message-bubble--editing'
+                            : '',
+                        ]"
+                      >
+                        <template v-if="isInlineEditingMessage(idx)">
+                          <div
+                            class="message-inline-editor"
+                            :data-inline-editor-id="inlineEditingMessageId"
+                          >
+                            <el-input
+                              v-model="inlineEditingDraft"
+                              class="message-inline-editor__input"
+                              type="textarea"
+                              resize="none"
+                              :autosize="{ minRows: 4, maxRows: 10 }"
+                              placeholder="继续润色这条消息…"
+                              @keydown.stop="
+                                handleInlineMessageEditKeydown($event)
+                              "
+                            />
+                            <div class="message-inline-editor__footer">
+                              <div class="message-inline-editor__hint">
+                                <span class="message-inline-editor__hint-label">
+                                  快捷键
+                                </span>
+                                <span class="message-inline-editor__shortcut">
+                                  <kbd>Cmd/Ctrl</kbd>
+                                  <kbd>Enter</kbd>
+                                  <span>重新生成</span>
+                                </span>
+                                <span class="message-inline-editor__shortcut">
+                                  <kbd>Esc</kbd>
+                                  <span>取消</span>
+                                </span>
+                              </div>
+                              <div class="message-inline-editor__actions">
+                                <el-button
+                                  text
+                                  class="message-inline-editor__button message-inline-editor__button--ghost"
+                                  :disabled="inlineEditingBusy"
+                                  @click="cancelInlineMessageEdit"
+                                >
+                                  取消
+                                </el-button>
+                                <el-button
+                                  plain
+                                  class="message-inline-editor__button message-inline-editor__button--soft"
+                                  :disabled="inlineEditingBusy"
+                                  @click="applyInlineMessageEditToComposer"
+                                >
+                                  应用到输入框
+                                </el-button>
+                                <el-button
+                                  type="primary"
+                                  class="message-inline-editor__button message-inline-editor__button--primary"
+                                  :loading="inlineEditingBusy"
+                                  @click="submitInlineMessageEditAndReplay"
+                                >
+                                  保存并重新生成
+                                </el-button>
+                              </div>
+                            </div>
+                          </div>
+                        </template>
+                        <template v-else-if="item.displayMode === 'terminal'">
+                          <div
+                            v-if="terminalLogLines(item).length"
+                            class="message-process"
+                          >
+                            <button
+                              type="button"
+                              class="message-process-toggle"
+                              @click="
+                                item.processExpanded = !item.processExpanded
+                              "
+                            >
+                              <span>
+                                思考过程
+                                <span class="message-process-count">
+                                  {{ terminalLogLines(item).length }} 条
+                                </span>
+                              </span>
+                              <span class="message-process-meta">
+                                {{ item.processExpanded ? "收起" : "展开" }}
+                              </span>
+                            </button>
+                            <pre
+                              v-show="item.processExpanded"
+                              class="message-text message-text-terminal message-process-pre"
+                              >{{ formatTerminalLogs(item) }}</pre
+                            >
+                          </div>
+                          <div
+                            class="message-text"
+                            v-html="
+                              formatContent(item.content) ||
+                              (chatLoading && idx === messages.length - 1
+                                ? '思考中...'
+                                : '')
+                            "
+                          ></div>
+                        </template>
+                        <div
+                          v-else
+                          class="message-text"
+                          v-html="
+                            formatContent(item.content) ||
+                            (chatLoading && idx === messages.length - 1
+                              ? '思考中...'
+                              : '')
+                          "
+                        ></div>
+                        <!-- Images -->
+                        <div
+                          v-if="extractImages(item).length"
+                          class="message-images"
+                        >
+                          <el-image
+                            v-for="(img, imageIndex) in extractImages(item)"
+                            :key="imageIndex"
+                            :src="img"
+                            class="preview-image"
+                            fit="cover"
+                            :preview-src-list="extractImages(item)"
+                            :initial-index="imageIndex"
+                            preview-teleported
+                          />
+                        </div>
+                        <div
+                          v-if="extractAttachments(item).length"
+                          class="message-attachments"
+                        >
+                          <div
+                            v-for="(
+                              attachment, attachmentIndex
+                            ) in extractAttachments(item)"
+                            :key="`att-${idx}-${attachmentIndex}`"
+                            class="attachment-item"
+                          >
+                            <el-tag
+                              size="small"
+                              :type="attachmentTagType(attachment.kind)"
+                              effect="plain"
+                            >
+                              {{ attachmentTypeLabel(attachment) }}
+                            </el-tag>
+                            <span class="attachment-name">{{
+                              attachment.name
+                            }}</span>
+                          </div>
+                        </div>
+                        <div v-if="item.audit" class="message-audit">
+                          <div class="message-audit-title">执行审计</div>
+                          <div
+                            v-if="item.audit.risk_signals?.length"
+                            class="message-audit-section"
+                          >
+                            <div class="message-audit-label">高风险提示</div>
+                            <div class="message-audit-tags">
+                              <el-tag
+                                v-for="risk in item.audit.risk_signals"
+                                :key="`risk-${risk.id}-${risk.snippet}`"
+                                size="small"
+                                type="danger"
+                                effect="plain"
+                              >
+                                {{ risk.label }}
+                              </el-tag>
+                            </div>
+                          </div>
+                          <div class="message-audit-section">
+                            <div class="message-audit-label">工作区变更</div>
+                            <template
+                              v-if="item.audit.after_diff_summary?.enabled"
+                            >
+                              <div class="message-audit-text">
+                                改动文件数：{{
+                                  item.audit.after_diff_summary
+                                    .changed_file_count
+                                }}
+                              </div>
+                              <pre
+                                v-if="item.audit.after_diff_summary.diff_stat"
+                                class="message-audit-pre"
+                                >{{
+                                  item.audit.after_diff_summary.diff_stat
+                                }}</pre
+                              >
+                              <pre
+                                v-else-if="
+                                  item.audit.after_diff_summary.status_lines
+                                    ?.length
+                                "
+                                class="message-audit-pre"
+                                >{{
+                                  item.audit.after_diff_summary.status_lines.join(
+                                    "\n",
+                                  )
+                                }}</pre
+                              >
+                              <div v-else class="message-audit-text">
+                                暂无 Git 变更
+                              </div>
+                            </template>
+                            <div v-else class="message-audit-text">
+                              {{
+                                item.audit.after_diff_summary?.reason ||
+                                "当前工作区不是 Git 仓库"
+                              }}
+                            </div>
+                          </div>
+                          <div
+                            v-if="
+                              item.audit.file_review_status &&
+                              item.audit.file_review_status !== 'not_required'
+                            "
+                            class="message-audit-section"
+                          >
+                            <div class="message-audit-label">变更审查</div>
+                            <div class="message-audit-tags">
+                              <el-tag
+                                size="small"
+                                :type="
+                                  getFileReviewStatusMeta(
+                                    item.audit.file_review_status,
+                                  ).type
+                                "
+                                effect="plain"
+                              >
+                                {{
+                                  getFileReviewStatusMeta(
+                                    item.audit.file_review_status,
+                                  ).label
+                                }}
+                              </el-tag>
+                            </div>
+                            <div class="message-audit-text">
+                              {{
+                                getFileReviewStatusMeta(
+                                  item.audit.file_review_status,
+                                ).text
+                              }}
+                            </div>
+                          </div>
+                        </div>
+                        <div
+                          v-if="
+                            item.role !== 'user' && getEmployeeDraftCard(item)
+                          "
+                          class="message-employee-draft"
+                        >
+                          <div class="message-employee-draft__head">
+                            <div>
+                              <div class="message-employee-draft__eyebrow">
+                                AI 员工草稿
+                              </div>
+                              <div class="message-employee-draft__title">
+                                {{
+                                  getEmployeeDraftCard(item).name ||
+                                  "未命名员工"
+                                }}
+                              </div>
+                            </div>
+                            <div class="message-employee-draft__pills">
+                              <span class="employee-draft-pill">
+                                技能
+                                {{
+                                  getEmployeeDraftCard(item).matched_skill_count
+                                }}
+                              </span>
+                              <span class="employee-draft-pill">
+                                规则
+                                {{
+                                  getEmployeeDraftCard(item).matched_rule_count
+                                }}
+                              </span>
+                            </div>
+                          </div>
+                          <div
+                            v-if="getEmployeeDraftCard(item).description"
+                            class="message-employee-draft__desc"
+                          >
+                            {{ getEmployeeDraftCard(item).description }}
+                          </div>
+                          <div class="message-employee-draft__meta">
+                            <div class="message-employee-draft__meta-item">
+                              <span class="meta-label">核心目标</span>
+                              <span class="meta-value">
+                                {{ getEmployeeDraftCard(item).goal || "-" }}
+                              </span>
+                            </div>
+                            <div class="message-employee-draft__meta-item">
+                              <span class="meta-label">语调 / 风格</span>
+                              <span class="meta-value">
+                                {{ getEmployeeDraftCard(item).tone || "-" }} /
+                                {{
+                                  getEmployeeDraftCard(item).verbosity || "-"
+                                }}
+                              </span>
+                            </div>
+                          </div>
+                          <div
+                            v-if="
+                              getEmployeeDraftCard(item).style_hints?.length
+                            "
+                            class="message-employee-draft__tags"
+                          >
+                            <el-tag
+                              v-for="hint in getEmployeeDraftCard(item)
+                                .style_hints"
+                              :key="`style-${hint}`"
+                              size="small"
+                              effect="plain"
+                            >
+                              {{ hint }}
+                            </el-tag>
+                          </div>
+                          <div
+                            v-if="
+                              getEmployeeDraftCard(item).default_workflow
+                                ?.length
+                            "
+                            class="message-employee-draft__workflow"
+                          >
+                            <div class="meta-label">默认工作流</div>
+                            <ol class="employee-draft-workflow-list">
+                              <li
+                                v-for="step in getEmployeeDraftCard(item)
+                                  .default_workflow"
+                                :key="`workflow-${step}`"
+                              >
+                                {{ step }}
+                              </li>
+                            </ol>
+                          </div>
+                          <div class="message-employee-draft__actions">
+                            <el-button
+                              type="primary"
+                              :loading="
+                                employeeDraftCreatingKey ===
+                                getEmployeeDraftKey(item)
+                              "
+                              :disabled="Boolean(item.employeeDraftCreatedName)"
+                              @click="createEmployeeFromDraft(item)"
+                            >
+                              手动创建员工
+                            </el-button>
+                            <span
+                              v-if="item.employeeDraftCreatedName"
+                              class="message-employee-draft__success"
+                            >
+                              已创建：{{ item.employeeDraftCreatedName }}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div
+                        v-if="
+                          !isInlineEditingMessage(idx) &&
+                          getMessageActions(item, idx).length
+                        "
+                        class="message-actions"
+                      >
+                        <el-tooltip
+                          v-for="action in getMessageActions(item, idx)"
+                          :key="`${idx}-${action.key}`"
+                          :content="action.tooltip"
+                          placement="top"
+                        >
+                          <el-button
+                            text
+                            size="small"
+                            class="message-action-button"
+                            :icon="action.icon"
+                            circle
+                            @click="handleMessageAction(item, idx, action.key)"
+                          />
+                        </el-tooltip>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <!-- Composer Area -->
+          <div class="chat-composer">
+            <div class="chat-composer-panel">
+              <div
+                class="chat-input-wrapper"
+                :class="{
+                  'is-focused': inputFocused,
+                  'is-dragover': isDragging,
+                }"
+                @dragover.prevent="handleDragOver"
+                @dragleave.prevent="handleDragLeave"
+                @drop.prevent="handleDrop"
+              >
+                <div v-if="uploadFiles.length > 0" class="upload-preview-area">
+                  <div
+                    v-for="(file, idx) in uploadFiles"
+                    :key="idx"
+                    class="preview-item"
+                  >
+                    <img v-if="file.url" :src="file.url" class="preview-img" />
+                    <div v-else class="preview-doc">
+                      <el-icon :size="24"><Document /></el-icon>
+                      <span class="doc-name">{{ file.name }}</span>
+                      <span class="doc-type">{{
+                        formatFileType(file.name)
+                      }}</span>
+                    </div>
+                    <div class="remove-mask" @click="removeFile(idx)">
+                      <el-icon><Delete /></el-icon>
+                    </div>
+                  </div>
+                </div>
+
+                <el-input
+                  v-model="draftText"
+                  type="textarea"
+                  :autosize="{ minRows: 2, maxRows: 8 }"
+                  :placeholder="composerPlaceholder"
+                  resize="none"
+                  :disabled="isComposerDisabled"
+                  @focus="inputFocused = true"
+                  @blur="handleEditorBlur"
+                  @keydown="handleEditorKeydown"
+                  @paste="handleEditorPaste"
+                  @compositionstart="handleEditorCompositionStart"
+                  @compositionend="handleEditorCompositionEnd"
+                  class="chat-textarea"
+                />
+
+                <ComposerAssistBar
+                  :actions="composerAssistActions"
+                  :active-action-id="activeComposerAssist"
+                  @toggle="toggleComposerAssist"
+                />
+
+                <div class="input-footer">
+                  <div class="footer-left">
+                    <el-select
+                      v-if="!isExternalAgentMode"
+                      v-model="selectedModelOptionValue"
+                      class="chat-model-select"
+                      size="small"
+                      filterable
+                      placeholder="选择模型"
+                      :disabled="chatLoading || !providerModelGroups.length"
+                    >
+                      <el-option-group
+                        v-for="group in providerModelGroups"
+                        :key="group.providerId"
+                        :label="group.label"
+                      >
+                        <el-option
+                          v-for="option in group.options"
+                          :key="option.value"
+                          :label="option.label"
+                          :value="option.value"
+                        >
+                          <div class="chat-model-option">
+                            <span class="chat-model-option__name">{{
+                              option.modelName
+                            }}</span>
+                            <span class="chat-model-option__provider">
+                              {{ option.providerLabel }}
+                            </span>
+                          </div>
+                        </el-option>
+                      </el-option-group>
+                    </el-select>
+                    <div v-else class="chat-model-pill">
+                      {{ externalAgentDisplayLabel }}
+                    </div>
+                    <el-upload
+                      action="#"
+                      :auto-upload="false"
+                      :show-file-list="false"
+                      accept="image/*"
+                      :multiple="true"
+                      :on-change="handleFileChange"
+                      :disabled="
+                        chatLoading || isExternalAgentMode || !selectedProjectId
+                      "
+                    >
+                      <el-tooltip content="添加图片" placement="top">
+                        <el-button text circle
+                          ><el-icon><Picture /></el-icon
+                        ></el-button>
+                      </el-tooltip>
+                    </el-upload>
+                    <el-upload
+                      action="#"
+                      :auto-upload="false"
+                      :show-file-list="false"
+                      accept=".wps,.doc,.docx,.pdf,.txt,.csv,.xlsx,.xls"
+                      :multiple="true"
+                      :on-change="handleFileChange"
+                      :disabled="
+                        chatLoading || isExternalAgentMode || !selectedProjectId
+                      "
+                    >
+                      <el-tooltip content="添加文档" placement="top">
+                        <el-button text circle
+                          ><el-icon><Document /></el-icon
+                        ></el-button>
+                      </el-tooltip>
+                    </el-upload>
+                  </div>
+                  <div class="footer-right">
+                    <span class="hint-text">{{ composerHintText }}</span>
+                    <el-tooltip
+                      v-if="chatLoading"
+                      content="暂停当前回答"
+                      placement="top"
+                    >
+                      <el-button
+                        class="pause-generation-button"
+                        type="danger"
+                        plain
+                        @click="stopGeneration"
+                      >
+                        <el-icon><VideoPause /></el-icon>
+                        <span>暂停</span>
+                      </el-button>
+                    </el-tooltip>
+                    <el-button
+                      v-else
+                      class="send-message-button"
+                      type="primary"
+                      :disabled="!canSend"
+                      @click="doSend"
+                      circle
+                    >
+                      <el-icon><Promotion /></el-icon>
+                    </el-button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -384,944 +849,1654 @@
     </div>
   </div>
 
-  <!-- Settings Dialog -->
   <el-dialog
-    v-model="showSettingsDialog"
-    title="对话设置"
-    width="850px"
+    v-model="codePreviewVisible"
+    :title="codePreviewTitle"
+    width="min(1200px, calc(100vw - 32px))"
     destroy-on-close
-    class="custom-settings-dialog"
+    class="code-preview-dialog"
   >
-    <div class="settings-dialog-body">
-      <div class="settings-summary-card">
-        <div class="settings-summary-title">当前真正会影响回答的配置</div>
-        <div class="settings-summary-text">
-          基础设置决定项目、执行模式、模型或外部 Agent；生成回答控制输出风格；工具与约束控制 MCP、工具开关和调用上限。
-          <template v-if="isExternalAgentMode">
-            当前是外部 Agent 模式，模型供应商和模型版本不会参与本轮请求。
+    <div class="code-preview-shell">
+      <div v-if="codePreviewError" class="code-preview-error">
+        {{ codePreviewError }}
+      </div>
+      <iframe
+        v-else
+        class="code-preview-frame"
+        :srcdoc="codePreviewSrcdoc"
+        sandbox="allow-scripts allow-forms allow-modals"
+        referrerpolicy="no-referrer"
+      />
+    </div>
+  </el-dialog>
+
+  <el-dialog
+    v-model="employeeDraftDialogVisible"
+    title="确认创建 AI 员工"
+    width="min(880px, calc(100vw - 32px))"
+    destroy-on-close
+    class="employee-draft-create-dialog"
+    @closed="resetEmployeeDraftDialogState"
+  >
+    <div
+      v-if="employeeDraftDialogPayload"
+      class="employee-draft-dialog"
+      v-loading="employeeDraftDialogLoading"
+    >
+      <div class="employee-draft-dialog__summary">
+        <div class="employee-draft-dialog__title">
+          {{ employeeDraftDialogPayload.name || "未命名员工" }}
+        </div>
+        <div
+          v-if="employeeDraftDialogPayload.description"
+          class="employee-draft-dialog__desc"
+        >
+          {{ employeeDraftDialogPayload.description }}
+        </div>
+        <div class="employee-draft-dialog__meta">
+          <span>核心目标：{{ employeeDraftDialogPayload.goal || "-" }}</span>
+          <span>
+            风格：{{ employeeDraftDialogPayload.tone || "professional" }} /
+            {{ employeeDraftDialogPayload.verbosity || "concise" }}
+          </span>
+          <span>
+            记忆：{{ employeeDraftDialogPayload.memory_scope || "project" }} /
+            {{ employeeDraftDialogPayload.memory_retention_days || 90 }} 天
+          </span>
+        </div>
+      </div>
+
+      <div class="employee-draft-dialog__section">
+        <div class="employee-draft-dialog__section-title">本地已匹配能力</div>
+        <div class="employee-draft-dialog__grid">
+          <div class="employee-draft-dialog__panel">
+            <div class="employee-draft-dialog__panel-title">
+              技能 {{ employeeDraftDialogMatchedSkillLabels.length }}
+            </div>
+            <div class="employee-draft-dialog__tag-list">
+              <el-tag
+                v-for="label in employeeDraftDialogMatchedSkillLabels"
+                :key="`employee-draft-skill-${label}`"
+                size="small"
+                effect="plain"
+              >
+                {{ label }}
+              </el-tag>
+              <span
+                v-if="!employeeDraftDialogMatchedSkillLabels.length"
+                class="employee-draft-dialog__empty"
+              >
+                暂无可直接匹配的本地技能，将按下面开关决定是否自动补齐。
+              </span>
+            </div>
+          </div>
+          <div class="employee-draft-dialog__panel">
+            <div class="employee-draft-dialog__panel-title">
+              规则 {{ employeeDraftDialogMatchedRuleLabels.length }}
+            </div>
+            <div class="employee-draft-dialog__tag-list">
+              <el-tag
+                v-for="label in employeeDraftDialogMatchedRuleLabels"
+                :key="`employee-draft-rule-${label}`"
+                size="small"
+                effect="plain"
+                type="success"
+              >
+                {{ label }}
+              </el-tag>
+              <span
+                v-if="!employeeDraftDialogMatchedRuleLabels.length"
+                class="employee-draft-dialog__empty"
+              >
+                暂无可直接匹配的本地规则，将按下面开关决定是否自动补齐。
+              </span>
+            </div>
+            <div
+              v-if="employeeDraftDialogRuleDraftLabels.length"
+              class="employee-draft-dialog__subsection"
+            >
+              <div class="employee-draft-dialog__subsection-title">
+                待落地规则草稿 {{ employeeDraftDialogRuleDraftLabels.length }}
+              </div>
+              <div class="employee-draft-dialog__tag-list">
+                <el-tag
+                  v-for="label in employeeDraftDialogRuleDraftLabels"
+                  :key="`employee-draft-rule-draft-${label}`"
+                  size="small"
+                  effect="plain"
+                  type="warning"
+                >
+                  {{ label }}
+                </el-tag>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="employee-draft-dialog__section">
+        <div class="employee-draft-dialog__section-head">
+          <div class="employee-draft-dialog__section-title">规则自动生成</div>
+          <el-tag
+            size="small"
+            effect="plain"
+            :type="employeeDraftAutoRuleGenerationEnabled ? 'success' : 'info'"
+          >
+            {{
+              employeeDraftAutoRuleGenerationEnabled
+                ? "系统已启用"
+                : "系统已停用"
+            }}
+          </el-tag>
+        </div>
+        <div class="employee-draft-dialog__section-hint">
+          规则不再由当前页面手动选择。创建时系统会按后台配置自动补全规则草稿，再落地并绑定到当前员工。
+        </div>
+        <div class="employee-draft-dialog__grid">
+          <div class="employee-draft-dialog__panel">
+            <div class="employee-draft-dialog__panel-title">当前策略</div>
+            <div class="employee-draft-dialog__tag-list">
+              <el-tag
+                size="small"
+                effect="plain"
+                :type="
+                  employeeDraftAutoRuleGenerationEnabled ? 'success' : 'info'
+                "
+              >
+                {{
+                  employeeDraftAutoRuleGenerationEnabled
+                    ? "自动生成已启用"
+                    : "自动生成已停用"
+                }}
+              </el-tag>
+              <el-tag
+                v-if="employeeDraftAutoRuleGenerationEnabled"
+                size="small"
+                effect="plain"
+                type="warning"
+              >
+                最多 {{ employeeDraftAutoRuleGenerationMaxCount }} 条
+              </el-tag>
+              <el-tag
+                v-for="label in employeeDraftAutoRuleSourceLabels"
+                :key="`employee-draft-rule-source-${label}`"
+                size="small"
+                effect="plain"
+              >
+                {{ label }}
+              </el-tag>
+            </div>
+            <div class="employee-draft-dialog__empty">
+              {{
+                employeeDraftAutoRuleGenerationEnabled
+                  ? "系统会结合员工描述、已选技能和系统规则源自动补全规则。"
+                  : "当前系统配置已关闭自动补规则，仅使用已匹配规则和已有规则草稿。"
+              }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="employee-draft-dialog__section">
+        <div class="employee-draft-dialog__section-title">创建策略</div>
+        <div class="employee-draft-dialog__section-hint">
+          员工技能仍以草稿内容和系统自动补齐为准。规则来源不在这里选择，而是由系统按后台配置自动生成。
+        </div>
+        <div class="employee-draft-dialog__switches">
+          <el-switch
+            v-model="employeeDraftAutoCreateSkills"
+            inline-prompt
+            active-text="自动补技能"
+            inactive-text="手动处理技能"
+          />
+          <el-switch
+            v-model="employeeDraftAutoCreateRules"
+            inline-prompt
+            active-text="自动补规则"
+            inactive-text="手动处理规则"
+          />
+          <el-switch
+            v-model="employeeDraftAddToProject"
+            inline-prompt
+            active-text="加入当前项目"
+            inactive-text="仅创建员工"
+            :disabled="!selectedProjectId"
+          />
+        </div>
+      </div>
+    </div>
+
+    <template #footer>
+      <el-button @click="employeeDraftDialogVisible = false">取消</el-button>
+      <el-button
+        type="primary"
+        :loading="employeeCreateSubmitting"
+        :disabled="!employeeDraftDialogPayload"
+        @click="confirmEmployeeDraftCreation"
+      >
+        创建并绑定
+      </el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog
+    v-model="skillResourceDialogVisible"
+    title="技能资源"
+    width="min(880px, calc(100vw - 32px))"
+    destroy-on-close
+    class="skill-resource-dialog"
+  >
+    <div class="skill-resource-dialog__body">
+      <div class="skill-resource-dialog__hint">
+        对话里发现当前项目缺技能时，可以先选好本地下载目录，再打开下面的网站自己下载技能包或模板。保存后，当前对话会把这个目录当作优先参考的本地技能来源，但不会自动绑定到系统。
+      </div>
+
+      <div class="skill-resource-dialog__directory">
+        <div class="skill-resource-dialog__directory-head">
+          <div class="skill-resource-dialog__section-title">本地技能目录</div>
+          <div class="skill-resource-dialog__directory-actions">
+            <el-button
+              size="small"
+              @click="useWorkspaceAsSkillDirectory"
+              :disabled="!workspacePathResolved"
+            >
+              使用当前工作区
+            </el-button>
+            <el-button
+              size="small"
+              @click="pickSkillResourceDirectory"
+              :loading="skillResourceDirectoryPicking"
+            >
+              选择目录
+            </el-button>
+            <el-button
+              size="small"
+              text
+              @click="copySkillResourceDirectory"
+              :disabled="!skillResourceDirectoryResolved"
+            >
+              复制路径
+            </el-button>
+          </div>
+        </div>
+        <div
+          class="skill-resource-dialog__directory-value"
+          :class="{ 'is-empty': !skillResourceDirectoryResolved }"
+        >
+          {{
+            skillResourceDirectoryResolved ||
+            "还没有选择目录。建议先选择本地技能下载目录。"
+          }}
+        </div>
+        <div class="skill-resource-dialog__directory-meta">
+          <template v-if="usingLocalConnector">
+            已连接本地连接器，可直接选择访问者电脑上的目录。
           </template>
           <template v-else>
-            当前是系统对话模式，外部 Agent 和工作区配置不会参与本轮请求。
+            未连接本地连接器时，可手动填写或先配置工作区路径。
           </template>
         </div>
       </div>
-      <el-tabs tab-position="left" class="settings-tabs">
-        <el-tab-pane label="基础设置">
-          <el-form
-            label-position="left"
-            label-width="160px"
-            class="settings-form"
-            size="default"
+
+      <div class="skill-resource-dialog__section-title">推荐网站</div>
+      <div class="skill-resource-search">
+        <el-input
+          v-model="skillResourceSearchQuery"
+          placeholder="搜索技能资源，例如 Java 开发、界面设计、浏览器调试"
+          clearable
+          @keyup.enter="searchSkillResources"
+        >
+          <template #append>
+            <el-button
+              :loading="skillResourceSearchLoading"
+              @click="searchSkillResources"
+            >
+              搜索
+            </el-button>
+          </template>
+        </el-input>
+        <div class="skill-resource-search__meta">
+          <span>支持中文搜索，结果会下载到下方选择的本地技能目录。</span>
+          <el-button
+            v-if="skillResourceSearchQuery || skillResourceSearchResults.length"
+            text
+            size="small"
+            @click="resetSkillResourceSearch"
           >
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  选择项目
-                  <el-tooltip
-                    content="当前对话所在的关联项目，不同的项目可能绑定不同的知识库和工具。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-select
-                v-model="selectedProjectId"
-                filterable
-                placeholder="请选择项目"
-                class="full-width"
-              >
-                <el-option
-                  v-for="item in projects"
-                  :key="item.id"
-                  :label="`${item.name}`"
-                  :value="item.id"
-                >
-                  <span style="float: left">{{ item.name }}</span>
-                  <span
-                    style="
-                      float: right;
-                      color: var(--el-text-color-secondary);
-                      font-size: 12px;
-                    "
-                    >{{ item.id }}</span
-                  >
-                </el-option>
-              </el-select>
-            </el-form-item>
+            清空结果
+          </el-button>
+        </div>
+        <div
+          v-if="skillResourceSearchResolvedQueries.length > 1"
+          class="skill-resource-search__expanded"
+        >
+          已自动扩展英文关键词：
+          {{ skillResourceSearchResolvedQueries.join(" / ") }}
+        </div>
+      </div>
 
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  执行员工
-                  <el-tooltip
-                    content="决定本次对话所使用的技能(Skills)及规则约束(Rules)。留空时由 AI 在项目可用员工能力内自行选择。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-select
-                v-model="selectedEmployeeIds"
-                multiple
-                collapse-tags
-                collapse-tags-tooltip
-                filterable
-                clearable
-                placeholder="默认全选（项目内全部员工）"
-                class="full-width"
-              >
-                <el-option
-                  v-for="item in projectEmployees"
-                  :key="item.id"
-                  :label="`${item.name || item.id}`"
-                  :value="item.id"
-                >
-                  <div
-                    style="
-                      display: flex;
-                      flex-direction: column;
-                      gap: 4px;
-                      padding: 4px 0;
-                    "
-                  >
-                    <div
-                      style="
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
-                      "
-                    >
-                      <span style="font-weight: 500">{{
-                        item.name || item.id
-                      }}</span>
-                      <el-tag
-                        size="small"
-                        :type="item.role === 'admin' ? 'danger' : 'info'"
-                        >{{ item.role || "member" }}</el-tag
-                      >
-                    </div>
-                    <div
-                      v-if="item.skill_names && item.skill_names.length"
-                      style="
-                        font-size: 12px;
-                        color: var(--el-text-color-secondary);
-                      "
-                    >
-                      技能: {{ item.skill_names.join(", ") }}
-                    </div>
-                    <div
-                      v-if="item.rule_bindings && item.rule_bindings.length"
-                      style="
-                        font-size: 12px;
-                        color: var(--el-text-color-secondary);
-                      "
-                    >
-                      规则:
-                      {{
-                        item.rule_bindings
-                          .map((rule) => rule.title || rule.id)
-                          .join(" / ")
-                      }}
-                    </div>
-                  </div>
-                </el-option>
-              </el-select>
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  运行模式
-                  <el-tooltip
-                    content="系统对话走内置 Provider；外部 Agent 可切换不同 CLI 适配器。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-radio-group v-model="selectedChatMode" class="full-width">
-                <el-radio-button
-                  v-for="item in chatModes"
-                  :key="item.id"
-                  :label="item.id"
-                >
-                  {{ item.label }}
-                </el-radio-button>
-              </el-radio-group>
-            </el-form-item>
-
-            <el-form-item v-if="isExternalAgentMode">
-              <template #label>
-                <span class="label-with-tooltip">
-                  外部 Agent
-                  <el-tooltip
-                    content="选择要托管到聊天框里的外部 CLI 智能体。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <div class="full-width">
-                <el-select
-                  v-model="projectChatSettings.external_agent_type"
-                  class="full-width"
-                >
-                  <el-option
-                    v-for="item in externalAgentOptions"
-                    :key="item.agent_type"
-                    :label="`${item.label}${item.implemented ? '' : '（待接入）'}`"
-                    :value="item.agent_type"
-                  />
-                </el-select>
-                <div
-                  v-if="!externalAgentInfo.implemented && externalAgentInfo.reason"
-                  class="workspace-path-hint"
-                >
-                  当前状态：{{ externalAgentInfo.reason }}
-                </div>
-              </div>
-            </el-form-item>
-
-            <el-form-item v-if="isExternalAgentMode">
-              <template #label>
-                <span class="label-with-tooltip">
-                  Agent 状态
-                </span>
-              </template>
-              <div class="full-width external-agent-status-card">
-                <button
-                  type="button"
-                  class="external-agent-status-toggle"
-                  @click="agentStatusExpanded = !agentStatusExpanded"
-                >
-                  <div class="external-agent-status-head">
-                    <span class="external-agent-status-title">
-                      {{ externalAgentStatusSummary }}
-                    </span>
-                    <div class="external-agent-status-tags">
-                      <el-tag
-                        :type="externalAgentInfo.available ? 'success' : externalAgentInfo.installed ? 'warning' : 'info'"
-                        size="small"
-                        effect="plain"
-                      >
-                        {{ externalAgentAvailabilityLabel }}
-                      </el-tag>
-                      <el-tag
-                        :type="externalAgentInfo.ready ? 'success' : 'info'"
-                        size="small"
-                        effect="plain"
-                      >
-                        {{ externalAgentInfo.ready ? '已就绪' : '未就绪' }}
-                      </el-tag>
-                    </div>
-                  </div>
-                  <span class="external-agent-status-meta">
-                    {{ agentStatusExpanded ? '收起详情' : '展开详情' }}
-                  </span>
-                </button>
-
-                <div v-show="agentStatusExpanded" class="external-agent-meta">
-                  <div class="external-agent-row external-agent-command">
-                    命令：{{ externalAgentInfo.resolved_command || externalAgentInfo.command || 'codex' }}
-                  </div>
-                  <div class="external-agent-row external-agent-command">
-                    来源：{{ externalAgentInfo.command_source === 'system' ? '系统 PATH' : externalAgentInfo.command_source === 'override' ? '手动覆盖' : '未找到' }}
-                  </div>
-                  <div class="external-agent-row external-agent-command">
-                    运行标识：{{ externalAgentRuntimeLabel }}
-                  </div>
-                  <div class="external-agent-row external-agent-command">
-                    精确模型：{{ externalAgentInfo.exact_model_name || '当前未暴露' }}
-                  </div>
-                  <div
-                    v-if="externalAgentInfo.thread_id"
-                    class="external-agent-row external-agent-command"
-                  >
-                    Thread：{{ externalAgentInfo.thread_id }}
-                  </div>
-                  <div
-                    v-if="externalAgentInfo.session_id"
-                    class="external-agent-row external-agent-command"
-                  >
-                    Session：{{ externalAgentInfo.session_id }}
-                  </div>
-                  <div
-                    v-if="externalAgentInfo.runner_url"
-                    class="external-agent-row external-agent-command"
-                  >
-                    Runner：{{ externalAgentInfo.runner_url }}
-                  </div>
-                  <div
-                    v-if="externalAgentInfo.materialized_by"
-                    class="external-agent-row external-agent-command"
-                  >
-                    上下文写入：{{ externalAgentInfo.materialized_by }}
-                  </div>
-                  <div
-                    v-if="externalAgentInfo.support_dir"
-                    class="external-agent-row external-agent-command"
-                  >
-                    上下文目录：{{ externalAgentInfo.support_dir }}
-                  </div>
-                  <div class="external-agent-row">
-                    <span>
-                      项目 MCP：
-                      {{
-                        externalAgentInfo.mcp_bridge_enabled
-                          ? `已注入 (${externalAgentInfo.mcp_server_name || 'project_mcp'})`
-                          : '未注入'
-                      }}
-                    </span>
-                    <el-tag
-                      :type="externalAgentInfo.mcp_bridge_enabled ? 'success' : 'warning'"
-                      size="small"
-                      effect="plain"
-                    >
-                      {{ externalAgentInfo.mcp_bridge_enabled ? '可调用项目工具' : '暂不可用' }}
-                    </el-tag>
-                  </div>
-                  <div
-                    v-if="externalAgentInfo.mcp_bridge_reason && !externalAgentInfo.mcp_bridge_enabled"
-                    class="external-agent-row external-agent-command"
-                  >
-                    原因：{{ externalAgentInfo.mcp_bridge_reason }}
-                  </div>
-                  <div
-                    v-if="externalAgentInfo.support_files?.length"
-                    class="external-agent-support-list"
-                  >
-                    <div
-                      v-for="item in externalAgentInfo.support_files"
-                      :key="`${item.kind}-${item.path}`"
-                      class="external-agent-support-item"
-                    >
-                      <span>{{ item.label }}</span>
-                      <code>{{ item.path }}</code>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </el-form-item>
-
-            <el-form-item v-if="isExternalAgentMode">
-              <template #label>
-                <span class="label-with-tooltip">
-                  沙箱模式
-                  <el-tooltip
-                    content="先支持只读或工作区受限写入，不接复杂审批流。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-select
-                v-model="projectChatSettings.external_agent_sandbox_mode"
-                class="full-width"
-              >
-                <el-option label="只读 (read-only)" value="read-only" />
-                <el-option
-                  label="工作区写入 (workspace-write)"
-                  value="workspace-write"
-                />
-              </el-select>
-            </el-form-item>
-
-            <el-form-item v-if="isExternalAgentMode">
-              <template #label>
-                <span class="label-with-tooltip">
-                  工作区路径
-                  <el-tooltip
-                    content="外部 Agent 启动时会将此路径作为 CLI 工作目录。请填写项目绝对路径。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <div class="workspace-path-editor">
-                <el-input
-                  v-model="workspacePathDraft"
-                  class="full-width"
-                  placeholder="/Users/yourname/project"
-                />
-                <div class="workspace-path-actions">
-                  <el-button @click="promptProjectWorkspacePath">填写路径</el-button>
-                  <el-button @click="testProjectWorkspacePath" :loading="workspacePathTesting">测试工作区</el-button>
-                  <el-button
-                    type="primary"
-                    :loading="workspacePathSaving"
-                    @click="saveProjectWorkspacePath"
-                  >保存路径</el-button>
-                </div>
-                <div class="workspace-path-hint">
-                  当前会话会按这里的绝对路径启动；保存后，聊天框里的外部 Agent 就会在该目录执行。
-                  <template v-if="externalAgentInfo.execution_mode">
-                    当前执行模式：{{ externalAgentInfo.execution_mode === 'runner' ? '宿主 Runner' : 'API 本地进程' }}。
-                  </template>
-                  <template v-if="externalAgentInfo.workspace_access?.reason">
-                    当前探测结果：{{ externalAgentInfo.workspace_access.reason }}
-                  </template>
-                </div>
-              </div>
-            </el-form-item>
-
-            <el-alert
-              v-if="isExternalAgentMode && !externalAgentInfo.available"
-              title="当前选中的外部 Agent 不可用，保存设置后仍无法正常启动。"
-              type="warning"
-              :closable="false"
-              show-icon
-            />
-
-            <el-form-item v-if="!isExternalAgentMode">
-              <template #label>
-                <span class="label-with-tooltip">
-                  模型供应商
-                  <el-tooltip
-                    content="选择用于对话的基础大模型服务提供商，如 OpenAI、阿里云等。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-select
-                v-model="selectedProviderId"
-                filterable
-                placeholder="默认"
-                class="full-width"
-                @change="handleProviderChange"
-              >
-                <el-option
-                  v-for="item in providers"
-                  :key="item.id"
-                  :label="item.name"
-                  :value="item.id"
-                />
-              </el-select>
-            </el-form-item>
-
-            <el-form-item v-if="!isExternalAgentMode">
-              <template #label>
-                <span class="label-with-tooltip">
-                  模型版本
-                  <el-tooltip
-                    content="具体使用的大模型版本，如 gpt-4o 或 qwen-max。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-select
-                v-model="selectedModelName"
-                filterable
-                allow-create
-                default-first-option
-                placeholder="默认"
-                class="full-width"
-              >
-                <el-option
-                  v-for="item in availableModels"
-                  :key="item"
-                  :label="item"
-                  :value="item"
-                />
-              </el-select>
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  系统提示词
-                  <el-tooltip
-                    :content="isExternalAgentMode ? '外部 Agent 首轮会把这里作为启动上下文的一部分注入。' : '(System Prompt) 设定 AI 的角色背景和最高优先级的行为准则。'"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-input
-                type="textarea"
-                v-model="systemPrompt"
-                :rows="3"
-                :placeholder="isExternalAgentMode ? `补充给 ${externalAgentDisplayLabel} 的启动上下文...` : '你是项目开发助手...'"
-                class="full-width"
-              />
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  历史消息条数
-                  <el-tooltip
-                    content="每次向模型发送请求时，携带最近几次的对话历史。较小的值可节省 Token，较大的值有助于维持长上下文记忆。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-input-number
-                v-model="projectChatSettings.history_limit"
-                :min="1"
-                :max="50"
-                class="full-width"
-              />
-            </el-form-item>
-          </el-form>
-        </el-tab-pane>
-
-        <el-tab-pane label="生成回答">
-          <el-form
-            label-position="left"
-            label-width="160px"
-            class="settings-form"
-            size="default"
-          >
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  温度 (Temperature)
-                  <el-tooltip
-                    content="控制 AI 生成文本的随机性。值越小（如 0.1）回答越严谨保守，适合代码生成；值越大（如 0.8）回答越发散具有创造力。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-slider
-                v-model="temperature"
-                :min="0"
-                :max="2"
-                :step="0.1"
-                show-input
-                :show-input-controls="false"
-              />
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  最大输出 Token
-                  <el-tooltip
-                    content="限制 AI 单次回答的最大长度，1 个 Token 大约对应 0.5 个汉字或 1 个英文单词。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-input-number
-                v-model="chatMaxTokens"
-                :min="128"
-                :max="8192"
-                :step="64"
-                class="full-width"
-              />
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  回答风格
-                  <el-tooltip
-                    content="偏好 AI 返回内容的详细程度。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-select
-                v-model="projectChatSettings.answer_style"
-                class="full-width"
-              >
-                <el-option label="简洁 (Concise)" value="concise" />
-                <el-option label="平衡 (Balanced)" value="balanced" />
-                <el-option label="详细 (Detailed)" value="detailed" />
-              </el-select>
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  先结论后步骤
-                  <el-tooltip
-                    content="让 AI 在长篇大论前，先给出简明扼要的核心结论。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-switch
-                v-model="projectChatSettings.prefer_conclusion_first"
-              />
-            </el-form-item>
-          </el-form>
-        </el-tab-pane>
-
-        <el-tab-pane label="工具与约束">
-          <el-form
-            label-position="left"
-            label-width="160px"
-            class="settings-form"
-            size="default"
-          >
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  自动使用工具
-                  <el-tooltip
-                    content="是否允许 AI 在必要时自主调用系统内置工具（如查数据库、读写文件）。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-switch v-model="projectChatSettings.auto_use_tools" />
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  单轮仅回答
-                  <el-tooltip
-                    content="仅对下一次对话生效：强制 AI 直接用自然语言回答，禁止在此轮对话中调用任何工具。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-switch v-model="singleRoundAnswerOnly" />
-            </el-form-item>
-
-            <el-form-item label="MCP 模块">
-              <el-tabs
-                v-model="activeMcpSource"
-                class="mcp-source-tabs"
-                style="width: 100%"
-              >
-                <el-tab-pane
-                  :label="`系统提供 (${systemMcpTotal})`"
-                  name="system"
-                >
-                  <el-select
-                    v-model="activeSystemScope"
-                    size="small"
-                    class="full-width mcp-scope-select"
-                  >
-                    <el-option
-                      :label="`项目关联的所有 (${systemProjectRelatedModules.length})`"
-                      value="project_related"
-                    />
-                    <el-option
-                      :label="`系统本身提供的所有 (${systemGlobalModules.length})`"
-                      value="system_global"
-                    />
-                  </el-select>
-                  <div class="mcp-section-tip">
-                    系统提供的 MCP
-                    仅展示；此处勾选只控制当前项目对话可用工具，不修改模块定义。
-                  </div>
-                  <div
-                    v-if="
-                      activeSystemScope === 'project_related' &&
-                      projectToolModules.length
-                    "
-                    class="mcp-tool-actions"
-                  >
-                    <span class="mcp-tool-count"
-                      >本轮启用 {{ selectedProjectToolNames.length }}/{{
-                        projectToolModules.length
-                      }}</span
-                    >
-                    <div class="mcp-tool-buttons">
-                      <el-button
-                        text
-                        size="small"
-                        @click="selectAllProjectTools"
-                        >全选</el-button
-                      >
-                      <el-button text size="small" @click="clearProjectTools"
-                        >清空</el-button
-                      >
-                    </div>
-                  </div>
-                  <div class="mcp-module-list">
-                    <el-empty
-                      v-if="!activeSystemModules.length"
-                      description="暂无系统模块"
-                      :image-size="48"
-                    />
-                    <template v-else>
-                      <div
-                        v-for="item in activeSystemModules.slice(0, 12)"
-                        :key="item.id || item.tool_name"
-                        class="mcp-module-item"
-                      >
-                        <div class="mcp-module-row">
-                          <div class="mcp-module-head">
-                            <el-checkbox
-                              v-if="
-                                item.scope === 'project_related' &&
-                                item.tool_name
-                              "
-                              :model-value="
-                                isProjectToolSelected(item.tool_name)
-                              "
-                              @change="
-                                (val) => toggleProjectTool(item.tool_name, val)
-                              "
-                            />
-                            <span class="mcp-module-name">{{
-                              item.name || item.id || "-"
-                            }}</span>
-                          </div>
-                          <el-tag
-                            size="small"
-                            :type="moduleTagType(item.module_type)"
-                            >{{ moduleTypeLabel(item.module_type) }}</el-tag
-                          >
-                        </div>
-                        <div v-if="item.description" class="mcp-module-desc">
-                          {{ item.description }}
-                        </div>
-                        <div
-                          v-if="moduleMetaText(item)"
-                          class="mcp-module-meta"
-                        >
-                          {{ moduleMetaText(item) }}
-                        </div>
-                      </div>
-                      <div
-                        v-if="activeSystemModules.length > 12"
-                        class="mcp-module-more"
-                      >
-                        其余 {{ activeSystemModules.length - 12 }} 个模块未展示
-                      </div>
-                    </template>
-                  </div>
-                </el-tab-pane>
-                <el-tab-pane
-                  :label="`外部 (${externalMcpTotal})`"
-                  name="external"
-                >
-                  <ExternalMcpManager
-                    :project-id="selectedProjectId"
-                    @changed="handleExternalModulesChanged"
-                    @count-change="handleExternalModuleCountChange"
-                  />
-                </el-tab-pane>
-              </el-tabs>
-            </el-form-item>
-
-            <div class="settings-section-title">执行限制</div>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  允许 Shell 类工具
-                  <el-tooltip
-                    content="开启后，AI 可以通过终端执行命令行指令（存在一定安全风险）。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-switch v-model="projectChatSettings.allow_shell_tools" />
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  允许写文件类工具
-                  <el-tooltip
-                    content="开启后，AI 可以直接修改或创建您的项目文件。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-switch v-model="projectChatSettings.allow_file_write_tools" />
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  工具执行超时
-                  <el-tooltip
-                    content="单个工具允许执行的最长时间（秒），避免某个耗时任务卡死整个对话。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-input-number
-                v-model="projectChatSettings.tool_timeout_sec"
-                :min="1"
-                :max="600"
-                class="full-width"
-              />
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  失败重试次数
-                  <el-tooltip
-                    content="工具执行失败时的自动重试次数。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-input-number
-                v-model="projectChatSettings.tool_retry_count"
-                :min="0"
-                :max="5"
-                class="full-width"
-              />
-            </el-form-item>
-
-            <div class="settings-section-title">调度上限</div>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  最大循环轮次
-                  <el-tooltip
-                    content="AI 与工具之间交互迭代的最大次数，防止陷入无限死循环。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-input-number
-                v-model="projectChatSettings.max_loop_rounds"
-                :min="1"
-                :max="60"
-                class="full-width"
-              />
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  最大工具轮次
-                  <el-tooltip
-                    content="一轮对话中，允许连续调用工具的最高批次数。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-input-number
-                v-model="projectChatSettings.max_tool_rounds"
-                :min="1"
-                :max="30"
-                class="full-width"
-              />
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  单批工具调用数
-                  <el-tooltip
-                    content="每次向模型请求时，AI 并行发起工具调用的最大数量。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-input-number
-                v-model="projectChatSettings.max_tool_calls_per_round"
-                :min="1"
-                :max="30"
-                class="full-width"
-              />
-            </el-form-item>
-
-            <el-form-item>
-              <template #label>
-                <span class="label-with-tooltip">
-                  熔断后策略
-                  <el-tooltip
-                    content="当超过上述最大轮次限制（熔断）后，系统采取的动作：直接中断(Stop)或要求强制总结(Finalize)。"
-                    placement="top"
-                  >
-                    <el-icon class="label-icon"><InfoFilled /></el-icon>
-                  </el-tooltip>
-                </span>
-              </template>
-              <el-select
-                v-model="projectChatSettings.tool_budget_strategy"
-                class="full-width"
-              >
-                <el-option label="强制收敛回答 (Finalize)" value="finalize" />
-                <el-option label="直接停止 (Stop)" value="stop" />
-              </el-select>
-            </el-form-item>
-
-            <div class="settings-subtle-card">
-              <div class="settings-subtle-title">暂时降权的配置</div>
-              <div class="settings-subtle-text">
-                `高风险二次确认` 当前只做配置保存，主执行链还没有完全按这个开关分流，所以先不放在主要设置项里，避免误导。
+      <div
+        v-if="skillResourceSearchResults.length"
+        class="skill-resource-site-list skill-resource-site-list--search"
+      >
+        <article
+          v-for="site in skillResourceSearchResults"
+          :key="site.id || site.slug"
+          class="skill-resource-site-card"
+        >
+          <div class="skill-resource-site-card__head">
+            <div class="skill-resource-site-card__title-wrap">
+              <div class="skill-resource-site-card__title">
+                {{ site.title }}
               </div>
             </div>
-          </el-form>
-        </el-tab-pane>
-      </el-tabs>
-
-      <div class="settings-actions">
-        <el-button @click="showSettingsDialog = false">关闭</el-button>
-        <el-button
-          type="primary"
-          :loading="settingsSaving"
-          @click="saveProjectChatSettings(false)"
-          >保存设置</el-button
-        >
+            <el-tag
+              v-if="site.latestVersionLabel"
+              size="small"
+              effect="plain"
+              type="success"
+            >
+              {{ site.latestVersionLabel }}
+            </el-tag>
+          </div>
+          <div
+            v-if="site.description"
+            class="skill-resource-site-card__desc"
+          >
+            {{ site.description }}
+          </div>
+          <div
+            v-if="site.localizedDescription"
+            class="skill-resource-site-card__desc skill-resource-site-card__desc--localized"
+          >
+            {{ site.localizedDescription }}
+          </div>
+          <div class="skill-resource-site-card__url">
+            {{ site.url }}
+          </div>
+          <div class="skill-resource-site-card__actions">
+            <el-link
+              :href="site.url"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              打开网站
+            </el-link>
+            <el-button
+              text
+              size="small"
+              type="success"
+              :loading="skillResourceInstallingSlug === site.slug"
+              :disabled="!site.canInstall"
+              @click="installSkillResource(site)"
+            >
+              下载到本地技能目录
+            </el-button>
+          </div>
+        </article>
       </div>
+      <el-empty
+        v-else-if="skillResourceSearchQuery && !skillResourceSearchLoading"
+        description="没有找到匹配的技能资源"
+        :image-size="56"
+      />
+      <div
+        v-if="
+          skillResourceSearchQuery &&
+          !skillResourceSearchLoading &&
+          !skillResourceSearchResults.length &&
+          skillResourceSearchResolvedQueries.length > 1
+        "
+        class="skill-resource-search__expanded skill-resource-search__expanded--empty"
+      >
+        已尝试关键词：{{ skillResourceSearchResolvedQueries.join(" / ") }}
+      </div>
+
+      <div v-if="skillResourceSites.length" class="skill-resource-site-list">
+        <article
+          v-for="site in skillResourceSites"
+          :key="site.id"
+          class="skill-resource-site-card"
+        >
+          <div class="skill-resource-site-card__head">
+            <div class="skill-resource-site-card__title">{{ site.title }}</div>
+            <div class="skill-resource-site-card__badge">推荐</div>
+          </div>
+          <div
+            v-if="site.description"
+            class="skill-resource-site-card__desc"
+          >
+            {{ site.description }}
+          </div>
+          <div class="skill-resource-site-card__url">{{ site.url }}</div>
+          <div class="skill-resource-site-card__actions">
+            <el-link
+              :href="site.url"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              打开网站
+            </el-link>
+            <el-button text size="small" @click="copySkillResourceSite(site)">
+              复制地址
+            </el-button>
+          </div>
+        </article>
+      </div>
+      <el-empty
+        v-else
+        description="当前还没有配置技能网站"
+        :image-size="56"
+      />
+    </div>
+  </el-dialog>
+
+  <!-- Settings Dialog -->
+  <el-dialog
+    v-model="showSettingsDialog"
+    fullscreen
+    :show-close="false"
+    destroy-on-close
+    class="settings-center-dialog"
+  >
+    <div class="settings-center-shell">
+      <aside class="settings-center-sidebar">
+        <div class="settings-center-sidebar-card">
+          <div class="settings-center-brand-panel">
+            <div class="settings-center-brand">
+              <div class="settings-center-brand__mark">AI</div>
+              <div>
+                <div class="settings-center-brand__name">设置中心</div>
+                <div class="settings-center-brand__meta">对话与平台入口</div>
+              </div>
+            </div>
+            <el-button
+              text
+              class="settings-center-close-button"
+              @click="showSettingsDialog = false"
+              >关闭</el-button
+            >
+          </div>
+
+          <div class="settings-center-sidebar-copy">
+            当前对话设置和常用管理页都放在这里，左侧切换，右侧直接查看和编辑。
+          </div>
+
+          <div class="settings-center-nav-group">
+            <div class="settings-center-nav-group__title">当前对话</div>
+            <div class="settings-center-sidebar__nav">
+              <button
+                v-for="item in settingsInternalItems"
+                :key="item.id"
+                type="button"
+                class="settings-center-nav-item"
+                :class="{ 'is-active': activeSettingsPanel === item.id }"
+                @click="openSettingsCenter(item.id)"
+              >
+                <span class="settings-center-nav-item__row">
+                  <span class="settings-center-nav-item__label">{{ item.label }}</span>
+                  <span class="settings-center-nav-item__badge">本页</span>
+                </span>
+                <span v-if="item.desc" class="settings-center-nav-item__desc">{{
+                  item.desc
+                }}</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="settings-center-nav-group">
+            <div class="settings-center-nav-group__title">平台入口</div>
+            <div class="settings-center-sidebar__nav">
+              <button
+                v-for="item in settingsRouteItems"
+                :key="item.id"
+                type="button"
+                class="settings-center-nav-item"
+                :class="{ 'is-active': activeSettingsPanel === item.id }"
+                @click="openSettingsCenter(item.id)"
+              >
+                <span class="settings-center-nav-item__row">
+                  <span class="settings-center-nav-item__label">{{ item.label }}</span>
+                  <span class="settings-center-nav-item__badge">管理页</span>
+                </span>
+                <span v-if="item.desc" class="settings-center-nav-item__desc">{{
+                  item.desc
+                }}</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="settings-center-account">
+            <div class="settings-center-account__avatar">
+              {{ currentUsernameInitial }}
+            </div>
+            <div class="settings-center-account__meta">
+              <div class="settings-center-account__name">{{ currentUsername }}</div>
+              <div class="settings-center-account__role">当前账号</div>
+            </div>
+            <el-button
+              text
+              class="settings-center-account__logout"
+              @click="logoutFromChat"
+              >退出</el-button
+            >
+          </div>
+        </div>
+      </aside>
+
+      <section class="settings-center-stage">
+        <div class="settings-center-context-bar">
+          <div class="settings-center-context-bar__title">
+            {{ activeSettingsPanelItem?.label || "设置" }}
+          </div>
+          <div
+            v-if="activeSettingsPanelItem?.desc"
+            class="settings-center-context-bar__desc"
+          >
+            {{ activeSettingsPanelItem.desc }}
+          </div>
+          <div class="settings-center-context-bar__meta">
+            <span>项目：{{ currentProjectLabel }}</span>
+            <span>
+              模式：{{ isExternalAgentMode ? externalAgentDisplayLabel : "系统对话" }}
+            </span>
+            <span>
+              面板：{{ activeSettingsPanelItem?.kind === "route" ? "管理页" : "对话配置" }}
+            </span>
+          </div>
+        </div>
+
+        <div
+          v-if="activeSettingsPanel === 'chat'"
+          class="settings-center-stage__body settings-center-stage__body--chat"
+        >
+          <div class="settings-summary-card">
+            <div class="settings-summary-title">影响当前回答</div>
+            <div class="settings-summary-text">
+              这里集中管理运行模式、执行员工、系统提示词、输出风格，以及 MCP
+              与工具调用上限等高级参数。
+              <template v-if="!hasSelectedProject">
+                当前还没有选中项目，所以外部 Agent、项目员工和项目级 MCP
+                配置暂不可用。
+              </template>
+              <template v-if="isExternalAgentMode">
+                当前是外部 Agent 模式，模型供应商和模型版本不会参与本轮请求。
+              </template>
+              <template v-else>
+                当前是系统对话模式，外部 Agent 和工作区配置不会参与本轮请求。
+              </template>
+            </div>
+            <div class="settings-summary-actions">
+              <div class="settings-summary-status">
+                {{ autoSaveStatusText }}
+              </div>
+              <el-button
+                plain
+                size="small"
+                class="settings-summary-sync-button"
+                :loading="settingsSaving"
+                @click="saveProjectChatSettings(false)"
+              >
+                立即同步
+              </el-button>
+            </div>
+          </div>
+          <el-tabs class="settings-tabs">
+            <el-tab-pane label="基础设置">
+              <el-form
+                label-position="left"
+                label-width="160px"
+                class="settings-form"
+                size="default"
+              >
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">运行模式</span>
+                  </template>
+                  <el-radio-group
+                    v-model="selectedChatMode"
+                    class="settings-mode-group"
+                  >
+                    <el-radio-button
+                      v-for="item in chatModes"
+                      :key="item.id"
+                      :label="item.id"
+                    >
+                      {{ item.label }}
+                    </el-radio-button>
+                  </el-radio-group>
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">执行员工</span>
+                  </template>
+                  <el-select
+                    v-model="selectedEmployeeIds"
+                    multiple
+                    collapse-tags
+                    collapse-tags-tooltip
+                    filterable
+                    clearable
+                    placeholder="默认全选（项目内全部员工）"
+                    class="full-width"
+                    :disabled="!selectedProjectId"
+                  >
+                    <el-option
+                      v-for="item in projectEmployees"
+                      :key="item.id"
+                      :label="`${item.name || item.id}`"
+                      :value="item.id"
+                    >
+                      <div class="settings-employee-option">
+                        <div class="settings-employee-option__head">
+                          <span class="settings-employee-option__name">
+                            {{ item.name || item.id }}
+                          </span>
+                          <el-tag
+                            size="small"
+                            :type="item.role === 'admin' ? 'danger' : 'info'"
+                          >
+                            {{ item.role || "member" }}
+                          </el-tag>
+                        </div>
+                        <div
+                          v-if="item.skill_names && item.skill_names.length"
+                          class="settings-employee-option__meta"
+                        >
+                          技能: {{ item.skill_names.join(", ") }}
+                        </div>
+                        <div
+                          v-if="item.rule_bindings && item.rule_bindings.length"
+                          class="settings-employee-option__meta"
+                        >
+                          规则:
+                          {{
+                            item.rule_bindings
+                              .map((rule) => rule.title || rule.id)
+                              .join(" / ")
+                          }}
+                        </div>
+                      </div>
+                    </el-option>
+                  </el-select>
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      本地连接器
+                      <el-tooltip
+                        content="连接器运行在用户自己的电脑上，可桥接本地目录、本地命令和本地模型。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <div class="full-width">
+                    <el-select
+                      v-model="projectChatSettings.local_connector_id"
+                      clearable
+                      filterable
+                      placeholder="请选择当前用户的本地连接器"
+                      class="full-width"
+                    >
+                      <el-option
+                        v-for="item in localConnectors"
+                        :key="item.id"
+                        :label="item.connector_name || item.id"
+                        :value="item.id"
+                      >
+                        <div class="settings-employee-option">
+                          <div class="settings-employee-option__head">
+                            <span class="settings-employee-option__name">
+                              {{ item.connector_name || item.id }}
+                            </span>
+                            <el-tag
+                              size="small"
+                              :type="item.online ? 'success' : 'info'"
+                            >
+                              {{ item.online ? "在线" : "离线" }}
+                            </el-tag>
+                          </div>
+                          <div class="settings-employee-option__meta">
+                            {{ item.platform || "-" }} ·
+                            {{ item.owner_username || "-" }}
+                          </div>
+                        </div>
+                      </el-option>
+                    </el-select>
+                    <div class="workspace-path-actions">
+                      <el-button
+                        size="small"
+                        :loading="localConnectorRefreshing"
+                        @click="refreshLocalConnectorCatalog(false)"
+                      >
+                        刷新连接器
+                      </el-button>
+                    </div>
+                    <div class="workspace-path-hint">
+                      <template v-if="activeLocalConnector">
+                        当前设备：{{
+                          activeLocalConnector.connector_name ||
+                          activeLocalConnector.id
+                        }}
+                        <span v-if="activeLocalConnector.online">，在线</span>
+                        <span v-else>，离线</span>
+                        。选择后，外部 Agent
+                        会固定在这台电脑执行；可用的本地模型也会优先走这台电脑。
+                      </template>
+                      <template v-else>
+                        未选择时，系统对话仍可使用平台模型；外部 Agent
+                        不可用。若你刚启动或刚配对连接器，请点“刷新连接器”。
+                      </template>
+                    </div>
+                    <div class="external-agent-download-card">
+                      <div class="external-agent-download-card__text">
+                        如果当前用户本机还没有安装本地连接器，先下载下面的通用安装包。
+                        安装并启动桌面连接器后，回到这里点击“匹配本地连接器”，当前浏览器会把这台电脑认证到当前账号。
+                      </div>
+                      <div
+                        v-if="desktopConnectorArtifacts.length"
+                        class="external-agent-download-card__subtitle"
+                      >
+                        桌面安装包
+                      </div>
+                      <div
+                        v-if="desktopConnectorArtifacts.length"
+                        class="external-agent-download-card__actions"
+                      >
+                        <el-button
+                          v-for="item in desktopConnectorArtifacts"
+                          :key="item.filename"
+                          size="small"
+                          plain
+                          :loading="
+                            downloadingDesktopArtifactKey === item.filename
+                          "
+                          @click="downloadDesktopConnectorArtifact(item)"
+                        >
+                          {{ item.label }}
+                        </el-button>
+                      </div>
+                      <div class="external-agent-download-card__subtitle">
+                        本机认证
+                      </div>
+                      <div class="external-agent-download-card__actions">
+                        <el-button
+                          size="small"
+                          type="primary"
+                          :loading="localConnectorPairing"
+                          @click="pairBrowserLocalConnector"
+                        >
+                          匹配本地连接器
+                        </el-button>
+                      </div>
+                      <div class="workspace-path-hint">
+                        浏览器会优先连接
+                        `127.0.0.1:3931`，若主端口被占用，会继续探测连接器自动切换的备用端口。
+                      </div>
+                    </div>
+                  </div>
+                </el-form-item>
+
+                <el-form-item v-if="isExternalAgentMode">
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      外部 Agent
+                      <el-tooltip
+                        content="选择要托管到聊天框里的外部 CLI 智能体。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <div class="full-width">
+                    <el-select
+                      v-model="projectChatSettings.external_agent_type"
+                      class="full-width"
+                    >
+                      <el-option
+                        v-for="item in externalAgentOptions"
+                        :key="item.agent_type"
+                        :label="`${item.label}${item.implemented ? '' : '（待接入）'}`"
+                        :value="item.agent_type"
+                      />
+                    </el-select>
+                    <div
+                      v-if="externalAgentInfo.reason"
+                      class="workspace-path-hint"
+                    >
+                      当前状态：{{ externalAgentInfo.reason }}
+                    </div>
+                  </div>
+                </el-form-item>
+
+                <el-form-item v-if="isExternalAgentMode">
+                  <template #label>
+                    <span class="label-with-tooltip"> Agent 状态 </span>
+                  </template>
+                  <div class="full-width external-agent-status-card">
+                    <button
+                      type="button"
+                      class="external-agent-status-toggle"
+                      @click="agentStatusExpanded = !agentStatusExpanded"
+                    >
+                      <div class="external-agent-status-head">
+                        <span class="external-agent-status-title">
+                          {{ externalAgentStatusSummary }}
+                        </span>
+                        <div class="external-agent-status-tags">
+                          <el-tag
+                            :type="
+                              externalAgentInfo.available
+                                ? 'success'
+                                : externalAgentInfo.installed
+                                  ? 'warning'
+                                  : 'info'
+                            "
+                            size="small"
+                            effect="plain"
+                          >
+                            {{ externalAgentAvailabilityLabel }}
+                          </el-tag>
+                          <el-tag
+                            :type="externalAgentInfo.ready ? 'success' : 'info'"
+                            size="small"
+                            effect="plain"
+                          >
+                            {{ externalAgentInfo.ready ? "已就绪" : "未就绪" }}
+                          </el-tag>
+                        </div>
+                      </div>
+                      <span class="external-agent-status-meta">
+                        {{ agentStatusExpanded ? "收起详情" : "展开详情" }}
+                      </span>
+                    </button>
+
+                    <div
+                      v-show="agentStatusExpanded"
+                      class="external-agent-meta"
+                    >
+                      <div class="external-agent-row external-agent-command">
+                        命令：{{
+                          externalAgentInfo.resolved_command ||
+                          externalAgentInfo.command ||
+                          "codex"
+                        }}
+                      </div>
+                      <div class="external-agent-row external-agent-command">
+                        来源：{{
+                          externalAgentInfo.command_source === "local_connector"
+                            ? "本地连接器"
+                            : externalAgentInfo.command_source ===
+                                "local_connector_required"
+                              ? "需先选择连接器"
+                              : externalAgentInfo.command_source === "system"
+                                ? "系统 PATH"
+                                : externalAgentInfo.command_source ===
+                                    "override"
+                                  ? "手动覆盖"
+                                  : "未找到"
+                        }}
+                      </div>
+                      <div class="external-agent-row external-agent-command">
+                        运行标识：{{ externalAgentRuntimeLabel }}
+                      </div>
+                      <div class="external-agent-row external-agent-command">
+                        精确模型：{{
+                          externalAgentInfo.exact_model_name || "当前未暴露"
+                        }}
+                      </div>
+                      <div
+                        v-if="externalAgentInfo.thread_id"
+                        class="external-agent-row external-agent-command"
+                      >
+                        Thread：{{ externalAgentInfo.thread_id }}
+                      </div>
+                      <div
+                        v-if="externalAgentInfo.session_id"
+                        class="external-agent-row external-agent-command"
+                      >
+                        Session：{{ externalAgentInfo.session_id }}
+                      </div>
+                      <div
+                        v-if="externalAgentInfo.runner_url"
+                        class="external-agent-row external-agent-command"
+                      >
+                        连接器地址：{{ externalAgentInfo.runner_url }}
+                      </div>
+                      <div
+                        v-if="externalAgentInfo.materialized_by"
+                        class="external-agent-row external-agent-command"
+                      >
+                        上下文写入：{{ externalAgentInfo.materialized_by }}
+                      </div>
+                      <div
+                        v-if="externalAgentInfo.support_dir"
+                        class="external-agent-row external-agent-command"
+                      >
+                        上下文目录：{{ externalAgentInfo.support_dir }}
+                      </div>
+                      <div class="external-agent-row">
+                        <span>
+                          项目 MCP：
+                          {{
+                            externalAgentInfo.mcp_bridge_enabled
+                              ? `已注入 (${externalAgentInfo.mcp_server_name || "project_mcp"})`
+                              : "未注入"
+                          }}
+                        </span>
+                        <el-tag
+                          :type="
+                            externalAgentInfo.mcp_bridge_enabled
+                              ? 'success'
+                              : 'warning'
+                          "
+                          size="small"
+                          effect="plain"
+                        >
+                          {{
+                            externalAgentInfo.mcp_bridge_enabled
+                              ? "可调用项目工具"
+                              : "暂不可用"
+                          }}
+                        </el-tag>
+                      </div>
+                      <div
+                        v-if="
+                          externalAgentInfo.mcp_bridge_reason &&
+                          !externalAgentInfo.mcp_bridge_enabled
+                        "
+                        class="external-agent-row external-agent-command"
+                      >
+                        原因：{{ externalAgentInfo.mcp_bridge_reason }}
+                      </div>
+                      <div
+                        v-if="externalAgentInfo.support_files?.length"
+                        class="external-agent-support-list"
+                      >
+                        <div
+                          v-for="item in externalAgentInfo.support_files"
+                          :key="`${item.kind}-${item.path}`"
+                          class="external-agent-support-item"
+                        >
+                          <span>{{ item.label }}</span>
+                          <code>{{ item.path }}</code>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </el-form-item>
+
+                <el-form-item v-if="isExternalAgentMode">
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      沙箱模式
+                      <el-tooltip
+                        content="先支持只读或工作区受限写入，不接复杂审批流。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-select
+                    v-model="projectChatSettings.external_agent_sandbox_mode"
+                    class="full-width"
+                  >
+                    <el-option label="只读 (read-only)" value="read-only" />
+                    <el-option
+                      label="工作区写入 (workspace-write)"
+                      value="workspace-write"
+                    />
+                  </el-select>
+                </el-form-item>
+
+                <el-form-item v-if="isExternalAgentMode">
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      工作区路径
+                      <el-tooltip
+                        content="外部 Agent 启动时会将此路径作为 CLI 工作目录。请填写项目绝对路径。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <div class="workspace-path-editor">
+                    <el-input
+                      v-model="workspacePathDraft"
+                      class="full-width"
+                      placeholder="/Users/yourname/project"
+                    />
+                    <div class="workspace-path-actions">
+                      <el-button
+                        @click="promptProjectWorkspacePath"
+                        :loading="workspacePathPicking"
+                        >选择目录</el-button
+                      >
+                      <el-button
+                        @click="testProjectWorkspacePath"
+                        :loading="workspacePathTesting"
+                        >测试工作区</el-button
+                      >
+                      <el-button
+                        type="primary"
+                        :loading="workspacePathSaving"
+                        @click="saveProjectWorkspacePath()"
+                        >保存路径</el-button
+                      >
+                    </div>
+                    <div class="workspace-path-hint">
+                      <template v-if="usingLocalConnector">
+                        当前会话会把这里当作连接器所在电脑上的绝对路径；保存后，聊天框里的外部
+                        Agent 会在该目录执行。现在支持通过本机 Local Connector
+                        直接弹出访问者电脑上的目录选择器；手动填写仅作为兜底。
+                      </template>
+                      <template v-else>
+                        请先选择本地连接器；工作区路径必须填写连接器所在电脑上的绝对路径。
+                      </template>
+                      <template v-if="externalAgentInfo.execution_mode">
+                        当前执行模式：本地连接器。
+                      </template>
+                      <template
+                        v-if="externalAgentInfo.workspace_access?.reason"
+                      >
+                        当前探测结果：{{
+                          externalAgentInfo.workspace_access.reason
+                        }}
+                      </template>
+                    </div>
+                  </div>
+                </el-form-item>
+
+                <el-form-item v-if="hasSelectedProject">
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      AI 入口文件
+                      <el-tooltip
+                        content="项目级规则入口。系统对话和外部 Agent 都会优先读取它来理解规则、目录约定和实现约束。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <div class="workspace-path-editor">
+                    <el-input
+                      v-model="aiEntryFileDraft"
+                      class="full-width"
+                      placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
+                    />
+                    <div class="workspace-path-actions">
+                      <el-button
+                        @click="promptProjectAiEntryFile"
+                        :loading="aiEntryFilePicking"
+                      >
+                        选择文件
+                      </el-button>
+                      <el-button
+                        type="primary"
+                        :loading="aiEntryFileSaving"
+                        @click="saveProjectAiEntryFile()"
+                      >
+                        保存入口
+                      </el-button>
+                    </div>
+                    <div class="workspace-path-hint">
+                      <template v-if="projectWorkspacePath">
+                        当前项目工作区：{{ projectWorkspacePath }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话和外部 Agent 共用。
+                      </template>
+                      <template v-else>
+                        当前项目还没有平台工作区路径时，建议直接填写相对路径或绝对路径。
+                      </template>
+                      <template v-if="aiEntryFileResolved">
+                        当前已保存：{{ aiEntryFileResolved }}
+                      </template>
+                      <template v-if="aiEntryFileDirty">
+                        当前输入尚未保存。
+                      </template>
+                    </div>
+                  </div>
+                </el-form-item>
+
+                <el-alert
+                  v-if="isExternalAgentMode && !externalAgentInfo.available"
+                  title="当前选中的外部 Agent 不可用，保存设置后仍无法正常启动。"
+                  type="warning"
+                  :closable="false"
+                  show-icon
+                />
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      系统提示词
+                      <el-tooltip
+                        :content="
+                          isExternalAgentMode
+                            ? '外部 Agent 首轮会把这里作为启动上下文的一部分注入。'
+                            : '(System Prompt) 设定 AI 的角色背景和最高优先级的行为准则。'
+                        "
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-input
+                    type="textarea"
+                    v-model="systemPrompt"
+                    :rows="3"
+                    :placeholder="
+                      isExternalAgentMode
+                        ? `补充给 ${externalAgentDisplayLabel} 的启动上下文...`
+                        : '你是项目开发助手...'
+                    "
+                    class="full-width"
+                  />
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      历史消息条数
+                      <el-tooltip
+                        content="每次向模型发送请求时，携带最近几次的对话历史。较小的值可节省 Token，较大的值有助于维持长上下文记忆。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-input-number
+                    v-model="projectChatSettings.history_limit"
+                    :min="1"
+                    :max="50"
+                    class="full-width"
+                  />
+                </el-form-item>
+              </el-form>
+            </el-tab-pane>
+
+            <el-tab-pane label="生成回答">
+              <el-form
+                label-position="left"
+                label-width="160px"
+                class="settings-form"
+                size="default"
+              >
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      温度 (Temperature)
+                      <el-tooltip
+                        content="控制 AI 生成文本的随机性。值越小（如 0.1）回答越严谨保守，适合代码生成；值越大（如 0.8）回答越发散具有创造力。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-slider
+                    v-model="temperature"
+                    :min="0"
+                    :max="2"
+                    :step="0.1"
+                    show-input
+                    :show-input-controls="false"
+                  />
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      最大输出 Token
+                      <el-tooltip
+                        content="限制 AI 单次回答的最大长度，1 个 Token 大约对应 0.5 个汉字或 1 个英文单词。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-input-number
+                    v-model="chatMaxTokens"
+                    :min="128"
+                    :max="8192"
+                    :step="64"
+                    class="full-width"
+                  />
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      回答风格
+                      <el-tooltip
+                        content="偏好 AI 返回内容的详细程度。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-select
+                    v-model="projectChatSettings.answer_style"
+                    class="full-width"
+                  >
+                    <el-option label="简洁 (Concise)" value="concise" />
+                    <el-option label="平衡 (Balanced)" value="balanced" />
+                    <el-option label="详细 (Detailed)" value="detailed" />
+                  </el-select>
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      先结论后步骤
+                      <el-tooltip
+                        content="让 AI 在长篇大论前，先给出简明扼要的核心结论。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-switch
+                    v-model="projectChatSettings.prefer_conclusion_first"
+                  />
+                </el-form-item>
+              </el-form>
+            </el-tab-pane>
+
+            <el-tab-pane label="工具与约束">
+              <el-form
+                label-position="left"
+                label-width="160px"
+                class="settings-form"
+                size="default"
+              >
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      自动使用工具
+                      <el-tooltip
+                        content="是否允许 AI 在必要时自主调用系统内置工具（如查数据库、读写文件）。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-switch v-model="projectChatSettings.auto_use_tools" />
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      单轮仅回答
+                      <el-tooltip
+                        content="仅对下一次对话生效：强制 AI 直接用自然语言回答，禁止在此轮对话中调用任何工具。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-switch v-model="singleRoundAnswerOnly" />
+                </el-form-item>
+
+                <el-form-item label="MCP 模块">
+                  <el-tabs
+                    v-model="activeMcpSource"
+                    class="mcp-source-tabs"
+                    style="width: 100%"
+                  >
+                    <el-tab-pane
+                      :label="`系统提供 (${systemMcpTotal})`"
+                      name="system"
+                    >
+                      <el-select
+                        v-model="activeSystemScope"
+                        size="small"
+                        class="full-width mcp-scope-select"
+                      >
+                        <el-option
+                          :label="`项目关联的所有 (${systemProjectRelatedModules.length})`"
+                          value="project_related"
+                        />
+                        <el-option
+                          :label="`系统本身提供的所有 (${systemGlobalModules.length})`"
+                          value="system_global"
+                        />
+                      </el-select>
+                      <div class="mcp-section-tip">
+                        系统提供的 MCP
+                        仅展示；此处勾选只控制当前项目对话可用工具，不修改模块定义。
+                      </div>
+                      <div
+                        v-if="
+                          activeSystemScope === 'project_related' &&
+                          projectToolModules.length
+                        "
+                        class="mcp-tool-actions"
+                      >
+                        <span class="mcp-tool-count"
+                          >本轮启用 {{ selectedProjectToolNames.length }}/{{
+                            projectToolModules.length
+                          }}</span
+                        >
+                        <div class="mcp-tool-buttons">
+                          <el-button
+                            text
+                            size="small"
+                            @click="selectAllProjectTools"
+                            >全选</el-button
+                          >
+                          <el-button
+                            text
+                            size="small"
+                            @click="clearProjectTools"
+                            >清空</el-button
+                          >
+                        </div>
+                      </div>
+                      <div class="mcp-module-list">
+                        <el-empty
+                          v-if="!activeSystemModules.length"
+                          description="暂无系统模块"
+                          :image-size="48"
+                        />
+                        <template v-else>
+                          <div
+                            v-for="item in activeSystemModules.slice(0, 12)"
+                            :key="item.id || item.tool_name"
+                            class="mcp-module-item"
+                          >
+                            <div class="mcp-module-row">
+                              <div class="mcp-module-head">
+                                <el-checkbox
+                                  v-if="
+                                    item.scope === 'project_related' &&
+                                    item.tool_name
+                                  "
+                                  :model-value="
+                                    isProjectToolSelected(item.tool_name)
+                                  "
+                                  @change="
+                                    (val) =>
+                                      toggleProjectTool(item.tool_name, val)
+                                  "
+                                />
+                                <span class="mcp-module-name">{{
+                                  item.name || item.id || "-"
+                                }}</span>
+                              </div>
+                              <el-tag
+                                size="small"
+                                :type="moduleTagType(item.module_type)"
+                                >{{ moduleTypeLabel(item.module_type) }}</el-tag
+                              >
+                            </div>
+                            <div
+                              v-if="item.description"
+                              class="mcp-module-desc"
+                            >
+                              {{ item.description }}
+                            </div>
+                            <div
+                              v-if="moduleMetaText(item)"
+                              class="mcp-module-meta"
+                            >
+                              {{ moduleMetaText(item) }}
+                            </div>
+                          </div>
+                          <div
+                            v-if="activeSystemModules.length > 12"
+                            class="mcp-module-more"
+                          >
+                            其余
+                            {{ activeSystemModules.length - 12 }} 个模块未展示
+                          </div>
+                        </template>
+                      </div>
+                    </el-tab-pane>
+                    <el-tab-pane
+                      v-if="hasSelectedProject"
+                      :label="`外部 (${externalMcpTotal})`"
+                      name="external"
+                    >
+                      <ExternalMcpManager
+                        :project-id="selectedProjectId"
+                        @changed="handleExternalModulesChanged"
+                        @count-change="handleExternalModuleCountChange"
+                      />
+                    </el-tab-pane>
+                  </el-tabs>
+                </el-form-item>
+
+                <div class="settings-section-title">执行限制</div>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      允许 Shell 类工具
+                      <el-tooltip
+                        content="开启后，AI 可以通过终端执行命令行指令（存在一定安全风险）。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-switch v-model="projectChatSettings.allow_shell_tools" />
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      允许写文件类工具
+                      <el-tooltip
+                        content="开启后，AI 可以直接修改或创建您的项目文件。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-switch
+                    v-model="projectChatSettings.allow_file_write_tools"
+                  />
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      工具执行超时
+                      <el-tooltip
+                        content="单个工具允许执行的最长时间（秒），避免某个耗时任务卡死整个对话。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-input-number
+                    v-model="projectChatSettings.tool_timeout_sec"
+                    :min="1"
+                    :max="600"
+                    class="full-width"
+                  />
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      失败重试次数
+                      <el-tooltip
+                        content="工具执行失败时的自动重试次数。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-input-number
+                    v-model="projectChatSettings.tool_retry_count"
+                    :min="0"
+                    :max="5"
+                    class="full-width"
+                  />
+                </el-form-item>
+
+                <div class="settings-section-title">调度上限</div>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      最大循环轮次
+                      <el-tooltip
+                        content="AI 与工具之间交互迭代的最大次数，防止陷入无限死循环。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-input-number
+                    v-model="projectChatSettings.max_loop_rounds"
+                    :min="1"
+                    :max="60"
+                    class="full-width"
+                  />
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      最大工具轮次
+                      <el-tooltip
+                        content="一轮对话中，允许连续调用工具的最高批次数。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-input-number
+                    v-model="projectChatSettings.max_tool_rounds"
+                    :min="1"
+                    :max="30"
+                    class="full-width"
+                  />
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      单批工具调用数
+                      <el-tooltip
+                        content="每次向模型请求时，AI 并行发起工具调用的最大数量。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-input-number
+                    v-model="projectChatSettings.max_tool_calls_per_round"
+                    :min="1"
+                    :max="30"
+                    class="full-width"
+                  />
+                </el-form-item>
+
+                <el-form-item>
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      熔断后策略
+                      <el-tooltip
+                        content="当超过上述最大轮次限制（熔断）后，系统采取的动作：直接中断(Stop)或要求强制总结(Finalize)。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <el-select
+                    v-model="projectChatSettings.tool_budget_strategy"
+                    class="full-width"
+                  >
+                    <el-option
+                      label="强制收敛回答 (Finalize)"
+                      value="finalize"
+                    />
+                    <el-option label="直接停止 (Stop)" value="stop" />
+                  </el-select>
+                </el-form-item>
+
+                <div class="settings-subtle-card">
+                  <div class="settings-subtle-title">暂时降权的配置</div>
+                  <div class="settings-subtle-text">
+                    `高风险二次确认`
+                    当前只做配置保存，主执行链还没有完全按这个开关分流，所以先不放在主要设置项里，避免误导。
+                  </div>
+                </div>
+              </el-form>
+            </el-tab-pane>
+          </el-tabs>
+
+        </div>
+
+        <div
+          v-else
+          class="settings-center-stage__body settings-center-stage__body--frame"
+        >
+          <iframe
+            v-if="activeSettingsIframeSrc"
+            class="settings-center-frame"
+            :src="activeSettingsIframeSrc"
+            referrerpolicy="no-referrer"
+          />
+        </div>
+      </section>
     </div>
   </el-dialog>
 </template>
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ExternalMcpManager from "@/components/ExternalMcpManager.vue";
 import api from "@/utils/api.js";
 import { createProjectChatWsClient } from "@/utils/ws-chat.js";
+import { clearPermissionArray, hasPermission } from "@/utils/permissions.js";
 import {
   Delete,
   Picture,
   Promotion,
   Document,
+  DocumentCopy,
+  EditPen,
+  Files,
+  RefreshRight,
   VideoPause,
   Setting,
   InfoFilled,
 } from "@element-plus/icons-vue";
 import { marked } from "marked";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
+import ComposerAssistBar from "@/components/ComposerAssistBar.vue";
+import {
+  pickWorkspaceDirectory,
+  pickWorkspaceFile,
+  toWorkspaceRelativePath,
+} from "@/utils/workspace-picker.js";
 
 // 配置 marked 以支持代码高亮和换行
 marked.setOptions({
@@ -1329,7 +2504,68 @@ marked.setOptions({
   gfm: true,
 });
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function normalizeCodeLanguage(value) {
+  return String(value || "")
+    .trim()
+    .split(/\s+/)[0]
+    .toLowerCase();
+}
+
+const markdownRenderer = new marked.Renderer();
+const CODE_COPY_ICON_HTML =
+  '<span class="el-icon chat-code-block__icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><path fill="currentColor" d="M128 320v576h576V320zm-32-64h640a32 32 0 0 1 32 32v640a32 32 0 0 1-32 32H96a32 32 0 0 1-32-32V288a32 32 0 0 1 32-32M960 96v704a32 32 0 0 1-32 32h-96v-64h64V128H384v64h-64V96a32 32 0 0 1 32-32h576a32 32 0 0 1 32 32M256 672h320v64H256zm0-192h320v64H256z" /></svg></span>';
+const CODE_COPIED_ICON_HTML =
+  '<span class="el-icon chat-code-block__icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><path fill="currentColor" d="M406.656 706.944 195.84 496.256a32 32 0 1 0-45.248 45.248l256 256 512-512a32 32 0 0 0-45.248-45.248L406.592 706.944z" /></svg></span>';
+const CODE_PREVIEW_ICON_HTML =
+  '<span class="el-icon chat-code-block__icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><path fill="currentColor" d="M942.2 486.2C847.4 334.6 691 224 512 224S176.6 334.6 81.8 486.2a48.9 48.9 0 0 0 0 51.6C176.6 689.4 333 800 512 800s335.4-110.6 430.2-262.2a48.9 48.9 0 0 0 0-51.6M512 736c-147.8 0-279-88.5-363.1-224C233 376.5 364.2 288 512 288s279 88.5 363.1 224C791 647.5 659.8 736 512 736m0-352a128 128 0 1 0 0 256 128 128 0 0 0 0-256m0 192a64 64 0 1 1 0-128 64 64 0 0 1 0 128" /></svg></span>';
+const EMPLOYEE_DRAFT_BLOCK_RE = /```employee-draft\s*([\s\S]*?)```/i;
+const PREVIEWABLE_CODE_LANGUAGES = new Set(["vue", "html", "htm"]);
+
+function isPreviewableCodeBlock(content, language) {
+  const normalizedLanguage = normalizeCodeLanguage(language);
+  const text = String(content || "").trim();
+  if (!text) return false;
+  if (PREVIEWABLE_CODE_LANGUAGES.has(normalizedLanguage)) return true;
+  if (/<template[\s>]/i.test(text) || /<script[\s>]/i.test(text)) return true;
+  if (/<!doctype html/i.test(text) || /<html[\s>]/i.test(text)) return true;
+  return false;
+}
+
+markdownRenderer.code = ({ text, lang, escaped }) => {
+  const language = normalizeCodeLanguage(lang);
+  const languageLabel = escapeHtml(language || "code");
+  const codeHtml = escaped ? text : escapeHtml(text);
+  const actions = [];
+  if (isPreviewableCodeBlock(text, language)) {
+    actions.push(
+      `<button type="button" class="chat-code-block__preview" aria-label="预览代码" title="预览代码" data-code-lang="${escapeHtml(language || "")}">${CODE_PREVIEW_ICON_HTML}</button>`,
+    );
+  }
+  actions.push(
+    `<button type="button" class="chat-code-block__copy" aria-label="复制代码" title="复制代码" data-copy-label="复制代码" data-copied-label="已复制" data-copy-icon="${escapeHtml(CODE_COPY_ICON_HTML)}" data-copied-icon="${escapeHtml(CODE_COPIED_ICON_HTML)}">${CODE_COPY_ICON_HTML}</button>`,
+  );
+  return [
+    '<div class="chat-code-block">',
+    '<div class="chat-code-block__toolbar">',
+    `<span class="chat-code-block__lang">${languageLabel}</span>`,
+    `<div class="chat-code-block__actions">${actions.join("")}</div>`,
+    "</div>",
+    `<pre><code${language ? ` class="language-${escapeHtml(language)}"` : ""}>${codeHtml}</code></pre>`,
+    "</div>",
+  ].join("");
+};
+
 const route = useRoute();
+const router = useRouter();
 
 const HIGH_RISK_RULES = [
   {
@@ -1363,6 +2599,8 @@ const CHAT_SETTINGS_DEFAULTS = {
   external_agent_type: "codex_cli",
   external_agent_sandbox_mode: "workspace-write",
   external_agent_sandbox_mode_explicit: false,
+  local_connector_id: "",
+  connector_workspace_path: "",
   selected_employee_id: "",
   selected_employee_ids: [],
   provider_id: "",
@@ -1404,11 +2642,174 @@ const CHAT_SETTINGS_DEFAULTS = {
   prefer_conclusion_first: true,
 };
 
+const EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS = {
+  prompts_chat_curated: "系统规则源",
+};
+
+// 开放未选择项目时的通用对话模式，复用现有 sendGlobalChatWithoutProject 逻辑。
+const ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT = true;
+const LOCAL_CONNECTOR_STORAGE_PREFIX = "project_chat.local_connector";
+
+function resolveCurrentUsername() {
+  return (
+    String(localStorage.getItem("username") || "anonymous").trim() ||
+    "anonymous"
+  );
+}
+
+function localConnectorPreferenceStorageKey() {
+  return `${LOCAL_CONNECTOR_STORAGE_PREFIX}.selected.${resolveCurrentUsername()}`;
+}
+
+function localConnectorWorkspaceStorageKey(projectId, connectorId) {
+  return [
+    LOCAL_CONNECTOR_STORAGE_PREFIX,
+    "workspace",
+    resolveCurrentUsername(),
+    String(projectId || "").trim() || "default",
+    String(connectorId || "").trim() || "default",
+  ].join(".");
+}
+
+function readPreferredLocalConnectorId() {
+  return String(
+    localStorage.getItem(localConnectorPreferenceStorageKey()) || "",
+  ).trim();
+}
+
+function writePreferredLocalConnectorId(connectorId) {
+  const normalized = String(connectorId || "").trim();
+  const key = localConnectorPreferenceStorageKey();
+  if (normalized) {
+    localStorage.setItem(key, normalized);
+    return;
+  }
+  localStorage.removeItem(key);
+}
+
+function readPreferredLocalWorkspacePath(projectId, connectorId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedConnectorId = String(connectorId || "").trim();
+  if (!normalizedProjectId || !normalizedConnectorId) return "";
+  return String(
+    localStorage.getItem(
+      localConnectorWorkspaceStorageKey(
+        normalizedProjectId,
+        normalizedConnectorId,
+      ),
+    ) || "",
+  ).trim();
+}
+
+function writePreferredLocalWorkspacePath(
+  projectId,
+  connectorId,
+  workspacePath,
+) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedConnectorId = String(connectorId || "").trim();
+  if (!normalizedProjectId || !normalizedConnectorId) return;
+  const normalizedWorkspacePath = String(workspacePath || "").trim();
+  const key = localConnectorWorkspaceStorageKey(
+    normalizedProjectId,
+    normalizedConnectorId,
+  );
+  if (normalizedWorkspacePath) {
+    localStorage.setItem(key, normalizedWorkspacePath);
+    return;
+  }
+  localStorage.removeItem(key);
+}
+
+function skillResourceDirectoryStorageKey(projectId, connectorId) {
+  return [
+    LOCAL_CONNECTOR_STORAGE_PREFIX,
+    "skill_dir",
+    resolveCurrentUsername(),
+    String(projectId || "").trim() || "default",
+    String(connectorId || "").trim() || "default",
+  ].join(".");
+}
+
+function readPreferredSkillResourceDirectory(projectId, connectorId) {
+  return String(
+    localStorage.getItem(
+      skillResourceDirectoryStorageKey(projectId, connectorId),
+    ) || "",
+  ).trim();
+}
+
+function writePreferredSkillResourceDirectory(
+  projectId,
+  connectorId,
+  directoryPath,
+) {
+  const normalized = String(directoryPath || "").trim();
+  const key = skillResourceDirectoryStorageKey(projectId, connectorId);
+  if (normalized) {
+    localStorage.setItem(key, normalized);
+    return;
+  }
+  localStorage.removeItem(key);
+}
+
+function buildProjectProvidersRequestUrl(
+  projectId,
+  connectorId,
+  workspacePath,
+) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const params = new URLSearchParams();
+  const normalizedConnectorId = String(connectorId || "").trim();
+  const normalizedWorkspacePath = String(workspacePath || "").trim();
+  if (normalizedConnectorId) {
+    params.set("local_connector_id", normalizedConnectorId);
+  }
+  if (normalizedConnectorId && normalizedWorkspacePath) {
+    params.set("connector_workspace_path", normalizedWorkspacePath);
+  }
+  const query = params.toString();
+  return `/projects/${encodeURIComponent(normalizedProjectId)}/chat/providers${query ? `?${query}` : ""}`;
+}
+
+function applyLocalConnectorRuntimeSettings(
+  baseSettings,
+  projectId,
+  connectors = [],
+) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const availableConnectors = Array.isArray(connectors) ? connectors : [];
+  let connectorId = String(
+    baseSettings?.local_connector_id || readPreferredLocalConnectorId() || "",
+  ).trim();
+  if (
+    connectorId &&
+    availableConnectors.length &&
+    !availableConnectors.some(
+      (item) => String(item?.id || "").trim() === connectorId,
+    )
+  ) {
+    connectorId = "";
+    writePreferredLocalConnectorId("");
+  }
+  const workspacePath = connectorId
+    ? readPreferredLocalWorkspacePath(normalizedProjectId, connectorId)
+    : "";
+  return normalizeProjectChatSettings({
+    ...(baseSettings && typeof baseSettings === "object" ? baseSettings : {}),
+    local_connector_id: connectorId,
+    connector_workspace_path: workspacePath,
+  });
+}
+
 const loading = ref(false);
 const chatLoading = ref(false);
 const settingsSaving = ref(false);
 const workspacePathSaving = ref(false);
 const workspacePathTesting = ref(false);
+const autoSaveState = ref("idle");
+const autoSaveUpdatedAt = ref("");
+const projectSettingsHydrating = ref(false);
 
 const projects = ref([]);
 const chatModes = ref([
@@ -1416,6 +2817,8 @@ const chatModes = ref([
   { id: "external_agent", label: "外部 Agent" },
 ]);
 const providers = ref([]);
+const localConnectors = ref([]);
+const desktopConnectorArtifacts = ref([]);
 const projectEmployees = ref([]);
 const externalAgentInfo = ref({
   agent_type: "codex_cli",
@@ -1425,7 +2828,7 @@ const externalAgentInfo = ref({
   command_source: "missing",
   runtime_model_name: "codex-cli",
   exact_model_name: "",
-  execution_mode: "local",
+  execution_mode: "local_connector",
   runner_url: "",
   materialized_by: "",
   available: false,
@@ -1439,6 +2842,9 @@ const externalAgentInfo = ref({
   thread_id: "",
   sandbox_mode: "workspace-write",
   workspace_path: "",
+  local_connector_id: "",
+  local_connector_name: "",
+  local_connector_online: false,
   sandbox_modes: ["read-only", "workspace-write"],
   agent_types: [],
 });
@@ -1451,7 +2857,40 @@ const mcpModules = ref({
     external_total: 0,
   },
 });
+const runtimeExternalTools = ref([]);
 const messages = ref([]);
+const chatSessions = ref([]);
+const employeeDraftCatalog = ref({
+  skills: [],
+  rules: [],
+  loaded_at: 0,
+});
+const employeeDraftCreatingKey = ref("");
+const employeeDraftDialogVisible = ref(false);
+const employeeDraftDialogLoading = ref(false);
+const employeeDraftDialogPayload = ref(null);
+const employeeDraftDialogItem = ref(null);
+const employeeDraftExternalSkillSites = ref([]);
+const employeeDraftAutoCreateSkills = ref(true);
+const employeeDraftAutoCreateRules = ref(true);
+const employeeDraftAddToProject = ref(false);
+const employeeDraftAutoRuleGenerationEnabled = ref(true);
+const employeeDraftAutoRuleGenerationSourceFilters = ref([
+  "prompts_chat_curated",
+]);
+const employeeDraftAutoRuleGenerationMaxCount = ref(3);
+const skillResourceDialogVisible = ref(false);
+const skillResourceDirectoryDraft = ref("");
+const skillResourceDirectoryPicking = ref(false);
+const skillResourceSearchQuery = ref("");
+const skillResourceSearchResults = ref([]);
+const skillResourceSearchResolvedQueries = ref([]);
+const skillResourceSearchLoading = ref(false);
+const skillResourceInstallingSlug = ref("");
+const codePreviewVisible = ref(false);
+const codePreviewTitle = ref("代码预览");
+const codePreviewSrcdoc = ref("");
+const codePreviewError = ref("");
 
 const selectedProjectId = ref("");
 const selectedEmployeeIds = ref([]);
@@ -1459,17 +2898,35 @@ const selectedProviderId = ref("");
 const selectedModelName = ref("");
 const defaultProviderId = ref("");
 const defaultModelName = ref("");
+const globalDefaultProviderId = ref("");
+const globalDefaultModelName = ref("");
 const temperature = ref(0.1);
 const systemPrompt = ref("");
 const activeMcpSource = ref("system");
 const showSettingsDialog = ref(false);
+const activeSettingsPanel = ref("chat");
 const activeSystemScope = ref("project_related");
 const selectedProjectToolNames = ref([]);
 const projectChatSettings = ref({ ...CHAT_SETTINGS_DEFAULTS });
+const projectWorkspacePath = ref("");
 const workspacePathDraft = ref("");
+const projectAiEntryFile = ref("");
+const aiEntryFileDraft = ref("");
 const singleRoundAnswerOnly = ref(false);
+const employeeCreateSubmitting = ref(false);
+const activeComposerAssist = ref("");
 const externalMcpTotal = ref(0);
 const agentStatusExpanded = ref(false);
+const currentChatSessionId = ref("");
+const creatingChatSession = ref(false);
+const deletingChatSessionId = ref("");
+const downloadingDesktopArtifactKey = ref("");
+const localConnectorRefreshing = ref(false);
+const localConnectorPairing = ref(false);
+const workspacePathPicking = ref(false);
+const aiEntryFilePicking = ref(false);
+const aiEntryFileSaving = ref(false);
+let connectorPollTimer = null;
 
 const wsConnected = ref(false);
 const wsClient = ref(null);
@@ -1487,6 +2944,10 @@ const terminalPanelStatus = ref("idle");
 const terminalPanelInput = ref("");
 const terminalMirrorConnected = ref(false);
 const terminalDebugInputVisible = ref(false);
+const inlineEditingMessageIndex = ref(-1);
+const inlineEditingMessageId = ref("");
+const inlineEditingDraft = ref("");
+const inlineEditingBusy = ref(false);
 
 const maxUploadLimit = ref(6);
 const chatMaxTokens = ref(512);
@@ -1502,8 +2963,19 @@ const selectedChatMode = computed({
     });
   },
 });
+const hasSelectedProject = computed(() =>
+  Boolean(String(selectedProjectId.value || "").trim()),
+);
+const canUseExternalAgent = computed(
+  () =>
+    hasSelectedProject.value &&
+    (chatModes.value || []).some(
+      (item) => String(item?.id || "").trim() === "external_agent",
+    ),
+);
 const isExternalAgentMode = computed(
-  () => selectedChatMode.value === "external_agent",
+  () =>
+    canUseExternalAgent.value && selectedChatMode.value === "external_agent",
 );
 const chatModeLabel = computed(() =>
   isExternalAgentMode.value ? "外部 Agent" : "系统对话",
@@ -1516,35 +2988,89 @@ const workspacePathResolved = computed(() =>
 const workspacePathDraftNormalized = computed(() =>
   String(workspacePathDraft.value || "").trim(),
 );
-const workspacePathConfigured = computed(
-  () => !!workspacePathResolved.value,
+const aiEntryFileResolved = computed(() =>
+  String(projectAiEntryFile.value || "").trim(),
+);
+const aiEntryFileDraftNormalized = computed(() =>
+  String(aiEntryFileDraft.value || "").trim(),
+);
+const workspacePathConfigured = computed(() => !!workspacePathResolved.value);
+const externalAgentConnectorRequired = computed(
+  () => isExternalAgentMode.value && !usingLocalConnector.value,
 );
 const workspacePathDirty = computed(() => {
   if (!isExternalAgentMode.value) return false;
   return workspacePathDraftNormalized.value !== workspacePathResolved.value;
 });
-const externalAgentDisplayLabel = computed(() =>
-  String(externalAgentInfo.value.label || "外部 Agent").trim() || "外部 Agent",
+const aiEntryFileDirty = computed(
+  () => aiEntryFileDraftNormalized.value !== aiEntryFileResolved.value,
+);
+const activeLocalConnector = computed(() => {
+  const connectorId = String(
+    projectChatSettings.value.local_connector_id || "",
+  ).trim();
+  if (!connectorId) return null;
+  return (
+    (localConnectors.value || []).find(
+      (item) => String(item?.id || "").trim() === connectorId,
+    ) || null
+  );
+});
+const usingLocalConnector = computed(() => Boolean(activeLocalConnector.value));
+const activeLocalConnectorProviderId = computed(() => {
+  const connectorId = String(
+    projectChatSettings.value.local_connector_id || "",
+  ).trim();
+  if (!connectorId) return "";
+  return String(
+    (providers.value || []).find(
+      (item) =>
+        item?.provider_type === "local-connector" &&
+        String(item?.connector_id || "").trim() === connectorId,
+    )?.id || "",
+  ).trim();
+});
+const providerDisplayNameMap = computed(() => {
+  const map = new Map();
+  for (const item of providers.value || []) {
+    const providerId = String(item?.id || "").trim();
+    if (!providerId) continue;
+    map.set(providerId, String(item?.name || providerId).trim());
+  }
+  return map;
+});
+const externalAgentDisplayLabel = computed(
+  () =>
+    String(externalAgentInfo.value.label || "外部 Agent").trim() ||
+    "外部 Agent",
 );
 const externalAgentAvailabilityLabel = computed(() => {
+  if (externalAgentInfo.value.command_source === "local_connector_required") {
+    return "需连接器";
+  }
   if (externalAgentInfo.value.available) return "可用";
   if (externalAgentInfo.value.installed) return "已安装待接入";
   return "未发现";
 });
-const externalAgentRuntimeLabel = computed(() =>
-  String(
-    externalAgentInfo.value.runtime_model_name ||
-      externalAgentInfo.value.agent_type ||
-      "external-agent",
-  ).trim() || "external-agent",
+const externalAgentRuntimeLabel = computed(
+  () =>
+    String(
+      externalAgentInfo.value.runtime_model_name ||
+        externalAgentInfo.value.agent_type ||
+        "external-agent",
+    ).trim() || "external-agent",
 );
 const externalAgentStatusSummary = computed(() => {
   const parts = [
     externalAgentDisplayLabel.value,
     externalAgentRuntimeLabel.value,
-    externalAgentInfo.value.execution_mode === "runner" ? "宿主 Runner" : "本地执行",
-    String(externalAgentInfo.value.sandbox_mode || "workspace-write").trim() || "workspace-write",
+    "本地连接器",
+    String(externalAgentInfo.value.sandbox_mode || "workspace-write").trim() ||
+      "workspace-write",
   ];
+  if (externalAgentInfo.value.local_connector_name) {
+    parts.push(externalAgentInfo.value.local_connector_name);
+  }
   if (externalAgentInfo.value.thread_id) {
     parts.push(`Thread ${shortThreadId.value}`);
   }
@@ -1552,6 +3078,7 @@ const externalAgentStatusSummary = computed(() => {
 });
 const chatHeaderStatusText = computed(() => {
   if (!isExternalAgentMode.value) return wsStatusText.value;
+  if (externalAgentConnectorRequired.value) return "未选择连接器";
   if (!workspacePathConfigured.value) return "未配置工作区";
   if (workspacePathDirty.value) return "工作区未保存";
   if (externalAgentWarmupLoading.value) return "预热中";
@@ -1560,17 +3087,29 @@ const chatHeaderStatusText = computed(() => {
 });
 const chatHeaderStatusType = computed(() => {
   if (!isExternalAgentMode.value) return wsStatusType.value;
-  if (!workspacePathConfigured.value || workspacePathDirty.value) return "warning";
+  if (externalAgentConnectorRequired.value) return "warning";
+  if (!workspacePathConfigured.value || workspacePathDirty.value)
+    return "warning";
   if (externalAgentWarmupLoading.value) return "warning";
   if (externalAgentInfo.value.ready) return "success";
   return "info";
 });
 const chatHeaderSubtext = computed(() => {
+  if (!hasAccessibleProjects.value) {
+    return "当前账号未分配任何项目";
+  }
+  if (!hasSelectedProject.value) {
+    return ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+      ? "当前是通用对话；选择项目后可切换到项目上下文"
+      : "请先在顶部选择项目后开始对话";
+  }
   if (!isExternalAgentMode.value) {
     const provider = String(
       selectedProviderId.value || defaultProviderId.value || "",
     ).trim();
-    const model = String(selectedModelName.value || defaultModelName.value || "",).trim();
+    const model = String(
+      selectedModelName.value || defaultModelName.value || "",
+    ).trim();
     if (provider && model) return `${provider} · ${model}`;
     if (model) return `当前模型 ${model}`;
     return "系统对话";
@@ -1578,19 +3117,273 @@ const chatHeaderSubtext = computed(() => {
   const parts = [
     `${externalAgentDisplayLabel.value} 对话`,
     externalAgentRuntimeLabel.value,
-    externalAgentInfo.value.execution_mode === "runner" ? "宿主 Runner" : "本地执行",
+    "本地连接器",
   ];
+  if (externalAgentConnectorRequired.value) {
+    parts.push("待选择连接器");
+  }
+  if (externalAgentInfo.value.local_connector_name) {
+    parts.push(externalAgentInfo.value.local_connector_name);
+  }
   if (shortThreadId.value) {
     parts.push(`Thread ${shortThreadId.value}`);
   }
   return parts.filter(Boolean).join(" · ");
+});
+const currentUsername = computed(() => resolveCurrentUsername());
+const currentUsernameInitial = computed(
+  () =>
+    String(currentUsername.value || "?")
+      .trim()
+      .slice(0, 1)
+      .toUpperCase() || "?",
+);
+
+async function logoutFromChat() {
+  try {
+    await ElMessageBox.confirm("确认退出当前登录账号？", "退出登录", {
+      confirmButtonText: "退出",
+      cancelButtonText: "取消",
+      type: "warning",
+    });
+  } catch {
+    return;
+  }
+  localStorage.removeItem("token");
+  localStorage.removeItem("username");
+  localStorage.removeItem("role");
+  clearPermissionArray();
+  router.replace("/login");
+}
+
+const localConnectorSummary = computed(() => {
+  if (!isExternalAgentMode.value) {
+    return usingLocalConnector.value ? "已绑定连接器" : "未使用";
+  }
+  if (externalAgentConnectorRequired.value) {
+    return "待选择连接器";
+  }
+  if (!activeLocalConnector.value) {
+    return "未连接";
+  }
+  const connectorName = String(
+    activeLocalConnector.value.connector_name ||
+      activeLocalConnector.value.id ||
+      "",
+  ).trim();
+  const onlineText = activeLocalConnector.value.online ? "在线" : "离线";
+  return [connectorName || "本地连接器", onlineText]
+    .filter(Boolean)
+    .join(" · ");
+});
+const currentProjectLabel = computed(() => {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) return "未选择";
+  const matched = (projects.value || []).find((item) => item.id === projectId);
+  return String(matched?.name || projectId);
+});
+const skillResourceSites = computed(() =>
+  (employeeDraftExternalSkillSites.value || [])
+    .map(normalizeEmployeeDraftExternalSkillSite)
+    .filter((item) => item.title && item.url),
+);
+const skillResourceDirectoryStored = computed(() =>
+  readPreferredSkillResourceDirectory(
+    selectedProjectId.value,
+    projectChatSettings.value.local_connector_id,
+  ),
+);
+const skillResourceDirectoryResolved = computed(
+  () =>
+    String(
+      skillResourceDirectoryDraft.value || skillResourceDirectoryStored.value,
+    ).trim(),
+);
+const settingsCenterItems = computed(() =>
+  [
+    {
+      id: "chat",
+      label: "对话设置",
+      desc: "当前项目的 AI 对话运行参数",
+      kind: "internal",
+    },
+    {
+      id: "system-config",
+      label: "系统配置",
+      desc: "全局系统开关与默认项",
+      kind: "route",
+      path: "/system/config",
+      permission: "menu.system.config",
+    },
+    {
+      id: "providers",
+      label: "模型供应商",
+      desc: "管理平台模型源",
+      kind: "route",
+      path: "/llm/providers",
+      permission: "menu.llm.providers",
+    },
+    {
+      id: "projects",
+      label: "项目管理",
+      desc: "查看和维护项目列表",
+      kind: "route",
+      path: "/projects",
+      permission: "menu.projects",
+    },
+    {
+      id: "employees",
+      label: "员工管理",
+      desc: "管理员工与能力绑定",
+      kind: "route",
+      path: "/employees",
+      permission: "menu.employees",
+    },
+    {
+      id: "skills",
+      label: "技能目录",
+      desc: "维护可复用技能",
+      kind: "route",
+      path: "/skills",
+      permission: "menu.skills",
+    },
+    {
+      id: "rules",
+      label: "规则管理",
+      desc: "管理系统规则",
+      kind: "route",
+      path: "/rules",
+      permission: "menu.rules",
+    },
+    {
+      id: "users",
+      label: "用户管理",
+      desc: "账号与权限视图",
+      kind: "route",
+      path: "/users",
+      permission: "menu.users",
+    },
+    {
+      id: "roles",
+      label: "角色管理",
+      desc: "角色和权限配置",
+      kind: "route",
+      path: "/roles",
+      permission: "menu.roles",
+    },
+    {
+      id: "api-keys",
+      label: "API Key",
+      desc: "使用控制和密钥管理",
+      kind: "route",
+      path: "/usage/keys",
+      permission: "menu.usage.keys",
+    },
+  ].filter((item) => !item.permission || hasPermission(item.permission)),
+);
+const settingsInternalItems = computed(() =>
+  settingsCenterItems.value.filter((item) => item.kind === "internal"),
+);
+const settingsRouteItems = computed(() =>
+  settingsCenterItems.value.filter((item) => item.kind === "route"),
+);
+const activeSettingsPanelItem = computed(
+  () =>
+    settingsCenterItems.value.find(
+      (item) => item.id === String(activeSettingsPanel.value || "").trim(),
+    ) ||
+    settingsCenterItems.value[0] ||
+    null,
+);
+const activeSettingsIframeSrc = computed(() => {
+  const item = activeSettingsPanelItem.value;
+  if (!item || item.kind !== "route" || !item.path) return "";
+  if (typeof window === "undefined") return "";
+  return `${window.location.pathname}?embedded=1#${item.path}`;
+});
+const selectedEmployeeSummary = computed(() => {
+  const selectedCount = Array.isArray(selectedEmployeeIds.value)
+    ? selectedEmployeeIds.value.length
+    : 0;
+  const total = Array.isArray(projectEmployees.value)
+    ? projectEmployees.value.length
+    : 0;
+  if (!total) return "暂无员工";
+  if (!selectedCount) return `全部员工 (${total})`;
+  if (selectedCount === 1) {
+    const selectedId = String(selectedEmployeeIds.value[0] || "").trim();
+    const matched = (projectEmployees.value || []).find(
+      (item) => String(item.id || "").trim() === selectedId,
+    );
+    return String(matched?.name || selectedId || "1 名员工");
+  }
+  return `${selectedCount} 名员工`;
+});
+const currentModelSummary = computed(() => {
+  if (isExternalAgentMode.value) {
+    return externalAgentDisplayLabel.value || "外部 Agent";
+  }
+  const provider = String(
+    selectedProviderId.value || defaultProviderId.value || "",
+  ).trim();
+  const providerLabel = providerDisplayNameMap.value.get(provider) || provider;
+  const model = String(
+    selectedModelName.value || defaultModelName.value || "",
+  ).trim();
+  if (providerLabel && model) return `${providerLabel} / ${model}`;
+  if (model) return model;
+  if (providerLabel) return providerLabel;
+  return "系统默认";
+});
+const activeChatSessionTitle = computed(() => {
+  const sessionId = String(currentChatSessionId.value || "").trim();
+  if (!sessionId) return "新对话";
+  const matched = (chatSessions.value || []).find(
+    (item) => item.id === sessionId,
+  );
+  return String(matched?.title || "新对话").trim() || "新对话";
+});
+const autoSaveStatusText = computed(() => {
+  if (!selectedProjectId.value) return "未选择项目";
+  if (projectSettingsHydrating.value) return "正在同步项目配置...";
+  if (settingsSaving.value || autoSaveState.value === "saving") {
+    return "配置保存中...";
+  }
+  if (autoSaveState.value === "error") return "自动保存失败";
+  if (autoSaveUpdatedAt.value) return `已自动保存 ${autoSaveUpdatedAt.value}`;
+  return "修改后自动保存";
 });
 const externalAgentOptions = computed(() =>
   Array.isArray(externalAgentInfo.value.agent_types)
     ? externalAgentInfo.value.agent_types
     : [],
 );
+const hasAccessibleProjects = computed(
+  () => Array.isArray(projects.value) && projects.value.length > 0,
+);
+const groupedChatSessions = computed(() => {
+  const groups = new Map();
+  for (const session of chatSessions.value || []) {
+    const label = resolveChatSessionGroupLabel(session);
+    if (!groups.has(label)) {
+      groups.set(label, []);
+    }
+    groups.get(label).push(session);
+  }
+  return Array.from(groups.entries()).map(([label, items]) => ({
+    label,
+    items,
+  }));
+});
 const starterPrompts = computed(() => {
+  if (!hasSelectedProject.value && ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT) {
+    return [
+      "帮我梳理这个问题的思路",
+      "先给结论，再展开步骤",
+      "把我的想法优化成可执行方案",
+    ];
+  }
+  if (!hasAccessibleProjects.value || !hasSelectedProject.value) return [];
   if (isExternalAgentMode.value) {
     return [
       "先帮我审一下当前项目结构",
@@ -1604,7 +3397,31 @@ const starterPrompts = computed(() => {
     "把需求拆成可执行步骤",
   ];
 });
+const emptyStateTitle = computed(() => {
+  if (!hasAccessibleProjects.value) return "暂无可访问项目";
+  if (!hasSelectedProject.value) {
+    return ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+      ? "开始一轮通用对话"
+      : "先选择一个项目";
+  }
+  return "开始一轮新的对话";
+});
 const emptyStateText = computed(() => {
+  if (!hasAccessibleProjects.value) {
+    if (activeComposerAssistMeta.value?.id === "employee_create") {
+      return "当前没有可访问项目，但你仍然可以直接描述岗位职责，AI 会先帮你生成员工草稿，确认后即可创建到员工管理。";
+    }
+    return ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+      ? "当前账号还没有被分配任何项目，但你仍然可以直接进行通用对话；如果需要创建 AI 员工，也可以点击“创建员工”。"
+      : "当前账号还没有被分配任何项目。你仍然可以点击“创建员工”，先在这里生成并创建 AI 员工。";
+  }
+  if (!hasSelectedProject.value) {
+    return activeComposerAssistMeta.value?.id === "employee_create"
+      ? "当前将直接生成员工草稿，无需选择项目；确认后会直接创建到员工管理。"
+      : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+        ? "当前是通用对话模式。你可以直接聊天；如果需要项目上下文、项目员工或外部 Agent，再从顶部选择项目。"
+        : "请先从顶部选择一个项目，再进行普通对话、上传附件或使用项目级外部 Agent。";
+  }
   if (isExternalAgentMode.value) {
     return workspacePathConfigured.value
       ? `当前会话会把消息发送给 ${externalAgentDisplayLabel.value}，你可以直接让它查看代码、修改文件或执行工作区内任务。`
@@ -1614,21 +3431,54 @@ const emptyStateText = computed(() => {
 });
 
 const composerPlaceholder = computed(() =>
-  isExternalAgentMode.value
-    ? `向${externalAgentDisplayLabel.value}发送输入，按 Enter 发送，Shift + Enter 换行。`
-    : "输入你的问题，按 Enter 发送，Shift + Enter 换行。支持粘贴图片。",
+  !hasAccessibleProjects.value
+    ? activeComposerAssistMeta.value?.id === "employee_create"
+      ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
+      : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+        ? "当前没有可访问项目，也可以直接开始通用对话；如需创建员工，可点击上方“创建员工”。"
+        : "当前没有可访问项目；如需创建员工，可先点击上方“创建员工”。"
+    : !hasSelectedProject.value
+      ? activeComposerAssistMeta.value?.id === "employee_create"
+        ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
+        : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+          ? "直接输入问题开始通用对话；如需项目上下文，再从顶部选择项目。"
+          : "请先从顶部选择项目；如需快速创建员工，也可直接点击“创建员工”。"
+      : isExternalAgentMode.value
+        ? `向${externalAgentDisplayLabel.value}发送输入，按 Enter 发送，Shift + Enter 换行。`
+        : "输入你的问题，按 Enter 发送，Shift + Enter 换行。支持粘贴图片。",
 );
 const composerHintText = computed(() => {
-  if (!isExternalAgentMode.value) return "Enter 发送，Shift + Enter 换行";
+  if (!hasAccessibleProjects.value) {
+    return activeComposerAssistMeta.value?.id === "employee_create"
+      ? "当前将直接生成员工草稿，无需选择项目"
+      : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+        ? "当前是通用对话"
+        : "暂无可访问项目";
+  }
+  if (!hasSelectedProject.value) {
+    return activeComposerAssistMeta.value?.id === "employee_create"
+      ? "当前将直接生成员工草稿，无需选择项目"
+      : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+        ? "当前是通用对话，Enter 发送"
+        : "请先选择项目";
+  }
+  if (!isExternalAgentMode.value) {
+    if (activeComposerAssistMeta.value) {
+      return `${activeComposerAssistMeta.value.label} 已激活，Enter 发送`;
+    }
+    return "Enter 发送，Shift + Enter 换行";
+  }
   if (!workspacePathConfigured.value) return "先配置项目工作区路径";
   if (workspacePathDirty.value) return "工作区路径有未保存修改";
-  if (externalAgentWarmupLoading.value) return `${externalAgentDisplayLabel.value} 预热中...`;
-  if (externalAgentInfo.value.ready) return `${externalAgentDisplayLabel.value} 已就绪，Enter 发送，Shift + Enter 换行`;
+  if (externalAgentWarmupLoading.value)
+    return `${externalAgentDisplayLabel.value} 预热中...`;
+  if (externalAgentInfo.value.ready)
+    return `${externalAgentDisplayLabel.value} 已就绪，Enter 发送，Shift + Enter 换行`;
   return `Enter 发送到 ${externalAgentDisplayLabel.value}，Shift + Enter 换行`;
 });
 const shortThreadId = computed(() => {
-  const value = String(externalAgentInfo.value.thread_id || '').trim();
-  return value ? value.slice(0, 8) : '';
+  const value = String(externalAgentInfo.value.thread_id || "").trim();
+  return value ? value.slice(0, 8) : "";
 });
 const terminalPanelStatusText = computed(() => {
   if (!isExternalAgentMode.value) return "未启用";
@@ -1637,10 +3487,7 @@ const terminalPanelStatusText = computed(() => {
     return "运行中";
   }
   if (externalAgentWarmupLoading.value) return "预热中";
-  if (
-    terminalPanelStatus.value === "ready" ||
-    externalAgentInfo.value.ready
-  ) {
+  if (terminalPanelStatus.value === "ready" || externalAgentInfo.value.ready) {
     return "待命";
   }
   return "未就绪";
@@ -1660,11 +3507,7 @@ const terminalPanelText = computed(() => {
       "codex",
   ).trim();
   const cwd = String(externalAgentInfo.value.workspace_path || "").trim();
-  return [
-    `# ${command}`,
-    cwd ? `# cwd ${cwd}` : "",
-    "# 等待外部 Agent 新请求…",
-  ]
+  return [`# ${command}`, cwd ? `# cwd ${cwd}` : "", "# 等待外部 Agent 新请求…"]
     .filter(Boolean)
     .join("\n");
 });
@@ -1674,6 +3517,52 @@ const availableModels = computed(() => {
     (item) => item.id === selectedProviderId.value,
   );
   return Array.isArray(selected?.models) ? selected.models : [];
+});
+const providerModelGroups = computed(() =>
+  (providers.value || [])
+    .map((provider) => {
+      const providerId = String(provider?.id || "").trim();
+      const providerLabel = String(
+        provider?.name || providerId || "未命名供应商",
+      ).trim();
+      const models = Array.isArray(provider?.models)
+        ? provider.models
+            .map((item) => String(item || "").trim())
+            .filter(Boolean)
+        : [];
+      return {
+        providerId,
+        label: providerLabel,
+        options: models.map((modelName) => ({
+          value: `${providerId}::${modelName}`,
+          modelName,
+          providerId,
+          providerLabel,
+          label: `${modelName} · ${providerLabel}`,
+        })),
+      };
+    })
+    .filter((group) => group.providerId && group.options.length),
+);
+const selectedModelOptionValue = computed({
+  get() {
+    const providerId = String(selectedProviderId.value || "").trim();
+    const modelName = String(selectedModelName.value || "").trim();
+    if (!providerId || !modelName) return "";
+    return `${providerId}::${modelName}`;
+  },
+  set(value) {
+    const normalized = String(value || "").trim();
+    if (!normalized) {
+      selectedProviderId.value = "";
+      selectedModelName.value = "";
+      return;
+    }
+    const separatorIndex = normalized.indexOf("::");
+    if (separatorIndex < 0) return;
+    selectedProviderId.value = normalized.slice(0, separatorIndex);
+    selectedModelName.value = normalized.slice(separatorIndex + 2);
+  },
 });
 
 const systemProjectRelatedModules = computed(() => {
@@ -1703,6 +3592,97 @@ const projectToolModules = computed(() =>
     String(item?.tool_name || "").trim(),
   ),
 );
+const promptsChatToolMap = computed(() => {
+  const toolMap = {};
+  for (const item of runtimeExternalTools.value) {
+    const source = String(item?.module_source || "")
+      .trim()
+      .toLowerCase();
+    const moduleName = String(item?.module_name || "")
+      .trim()
+      .toLowerCase();
+    const remoteToolName = String(item?.remote_tool_name || "").trim();
+    const toolName = String(item?.tool_name || "").trim();
+    if (!toolName || !remoteToolName) continue;
+    if (source !== "system_config") continue;
+    if (!["prompts.chat", "prompts-chat"].includes(moduleName)) continue;
+    toolMap[remoteToolName] = toolName;
+  }
+  return toolMap;
+});
+const composerAssistActions = computed(() => {
+  const toolMap = promptsChatToolMap.value;
+  const actions = [];
+  actions.push({
+    id: "employee_create",
+    icon: "employee",
+    label: "创建员工",
+    shortDesc: "描述职责，自动创建员工",
+    activeText:
+      "本轮会优先调用系统能力检索与已接入 MCP 能力，完善技能和规则建议，并在返回草稿后自动创建员工。",
+    seedText:
+      "我要创建一个新员工，主要负责【在这里补充角色职责】。请优先结合系统能力库和已接入的 MCP 能力，整理出合适的技能、规则和工作方式建议，并输出成可直接创建的员工草稿，系统会在你输出后自动创建员工并绑定相关能力。",
+    toolNames: [
+      toolMap.search_skills,
+      toolMap.get_skill,
+      toolMap.search_prompts,
+      toolMap.get_prompt,
+      toolMap.improve_prompt,
+    ].filter(Boolean),
+    promptOnly: true,
+    instruction:
+      "请先调用当前可用的系统能力检索工具和 MCP 能力，补全最合适的技能、规则建议与工作流，再把用户需求整理成一个可直接创建的 AI 员工草稿；输出先给简短说明，最后必须附带一个严格 JSON 的 ```employee-draft``` 代码块。若从 prompts.chat 或其他外部能力中提炼出可直接落地的规则，请写入 rule_drafts 数组（title、domain、content，可选 source_label、source_url）；系统会据此创建本地规则并绑定到员工身上。",
+  });
+  if (toolMap.search_prompts || toolMap.get_prompt) {
+    actions.push({
+      id: "prompt_search",
+      icon: "search",
+      label: "搜提示词",
+      shortDesc: "先搜参考再创作",
+      activeText: "本轮会优先搜索已接入的提示词库作为创作参考。",
+      seedText:
+        "我想做一个关于【在这里补充任务/场景】的提示词，请先搜索相关参考，再帮我整理成适合当前场景的最终版本。",
+      toolNames: [toolMap.search_prompts, toolMap.get_prompt].filter(Boolean),
+      instruction:
+        "请优先调用当前可用的提示词检索工具搜索相关提示词；如有合适候选，再调用详情工具读取细节，然后基于检索结果完成创作。",
+    });
+  }
+  if (toolMap.improve_prompt) {
+    actions.push({
+      id: "prompt_improve",
+      icon: "improve",
+      label: "优化提示词",
+      shortDesc: "把草稿升级成成品",
+      activeText: "本轮会优先调用已接入的提示词增强能力来优化你的草稿。",
+      seedText:
+        "请把下面这段基础提示词优化成结构清晰、可直接使用的高质量版本：\n\n【把你的草稿写在这里】",
+      toolNames: [toolMap.improve_prompt],
+      instruction:
+        "请优先调用当前可用的提示词增强能力强化用户输入，并输出最终可直接复制使用的成品提示词。",
+    });
+  }
+  if (toolMap.search_skills || toolMap.get_skill) {
+    actions.push({
+      id: "skill_search",
+      icon: "skill",
+      label: "找技能模板",
+      shortDesc: "先找技能再生成",
+      activeText: "本轮会优先搜索已接入的技能模板库作为创作依据。",
+      seedText:
+        "我想完成【在这里补充任务/场景】，请先搜索合适的 Agent Skill / 技能模板，再帮我整理成可执行方案或提示词。",
+      toolNames: [toolMap.search_skills, toolMap.get_skill].filter(Boolean),
+      instruction:
+        "请优先调用当前可用的技能检索工具搜索相关技能；如有高匹配项，再调用详情工具获取细节，并基于结果完成输出。",
+    });
+  }
+  return actions;
+});
+const activeComposerAssistMeta = computed(
+  () =>
+    composerAssistActions.value.find(
+      (item) => item.id === String(activeComposerAssist.value || "").trim(),
+    ) || null,
+);
 const projectToolNameOptions = computed(() =>
   projectToolModules.value
     .map((item) => String(item?.tool_name || "").trim())
@@ -1719,11 +3699,15 @@ const fileTypeOptions = computed(() =>
 );
 
 const messagesContainer = ref(null);
+const projectSwitcherRef = ref(null);
 const draftText = ref("");
 const editorComposing = ref(false);
 const uploadFiles = ref([]);
 const inputFocused = ref(false);
 const isDragging = ref(false);
+let autoSaveTimer = null;
+let lastAutoSavedFingerprint = "";
+const projectSwitcherMenuWidth = ref(0);
 const IMAGE_EXTENSIONS = new Set([
   "png",
   "jpg",
@@ -1750,6 +3734,202 @@ function normalizeStringList(values, max = 200) {
     if (items.length >= max) break;
   }
   return items;
+}
+
+function syncProjectSwitcherMenuWidth() {
+  nextTick(() => {
+    const element = projectSwitcherRef.value;
+    const width = Number(element?.offsetWidth || 0);
+    if (width > 0) {
+      projectSwitcherMenuWidth.value = width;
+    }
+  });
+}
+
+const projectSwitcherMenuStyle = computed(() => {
+  const width = Number(projectSwitcherMenuWidth.value || 0);
+  if (!width) return {};
+  return {
+    width: `${width}px`,
+    minWidth: `${width}px`,
+    maxWidth: "calc(100vw - 24px)",
+  };
+});
+
+function chatSessionStorageKey(projectId) {
+  const normalized = String(projectId || "").trim();
+  return normalized ? `project_chat_session_${normalized}` : "";
+}
+
+function rememberChatSession(projectId, sessionId) {
+  const key = chatSessionStorageKey(projectId);
+  if (!key) return;
+  const normalized = String(sessionId || "").trim();
+  if (normalized) {
+    localStorage.setItem(key, normalized);
+  } else {
+    localStorage.removeItem(key);
+  }
+}
+
+function restoreChatSession(projectId) {
+  const key = chatSessionStorageKey(projectId);
+  if (!key) return "";
+  return String(localStorage.getItem(key) || "").trim();
+}
+
+function clearChatSessionMemory(projectId) {
+  const key = chatSessionStorageKey(projectId);
+  if (key) {
+    localStorage.removeItem(key);
+  }
+}
+
+function normalizeChatSession(item) {
+  return {
+    id: String(item?.id || "").trim(),
+    title: String(item?.title || "新对话").trim() || "新对话",
+    preview: String(item?.preview || "").trim(),
+    message_count: Number(item?.message_count || 0),
+    created_at: String(item?.created_at || "").trim(),
+    updated_at: String(item?.updated_at || "").trim(),
+    last_message_at: String(item?.last_message_at || "").trim(),
+  };
+}
+
+function formatChatSessionMeta(session) {
+  const count = Number(session?.message_count || 0);
+  const time = formatChatSessionTime(
+    session?.last_message_at ||
+      session?.updated_at ||
+      session?.created_at ||
+      "",
+  );
+  return `${count} 条 · ${time}`;
+}
+
+function formatChatSessionTime(value) {
+  const source = String(value || "").trim();
+  if (!source) return "刚刚";
+  const timestamp = Date.parse(source.replace(" ", "T"));
+  if (Number.isNaN(timestamp)) return source;
+  const target = new Date(timestamp);
+  const now = new Date();
+  const isSameYear = target.getFullYear() === now.getFullYear();
+  const isSameDay =
+    isSameYear &&
+    target.getMonth() === now.getMonth() &&
+    target.getDate() === now.getDate();
+  if (isSameDay) {
+    return `${String(target.getHours()).padStart(2, "0")}:${String(
+      target.getMinutes(),
+    ).padStart(2, "0")}`;
+  }
+  if (isSameYear) {
+    return `${String(target.getMonth() + 1).padStart(2, "0")}-${String(
+      target.getDate(),
+    ).padStart(2, "0")}`;
+  }
+  return `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}-${String(
+    target.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+function resolveChatSessionGroupLabel(session) {
+  const source = String(
+    session?.last_message_at ||
+      session?.updated_at ||
+      session?.created_at ||
+      "",
+  ).trim();
+  const normalized = source.replace(" ", "T");
+  const timestamp = Date.parse(normalized);
+  if (Number.isNaN(timestamp)) {
+    return "更早";
+  }
+  const now = new Date();
+  const target = new Date(timestamp);
+  const todayStart = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+  ).getTime();
+  const targetStart = new Date(
+    target.getFullYear(),
+    target.getMonth(),
+    target.getDate(),
+  ).getTime();
+  const diffDays = Math.floor((todayStart - targetStart) / 86400000);
+  if (diffDays <= 0) return "今天";
+  if (diffDays <= 30) return "30 天内";
+  return `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function extractEmployeeDraftPayload(text) {
+  const content = String(text || "");
+  const match = content.match(EMPLOYEE_DRAFT_BLOCK_RE);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(String(match[1] || "").trim());
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function stripEmployeeDraftBlock(text) {
+  const content = String(text || "");
+  if (!content) return "";
+  return content.replace(EMPLOYEE_DRAFT_BLOCK_RE, "").trim();
+}
+
+function normalizeEmployeeDraftPayload(raw) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  return {
+    name: String(item.name || "").trim(),
+    description: String(item.description || "").trim(),
+    goal: String(item.goal || "").trim(),
+    industry: String(item.industry || "").trim(),
+    source_filters: normalizeStringList(item.source_filters || [], 8),
+    tone: String(item.tone || "professional").trim() || "professional",
+    verbosity: String(item.verbosity || "concise").trim() || "concise",
+    language: String(item.language || "zh-CN").trim() || "zh-CN",
+    skills: normalizeStringList(
+      [
+        ...(Array.isArray(item.skills) ? item.skills : []),
+        ...(Array.isArray(item.skill_ids) ? item.skill_ids : []),
+        ...(Array.isArray(item.skill_names) ? item.skill_names : []),
+        ...(Array.isArray(item.skill_keywords) ? item.skill_keywords : []),
+      ],
+      20,
+    ),
+    rule_ids: normalizeStringList(item.rule_ids || [], 30),
+    rule_titles: normalizeStringList(item.rule_titles || [], 30),
+    rule_domains: normalizeStringList(
+      [
+        ...(Array.isArray(item.rule_domains) ? item.rule_domains : []),
+        ...(Array.isArray(item.rule_categories) ? item.rule_categories : []),
+      ],
+      20,
+    ),
+    rule_drafts: (Array.isArray(item.rule_drafts) ? item.rule_drafts : [])
+      .map((draft) => ({
+        title: String(draft?.title || "").trim(),
+        domain: String(draft?.domain || "").trim(),
+        content: String(draft?.content || "").trim(),
+        source_label: String(draft?.source_label || "").trim(),
+        source_url: String(draft?.source_url || "").trim(),
+      }))
+      .filter((draft) => draft.title || draft.domain || draft.content),
+    style_hints: normalizeStringList(item.style_hints || [], 12),
+    default_workflow: normalizeStringList(item.default_workflow || [], 12),
+    tool_usage_policy: String(item.tool_usage_policy || "").trim(),
+    memory_scope: String(item.memory_scope || "project").trim() || "project",
+    memory_retention_days: Number(item.memory_retention_days || 90),
+  };
 }
 
 function detectHighRiskSignals(text) {
@@ -1791,7 +3971,9 @@ function normalizeAuditPayload(raw) {
       repo_root: String(item.repo_root || "").trim(),
       changed_file_count: Number(item.changed_file_count || 0),
       status_lines: Array.isArray(item.status_lines)
-        ? item.status_lines.map((line) => String(line || "").trim()).filter(Boolean)
+        ? item.status_lines
+            .map((line) => String(line || "").trim())
+            .filter(Boolean)
         : [],
       diff_stat: String(item.diff_stat || "").trim(),
       staged_diff_stat: String(item.staged_diff_stat || "").trim(),
@@ -1804,20 +3986,34 @@ function normalizeAuditPayload(raw) {
     output_risk_signals: normalizeRiskItems(source.output_risk_signals),
     before_diff_summary: normalizeDiff(source.before_diff_summary),
     after_diff_summary: normalizeDiff(source.after_diff_summary),
-    file_review_status: String(source.file_review_status || "not_required").trim() || "not_required",
+    file_review_status:
+      String(source.file_review_status || "not_required").trim() ||
+      "not_required",
   };
 }
 
 function getFileReviewStatusMeta(status) {
   const normalized = String(status || "not_required").trim();
   if (normalized === "pending") {
-    return { label: "待审查", type: "warning", text: "检测到工作区文件改动，等待人工确认。" };
+    return {
+      label: "待审查",
+      type: "warning",
+      text: "检测到工作区文件改动，等待人工确认。",
+    };
   }
   if (normalized === "approved") {
-    return { label: "已通过", type: "success", text: "文件改动已人工确认，允许继续保留。" };
+    return {
+      label: "已通过",
+      type: "success",
+      text: "文件改动已人工确认，允许继续保留。",
+    };
   }
   if (normalized === "rejected") {
-    return { label: "已拒绝", type: "danger", text: "文件改动未通过人工确认，请回看 diff 后再处理。" };
+    return {
+      label: "已拒绝",
+      type: "danger",
+      text: "文件改动未通过人工确认，请回看 diff 后再处理。",
+    };
   }
   return { label: "无需审查", type: "info", text: "当前未触发文件变更审查。" };
 }
@@ -1850,7 +4046,9 @@ function formatApprovalMessage(eventData) {
   const risks = Array.isArray(eventData?.risk_signals)
     ? eventData.risk_signals
     : [];
-  const lines = [String(eventData?.message || "检测到高风险操作，需要确认后继续。")];
+  const lines = [
+    String(eventData?.message || "检测到高风险操作，需要确认后继续。"),
+  ];
   if (risks.length) {
     lines.push("");
     lines.push("风险项：");
@@ -1870,7 +4068,8 @@ async function handleApprovalRequired(eventData, row) {
     return;
   }
   activeApprovalIds.add(approvalId);
-  row.content = `${row.content || ""}\n\n> ⛔ 检测到高风险操作，等待审批...`.trim();
+  row.content =
+    `${row.content || ""}\n\n> ⛔ 检测到高风险操作，等待审批...`.trim();
   scrollToBottom();
   try {
     await ElMessageBox.confirm(
@@ -1896,17 +4095,24 @@ async function handleApprovalRequired(eventData, row) {
 }
 
 function formatFileReviewMessage(eventData) {
-  const diffSummary = eventData?.diff_summary && typeof eventData.diff_summary === "object"
-    ? eventData.diff_summary
-    : {};
-  const lines = [String(eventData?.message || "检测到文件改动，请先确认是否允许保留本次变更。")];
+  const diffSummary =
+    eventData?.diff_summary && typeof eventData.diff_summary === "object"
+      ? eventData.diff_summary
+      : {};
+  const lines = [
+    String(
+      eventData?.message || "检测到文件改动，请先确认是否允许保留本次变更。",
+    ),
+  ];
   const changedFileCount = Number(diffSummary?.changed_file_count || 0);
   if (changedFileCount > 0) {
     lines.push(`改动文件数：${changedFileCount}`);
   }
   const diffStat = String(diffSummary?.diff_stat || "").trim();
   const statusLines = Array.isArray(diffSummary?.status_lines)
-    ? diffSummary.status_lines.map((line) => String(line || "").trim()).filter(Boolean)
+    ? diffSummary.status_lines
+        .map((line) => String(line || "").trim())
+        .filter(Boolean)
     : [];
   const preview = diffStat || statusLines.join("\n");
   if (preview) {
@@ -1926,10 +4132,12 @@ async function handleFileReviewRequired(eventData, row) {
   activeReviewIds.add(reviewId);
   row.audit = normalizeAuditPayload({
     ...(row.audit && typeof row.audit === "object" ? row.audit : {}),
-    after_diff_summary: eventData?.diff_summary || row.audit?.after_diff_summary || {},
+    after_diff_summary:
+      eventData?.diff_summary || row.audit?.after_diff_summary || {},
     file_review_status: "pending",
   });
-  row.content = `${row.content || ""}\n> 📝 检测到文件改动，等待审查确认`.trim();
+  row.content =
+    `${row.content || ""}\n> 📝 检测到文件改动，等待审查确认`.trim();
   scrollToBottom();
   try {
     await ElMessageBox.confirm(
@@ -1961,10 +4169,16 @@ function normalizeExternalAgentInfo(raw) {
     label: String(source.label || "Codex CLI").trim() || "Codex CLI",
     command: String(source.command || "codex").trim() || "codex",
     resolved_command: String(source.resolved_command || "").trim(),
-    command_source: String(source.command_source || "missing").trim() || "missing",
-    runtime_model_name: String(source.runtime_model_name || source.model_name || "codex-cli").trim() || "codex-cli",
+    command_source:
+      String(source.command_source || "missing").trim() || "missing",
+    runtime_model_name:
+      String(
+        source.runtime_model_name || source.model_name || "codex-cli",
+      ).trim() || "codex-cli",
     exact_model_name: String(source.exact_model_name || "").trim(),
-    execution_mode: String(source.execution_mode || "local").trim() || "local",
+    execution_mode:
+      String(source.execution_mode || "local_connector").trim() ||
+      "local_connector",
     runner_url: String(source.runner_url || "").trim(),
     materialized_by: String(source.materialized_by || "").trim(),
     available: Boolean(source.available),
@@ -1978,8 +4192,13 @@ function normalizeExternalAgentInfo(raw) {
       source.session_id || source.agent_session_id || "",
     ).trim(),
     thread_id: String(source.thread_id || "").trim(),
-    sandbox_mode: String(source.sandbox_mode || "workspace-write").trim() || "workspace-write",
+    sandbox_mode:
+      String(source.sandbox_mode || "workspace-write").trim() ||
+      "workspace-write",
     workspace_path: String(source.workspace_path || "").trim(),
+    local_connector_id: String(source.local_connector_id || "").trim(),
+    local_connector_name: String(source.local_connector_name || "").trim(),
+    local_connector_online: Boolean(source.local_connector_online),
     context_root: String(source.context_root || "").trim(),
     support_dir: String(source.support_dir || "").trim(),
     mcp_bridge_enabled: Boolean(source.mcp_bridge_enabled),
@@ -2004,7 +4223,9 @@ function normalizeExternalAgentInfo(raw) {
             source: String(source.workspace_access.source || "").trim(),
             sandbox_mode:
               String(
-                source.workspace_access.sandbox_mode || source.sandbox_mode || "workspace-write",
+                source.workspace_access.sandbox_mode ||
+                  source.sandbox_mode ||
+                  "workspace-write",
               ).trim() || "workspace-write",
             reason: String(source.workspace_access.reason || "").trim(),
           }
@@ -2015,7 +4236,9 @@ function normalizeExternalAgentInfo(raw) {
             read_ok: false,
             write_ok: false,
             source: "",
-            sandbox_mode: String(source.sandbox_mode || "workspace-write").trim() || "workspace-write",
+            sandbox_mode:
+              String(source.sandbox_mode || "workspace-write").trim() ||
+              "workspace-write",
             reason: "",
           },
     sandbox_modes: normalizeStringList(
@@ -2048,7 +4271,9 @@ function normalizeProjectChatSettings(raw) {
   const chatMode = String(source.chat_mode || CHAT_SETTINGS_DEFAULTS.chat_mode)
     .trim()
     .toLowerCase();
-  const sandboxModeExplicit = Boolean(source.external_agent_sandbox_mode_explicit);
+  const sandboxModeExplicit = Boolean(
+    source.external_agent_sandbox_mode_explicit,
+  );
   const sandboxMode = String(
     source.external_agent_sandbox_mode ||
       CHAT_SETTINGS_DEFAULTS.external_agent_sandbox_mode,
@@ -2071,12 +4296,25 @@ function normalizeProjectChatSettings(raw) {
         ? "external_agent"
         : CHAT_SETTINGS_DEFAULTS.chat_mode,
     external_agent_type: ["codex_cli", "claude_cli", "gemini_cli"].includes(
-      String(source.external_agent_type || CHAT_SETTINGS_DEFAULTS.external_agent_type).trim(),
+      String(
+        source.external_agent_type ||
+          CHAT_SETTINGS_DEFAULTS.external_agent_type,
+      ).trim(),
     )
-      ? String(source.external_agent_type || CHAT_SETTINGS_DEFAULTS.external_agent_type).trim()
+      ? String(
+          source.external_agent_type ||
+            CHAT_SETTINGS_DEFAULTS.external_agent_type,
+        ).trim()
       : CHAT_SETTINGS_DEFAULTS.external_agent_type,
     external_agent_sandbox_mode: effectiveSandboxMode,
     external_agent_sandbox_mode_explicit: sandboxModeExplicit,
+    local_connector_id: String(
+      source.local_connector_id || CHAT_SETTINGS_DEFAULTS.local_connector_id,
+    ).trim(),
+    connector_workspace_path: String(
+      source.connector_workspace_path ||
+        CHAT_SETTINGS_DEFAULTS.connector_workspace_path,
+    ).trim(),
     selected_employee_ids: selectedEmployeeIds,
     enabled_project_tool_names: normalizeStringList(
       source.enabled_project_tool_names ||
@@ -2141,17 +4379,46 @@ const allowedFileTypes = computed(() =>
 
 const canSend = computed(() => {
   if (chatLoading.value) return false;
+  if (
+    !String(selectedProjectId.value || "").trim() &&
+    activeComposerAssistMeta.value?.id !== "employee_create" &&
+    !ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+  ) {
+    return false;
+  }
   if (String(draftText.value || "").trim()) return true;
   if (isExternalAgentMode.value) return false;
+  if (!String(selectedProjectId.value || "").trim()) {
+    return (
+      activeComposerAssistMeta.value?.id === "employee_create" ||
+      ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+    );
+  }
   return uploadFiles.value.length > 0;
 });
 
+const isProjectOptionalEmployeeCreate = computed(
+  () =>
+    !String(selectedProjectId.value || "").trim() &&
+    activeComposerAssistMeta.value?.id === "employee_create",
+);
+
+const isComposerDisabled = computed(() => {
+  if (chatLoading.value) return true;
+  if (isProjectOptionalEmployeeCreate.value) return false;
+  if (!ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT) {
+    return !selectedProjectId.value;
+  }
+  return false;
+});
+
 function formatContent(text) {
-  if (!text) return "";
+  const displayText = stripEmployeeDraftBlock(text);
+  if (!displayText) return "";
   try {
-    return marked.parse(text);
+    return marked.parse(displayText, { renderer: markdownRenderer });
   } catch (e) {
-    return text;
+    return displayText;
   }
 }
 
@@ -2164,7 +4431,7 @@ function scrollTerminalPanelBottom() {
 }
 
 function appendTerminalPanelLine(text) {
-  const line = String(text || '').trim();
+  const line = String(text || "").trim();
   if (!line) return;
   const lines = Array.isArray(terminalPanelLines.value)
     ? terminalPanelLines.value.slice()
@@ -2185,7 +4452,7 @@ function clearTerminalPanel() {
 
 function resetTerminalPanel() {
   terminalPanelLines.value = [];
-  terminalPanelStatus.value = 'idle';
+  terminalPanelStatus.value = "idle";
   terminalPanelInput.value = "";
   terminalMirrorConnected.value = false;
   terminalDebugInputVisible.value = false;
@@ -2204,9 +4471,12 @@ async function startTerminalMirror() {
     type: "terminal_mirror_start",
     request_id: `mirror-start-${Date.now()}`,
     chat_mode: "external_agent",
-    external_agent_type: String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
+    external_agent_type: String(
+      projectChatSettings.value.external_agent_type || "codex_cli",
+    ).trim(),
     external_agent_sandbox_mode:
-      projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
+      projectChatSettings.value.external_agent_sandbox_mode ||
+      "workspace-write",
     external_agent_sandbox_mode_explicit: true,
   });
 }
@@ -2235,9 +4505,12 @@ async function sendTerminalMirrorInput() {
     type: "terminal_mirror_input",
     request_id: `mirror-input-${Date.now()}`,
     chat_mode: "external_agent",
-    external_agent_type: String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
+    external_agent_type: String(
+      projectChatSettings.value.external_agent_type || "codex_cli",
+    ).trim(),
     external_agent_sandbox_mode:
-      projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
+      projectChatSettings.value.external_agent_sandbox_mode ||
+      "workspace-write",
     external_agent_sandbox_mode_explicit: true,
     content,
   });
@@ -2327,6 +4600,16 @@ async function writeClipboardText(text) {
   }
 }
 
+function hasMessageCopyableContent(item, options = {}) {
+  const includeProcess = Boolean(options?.includeProcess);
+  const content = String(item?.content || "").trim();
+  if (content) return true;
+  if (includeProcess) {
+    return terminalLogLines(item).length > 0;
+  }
+  return false;
+}
+
 async function copyMessageMarkdown(item, options = {}) {
   const content = buildMessageMarkdown(item, options);
   if (!content) {
@@ -2336,8 +4619,639 @@ async function copyMessageMarkdown(item, options = {}) {
   try {
     await writeClipboardText(content);
     ElMessage.success(
-      options?.includeProcess ? "已复制 Markdown（含思考过程）" : "已复制 Markdown",
+      options?.includeProcess
+        ? "已复制 Markdown（含思考过程）"
+        : "已复制 Markdown",
     );
+  } catch {
+    ElMessage.error("复制失败");
+  }
+}
+
+function createLocalMessageId() {
+  return `chat-local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function resolveMessageSource(messageIndex) {
+  const normalizedIndex = Number(messageIndex);
+  if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return null;
+  const current = messages.value[normalizedIndex];
+  if (!current) return null;
+  if (String(current?.role || "").trim() === "user") {
+    return { index: normalizedIndex, item: current };
+  }
+  for (let cursor = normalizedIndex - 1; cursor >= 0; cursor -= 1) {
+    const candidate = messages.value[cursor];
+    if (String(candidate?.role || "").trim() === "user") {
+      return { index: cursor, item: candidate };
+    }
+  }
+  return null;
+}
+
+function messageHasReplayUnsupportedAssets(item) {
+  return (
+    (Array.isArray(item?.attachments) && item.attachments.length > 0) ||
+    (Array.isArray(item?.images) && item.images.length > 0)
+  );
+}
+
+function canReplayMessageSource(messageIndex) {
+  const source = resolveMessageSource(messageIndex);
+  if (!source) return false;
+  if (!String(source.item?.content || "").trim()) return false;
+  if (messageHasReplayUnsupportedAssets(source.item)) return false;
+  return true;
+}
+
+function resetInlineMessageEdit() {
+  inlineEditingMessageIndex.value = -1;
+  inlineEditingMessageId.value = "";
+  inlineEditingDraft.value = "";
+  inlineEditingBusy.value = false;
+}
+
+function isInlineEditingMessage(messageIndex) {
+  const normalizedIndex = Number(messageIndex);
+  if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return false;
+  if (normalizedIndex !== inlineEditingMessageIndex.value) return false;
+  const current = messages.value[normalizedIndex];
+  if (!current) return false;
+  return (
+    String(current?.id || "").trim() === String(inlineEditingMessageId.value || "").trim()
+  );
+}
+
+function focusInlineMessageEditor() {
+  nextTick(() => {
+    const editorRoot = messagesContainer.value?.querySelector?.(
+      `[data-inline-editor-id="${inlineEditingMessageId.value}"]`,
+    );
+    if (editorRoot?.scrollIntoView) {
+      editorRoot.scrollIntoView({
+        block: "center",
+        behavior: "smooth",
+      });
+    }
+    const textarea = editorRoot?.querySelector?.("textarea");
+    if (!textarea) return;
+    textarea.focus();
+    const textLength = String(textarea.value || "").length;
+    if (typeof textarea.setSelectionRange === "function") {
+      textarea.setSelectionRange(textLength, textLength);
+    }
+  });
+}
+
+function getInlineEditingSource() {
+  if (inlineEditingMessageIndex.value < 0) return null;
+  const current = messages.value[inlineEditingMessageIndex.value];
+  if (!current) return null;
+  if (
+    String(current?.id || "").trim() !==
+    String(inlineEditingMessageId.value || "").trim()
+  ) {
+    return null;
+  }
+  return {
+    index: inlineEditingMessageIndex.value,
+    item: current,
+  };
+}
+
+function normalizeInlineEditingDraft() {
+  return String(inlineEditingDraft.value || "").trim();
+}
+
+async function truncateConversationFromSource(source) {
+  if (!source) return;
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (projectId && chatSessionId) {
+    const messageId = String(source.item?.id || "").trim();
+    if (!messageId) {
+      throw new Error("当前消息尚未保存完成，请稍后再试");
+    }
+    await api.post(
+      `/projects/${encodeURIComponent(projectId)}/chat/history/truncate`,
+      {
+        chat_session_id: chatSessionId,
+        message_id: messageId,
+      },
+    );
+  }
+  messages.value = messages.value.slice(0, source.index);
+}
+
+async function openInlineMessageEditor(messageIndex) {
+  if (chatLoading.value) {
+    ElMessage.warning("当前回答进行中，暂时不能编辑历史消息");
+    return;
+  }
+  const source = resolveMessageSource(messageIndex);
+  if (!source) {
+    ElMessage.warning("未找到可编辑的原始用户消息");
+    return;
+  }
+  if (messageHasReplayUnsupportedAssets(source.item)) {
+    ElMessage.warning("带附件或图片的消息暂不支持编辑");
+    return;
+  }
+  inlineEditingMessageIndex.value = source.index;
+  inlineEditingMessageId.value = String(source.item?.id || "").trim();
+  inlineEditingDraft.value = String(source.item?.content || "").trim();
+  focusInlineMessageEditor();
+}
+
+async function replayMessageFromSource(messageIndex, options = {}) {
+  if (chatLoading.value) {
+    ElMessage.warning("当前回答进行中，暂时不能重新生成");
+    return;
+  }
+  const source = resolveMessageSource(messageIndex);
+  if (!source || !canReplayMessageSource(messageIndex)) {
+    ElMessage.warning("当前消息暂不支持重新生成");
+    return;
+  }
+  const nextPrompt = String(
+    options?.message ?? source.item?.content ?? "",
+  ).trim();
+  if (!nextPrompt) {
+    ElMessage.warning("消息不能为空");
+    return;
+  }
+  try {
+    await truncateConversationFromSource(source);
+    draftText.value = nextPrompt;
+    await doSend();
+  } catch (err) {
+    if (options?.throwOnError) {
+      throw err;
+    }
+    ElMessage.error(err?.detail || err?.message || "重新生成失败");
+  }
+}
+
+function cancelInlineMessageEdit() {
+  resetInlineMessageEdit();
+}
+
+function applyInlineMessageEditToComposer() {
+  const edited = normalizeInlineEditingDraft();
+  if (!edited) {
+    ElMessage.warning("消息不能为空");
+    return;
+  }
+  draftText.value = edited;
+  resetInlineMessageEdit();
+  scrollToBottom();
+  ElMessage.success("已填入输入框，可以继续修改后发送");
+}
+
+async function submitInlineMessageEditAndReplay() {
+  if (inlineEditingBusy.value) return;
+  const source = getInlineEditingSource();
+  if (!source) {
+    resetInlineMessageEdit();
+    ElMessage.warning("当前消息不可编辑，请重新操作");
+    return;
+  }
+  const edited = normalizeInlineEditingDraft();
+  if (!edited) {
+    ElMessage.warning("消息不能为空");
+    return;
+  }
+  inlineEditingBusy.value = true;
+  try {
+    await replayMessageFromSource(source.index, {
+      message: edited,
+      throwOnError: true,
+    });
+    resetInlineMessageEdit();
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "重新生成失败");
+  } finally {
+    inlineEditingBusy.value = false;
+  }
+}
+
+function handleInlineMessageEditKeydown(event) {
+  if (!event) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    cancelInlineMessageEdit();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    void submitInlineMessageEditAndReplay();
+  }
+}
+
+function getMessageActions(item, messageIndex) {
+  const actions = [];
+  const role = String(item?.role || "").trim();
+  if (role === "user" && canReplayMessageSource(messageIndex)) {
+    actions.push({
+      key: "edit_message",
+      tooltip: "编辑",
+      icon: EditPen,
+    });
+    actions.push({
+      key: "edit_and_regenerate",
+      tooltip: "编辑后重新生成",
+      icon: RefreshRight,
+    });
+  }
+  if (role !== "user" && canReplayMessageSource(messageIndex)) {
+    actions.push({
+      key: "regenerate",
+      tooltip: "重新生成",
+      icon: RefreshRight,
+    });
+    actions.push({
+      key: "edit_and_regenerate",
+      tooltip: "编辑后重新生成",
+      icon: EditPen,
+    });
+  }
+  if (hasMessageCopyableContent(item)) {
+    actions.push({
+      key: "copy_markdown",
+      tooltip: role === "user" ? "复制消息" : "复制 Markdown",
+      icon: DocumentCopy,
+    });
+  }
+  if (
+    role !== "user" &&
+    hasMessageCopyableContent(item, { includeProcess: true }) &&
+    terminalLogLines(item).length
+  ) {
+    actions.push({
+      key: "copy_with_process",
+      tooltip: "复制含过程",
+      icon: Files,
+    });
+  }
+  return actions;
+}
+
+function handleMessageAction(item, messageIndex, actionKey) {
+  switch (String(actionKey || "").trim()) {
+    case "edit_message":
+      void openInlineMessageEditor(messageIndex);
+      return;
+    case "regenerate":
+      void replayMessageFromSource(messageIndex);
+      return;
+    case "edit_and_regenerate":
+      void openInlineMessageEditor(messageIndex);
+      return;
+    case "copy_markdown":
+      copyMessageMarkdown(item);
+      return;
+    case "copy_with_process":
+      copyMessageMarkdown(item, { includeProcess: true });
+      return;
+    default:
+      return;
+  }
+}
+
+function buildCodePreviewTitle(language, content) {
+  const normalizedLanguage = normalizeCodeLanguage(language);
+  if (normalizedLanguage === "vue" || /<template[\s>]/i.test(content)) {
+    return "Vue 组件预览";
+  }
+  if (normalizedLanguage === "html" || normalizedLanguage === "htm") {
+    return "HTML 预览";
+  }
+  return "代码预览";
+}
+
+function extractSfcTemplate(content) {
+  const match = String(content || "").match(
+    /<template[^>]*>([\s\S]*?)<\/template>/i,
+  );
+  return String(match?.[1] || "").trim();
+}
+
+function extractSfcStyles(content) {
+  const styles = [];
+  const regex = /<style[^>]*>([\s\S]*?)<\/style>/gi;
+  for (const match of String(content || "").matchAll(regex)) {
+    const text = String(match?.[1] || "").trim();
+    if (text) styles.push(text);
+  }
+  return styles;
+}
+
+function extractSfcScript(content) {
+  const setupMatch = String(content || "").match(
+    /<script\b[^>]*setup[^>]*>([\s\S]*?)<\/script>/i,
+  );
+  if (setupMatch) return String(setupMatch[1] || "");
+  const normalMatch = String(content || "").match(
+    /<script\b[^>]*>([\s\S]*?)<\/script>/i,
+  );
+  return String(normalMatch?.[1] || "");
+}
+
+function collectScriptRefInitializers(scriptContent) {
+  const refs = [];
+  const regex =
+    /const\s+([A-Za-z_$][\w$]*)\s*=\s*ref(?:<[^>]+>)?\s*\(([\s\S]*?)\)\s*(?:;|\n)/g;
+  for (const match of String(scriptContent || "").matchAll(regex)) {
+    const name = String(match?.[1] || "").trim();
+    const expression = String(match?.[2] || "").trim();
+    if (!name) continue;
+    refs.push({ name, expression });
+  }
+  return refs;
+}
+
+function collectScriptReactiveInitializers(scriptContent) {
+  const reactives = [];
+  const regex =
+    /const\s+([A-Za-z_$][\w$]*)\s*=\s*reactive\s*\((\{[\s\S]*?\})\s*\)\s*(?:;|\n)/g;
+  for (const match of String(scriptContent || "").matchAll(regex)) {
+    const name = String(match?.[1] || "").trim();
+    const expression = String(match?.[2] || "").trim();
+    if (!name) continue;
+    reactives.push({ name, expression });
+  }
+  return reactives;
+}
+
+function collectScriptFunctionNames(scriptContent) {
+  const names = new Set();
+  const regex = /(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g;
+  for (const match of String(scriptContent || "").matchAll(regex)) {
+    const name = String(match?.[1] || "").trim();
+    if (!name) continue;
+    names.add(name);
+  }
+  return Array.from(names);
+}
+
+function collectTemplateModelPaths(template) {
+  const paths = new Set();
+  const regex = /v-model(?:\.[^=]+)?="([^"]+)"/g;
+  for (const match of String(template || "").matchAll(regex)) {
+    const path = String(match?.[1] || "").trim();
+    if (!path) continue;
+    paths.add(path);
+  }
+  return Array.from(paths);
+}
+
+function transformVueTemplateToStaticHtml(template) {
+  let html = String(template || "").trim();
+  if (!html) return "";
+
+  html = html.replace(/<template[^>]*>|<\/template>/gi, "");
+  html = html.replace(/<script[\s\S]*?<\/script>/gi, "");
+
+  html = html.replace(/{{[\s\S]*?}}/g, "示例内容");
+  html = html.replace(/\s(?:v-|:|@)[^=\s>]+(?:=(["'])[\s\S]*?\1)?/g, "");
+
+  html = html.replace(
+    /<el-form-item\b([^>]*)>/gi,
+    '<div class="preview-form-item"$1>',
+  );
+  html = html.replace(/<\/el-form-item>/gi, "</div>");
+  html = html.replace(/<el-form\b([^>]*)>/gi, '<form class="preview-form"$1>');
+  html = html.replace(/<\/el-form>/gi, "</form>");
+  html = html.replace(/<el-alert\b([^>]*)>/gi, '<div class="preview-alert"$1>');
+  html = html.replace(/<\/el-alert>/gi, "</div>");
+  html = html.replace(
+    /<el-checkbox\b([^>]*)>/gi,
+    '<label class="preview-checkbox"$1><input type="checkbox" />',
+  );
+  html = html.replace(/<\/el-checkbox>/gi, "</label>");
+  html = html.replace(
+    /<el-button\b([^>]*)>/gi,
+    '<button type="button" class="preview-button"$1>',
+  );
+  html = html.replace(/<\/el-button>/gi, "</button>");
+  html = html.replace(
+    /<el-input-number\b([^>]*)\/>/gi,
+    '<input type="number" class="preview-input" $1 />',
+  );
+  html = html.replace(/<el-input\b([^>]*)\/>/gi, (_match, attrs) => {
+    const typeMatch = String(attrs || "").match(/\btype=(['"])(.*?)\1/i);
+    const type = String(typeMatch?.[2] || "text").trim() || "text";
+    return `<input class="preview-input" type="${escapeHtml(type)}" ${attrs || ""} />`;
+  });
+  html = html.replace(
+    /<el-input\b([^>]*)>([\s\S]*?)<\/el-input>/gi,
+    (_match, attrs) => {
+      const typeMatch = String(attrs || "").match(/\btype=(['"])(.*?)\1/i);
+      const type = String(typeMatch?.[2] || "text").trim() || "text";
+      if (type === "textarea") {
+        return `<textarea class="preview-textarea" ${attrs || ""}></textarea>`;
+      }
+      return `<input class="preview-input" type="${escapeHtml(type)}" ${attrs || ""} />`;
+    },
+  );
+  html = html.replace(
+    /<el-select\b([^>]*)>([\s\S]*?)<\/el-select>/gi,
+    '<select class="preview-select"$1>$2</select>',
+  );
+  html = html.replace(
+    /<el-option\b([^>]*)>([\s\S]*?)<\/el-option>/gi,
+    (_match, attrs, inner) => {
+      const labelMatch = String(attrs || "").match(/\blabel=(['"])(.*?)\1/i);
+      const label = String(labelMatch?.[2] || inner || "选项").trim() || "选项";
+      return `<option>${escapeHtml(label)}</option>`;
+    },
+  );
+  html = html.replace(
+    /<el-radio-group\b([^>]*)>/gi,
+    '<div class="preview-radio-group"$1>',
+  );
+  html = html.replace(/<\/el-radio-group>/gi, "</div>");
+  html = html.replace(
+    /<el-radio\b([^>]*)>([\s\S]*?)<\/el-radio>/gi,
+    '<label class="preview-radio"$1><input type="radio" />$2</label>',
+  );
+  html = html.replace(
+    /<el-switch\b([^>]*)\/?>/gi,
+    '<label class="preview-switch"$1><span class="preview-switch__track"></span></label>',
+  );
+  html = html.replace(/<el-icon\b[^>]*>[\s\S]*?<\/el-icon>/gi, "");
+
+  html = html.replace(
+    /<el-[a-z0-9-]+\b([^>]*)>/gi,
+    '<div class="preview-block"$1>',
+  );
+  html = html.replace(/<\/el-[a-z0-9-]+>/gi, "</div>");
+
+  html = html.replace(
+    /\s(?:clearable|show-password|filterable|multiple|text|circle|plain|border|show-icon|destroy-on-close|closable)(?=[\s>])/gi,
+    "",
+  );
+  return html;
+}
+
+function buildStaticVuePreviewHtml(template) {
+  const html = transformVueTemplateToStaticHtml(template);
+  if (!html) return "";
+  return ['<div class="preview-static-shell">', html, "</div>"].join("");
+}
+
+function buildHtmlPreviewSrcdoc(content) {
+  const html = String(content || "").trim();
+  if (!html) return "";
+  if (/<!doctype html/i.test(html) || /<html[\s>]/i.test(html)) {
+    return html;
+  }
+  return [
+    "<!doctype html>",
+    '<html lang="zh-CN">',
+    "<head>",
+    '<meta charset="UTF-8" />',
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+    "<style>html,body{margin:0;padding:0;min-height:100%;background:#f7f7f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','PingFang SC','Microsoft YaHei',sans-serif;}body{padding:24px;}</style>",
+    "</head>",
+    "<body>",
+    html,
+    "</body>",
+    "</html>",
+  ].join("");
+}
+
+function buildVuePreviewSrcdoc(content) {
+  const template = extractSfcTemplate(content) || String(content || "").trim();
+  if (!template) return "";
+  const styles = extractSfcStyles(content).join("\n\n");
+  const scriptContent = extractSfcScript(content);
+  const refInitializers = collectScriptRefInitializers(scriptContent);
+  const reactiveInitializers = collectScriptReactiveInitializers(scriptContent);
+  const functionNames = collectScriptFunctionNames(scriptContent);
+  const modelPaths = collectTemplateModelPaths(template);
+  const staticPreviewHtml = buildStaticVuePreviewHtml(template);
+
+  return [
+    "<!doctype html>",
+    '<html lang="zh-CN">',
+    "<head>",
+    '<meta charset="UTF-8" />',
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+    '<link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />',
+    "<style>",
+    "html,body{margin:0;padding:0;min-height:100%;background:#f7f7f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','PingFang SC','Microsoft YaHei',sans-serif;}",
+    "body{padding:24px;box-sizing:border-box;}",
+    "#app{min-height:calc(100vh - 48px);}",
+    ".preview-static-shell{min-height:calc(100vh - 48px);}",
+    ".preview-form{display:block;}",
+    ".preview-form-item{display:flex;flex-direction:column;gap:8px;margin-bottom:18px;}",
+    ".preview-input,.preview-textarea,.preview-select{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #dcdfe6;border-radius:8px;background:#fff;color:#1f2937;font-size:14px;line-height:1.5;}",
+    ".preview-textarea{min-height:96px;resize:vertical;}",
+    ".preview-button{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 18px;border-radius:10px;border:1px solid #1677ff;background:#1677ff;color:#fff;font-size:14px;font-weight:600;cursor:default;}",
+    ".preview-checkbox,.preview-radio{display:inline-flex;align-items:center;gap:8px;color:#4b5563;font-size:14px;}",
+    ".preview-switch{display:inline-flex;align-items:center;width:42px;height:24px;padding:2px;border-radius:999px;background:#dbeafe;box-sizing:border-box;}",
+    ".preview-switch__track{display:block;width:20px;height:20px;border-radius:50%;background:#1677ff;margin-left:auto;}",
+    ".preview-alert{margin-bottom:16px;padding:10px 12px;border-radius:10px;border:1px solid rgba(59,130,246,.18);background:#eff6ff;color:#1d4ed8;font-size:13px;line-height:1.6;}",
+    ".preview-block{display:block;}",
+    ".preview-error{padding:16px;border-radius:16px;background:#fff1f2;border:1px solid rgba(244,63,94,.18);color:#9f1239;font-size:14px;line-height:1.7;white-space:pre-wrap;}",
+    styles,
+    "</style>",
+    "</head>",
+    "<body>",
+    `<div id="app">${staticPreviewHtml}</div>`,
+    '<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"><\\/script>',
+    '<script src="https://unpkg.com/element-plus/dist/index.full.min.js"><\\/script>',
+    "<script>",
+    `const previewTemplate = ${JSON.stringify(template)};`,
+    `const previewRefs = ${JSON.stringify(refInitializers)};`,
+    `const previewReactives = ${JSON.stringify(reactiveInitializers)};`,
+    `const previewFunctions = ${JSON.stringify(functionNames)};`,
+    `const previewModelPaths = ${JSON.stringify(modelPaths)};`,
+    `function evaluateLiteral(source, fallback){ if(!source){ return fallback; } try { return (new Function("return (" + source + ")"))(); } catch { return fallback; } }`,
+    `function inferLeafDefault(path){ const leaf = String(path.split('.').pop() || '').toLowerCase(); if(/^(is|has|can|show|enable|loading|locked|disabled|visible|checked|remember|submitting)/.test(leaf)){ return false; } if(/count|size|total|days|length|index|step/.test(leaf)){ return 0; } return ''; }`,
+    `function ensurePath(root, path){ const parts = String(path || '').split('.').map((item) => item.trim()).filter(Boolean); if(!parts.length){ return; } let current = root; for(let i = 0; i < parts.length; i += 1){ const key = parts[i]; const isLast = i === parts.length - 1; if(isLast){ if(current[key] === undefined){ current[key] = inferLeafDefault(path); } break; } if(!current[key] || typeof current[key] !== 'object' || Array.isArray(current[key])){ current[key] = {}; } current = current[key]; } }`,
+    `function noop(){ return undefined; }`,
+    `const component = { setup(){ const ctx = {}; for(const item of previewReactives){ ctx[item.name] = Vue.reactive(evaluateLiteral(item.expression, {})); } for(const item of previewRefs){ ctx[item.name] = Vue.ref(evaluateLiteral(item.expression, inferLeafDefault(item.name))); } if(!ctx.form){ ctx.form = Vue.reactive({}); } if(!ctx.rules){ ctx.rules = Vue.reactive({}); } for(const path of previewModelPaths){ const rootName = String(path.split('.')[0] || '').trim(); if(!rootName){ continue; } const rootValue = ctx[rootName]; if(rootValue && typeof rootValue === 'object' && !('value' in rootValue)){ ensurePath(rootValue, path.split('.').slice(1).join('.')); continue; } if(rootValue && typeof rootValue === 'object' && 'value' in rootValue){ if(rootValue.value === undefined || rootValue.value === null || typeof rootValue.value !== 'object'){ rootValue.value = {}; } ensurePath(rootValue.value, path.split('.').slice(1).join('.')); continue; } if(path.includes('.')){ ctx[rootName] = Vue.reactive({}); ensurePath(ctx[rootName], path.split('.').slice(1).join('.')); } else if(ctx[rootName] === undefined){ ctx[rootName] = Vue.ref(inferLeafDefault(path)); } } for(const name of previewFunctions){ if(!ctx[name]){ ctx[name] = noop; } } return ctx; }, template: previewTemplate };`,
+    `function showError(error){ const el = document.getElementById('app'); if(el){ el.innerHTML = '<div class="preview-error">' + String(error && error.message ? error.message : error) + '</div>'; } }`,
+    `window.setTimeout(() => { if(!window.Vue || !window.ElementPlus){ return; } try { const app = Vue.createApp(component); app.use(ElementPlus); app.config.errorHandler = (error) => { showError(error); }; app.mount('#app'); } catch (error) { showError(error); } }, 80);`,
+    "<\\/script>",
+    "</body>",
+    "</html>",
+  ].join("");
+}
+
+function openCodePreview(content, language) {
+  const text = String(content || "").trim();
+  if (!text) {
+    ElMessage.warning("当前代码块暂无可预览内容");
+    return;
+  }
+  codePreviewError.value = "";
+  codePreviewTitle.value = buildCodePreviewTitle(language, text);
+  try {
+    if (
+      /<!doctype html/i.test(text) ||
+      /<html[\s>]/i.test(text) ||
+      ["html", "htm"].includes(normalizeCodeLanguage(language))
+    ) {
+      codePreviewSrcdoc.value = buildHtmlPreviewSrcdoc(text);
+    } else if (isPreviewableCodeBlock(text, language)) {
+      codePreviewSrcdoc.value = buildVuePreviewSrcdoc(text);
+    } else {
+      codePreviewError.value =
+        "当前代码块暂不支持预览，仅支持 HTML 和 Vue 单文件组件。";
+    }
+  } catch (error) {
+    codePreviewError.value = String(error?.message || error || "预览生成失败");
+  }
+  codePreviewVisible.value = true;
+}
+
+const codeCopyResetTimers = new WeakMap();
+
+function setCodeCopyButtonState(button, copied) {
+  if (!button) return;
+  const idleLabel = String(button.dataset.copyLabel || "复制").trim() || "复制";
+  const copiedLabel =
+    String(button.dataset.copiedLabel || "已复制").trim() || "已复制";
+  const idleIcon = String(button.dataset.copyIcon || "").trim();
+  const copiedIcon = String(button.dataset.copiedIcon || "").trim();
+  button.innerHTML = copied ? copiedIcon || copiedLabel : idleIcon || idleLabel;
+  button.setAttribute("aria-label", copied ? copiedLabel : idleLabel);
+  button.setAttribute("title", copied ? copiedLabel : idleLabel);
+  button.dataset.copied = copied ? "true" : "false";
+}
+
+async function handleMessageAreaClick(event) {
+  const previewButton = event?.target?.closest?.(".chat-code-block__preview");
+  const copyButton = event?.target?.closest?.(".chat-code-block__copy");
+  const button = previewButton || copyButton;
+  if (!button) return;
+  const wrapper = button.closest(".chat-code-block");
+  const codeElement = wrapper?.querySelector("pre code");
+  const content = String(codeElement?.textContent || "");
+  if (!content && !previewButton) {
+    ElMessage.warning("当前代码块暂无可复制内容");
+    return;
+  }
+  if (previewButton) {
+    const language = String(previewButton.dataset.codeLang || "").trim();
+    openCodePreview(content, language);
+    return;
+  }
+  try {
+    await writeClipboardText(content);
+    setCodeCopyButtonState(copyButton, true);
+    const previousTimer = codeCopyResetTimers.get(copyButton);
+    if (previousTimer) {
+      window.clearTimeout(previousTimer);
+    }
+    const timerId = window.setTimeout(() => {
+      setCodeCopyButtonState(copyButton, false);
+      codeCopyResetTimers.delete(copyButton);
+    }, 2000);
+    codeCopyResetTimers.set(copyButton, timerId);
   } catch {
     ElMessage.error("复制失败");
   }
@@ -2350,6 +5264,22 @@ function scrollToBottom() {
     }
   });
 }
+
+watch(
+  messages,
+  (value) => {
+    if (inlineEditingMessageIndex.value < 0) return;
+    const current = value[inlineEditingMessageIndex.value];
+    if (
+      !current ||
+      String(current?.id || "").trim() !==
+        String(inlineEditingMessageId.value || "").trim()
+    ) {
+      resetInlineMessageEdit();
+    }
+  },
+  { deep: false },
+);
 
 function extractImages(message) {
   if (!message || !Array.isArray(message.images)) return [];
@@ -2396,6 +5326,860 @@ function clipText(text, maxChars) {
   if (!value) return "";
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}\n（内容已截断）`;
+}
+
+async function ensureEmployeeDraftCatalog(force = false) {
+  const now = Date.now();
+  const loadedAt = Number(employeeDraftCatalog.value.loaded_at || 0);
+  if (
+    !force &&
+    employeeDraftCatalog.value.skills.length &&
+    employeeDraftCatalog.value.rules.length &&
+    now - loadedAt < 60_000
+  ) {
+    return employeeDraftCatalog.value;
+  }
+  const [skillsRes, rulesRes] = await Promise.all([
+    api.get("/skills"),
+    api.get("/rules"),
+  ]);
+  employeeDraftCatalog.value = {
+    skills: (skillsRes.skills || [])
+      .filter(isReusableEmployeeDraftSkill)
+      .map((skill) => ({
+        id: String(skill.id || "").trim(),
+        name: String(skill.name || skill.id || "").trim(),
+        description: String(skill.description || "").trim(),
+        tags: Array.isArray(skill.tags) ? skill.tags : [],
+      })),
+    rules: (rulesRes.rules || []).map((rule) => ({
+      id: String(rule.id || "").trim(),
+      title: String(rule.title || rule.id || "").trim(),
+      domain: String(rule.domain || "").trim(),
+    })),
+    loaded_at: now,
+  };
+  return employeeDraftCatalog.value;
+}
+
+function buildEmployeeDraftAssistContext() {
+  const skillLines = employeeDraftCatalog.value.skills
+    .slice(0, 40)
+    .map(
+      (skill) =>
+        `- ${skill.id} | ${skill.name}${skill.description ? ` | ${clipText(skill.description, 80).replace(/\n/g, " ")}` : ""}`,
+    );
+  const ruleLines = employeeDraftCatalog.value.rules
+    .slice(0, 60)
+    .map((rule) => `- ${rule.id} | ${rule.domain || "未分类"} | ${rule.title}`);
+  return [
+    "系统可用技能目录（优先从这里匹配，不要臆造不存在的技能 ID）：",
+    skillLines.length ? skillLines.join("\n") : "- 暂无本地技能",
+    "",
+    "系统可用规则目录（优先输出 rule_domains / rule_titles，便于系统自动绑定）：",
+    ruleLines.length ? ruleLines.join("\n") : "- 暂无本地规则",
+    "",
+    "输出要求：",
+    "- 先用 3 到 6 行说明你推荐这个员工的定位。",
+    "- 最后必须追加一个 ```employee-draft``` 代码块，内容是严格 JSON，不要写注释。",
+    "- JSON 至少包含：name、description、goal、skills、rule_domains、style_hints、default_workflow、tool_usage_policy、memory_scope、memory_retention_days。",
+    "- skills 字段里优先放技能 ID；如果拿不准，可放技能名称或关键词。",
+    "- rule_domains 优先输出领域名；rule_titles 可补充你认为最关键的规则标题。",
+    "- 如果从外部提示词或技能模板中提炼出了可直接落地的员工规则，请额外输出 rule_drafts 数组；每项包含 title、domain、content，可选 source_label、source_url。",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function normalizeMatchKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function isReusableEmployeeDraftSkill(skill) {
+  const tags = Array.isArray(skill?.tags)
+    ? skill.tags.map((item) => normalizeMatchKey(item))
+    : [];
+  return !tags.some((tag) =>
+    ["employee-draft", "system-mcp", "system-mcp-import"].includes(tag),
+  );
+}
+
+function matchSkillsFromDraft(skillHints, skillCatalog) {
+  const hints = normalizeStringList(skillHints || [], 20);
+  if (!hints.length) return [];
+  const matchedIds = [];
+  const seen = new Set();
+  for (const hint of hints) {
+    const target = normalizeMatchKey(hint);
+    if (!target) continue;
+    const exact = skillCatalog.find(
+      (skill) =>
+        normalizeMatchKey(skill.id) === target ||
+        normalizeMatchKey(skill.name) === target,
+    );
+    const partial =
+      exact ||
+      skillCatalog.find((skill) =>
+        [skill.id, skill.name]
+          .map(normalizeMatchKey)
+          .some((text) => text && text.includes(target)),
+      );
+    if (!partial) continue;
+    if (seen.has(partial.id)) continue;
+    seen.add(partial.id);
+    matchedIds.push(partial.id);
+  }
+  return matchedIds;
+}
+
+function matchRulesFromDraft(draft, ruleCatalog) {
+  const bindings = [];
+  const seen = new Set();
+  const addRule = (rule) => {
+    if (!rule?.id || seen.has(rule.id)) return;
+    seen.add(rule.id);
+    bindings.push({
+      id: rule.id,
+      title: rule.title,
+      domain: rule.domain,
+    });
+  };
+
+  for (const ruleId of normalizeStringList(draft.rule_ids || [], 30)) {
+    addRule(
+      ruleCatalog.find(
+        (rule) => normalizeMatchKey(rule.id) === normalizeMatchKey(ruleId),
+      ),
+    );
+  }
+  for (const title of normalizeStringList(draft.rule_titles || [], 30)) {
+    const normalized = normalizeMatchKey(title);
+    addRule(
+      ruleCatalog.find(
+        (rule) =>
+          normalizeMatchKey(rule.title) === normalized ||
+          normalizeMatchKey(rule.title).includes(normalized),
+      ),
+    );
+  }
+  for (const domain of normalizeStringList(draft.rule_domains || [], 20)) {
+    const normalized = normalizeMatchKey(domain);
+    for (const rule of ruleCatalog) {
+      if (normalizeMatchKey(rule.domain) !== normalized) continue;
+      addRule(rule);
+    }
+  }
+  return bindings;
+}
+
+function buildEmployeeDraftCard(rawDraft) {
+  const draft = normalizeEmployeeDraftPayload(rawDraft);
+  const skillCatalog = Array.isArray(employeeDraftCatalog.value.skills)
+    ? employeeDraftCatalog.value.skills
+    : [];
+  const ruleCatalog = Array.isArray(employeeDraftCatalog.value.rules)
+    ? employeeDraftCatalog.value.rules
+    : [];
+  const matchedSkillIds = matchSkillsFromDraft(draft.skills, skillCatalog);
+  const matchedRuleBindings = matchRulesFromDraft(draft, ruleCatalog);
+  return {
+    ...draft,
+    matched_skill_count: matchedSkillIds.length,
+    matched_rule_count: matchedRuleBindings.length,
+  };
+}
+
+function buildEmployeeAutoCreatePayload(rawDraft) {
+  const draft = normalizeEmployeeDraftPayload(rawDraft);
+  return {
+    ...draft,
+    add_to_current_project: Boolean(
+      String(selectedProjectId.value || "").trim(),
+    ),
+    memory_retention_days: Math.min(
+      365,
+      Math.max(7, Number(draft.memory_retention_days || 90)),
+    ),
+    auto_create_missing_skills: true,
+    auto_create_missing_rules: true,
+  };
+}
+
+function normalizeEmployeeDraftExternalSkillSite(raw) {
+  return {
+    id: String(raw?.id || "").trim(),
+    title: String(raw?.title || "").trim(),
+    description: String(raw?.description || "").trim(),
+    url: String(raw?.url || "").trim(),
+  };
+}
+
+function buildVettSkillPageUrl(slug) {
+  const normalized = String(slug || "").trim().replace(/^\/+|\/+$/g, "");
+  return normalized ? `https://vett.sh/skills/${normalized}` : "";
+}
+
+const skillResourceIntentAliasGroups = [
+  {
+    match: [
+      "java开发",
+      "java后端",
+      "java",
+      "后端",
+      "backend",
+      "spring",
+      "springboot",
+      "spring boot",
+      "jvm",
+    ],
+    queries: ["java", "spring", "spring boot", "backend", "jvm"],
+  },
+  {
+    match: [
+      "界面设计",
+      "ui设计",
+      "界面",
+      "ui",
+      "视觉",
+      "交互",
+      "排版",
+      "设计系统",
+      "frontend",
+      "interface",
+      "design system",
+      "design-system",
+    ],
+    queries: ["ui", "frontend", "design", "interface", "design system"],
+  },
+  {
+    match: [
+      "css",
+      "样式",
+      "布局",
+      "响应式",
+      "动画",
+      "style",
+      "responsive",
+      "animation",
+    ],
+    queries: ["css", "style", "responsive", "animation"],
+  },
+  {
+    match: ["vue", "vue3", "composition api", "composition-api"],
+    queries: ["vue", "vue3", "composition api"],
+  },
+  {
+    match: [
+      "浏览器",
+      "调试",
+      "性能",
+      "chrome",
+      "devtools",
+      "browser",
+      "performance",
+    ],
+    queries: ["chrome", "devtools", "browser", "performance"],
+  },
+  {
+    match: [
+      "架构",
+      "架构设计",
+      "技术选型",
+      "系统设计",
+      "architect",
+      "architecture",
+      "system design",
+      "software architect",
+    ],
+    queries: [
+      "software architect",
+      "architecture",
+      "architect",
+      "system design",
+    ],
+  },
+  {
+    match: [
+      "node",
+      "nodejs",
+      "node.js",
+      "javascript",
+      "js",
+      "工程实践",
+      "工具链",
+    ],
+    queries: ["nodejs", "node", "javascript", "js"],
+  },
+];
+
+function normalizeSearchAliasKey(value) {
+  return normalizeMatchKey(value).replace(/[\s._/+-]+/g, "");
+}
+
+function pushSkillResourceSearchQuery(buffer, seen, value) {
+  const text = String(value || "").trim();
+  const key = normalizeMatchKey(text);
+  if (!text || !key || seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  buffer.push(text);
+}
+
+function buildSkillResourceSearchQueries(query) {
+  const rawQuery = String(query || "").trim();
+  const normalized = normalizeMatchKey(rawQuery);
+  const compact = normalizeSearchAliasKey(rawQuery);
+  const queries = [];
+  const seen = new Set();
+  pushSkillResourceSearchQuery(queries, seen, rawQuery);
+  const asciiTokens = rawQuery.match(/[A-Za-z][A-Za-z0-9.+#-]*/g) || [];
+  asciiTokens.forEach((token) => pushSkillResourceSearchQuery(queries, seen, token));
+  skillResourceIntentAliasGroups.forEach((group) => {
+    const matched = group.match.some((token) => {
+      const compactToken = normalizeSearchAliasKey(token);
+      return (
+        (normalized && normalized.includes(normalizeMatchKey(token))) ||
+        (compact && compactToken && compact.includes(compactToken))
+      );
+    });
+    if (!matched) {
+      return;
+    }
+    group.queries.forEach((token) =>
+      pushSkillResourceSearchQuery(queries, seen, token),
+    );
+  });
+  return queries.slice(0, 6);
+}
+
+function inferChineseSkillSummary(raw) {
+  const name = String(raw?.name || raw?.slug || "").trim();
+  const slug = String(raw?.slug || "").trim().toLowerCase();
+  const description = String(raw?.description || "").trim();
+  const joined = `${name} ${slug} ${description}`.toLowerCase();
+  if (joined.includes("ui") || joined.includes("interface")) {
+    return "适合界面审美、排版层级、交互一致性和设计系统类员工。";
+  }
+  if (joined.includes("css") || joined.includes("style") || joined.includes("responsive")) {
+    return "适合布局系统、响应式、动画和样式治理相关任务。";
+  }
+  if (joined.includes("vue")) {
+    return "适合 Vue 组件设计、Composition API 和工程实践相关任务。";
+  }
+  if (joined.includes("chrome") || joined.includes("devtools") || joined.includes("browser")) {
+    return "适合浏览器调试、渲染链路分析和性能定位相关任务。";
+  }
+  if (joined.includes("architect") || joined.includes("architecture")) {
+    return "适合系统拆分、技术选型、边界设计和架构治理相关任务。";
+  }
+  if (
+    joined.includes("node") ||
+    joined.includes("javascript") ||
+    joined.includes("js")
+  ) {
+    return "适合 JS 工具链、构建脚本、运行时治理和工程交付相关任务。";
+  }
+  if (joined.includes("frontend") || joined.includes("design")) {
+    return "适合前端界面、组件设计和交付规范相关任务。";
+  }
+  return "适合相关技能补强场景，建议结合原始说明和来源页面进一步判断是否匹配当前任务。";
+}
+
+function resolveLocalizedSkillSummary(raw, url) {
+  const normalizedUrl = String(url || "").trim();
+  const matched = (employeeDraftExternalSkillSites.value || []).find(
+    (item) => String(item?.url || "").trim() === normalizedUrl,
+  );
+  if (matched?.description) {
+    return String(matched.description || "").trim();
+  }
+  return inferChineseSkillSummary(raw);
+}
+
+function normalizeSkillResourceSearchItem(raw) {
+  const latestVersion =
+    raw?.latest_version && typeof raw.latest_version === "object"
+      ? raw.latest_version
+      : {};
+  const risk = String(latestVersion.risk || "").trim().toLowerCase();
+  const scanStatus = String(latestVersion.scan_status || "").trim().toLowerCase();
+  const policyAction = String(latestVersion.policy_action || "").trim().toLowerCase();
+  const latestVersionNumber = String(latestVersion.version || "").trim();
+  const installCount = Number(raw?.install_count ?? raw?.installCount ?? 0) || 0;
+  const pageUrl =
+    buildVettSkillPageUrl(raw?.slug) ||
+    String(raw?.source_url || "").trim();
+  return {
+    id: String(raw?.id || "").trim(),
+    slug: String(raw?.slug || "").trim(),
+    title: String(raw?.name || raw?.slug || "").trim(),
+    description: String(raw?.description || "").trim(),
+    url: pageUrl,
+    localizedDescription: resolveLocalizedSkillSummary(
+      raw,
+      pageUrl,
+    ),
+    latestVersionLabel: latestVersionNumber
+      ? `v${latestVersionNumber}`
+      : "",
+    canInstall:
+      !!latestVersionNumber &&
+      scanStatus === "completed" &&
+      policyAction !== "deny" &&
+      policyAction !== "blocked",
+    requiresReview: policyAction === "review",
+    risk,
+    scanStatus,
+    version: latestVersionNumber,
+    installCount,
+  };
+}
+
+function scoreSkillResourceSearchItem(item, rawQuery, matchedQuery, queryIndex) {
+  const joined = normalizeMatchKey(
+    `${item?.title || ""} ${item?.slug || ""} ${item?.description || ""}`,
+  );
+  const raw = normalizeMatchKey(rawQuery);
+  const matched = normalizeMatchKey(matchedQuery);
+  let score = 120 - queryIndex * 12;
+  if (matched && joined.includes(matched)) {
+    score += 36;
+  }
+  if (raw && joined.includes(raw)) {
+    score += 48;
+  }
+  if (matched && normalizeMatchKey(item?.title || "") === matched) {
+    score += 18;
+  }
+  if (item?.canInstall) {
+    score += 6;
+  }
+  if ((skillResourceSites.value || []).some((site) => site.url === item?.url)) {
+    score += 14;
+  }
+  score += Math.min(18, Math.log10((Number(item?.installCount) || 0) + 1) * 8);
+  return score;
+}
+
+function mergeSkillResourceSearchResults(groups, rawQuery) {
+  const merged = new Map();
+  groups.forEach(({ query, items, index }) => {
+    items.forEach((rawItem) => {
+      const item = normalizeSkillResourceSearchItem(rawItem);
+      if (!item.slug || !item.url) {
+        return;
+      }
+      const score = scoreSkillResourceSearchItem(item, rawQuery, query, index);
+      const existing = merged.get(item.slug);
+      if (!existing || score > existing.searchScore) {
+        merged.set(item.slug, {
+          ...item,
+          searchScore: score,
+          matchedQuery: query,
+        });
+      }
+    });
+  });
+  return Array.from(merged.values())
+    .sort((left, right) => {
+      if (right.searchScore !== left.searchScore) {
+        return right.searchScore - left.searchScore;
+      }
+      if (right.installCount !== left.installCount) {
+        return right.installCount - left.installCount;
+      }
+      return left.title.localeCompare(right.title);
+    })
+    .slice(0, 18);
+}
+
+async function fetchSkillResourceSearchItems(query) {
+  const data = await api.get("/skill-resources", {
+    params: {
+      source: "vett",
+      q: query,
+      limit: 8,
+      offset: 0,
+    },
+  });
+  return Array.isArray(data?.items) ? data.items : [];
+}
+
+const employeeDraftDialogMatchedSkillIds = computed(() => {
+  const payload = employeeDraftDialogPayload.value;
+  if (!payload) return [];
+  return matchSkillsFromDraft(
+    payload.skills,
+    Array.isArray(employeeDraftCatalog.value.skills)
+      ? employeeDraftCatalog.value.skills
+      : [],
+  );
+});
+
+const employeeDraftDialogMatchedSkillLabels = computed(() => {
+  const skillMap = new Map(
+    (employeeDraftCatalog.value.skills || []).map((skill) => [
+      skill.id,
+      skill.name || skill.id,
+    ]),
+  );
+  return employeeDraftDialogMatchedSkillIds.value.map((id) => {
+    const name = String(skillMap.get(id) || id).trim();
+    return `${name} (${id})`;
+  });
+});
+
+const employeeDraftDialogMatchedRuleBindings = computed(() => {
+  const payload = employeeDraftDialogPayload.value;
+  if (!payload) return [];
+  return matchRulesFromDraft(
+    payload,
+    Array.isArray(employeeDraftCatalog.value.rules)
+      ? employeeDraftCatalog.value.rules
+      : [],
+  );
+});
+
+const employeeDraftDialogMatchedRuleLabels = computed(() =>
+  employeeDraftDialogMatchedRuleBindings.value.map((rule) =>
+    rule.domain ? `${rule.title} (${rule.domain})` : rule.title,
+  ),
+);
+
+function syncSkillResourceDirectoryDraft() {
+  skillResourceDirectoryDraft.value = readPreferredSkillResourceDirectory(
+    selectedProjectId.value,
+    projectChatSettings.value.local_connector_id,
+  );
+}
+
+function setSkillResourceDirectory(directoryPath, options = {}) {
+  const normalized = String(directoryPath || "").trim();
+  const previous = String(skillResourceDirectoryResolved.value || "").trim();
+  skillResourceDirectoryDraft.value = normalized;
+  writePreferredSkillResourceDirectory(
+    selectedProjectId.value,
+    projectChatSettings.value.local_connector_id,
+    normalized,
+  );
+  if (previous !== normalized) {
+    externalAgentWarmupKey.value = "";
+  }
+  if (!options?.silent) {
+    ElMessage.success(normalized ? "技能目录已保存" : "技能目录已清空");
+  }
+}
+
+function openSkillResourceCenter() {
+  syncSkillResourceDirectoryDraft();
+  skillResourceDialogVisible.value = true;
+}
+
+function useWorkspaceAsSkillDirectory() {
+  const nextDirectory = String(
+    workspacePathDraftNormalized.value || workspacePathResolved.value || "",
+  ).trim();
+  if (!nextDirectory) {
+    ElMessage.warning("当前还没有可复用的工作区路径");
+    return;
+  }
+  setSkillResourceDirectory(nextDirectory);
+}
+
+async function pickSkillResourceDirectory() {
+  const title = `选择技能下载目录 · ${String(currentProjectLabel.value || "").trim() || "AI 对话"}`;
+  const initialPath = String(
+    skillResourceDirectoryResolved.value ||
+      workspacePathDraftNormalized.value ||
+      workspacePathResolved.value ||
+      "",
+  ).trim();
+  skillResourceDirectoryPicking.value = true;
+  try {
+    let pickedPath = "";
+    if (usingLocalConnector.value) {
+      const connectorId = String(
+        projectChatSettings.value.local_connector_id || "",
+      ).trim();
+      if (!connectorId) {
+        ElMessage.warning("请先选择本地连接器");
+        return;
+      }
+      const payload = await pickWorkspaceViaLocalConnector(connectorId, {
+        title,
+        initialPath,
+      });
+      pickedPath = String(payload?.path || "").trim();
+      if (payload?.cancelled || !pickedPath) {
+        return;
+      }
+    } else {
+      const picked = await pickWorkspaceDirectory(initialPath, {
+        title,
+        placeholder: "/Users/yourname/.codex/skills",
+      });
+      pickedPath = String(picked || "").trim();
+      if (!pickedPath) {
+        return;
+      }
+    }
+    setSkillResourceDirectory(pickedPath);
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "选择技能目录失败");
+  } finally {
+    skillResourceDirectoryPicking.value = false;
+  }
+}
+
+async function copySkillResourceDirectory() {
+  const directoryPath = String(skillResourceDirectoryResolved.value || "").trim();
+  if (!directoryPath) {
+    ElMessage.warning("请先选择技能目录");
+    return;
+  }
+  try {
+    await writeClipboardText(directoryPath);
+    ElMessage.success("技能目录路径已复制");
+  } catch {
+    ElMessage.error("复制路径失败");
+  }
+}
+
+async function copySkillResourceSite(site) {
+  const url = String(site?.url || "").trim();
+  if (!url) {
+    ElMessage.warning("当前站点没有可复制地址");
+    return;
+  }
+  try {
+    await writeClipboardText(url);
+    ElMessage.success("站点地址已复制");
+  } catch {
+    ElMessage.error("复制地址失败");
+  }
+}
+
+async function searchSkillResources() {
+  const query = String(skillResourceSearchQuery.value || "").trim();
+  if (!query) {
+    skillResourceSearchResults.value = [];
+    skillResourceSearchResolvedQueries.value = [];
+    return;
+  }
+  const expandedQueries = buildSkillResourceSearchQueries(query);
+  skillResourceSearchResolvedQueries.value = expandedQueries;
+  skillResourceSearchLoading.value = true;
+  try {
+    const settled = await Promise.allSettled(
+      expandedQueries.map((searchQuery) => fetchSkillResourceSearchItems(searchQuery)),
+    );
+    const groups = settled
+      .map((entry, index) => {
+        if (entry.status !== "fulfilled") {
+          return null;
+        }
+        return {
+          query: expandedQueries[index],
+          index,
+          items: Array.isArray(entry.value) ? entry.value : [],
+        };
+      })
+      .filter(Boolean);
+    if (!groups.length) {
+      const failed = settled.find((entry) => entry.status === "rejected");
+      throw failed?.reason || new Error("搜索技能资源失败");
+    }
+    skillResourceSearchResults.value = mergeSkillResourceSearchResults(groups, query);
+  } catch (err) {
+    skillResourceSearchResults.value = [];
+    ElMessage.error(err?.detail || err?.message || "搜索技能资源失败");
+  } finally {
+    skillResourceSearchLoading.value = false;
+  }
+}
+
+function resetSkillResourceSearch() {
+  skillResourceSearchQuery.value = "";
+  skillResourceSearchResults.value = [];
+  skillResourceSearchResolvedQueries.value = [];
+}
+
+async function installSkillResource(site) {
+  const slug = String(site?.slug || "").trim();
+  const version = String(site?.version || "").trim();
+  const installDir = String(skillResourceDirectoryResolved.value || "").trim();
+  if (!slug || !version) {
+    ElMessage.warning("当前技能资源缺少可安装版本");
+    return;
+  }
+  if (!installDir) {
+    ElMessage.warning("请先选择本地技能目录");
+    return;
+  }
+  if (site?.requiresReview) {
+    await ElMessageBox.confirm(
+      `技能「${site.title || slug}」被标记为需要人工确认，确定继续安装？`,
+      "高风险确认",
+      { type: "warning" },
+    );
+  }
+  skillResourceInstallingSlug.value = slug;
+  try {
+    const result = await api.post(
+      `/skill-resources/vett/${slug}/install`,
+      {
+        version,
+        install_dir: installDir,
+        import_to_library: false,
+      },
+    );
+    const resolvedInstallDir = String(result?.install_dir || installDir).trim();
+    ElMessage.success(
+      resolvedInstallDir
+        ? `技能已下载到本地技能目录：${resolvedInstallDir}`
+        : "技能已下载到本地技能目录",
+    );
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "下载技能资源失败");
+  } finally {
+    skillResourceInstallingSlug.value = "";
+  }
+}
+
+const employeeDraftDialogRuleDraftLabels = computed(() => {
+  const payload = employeeDraftDialogPayload.value;
+  if (!payload || !Array.isArray(payload.rule_drafts)) return [];
+  return payload.rule_drafts
+    .map((draft) => {
+      const title = String(draft?.title || "").trim();
+      const domain = String(draft?.domain || "").trim();
+      if (!title && !domain) return "";
+      return domain ? `${title || "未命名规则"} (${domain})` : title;
+    })
+    .filter(Boolean);
+});
+
+const employeeDraftAutoRuleSourceLabels = computed(() =>
+  normalizeStringList(
+    (employeeDraftAutoRuleGenerationSourceFilters.value || []).map(
+      (item) =>
+        EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS[String(item || "").trim()] ||
+        "系统规则源",
+    ),
+    6,
+  ),
+);
+
+function getEmployeeDraftCard(item) {
+  const rawDraft = extractEmployeeDraftPayload(item?.content || "");
+  if (!rawDraft) return null;
+  return buildEmployeeDraftCard(rawDraft);
+}
+
+function getEmployeeDraftKey(item) {
+  const messageId = String(item?.id || "").trim();
+  if (messageId) return `msg:${messageId}`;
+  const content = String(item?.content || "").trim();
+  return `content:${content.slice(0, 120)}`;
+}
+
+function resetEmployeeDraftDialogState() {
+  employeeDraftDialogLoading.value = false;
+  employeeDraftDialogPayload.value = null;
+  employeeDraftDialogItem.value = null;
+  employeeDraftAutoCreateSkills.value = true;
+  employeeDraftAutoCreateRules.value = true;
+  employeeDraftAddToProject.value = false;
+}
+
+function handleStartEmployeeCreation() {
+  if (isExternalAgentMode.value) {
+    selectedChatMode.value = "system";
+  }
+  toggleComposerAssist("employee_create");
+}
+
+async function autoCreateEmployeeFromDraftMessage(
+  item,
+  { resetAssist = false } = {},
+) {
+  if (!item || item.employeeDraftCreatedName) {
+    return false;
+  }
+  const rawDraft = extractEmployeeDraftPayload(item?.content || "");
+  if (!rawDraft) {
+    return false;
+  }
+  const payload = buildEmployeeAutoCreatePayload(rawDraft);
+  await openEmployeeDraftCreateDialog(item, payload);
+  if (resetAssist && activeComposerAssist.value === "employee_create") {
+    activeComposerAssist.value = "";
+  }
+  return true;
+}
+
+async function openEmployeeDraftCreateDialog(item, payload) {
+  employeeDraftDialogPayload.value = payload;
+  employeeDraftDialogItem.value = item;
+  employeeDraftAutoCreateSkills.value = true;
+  employeeDraftAutoCreateRules.value = true;
+  employeeDraftAddToProject.value = Boolean(
+    String(selectedProjectId.value || "").trim(),
+  );
+  employeeDraftDialogVisible.value = true;
+}
+
+async function createEmployeeFromDraft(item) {
+  const rawDraft = extractEmployeeDraftPayload(item?.content || "");
+  if (!rawDraft) {
+    ElMessage.warning("当前消息里没有可创建的员工草稿");
+    return;
+  }
+  try {
+    const draft = normalizeEmployeeDraftPayload(rawDraft);
+    const payload = {
+      ...draft,
+      add_to_current_project: Boolean(
+        String(selectedProjectId.value || "").trim(),
+      ),
+      memory_retention_days: Math.min(
+        365,
+        Math.max(7, Number(draft.memory_retention_days || 90)),
+      ),
+    };
+    await openEmployeeDraftCreateDialog(item, payload);
+  } catch {}
+}
+
+async function confirmEmployeeDraftCreation() {
+  const payload = employeeDraftDialogPayload.value;
+  const item = employeeDraftDialogItem.value;
+  if (!payload || !item) {
+    employeeDraftDialogVisible.value = false;
+    return;
+  }
+  employeeDraftCreatingKey.value = getEmployeeDraftKey(item);
+  try {
+    const employee = await handleQuickCreateEmployee({
+      ...payload,
+      skills: Array.isArray(payload.skills) ? payload.skills : [],
+      rule_drafts: Array.isArray(payload.rule_drafts)
+        ? payload.rule_drafts
+        : [],
+      add_to_current_project: employeeDraftAddToProject.value,
+      auto_create_missing_skills: employeeDraftAutoCreateSkills.value,
+      auto_create_missing_rules: employeeDraftAutoCreateRules.value,
+    });
+    item.employeeDraftCreatedName = String(
+      employee?.name || payload.name || "",
+    ).trim();
+    employeeDraftDialogVisible.value = false;
+  } finally {
+    employeeDraftCreatingKey.value = "";
+  }
 }
 
 function normalizeAttachment(name) {
@@ -2585,6 +6369,24 @@ function normalizeMcpModules(payload) {
   };
 }
 
+function normalizeRuntimeExternalTools(payload) {
+  if (!Array.isArray(payload)) return [];
+  return payload
+    .map((item) => ({
+      tool_name: String(item?.tool_name || "").trim(),
+      remote_tool_name: String(item?.remote_tool_name || "").trim(),
+      module_name: String(item?.module_name || "").trim(),
+      module_source: String(item?.module_source || "").trim(),
+      description: String(item?.description || "").trim(),
+      disabled: Boolean(item?.disabled),
+    }))
+    .filter((item) => item.tool_name && !item.disabled);
+}
+
+function mergeToolPriority(baseNames, promotedNames) {
+  return normalizeStringList([...(promotedNames || []), ...(baseNames || [])]);
+}
+
 function syncSelectedProjectTools(modules) {
   const names = (modules || [])
     .map((item) => String(item?.tool_name || "").trim())
@@ -2622,6 +6424,37 @@ function selectAllProjectTools() {
 
 function clearProjectTools() {
   selectedProjectToolNames.value = [];
+}
+
+function toggleComposerAssist(actionId) {
+  const normalized = String(actionId || "").trim();
+  if (!normalized) return;
+  if (activeComposerAssist.value === normalized) {
+    activeComposerAssist.value = "";
+    return;
+  }
+  const action = composerAssistActions.value.find(
+    (item) => item.id === normalized,
+  );
+  if (!action) return;
+  activeComposerAssist.value = normalized;
+  if (normalized === "employee_create") {
+    void ensureEmployeeDraftCatalog().catch(() => {});
+  }
+  draftText.value = String(action.seedText || "").trim();
+}
+
+function openSettingsCenter(panelId = "chat") {
+  const normalized = String(panelId || "chat").trim() || "chat";
+  const matched = settingsCenterItems.value.find(
+    (item) => item.id === normalized,
+  );
+  activeSettingsPanel.value = matched?.id || "chat";
+  showSettingsDialog.value = true;
+}
+
+function handleProjectCommand(projectId) {
+  selectedProjectId.value = String(projectId || "").trim();
 }
 
 function moduleTypeLabel(moduleType) {
@@ -2687,135 +6520,469 @@ async function fetchSystemConfig() {
     if (data?.config?.chat_max_tokens) {
       chatMaxTokens.value = Number(data.config.chat_max_tokens);
     }
+    employeeDraftAutoRuleGenerationEnabled.value =
+      !Object.prototype.hasOwnProperty.call(
+        data?.config || {},
+        "employee_auto_rule_generation_enabled",
+      ) || !!data?.config?.employee_auto_rule_generation_enabled;
+    employeeDraftAutoRuleGenerationSourceFilters.value = normalizeStringList(
+      data?.config?.employee_auto_rule_generation_source_filters || [
+        "prompts_chat_curated",
+      ],
+      8,
+    );
+    employeeDraftExternalSkillSites.value = (
+      Array.isArray(data?.config?.employee_external_skill_sites)
+        ? data.config.employee_external_skill_sites
+        : []
+    )
+      .map(normalizeEmployeeDraftExternalSkillSite)
+      .filter((item) => item.url && item.title);
+    employeeDraftAutoRuleGenerationMaxCount.value = Math.min(
+      6,
+      Math.max(
+        1,
+        Number(data?.config?.employee_auto_rule_generation_max_count || 3),
+      ),
+    );
   } catch (err) {
     console.error("加载系统配置失败", err);
+    employeeDraftAutoRuleGenerationEnabled.value = true;
+    employeeDraftAutoRuleGenerationSourceFilters.value = [
+      "prompts_chat_curated",
+    ];
+    employeeDraftExternalSkillSites.value = [];
+    employeeDraftAutoRuleGenerationMaxCount.value = 3;
   }
 }
 
 async function fetchProjects() {
   const data = await api.get("/projects");
   projects.value = data.projects || [];
+  if (!projects.value.length) {
+    localStorage.removeItem("project_id");
+    return;
+  }
+  const savedProjectId = String(
+    localStorage.getItem("project_id") || "",
+  ).trim();
+  if (
+    savedProjectId &&
+    !(projects.value || []).some((item) => item.id === savedProjectId)
+  ) {
+    localStorage.removeItem("project_id");
+  }
+}
+
+async function fetchGlobalProviders() {
+  const [providerData, connectorData, desktopArtifactData] = await Promise.all([
+    api.get("/llm/providers", {
+      params: { enabled_only: true },
+    }),
+    api.get("/local-connectors").catch(() => ({ connectors: [] })),
+    api
+      .get("/local-connectors/desktop-artifacts")
+      .catch(() => ({ artifacts: [] })),
+  ]);
+  const list = Array.isArray(providerData?.providers)
+    ? providerData.providers
+    : [];
+  providers.value = list;
+  localConnectors.value = Array.isArray(connectorData?.connectors)
+    ? connectorData.connectors
+    : [];
+  desktopConnectorArtifacts.value = Array.isArray(
+    desktopArtifactData?.artifacts,
+  )
+    ? desktopArtifactData.artifacts
+    : [];
+  globalDefaultProviderId.value = String(
+    list.find((item) => Boolean(item?.is_default))?.id || list[0]?.id || "",
+  ).trim();
+  const provider =
+    list.find((item) => item.id === globalDefaultProviderId.value) ||
+    list[0] ||
+    {};
+  const models = Array.isArray(provider?.models)
+    ? provider.models.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  globalDefaultModelName.value = String(
+    provider?.default_model || models[0] || "",
+  ).trim();
+  defaultProviderId.value = globalDefaultProviderId.value;
+  defaultModelName.value = globalDefaultModelName.value;
+
+  const currentProviderValid = list.some(
+    (item) =>
+      String(item?.id || "").trim() ===
+      String(selectedProviderId.value || "").trim(),
+  );
+  if (!currentProviderValid) {
+    selectedProviderId.value = globalDefaultProviderId.value;
+  }
+  const selectedProvider =
+    list.find((item) => item.id === selectedProviderId.value) || provider;
+  const selectedModels = Array.isArray(selectedProvider?.models)
+    ? selectedProvider.models
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    : [];
+  if (
+    !selectedModelName.value ||
+    !selectedModels.includes(String(selectedModelName.value || "").trim())
+  ) {
+    selectedModelName.value = String(
+      selectedProvider?.default_model ||
+        selectedModels[0] ||
+        globalDefaultModelName.value ||
+        "",
+    ).trim();
+  }
+  projectChatSettings.value = applyLocalConnectorRuntimeSettings(
+    projectChatSettings.value,
+    String(selectedProjectId.value || "").trim(),
+    localConnectors.value,
+  );
+}
+
+async function refreshLocalConnectorCatalog(silent = true) {
+  if (localConnectorRefreshing.value) {
+    return;
+  }
+  localConnectorRefreshing.value = true;
+  try {
+    const projectId = String(selectedProjectId.value || "").trim();
+    if (projectId) {
+      await fetchProvidersByProject(projectId);
+    } else {
+      await fetchGlobalProviders();
+    }
+    if (!silent) {
+      ElMessage.success("连接器列表已刷新");
+    }
+  } catch (err) {
+    if (!silent) {
+      ElMessage.error(err?.detail || err?.message || "刷新连接器失败");
+    }
+  } finally {
+    localConnectorRefreshing.value = false;
+  }
 }
 
 function syncProjectFromRoute() {
   const routeProjectId = String(route.query.project_id || "").trim();
-  const exists = (projects.value || []).some(
-    (item) => item.id === routeProjectId,
+  const savedProjectId = String(
+    localStorage.getItem("project_id") || "",
+  ).trim();
+  const initialProjectId = resolveAvailableProjectId(
+    routeProjectId || savedProjectId,
   );
-  const initialProjectId = exists ? routeProjectId : "";
-  selectedProjectId.value = exists
-    ? initialProjectId
-    : String(projects.value[0]?.id || "");
+  if (initialProjectId) {
+    selectedProjectId.value = initialProjectId;
+    localStorage.setItem("project_id", initialProjectId);
+    return;
+  }
+  clearSelectedProjectState();
 }
 
 async function fetchProvidersByProject(projectId) {
+  projectSettingsHydrating.value = true;
   if (!projectId) {
-    chatModes.value = [
-      { id: "system", label: "系统对话" },
-      { id: "external_agent", label: "外部 Agent" },
-    ];
-    providers.value = [];
+    chatModes.value = [{ id: "system", label: "系统对话" }];
     projectEmployees.value = [];
     externalAgentInfo.value = normalizeExternalAgentInfo({});
     mcpModules.value = normalizeMcpModules({});
+    runtimeExternalTools.value = [];
     externalMcpTotal.value = 0;
-    projectChatSettings.value = { ...CHAT_SETTINGS_DEFAULTS };
+    activeMcpSource.value = "system";
     selectedProjectToolNames.value = [];
     selectedEmployeeIds.value = [];
-    selectedProviderId.value = "";
-    selectedModelName.value = "";
     systemPrompt.value = "";
     temperature.value = CHAT_SETTINGS_DEFAULTS.temperature;
     chatMaxTokens.value = CHAT_SETTINGS_DEFAULTS.max_tokens;
+    activeComposerAssist.value = "";
     void stopTerminalMirror().catch(() => {});
     resetTerminalPanel();
+    projectWorkspacePath.value = "";
     workspacePathDraft.value = "";
+    projectAiEntryFile.value = "";
+    aiEntryFileDraft.value = "";
+    chatSessions.value = [];
+    currentChatSessionId.value = "";
+    autoSaveState.value = "idle";
+    autoSaveUpdatedAt.value = "";
+    lastAutoSavedFingerprint = "";
+    if (selectedChatMode.value !== "system") {
+      selectedChatMode.value = "system";
+    }
+    await fetchGlobalProviders();
+    projectChatSettings.value = applyLocalConnectorRuntimeSettings(
+      { ...CHAT_SETTINGS_DEFAULTS },
+      "",
+      localConnectors.value,
+    );
+    projectSettingsHydrating.value = false;
     return;
   }
-  const data = await api.get(
-    `/projects/${encodeURIComponent(projectId)}/chat/providers`,
-  );
-  const rawSettings =
-    data?.chat_settings && typeof data.chat_settings === "object"
-      ? data.chat_settings
-      : {};
-  const settings = normalizeProjectChatSettings(rawSettings);
-  projectChatSettings.value = settings;
-  chatModes.value = Array.isArray(data?.chat_modes) && data.chat_modes.length
-    ? data.chat_modes
-    : chatModes.value;
-  providers.value = data.providers || [];
-  projectEmployees.value = data.employees || [];
-  externalAgentInfo.value = normalizeExternalAgentInfo(data?.external_agent || {});
-  workspacePathDraft.value = String(data?.workspace_path || data?.external_agent?.workspace_path || "").trim();
-  mcpModules.value = normalizeMcpModules(data.mcp_modules || {});
-  externalMcpTotal.value = Number(
-    data?.mcp_modules?.summary?.external_total ||
-      mcpModules.value?.external?.modules?.length ||
-      0,
-  );
-  syncSelectedProjectTools(mcpModules.value?.system?.project_related || []);
-
-  const availableToolNames = new Set(
-    projectToolModules.value
-      .map((item) => String(item?.tool_name || "").trim())
-      .filter(Boolean),
-  );
-  const savedToolNames = normalizeStringList(
-    settings.enabled_project_tool_names || [],
-  ).filter((name) => availableToolNames.has(name));
-  const hasSavedToolSelection = Array.isArray(
-    rawSettings?.enabled_project_tool_names,
-  );
-  if (hasSavedToolSelection) {
-    selectedProjectToolNames.value = savedToolNames;
-  }
-
-  const allEmployeeIds = projectEmployees.value
-    .map((item) => String(item?.id || "").trim())
-    .filter(Boolean);
-  const savedEmployeeIds = normalizeStringList(
-    settings.selected_employee_ids || [],
-  );
-  const validSavedEmployeeIds = savedEmployeeIds.filter((id) =>
-    allEmployeeIds.includes(id),
-  );
-  selectedEmployeeIds.value =
-    validSavedEmployeeIds.length > 0 ? validSavedEmployeeIds : allEmployeeIds;
-
-  defaultProviderId.value = String(data.default_provider_id || "");
-  defaultModelName.value = String(data.default_model_name || "");
-
-  const preferredProviderId = String(settings.provider_id || "").trim();
-  const hasPreferredProvider = providers.value.some(
-    (item) => item.id === preferredProviderId,
-  );
-  selectedProviderId.value = hasPreferredProvider
-    ? preferredProviderId
-    : defaultProviderId.value;
-
-  const providerModels = (
-    providers.value.find((item) => item.id === selectedProviderId.value)
-      ?.models || []
-  )
-    .map((item) => String(item || "").trim())
-    .filter(Boolean);
-  const preferredModelName = String(settings.model_name || "").trim();
-  if (preferredModelName && providerModels.includes(preferredModelName)) {
-    selectedModelName.value = preferredModelName;
-  } else {
-    selectedModelName.value = String(
-      defaultModelName.value || providerModels[0] || "",
+  let hydrated = false;
+  try {
+    const preferredConnectorId = String(
+      projectChatSettings.value.local_connector_id ||
+        readPreferredLocalConnectorId() ||
+        "",
+    ).trim();
+    const preferredWorkspacePath = preferredConnectorId
+      ? String(
+          workspacePathDraftNormalized.value ||
+            readPreferredLocalWorkspacePath(projectId, preferredConnectorId) ||
+            "",
+        ).trim()
+      : "";
+    const data = await api.get(
+      buildProjectProvidersRequestUrl(
+        projectId,
+        preferredConnectorId,
+        preferredWorkspacePath,
+      ),
     );
-  }
+    const rawSettings =
+      data?.chat_settings && typeof data.chat_settings === "object"
+        ? data.chat_settings
+        : {};
+    chatModes.value =
+      Array.isArray(data?.chat_modes) && data.chat_modes.length
+        ? data.chat_modes
+        : chatModes.value;
+    if (
+      selectedChatMode.value === "external_agent" &&
+      !chatModes.value.some(
+        (item) => String(item?.id || "").trim() === "external_agent",
+      )
+    ) {
+      selectedChatMode.value = "system";
+    }
+    providers.value = data.providers || [];
+    localConnectors.value = Array.isArray(data?.local_connectors)
+      ? data.local_connectors
+      : [];
+    const settings = applyLocalConnectorRuntimeSettings(
+      rawSettings,
+      projectId,
+      localConnectors.value,
+    );
+    projectChatSettings.value = settings;
+    projectEmployees.value = data.employees || [];
+    externalAgentInfo.value = normalizeExternalAgentInfo(
+      data?.external_agent || {},
+    );
+    projectWorkspacePath.value = String(
+      data?.project_workspace_path || "",
+    ).trim();
+    projectAiEntryFile.value = String(
+      data?.project_ai_entry_file || "",
+    ).trim();
+    aiEntryFileDraft.value = projectAiEntryFile.value;
+    workspacePathDraft.value = String(
+      settings.local_connector_id
+        ? settings.connector_workspace_path ||
+            data?.external_agent?.workspace_path ||
+            ""
+        : projectWorkspacePath.value ||
+            data?.workspace_path ||
+            data?.external_agent?.workspace_path ||
+            "",
+    ).trim();
+    mcpModules.value = normalizeMcpModules(data.mcp_modules || {});
+    runtimeExternalTools.value = normalizeRuntimeExternalTools(
+      data?.runtime_external_tools || [],
+    );
+    externalMcpTotal.value = Number(
+      data?.mcp_modules?.summary?.external_total ||
+        mcpModules.value?.external?.modules?.length ||
+        0,
+    );
+    if (
+      activeComposerAssist.value &&
+      !composerAssistActions.value.some(
+        (item) => item.id === activeComposerAssist.value,
+      )
+    ) {
+      activeComposerAssist.value = "";
+    }
+    syncSelectedProjectTools(mcpModules.value?.system?.project_related || []);
 
-  systemPrompt.value = String(settings.system_prompt || "");
-  temperature.value = Number(
-    settings.temperature ?? CHAT_SETTINGS_DEFAULTS.temperature,
-  );
-  chatMaxTokens.value = Number(
-    settings.max_tokens ?? CHAT_SETTINGS_DEFAULTS.max_tokens,
-  );
+    const availableToolNames = new Set(
+      projectToolModules.value
+        .map((item) => String(item?.tool_name || "").trim())
+        .filter(Boolean),
+    );
+    const savedToolNames = normalizeStringList(
+      settings.enabled_project_tool_names || [],
+    ).filter((name) => availableToolNames.has(name));
+    const hasSavedToolSelection = Array.isArray(
+      rawSettings?.enabled_project_tool_names,
+    );
+    if (hasSavedToolSelection) {
+      selectedProjectToolNames.value = savedToolNames;
+    }
+
+    const allEmployeeIds = projectEmployees.value
+      .map((item) => String(item?.id || "").trim())
+      .filter(Boolean);
+    const savedEmployeeIds = normalizeStringList(
+      settings.selected_employee_ids || [],
+    );
+    const validSavedEmployeeIds = savedEmployeeIds.filter((id) =>
+      allEmployeeIds.includes(id),
+    );
+    selectedEmployeeIds.value =
+      validSavedEmployeeIds.length > 0 ? validSavedEmployeeIds : allEmployeeIds;
+
+    defaultProviderId.value = String(data.default_provider_id || "");
+    defaultModelName.value = String(data.default_model_name || "");
+
+    const preferredProviderId = String(settings.provider_id || "").trim();
+    const connectorProviderId = String(
+      providers.value.find(
+        (item) =>
+          item?.provider_type === "local-connector" &&
+          String(item?.connector_id || "").trim() ===
+            String(settings.local_connector_id || "").trim(),
+      )?.id || "",
+    ).trim();
+    const hasPreferredProvider = providers.value.some(
+      (item) => item.id === preferredProviderId,
+    );
+    selectedProviderId.value =
+      connectorProviderId ||
+      (hasPreferredProvider ? preferredProviderId : defaultProviderId.value);
+
+    const providerModels = (
+      providers.value.find((item) => item.id === selectedProviderId.value)
+        ?.models || []
+    )
+      .map((item) => String(item || "").trim())
+      .filter(Boolean);
+    const preferredModelName = String(settings.model_name || "").trim();
+    if (preferredModelName && providerModels.includes(preferredModelName)) {
+      selectedModelName.value = preferredModelName;
+    } else {
+      selectedModelName.value = String(
+        defaultModelName.value || providerModels[0] || "",
+      );
+    }
+
+    systemPrompt.value = String(settings.system_prompt || "");
+    temperature.value = Number(
+      settings.temperature ?? CHAT_SETTINGS_DEFAULTS.temperature,
+    );
+    chatMaxTokens.value = Number(
+      settings.max_tokens ?? CHAT_SETTINGS_DEFAULTS.max_tokens,
+    );
+    hydrated = true;
+  } finally {
+    projectSettingsHydrating.value = false;
+    if (hydrated) {
+      await nextTick();
+      markAutoSaveSynced();
+      autoSaveState.value = "saved";
+    }
+  }
+}
+
+async function handleQuickCreateEmployee(payload) {
+  employeeCreateSubmitting.value = true;
+  try {
+    const employeeRes = await api.post("/employees/create-from-draft", {
+      name: payload.name,
+      description: payload.description || "",
+      goal: payload.goal || "",
+      tone: payload.tone || "professional",
+      verbosity: payload.verbosity || "concise",
+      language: payload.language || "zh-CN",
+      skills: Array.isArray(payload.skills) ? payload.skills : [],
+      rule_ids: Array.isArray(payload.rule_ids) ? payload.rule_ids : [],
+      rule_titles: Array.isArray(payload.rule_titles)
+        ? payload.rule_titles
+        : [],
+      rule_domains: Array.isArray(payload.rule_domains)
+        ? payload.rule_domains
+        : [],
+      rule_drafts: Array.isArray(payload.rule_drafts)
+        ? payload.rule_drafts
+        : [],
+      style_hints: Array.isArray(payload.style_hints)
+        ? payload.style_hints
+        : [],
+      default_workflow: Array.isArray(payload.default_workflow)
+        ? payload.default_workflow
+        : [],
+      tool_usage_policy: payload.tool_usage_policy || "",
+      auto_evolve: true,
+      evolve_threshold: 0.8,
+      feedback_upgrade_enabled: false,
+      mcp_enabled: true,
+      memory_scope: payload.memory_scope || "project",
+      memory_retention_days: Number(payload.memory_retention_days || 90),
+      auto_create_missing_skills: payload.auto_create_missing_skills !== false,
+      auto_create_missing_rules: payload.auto_create_missing_rules !== false,
+    });
+    const employee = employeeRes?.employee || {};
+    const createdSkills = Array.isArray(employeeRes?.created_skills)
+      ? employeeRes.created_skills
+      : [];
+    const importedSystemMcpSkills = Array.isArray(
+      employeeRes?.imported_system_mcp_skills,
+    )
+      ? employeeRes.imported_system_mcp_skills
+      : [];
+    const createdRules = Array.isArray(employeeRes?.created_rules)
+      ? employeeRes.created_rules
+      : [];
+    const employeeId = String(employee.id || "").trim();
+    const projectId = String(selectedProjectId.value || "").trim();
+    if (payload.add_to_current_project && projectId && employeeId) {
+      await api.post(`/projects/${encodeURIComponent(projectId)}/members`, {
+        employee_id: employeeId,
+        role: "member",
+        enabled: true,
+      });
+    }
+    if (projectId) {
+      await fetchProvidersByProject(projectId);
+      if (payload.add_to_current_project && employeeId) {
+        selectedEmployeeIds.value = [employeeId];
+      }
+    }
+    if (
+      createdSkills.length ||
+      createdRules.length ||
+      importedSystemMcpSkills.length
+    ) {
+      await ensureEmployeeDraftCatalog(true);
+    }
+    const createdParts = [];
+    if (createdSkills.length) {
+      createdParts.push(`技能 ${createdSkills.length} 个`);
+    }
+    if (importedSystemMcpSkills.length) {
+      createdParts.push(`系统MCP技能 ${importedSystemMcpSkills.length} 个`);
+    }
+    if (createdRules.length) {
+      createdParts.push(`规则 ${createdRules.length} 条`);
+    }
+    ElMessage.success(
+      payload.add_to_current_project && projectId
+        ? `员工「${employee.name || employeeId}」已创建并加入当前项目${createdParts.length ? `，自动补齐${createdParts.join("、")}` : ""}`
+        : `员工「${employee.name || employeeId}」创建成功${createdParts.length ? `，自动补齐${createdParts.join("、")}` : ""}`,
+    );
+    return employee;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "创建员工失败");
+    throw err;
+  } finally {
+    employeeCreateSubmitting.value = false;
+  }
 }
 
 function buildProjectChatSettingsPayload() {
@@ -2823,11 +6990,16 @@ function buildProjectChatSettingsPayload() {
   return normalizeProjectChatSettings({
     ...projectChatSettings.value,
     chat_mode: String(selectedChatMode.value || "system").trim(),
-    external_agent_type: String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
+    external_agent_type: String(
+      projectChatSettings.value.external_agent_type || "codex_cli",
+    ).trim(),
     external_agent_sandbox_mode: String(
-      projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
+      projectChatSettings.value.external_agent_sandbox_mode ||
+        "workspace-write",
     ).trim(),
     external_agent_sandbox_mode_explicit: true,
+    local_connector_id: "",
+    connector_workspace_path: "",
     selected_employee_id: employeeIds.length === 1 ? employeeIds[0] : "",
     selected_employee_ids: employeeIds,
     provider_id: String(selectedProviderId.value || "").trim(),
@@ -2843,6 +7015,38 @@ function buildProjectChatSettingsPayload() {
   });
 }
 
+const autoSaveFingerprint = computed(() => {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId || projectSettingsHydrating.value) return "";
+  return JSON.stringify(buildProjectChatSettingsPayload());
+});
+
+function clearAutoSaveTimer() {
+  if (autoSaveTimer) {
+    window.clearTimeout(autoSaveTimer);
+    autoSaveTimer = null;
+  }
+}
+
+function markAutoSaveSynced() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) return;
+  clearAutoSaveTimer();
+  lastAutoSavedFingerprint = JSON.stringify(buildProjectChatSettingsPayload());
+}
+
+function scheduleAutoSave() {
+  if (!selectedProjectId.value || projectSettingsHydrating.value) return;
+  const fingerprint = autoSaveFingerprint.value;
+  if (!fingerprint || fingerprint === lastAutoSavedFingerprint) return;
+  clearAutoSaveTimer();
+  autoSaveState.value = "pending";
+  autoSaveTimer = window.setTimeout(async () => {
+    autoSaveTimer = null;
+    await saveProjectChatSettings(true);
+  }, 700);
+}
+
 async function saveProjectChatSettings(silent = false) {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) {
@@ -2851,6 +7055,8 @@ async function saveProjectChatSettings(silent = false) {
     }
     return;
   }
+  clearAutoSaveTimer();
+  autoSaveState.value = "saving";
   settingsSaving.value = true;
   try {
     const payload = buildProjectChatSettingsPayload();
@@ -2858,8 +7064,10 @@ async function saveProjectChatSettings(silent = false) {
       `/projects/${encodeURIComponent(projectId)}/chat/settings`,
       { settings: payload },
     );
-    projectChatSettings.value = normalizeProjectChatSettings(
+    projectChatSettings.value = applyLocalConnectorRuntimeSettings(
       data?.settings || payload,
+      projectId,
+      localConnectors.value,
     );
     // 以服务端回读结果为准，避免“保存成功但界面仍旧值”的状态分叉。
     await fetchProvidersByProject(projectId);
@@ -2869,10 +7077,18 @@ async function saveProjectChatSettings(silent = false) {
     if (!silent) {
       showSettingsDialog.value = false;
     }
+    markAutoSaveSynced();
+    autoSaveState.value = "saved";
+    autoSaveUpdatedAt.value = new Date().toLocaleTimeString("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
     if (!silent) {
       ElMessage.success("项目对话设置已保存");
     }
   } catch (err) {
+    autoSaveState.value = "error";
     if (!silent) {
       ElMessage.error(err?.detail || err?.message || "保存对话设置失败");
     }
@@ -2898,8 +7114,51 @@ function mapHistoryMessage(item) {
   };
 }
 
-async function fetchChatHistory(projectId) {
+async function fetchChatSessions(projectId, preferredSessionId = "") {
   if (!projectId) {
+    chatSessions.value = [];
+    currentChatSessionId.value = "";
+    messages.value = [];
+    return "";
+  }
+  try {
+    const data = await api.get(
+      `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
+      {
+        params: { limit: 50 },
+      },
+    );
+    chatSessions.value = (data.sessions || []).map(normalizeChatSession);
+    const remembered = restoreChatSession(projectId);
+    const preferred = String(preferredSessionId || "").trim() || remembered;
+    const fallback = String(chatSessions.value[0]?.id || "").trim();
+    const resolved =
+      [preferred, fallback].find(
+        (candidate) =>
+          candidate && chatSessions.value.some((item) => item.id === candidate),
+      ) || "";
+    currentChatSessionId.value = resolved;
+    rememberChatSession(projectId, resolved);
+    return resolved;
+  } catch (err) {
+    chatSessions.value = [];
+    currentChatSessionId.value = "";
+    ElMessage.error(err?.detail || err?.message || "加载会话列表失败");
+    return "";
+  }
+}
+
+async function fetchChatHistory(
+  projectId,
+  chatSessionId = currentChatSessionId.value,
+) {
+  if (!projectId) {
+    messages.value = [];
+    return;
+  }
+  const normalizedSessionId = String(chatSessionId || "").trim();
+  currentChatSessionId.value = normalizedSessionId;
+  if (!normalizedSessionId) {
     messages.value = [];
     return;
   }
@@ -2907,10 +7166,11 @@ async function fetchChatHistory(projectId) {
     const data = await api.get(
       `/projects/${encodeURIComponent(projectId)}/chat/history`,
       {
-        params: { limit: 200 },
+        params: { limit: 200, chat_session_id: normalizedSessionId },
       },
     );
     messages.value = (data.messages || []).map(mapHistoryMessage);
+    rememberChatSession(projectId, normalizedSessionId);
     scrollToBottom();
   } catch (err) {
     messages.value = [];
@@ -2933,19 +7193,328 @@ function handleProviderChange() {
   }
 }
 
+function resetExternalAgentRuntimeState() {
+  externalAgentWarmupKey.value = "";
+  externalAgentWarmupLoading.value = false;
+  externalAgentInfo.value = normalizeExternalAgentInfo({
+    ...externalAgentInfo.value,
+    ready: false,
+    session_id: "",
+    thread_id: "",
+    workspace_path: usingLocalConnector.value
+      ? String(
+          projectChatSettings.value.connector_workspace_path ||
+            workspacePathDraftNormalized.value ||
+            "",
+        ).trim()
+      : String(
+          projectWorkspacePath.value ||
+            externalAgentInfo.value.workspace_path ||
+            "",
+        ).trim(),
+  });
+  resetTerminalPanel();
+}
+
+async function createChatSession(options = {}) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    return null;
+  }
+  creatingChatSession.value = true;
+  try {
+    const data = await api.post(
+      `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
+      {},
+    );
+    const session = normalizeChatSession(data.session || {});
+    if (!session.id) {
+      throw new Error("创建会话失败");
+    }
+    chatSessions.value = [
+      session,
+      ...chatSessions.value.filter((item) => item.id !== session.id),
+    ];
+    if (options.switchTo !== false) {
+      currentChatSessionId.value = session.id;
+      rememberChatSession(projectId, session.id);
+      messages.value = [];
+      scrollToBottom();
+    }
+    return session;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "创建新对话失败");
+    return null;
+  } finally {
+    creatingChatSession.value = false;
+  }
+}
+
+const LOCAL_CONNECTOR_RUNTIME_PORTS = Array.from(
+  { length: 21 },
+  (_item, index) => 3931 + index,
+);
+
+async function readLocalConnectorError(response, fallbackMessage) {
+  try {
+    const payload = await response.json();
+    return (
+      String(
+        payload?.detail || payload?.message || fallbackMessage || "",
+      ).trim() || fallbackMessage
+    );
+  } catch (_error) {
+    return fallbackMessage;
+  }
+}
+
+async function resolveBrowserConnectorRuntimeUrl() {
+  for (const port of LOCAL_CONNECTOR_RUNTIME_PORTS) {
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const response = await fetch(`${baseUrl}/health`, {
+        method: "GET",
+        cache: "no-store",
+      });
+      if (response.ok) {
+        return baseUrl;
+      }
+    } catch (_error) {
+      // try next port
+    }
+  }
+  throw new Error("未检测到本机 Local Connector，请先启动桌面连接器");
+}
+
+async function pairBrowserLocalConnector() {
+  if (localConnectorPairing.value) {
+    return;
+  }
+  localConnectorPairing.value = true;
+  try {
+    const data = await api.post("/local-connectors/pair/browser-session");
+    const pairing = data?.pairing || {};
+    const pairCode = String(pairing.pair_code || "").trim();
+    const platformUrl = String(pairing.platform_url || "").trim();
+    if (!pairCode || !platformUrl) {
+      throw new Error("服务端没有返回可用的配对信息");
+    }
+    const runtimeUrl = await resolveBrowserConnectorRuntimeUrl();
+    const response = await fetch(`${runtimeUrl}/pairing/connect`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        pair_code: pairCode,
+        platform_url: platformUrl,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(
+        await readLocalConnectorError(response, "本机连接器认证失败"),
+      );
+    }
+    const payload = await response.json().catch(() => ({}));
+    const connectorId = String(payload?.pairing?.connector_id || "").trim();
+    await refreshLocalConnectorCatalog(true);
+    if (connectorId) {
+      projectChatSettings.value.local_connector_id = connectorId;
+    }
+    ElMessage.success("本机连接器已认证成功，请保存当前设置");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "匹配本地连接器失败");
+  } finally {
+    localConnectorPairing.value = false;
+  }
+}
+
+async function requestWorkspacePickSession(connectorId) {
+  return api.post(
+    `/local-connectors/${encodeURIComponent(connectorId)}/workspace-pick/session`,
+  );
+}
+
+async function pickWorkspaceViaLocalConnector(connectorId, options = {}) {
+  const normalizedConnectorId = String(connectorId || "").trim();
+  if (!normalizedConnectorId) {
+    throw new Error("缺少本地连接器 ID");
+  }
+  const data = await requestWorkspacePickSession(normalizedConnectorId);
+  const session = data?.workspace_pick || {};
+  const sessionId = String(session.session_id || "").trim();
+  const sessionToken = String(session.session_token || "").trim();
+  const platformUrl = String(session.platform_url || "").trim();
+  if (!sessionId || !sessionToken || !platformUrl) {
+    throw new Error("服务端没有返回可用的目录选择会话");
+  }
+  const runtimeUrl = await resolveBrowserConnectorRuntimeUrl();
+  const response = await fetch(`${runtimeUrl}/workspace/pick`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      platform_url: platformUrl,
+      session_id: sessionId,
+      session_token: sessionToken,
+      title:
+        String(options?.title || "").trim() ||
+        `选择项目工作区目录 · ${String(currentProjectLabel.value || "").trim() || "AI 对话中心"}`,
+      initial_path: String(
+        options?.initialPath ||
+          workspacePathDraftNormalized.value ||
+          workspacePathResolved.value ||
+          "",
+      ).trim(),
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(
+      await readLocalConnectorError(response, "本机目录选择失败"),
+    );
+  }
+  return response.json();
+}
+
+async function downloadDesktopConnectorArtifact(item) {
+  const filename = String(item?.filename || "").trim();
+  if (!filename) {
+    ElMessage.warning("缺少桌面安装包文件名");
+    return;
+  }
+  downloadingDesktopArtifactKey.value = filename;
+  try {
+    const response = await api.get(
+      "/local-connectors/desktop-artifacts/download",
+      {
+        params: { name: filename },
+        responseType: "blob",
+      },
+    );
+    const url = URL.createObjectURL(response);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    ElMessage.success("桌面安装包已下载");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "下载桌面安装包失败");
+  } finally {
+    downloadingDesktopArtifactKey.value = "";
+  }
+}
+
+async function handleCreateNewConversation() {
+  if (
+    !String(selectedProjectId.value || "").trim() &&
+    ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+  ) {
+    currentChatSessionId.value = "";
+    messages.value = [];
+    activeComposerAssist.value = "";
+    resetDraft();
+    scrollToBottom();
+    return;
+  }
+  const session = await createChatSession({ switchTo: true });
+  if (!session) return;
+  resetDraft();
+}
+
+async function selectChatSession(sessionId) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!projectId || !normalizedSessionId) return;
+  if (chatLoading.value) {
+    ElMessage.warning("当前回答进行中，暂时不能切换会话");
+    return;
+  }
+  await fetchChatHistory(projectId, normalizedSessionId);
+}
+
+async function deleteChatSession(session) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(session?.id || "").trim();
+  if (!projectId || !chatSessionId) return;
+  if (chatLoading.value && currentChatSessionId.value === chatSessionId) {
+    ElMessage.warning("当前回答进行中，暂时不能删除这个会话");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认删除会话「${String(session?.title || "新对话")}」吗？删除后不可恢复。`,
+      "删除历史对话",
+      {
+        confirmButtonText: "删除",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+  } catch {
+    return;
+  }
+  deletingChatSessionId.value = chatSessionId;
+  try {
+    await api.delete(
+      `/projects/${encodeURIComponent(projectId)}/chat/history`,
+      {
+        params: { chat_session_id: chatSessionId },
+      },
+    );
+    chatSessions.value = chatSessions.value.filter(
+      (item) => item.id !== chatSessionId,
+    );
+    const isCurrentSession = currentChatSessionId.value === chatSessionId;
+    if (isCurrentSession) {
+      clearChatSessionMemory(projectId);
+      const nextSessionId = String(chatSessions.value[0]?.id || "").trim();
+      if (nextSessionId) {
+        await fetchChatHistory(projectId, nextSessionId);
+      } else {
+        currentChatSessionId.value = "";
+        messages.value = [];
+        await createChatSession({ switchTo: true });
+      }
+    }
+    ElMessage.success("历史对话已删除");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "删除历史对话失败");
+  } finally {
+    deletingChatSessionId.value = "";
+  }
+}
+
 async function clearMessages() {
-  if (!selectedProjectId.value) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!projectId || !chatSessionId) {
     messages.value = [];
     return;
   }
   try {
     await api.delete(
-      `/projects/${encodeURIComponent(selectedProjectId.value)}/chat/history`,
+      `/projects/${encodeURIComponent(projectId)}/chat/history`,
+      {
+        params: { chat_session_id: chatSessionId },
+      },
     );
     messages.value = [];
-    ElMessage.success("聊天记录已清空");
+    chatSessions.value = chatSessions.value.filter(
+      (item) => item.id !== chatSessionId,
+    );
+    clearChatSessionMemory(projectId);
+    const nextSessionId = String(chatSessions.value[0]?.id || "").trim();
+    if (nextSessionId) {
+      await fetchChatHistory(projectId, nextSessionId);
+    } else {
+      currentChatSessionId.value = "";
+      await createChatSession({ switchTo: true });
+    }
+    ElMessage.success("当前会话已清空");
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "清空聊天记录失败");
+    ElMessage.error(err?.detail || err?.message || "清空当前会话失败");
   }
 }
 
@@ -2969,7 +7538,9 @@ function handleSocketMessage(eventData) {
   if (eventType === "agent_ready") {
     externalAgentWarmupLoading.value = false;
     terminalPanelStatus.value = "ready";
-    appendTerminalPanelLine(`# 会话已预热 · thread=${String(eventData?.thread_id || "-").trim() || "-"}`);
+    appendTerminalPanelLine(
+      `# 会话已预热 · thread=${String(eventData?.thread_id || "-").trim() || "-"}`,
+    );
     externalAgentInfo.value = normalizeExternalAgentInfo({
       ...externalAgentInfo.value,
       ...eventData,
@@ -2989,7 +7560,9 @@ function handleSocketMessage(eventData) {
   }
   if (eventType === "terminal_mirror_started") {
     terminalMirrorConnected.value = true;
-    appendTerminalPanelLine(`# 真实终端镜像已连接 · thread=${String(eventData?.thread_id || "-").trim() || "-"}`);
+    appendTerminalPanelLine(
+      `# 真实终端镜像已连接 · thread=${String(eventData?.thread_id || "-").trim() || "-"}`,
+    );
     return;
   }
   if (eventType === "terminal_mirror_stopped") {
@@ -3004,7 +7577,7 @@ function handleSocketMessage(eventData) {
   }
   if (!requestId) {
     if (eventType === "error") {
-    terminalPanelStatus.value = "error";
+      terminalPanelStatus.value = "error";
       ElMessage.error(String(eventData?.message || "对话异常"));
     }
     return;
@@ -3018,7 +7591,9 @@ function handleSocketMessage(eventData) {
       ...externalAgentInfo.value,
       ready: false,
     };
-    pendingPrepare?.reject(new Error(String(eventData?.message || "外部 Agent 预热失败")));
+    pendingPrepare?.reject(
+      new Error(String(eventData?.message || "外部 Agent 预热失败")),
+    );
     return;
   }
   const pending = pendingRequests.get(requestId);
@@ -3041,17 +7616,26 @@ function handleSocketMessage(eventData) {
         ...eventData,
         ready: true,
         session_id: String(
-          eventData?.agent_session_id || externalAgentInfo.value.session_id || "",
+          eventData?.agent_session_id ||
+            externalAgentInfo.value.session_id ||
+            "",
         ).trim(),
-        support_dir: String(eventData?.support_dir || externalAgentInfo.value.support_dir || "").trim(),
+        support_dir: String(
+          eventData?.support_dir || externalAgentInfo.value.support_dir || "",
+        ).trim(),
         mcp_bridge_enabled: Boolean(
-          eventData?.mcp_bridge_enabled ?? externalAgentInfo.value.mcp_bridge_enabled,
+          eventData?.mcp_bridge_enabled ??
+          externalAgentInfo.value.mcp_bridge_enabled,
         ),
         mcp_bridge_reason: String(
-          eventData?.mcp_bridge_reason || externalAgentInfo.value.mcp_bridge_reason || "",
+          eventData?.mcp_bridge_reason ||
+            externalAgentInfo.value.mcp_bridge_reason ||
+            "",
         ).trim(),
         mcp_server_name: String(
-          eventData?.mcp_server_name || externalAgentInfo.value.mcp_server_name || "",
+          eventData?.mcp_server_name ||
+            externalAgentInfo.value.mcp_server_name ||
+            "",
         ).trim(),
         support_files: Array.isArray(eventData?.support_files)
           ? eventData.support_files.map((item) => ({
@@ -3062,16 +7646,21 @@ function handleSocketMessage(eventData) {
             }))
           : externalAgentInfo.value.support_files,
         execution_mode: String(
-          eventData?.execution_mode || externalAgentInfo.value.execution_mode || "local",
+          eventData?.execution_mode ||
+            externalAgentInfo.value.execution_mode ||
+            "local",
         ).trim(),
         runner_url: String(
           eventData?.runner_url || externalAgentInfo.value.runner_url || "",
         ).trim(),
         materialized_by: String(
-          eventData?.materialized_by || externalAgentInfo.value.materialized_by || "",
+          eventData?.materialized_by ||
+            externalAgentInfo.value.materialized_by ||
+            "",
         ).trim(),
         workspace_access:
-          eventData?.workspace_access && typeof eventData.workspace_access === "object"
+          eventData?.workspace_access &&
+          typeof eventData.workspace_access === "object"
             ? {
                 configured: Boolean(eventData.workspace_access.configured),
                 exists: Boolean(eventData.workspace_access.exists),
@@ -3081,7 +7670,9 @@ function handleSocketMessage(eventData) {
                 source: String(eventData.workspace_access.source || "").trim(),
                 sandbox_mode:
                   String(
-                    eventData.workspace_access.sandbox_mode || eventData?.sandbox_mode || "workspace-write",
+                    eventData.workspace_access.sandbox_mode ||
+                      eventData?.sandbox_mode ||
+                      "workspace-write",
                   ).trim() || "workspace-write",
                 reason: String(eventData.workspace_access.reason || "").trim(),
               }
@@ -3109,7 +7700,8 @@ function handleSocketMessage(eventData) {
   if (eventType === "file_review_required") {
     row.audit = normalizeAuditPayload({
       ...(row.audit && typeof row.audit === "object" ? row.audit : {}),
-      after_diff_summary: eventData?.diff_summary || row.audit?.after_diff_summary || {},
+      after_diff_summary:
+        eventData?.diff_summary || row.audit?.after_diff_summary || {},
       file_review_status: "pending",
     });
     void handleFileReviewRequired(eventData, row);
@@ -3128,7 +7720,10 @@ function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "status") {
-    appendTerminalLog(row, `› ${String(eventData?.message || "处理中...").trim()}`);
+    appendTerminalLog(
+      row,
+      `› ${String(eventData?.message || "处理中...").trim()}`,
+    );
     scrollToBottom();
     return;
   }
@@ -3138,15 +7733,21 @@ function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "command_start") {
-    appendTerminalLog(row, `$ ${String(eventData?.command || "").trim() || "(command)"}`);
+    appendTerminalLog(
+      row,
+      `$ ${String(eventData?.command || "").trim() || "(command)"}`,
+    );
     scrollToBottom();
     return;
   }
   if (eventType === "command_result") {
     const exitCode = eventData?.exit_code;
-    const statusText = String(eventData?.status || "completed").trim() || "completed";
+    const statusText =
+      String(eventData?.status || "completed").trim() || "completed";
     const exitLabel =
-      exitCode === null || exitCode === undefined ? statusText : `exit=${exitCode}`;
+      exitCode === null || exitCode === undefined
+        ? statusText
+        : `exit=${exitCode}`;
     appendTerminalLog(row, `# 命令完成 · ${exitLabel}`);
     const outputPreview = String(eventData?.output_preview || "").trim();
     if (outputPreview) {
@@ -3156,9 +7757,10 @@ function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "usage") {
-    const usage = eventData?.usage && typeof eventData.usage === "object"
-      ? eventData.usage
-      : {};
+    const usage =
+      eventData?.usage && typeof eventData.usage === "object"
+        ? eventData.usage
+        : {};
     appendTerminalLog(
       row,
       `# tokens in=${Number(usage.input_tokens || 0)} cache=${Number(usage.cached_input_tokens || 0)} out=${Number(usage.output_tokens || 0)}`,
@@ -3253,8 +7855,18 @@ function buildExternalAgentWarmupKey(projectId) {
     agentType: String(
       projectChatSettings.value.external_agent_type || "codex_cli",
     ).trim(),
+    localConnectorId: String(
+      projectChatSettings.value.local_connector_id || "",
+    ).trim(),
+    workspacePath: String(
+      workspacePathDraftNormalized.value || workspacePathResolved.value || "",
+    ).trim(),
     sandboxMode: String(
-      projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
+      projectChatSettings.value.external_agent_sandbox_mode ||
+        "workspace-write",
+    ).trim(),
+    skillResourceDirectory: String(
+      skillResourceDirectoryResolved.value || "",
     ).trim(),
     systemPrompt: String(systemPrompt.value || "").trim(),
     employeeIds: normalizeStringList(selectedEmployeeIds.value || []),
@@ -3262,37 +7874,136 @@ function buildExternalAgentWarmupKey(projectId) {
 }
 
 async function promptProjectWorkspacePath() {
-  const currentValue = String(
-    workspacePathDraft.value || externalAgentInfo.value.workspace_path || "",
-  ).trim();
-  try {
-    const { value } = await ElMessageBox.prompt(
-      "请填写当前项目的绝对路径，外部 Agent 会在这个目录里执行写文件和命令。",
-      "设置工作区路径",
-      {
-        inputValue: currentValue,
-        inputPlaceholder: "/Users/yourname/project",
-        confirmButtonText: "确定",
-        cancelButtonText: "取消",
-      },
+  if (!usingLocalConnector.value) {
+    ElMessage.warning(
+      "请先选择本地连接器，再填写连接器所在电脑上的工作区绝对路径",
     );
-    workspacePathDraft.value = String(value || "").trim();
-  } catch {
     return;
+  }
+  const connectorId = String(
+    projectChatSettings.value.local_connector_id || "",
+  ).trim();
+  if (!connectorId) {
+    ElMessage.warning("请先选择本地连接器");
+    return;
+  }
+  workspacePathPicking.value = true;
+  try {
+    const payload = await pickWorkspaceViaLocalConnector(connectorId);
+    const pickedPath = String(payload?.path || "").trim();
+    if (payload?.cancelled || !pickedPath) {
+      return;
+    }
+    workspacePathDraft.value = pickedPath;
+    await saveProjectWorkspacePath(pickedPath);
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "打开本机目录选择器失败");
+  } finally {
+    workspacePathPicking.value = false;
   }
 }
 
-async function saveProjectWorkspacePath() {
+function normalizeAiEntryFileForSave(value) {
+  const rawValue = String(value || "").trim();
+  if (!rawValue) return "";
+  const normalizedRelative = toWorkspaceRelativePath(
+    rawValue,
+    projectWorkspacePath.value,
+  );
+  return String(normalizedRelative || rawValue).trim();
+}
+
+async function promptProjectAiEntryFile() {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) {
     ElMessage.warning("请先选择项目");
     return;
   }
-  const workspacePath = String(workspacePathDraft.value || "").trim();
+  aiEntryFilePicking.value = true;
+  try {
+    const pickedPath = await pickWorkspaceFile(
+      aiEntryFileDraftNormalized.value || aiEntryFileResolved.value || "",
+      {
+        title: "选择 AI 入口文件",
+        placeholder: ".ai/ENTRY.md",
+        basePath: projectWorkspacePath.value,
+      },
+    );
+    if (!pickedPath) {
+      return;
+    }
+    aiEntryFileDraft.value = normalizeAiEntryFileForSave(pickedPath);
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "打开文件选择器失败");
+  } finally {
+    aiEntryFilePicking.value = false;
+  }
+}
+
+async function saveProjectAiEntryFile(aiEntryFileOverride = null) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  aiEntryFileSaving.value = true;
+  try {
+    const normalizedOverride =
+      typeof Event !== "undefined" && aiEntryFileOverride instanceof Event
+        ? null
+        : aiEntryFileOverride;
+    const aiEntryFile = normalizeAiEntryFileForSave(
+      normalizedOverride ?? aiEntryFileDraft.value ?? "",
+    );
+    const data = await api.patch(
+      `/projects/${encodeURIComponent(projectId)}/chat/ai-entry-file`,
+      {
+        ai_entry_file: aiEntryFile,
+      },
+    );
+    const persisted = String(data?.ai_entry_file || aiEntryFile).trim();
+    projectAiEntryFile.value = persisted;
+    aiEntryFileDraft.value = persisted;
+    projects.value = (projects.value || []).map((item) =>
+      String(item?.id || "").trim() === projectId
+        ? { ...item, ai_entry_file: persisted }
+        : item,
+    );
+    ElMessage.success(persisted ? "AI 入口文件已保存" : "已清空 AI 入口文件");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存 AI 入口文件失败");
+  } finally {
+    aiEntryFileSaving.value = false;
+  }
+}
+
+async function saveProjectWorkspacePath(workspacePathOverride = null) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  const normalizedOverride =
+    typeof Event !== "undefined" && workspacePathOverride instanceof Event
+      ? null
+      : workspacePathOverride;
+  const workspacePath = String(
+    normalizedOverride ?? workspacePathDraft.value ?? "",
+  ).trim();
   workspacePathSaving.value = true;
   try {
-    await api.put(`/projects/${encodeURIComponent(projectId)}`, {
-      workspace_path: workspacePath,
+    if (!usingLocalConnector.value) {
+      ElMessage.warning("请先选择本地连接器");
+      return;
+    }
+    const connectorId = String(
+      projectChatSettings.value.local_connector_id || "",
+    ).trim();
+    workspacePathDraft.value = workspacePath;
+    writePreferredLocalWorkspacePath(projectId, connectorId, workspacePath);
+    projectChatSettings.value = normalizeProjectChatSettings({
+      ...projectChatSettings.value,
+      connector_workspace_path: workspacePath,
     });
     await fetchProvidersByProject(projectId);
     externalAgentWarmupKey.value = "";
@@ -3303,7 +8014,9 @@ async function saveProjectWorkspacePath() {
       thread_id: "",
       workspace_path: workspacePath,
     });
-    ElMessage.success(workspacePath ? "工作区路径已保存" : "已清空工作区路径");
+    ElMessage.success(
+      workspacePath ? "连接器工作区路径已保存" : "已清空连接器工作区路径",
+    );
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "保存工作区路径失败");
   } finally {
@@ -3315,6 +8028,10 @@ async function testProjectWorkspacePath() {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) {
     ElMessage.warning("请先选择项目");
+    return;
+  }
+  if (!usingLocalConnector.value) {
+    ElMessage.warning("请先选择本地连接器");
     return;
   }
   if (!externalAgentInfo.value.available) {
@@ -3340,9 +8057,13 @@ async function testProjectWorkspacePath() {
   }
 }
 
-async function prepareExternalAgentSession({ force = false, silent = true } = {}) {
+async function prepareExternalAgentSession({
+  force = false,
+  silent = true,
+} = {}) {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId || !isExternalAgentMode.value) return;
+  if (!usingLocalConnector.value) return;
   if (!externalAgentInfo.value.available) return;
   if (!String(externalAgentInfo.value.workspace_path || "").trim()) return;
 
@@ -3371,10 +8092,22 @@ async function prepareExternalAgentSession({ force = false, silent = true } = {}
       type: "agent_prepare",
       request_id: requestId,
       chat_mode: "external_agent",
-      external_agent_type: String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
+      external_agent_type: String(
+        projectChatSettings.value.external_agent_type || "codex_cli",
+      ).trim(),
       external_agent_sandbox_mode:
-        projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
+        projectChatSettings.value.external_agent_sandbox_mode ||
+        "workspace-write",
       external_agent_sandbox_mode_explicit: true,
+      local_connector_id: String(
+        projectChatSettings.value.local_connector_id || "",
+      ).trim(),
+      connector_workspace_path: String(
+        workspacePathDraftNormalized.value || workspacePathResolved.value || "",
+      ).trim(),
+      skill_resource_directory: String(
+        skillResourceDirectoryResolved.value || "",
+      ).trim(),
       employee_ids: employeeIds,
       employee_id: employeeIds.length === 1 ? employeeIds[0] : undefined,
       system_prompt: systemPrompt.value || undefined,
@@ -3462,28 +8195,217 @@ function stopGeneration() {
   if (currentRequestId && wsClient.value && wsClient.value.isOpen()) {
     wsClient.value.send({ type: "cancel", request_id: currentRequestId });
     ElMessage.info(
-      isExternalAgentMode.value ? "已发送 Ctrl+C 到外部 Agent" : "已发送停止指令",
+      isExternalAgentMode.value
+        ? "已发送 Ctrl+C 到外部 Agent"
+        : "已发送停止指令",
     );
     return;
   }
   ElMessage.warning("当前没有可暂停的生成任务");
 }
 
+async function generateEmployeeDraftWithoutProject() {
+  const text = String(draftText.value || "").trim();
+  if (!text) {
+    ElMessage.warning("请先描述你要创建的员工");
+    return;
+  }
+  const userMessage = {
+    id: createLocalMessageId(),
+    role: "user",
+    content: text,
+    images: [],
+    attachments: [],
+    time: nowText(),
+  };
+  const assistantMessage = {
+    id: createLocalMessageId(),
+    role: "assistant",
+    content: "",
+    displayMode: "",
+    terminalLog: [],
+    processExpanded: false,
+    audit: null,
+    time: nowText(),
+  };
+
+  const history = messages.value
+    .slice(-6)
+    .map((item) => ({
+      role: String(item?.role || "assistant"),
+      content: String(item?.content || ""),
+    }))
+    .filter(
+      (item) =>
+        ["user", "assistant"].includes(item.role) && item.content.trim(),
+    );
+
+  messages.value.push(userMessage);
+  messages.value.push(assistantMessage);
+
+  const assistantIndex = messages.value.length - 1;
+  chatLoading.value = true;
+  resetDraft();
+  scrollToBottom();
+
+  try {
+    await ensureEmployeeDraftCatalog();
+    const response = await api.post("/employees/generate-draft", {
+      message: String(
+        [text, "", buildEmployeeDraftAssistContext()]
+          .filter(Boolean)
+          .join("\n"),
+      ),
+      history,
+      provider_id: String(
+        selectedProviderId.value || defaultProviderId.value || "",
+      ).trim(),
+      model_name: String(
+        selectedModelName.value || defaultModelName.value || "",
+      ).trim(),
+      temperature: Number(
+        temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
+      ),
+      system_prompt:
+        "你是 AI 员工架构师。请根据用户需求和现有技能、规则目录生成员工草稿。先给一句简短说明，最后必须附带严格 JSON 的 ```employee-draft``` 代码块；如果能明确整理出可直接落地的员工规则，请输出 rule_drafts 数组，每项包含 title、domain、content。",
+    });
+    messages.value[assistantIndex].content = String(
+      response?.content || "未生成员工草稿。",
+    ).trim();
+    await autoCreateEmployeeFromDraftMessage(messages.value[assistantIndex], {
+      resetAssist: true,
+    });
+  } catch (err) {
+    messages.value[assistantIndex].content =
+      `请求失败：${err?.message || "未知错误"}`;
+    ElMessage.error(err?.detail || err?.message || "生成员工草稿失败");
+  } finally {
+    chatLoading.value = false;
+    scrollToBottom();
+  }
+}
+
+async function sendGlobalChatWithoutProject() {
+  const text = String(draftText.value || "").trim();
+  if (!text) {
+    ElMessage.warning("请输入消息内容");
+    return;
+  }
+  const userMessage = {
+    id: createLocalMessageId(),
+    role: "user",
+    content: text,
+    images: [],
+    attachments: [],
+    time: nowText(),
+  };
+  const assistantMessage = {
+    id: createLocalMessageId(),
+    role: "assistant",
+    content: "",
+    displayMode: "",
+    terminalLog: [],
+    processExpanded: false,
+    audit: null,
+    time: nowText(),
+  };
+
+  const history = messages.value
+    .slice(-10)
+    .map((item) => ({
+      role: String(item?.role || "assistant"),
+      content: String(item?.content || ""),
+    }))
+    .filter(
+      (item) =>
+        ["user", "assistant"].includes(item.role) && item.content.trim(),
+    );
+
+  messages.value.push(userMessage);
+  messages.value.push(assistantMessage);
+
+  const assistantIndex = messages.value.length - 1;
+  chatLoading.value = true;
+  resetDraft();
+  scrollToBottom();
+
+  try {
+    const response = await api.post("/projects/chat/global", {
+      message: text,
+      history,
+      provider_id: String(
+        selectedProviderId.value || defaultProviderId.value || "",
+      ).trim(),
+      model_name: String(
+        selectedModelName.value || defaultModelName.value || "",
+      ).trim(),
+      temperature: Number(
+        temperature.value ?? CHAT_SETTINGS_DEFAULTS.temperature,
+      ),
+      max_tokens: Number(
+        chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens,
+      ),
+      system_prompt: String(systemPrompt.value || "").trim(),
+      skill_resource_directory: String(
+        skillResourceDirectoryResolved.value || "",
+      ).trim(),
+      answer_style: String(
+        projectChatSettings.value.answer_style ||
+          CHAT_SETTINGS_DEFAULTS.answer_style,
+      ).trim(),
+      prefer_conclusion_first: Boolean(
+        projectChatSettings.value.prefer_conclusion_first ??
+        CHAT_SETTINGS_DEFAULTS.prefer_conclusion_first,
+      ),
+    });
+    messages.value[assistantIndex].content = String(
+      response?.content || "未返回有效内容。",
+    ).trim();
+  } catch (err) {
+    messages.value[assistantIndex].content =
+      `请求失败：${err?.message || "未知错误"}`;
+    ElMessage.error(err?.detail || err?.message || "通用对话失败");
+  } finally {
+    chatLoading.value = false;
+    scrollToBottom();
+  }
+}
+
 async function doSend() {
   if (!canSend.value) return;
 
+  if (
+    !selectedProjectId.value &&
+    activeComposerAssistMeta.value?.id === "employee_create"
+  ) {
+    await generateEmployeeDraftWithoutProject();
+    return;
+  }
+
   if (!selectedProjectId.value) {
+    if (ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT) {
+      await sendGlobalChatWithoutProject();
+      return;
+    }
     ElMessage.warning("请先选择项目");
     return;
   }
 
   if (isExternalAgentMode.value) {
+    if (!usingLocalConnector.value) {
+      ElMessage.error("请先在设置中选择本地连接器");
+      return;
+    }
     if (!externalAgentInfo.value.available) {
       ElMessage.error("当前选中的外部 Agent 不可用，无法启动外部 Agent 模式");
       return;
     }
     if (!String(externalAgentInfo.value.workspace_path || "").trim()) {
-      ElMessage.warning("当前项目未配置 workspace_path");
+      ElMessage.warning(
+        usingLocalConnector.value
+          ? "当前连接器未配置工作区路径"
+          : "当前项目未配置 workspace_path",
+      );
       return;
     }
     if (uploadFiles.value.length > 0) {
@@ -3492,6 +8414,14 @@ async function doSend() {
   }
 
   const text = String(draftText.value || "").trim();
+  let activeChatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!activeChatSessionId) {
+    const created = await createChatSession({ switchTo: true });
+    activeChatSessionId = String(created?.id || "").trim();
+    if (!activeChatSessionId) {
+      return;
+    }
+  }
   const files = isExternalAgentMode.value
     ? []
     : uploadFiles.value.map((item) => item.raw).filter(Boolean);
@@ -3539,15 +8469,64 @@ async function doSend() {
   if (docsText) {
     userPrompt += `${docsText}\n\n请先给简要结论：最多 5 条，每条不超过 40 字。`;
   }
-
-  messages.value.push({
+  const assistAction = activeComposerAssistMeta.value;
+  const assistToolNames = normalizeStringList(
+    assistAction?.toolNames || [],
+    20,
+  );
+  const shouldInjectAssistPrompt = Boolean(
+    assistAction && (assistToolNames.length || assistAction.promptOnly),
+  );
+  let assistContextText = "";
+  if (assistAction?.id === "employee_create") {
+    try {
+      await ensureEmployeeDraftCatalog();
+      assistContextText = buildEmployeeDraftAssistContext();
+    } catch (err) {
+      console.warn("employee draft catalog load failed", err);
+    }
+    if (!assistToolNames.length && selectedProjectId.value) {
+      ElMessage.warning(
+        "当前项目没有可用的远程能力检索工具，本次会回退为基于本地目录的自动创建",
+      );
+    }
+  }
+  const effectiveUserPrompt = shouldInjectAssistPrompt
+    ? [
+        userPrompt,
+        "",
+        "创作辅助要求：",
+        `- 当前已激活：${assistAction.label}`,
+        `- ${assistAction.instruction}`,
+        assistContextText,
+        "- 最终输出请直接给我可使用的结果，不要只停留在工具原始返回。",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : userPrompt;
+  const effectiveToolPriority = mergeToolPriority(
+    projectChatSettings.value.tool_priority || [],
+    assistToolNames,
+  );
+  const effectiveAutoUseTools =
+    assistAction && assistToolNames.length
+      ? true
+      : singleRoundAnswerOnly.value
+        ? false
+        : Boolean(
+            projectChatSettings.value.auto_use_tools ??
+            CHAT_SETTINGS_DEFAULTS.auto_use_tools,
+          );
+  const userMessage = {
+    id: createLocalMessageId(),
     role: "user",
     content: text || "（发送了附件）",
     images: imageUrls,
     attachments: attachmentNames,
     time: nowText(),
-  });
-  messages.value.push({
+  };
+  const assistantMessage = {
+    id: createLocalMessageId(),
     role: "assistant",
     content: "",
     displayMode: isExternalAgentMode.value ? "terminal" : "",
@@ -3555,13 +8534,18 @@ async function doSend() {
     processExpanded: false,
     audit: null,
     time: nowText(),
-  });
+  };
+
+  messages.value.push(userMessage);
+  messages.value.push(assistantMessage);
 
   if (isExternalAgentMode.value) {
     terminalPanelExpanded.value = true;
     appendTerminalPanelLine(`
 # ${nowText()} · 新请求`);
-    appendTerminalPanelLine(`> ${String(text || userPrompt || '').trim() || '（空输入）'}`);
+    appendTerminalPanelLine(
+      `> ${String(text || userPrompt || "").trim() || "（空输入）"}`,
+    );
   }
 
   const assistantIndex = messages.value.length - 1;
@@ -3582,12 +8566,26 @@ async function doSend() {
     const employeeIds = normalizeStringList(selectedEmployeeIds.value || []);
     const requestPayload = {
       request_id: requestId,
+      message_id: userMessage.id,
+      chat_session_id: activeChatSessionId,
       chat_mode: selectedChatMode.value || "system",
-      external_agent_type: String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
+      external_agent_type: String(
+        projectChatSettings.value.external_agent_type || "codex_cli",
+      ).trim(),
       external_agent_sandbox_mode:
-        projectChatSettings.value.external_agent_sandbox_mode || "workspace-write",
+        projectChatSettings.value.external_agent_sandbox_mode ||
+        "workspace-write",
       external_agent_sandbox_mode_explicit: true,
-      message: userPrompt,
+      local_connector_id: String(
+        projectChatSettings.value.local_connector_id || "",
+      ).trim(),
+      connector_workspace_path: String(
+        workspacePathDraftNormalized.value || workspacePathResolved.value || "",
+      ).trim(),
+      skill_resource_directory: String(
+        skillResourceDirectoryResolved.value || "",
+      ).trim(),
+      message: effectiveUserPrompt,
       employee_ids: employeeIds,
       employee_id: employeeIds.length === 1 ? employeeIds[0] : undefined,
       history: historyRows,
@@ -3602,15 +8600,8 @@ async function doSend() {
       system_prompt: systemPrompt.value || undefined,
       attachment_names: attachmentNames,
       images: base64Images,
-      auto_use_tools: singleRoundAnswerOnly.value
-        ? false
-        : Boolean(
-            projectChatSettings.value.auto_use_tools ??
-            CHAT_SETTINGS_DEFAULTS.auto_use_tools,
-          ),
-      tool_priority: normalizeStringList(
-        projectChatSettings.value.tool_priority || [],
-      ),
+      auto_use_tools: effectiveAutoUseTools,
+      tool_priority: effectiveToolPriority,
       max_tool_calls_per_round: Number(
         projectChatSettings.value.max_tool_calls_per_round ||
           CHAT_SETTINGS_DEFAULTS.max_tool_calls_per_round,
@@ -3664,13 +8655,22 @@ async function doSend() {
         CHAT_SETTINGS_DEFAULTS.prefer_conclusion_first,
       ),
     };
-    requestPayload.enabled_project_tool_names = [
-      ...selectedProjectToolNames.value,
-    ];
+    requestPayload.enabled_project_tool_names = normalizeStringList(
+      [
+        ...selectedProjectToolNames.value,
+        ...(assistAction?.id === "employee_create" ? assistToolNames : []),
+      ],
+      200,
+    );
     client.send(requestPayload);
     await donePromise;
     if (!String(messages.value[assistantIndex]?.content || "").trim()) {
       messages.value[assistantIndex].content = "模型未返回内容。";
+    }
+    if (assistAction?.id === "employee_create") {
+      await autoCreateEmployeeFromDraftMessage(messages.value[assistantIndex], {
+        resetAssist: true,
+      });
     }
   } catch (err) {
     messages.value[assistantIndex].content =
@@ -3680,15 +8680,24 @@ async function doSend() {
     pendingRequests.delete(requestId);
     chatLoading.value = false;
     singleRoundAnswerOnly.value = false;
+    if (selectedProjectId.value) {
+      await fetchChatSessions(selectedProjectId.value, activeChatSessionId);
+    }
     scrollToBottom();
   }
 }
 
 watch(
-  () => String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
+  () =>
+    String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
   () => {
-    const nextType = String(projectChatSettings.value.external_agent_type || "codex_cli").trim();
-    const option = (externalAgentOptions.value || []).find((item) => item.agent_type === nextType) || {};
+    const nextType = String(
+      projectChatSettings.value.external_agent_type || "codex_cli",
+    ).trim();
+    const option =
+      (externalAgentOptions.value || []).find(
+        (item) => item.agent_type === nextType,
+      ) || {};
     externalAgentWarmupKey.value = "";
     externalAgentWarmupLoading.value = false;
     terminalDebugInputVisible.value = false;
@@ -3706,16 +8715,14 @@ watch(
 );
 
 watch(selectedChatMode, async (value) => {
-  if (String(value || "").trim() !== "external_agent") {
+  const normalized = String(value || "").trim();
+  if (normalized === "external_agent" && !canUseExternalAgent.value) {
+    selectedChatMode.value = "system";
+    return;
+  }
+  if (normalized !== "external_agent") {
     agentStatusExpanded.value = false;
-    externalAgentWarmupLoading.value = false;
-    externalAgentWarmupKey.value = "";
-    externalAgentInfo.value = {
-      ...externalAgentInfo.value,
-      ready: false,
-      session_id: "",
-    };
-    resetTerminalPanel();
+    resetExternalAgentRuntimeState();
     return;
   }
   terminalPanelExpanded.value = true;
@@ -3728,29 +8735,123 @@ watch(selectedChatMode, async (value) => {
   }
 });
 
+watch(selectedProviderId, () => {
+  handleProviderChange();
+});
+
+watch(showSettingsDialog, async (visible) => {
+  if (!visible) {
+    return;
+  }
+  await refreshLocalConnectorCatalog(true);
+});
+
+watch(
+  [
+    () => String(selectedProjectId.value || "").trim(),
+    () => String(projectChatSettings.value.local_connector_id || "").trim(),
+  ],
+  () => {
+    syncSkillResourceDirectoryDraft();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => String(projectChatSettings.value.local_connector_id || "").trim(),
+  async (nextConnectorId, prevConnectorId) => {
+    if (nextConnectorId === prevConnectorId) return;
+    const projectId = String(selectedProjectId.value || "").trim();
+    const currentProvider = (providers.value || []).find(
+      (item) => item.id === selectedProviderId.value,
+    );
+    const currentUsesConnector =
+      String(currentProvider?.provider_type || "").trim() === "local-connector";
+    const fallbackProviderId = String(
+      (providers.value || []).find(
+        (item) =>
+          String(item?.provider_type || "").trim() !== "local-connector",
+      )?.id ||
+        defaultProviderId.value ||
+        "",
+    ).trim();
+    if (projectId && prevConnectorId) {
+      writePreferredLocalWorkspacePath(
+        projectId,
+        prevConnectorId,
+        workspacePathDraftNormalized.value,
+      );
+    }
+    writePreferredLocalConnectorId(nextConnectorId);
+    if (nextConnectorId) {
+      const nextWorkspacePath = projectId
+        ? readPreferredLocalWorkspacePath(projectId, nextConnectorId)
+        : "";
+      projectChatSettings.value = normalizeProjectChatSettings({
+        ...projectChatSettings.value,
+        connector_workspace_path: nextWorkspacePath,
+      });
+      workspacePathDraft.value = String(nextWorkspacePath || "").trim();
+      if (activeLocalConnectorProviderId.value) {
+        selectedProviderId.value = activeLocalConnectorProviderId.value;
+      } else if (currentUsesConnector) {
+        selectedProviderId.value = fallbackProviderId;
+      }
+    } else {
+      projectChatSettings.value = normalizeProjectChatSettings({
+        ...projectChatSettings.value,
+        connector_workspace_path: "",
+      });
+      workspacePathDraft.value = String(
+        projectWorkspacePath.value || "",
+      ).trim();
+      if (currentUsesConnector) {
+        selectedProviderId.value = fallbackProviderId;
+      }
+    }
+    resetExternalAgentRuntimeState();
+    if (projectId && !projectSettingsHydrating.value) {
+      await fetchProvidersByProject(projectId);
+    }
+  },
+);
+
+watch(autoSaveFingerprint, (nextFingerprint, prevFingerprint) => {
+  if (!nextFingerprint || nextFingerprint === prevFingerprint) return;
+  scheduleAutoSave();
+});
+
+function clearSelectedProjectState() {
+  clearChatSessionMemory(selectedProjectId.value);
+  selectedProjectId.value = "";
+  localStorage.removeItem("project_id");
+  currentChatSessionId.value = "";
+  chatSessions.value = [];
+}
+
+function resolveAvailableProjectId(preferredId = "") {
+  const normalizedPreferred = String(preferredId || "").trim();
+  if (
+    normalizedPreferred &&
+    (projects.value || []).some((item) => item.id === normalizedPreferred)
+  ) {
+    return normalizedPreferred;
+  }
+  return String(projects.value[0]?.id || "").trim();
+}
+
 watch(selectedProjectId, async (value) => {
   const projectId = String(value || "").trim();
+  if (projectId) {
+    localStorage.setItem("project_id", projectId);
+  } else {
+    localStorage.removeItem("project_id");
+  }
   if (!projectId) {
     rejectPendingRequests("已切换项目，当前请求取消");
     disconnectWs("switch project");
     singleRoundAnswerOnly.value = false;
-    chatModes.value = [
-      { id: "system", label: "系统对话" },
-      { id: "external_agent", label: "外部 Agent" },
-    ];
-    providers.value = [];
-    projectEmployees.value = [];
-    externalAgentInfo.value = normalizeExternalAgentInfo({});
-    mcpModules.value = normalizeMcpModules({});
-    selectedProjectToolNames.value = [];
-    selectedEmployeeIds.value = [];
-    selectedProviderId.value = "";
-    selectedModelName.value = "";
-    projectChatSettings.value = { ...CHAT_SETTINGS_DEFAULTS };
-    systemPrompt.value = "";
-    temperature.value = CHAT_SETTINGS_DEFAULTS.temperature;
-    chatMaxTokens.value = CHAT_SETTINGS_DEFAULTS.max_tokens;
-    resetTerminalPanel();
+    await fetchProvidersByProject("");
     return;
   }
   rejectPendingRequests("已切换项目，当前请求取消");
@@ -3761,23 +8862,31 @@ watch(selectedProjectId, async (value) => {
   try {
     agentStatusExpanded.value = false;
     await fetchProvidersByProject(projectId);
-    await fetchChatHistory(projectId);
+    let chatSessionId = await fetchChatSessions(projectId);
+    if (!chatSessionId) {
+      const created = await createChatSession({ switchTo: true });
+      chatSessionId = String(created?.id || "").trim();
+    }
+    await fetchChatHistory(projectId, chatSessionId);
     if (selectedChatMode.value === "external_agent") {
       await prepareExternalAgentSession({ silent: true });
     }
   } catch (err) {
-    chatModes.value = [
-      { id: "system", label: "系统对话" },
-      { id: "external_agent", label: "外部 Agent" },
-    ];
-    providers.value = [];
-    projectEmployees.value = [];
-    externalAgentInfo.value = normalizeExternalAgentInfo({});
-    mcpModules.value = normalizeMcpModules({});
-    selectedProjectToolNames.value = [];
-    selectedEmployeeIds.value = [];
-    selectedProviderId.value = "";
-    selectedModelName.value = "";
+    if (
+      err?.status === 403 ||
+      err?.status === 404 ||
+      String(err?.detail || "").includes("Project access denied")
+    ) {
+      await fetchProjects();
+      const fallbackProjectId = resolveAvailableProjectId();
+      if (fallbackProjectId && fallbackProjectId !== projectId) {
+        selectedProjectId.value = fallbackProjectId;
+        localStorage.setItem("project_id", fallbackProjectId);
+      } else if (!fallbackProjectId) {
+        clearSelectedProjectState();
+      }
+    }
+    await fetchProvidersByProject("");
     messages.value = [];
     ElMessage.error(err?.detail || err?.message || "加载模型供应商失败");
   }
@@ -3786,16 +8895,34 @@ watch(selectedProjectId, async (value) => {
 onMounted(async () => {
   loading.value = true;
   try {
-    await Promise.all([fetchSystemConfig(), fetchProjects()]);
+    await Promise.all([
+      fetchSystemConfig(),
+      fetchProjects(),
+      fetchGlobalProviders(),
+    ]);
     syncProjectFromRoute();
+    if (!String(selectedProjectId.value || "").trim()) {
+      await fetchProvidersByProject("");
+    }
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "初始化失败");
   } finally {
     loading.value = false;
   }
+  syncProjectSwitcherMenuWidth();
+  window.addEventListener("resize", syncProjectSwitcherMenuWidth);
+  connectorPollTimer = window.setInterval(() => {
+    void refreshLocalConnectorCatalog(true);
+  }, 10000);
 });
 
 onUnmounted(() => {
+  window.removeEventListener("resize", syncProjectSwitcherMenuWidth);
+  if (connectorPollTimer !== null) {
+    clearInterval(connectorPollTimer);
+    connectorPollTimer = null;
+  }
+  clearAutoSaveTimer();
   rejectPendingRequests("页面已关闭");
   disconnectWs("page closed");
 });
@@ -3805,41 +8932,408 @@ onUnmounted(() => {
 .chat-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 18px 28px 16px;
-  background: rgba(255, 255, 255, 0.72);
-  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
-  backdrop-filter: blur(18px);
+  align-items: center;
+  gap: 20px;
+  padding: 18px max(20px, calc((100% - 1240px) / 2)) 12px;
+  background: transparent;
+  border-bottom: none;
   z-index: 10;
+  position: relative;
 }
 
 .chat-header-left {
   display: flex;
-  align-items: flex-start;
-  gap: 14px;
+  align-items: center;
+  gap: 16px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .chat-title-block {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
 }
 
 .chat-title-subtext {
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.4;
-  color: #64748b;
+  color: #6b7280;
+  font-weight: 500;
 }
 
 .chat-status-pills {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
-  padding-top: 2px;
+  margin-left: auto;
+}
+
+.chat-shell {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 18px;
+  padding: 18px max(20px, calc((100% - 1240px) / 2)) 18px;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.chat-workbench {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.chat-stage {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  border-radius: 32px;
+  background: radial-gradient(
+    circle at top,
+    rgba(255, 255, 255, 0.98),
+    rgba(248, 250, 252, 0.94) 56%,
+    rgba(244, 247, 251, 0.96)
+  );
+  box-shadow:
+    0 24px 64px rgba(15, 23, 42, 0.08),
+    0 4px 14px rgba(15, 23, 42, 0.04);
+  overflow: hidden;
+}
+
+.chat-conversation-sidebar {
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 28px;
+  padding: 16px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.96),
+    rgba(248, 250, 252, 0.92)
+  );
+  backdrop-filter: blur(14px);
+  box-shadow:
+    0 16px 36px rgba(15, 23, 42, 0.05),
+    0 2px 8px rgba(15, 23, 42, 0.03);
+}
+
+.chat-project-panel {
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid rgba(191, 219, 254, 0.72);
+  border-radius: 22px;
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(59, 130, 246, 0.12),
+      transparent 32%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(248, 250, 252, 0.98),
+      rgba(255, 255, 255, 0.94)
+    );
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.chat-project-panel__eyebrow {
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.chat-project-panel__title {
+  margin-top: 10px;
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.chat-project-panel__desc {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.chat-project-panel__select {
+  margin-top: 12px;
+}
+
+.chat-project-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-project-option__name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-project-option__id {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.chat-conversation-sidebar__head {
+  margin-bottom: 14px;
+}
+
+.chat-conversation-sidebar__title {
+  margin-top: 6px;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.chat-conversation-sidebar__desc {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.chat-conversation-sidebar__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.chat-quick-bar__eyebrow {
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.chat-quick-bar__title {
+  margin-top: 6px;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.chat-quick-bar__desc {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.chat-new-conversation-button {
+  justify-content: center;
+  height: 38px !important;
+  border-radius: 999px !important;
+  border-color: rgba(15, 23, 42, 0.08) !important;
+  background: linear-gradient(180deg, #111827, #1f2937) !important;
+  color: #f8fafc !important;
+  font-weight: 600;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16) !important;
+}
+
+.chat-stage-toolbar {
+  flex-shrink: 0;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.84);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.84),
+    rgba(248, 250, 252, 0.72)
+  );
+}
+
+.chat-top-summary {
+  margin-bottom: 12px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.chat-top-summary .chat-side-summary__row {
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.chat-side-summary__row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.chat-side-summary__label {
+  font-size: 11px;
+  line-height: 1;
+  color: #94a3b8;
+  letter-spacing: 0.04em;
+}
+
+.chat-side-summary__value {
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 600;
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.chat-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+
+.chat-quick-field,
+.chat-quick-mode-note {
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.7);
+  padding: 12px 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.chat-quick-label {
+  margin-bottom: 8px;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #64748b;
+}
+
+.chat-quick-mode-text {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #334155;
+}
+
+.chat-quick-mode-group {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.chat-quick-mode-group :deep(.el-radio-button__inner) {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+}
+
+.chat-session-strip {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-session-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+
+.chat-session-chip {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  cursor: pointer;
+  color: #0f172a;
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.chat-session-chip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(148, 163, 184, 0.92);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.chat-session-chip.is-active {
+  border-color: rgba(37, 99, 235, 0.26);
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(59, 130, 246, 0.12),
+      transparent 38%
+    ),
+    #ffffff;
+  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.08);
+}
+
+.chat-session-chip__title {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.chat-session-chip__meta {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #64748b;
+}
+
+.chat-session-empty {
+  display: flex;
+  align-items: center;
+  min-height: 56px;
+  padding: 0 4px;
+  font-size: 13px;
+  color: #94a3b8;
 }
 
 .terminal-panel {
@@ -3919,7 +9413,7 @@ onUnmounted(() => {
 
 .chat-header-left h2 {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.02em;
   color: #0f172a;
@@ -3932,9 +9426,38 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.chat-header-right :deep(.el-button) {
-  border-color: rgba(148, 163, 184, 0.2);
-  background: rgba(255, 255, 255, 0.86);
+.chat-settings-button {
+  width: 34px;
+  height: 34px;
+}
+
+.chat-create-employee-button {
+  width: auto !important;
+  min-width: 104px;
+  height: 34px !important;
+  padding: 0 14px !important;
+  border-radius: 999px !important;
+  border-color: rgba(59, 130, 246, 0.16) !important;
+  background: linear-gradient(180deg, #ffffff 0%, #f5f9ff 100%) !important;
+  color: #2563eb !important;
+  font-weight: 600;
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.08) !important;
+}
+
+.chat-create-employee-button:hover {
+  border-color: rgba(37, 99, 235, 0.26) !important;
+  background: linear-gradient(180deg, #ffffff 0%, #edf5ff 100%) !important;
+}
+
+.chat-status-pills :deep(.el-tag) {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border-color: rgba(226, 232, 240, 0.92);
+  background: rgba(255, 255, 255, 0.94);
+  color: #4b5563;
 }
 
 .settings-dialog-body {
@@ -3944,32 +9467,118 @@ onUnmounted(() => {
 }
 
 .settings-summary-card {
-  margin: 4px 0 14px;
-  padding: 14px 16px;
-  border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.98));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 14px;
+  width: min(100%, 940px);
+  margin: 0 0 8px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid rgba(17, 24, 39, 0.06);
+  background: transparent;
 }
 
 .settings-summary-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: #0f172a;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #171717;
+  white-space: nowrap;
 }
 
 .settings-summary-text {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.65;
-  color: #475569;
+  flex: 1;
+  min-width: min(320px, 100%);
+  margin-top: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #6b7280;
 }
 
 .settings-form {
   flex: 1;
+  width: min(100%, 940px);
+  max-width: 940px;
+  padding-bottom: 20px;
 }
 
 .settings-form .el-form-item {
-  margin-bottom: 20px;
+  margin-bottom: 0;
+  padding: 16px 0;
+  border-top: 1px solid rgba(17, 24, 39, 0.06);
+}
+
+.settings-form .el-form-item:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.settings-mode-group {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-mode-group :deep(.el-radio-button__inner) {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+}
+
+.settings-employee-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.settings-employee-option__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-employee-option__name {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.settings-employee-option__meta {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.external-agent-download-card {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px dashed rgba(148, 163, 184, 0.32);
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.external-agent-download-card__text {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.external-agent-download-card__subtitle {
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.external-agent-download-card__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
 }
 
 .settings-section-title {
@@ -4001,12 +9610,46 @@ onUnmounted(() => {
 }
 
 .settings-form :deep(.el-form-item__label) {
-  padding-bottom: 8px;
-  font-weight: 500;
-  font-size: 14px;
-  color: var(--el-text-color-primary);
+  padding-bottom: 10px;
+  font-weight: 600;
+  font-size: 13px;
+  color: #171717;
   display: flex;
   align-items: center;
+}
+
+.settings-form :deep(.el-input__wrapper),
+.settings-form :deep(.el-select__wrapper),
+.settings-form :deep(.el-input-number .el-input__wrapper),
+.settings-form :deep(.el-cascader .el-input__wrapper),
+.settings-form :deep(.el-mentions),
+.settings-form :deep(.el-textarea__inner) {
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.settings-form :deep(.el-input__wrapper),
+.settings-form :deep(.el-select__wrapper),
+.settings-form :deep(.el-input-number .el-input__wrapper),
+.settings-form :deep(.el-cascader .el-input__wrapper),
+.settings-form :deep(.el-mentions) {
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.08);
+}
+
+.settings-form :deep(.el-textarea__inner) {
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.08);
+  min-height: 104px;
+}
+
+.settings-form :deep(.el-input__wrapper.is-focus),
+.settings-form :deep(.el-select__wrapper.is-focused),
+.settings-form :deep(.el-input-number .el-input__wrapper.is-focus),
+.settings-form :deep(.el-cascader .el-input__wrapper.is-focus),
+.settings-form :deep(.el-mentions.is-focus),
+.settings-form :deep(.el-textarea__inner:focus) {
+  box-shadow:
+    inset 0 0 0 1px rgba(17, 24, 39, 0.14),
+    0 8px 18px rgba(15, 23, 42, 0.04);
 }
 
 .label-with-tooltip {
@@ -4028,6 +9671,38 @@ onUnmounted(() => {
 
 .full-width {
   width: 100%;
+}
+
+.settings-summary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin-left: auto;
+}
+
+.settings-summary-status {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #737373;
+}
+
+.settings-summary-sync-button {
+  min-height: 32px !important;
+  padding: 0 14px !important;
+  border-radius: 999px !important;
+  border-color: rgba(17, 24, 39, 0.08) !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+  color: #374151 !important;
+  font-weight: 600;
+  box-shadow: none !important;
+}
+
+.settings-summary-sync-button:hover {
+  border-color: rgba(17, 24, 39, 0.14) !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: #111827 !important;
 }
 
 .mcp-source-tabs :deep(.el-tabs__header) {
@@ -4162,15 +9837,19 @@ onUnmounted(() => {
   min-height: 0;
   height: 100%;
   overflow: hidden;
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(255, 255, 255, 0.98),
+      transparent 28%
+    ),
+    linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
 }
 
 .chat-main {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background:
-    radial-gradient(circle at top, rgba(16, 163, 127, 0.08), transparent 30%),
-    linear-gradient(180deg, #f7f8fa 0%, #f3f5f7 100%);
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -4179,18 +9858,18 @@ onUnmounted(() => {
 
 .chat-messages {
   flex: 1;
-  min-height: 0;
+  min-height: 220px;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 28px 24px 32px;
+  padding: 34px max(28px, calc((100% - 820px) / 2)) 28px;
   scroll-behavior: smooth;
 }
 
 .chat-empty-state {
   width: 100%;
-  max-width: 760px;
+  max-width: 720px;
   margin: auto;
-  padding: 24px 8px 12px;
+  padding: 48px 0 12px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -4198,29 +9877,30 @@ onUnmounted(() => {
 }
 
 .chat-empty-badge {
-  padding: 6px 12px;
+  padding: 6px 11px;
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.06);
-  color: #0f172a;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  color: #374151;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .chat-empty-title {
-  margin-top: 16px;
-  font-size: 34px;
+  margin-top: 20px;
+  font-size: 38px;
   line-height: 1.15;
   font-weight: 700;
   letter-spacing: -0.03em;
-  color: #0f172a;
+  color: #111827;
 }
 
 .chat-empty-text {
-  margin-top: 12px;
-  max-width: 640px;
+  margin-top: 14px;
+  max-width: 600px;
   font-size: 14px;
-  line-height: 1.7;
-  color: #64748b;
+  line-height: 1.75;
+  color: #6b7280;
 }
 
 .chat-empty-actions {
@@ -4232,39 +9912,39 @@ onUnmounted(() => {
 }
 
 .chat-empty-action {
-  padding: 11px 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(255, 255, 255, 0.82);
-  color: #0f172a;
+  padding: 12px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(255, 255, 255, 0.96);
+  color: #111827;
   font-size: 13px;
   line-height: 1.4;
   cursor: pointer;
   transition:
     transform 0.18s ease,
     border-color 0.18s ease,
-    box-shadow 0.18s ease;
+    box-shadow 0.18s ease,
+    background-color 0.18s ease;
 }
 
 .chat-empty-action:hover {
   transform: translateY(-1px);
-  border-color: rgba(37, 99, 235, 0.24);
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+  border-color: rgba(156, 163, 175, 0.92);
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(17, 24, 39, 0.06);
 }
 
 .message-list-inner {
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: 18px;
   max-width: 900px;
   margin: 0 auto;
   width: 100%;
 }
 
 .message-row {
-  display: flex;
-  gap: 14px;
-  align-items: flex-start;
+  display: block;
 }
 
 .message-row-process {
@@ -4272,27 +9952,36 @@ onUnmounted(() => {
 }
 
 .message-row.is-user {
-  flex-direction: row-reverse;
+  flex-direction: initial;
 }
 
 .message-avatar {
-  flex-shrink: 0;
+  display: none;
+}
+
+.message-avatar :deep(.el-avatar) {
+  width: 32px !important;
+  height: 32px !important;
+  font-size: 12px;
 }
 
 .avatar-user {
-  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
+  background: #e5e7eb;
+  color: #374151;
   font-weight: 700;
-  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.18);
+  box-shadow: none;
 }
 
 .avatar-ai {
-  background: linear-gradient(135deg, #0f172a 0%, #10a37f 100%);
+  background: linear-gradient(135deg, #111827 0%, #374151 100%);
+  color: #f9fafb;
   font-weight: 700;
-  box-shadow: 0 10px 24px rgba(16, 163, 127, 0.18);
+  box-shadow: none;
 }
 
 .message-content-wrapper {
-  max-width: 82%;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -4305,44 +9994,53 @@ onUnmounted(() => {
 }
 
 .message-row.is-ai .message-content-wrapper {
-  max-width: min(100%, 820px);
+  max-width: 100%;
+}
+
+.message-row.is-ai .message-bubble > .message-text,
+.message-row.is-ai .message-bubble > .message-process,
+.message-row.is-ai .message-bubble > .message-audit,
+.message-row.is-ai .message-bubble > .message-employee-draft,
+.message-row.is-ai .message-bubble > .message-images,
+.message-row.is-ai .message-bubble > .message-attachments {
+  max-width: 680px;
 }
 
 .message-row.is-user .message-content-wrapper {
-  align-items: flex-end;
+  align-items: stretch;
+  max-width: 100%;
 }
 
 .message-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
   font-size: 12px;
-  color: #64748b;
+  color: #6b7280;
 }
 
 .role-name {
-  font-weight: 700;
-  color: #0f172a;
+  font-weight: 600;
+  color: #111827;
 }
 
 .message-time {
-  opacity: 0;
-  transition: opacity 0.18s ease;
-}
-
-.message-row:hover .message-time {
   opacity: 1;
+  color: #9ca3af;
 }
 
 .message-bubble {
-  padding: 18px 20px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.92);
-  color: #0f172a;
-  line-height: 1.6;
+  padding: 20px 22px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.98);
+  color: #111827;
+  line-height: 1.7;
   font-size: 15px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  box-shadow: 0 10px 32px rgba(15, 23, 42, 0.05);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  box-shadow:
+    0 12px 28px rgba(15, 23, 42, 0.04),
+    0 2px 6px rgba(15, 23, 42, 0.02);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -4359,6 +10057,153 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
+.message-inline-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(100%, 680px);
+}
+
+.message-inline-editor__input {
+  width: 100%;
+}
+
+.message-inline-editor :deep(.el-textarea__wrapper) {
+  padding: 0;
+  border-radius: 20px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.message-inline-editor :deep(.el-textarea__inner) {
+  min-height: 132px !important;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(250, 250, 252, 0.9));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 2px rgba(15, 23, 42, 0.02);
+  padding: 15px 16px;
+  color: #1f2937;
+  line-height: 1.8;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.message-inline-editor :deep(.el-textarea__inner::placeholder) {
+  color: #9ca3af;
+}
+
+.message-inline-editor :deep(.el-textarea__inner:focus) {
+  border-color: rgba(59, 130, 246, 0.28);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(252, 252, 253, 0.94));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 0 0 4px rgba(255, 255, 255, 0.42);
+}
+
+.message-inline-editor__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.message-inline-editor__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.message-inline-editor__hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6b7280;
+}
+
+.message-inline-editor__hint-label {
+  color: #9ca3af;
+}
+
+.message-inline-editor__shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.5);
+  color: #6b7280;
+}
+
+.message-inline-editor__shortcut kbd {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(255, 255, 255, 0.96);
+  color: #374151;
+  font-size: 11px;
+  font-family:
+    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  line-height: 20px;
+  text-align: center;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.message-inline-editor__button {
+  min-height: 34px !important;
+  padding: 0 14px !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+  font-weight: 500;
+}
+
+.message-inline-editor__button--ghost {
+  color: #6b7280 !important;
+}
+
+.message-inline-editor__button--ghost:hover {
+  color: #111827 !important;
+  background: rgba(15, 23, 42, 0.04) !important;
+}
+
+.message-inline-editor__button--soft {
+  border-color: rgba(148, 163, 184, 0.22) !important;
+  background: rgba(255, 255, 255, 0.68) !important;
+  color: #374151 !important;
+}
+
+.message-inline-editor__button--soft:hover {
+  border-color: rgba(59, 130, 246, 0.18) !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  color: #1f2937 !important;
+}
+
+.message-inline-editor__button--primary {
+  border-color: transparent !important;
+  background: #111827 !important;
+  color: #f9fafb !important;
+}
+
+.message-inline-editor__button--primary:hover {
+  background: #1f2937 !important;
+  color: #ffffff !important;
+}
+
 .message-text-terminal {
   margin: 0;
   white-space: pre-wrap;
@@ -4371,9 +10216,9 @@ onUnmounted(() => {
 
 .message-process {
   margin-bottom: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: 14px;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.92));
+  border: 1px solid rgba(229, 231, 235, 0.95);
+  border-radius: 16px;
+  background: #f8fafc;
   overflow: hidden;
 }
 
@@ -4386,7 +10231,7 @@ onUnmounted(() => {
   padding: 11px 14px;
   border: 0;
   background: transparent;
-  color: #0f172a;
+  color: #111827;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -4395,19 +10240,19 @@ onUnmounted(() => {
 .message-process-count {
   margin-left: 6px;
   font-size: 12px;
-  color: #64748b;
+  color: #6b7280;
   font-weight: 500;
 }
 
 .message-process-meta {
-  color: #0f766e;
+  color: #4b5563;
   font-size: 12px;
   font-weight: 500;
 }
 
 .message-process-pre {
   padding: 0 14px 14px;
-  color: #334155;
+  color: #374151;
   font-size: 12px;
   line-height: 1.6;
   max-height: 280px;
@@ -4417,39 +10262,36 @@ onUnmounted(() => {
 .message-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
-  opacity: 0;
-  transition: opacity 0.18s ease;
-}
-
-.message-row.is-ai:hover .message-actions,
-.message-actions:focus-within {
+  gap: 6px;
   opacity: 1;
+  padding-left: 4px;
 }
 
 .message-action-button {
-  color: #64748b;
+  color: #9ca3af;
   border-radius: 999px;
-  padding: 0 8px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
 }
 
 .message-action-button:hover {
-  color: #0f172a;
-  background: rgba(15, 23, 42, 0.04);
+  color: #111827;
+  background: rgba(17, 24, 39, 0.05);
 }
 
 .message-audit {
   margin-top: 12px;
   padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(248, 250, 252, 0.96);
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 16px;
+  background: #f9fafb;
+  border: 1px solid rgba(229, 231, 235, 0.95);
 }
 
 .message-audit-title {
   font-size: 12px;
   font-weight: 600;
-  color: #0f172a;
+  color: #111827;
 }
 
 .message-audit-section {
@@ -4458,7 +10300,7 @@ onUnmounted(() => {
 
 .message-audit-label {
   font-size: 12px;
-  color: #64748b;
+  color: #6b7280;
   margin-bottom: 6px;
 }
 
@@ -4470,7 +10312,7 @@ onUnmounted(() => {
 
 .message-audit-text {
   font-size: 12px;
-  color: #334155;
+  color: #374151;
 }
 
 .message-audit-pre {
@@ -4479,9 +10321,484 @@ onUnmounted(() => {
   word-break: break-word;
   font-size: 12px;
   line-height: 1.5;
-  color: #334155;
+  color: #374151;
   font-family:
     ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.message-employee-draft {
+  margin-top: 12px;
+  padding: 14px 14px 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(59, 130, 246, 0.1),
+      transparent 38%
+    ),
+    linear-gradient(180deg, rgba(248, 250, 252, 0.98), #ffffff);
+}
+
+.message-employee-draft__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.message-employee-draft__eyebrow {
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.message-employee-draft__title {
+  margin-top: 4px;
+  color: #111827;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.message-employee-draft__pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.employee-draft-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.86);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.message-employee-draft__desc {
+  margin-top: 10px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.message-employee-draft__meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.message-employee-draft__meta-item {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.meta-label {
+  display: block;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.meta-value {
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.message-employee-draft__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.message-employee-draft__workflow {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.employee-draft-workflow-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.message-employee-draft__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.message-employee-draft__success {
+  color: #15803d;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.employee-draft-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.employee-draft-dialog__summary {
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(59, 130, 246, 0.08),
+      transparent 42%
+    ),
+    linear-gradient(180deg, rgba(248, 250, 252, 0.96), #ffffff);
+}
+
+.employee-draft-dialog__title {
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.employee-draft-dialog__desc {
+  margin-top: 8px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.employee-draft-dialog__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 12px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.employee-draft-dialog__section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.employee-draft-dialog__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.employee-draft-dialog__section-title {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.employee-draft-dialog__section-hint {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.employee-draft-dialog__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.employee-draft-dialog__panel {
+  min-height: 112px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: #f8fafc;
+}
+
+.employee-draft-dialog__panel-title {
+  margin-bottom: 10px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.employee-draft-dialog__subsection {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(203, 213, 225, 0.92);
+}
+
+.employee-draft-dialog__subsection-title {
+  margin-bottom: 10px;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.employee-draft-dialog__tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.employee-draft-dialog__empty {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.employee-draft-dialog__switches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.skill-resource-dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.skill-resource-dialog__hint {
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(59, 130, 246, 0.14);
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(59, 130, 246, 0.08),
+      transparent 42%
+    ),
+    linear-gradient(180deg, rgba(248, 250, 252, 0.96), #ffffff);
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.skill-resource-dialog__section-title {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.skill-resource-dialog__directory {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: #f8fafc;
+}
+
+.skill-resource-dialog__directory-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.skill-resource-dialog__directory-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skill-resource-dialog__directory-value {
+  min-height: 52px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: rgba(255, 255, 255, 0.96);
+  color: #111827;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family:
+    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.skill-resource-dialog__directory-value.is-empty {
+  color: #94a3b8;
+  font-family: inherit;
+}
+
+.skill-resource-dialog__directory-meta {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.skill-resource-search {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skill-resource-search__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.skill-resource-search__expanded {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.skill-resource-search__expanded--empty {
+  margin-top: -4px;
+  margin-bottom: 8px;
+}
+
+.skill-resource-site-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  max-height: min(52vh, 520px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.skill-resource-site-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.98),
+    rgba(248, 250, 252, 0.94)
+  );
+}
+
+.skill-resource-site-list--search {
+  max-height: min(46vh, 420px);
+}
+
+.skill-resource-site-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.skill-resource-site-card__title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.skill-resource-site-card__title {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.skill-resource-site-card__badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.skill-resource-site-card__desc {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.skill-resource-site-card__desc--localized {
+  color: #0f172a;
+  font-weight: 500;
+}
+
+.skill-resource-site-card__url {
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.skill-resource-site-card__actions {
+  margin-top: auto;
+  padding-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.employee-draft-external-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.employee-draft-external-preview__hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.employee-draft-external-preview__frame {
+  width: 100%;
+  min-height: 72vh;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 18px;
+  background: #ffffff;
 }
 
 .message-text :deep(p) {
@@ -4517,25 +10834,131 @@ onUnmounted(() => {
   color: inherit;
 }
 
+.message-text :deep(.chat-code-block) {
+  margin: 12px 0;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: #0f172a;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+}
+
+.message-text :deep(.chat-code-block__toolbar) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: rgba(15, 23, 42, 0.96);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.message-text :deep(.chat-code-block__lang) {
+  font-size: 12px;
+  line-height: 1;
+  color: rgba(226, 232, 240, 0.72);
+  text-transform: lowercase;
+  font-family:
+    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.message-text :deep(.chat-code-block__actions) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.message-text :deep(.chat-code-block__copy),
+.message-text :deep(.chat-code-block__preview) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.2);
+  color: #e2e8f0;
+  border-radius: 999px;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.message-text :deep(.chat-code-block__icon) {
+  display: inline-flex;
+  width: 15px;
+  height: 15px;
+}
+
+.message-text :deep(.chat-code-block__icon svg) {
+  width: 100%;
+  height: 100%;
+}
+
+.message-text :deep(.chat-code-block__copy:hover),
+.message-text :deep(.chat-code-block__preview:hover) {
+  background: rgba(148, 163, 184, 0.16);
+  border-color: rgba(148, 163, 184, 0.42);
+}
+
+.message-text :deep(.chat-code-block__copy[data-copied="true"]) {
+  color: #bbf7d0;
+  border-color: rgba(34, 197, 94, 0.34);
+  background: rgba(34, 197, 94, 0.14);
+}
+
+.message-text :deep(.chat-code-block pre) {
+  margin: 0;
+  padding: 14px 16px 16px;
+  border-radius: 0;
+  border: 0;
+  box-shadow: none;
+  background: #0b1120;
+}
+
+.code-preview-shell {
+  min-height: 72vh;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.92), #ffffff);
+}
+
+.code-preview-frame {
+  width: 100%;
+  min-height: 72vh;
+  border: 0;
+  background: #ffffff;
+}
+
+.code-preview-error {
+  padding: 18px 20px;
+  color: #9f1239;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
 .message-row.is-user .message-bubble {
-  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
-  color: #ffffff;
-  border-bottom-right-radius: 6px;
-  border-color: transparent;
-  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.22);
+  background: linear-gradient(
+    180deg,
+    rgba(245, 247, 250, 0.96),
+    rgba(255, 255, 255, 0.98)
+  );
+  color: #111827;
+  border-color: rgba(226, 232, 240, 0.95);
 }
 
 .message-row.is-user .message-text :deep(code) {
-  background: rgba(255, 255, 255, 0.2);
-  color: #ffffff;
+  background: rgba(17, 24, 39, 0.08);
+  color: inherit;
 }
 
 .message-row.is-ai .message-bubble {
-  padding: 4px 0 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+  background: rgba(255, 255, 255, 0.98);
 }
 
 .message-images {
@@ -4577,33 +11000,59 @@ onUnmounted(() => {
 
 .chat-composer {
   flex-shrink: 0;
-  padding: 18px 24px 24px;
-  background: linear-gradient(180deg, rgba(243, 245, 247, 0) 0%, rgba(243, 245, 247, 0.92) 24%, rgba(243, 245, 247, 1) 100%);
+  padding: 10px max(24px, calc((100% - 820px) / 2)) 24px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0),
+    rgba(248, 250, 252, 0.92) 18%,
+    rgba(255, 255, 255, 0.98) 100%
+  );
   display: flex;
   justify-content: center;
-  border-top: 1px solid rgba(148, 163, 184, 0.12);
-  position: relative;
+  border-top: 1px solid rgba(226, 232, 240, 0.92);
+  position: sticky;
+  bottom: 0;
   z-index: 1;
+}
+
+@media (max-height: 820px) {
+  .chat-shell {
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .chat-messages {
+    min-height: 160px;
+    padding-top: 22px;
+    padding-bottom: 18px;
+  }
+
+  .chat-composer {
+    padding-top: 8px;
+    padding-bottom: 14px;
+  }
 }
 
 .chat-input-wrapper {
   width: 100%;
-  max-width: 900px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.96);
+  max-width: 840px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.98);
   transition:
     border-color 0.2s,
     box-shadow 0.2s,
     background-color 0.2s;
-  box-shadow: 0 22px 48px rgba(15, 23, 42, 0.08);
+  box-shadow:
+    0 18px 36px rgba(15, 23, 42, 0.06),
+    0 3px 8px rgba(15, 23, 42, 0.03);
   display: flex;
   flex-direction: column;
 }
 
 .chat-input-wrapper.is-focused {
-  border-color: rgba(37, 99, 235, 0.45);
-  box-shadow: 0 24px 52px rgba(37, 99, 235, 0.12);
+  border-color: rgba(17, 24, 39, 0.18);
+  box-shadow: 0 16px 40px rgba(17, 24, 39, 0.1);
 }
 
 .chat-input-wrapper.is-dragover {
@@ -4615,7 +11064,7 @@ onUnmounted(() => {
 .upload-preview-area {
   display: flex;
   gap: 12px;
-  padding: 12px 16px 0 16px;
+  padding: 12px 16px 0;
   flex-wrap: wrap;
 }
 
@@ -4692,14 +11141,15 @@ onUnmounted(() => {
   border: none !important;
   box-shadow: none !important;
   background: transparent !important;
-  padding: 16px 18px 10px;
+  padding: 18px 18px 10px;
   font-size: 15px;
-  line-height: 1.65;
+  line-height: 1.7;
   resize: none;
+  color: #111827;
 }
 
 .chat-textarea :deep(.el-textarea__inner)::placeholder {
-  color: #94a3b8;
+  color: #9ca3af;
 }
 
 .input-footer {
@@ -4714,6 +11164,55 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding-left: 2px;
+  min-width: 0;
+}
+
+.footer-left :deep(.el-button) {
+  width: 34px;
+  height: 34px;
+  color: #6b7280;
+}
+
+.chat-model-select {
+  width: 214px;
+  max-width: 42vw;
+}
+
+.chat-model-select :deep(.el-select__wrapper) {
+  min-height: 34px;
+  border-radius: 999px;
+  box-shadow: none;
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.chat-model-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.chat-model-option__name {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.chat-model-option__provider {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.chat-model-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(241, 245, 249, 0.92);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .footer-right {
@@ -4725,18 +11224,22 @@ onUnmounted(() => {
 
 .hint-text {
   font-size: 12px;
-  color: #64748b;
+  color: #6b7280;
   white-space: nowrap;
 }
 
 .send-message-button {
-  width: 36px;
-  height: 36px;
-  box-shadow: 0 10px 20px rgba(37, 99, 235, 0.18);
+  width: 38px;
+  height: 38px;
+  border: 0;
+  background: #111827;
+  box-shadow: none;
 }
 
 .send-message-button:disabled {
   box-shadow: none;
+  background: #d1d5db;
+  color: #f9fafb;
 }
 
 .external-agent-meta {
@@ -4816,8 +11319,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
-  border-radius: 12px;
-  margin: 16px 24px 0;
+  border-radius: 16px;
+  margin: 14px max(20px, calc((100% - 920px) / 2)) 0;
 }
 
 .workspace-guide-banner--warning {
@@ -4899,45 +11402,1811 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-@media (max-width: 960px) {
-  .chat-header {
-    padding: 16px 16px 14px;
+.chat-layout {
+  position: relative;
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(255, 255, 255, 0.98),
+      transparent 24%
+    ),
+    linear-gradient(180deg, #f6f7fb 0%, #eef2f7 100%);
+}
+
+.chat-page-actions {
+  position: absolute;
+  top: 18px;
+  right: max(20px, calc((100% - 1240px) / 2));
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.chat-page-settings-button {
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(148, 163, 184, 0.26) !important;
+  background: rgba(255, 255, 255, 0.84) !important;
+  color: #111827 !important;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08) !important;
+  backdrop-filter: blur(16px);
+}
+
+.chat-page-settings-button:hover {
+  border-color: rgba(59, 130, 246, 0.22) !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+  color: #2563eb !important;
+}
+
+.chat-shell {
+  gap: 16px;
+  padding: 76px max(20px, calc((100% - 1240px) / 2)) 18px;
+}
+
+.chat-conversation-sidebar {
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 28px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.96),
+    rgba(245, 247, 250, 0.92)
+  );
+  box-shadow:
+    0 20px 40px rgba(15, 23, 42, 0.06),
+    0 2px 10px rgba(15, 23, 42, 0.03);
+  padding: 14px;
+}
+
+.chat-sidebar-top {
+  margin-bottom: 10px;
+}
+
+.chat-project-switcher {
+  position: relative;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px 48px 14px 14px;
+  border: 1px solid rgba(191, 219, 254, 0.72);
+  border-radius: 22px;
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(59, 130, 246, 0.14),
+      transparent 36%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(248, 250, 252, 0.98),
+      rgba(255, 255, 255, 0.94)
+    );
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.chat-project-switcher::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid #64748b;
+  border-bottom: 2px solid #64748b;
+  transform: translateY(-62%) rotate(45deg);
+}
+
+.chat-project-switcher:hover {
+  transform: translateY(-1px);
+  border-color: rgba(59, 130, 246, 0.3);
+  box-shadow: 0 12px 28px rgba(59, 130, 246, 0.1);
+}
+
+.chat-project-switcher.is-empty {
+  border-color: rgba(226, 232, 240, 0.92);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.chat-project-switcher__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.chat-project-switcher__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+:deep(.chat-project-switcher-menu) {
+  padding: 6px;
+  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.96);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.1);
+}
+
+:deep(.chat-project-switcher-menu .el-dropdown-menu__item) {
+  padding: 0;
+  border-radius: 14px;
+}
+
+:deep(
+  .chat-project-switcher-menu .el-dropdown-menu__item:not(.is-disabled):hover
+) {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.chat-project-option {
+  min-width: 250px;
+  padding: 12px 14px;
+}
+
+.chat-conversation-sidebar__actions {
+  margin-bottom: 10px;
+  gap: 8px;
+}
+
+.chat-new-conversation-button {
+  height: 42px !important;
+  border-radius: 18px !important;
+  border: 1px solid rgba(17, 24, 39, 0.06) !important;
+  background: linear-gradient(180deg, #111827, #1f2937) !important;
+  color: #f8fafc !important;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16) !important;
+}
+
+.chat-clear-current-button {
+  justify-content: flex-start !important;
+  padding-left: 6px !important;
+  color: #667085 !important;
+}
+
+.chat-session-strip {
+  padding: 0 2px 2px;
+}
+
+.chat-session-groups {
+  gap: 12px;
+}
+
+.chat-session-group {
+  gap: 6px;
+}
+
+.chat-session-group__title {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.04em;
+}
+
+.chat-session-list {
+  gap: 6px;
+  padding-right: 0;
+}
+
+.chat-session-chip {
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  box-shadow: none;
+  padding: 11px 12px;
+}
+
+.chat-session-chip:hover {
+  transform: none;
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: none;
+}
+
+.chat-session-chip.is-active {
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(59, 130, 246, 0.12),
+      transparent 40%
+    ),
+    rgba(219, 234, 254, 0.88);
+}
+
+.chat-session-chip__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.chat-session-chip__title {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-session-chip__delete {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  color: #98a2b3;
+  opacity: 0;
+  transition:
+    opacity 0.18s ease,
+    color 0.18s ease;
+}
+
+.chat-session-chip:hover .chat-session-chip__delete,
+.chat-session-chip.is-active .chat-session-chip__delete {
+  opacity: 1;
+}
+
+.chat-session-chip__delete:hover {
+  color: #ef4444;
+}
+
+.chat-session-chip__meta {
+  font-size: 11px;
+  color: #8a94a6;
+}
+
+.chat-stage {
+  border: 1px solid rgba(255, 255, 255, 0.96);
+  border-radius: 34px;
+  background: radial-gradient(
+    circle at top,
+    rgba(255, 255, 255, 0.98),
+    rgba(248, 250, 252, 0.96) 58%,
+    rgba(244, 247, 251, 0.98)
+  );
+  box-shadow:
+    0 26px 64px rgba(15, 23, 42, 0.08),
+    0 4px 14px rgba(15, 23, 42, 0.04);
+  overflow: hidden;
+}
+
+.workspace-guide-banner {
+  margin-top: 16px;
+  margin-left: max(24px, calc((100% - 860px) / 2));
+  margin-right: max(24px, calc((100% - 860px) / 2));
+}
+
+.chat-messages {
+  padding: 28px max(28px, calc((100% - 860px) / 2)) 18px;
+  background: transparent;
+}
+
+.message-list-inner {
+  max-width: 860px;
+  gap: 26px;
+}
+
+.chat-empty-state {
+  max-width: 760px;
+  min-height: calc(100vh - 368px);
+  justify-content: center;
+  padding: 4px 0 8px;
+}
+
+.chat-empty-badge {
+  border-radius: 999px;
+  border: 1px solid rgba(226, 232, 240, 0.96);
+  background: rgba(255, 255, 255, 0.86);
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chat-empty-title {
+  margin-top: 16px;
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1.18;
+  letter-spacing: -0.03em;
+  color: #111827;
+}
+
+.chat-empty-text {
+  margin-top: 12px;
+  max-width: 560px;
+  color: #6b7280;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.message-row {
+  width: 100%;
+}
+
+.message-row.is-user {
+  justify-content: flex-end;
+}
+
+.message-row.is-user .message-content-wrapper {
+  max-width: min(560px, 72%);
+}
+
+.message-row.is-user .message-meta {
+  justify-content: flex-end;
+  padding-right: 4px;
+}
+
+.message-row.is-user .role-name {
+  display: none;
+}
+
+.message-row.is-user .message-bubble {
+  padding: 14px 18px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 22px;
+  background: linear-gradient(
+    180deg,
+    rgba(245, 247, 250, 0.98),
+    rgba(255, 255, 255, 0.96)
+  );
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+}
+
+.message-row.is-ai {
+  justify-content: flex-start;
+}
+
+.message-row.is-ai .message-content-wrapper {
+  max-width: 100%;
+}
+
+.message-row.is-ai .message-meta {
+  justify-content: flex-start;
+  gap: 8px;
+  padding-left: 2px;
+}
+
+.message-row.is-ai .message-bubble {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.message-row.is-ai .message-text {
+  color: #2b3340;
+  font-size: 15px;
+  line-height: 1.9;
+}
+
+.message-actions {
+  padding-left: 0;
+}
+
+.chat-composer {
+  padding: 14px max(28px, calc((100% - 860px) / 2)) 22px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0),
+    rgba(248, 250, 252, 0.92) 16%,
+    rgba(255, 255, 255, 0.98) 100%
+  );
+  border-top: 0;
+}
+
+.chat-input-wrapper {
+  max-width: 860px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 20px 40px rgba(15, 23, 42, 0.06),
+    0 4px 12px rgba(15, 23, 42, 0.03);
+}
+
+.chat-textarea :deep(.el-textarea__inner) {
+  padding-top: 16px;
+  padding-bottom: 8px;
+}
+
+.input-footer {
+  padding-top: 4px;
+}
+
+:deep(.settings-center-dialog .el-dialog) {
+  margin: 0 !important;
+  border-radius: 0;
+  background:
+    radial-gradient(circle at top left, rgba(255, 244, 214, 0.5), transparent 24%),
+    linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
+}
+
+:deep(.settings-center-dialog .el-dialog__header) {
+  display: none;
+}
+
+:deep(.settings-center-dialog .el-dialog__body) {
+  padding: 0;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.settings-center-shell {
+  display: grid;
+  grid-template-columns: 272px minmax(0, 1fr);
+  gap: 18px;
+  height: 100vh;
+  padding: 14px 16px 16px;
+  background: transparent;
+}
+
+.settings-center-sidebar {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.settings-center-sidebar-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  padding: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 28px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.96),
+    rgba(245, 247, 250, 0.92)
+  );
+  box-shadow:
+    0 20px 40px rgba(15, 23, 42, 0.06),
+    0 2px 10px rgba(15, 23, 42, 0.03);
+  overflow-y: auto;
+}
+
+.settings-center-brand-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px 10px;
+}
+
+.settings-center-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-center-brand__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: #111827;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.settings-center-brand__name {
+  color: #111827;
+  font-size: 15px;
+  line-height: 1.2;
+  font-weight: 600;
+  font-family: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.settings-center-brand__meta {
+  margin-top: 2px;
+  color: #8b8d93;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.settings-center-sidebar-copy {
+  margin: 0 8px 14px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settings-center-nav-group + .settings-center-nav-group {
+  margin-top: 12px;
+}
+
+.settings-center-nav-group__title {
+  padding: 0 10px 8px;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.settings-center-sidebar__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-center-nav-item {
+  width: 100%;
+  padding: 11px 12px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.settings-center-nav-item:hover {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.settings-center-nav-item.is-active {
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(59, 130, 246, 0.12),
+      transparent 40%
+    ),
+    rgba(219, 234, 254, 0.88);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.settings-center-nav-item__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.settings-center-nav-item__label {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: #111827;
+}
+
+.settings-center-nav-item__badge {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.8);
+  color: #8b8d93;
+  font-size: 10px;
+  line-height: 1.5;
+  font-weight: 600;
+}
+
+.settings-center-nav-item__desc {
+  display: block;
+  margin-top: 5px;
+  color: #8a94a6;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.settings-center-account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding: 14px 10px 4px;
+  border-top: 1px solid rgba(17, 24, 39, 0.06);
+}
+
+.settings-center-account__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: #e4e4e7;
+  color: #52525b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settings-center-account__meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-center-account__name {
+  color: #27272a;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-center-account__role {
+  margin-top: 2px;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.settings-center-account__logout {
+  flex-shrink: 0;
+  color: #8b8d93 !important;
+}
+
+.settings-center-stage {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 12px 0 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.settings-center-context-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 24px 4px;
+  text-align: center;
+}
+
+.settings-center-close-button {
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 0 8px !important;
+  border-radius: 10px !important;
+  color: #6b7280 !important;
+  background: transparent !important;
+}
+
+.settings-center-close-button:hover {
+  background: rgba(255, 255, 255, 0.7) !important;
+  color: #111827 !important;
+}
+
+.settings-center-context-bar__title {
+  color: #1f2937;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.settings-center-context-bar__desc {
+  max-width: 760px;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.settings-center-context-bar__meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-top: 8px;
+  color: #9ca3af;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settings-center-context-bar__meta span:not(:last-child)::after {
+  content: "·";
+  margin-left: 8px;
+  color: #c8cdd5;
+}
+
+.settings-center-stage__body {
+  flex: 1;
+  min-height: 0;
+  padding-top: 14px;
+  overflow: visible;
+}
+
+.settings-center-stage__body--chat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-y: auto;
+  padding: 14px 14px 28px;
+}
+
+.settings-center-stage__body--frame {
+  padding: 12px;
+}
+
+.settings-tabs {
+  flex: 1;
+  min-height: 0;
+  width: min(100%, 940px);
+}
+
+.settings-tabs :deep(.el-tabs__header) {
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  background: transparent;
+}
+
+.settings-tabs :deep(.el-tabs__nav-wrap::after) {
+  display: none;
+}
+
+.settings-tabs :deep(.el-tabs__nav) {
+  gap: 18px;
+  border: 0;
+}
+
+.settings-tabs :deep(.el-tabs__item) {
+  height: 36px;
+  padding: 0 2px 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 500;
+  background: transparent;
+}
+
+.settings-tabs :deep(.el-tabs__item.is-active) {
+  color: #171717;
+  border-bottom-color: rgba(17, 24, 39, 0.22);
+  background: transparent;
+}
+
+.settings-tabs :deep(.el-tabs__active-bar) {
+  display: none;
+}
+
+.settings-tabs :deep(.el-tabs__content) {
+  height: 100%;
+  overflow: visible;
+}
+
+.settings-tabs :deep(.el-tab-pane) {
+  width: min(100%, 940px);
+}
+
+.settings-center-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: 0;
+}
+
+.chat-model-select {
+  width: 188px;
+}
+
+.chat-model-select :deep(.el-select__wrapper) {
+  background: #f3f5f8;
+}
+
+.chat-stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 0 0;
+  border: 0;
+  background: inherit;
+  box-shadow: none;
+}
+
+.chat-context-bar {
+  padding: 8px 24px 6px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-context-bar__title {
+  color: #1f2937;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.chat-context-bar__meta {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 8px;
+  margin-top: 4px;
+  color: #9ca3af;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chat-context-bar__meta span:not(:last-child)::after {
+  content: "·";
+  margin-left: 10px;
+  color: #c0c4cc;
+}
+
+.chat-context-bar__actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.chat-context-bar__action-button {
+  border-radius: 999px !important;
+  border-color: rgba(15, 23, 42, 0.08) !important;
+  background: rgba(255, 255, 255, 0.86) !important;
+  color: #334155 !important;
+  font-weight: 600;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+}
+
+.chat-context-bar__action-button:hover {
+  border-color: rgba(37, 99, 235, 0.22) !important;
+  color: #1d4ed8 !important;
+  background: #ffffff !important;
+}
+
+.workspace-guide-banner {
+  margin: 8px auto 12px;
+  width: min(100%, 780px);
+  border-radius: 14px;
+}
+
+.chat-messages-shell {
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-messages {
+  height: 100%;
+  padding: 14px 24px 18px;
+  overflow-y: auto;
+  background: transparent;
+}
+
+.message-list-inner {
+  max-width: 920px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  width: 100%;
+  min-height: 100%;
+}
+
+.chat-empty-state {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 420px;
+  padding: 20px 12px;
+  text-align: center;
+  background: transparent;
+  border: 0;
+}
+
+.chat-empty-state__hero {
+  max-width: 680px;
+}
+
+.chat-empty-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: #eceff3;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.chat-empty-title {
+  margin-top: 18px;
+  color: #171717;
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.chat-empty-text {
+  max-width: 620px;
+  margin-top: 12px;
+  color: #737373;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.chat-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.chat-empty-action {
+  min-width: 180px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 1px solid #e3e4e8;
+  background: #ffffff;
+  color: #262626;
+  box-shadow: none;
+}
+
+.chat-empty-action:hover {
+  transform: none;
+  border-color: #d3d6dc;
+  background: #fafafa;
+  box-shadow: none;
+}
+
+.message-row.is-user .message-meta,
+.message-row.is-ai .message-meta {
+  display: none;
+}
+
+.message-process {
+  border-radius: 12px;
+  background: #f3f4f6;
+}
+
+.message-audit,
+.message-employee-draft {
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+.chat-composer {
+  display: flex;
+  justify-content: center;
+  padding: 0 24px 24px;
+}
+
+.chat-composer-panel {
+  width: clamp(500px, 72vw, 800px);
+  max-width: 100%;
+  min-width: 500px;
+  margin: 0;
+  border-radius: 28px;
+  background: transparent;
+}
+
+.chat-input-wrapper {
+  width: 100%;
+  max-width: none;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+}
+
+.chat-input-wrapper.is-focused {
+  border-color: rgba(17, 24, 39, 0.12);
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.05);
+}
+
+.chat-textarea :deep(.el-textarea__inner) {
+  min-height: 88px !important;
+  padding: 18px 20px 8px;
+  color: #171717;
+  border: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+
+.chat-textarea :deep(.el-textarea__inner)::placeholder {
+  color: #a3a3a3;
+}
+
+.chat-input-wrapper :deep(.composer-assist) {
+  padding: 0 14px 6px;
+}
+
+.chat-input-wrapper :deep(.composer-assist-strip) {
+  gap: 8px;
+}
+
+.chat-input-wrapper :deep(.composer-assist-chip) {
+  border-radius: 999px;
+  border: 1px solid rgba(17, 24, 39, 0.06);
+  background: #f4f4f5;
+  color: #52525b;
+  min-height: 32px;
+}
+
+.chat-input-wrapper :deep(.composer-assist-chip.is-active) {
+  border-color: rgba(17, 24, 39, 0.1);
+  background: #eceff3;
+  color: #111827;
+}
+
+.input-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 12px 12px;
+}
+
+.footer-left,
+.footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.footer-left :deep(.el-button) {
+  color: #71717a;
+  width: 34px;
+  height: 34px;
+}
+
+.chat-model-select {
+  width: 172px;
+}
+
+.chat-model-select :deep(.el-select__wrapper),
+.chat-model-pill {
+  min-height: 32px;
+  border-radius: 999px;
+  background: #f4f4f5;
+  box-shadow: none;
+}
+
+.chat-model-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 999px;
+  color: #52525b;
+  font-size: 12px;
+}
+
+.hint-text {
+  display: none;
+}
+
+.send-message-button {
+  width: 36px;
+  height: 36px;
+  background: #111827 !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.send-message-button:disabled {
+  background: #d4d4d8 !important;
+}
+
+.message-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+}
+
+.message-row.is-ai .message-content-wrapper {
+  width: min(100%, 860px);
+  max-width: 100%;
+}
+
+.message-row.is-ai .message-bubble > .message-text,
+.message-row.is-ai .message-bubble > .message-process,
+.message-row.is-ai .message-bubble > .message-audit,
+.message-row.is-ai .message-bubble > .message-employee-draft,
+.message-row.is-ai .message-bubble > .message-images,
+.message-row.is-ai .message-bubble > .message-attachments {
+  max-width: 860px;
+}
+
+.message-row.is-user {
+  justify-content: flex-end;
+}
+
+.message-row.is-user .message-content-wrapper {
+  width: auto;
+  max-width: min(760px, 78%);
+  align-items: flex-end;
+}
+
+.message-row.is-user .message-bubble {
+  padding: 12px 16px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 22px;
+  background: #e9edf2;
+  box-shadow: none;
+  width: fit-content;
+  min-width: min(240px, 100%);
+  max-width: 100%;
+}
+
+.message-row.is-user .message-bubble.message-bubble--editing {
+  width: min(100%, 680px);
+  min-width: min(320px, 100%);
+  padding: 14px;
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(233, 237, 242, 0.72);
+}
+
+.message-row.is-user .message-inline-editor {
+  width: 100%;
+}
+
+.message-row.is-user .message-text {
+  color: #1f2937;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.message-row.is-ai .message-bubble {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.message-row.is-ai .message-text {
+  color: #2b2f36;
+  font-size: 15px;
+  line-height: 1.9;
+}
+
+.message-text :deep(p) {
+  margin-bottom: 0.9em;
+}
+
+.message-text :deep(ul),
+.message-text :deep(ol) {
+  margin: 0.5em 0 0.9em;
+  padding-left: 1.3em;
+}
+
+.message-process {
+  margin-bottom: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  background: rgba(245, 246, 248, 0.86);
+}
+
+.message-process-toggle {
+  padding: 10px 12px;
+  color: #374151;
+  font-size: 12px;
+}
+
+.message-process-pre {
+  padding: 0 12px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.message-audit {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #eceef2;
+  border-radius: 16px;
+  background: rgba(250, 250, 250, 0.86);
+}
+
+.message-audit-title {
+  color: #374151;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.message-audit-label,
+.message-audit-text,
+.message-audit-pre {
+  color: #6b7280;
+}
+
+.message-employee-draft {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #e7eaf0;
+  border-radius: 18px;
+  background: rgba(250, 251, 252, 0.88);
+}
+
+.message-employee-draft__title {
+  font-size: 15px;
+}
+
+.message-employee-draft__desc,
+.meta-value,
+.employee-draft-workflow-list {
+  color: #4b5563;
+}
+
+.message-employee-draft__meta-item,
+.message-employee-draft__workflow {
+  background: #ffffff;
+  border-color: #eceef2;
+}
+
+.message-images {
+  margin-top: 10px;
+  gap: 10px;
+}
+
+.preview-image {
+  border-radius: 14px;
+  border: 1px solid #eceef2;
+}
+
+.message-attachments {
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.attachment-item {
+  padding: 8px 10px;
+  border: 1px solid #eceef2;
+  border-radius: 12px;
+  background: #fafafa;
+}
+
+.message-actions {
+  margin-top: 8px;
+  padding-left: 0;
+  gap: 6px;
+}
+
+.message-row.is-user .message-actions {
+  justify-content: flex-end;
+}
+
+.message-action-button {
+  width: 28px;
+  height: 28px;
+  color: #a1a1aa;
+}
+
+.message-action-button:hover {
+  color: #52525b;
+  background: rgba(15, 23, 42, 0.05);
+}
+
+.chat-layout {
+  position: relative;
+  min-height: 100%;
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(255, 244, 214, 0.5),
+      transparent 24%
+    ),
+    linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
+}
+
+.chat-main {
+  min-height: 100%;
+  overflow: hidden;
+}
+
+.chat-shell {
+  display: grid;
+  grid-template-columns: 272px minmax(0, 1fr);
+  gap: 18px;
+  min-height: 100%;
+  padding: 14px 16px 16px;
+  box-sizing: border-box;
+}
+
+.chat-conversation-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px 8px 12px;
+  border: 0;
+  border-radius: 24px;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.chat-sidebar-brand-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px 10px;
+}
+
+.chat-sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-sidebar-brand__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: #111827;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.chat-sidebar-brand__name {
+  color: #111827;
+  font-size: 15px;
+  line-height: 1.2;
+  font-weight: 600;
+  font-family: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.chat-sidebar-brand__meta {
+  margin-top: 2px;
+  color: #8b8d93;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.chat-page-settings-button {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: 0 !important;
+  background: transparent !important;
+  color: #6b7280 !important;
+  box-shadow: none !important;
+}
+
+.chat-page-settings-button:hover {
+  background: rgba(255, 255, 255, 0.7) !important;
+  color: #111827 !important;
+}
+
+.chat-sidebar-project-card {
+  margin-top: 2px;
+  padding: 0 8px 8px;
+}
+
+.chat-sidebar-project-card :deep(.chat-project-dropdown) {
+  display: block;
+  width: 100%;
+}
+
+.chat-sidebar-card__label {
+  margin: 0 10px 8px;
+  color: #8b8d93;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.chat-project-switcher {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  position: relative;
+  min-width: 0;
+  height: 44px;
+  padding: 0 40px 0 14px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: none;
+}
+
+.chat-project-switcher::after {
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.chat-project-switcher:hover {
+  border-color: rgba(17, 24, 39, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.chat-project-switcher__name {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+:deep(.chat-project-switcher-menu) {
+  max-width: calc(100vw - 24px);
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+:deep(.chat-project-switcher-menu .el-dropdown-menu__item) {
+  max-width: 100%;
+}
+
+.chat-project-option {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 11px 14px;
+  box-sizing: border-box;
+}
+
+.chat-project-option--empty {
+  justify-content: center;
+}
+
+.chat-project-option--empty .chat-project-option__name {
+  color: #9ca3af;
+}
+
+.chat-project-option__name {
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-conversation-sidebar__actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 0 8px;
+}
+
+.chat-new-conversation-button {
+  width: 100%;
+  height: 38px !important;
+  border-radius: 18px !important;
+  border: 0 !important;
+  background: #111827 !important;
+  color: #fff !important;
+  font-weight: 600;
+  box-shadow: none !important;
+}
+
+.chat-clear-current-button {
+  justify-content: flex-start;
+  min-height: 30px !important;
+  padding: 0 4px !important;
+  color: #8b8d93 !important;
+}
+
+.chat-session-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: 8px;
+  padding: 6px 4px 0;
+  flex: 1;
+}
+
+.chat-session-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 0 10px 8px;
+}
+
+.chat-session-panel__title {
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.chat-session-strip {
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-session-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.chat-session-group__title {
+  padding: 0 10px 2px;
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chat-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-session-chip {
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background: transparent;
+  text-align: left;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.chat-session-chip:hover {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.chat-session-chip.is-active {
+  border-color: rgba(17, 24, 39, 0.05);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.chat-session-chip__title {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.chat-session-chip__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.chat-session-chip__delete {
+  opacity: 0;
+  color: #a1a1aa;
+}
+
+.chat-session-chip:hover .chat-session-chip__delete,
+.chat-session-chip.is-active .chat-session-chip__delete {
+  opacity: 1;
+}
+
+.chat-session-chip__meta {
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.chat-session-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  color: #a1a1aa;
+  font-size: 12px;
+}
+
+.chat-sidebar-footer {
+  margin-top: 12px;
+  padding: 0 8px;
+}
+
+.chat-sidebar-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(17, 24, 39, 0.06);
+}
+
+.chat-sidebar-user__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: #e4e4e7;
+  color: #52525b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chat-sidebar-user__name {
+  color: #27272a;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.chat-sidebar-user__role {
+  margin-top: 2px;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.chat-sidebar-user__meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.chat-sidebar-user__logout {
+  flex-shrink: 0;
+  color: #8b8d93 !important;
+}
+
+@media (max-width: 1120px) {
+  .chat-main {
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 
-  .chat-status-pills {
-    gap: 6px;
+  .chat-shell {
+    grid-template-columns: 1fr;
+    min-height: auto;
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .chat-conversation-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid rgba(17, 24, 39, 0.06);
+  }
+
+  .chat-stage {
+    min-height: auto;
+    padding-top: 0;
   }
 
   .chat-messages {
-    padding: 20px 14px 24px;
+    padding: 8px 18px 18px;
+  }
+
+  .chat-context-bar {
+    padding-top: 2px;
   }
 
   .chat-empty-title {
     font-size: 28px;
   }
 
-  .chat-composer {
-    padding: 14px 14px 16px;
+  .chat-empty-state {
+    min-height: 360px;
   }
 
-  .message-content-wrapper,
-  .message-row.is-ai .message-content-wrapper {
-    max-width: 100%;
+  .workspace-guide-banner {
+    width: calc(100% - 36px);
   }
-}
 
-@media (max-width: 640px) {
-  .chat-header {
+  .settings-center-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 12px;
+    padding: 12px 14px 14px;
+  }
+
+  .settings-center-sidebar {
+    min-height: auto;
+  }
+
+  .settings-center-sidebar-card {
+    padding: 12px;
+    border-radius: 24px;
+  }
+
+  .settings-center-sidebar__nav {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+    gap: 8px;
+  }
+
+  .settings-center-stage {
+    height: auto;
+    min-height: 0;
+    padding-top: 10px;
+    border-radius: 0;
+  }
+
+  .settings-center-context-bar__title {
+    font-size: 22px;
+  }
+
+  .message-employee-draft__meta {
+    grid-template-columns: 1fr;
+  }
+
+  .employee-draft-dialog__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .input-footer {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .chat-header-right {
-    justify-content: flex-end;
+  .skill-resource-dialog__directory-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 640px) {
+  .chat-messages {
+    padding: 8px 14px 16px;
+  }
+
+  .chat-composer {
+    padding: 0 14px 16px;
+  }
+
+  .chat-composer-panel {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .chat-project-switcher {
+    padding: 13px 40px 13px 13px;
+    border-radius: 16px;
+  }
+
+  :deep(.chat-project-switcher-menu) {
+    min-width: min(320px, calc(100vw - 24px));
   }
 
   .message-row {
-    gap: 10px;
+    gap: 0;
   }
 
   .message-avatar {
@@ -4946,7 +13215,33 @@ onUnmounted(() => {
 
   .message-bubble {
     padding: 16px;
-    border-radius: 18px;
+    border-radius: 20px;
+  }
+
+  .message-row.is-user .message-bubble.message-bubble--editing {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .message-inline-editor__footer {
+    align-items: flex-start;
+  }
+
+  .message-inline-editor__actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+
+  .message-row.is-ai .message-content-wrapper,
+  .message-row.is-user .message-content-wrapper {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .message-row.is-user .message-bubble {
+    width: 100%;
+    min-width: 0;
   }
 
   .message-actions {
@@ -4954,17 +13249,106 @@ onUnmounted(() => {
     flex-wrap: wrap;
   }
 
-  .message-time {
-    opacity: 1;
+  .chat-conversation-sidebar__actions {
+    justify-content: flex-start;
+  }
+
+  .message-employee-draft__head,
+  .message-employee-draft__actions {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .employee-draft-dialog__section-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .chat-context-bar__meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .chat-context-bar__meta span:not(:last-child)::after {
+    display: none;
+  }
+
+  .chat-empty-title {
+    font-size: 30px;
   }
 
   .input-footer {
-    align-items: flex-end;
+    align-items: stretch;
     gap: 10px;
+    flex-wrap: wrap;
   }
 
-  .hint-text {
+  .chat-model-select {
+    width: 100%;
+    max-width: none;
+  }
+
+  .footer-left {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .footer-right {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .skill-resource-dialog__directory-actions {
+    width: 100%;
+  }
+
+  .skill-resource-site-list {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-center-brand__name {
+    font-size: 14px;
+  }
+
+  .settings-center-nav-item {
+    padding: 10px 12px;
+    border-radius: 14px;
+  }
+
+  .settings-center-context-bar__meta {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .settings-center-context-bar__meta span:not(:last-child)::after {
     display: none;
+  }
+
+  .settings-summary-card {
+    align-items: flex-start;
+  }
+
+  .settings-tabs :deep(.el-tabs__header) {
+    padding-bottom: 6px;
+  }
+
+  .settings-tabs :deep(.el-tabs__nav) {
+    gap: 14px;
+  }
+
+  .settings-summary-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .settings-summary-status {
+    width: 100%;
+  }
+
+  .settings-center-frame {
+    border-radius: 0;
   }
 }
 </style>

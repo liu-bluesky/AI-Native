@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
+import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import asdict, replace
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 import asyncio
 from services.agent_orchestrator import AgentOrchestrator
 from services.conversation_manager import ConversationManager
@@ -20,19 +25,35 @@ from core.config import get_settings
 
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
 from core.auth import decode_token
-from core.deps import employee_store, external_mcp_store, project_chat_store, project_store, require_auth, role_store, system_config_store, usage_store
+from core.deps import employee_store, external_mcp_store, local_connector_store, project_chat_store, project_store, require_auth, role_store, system_config_store, usage_store, user_store
 from services.feedback_service import get_feedback_service
-from services.external_agent_service import ExternalAgentSession, create_external_agent_session, detect_external_agent_risk_signals, has_meaningful_workspace_changes, list_external_agent_statuses, materialize_external_agent_workspace_context_async, normalize_external_agent_type, prepare_external_agent_workspace_context, probe_workspace_access, probe_workspace_access_effective_async, resolve_external_agent_status
+from services.external_agent_service import ExternalAgentSession, create_external_agent_session, detect_external_agent_risk_signals, has_meaningful_workspace_changes, list_external_agent_statuses, normalize_external_agent_type, prepare_external_agent_workspace_context, probe_workspace_access, resolve_external_agent_status
+from services.local_connector_service import (
+    build_local_connector_provider_id,
+    chat_completion_via_connector,
+    connector_agent_available,
+    connector_headers,
+    connector_base_url,
+    list_connector_llm_models,
+    materialize_connector_workspace,
+    parse_local_connector_provider_id,
+    probe_connector_workspace,
+)
 from models.requests import (
+    ProjectAiEntryFileUpdateReq,
+    ProjectChatHistoryTruncateReq,
     ProjectChatReq,
     ProjectChatSettingsUpdateReq,
     ProjectCreateReq,
     ProjectMemberAddReq,
+    ProjectUserAddReq,
     ProjectUpdateReq,
+    WorkspaceDirectoryPickReq,
+    WorkspaceFilePickReq,
 )
 from stores.json.project_chat_store import ProjectChatMessage
-from stores.json.project_store import ProjectConfig, ProjectMember, _now_iso
-from core.role_permissions import has_permission
+from stores.json.project_store import ProjectConfig, ProjectMember, ProjectUserMember, _now_iso
+from core.role_permissions import has_permission, resolve_role_permissions
 from stores.mcp_bridge import rule_store, skill_store
 
 router = APIRouter(prefix="/api/projects", dependencies=[Depends(require_auth)])
@@ -43,6 +64,8 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "external_agent_type": "codex_cli",
     "external_agent_sandbox_mode": "workspace-write",
     "external_agent_sandbox_mode_explicit": False,
+    "local_connector_id": "",
+    "connector_workspace_path": "",
     "selected_employee_id": "",
     "selected_employee_ids": [],
     "provider_id": "",
@@ -89,6 +112,7 @@ def _serialize_project(project: ProjectConfig) -> dict:
     data = asdict(project)
     data.pop("chat_settings", None)
     data["member_count"] = len(project_store.list_members(project.id))
+    data["user_count"] = len(project_store.list_user_members(project.id))
     return data
 
 
@@ -155,6 +179,8 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
         normalized_sandbox_mode = settings["external_agent_sandbox_mode"]
     settings["external_agent_sandbox_mode"] = normalized_sandbox_mode
     settings["external_agent_sandbox_mode_explicit"] = sandbox_mode_explicit
+    settings["local_connector_id"] = str(source.get("local_connector_id", settings["local_connector_id"]) or "").strip()
+    settings["connector_workspace_path"] = str(source.get("connector_workspace_path", settings["connector_workspace_path"]) or "").strip()
     settings["selected_employee_id"] = str(source.get("selected_employee_id", settings["selected_employee_id"]) or "").strip()
     settings["selected_employee_ids"] = _to_unique_string_list(source.get("selected_employee_ids"), max_items=200, max_item_len=120)
     if not settings["selected_employee_ids"] and settings["selected_employee_id"]:
@@ -188,6 +214,13 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     style = str(source.get("answer_style", settings["answer_style"]) or "").strip().lower()
     settings["answer_style"] = style if style in {"concise", "balanced", "detailed"} else settings["answer_style"]
     settings["prefer_conclusion_first"] = _coerce_bool(source.get("prefer_conclusion_first"), settings["prefer_conclusion_first"])
+    return settings
+
+
+def _public_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
+    settings = _normalize_project_chat_settings(raw)
+    settings["local_connector_id"] = ""
+    settings["connector_workspace_path"] = ""
     return settings
 
 
@@ -297,9 +330,18 @@ def _assert_project_manual_generation_enabled() -> None:
 def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
     role_id = str(auth_payload.get("role") or "").strip().lower()
     role = role_store.get(role_id)
-    permissions = getattr(role, "permissions", [])
-    if not has_permission(permissions, permission_key):
+    permissions = getattr(role, "permissions", None)
+    if not has_permission(permissions, permission_key, role_id=role_id):
         raise HTTPException(403, f"Permission denied: {permission_key}")
+
+
+def _ensure_any_permission(auth_payload: dict, permission_keys: list[str]) -> None:
+    role_id = str(auth_payload.get("role") or "").strip().lower()
+    role = role_store.get(role_id)
+    permissions = getattr(role, "permissions", None)
+    if any(has_permission(permissions, key, role_id=role_id) for key in permission_keys):
+        return
+    raise HTTPException(403, f"Permission denied: {permission_keys}")
 
 
 def _project_chat_employee_candidates(project_id: str) -> list[dict[str, Any]]:
@@ -340,9 +382,11 @@ def _resolve_project_chat_employee(project_id: str, expected_employee_id: str = 
     expected = str(expected_employee_id or "").strip()
     if expected:
         matched = next((item for item in candidates if item["id"] == expected), None)
-        if matched is None:
-            raise ValueError(f"employee_id is not an enabled member of project {project_id}: {expected}")
-        return matched, candidates
+        if matched is not None:
+            return matched, candidates
+        # 项目聊天设置是项目级共享配置。多人协作时，某个用户删除/禁用成员后，
+        # 其他用户本地或项目设置里残留的 selected_employee_id 不应直接打断整轮对话。
+        return None, candidates
     # 未显式指定执行员工时，不做后端“智能默认选人”。
     # 由模型在项目可用工具/员工能力范围内自行决策。
     return None, candidates
@@ -372,13 +416,42 @@ def _resolve_project_chat_employees(
             continue
         seen.add(employee_id)
         item = by_id.get(employee_id)
-        if item is None:
-            missing.append(employee_id)
+        if item is not None:
+            selected.append(item)
             continue
-        selected.append(item)
-    if missing:
-        raise ValueError(f"employee_id is not an enabled member of project {project_id}: {', '.join(missing)}")
+        missing.append(employee_id)
+    # 对于多人共享的项目聊天配置，失效成员自动忽略并回退。
+    # 这样不会因为某个残留 employee_id 直接让整个聊天入口不可用。
     return selected, candidates
+
+
+def _cleanup_project_chat_employee_selection(project_id: str, employee_id: str) -> bool:
+    pid = str(project_id or "").strip()
+    eid = str(employee_id or "").strip()
+    if not pid or not eid:
+        return False
+    project = project_store.get(pid)
+    if project is None:
+        return False
+    chat_settings = dict(getattr(project, "chat_settings", {}) or {})
+    selected_ids = [
+        str(item or "").strip()
+        for item in (chat_settings.get("selected_employee_ids") or [])
+        if str(item or "").strip()
+    ]
+    selected_id = str(chat_settings.get("selected_employee_id") or "").strip()
+    next_selected_ids = [item for item in selected_ids if item != eid]
+    next_selected_id = "" if selected_id == eid else selected_id
+    if next_selected_id and next_selected_id not in next_selected_ids:
+        next_selected_ids.append(next_selected_id)
+    if next_selected_ids == selected_ids and next_selected_id == selected_id:
+        return False
+    chat_settings["selected_employee_ids"] = next_selected_ids
+    chat_settings["selected_employee_id"] = next_selected_id
+    project.chat_settings = chat_settings
+    project.updated_at = _now_iso()
+    project_store.save(project)
+    return True
 
 
 def _pick_chat_provider(provider_id: str) -> tuple[dict, list[dict]]:
@@ -396,6 +469,103 @@ def _pick_chat_provider(provider_id: str) -> tuple[dict, list[dict]]:
         return selected, providers
     default_provider = next((item for item in providers if bool(item.get("is_default"))), providers[0])
     return default_provider, providers
+
+
+async def _build_connector_chat_provider(connector: Any) -> dict[str, Any] | None:
+    connector_id = str(getattr(connector, "id", "") or "").strip()
+    if not connector_id or not connector_base_url(connector):
+        return None
+    try:
+        llm_info = await list_connector_llm_models(connector)
+    except Exception:
+        llm_info = {
+            "enabled": False,
+            "default_model": "",
+            "models": [],
+        }
+    if not bool(llm_info.get("enabled")):
+        return None
+    models = [
+        str(item or "").strip()
+        for item in (llm_info.get("models") or [])
+        if str(item or "").strip()
+    ]
+    default_model = str(llm_info.get("default_model") or "").strip()
+    if default_model and default_model not in models:
+        models = [default_model, *models]
+    if not models:
+        return None
+    connector_name = str(getattr(connector, "connector_name", "") or "").strip() or connector_id
+    return {
+        "id": build_local_connector_provider_id(connector_id),
+        "name": f"本地连接器 · {connector_name}",
+        "provider_type": "local-connector",
+        "base_url": connector_base_url(connector),
+        "models": models,
+        "default_model": default_model or models[0],
+        "enabled": True,
+        "is_default": False,
+        "connector_id": connector_id,
+        "connector_name": connector_name,
+    }
+
+
+async def _resolve_provider_runtime_target(
+    provider_id: str,
+    auth_payload: dict,
+) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
+    connector_id = parse_local_connector_provider_id(provider_id)
+    if connector_id:
+        connector = _resolve_accessible_local_connector(connector_id, auth_payload)
+        if connector is None:
+            raise HTTPException(404, "Local connector not found")
+        provider = await _build_connector_chat_provider(connector)
+        if provider is None:
+            raise HTTPException(400, "当前本地连接器未配置可用模型")
+        return "local_connector", provider, [provider]
+    provider, providers = _pick_chat_provider(provider_id)
+    return "provider", provider, providers
+
+
+def _resolve_agent_statuses_for_connector(connector: Any | None) -> list[dict[str, Any]]:
+    statuses = list_external_agent_statuses()
+    runner_url = connector_base_url(connector)
+    resolved: list[dict[str, Any]] = []
+    for item in statuses:
+        agent_type = str(item.get("agent_type") or "codex_cli").strip()
+        label = str(item.get("label") or agent_type).strip() or agent_type
+        if connector is None:
+            resolved.append(
+                {
+                    **item,
+                    "available": False,
+                    "installed": False,
+                    "command_source": "local_connector_required",
+                    "execution_mode": "local_connector",
+                    "runner_url": "",
+                    "resolved_command": "",
+                    "reason": f"请先选择并连接本地连接器后再使用 {label}",
+                }
+            )
+            continue
+        available = connector_agent_available(connector, agent_type)
+        connector_name = str(getattr(connector, "connector_name", "") or getattr(connector, "id", "") or "当前连接器").strip()
+        reason = ""
+        if not available:
+            reason = f"{connector_name} 暂未检测到 {label} 能力，请先在该电脑安装并启动对应 CLI"
+        resolved.append(
+            {
+                **item,
+                "available": available,
+                "installed": available,
+                "command_source": "local_connector",
+                "execution_mode": "local_connector",
+                "runner_url": runner_url,
+                "resolved_command": "",
+                "reason": reason,
+            }
+        )
+    return resolved
 
 
 def _project_tool_display_name(tool_name: str) -> str:
@@ -713,6 +883,8 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
         "external_agent_type": req.external_agent_type,
         "external_agent_sandbox_mode": req.external_agent_sandbox_mode,
         "external_agent_sandbox_mode_explicit": req.external_agent_sandbox_mode_explicit,
+        "local_connector_id": req.local_connector_id,
+        "connector_workspace_path": req.connector_workspace_path,
         "selected_employee_id": req.employee_id,
         "selected_employee_ids": req.employee_ids,
         "provider_id": req.provider_id,
@@ -775,6 +947,26 @@ def _normalize_image_inputs(images: list[str] | None) -> list[str]:
     return normalized
 
 
+def _normalize_skill_resource_directory(value: Any) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+    return normalized[:1000]
+
+
+def _build_skill_resource_prompt_block(skill_resource_directory: str) -> str:
+    normalized = _normalize_skill_resource_directory(skill_resource_directory)
+    if not normalized:
+        return ""
+    return (
+        f"\n\n当前已为本轮对话指定本地技能目录: {normalized}\n"
+        "当用户提到缺少技能、查找技能模板、下载技能、安装技能或复用本地 skill 时，优先把这个目录视为当前可参考的本地技能来源。"
+        "\n如果当前模式或工具链能够访问该目录，请优先读取其中的 SKILL.md、模板和脚本后再回答或执行。"
+        "\n如果当前模式无法直接访问该目录，请先明确说明限制，再给出下一步操作建议。"
+        "\n除非用户明确要求，不要把该目录中的技能自动导入系统。"
+    )
+
+
 def _build_project_chat_messages(
     project: ProjectConfig,
     user_message: str,
@@ -786,10 +978,31 @@ def _build_project_chat_messages(
     history_limit: int = 20,
     answer_style: str = "concise",
     prefer_conclusion_first: bool = True,
+    workspace_path: str = "",
+    skill_resource_directory: str = "",
 ) -> list[dict[str, Any]]:
     workspace_info = ""
-    if project.workspace_path:
-        workspace_info = f"\n\n当前项目工作区路径: {project.workspace_path}\n请在此目录下进行代码开发和文件操作。"
+    effective_workspace_path = str(workspace_path or project.workspace_path or "").strip()
+    if effective_workspace_path:
+        workspace_info = f"\n\n当前项目工作区路径: {effective_workspace_path}\n请在此目录下进行代码开发和文件操作。"
+    ai_entry_info = ""
+    ai_entry_file = str(project.ai_entry_file or "").strip()
+    if ai_entry_file:
+        ai_entry_path = Path(ai_entry_file).expanduser()
+        if effective_workspace_path and not ai_entry_path.is_absolute():
+            resolved_entry_hint = str(Path(effective_workspace_path) / ai_entry_file)
+            ai_entry_info = (
+                f"\n\n当前项目 AI 入口文件: {ai_entry_file}"
+                f"\n该入口文件相对于项目工作区，对应路径: {resolved_entry_hint}"
+                "\n在开始分析、编码、调用工具或回答项目前，优先读取这个入口文件，并按其中约定理解项目规则、目录结构、实现约束和执行顺序。"
+                "\n仅当该入口文件不存在、无法访问或信息不足时，再自行补充读取项目内其他相关规则文件。"
+            )
+        else:
+            ai_entry_info = (
+                f"\n\n当前项目 AI 入口文件: {ai_entry_file}"
+                "\n在开始分析、编码、调用工具或回答项目前，优先读取这个入口文件，并按其中约定理解项目规则、目录结构、实现约束和执行顺序。"
+                "\n仅当该入口文件不存在、无法访问或信息不足时，再自行补充读取项目内其他相关规则文件。"
+            )
 
     tool_names = [t.get("tool_name", "") for t in (tools or [])] if tools else []
     tool_list_text = f"可用工具({len(tool_names)}个): {', '.join(tool_names)}" if tool_names else "当前无可用工具"
@@ -806,19 +1019,32 @@ def _build_project_chat_messages(
         "detailed": "输出风格：详细，覆盖关键前提、步骤与风险。",
     }.get(str(answer_style or "concise").strip().lower(), "输出风格：简洁，避免冗长。")
     order_hint = "回答顺序：先给结论再给步骤。" if prefer_conclusion_first else "回答顺序：按自然推理顺序给出。"
-    system_prompt = f"{base_prompt}\n{workspace_info}\n\n{tool_list_text}\n{order_hint}\n{style_hint}"
+    skill_resource_prompt = _build_skill_resource_prompt_block(
+        skill_resource_directory,
+    )
+    system_prompt = (
+        f"{base_prompt}\n{workspace_info}{ai_entry_info}\n\n{tool_list_text}\n{order_hint}\n{style_hint}"
+        f"{skill_resource_prompt}"
+    )
     if selected_employee:
         rule_bindings = list(selected_employee.get("rule_bindings") or [])
         rule_titles = [str(item.get("title") or item.get("id") or "").strip() for item in rule_bindings]
         rule_titles = [item for item in rule_titles if item]
         rule_domains = _collect_rule_domains(rule_bindings)
+        workflow = [str(item or "").strip() for item in (selected_employee.get("default_workflow") or []) if str(item or "").strip()]
         system_prompt += (
             f"\n当前执行员工：{selected_employee.get('name') or selected_employee.get('id')} "
             f"({selected_employee.get('id')})，"
+            f"goal={str(selected_employee.get('goal') or '-').strip() or '-'}，"
             f"skills={', '.join(selected_employee.get('skill_names') or []) or '-'}，"
             f"rule_titles={', '.join(rule_titles) or '-'}，"
             f"rule_domains={', '.join(rule_domains) or '-'}。"
         )
+        if workflow:
+            system_prompt += f"\n默认工作流：{' -> '.join(workflow)}。"
+        tool_usage_policy = str(selected_employee.get("tool_usage_policy") or "").strip()
+        if tool_usage_policy:
+            system_prompt += f"\n工具使用策略：{tool_usage_policy}"
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {
@@ -840,6 +1066,60 @@ def _build_project_chat_messages(
     return messages
 
 
+def _build_global_chat_messages(
+    user_message: str,
+    history: list[dict] | None,
+    images: list[str] | None = None,
+    *,
+    custom_system_prompt: str | None = None,
+    history_limit: int = 20,
+    answer_style: str = "concise",
+    prefer_conclusion_first: bool = True,
+    skill_resource_directory: str = "",
+) -> list[dict[str, Any]]:
+    base_prompt = (custom_system_prompt or "").strip()
+    if not base_prompt:
+        base_prompt = "你是通用 AI 助手。"
+        base_prompt += "\n当前没有选中项目，请基于通用知识直接回答。"
+        base_prompt += "\n如果用户问题依赖项目、代码库、员工、MCP 或规则配置，请明确提示需要先选择项目后再继续。"
+
+    style_hint = {
+        "concise": "输出风格：简洁，避免冗长。",
+        "balanced": "输出风格：平衡，先结论后关键步骤。",
+        "detailed": "输出风格：详细，覆盖关键前提、步骤与风险。",
+    }.get(str(answer_style or "concise").strip().lower(), "输出风格：简洁，避免冗长。")
+    order_hint = "回答顺序：先给结论再给步骤。" if prefer_conclusion_first else "回答顺序：按自然推理顺序给出。"
+    skill_resource_prompt = _build_skill_resource_prompt_block(
+        skill_resource_directory,
+    )
+    system_prompt = (
+        f"{base_prompt}\n\n当前模式：通用对话（未选择项目）。\n{order_hint}\n{style_hint}"
+        f"{skill_resource_prompt}"
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt},
+        *_normalize_chat_history(history, limit=history_limit),
+    ]
+    normalized_images = _normalize_image_inputs(images)
+    if normalized_images:
+        content = [{"type": "text", "text": user_message or "请基于图片给建议。"}]
+        for img in normalized_images:
+            content.append({"type": "image_url", "image_url": {"url": img}})
+        messages.append({"role": "user", "content": content})
+    else:
+        messages.append({"role": "user", "content": user_message})
+    return messages
+
+
+def _resolve_default_chat_system_prompt(custom_system_prompt: Any = None) -> str | None:
+    custom_prompt = str(custom_system_prompt or "").strip()
+    if custom_prompt:
+        return custom_prompt
+    cfg = system_config_store.get_global()
+    default_prompt = str(getattr(cfg, "default_chat_system_prompt", "") or "").strip()
+    return default_prompt or None
+
+
 def _resolve_chat_max_tokens(request_max_tokens: int | None) -> int:
     cfg = system_config_store.get_global()
     configured = int(getattr(cfg, "chat_max_tokens", 512) or 512)
@@ -855,9 +1135,131 @@ def _resolve_chat_max_tokens(request_max_tokens: int | None) -> int:
     return max(128, min(request_value, 8192))
 
 
+def _normalize_project_username(value: Any) -> str:
+    username = str(value or "").strip()
+    if not username:
+        raise HTTPException(400, "username is required")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,63}", username):
+        raise HTTPException(400, "Invalid username format")
+    return username
+
+
 def _current_username(auth_payload: dict) -> str:
     username = str(auth_payload.get("sub") or "").strip()
     return username or "unknown"
+
+
+def _is_admin_like(auth_payload: dict) -> bool:
+    role_id = str(auth_payload.get("role") or "").strip().lower()
+    role = role_store.get(role_id)
+    permissions = getattr(role, "permissions", [])
+    resolved = resolve_role_permissions(permissions, role_id)
+    return "*" in set(resolved)
+
+
+def _list_accessible_local_connectors(auth_payload: dict) -> list[Any]:
+    username = _current_username(auth_payload)
+    if _is_admin_like(auth_payload):
+        return local_connector_store.list_connectors()
+    return local_connector_store.list_connectors(owner_username=username)
+
+
+def _resolve_accessible_local_connector(
+    connector_id: str,
+    auth_payload: dict,
+) -> Any | None:
+    normalized = str(connector_id or "").strip()
+    if not normalized:
+        return None
+    item = local_connector_store.get_connector(normalized)
+    if item is None:
+        return None
+    if _is_admin_like(auth_payload):
+        return item
+    return item if str(getattr(item, "owner_username", "") or "").strip() == _current_username(auth_payload) else None
+
+
+def _serialize_chat_connector(item: Any) -> dict[str, Any]:
+    payload = {
+        "id": str(getattr(item, "id", "") or "").strip(),
+        "connector_name": str(getattr(item, "connector_name", "") or "").strip(),
+        "owner_username": str(getattr(item, "owner_username", "") or "").strip(),
+        "platform": str(getattr(item, "platform", "") or "").strip(),
+        "app_version": str(getattr(item, "app_version", "") or "").strip(),
+        "advertised_url": str(getattr(item, "advertised_url", "") or "").strip(),
+        "status": str(getattr(item, "status", "") or "").strip(),
+        "last_error": str(getattr(item, "last_error", "") or "").strip(),
+        "last_seen_at": str(getattr(item, "last_seen_at", "") or "").strip(),
+        "capabilities": getattr(item, "capabilities", {}) if isinstance(getattr(item, "capabilities", {}), dict) else {},
+        "health": getattr(item, "health", {}) if isinstance(getattr(item, "health", {}), dict) else {},
+        "manifest": getattr(item, "manifest", {}) if isinstance(getattr(item, "manifest", {}), dict) else {},
+        "online": False,
+    }
+    last_seen_raw = payload["last_seen_at"]
+    if last_seen_raw:
+        try:
+            last_seen = datetime.fromisoformat(last_seen_raw.replace("Z", "+00:00"))
+            payload["online"] = (datetime.now(timezone.utc) - last_seen).total_seconds() <= 90
+        except ValueError:
+            payload["online"] = False
+    return payload
+
+
+def _resolve_project_workspace_for_chat(
+    project: ProjectConfig,
+    settings: dict[str, Any],
+) -> str:
+    connector_id = str(settings.get("local_connector_id") or "").strip()
+    if connector_id:
+        return str(settings.get("connector_workspace_path") or "").strip()
+    return str(project.workspace_path or "").strip()
+
+
+def _get_project_user_member(project_id: str, username: str) -> ProjectUserMember | None:
+    normalized_project_id = str(project_id or "").strip()
+    normalized_username = str(username or "").strip()
+    if not normalized_project_id or not normalized_username:
+        return None
+    try:
+        return project_store.get_user_member(normalized_project_id, normalized_username)
+    except Exception:
+        return None
+
+
+def _ensure_project_access(project_id: str, auth_payload: dict) -> ProjectConfig:
+    project = project_store.get(project_id)
+    if project is None:
+        raise HTTPException(404, f"Project {project_id} not found")
+    if _is_admin_like(auth_payload):
+        return project
+    username = _current_username(auth_payload)
+    member = _get_project_user_member(project_id, username)
+    if member is None or not bool(getattr(member, "enabled", True)):
+        raise HTTPException(403, f"Project access denied: {project_id}")
+    return project
+
+
+def _ensure_project_manage_access(project_id: str, auth_payload: dict) -> ProjectConfig:
+    project = _ensure_project_access(project_id, auth_payload)
+    if _is_admin_like(auth_payload):
+        return project
+    username = _current_username(auth_payload)
+    member = _get_project_user_member(project_id, username)
+    if member is None:
+        raise HTTPException(403, f"Project manage access denied: {project_id}")
+    member_role = str(getattr(member, "role", "") or "").strip().lower()
+    if member_role != "owner":
+        raise HTTPException(403, f"Project manage access denied: {project_id}")
+    return project
+
+
+def _serialize_project_user_member(member: ProjectUserMember) -> dict[str, Any]:
+    user = user_store.get(member.username)
+    return {
+        **asdict(member),
+        "user_exists": user is not None,
+        "user_role": str(getattr(user, "role", "") or ""),
+    }
 
 
 def _append_chat_record(
@@ -866,6 +1268,8 @@ def _append_chat_record(
     username: str,
     role: str,
     content: str,
+    message_id: str = "",
+    chat_session_id: str = "",
     display_mode: str = "",
     attachments: list[str] | None = None,
     images: list[str] | None = None,
@@ -876,10 +1280,12 @@ def _append_chat_record(
     try:
         project_chat_store.append_message(
             ProjectChatMessage(
+                id=str(message_id or "").strip(),
                 project_id=project_id,
                 username=username,
                 role=role,
                 content=text,
+                chat_session_id=str(chat_session_id or "").strip(),
                 display_mode=str(display_mode or "").strip(),
                 attachments=attachments or [],
                 images=images or [],
@@ -887,6 +1293,115 @@ def _append_chat_record(
         )
     except Exception:
         pass
+
+
+@router.post("/chat/global")
+async def chat_without_project(
+    req: ProjectChatReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    # 预留接口：当前前端默认关闭“未选择项目时的普通对话”入口，
+    # 但保留这条通用对话链路，后续如产品重新开放可直接复用。
+    from services.llm_provider_service import get_llm_provider_service
+
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    if str(req.chat_mode or "system").strip().lower() == "external_agent":
+        raise HTTPException(400, "Global chat does not support external_agent")
+
+    user_message = str(req.message or "").strip()
+    normalized_images = _normalize_image_inputs(req.images)
+    attachment_names = [
+        str(name or "").strip()
+        for name in (req.attachment_names or [])
+        if str(name or "").strip()
+    ]
+    if not user_message and not normalized_images and not attachment_names:
+        raise HTTPException(400, "message is required")
+
+    runtime_settings = _normalize_project_chat_settings(
+        {
+            "provider_id": req.provider_id,
+            "model_name": req.model_name,
+            "temperature": req.temperature,
+            "max_tokens": req.max_tokens,
+            "system_prompt": req.system_prompt,
+            "history_limit": req.history_limit,
+            "answer_style": req.answer_style,
+            "prefer_conclusion_first": req.prefer_conclusion_first,
+        }
+    )
+    provider_mode, selected_provider, _ = await _resolve_provider_runtime_target(
+        str(runtime_settings.get("provider_id") or ""),
+        auth_payload,
+    )
+    provider_id = str(selected_provider.get("id") or "").strip()
+    model_name = str(
+        runtime_settings.get("model_name")
+        or selected_provider.get("default_model")
+        or (selected_provider.get("models") or [""])[0]
+    ).strip()
+    if not provider_id or not model_name:
+        raise HTTPException(400, "未找到可用模型")
+
+    effective_user_message = user_message
+    if not effective_user_message and attachment_names:
+        effective_user_message = (
+            f"我上传了附件：{'、'.join(attachment_names)}。请先给我处理建议。"
+        )
+    messages = _build_global_chat_messages(
+        effective_user_message,
+        req.history,
+        normalized_images,
+        custom_system_prompt=_resolve_default_chat_system_prompt(
+            runtime_settings.get("system_prompt")
+        ),
+        history_limit=int(runtime_settings.get("history_limit") or 20),
+        answer_style=str(runtime_settings.get("answer_style") or "concise"),
+        prefer_conclusion_first=bool(
+            runtime_settings.get("prefer_conclusion_first", True)
+        ),
+        skill_resource_directory=req.skill_resource_directory,
+    )
+
+    llm_service = get_llm_provider_service()
+    try:
+        if provider_mode == "local_connector":
+            connector = _resolve_accessible_local_connector(
+                parse_local_connector_provider_id(provider_id),
+                auth_payload,
+            )
+            if connector is None:
+                raise HTTPException(404, "Local connector not found")
+            result = await chat_completion_via_connector(
+                connector,
+                model_name=model_name,
+                messages=messages,
+                temperature=float(runtime_settings.get("temperature") or 0.1),
+                max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
+                timeout=120,
+            )
+        else:
+            result = await llm_service.chat_completion(
+                provider_id=provider_id,
+                model_name=model_name,
+                messages=messages,
+                temperature=float(runtime_settings.get("temperature") or 0.1),
+                max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
+                timeout=120,
+            )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"Global chat failed: {exc}") from exc
+
+    answer = str(result.get("content") or "").strip() or "模型未返回有效内容。"
+    return {
+        "content": answer,
+        "provider_id": provider_id,
+        "model_name": model_name,
+    }
 
 
 def _extract_ws_auth_payload(websocket: WebSocket) -> dict | None:
@@ -901,6 +1416,183 @@ def _extract_ws_auth_payload(websocket: WebSocket) -> dict | None:
     return None
 
 
+def _pick_directory_via_native_dialog(
+    initial_path: str = "",
+    title: str = "选择工作区目录",
+) -> str:
+    normalized_title = str(title or "选择工作区目录").strip() or "选择工作区目录"
+    initial = Path(str(initial_path or "").strip()).expanduser()
+    initial_dir = initial if initial.is_dir() else (initial.parent if str(initial_path or "").strip() else None)
+
+    if sys.platform == "darwin":
+        osa_args = ["osascript"]
+        if initial_dir and initial_dir.exists():
+            osa_args.extend(
+                [
+                    "-e",
+                    f'set chosenFolder to choose folder with prompt "{normalized_title.replace(chr(34), chr(92) + chr(34))}" default location POSIX file "{str(initial_dir).replace(chr(34), chr(92) + chr(34))}"',
+                ]
+            )
+        else:
+            osa_args.extend(
+                [
+                    "-e",
+                    f'set chosenFolder to choose folder with prompt "{normalized_title.replace(chr(34), chr(92) + chr(34))}"',
+                ]
+            )
+        osa_args.extend(["-e", "POSIX path of chosenFolder"])
+        result = subprocess.run(osa_args, capture_output=True, text=True)
+        if result.returncode != 0:
+            message = str(result.stderr or result.stdout or "").strip()
+            if "User canceled" in message or "(-128)" in message:
+                return ""
+            raise RuntimeError(message or "macOS 原生目录选择失败")
+        return str(result.stdout or "").strip().rstrip("/") or ""
+
+    if sys.platform.startswith("win"):
+        ps_command = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; "
+            f'$dialog.Description = "{normalized_title.replace(chr(34), chr(92) + chr(34))}"; '
+        )
+        if initial_dir and initial_dir.exists():
+            ps_command += (
+                f'$dialog.SelectedPath = "{str(initial_dir).replace(chr(34), chr(92) + chr(34))}"; '
+            )
+        ps_command += (
+            'if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) '
+            '{ [Console]::Write($dialog.SelectedPath) }'
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_command],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            message = str(result.stderr or result.stdout or "").strip()
+            raise RuntimeError(message or "Windows 原生目录选择失败")
+        return str(result.stdout or "").strip()
+
+    if shutil.which("zenity"):
+        result = subprocess.run(
+            [
+                "zenity",
+                "--file-selection",
+                "--directory",
+                f"--title={normalized_title}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 1:
+            return ""
+        if result.returncode != 0:
+            raise RuntimeError(str(result.stderr or result.stdout or "").strip() or "zenity 目录选择失败")
+        return str(result.stdout or "").strip()
+
+    if shutil.which("kdialog"):
+        args = ["kdialog", "--getexistingdirectory"]
+        if initial_dir and initial_dir.exists():
+            args.append(str(initial_dir))
+        args.extend(["--title", normalized_title])
+        result = subprocess.run(args, capture_output=True, text=True)
+        if result.returncode == 1:
+            return ""
+        if result.returncode != 0:
+            raise RuntimeError(str(result.stderr or result.stdout or "").strip() or "kdialog 目录选择失败")
+        return str(result.stdout or "").strip()
+
+    raise RuntimeError("当前服务端环境不支持原生目录选择器，或运行在无桌面界面的 headless 模式")
+
+
+def _pick_file_via_native_dialog(
+    initial_path: str = "",
+    title: str = "选择文件",
+) -> str:
+    normalized_title = str(title or "选择文件").strip() or "选择文件"
+    initial = Path(str(initial_path or "").strip()).expanduser()
+    initial_dir = initial.parent if initial.is_file() else (initial if initial.is_dir() else (initial.parent if str(initial_path or "").strip() else None))
+
+    if sys.platform == "darwin":
+        osa_args = ["osascript"]
+        if initial_dir and initial_dir.exists():
+            osa_args.extend(
+                [
+                    "-e",
+                    f'set chosenFile to choose file with prompt "{normalized_title.replace(chr(34), chr(92) + chr(34))}" default location POSIX file "{str(initial_dir).replace(chr(34), chr(92) + chr(34))}"',
+                ]
+            )
+        else:
+            osa_args.extend(
+                [
+                    "-e",
+                    f'set chosenFile to choose file with prompt "{normalized_title.replace(chr(34), chr(92) + chr(34))}"',
+                ]
+            )
+        osa_args.extend(["-e", "POSIX path of chosenFile"])
+        result = subprocess.run(osa_args, capture_output=True, text=True)
+        if result.returncode != 0:
+            message = str(result.stderr or result.stdout or "").strip()
+            if "User canceled" in message or "(-128)" in message:
+                return ""
+            raise RuntimeError(message or "macOS 原生文件选择失败")
+        return str(result.stdout or "").strip()
+
+    if sys.platform.startswith("win"):
+        ps_command = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$dialog = New-Object System.Windows.Forms.OpenFileDialog; "
+            f'$dialog.Title = "{normalized_title.replace(chr(34), chr(92) + chr(34))}"; '
+        )
+        if initial_dir and initial_dir.exists():
+            ps_command += (
+                f'$dialog.InitialDirectory = "{str(initial_dir).replace(chr(34), chr(92) + chr(34))}"; '
+            )
+        ps_command += (
+            'if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) '
+            '{ [Console]::Write($dialog.FileName) }'
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_command],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            message = str(result.stderr or result.stdout or "").strip()
+            raise RuntimeError(message or "Windows 原生文件选择失败")
+        return str(result.stdout or "").strip()
+
+    if shutil.which("zenity"):
+        result = subprocess.run(
+            [
+                "zenity",
+                "--file-selection",
+                f"--title={normalized_title}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 1:
+            return ""
+        if result.returncode != 0:
+            raise RuntimeError(str(result.stderr or result.stdout or "").strip() or "zenity 文件选择失败")
+        return str(result.stdout or "").strip()
+
+    if shutil.which("kdialog"):
+        args = ["kdialog", "--getopenfilename"]
+        if initial_dir and initial_dir.exists():
+            args.append(str(initial_dir))
+        args.extend(["--title", normalized_title])
+        result = subprocess.run(args, capture_output=True, text=True)
+        if result.returncode == 1:
+            return ""
+        if result.returncode != 0:
+            raise RuntimeError(str(result.stderr or result.stdout or "").strip() or "kdialog 文件选择失败")
+        return str(result.stdout or "").strip()
+
+    raise RuntimeError("当前服务端环境不支持原生文件选择器，或运行在无桌面界面的 headless 模式")
+
+
 def _build_external_agent_startup_context(
     project: ProjectConfig,
     *,
@@ -909,6 +1601,8 @@ def _build_external_agent_startup_context(
     selected_employees: list[dict[str, Any]],
     system_prompt: str,
     sandbox_mode: str,
+    workspace_path: str = "",
+    skill_resource_directory: str = "",
 ) -> str:
     selected_names = [str(item.get("name") or item.get("id") or "").strip() for item in selected_employees]
     candidate_preview = [
@@ -928,10 +1622,26 @@ def _build_external_agent_startup_context(
     ]
     if project.description:
         lines.append(f"项目说明：{project.description}")
+    effective_workspace_path = str(workspace_path or project.workspace_path or "").strip()
+    ai_entry_file = str(project.ai_entry_file or "").strip()
+    if ai_entry_file:
+        lines.append(f"AI 入口文件：{ai_entry_file}")
+        if effective_workspace_path and not Path(ai_entry_file).expanduser().is_absolute():
+            lines.append(f"按当前工作目录解析时，对应路径：{str(Path(effective_workspace_path) / ai_entry_file)}")
+        lines.append("开始执行前优先读取该入口文件，并按其中说明理解项目规则、目录约定和实现约束；仅在入口文件缺失或信息不足时，再补充读取其他规则文件。")
     if selected_names:
         lines.append(f"当前选定成员：{', '.join(selected_names)}")
     elif candidate_preview:
         lines.append(f"项目成员参考：{', '.join(candidate_preview)}")
+    normalized_skill_dir = _normalize_skill_resource_directory(
+        skill_resource_directory,
+    )
+    if normalized_skill_dir:
+        lines.append(f"当前本地技能目录：{normalized_skill_dir}")
+        lines.append(
+            "如用户要求补技能、找技能模板、下载技能或复用本地 skill，请优先查看该目录中的 SKILL.md、模板和脚本。"
+        )
+        lines.append("如当前执行环境无法直接访问该目录，请先说明限制，再给可执行替代方案。")
     if system_prompt:
         lines.append(f"补充上下文：{system_prompt}")
     return "\n".join(lines)
@@ -1117,47 +1827,105 @@ def _build_project_meta_reply(project: ProjectConfig, selected_employee: dict[st
 
 
 @router.get("")
-async def list_projects():
+async def list_projects(auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
     projects = project_store.list_all()
-    return {"projects": [_serialize_project(item) for item in projects]}
+    if _is_admin_like(auth_payload):
+        visible_projects = projects
+    else:
+        username = _current_username(auth_payload)
+        visible_projects = []
+        for item in projects:
+            member = _get_project_user_member(item.id, username)
+            if member is not None and bool(getattr(member, "enabled", True)):
+                visible_projects.append(item)
+    return {"projects": [_serialize_project(item) for item in visible_projects]}
+
+
+@router.post("/workspace-directory/pick")
+async def pick_workspace_directory(
+    req: WorkspaceDirectoryPickReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_any_permission(auth_payload, ["menu.projects", "menu.ai.chat"])
+    try:
+        selected = await run_in_threadpool(
+            _pick_directory_via_native_dialog,
+            str(req.initial_path or "").strip(),
+            str(req.title or "选择工作区目录").strip() or "选择工作区目录",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(501, str(exc)) from exc
+    if not selected:
+        return {"path": "", "cancelled": True, "source": "native_dialog"}
+    return {"path": selected, "cancelled": False, "source": "native_dialog"}
+
+
+@router.post("/workspace-file/pick")
+async def pick_workspace_file(
+    req: WorkspaceFilePickReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_any_permission(auth_payload, ["menu.projects", "menu.ai.chat"])
+    try:
+        selected = await run_in_threadpool(
+            _pick_file_via_native_dialog,
+            str(req.initial_path or "").strip(),
+            str(req.title or "选择文件").strip() or "选择文件",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(501, str(exc)) from exc
+    if not selected:
+        return {"path": "", "cancelled": True, "source": "native_dialog"}
+    return {"path": selected, "cancelled": False, "source": "native_dialog"}
 
 
 @router.post("")
-async def create_project(req: ProjectCreateReq):
+async def create_project(req: ProjectCreateReq, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
     project = ProjectConfig(
         id=project_store.new_id(),
         name=str(req.name or "").strip(),
         description=req.description,
         workspace_path=_normalize_workspace_path_for_save(req.workspace_path),
+        ai_entry_file=_normalize_ai_entry_file_for_save(req.ai_entry_file),
         mcp_enabled=req.mcp_enabled,
         feedback_upgrade_enabled=req.feedback_upgrade_enabled,
     )
     if not project.name:
         raise HTTPException(400, "name is required")
     project_store.save(project)
+    creator_username = _normalize_project_username(_current_username(auth_payload))
+    project_store.upsert_user_member(
+        ProjectUserMember(
+            project_id=project.id,
+            username=creator_username,
+            role="owner",
+            enabled=True,
+            joined_at=_now_iso(),
+        )
+    )
     _sync_feedback_project_flag(project.id, project.feedback_upgrade_enabled)
     return {"status": "created", "project": _serialize_project(project)}
 
 
 @router.get("/{project_id}")
-async def get_project(project_id: str):
-    project = project_store.get(project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
+async def get_project(project_id: str, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_access(project_id, auth_payload)
     return {"project": _serialize_project(project)}
 
 
 @router.post("/{project_id}/smart-query")
-async def smart_query_project(project_id: str, request: dict):
+async def smart_query_project(project_id: str, request: dict, auth_payload: dict = Depends(require_auth)):
     """AI 智能查询端点：自动决策调用数据库或工具"""
     from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
     from services.llm_provider_service import get_llm_provider_service
     from starlette.concurrency import run_in_threadpool
     import json
 
-    project = project_store.get(project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    project = _ensure_project_access(project_id, auth_payload)
 
     user_message = request.get("message", "")
     if not user_message:
@@ -1211,6 +1979,10 @@ def _normalize_workspace_path_for_save(value: Any) -> str:
     return str(candidate.resolve())
 
 
+def _normalize_ai_entry_file_for_save(value: Any) -> str:
+    return str(value or "").strip()[:500]
+
+
 def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
     project = project_store.get(project_id)
     if project is None:
@@ -1224,6 +1996,8 @@ def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
             raise HTTPException(400, "name cannot be empty")
     if "workspace_path" in updates:
         updates["workspace_path"] = _normalize_workspace_path_for_save(updates.get("workspace_path"))
+    if "ai_entry_file" in updates:
+        updates["ai_entry_file"] = _normalize_ai_entry_file_for_save(updates.get("ai_entry_file"))
     updates["updated_at"] = _now_iso()
     updated = replace(project, **updates)
     project_store.save(updated)
@@ -1233,17 +2007,23 @@ def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
 
 
 @router.put("/{project_id}")
-async def update_project(project_id: str, req: ProjectUpdateReq):
+async def update_project(project_id: str, req: ProjectUpdateReq, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
     return _apply_project_update(project_id, req)
 
 
 @router.patch("/{project_id}")
-async def patch_project(project_id: str, req: ProjectUpdateReq):
+async def patch_project(project_id: str, req: ProjectUpdateReq, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
     return _apply_project_update(project_id, req)
 
 
 @router.delete("/{project_id}")
-async def delete_project(project_id: str):
+async def delete_project(project_id: str, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
     if not project_store.delete(project_id):
         raise HTTPException(404, f"Project {project_id} not found")
     try:
@@ -1253,13 +2033,97 @@ async def delete_project(project_id: str):
     return {"status": "deleted", "project_id": project_id}
 
 
+@router.get("/{project_id}/users")
+async def list_project_users(project_id: str, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    roles = {item.id: item for item in role_store.list_all()}
+    project_user_members = project_store.list_user_members(project_id)
+    can_manage = _is_admin_like(auth_payload) or str(
+        getattr(_get_project_user_member(project_id, _current_username(auth_payload)), "role", "") or ""
+    ).strip().lower() == "owner"
+    member_map = {
+        str(item.username or "").strip(): item
+        for item in project_user_members
+        if str(item.username or "").strip()
+    }
+    all_users = []
+    if can_manage:
+        for user in user_store.list_all():
+            member = member_map.get(user.username)
+            all_users.append(
+                {
+                    "username": user.username,
+                    "role": user.role,
+                    "role_name": getattr(roles.get(user.role), "name", user.role),
+                    "assigned": member is not None,
+                    "enabled_in_project": bool(getattr(member, "enabled", False)),
+                }
+            )
+    return {
+        "members": [_serialize_project_user_member(item) for item in project_user_members],
+        "all_users": all_users,
+        "can_manage": can_manage,
+    }
+
+
+@router.post("/{project_id}/users")
+async def add_project_user(project_id: str, req: ProjectUserAddReq, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    username = _normalize_project_username(req.username)
+    user = user_store.get(username)
+    if user is None:
+        raise HTTPException(404, f"User {username} not found")
+    existing = project_store.get_user_member(project_id, username)
+    if existing is not None:
+        return {
+            "status": "exists",
+            "message": f"User {username} already exists in project {project_id}",
+            "member": _serialize_project_user_member(existing),
+        }
+    member = ProjectUserMember(
+        project_id=project_id,
+        username=username,
+        role=str(req.role or "member").strip() or "member",
+        enabled=bool(req.enabled),
+        joined_at=_now_iso(),
+    )
+    project_store.upsert_user_member(member)
+    return {"status": "created", "member": _serialize_project_user_member(member)}
+
+
+@router.delete("/{project_id}/users/{username}")
+async def remove_project_user(project_id: str, username: str, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    normalized_username = _normalize_project_username(username)
+    member = project_store.get_user_member(project_id, normalized_username)
+    if member is None:
+        raise HTTPException(404, f"User {normalized_username} is not a member of project {project_id}")
+    owner_count = sum(
+        1
+        for item in project_store.list_user_members(project_id)
+        if bool(getattr(item, "enabled", True))
+        and str(getattr(item, "role", "") or "").strip().lower() == "owner"
+    )
+    if str(getattr(member, "role", "") or "").strip().lower() == "owner" and owner_count <= 1:
+        raise HTTPException(400, "Cannot remove the last project owner")
+    if not project_store.remove_user_member(project_id, normalized_username):
+        raise HTTPException(404, f"User {normalized_username} is not a member of project {project_id}")
+    return {
+        "status": "deleted",
+        "project_id": project_id,
+        "username": normalized_username,
+    }
+
+
 @router.get("/{project_id}/members")
-async def list_project_members(project_id: str):
+async def list_project_members(project_id: str, auth_payload: dict = Depends(require_auth)):
     from services.dynamic_mcp_runtime import list_project_member_profiles_runtime
 
-    project = project_store.get(project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
 
     profiles = list_project_member_profiles_runtime(
         project_id,
@@ -1290,10 +2154,9 @@ async def list_project_members(project_id: str):
 
 
 @router.post("/{project_id}/members")
-async def add_project_member(project_id: str, req: ProjectMemberAddReq):
-    project = project_store.get(project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
+async def add_project_member(project_id: str, req: ProjectMemberAddReq, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
 
     employee_id = str(req.employee_id or "").strip()
     if not employee_id:
@@ -1321,21 +2184,31 @@ async def add_project_member(project_id: str, req: ProjectMemberAddReq):
 
 
 @router.delete("/{project_id}/members/{employee_id}")
-async def remove_project_member(project_id: str, employee_id: str):
-    project = project_store.get(project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
+async def remove_project_member(project_id: str, employee_id: str, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
     if not project_store.remove_member(project_id, employee_id):
         raise HTTPException(404, f"Employee {employee_id} is not a member of project {project_id}")
-    return {"status": "deleted", "project_id": project_id, "employee_id": employee_id}
+    cleaned = _cleanup_project_chat_employee_selection(project_id, employee_id)
+    return {
+        "status": "deleted",
+        "project_id": project_id,
+        "employee_id": employee_id,
+        "cleaned_chat_settings": cleaned,
+    }
 
 
 @router.get("/{project_id}/chat/providers")
-async def list_project_chat_providers(project_id: str, auth_payload: dict = Depends(require_auth)):
+async def list_project_chat_providers(
+    project_id: str,
+    local_connector_id: str = Query(""),
+    connector_workspace_path: str = Query(""),
+    auth_payload: dict = Depends(require_auth),
+):
     _ensure_permission(auth_payload, "menu.ai.chat")
-    project = project_store.get(project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
+    from services.dynamic_mcp_runtime import list_project_external_tools_runtime
+
+    project = _ensure_project_access(project_id, auth_payload)
     try:
         selected_provider, providers = _pick_chat_provider("")
     except HTTPException as exc:
@@ -1344,15 +2217,39 @@ async def list_project_chat_providers(project_id: str, auth_payload: dict = Depe
         selected_provider, providers = {}, []
     default_employee, candidates = _resolve_project_chat_employee(project_id, "")
     mcp_modules = _build_chat_mcp_modules(project_id)
-    chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
+    persisted_chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
+    chat_settings = _normalize_project_chat_settings(
+        {
+            **persisted_chat_settings,
+            "local_connector_id": str(local_connector_id or "").strip(),
+            "connector_workspace_path": str(connector_workspace_path or "").strip(),
+        }
+    )
+    connector_items = [_serialize_chat_connector(item) for item in _list_accessible_local_connectors(auth_payload)]
+    selected_connector = _resolve_accessible_local_connector(
+        str(chat_settings.get("local_connector_id") or "").strip(),
+        auth_payload,
+    )
+    connector_provider = await _build_connector_chat_provider(selected_connector) if selected_connector is not None else None
+    if connector_provider is not None:
+        providers = [*providers, connector_provider]
     selected_external_agent_type = normalize_external_agent_type(str(chat_settings.get("external_agent_type") or "codex_cli"))
-    external_agent = resolve_external_agent_status(selected_external_agent_type)
+    external_agent = next(
+        (
+            item
+            for item in _resolve_agent_statuses_for_connector(selected_connector)
+            if str(item.get("agent_type") or "").strip() == selected_external_agent_type
+        ),
+        resolve_external_agent_status(selected_external_agent_type),
+    )
     external_agent_bridge = _build_external_agent_mcp_bridge(project, create_if_missing=False)
+    runtime_external_tools = list_project_external_tools_runtime(project_id)
+    effective_workspace_path = _resolve_project_workspace_for_chat(project, chat_settings)
     external_agent_context = prepare_external_agent_workspace_context(
         project_id=project_id,
         project_name=str(project.name or "").strip(),
         project_description=str(project.description or "").strip(),
-        workspace_path=str(project.workspace_path or "").strip(),
+        workspace_path=effective_workspace_path,
         sandbox_mode=str(chat_settings.get("external_agent_sandbox_mode") or "workspace-write").strip() or "workspace-write",
         agent_type=selected_external_agent_type,
         selected_employee_names=[],
@@ -1361,18 +2258,51 @@ async def list_project_chat_providers(project_id: str, auth_payload: dict = Depe
             for item in candidates[:8]
             if str(item.get("id") or "").strip()
         ],
-        system_prompt=str(chat_settings.get("system_prompt") or "").strip(),
+        system_prompt=str(_resolve_default_chat_system_prompt(chat_settings.get("system_prompt")) or ""),
         mcp_bridge=external_agent_bridge,
         write_files=False,
     )
-    effective_workspace_access = await probe_workspace_access_effective_async(
-        str(project.workspace_path or "").strip(),
-        str(chat_settings.get("external_agent_sandbox_mode") or "workspace-write").strip() or "workspace-write",
-    )
+    sandbox_mode = str(chat_settings.get("external_agent_sandbox_mode") or "workspace-write").strip() or "workspace-write"
+    if selected_connector is None:
+        effective_workspace_access = {
+            "configured": bool(effective_workspace_path),
+            "exists": False,
+            "is_dir": False,
+            "read_ok": False,
+            "write_ok": False,
+            "source": "local_connector",
+            "sandbox_mode": sandbox_mode,
+            "reason": "请先选择并连接本地连接器后再测试工作区",
+        }
+    elif effective_workspace_path:
+        try:
+            effective_workspace_access = await probe_connector_workspace(
+                selected_connector,
+                effective_workspace_path,
+                sandbox_mode,
+            )
+        except Exception as exc:
+            effective_workspace_access = {
+                "configured": bool(effective_workspace_path),
+                "exists": False,
+                "is_dir": False,
+                "read_ok": False,
+                "write_ok": False,
+                "source": "local_connector",
+                "sandbox_mode": sandbox_mode,
+                "reason": str(exc),
+            }
+    else:
+        effective_workspace_access = probe_workspace_access(effective_workspace_path, sandbox_mode)
+        effective_workspace_access["source"] = "local_connector"
+        if not str(effective_workspace_access.get("reason") or "").strip():
+            effective_workspace_access["reason"] = "请先填写连接器所在电脑上的工作区绝对路径"
 
     return {
         "project_id": project_id,
-        "workspace_path": str(project.workspace_path or ""),
+        "workspace_path": effective_workspace_path,
+        "project_workspace_path": str(project.workspace_path or "").strip(),
+        "project_ai_entry_file": str(project.ai_entry_file or "").strip(),
         "chat_modes": [
             {"id": "system", "label": "系统对话"},
             {"id": "external_agent", "label": "外部 Agent"},
@@ -1380,75 +2310,164 @@ async def list_project_chat_providers(project_id: str, auth_payload: dict = Depe
         "providers": providers,
         "default_provider_id": str(selected_provider.get("id") or ""),
         "default_model_name": str(selected_provider.get("default_model") or ""),
+        "local_connectors": connector_items,
+        "selected_local_connector_id": str(chat_settings.get("local_connector_id") or ""),
         "employees": candidates,
         "default_employee_id": str((default_employee or {}).get("id") or ""),
         "mcp_modules": mcp_modules,
-        "chat_settings": chat_settings,
+        "runtime_external_tools": runtime_external_tools,
+        "chat_settings": _public_project_chat_settings(persisted_chat_settings),
         "external_agent": {
             **external_agent,
-            "workspace_path": str(project.workspace_path or ""),
+            "workspace_path": effective_workspace_path,
+            "local_connector_id": str(chat_settings.get("local_connector_id") or ""),
+            "local_connector_name": str(getattr(selected_connector, "connector_name", "") or "").strip() if selected_connector is not None else "",
+            "local_connector_online": bool(next((item.get("online") for item in connector_items if item.get("id") == str(chat_settings.get("local_connector_id") or "").strip()), False)),
             "context_root": str(external_agent_context.get("context_root") or ""),
             "support_dir": str(external_agent_context.get("support_dir") or ""),
             "support_files": list(external_agent_context.get("support_files") or []),
             "mcp_bridge_enabled": bool(external_agent_bridge.get("enabled")),
             "mcp_bridge_reason": str(external_agent_bridge.get("reason") or ""),
             "mcp_server_name": str(external_agent_bridge.get("server_name") or ""),
-            "workspace_access": effective_workspace_access or external_agent_context.get("workspace_access") or probe_workspace_access(str(project.workspace_path or ""), str(chat_settings.get("external_agent_sandbox_mode") or "workspace-write")),
-            "agent_types": list_external_agent_statuses(),
+            "workspace_access": effective_workspace_access or external_agent_context.get("workspace_access") or probe_workspace_access(effective_workspace_path, str(chat_settings.get("external_agent_sandbox_mode") or "workspace-write")),
+            "agent_types": _resolve_agent_statuses_for_connector(selected_connector),
         },
+    }
+
+
+def _serialize_chat_session(item: Any) -> dict[str, Any]:
+    return {
+        "id": str(getattr(item, "id", "") or "").strip(),
+        "project_id": str(getattr(item, "project_id", "") or "").strip(),
+        "username": str(getattr(item, "username", "") or "").strip(),
+        "title": str(getattr(item, "title", "新对话") or "新对话"),
+        "preview": str(getattr(item, "preview", "") or ""),
+        "message_count": int(getattr(item, "message_count", 0) or 0),
+        "created_at": str(getattr(item, "created_at", "") or ""),
+        "updated_at": str(getattr(item, "updated_at", "") or ""),
+        "last_message_at": str(getattr(item, "last_message_at", "") or ""),
     }
 
 
 @router.get("/{project_id}/chat/settings")
 async def get_project_chat_settings(project_id: str, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.ai.chat")
-    project = project_store.get(project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
-    return {"project_id": project_id, "settings": _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})}
+    project = _ensure_project_access(project_id, auth_payload)
+    return {"project_id": project_id, "settings": _public_project_chat_settings(getattr(project, "chat_settings", {}) or {})}
 
 
 @router.put("/{project_id}/chat/settings")
 async def update_project_chat_settings(project_id: str, req: ProjectChatSettingsUpdateReq, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.ai.chat")
-    project = project_store.get(project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
-    normalized = _normalize_project_chat_settings(req.settings or {})
+    project = _ensure_project_access(project_id, auth_payload)
+    normalized = _public_project_chat_settings(req.settings or {})
     updated = replace(project, chat_settings=normalized, updated_at=_now_iso())
     project_store.save(updated)
     persisted = project_store.get(project_id)
-    persisted_settings = _normalize_project_chat_settings(getattr(persisted, "chat_settings", {}) or {}) if persisted else normalized
+    persisted_settings = _public_project_chat_settings(getattr(persisted, "chat_settings", {}) or {}) if persisted else normalized
     return {"status": "updated", "project_id": project_id, "settings": persisted_settings}
+
+
+@router.patch("/{project_id}/chat/ai-entry-file")
+async def update_project_chat_ai_entry_file(
+    project_id: str,
+    req: ProjectAiEntryFileUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    project = _ensure_project_access(project_id, auth_payload)
+    normalized = _normalize_ai_entry_file_for_save(req.ai_entry_file)
+    updated = replace(project, ai_entry_file=normalized, updated_at=_now_iso())
+    project_store.save(updated)
+    return {
+        "status": "updated",
+        "project_id": project_id,
+        "ai_entry_file": normalized,
+    }
 
 
 @router.get("/{project_id}/chat/history")
 async def list_project_chat_history(
     project_id: str,
     limit: int = 200,
+    chat_session_id: str = "",
     auth_payload: dict = Depends(require_auth),
 ):
     _ensure_permission(auth_payload, "menu.ai.chat")
-    project = project_store.get(project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
+    _ensure_project_access(project_id, auth_payload)
     username = _current_username(auth_payload)
-    records = project_chat_store.list_messages(project_id, username, limit=limit)
+    records = project_chat_store.list_messages(
+        project_id,
+        username,
+        limit=limit,
+        chat_session_id=str(chat_session_id or "").strip(),
+    )
     return {"messages": [asdict(item) for item in records]}
 
 
 @router.delete("/{project_id}/chat/history")
 async def clear_project_chat_history(
     project_id: str,
+    chat_session_id: str = "",
     auth_payload: dict = Depends(require_auth),
 ):
     _ensure_permission(auth_payload, "menu.ai.chat")
-    project = project_store.get(project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
+    _ensure_project_access(project_id, auth_payload)
     username = _current_username(auth_payload)
-    removed = project_chat_store.clear_messages(project_id, username)
+    removed = project_chat_store.clear_messages(
+        project_id,
+        username,
+        str(chat_session_id or "").strip(),
+    )
     return {"status": "cleared", "removed_count": int(removed)}
+
+
+@router.post("/{project_id}/chat/history/truncate")
+async def truncate_project_chat_history(
+    project_id: str,
+    req: ProjectChatHistoryTruncateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    message_id = str(req.message_id or "").strip()
+    if not message_id:
+        raise HTTPException(400, "message_id is required")
+    removed = project_chat_store.truncate_messages(
+        project_id,
+        username,
+        message_id,
+        str(req.chat_session_id or "").strip(),
+    )
+    if removed <= 0:
+        raise HTTPException(404, "message not found in chat session")
+    return {"status": "truncated", "removed_count": int(removed)}
+
+
+@router.get("/{project_id}/chat/sessions")
+async def list_project_chat_sessions(
+    project_id: str,
+    limit: int = 50,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    records = project_chat_store.list_sessions(project_id, username, limit=limit)
+    return {"sessions": [_serialize_chat_session(item) for item in records]}
+
+
+@router.post("/{project_id}/chat/sessions")
+async def create_project_chat_session(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    item = project_chat_store.create_session(project_id, username, "新对话")
+    return {"session": _serialize_chat_session(item)}
 
 
 @router.websocket("/{project_id}/chat/ws")
@@ -1463,9 +2482,11 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         await websocket.close(code=4403, reason="Permission denied")
         return
 
-    project = project_store.get(project_id)
-    if project is None:
-        await websocket.close(code=4404, reason=f"Project {project_id} not found")
+    try:
+        project = _ensure_project_access(project_id, auth_payload)
+    except HTTPException as exc:
+        code = 4404 if exc.status_code == 404 else 4403
+        await websocket.close(code=code, reason=str(exc.detail))
         return
 
     await websocket.accept()
@@ -1501,6 +2522,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         employee_id_val = selected_employee_ids[0] if len(selected_employee_ids) == 1 else ""
         agent_type = normalize_external_agent_type(str(runtime_settings.get("external_agent_type") or "codex_cli"))
         sandbox_mode = str(runtime_settings.get("external_agent_sandbox_mode") or "workspace-write").strip().lower() or "workspace-write"
+        local_connector = _resolve_accessible_local_connector(
+            str(runtime_settings.get("local_connector_id") or "").strip(),
+            auth_payload,
+        )
+        if local_connector is None:
+            raise RuntimeError("外部 Agent 已改为仅支持本地连接器模式，请先在设置中选择一个在线连接器")
+        effective_workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
         external_agent_bridge = _build_external_agent_mcp_bridge(project, create_if_missing=True)
         approval_risks = detect_external_agent_risk_signals(str(req.message or "").strip())
         selected_employee_names = [
@@ -1517,33 +2545,59 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             project_id=project_id,
             project_name=str(project.name or "").strip(),
             project_description=str(project.description or "").strip(),
-            workspace_path=str(project.workspace_path or "").strip(),
+            workspace_path=effective_workspace_path,
             sandbox_mode=sandbox_mode,
             agent_type=agent_type,
             selected_employee_names=selected_employee_names,
             candidate_preview=candidate_preview,
-            system_prompt=str(runtime_settings.get("system_prompt") or "").strip(),
+            system_prompt=str(_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")) or ""),
             mcp_bridge=external_agent_bridge,
             write_files=False,
+            skill_resource_directory=req.skill_resource_directory,
         )
-        external_agent_context = await materialize_external_agent_workspace_context_async(external_agent_context)
-        agent_status = resolve_external_agent_status(agent_type)
+        materialization = external_agent_context.get("materialization") if isinstance(external_agent_context.get("materialization"), dict) else {}
+        if materialization and effective_workspace_path:
+            runner_payload = await materialize_connector_workspace(
+                local_connector,
+                str(materialization.get("workspace_path") or ""),
+                str(materialization.get("sandbox_mode") or sandbox_mode),
+                list(materialization.get("files") or []),
+                list(materialization.get("copies") or []),
+            )
+            external_agent_context["materialized_by"] = "local_connector"
+            if isinstance(runner_payload.get("workspace_access"), dict):
+                external_agent_context["workspace_access"] = runner_payload.get("workspace_access")
+        else:
+            external_agent_context["materialized_by"] = "local_connector"
+        agent_status = next(
+            (
+                item
+                for item in _resolve_agent_statuses_for_connector(local_connector)
+                if str(item.get("agent_type") or "").strip() == agent_type
+            ),
+            resolve_external_agent_status(agent_type),
+        )
+        if not bool(agent_status.get("available")):
+            raise RuntimeError(str(agent_status.get("reason") or f"当前本地连接器暂不可用 {agent_type}"))
         startup_context = str(external_agent_context.get("startup_context") or "").strip() or _build_external_agent_startup_context(
             project,
             agent_label=str(agent_status.get("label") or agent_type),
             candidates=candidates,
             selected_employees=selected_employees,
-            system_prompt=str(runtime_settings.get("system_prompt") or "").strip(),
+            system_prompt=str(_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")) or ""),
             sandbox_mode=sandbox_mode,
+            workspace_path=effective_workspace_path,
+            skill_resource_directory=req.skill_resource_directory,
         )
         session_overrides = list(external_agent_bridge.get("config_overrides") or [])
         if (
             external_session is None
             or str(getattr(external_session, "agent_type", "codex_cli") or "codex_cli") != agent_type
-            or external_session.workspace_path != str(project.workspace_path or "").strip()
+            or external_session.workspace_path != effective_workspace_path
             or external_session.sandbox_mode != sandbox_mode
             or list(getattr(external_session, "codex_config_overrides", []) or []) != session_overrides
             or str(getattr(external_session, "startup_context", "") or "").strip() != startup_context
+            or str(getattr(external_session, "runner_url_override", "") or "").strip() != (connector_base_url(local_connector) if local_connector is not None else "")
         ):
             if external_session is not None:
                 await external_session.close()
@@ -1551,11 +2605,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 project_id=project_id,
                 project_name=str(project.name or "").strip(),
                 username=username,
-                workspace_path=str(project.workspace_path or "").strip(),
+                workspace_path=effective_workspace_path,
                 startup_context=startup_context,
                 agent_type=agent_type,
                 sandbox_mode=sandbox_mode,
                 codex_config_overrides=session_overrides,
+                runner_url_override=connector_base_url(local_connector) if local_connector is not None else "",
+                runner_headers=connector_headers(local_connector) if local_connector is not None else None,
             )
         await external_session.prepare_session()
         return {
@@ -1640,6 +2696,11 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 agent_status = external_meta["agent_status"]
                 agent_type = str(external_meta.get("agent_type") or "codex_cli")
                 sandbox_mode = str(external_meta.get("sandbox_mode") or "workspace-write")
+                effective_workspace_path = str(getattr(session, "workspace_path", "") or "").strip()
+                selected_connector = _resolve_accessible_local_connector(
+                    str(req.local_connector_id or external_meta.get("runtime_settings", {}).get("local_connector_id") or "").strip(),
+                    auth_payload,
+                )
                 await websocket.send_json(
                     {
                         "type": "agent_ready",
@@ -1649,13 +2710,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "agent_type": agent_type,
                         "agent_session_id": session.session_id,
                         "thread_id": session.thread_id,
-                        "workspace_path": str(project.workspace_path or ""),
+                        "workspace_path": effective_workspace_path,
                         "sandbox_mode": sandbox_mode,
                         "model_name": str(agent_status.get("runtime_model_name") or agent_type),
                         "label": str(agent_status.get("label") or agent_type),
                         "support_dir": str(external_agent_context.get("support_dir") or ""),
                         "support_files": list(external_agent_context.get("support_files") or []),
-                        "workspace_access": external_agent_context.get("workspace_access") or probe_workspace_access(str(project.workspace_path or ""), sandbox_mode),
+                        "workspace_access": external_agent_context.get("workspace_access") or probe_workspace_access(effective_workspace_path, sandbox_mode),
                         "mcp_bridge_enabled": bool(external_agent_bridge.get("enabled")),
                         "mcp_server_name": str(external_agent_bridge.get("server_name") or ""),
                         "mcp_bridge_reason": str(external_agent_bridge.get("reason") or ""),
@@ -1669,7 +2730,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "reason": str(agent_status.get("reason") or ""),
                         "supports_terminal_mirror": bool(agent_status.get("supports_terminal_mirror")),
                         "supports_workspace_write": bool(agent_status.get("supports_workspace_write")),
-                        "agent_types": list_external_agent_statuses(),
+                        "agent_types": _resolve_agent_statuses_for_connector(selected_connector),
                         "materialized_by": str(external_agent_context.get("materialized_by") or ""),
                     }
                 )
@@ -1685,6 +2746,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             return
 
         effective_user_message = user_message
+        chat_session_id = str(req.chat_session_id or "").strip()
         if not effective_user_message and attachment_names:
             effective_user_message = f"我上传了附件：{', '.join(attachment_names)}。请先给我处理建议。"
         elif not effective_user_message and normalized_images:
@@ -1692,6 +2754,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         record_content = user_message or ("（发送了图片）" if normalized_images else "（发送了附件）")
         _append_chat_record(
             project_id=project_id, username=username, role="user", content=record_content,
+            message_id=str(req.message_id or "").strip(),
+            chat_session_id=chat_session_id,
             attachments=attachment_names, images=normalized_images,
         )
 
@@ -1770,6 +2834,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                             username=username,
                             role="assistant",
                             content=denied_message,
+                            chat_session_id=chat_session_id,
                             display_mode="terminal",
                         )
                         return
@@ -1783,7 +2848,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "agent_type": str(external_session.agent_type or "codex_cli"),
                         "agent_session_id": external_session.session_id,
                         "thread_id": external_session.thread_id,
-                        "workspace_path": str(project.workspace_path or ""),
+                        "workspace_path": str(getattr(external_session, "workspace_path", "") or ""),
                         "sandbox_mode": sandbox_mode,
                         "model_name": str(resolve_external_agent_status(getattr(external_session, "agent_type", "codex_cli")).get("runtime_model_name") or getattr(external_session, "agent_type", "codex_cli")),
                         "support_dir": str(external_agent_context.get("support_dir") or ""),
@@ -1806,7 +2871,12 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "reason": str(agent_status.get("reason") or ""),
                         "supports_terminal_mirror": bool(agent_status.get("supports_terminal_mirror")),
                         "supports_workspace_write": bool(agent_status.get("supports_workspace_write")),
-                        "agent_types": list_external_agent_statuses(),
+                        "agent_types": _resolve_agent_statuses_for_connector(
+                            _resolve_accessible_local_connector(
+                                str(runtime_settings.get("local_connector_id") or "").strip(),
+                                auth_payload,
+                            )
+                        ),
                     }
                 )
                 final_output = ""
@@ -1970,7 +3040,10 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 _append_chat_record(project_id=project_id, username=username, role="assistant", content=direct_answer)
                 return
 
-            selected_provider, _ = _pick_chat_provider(str(runtime_settings.get("provider_id") or ""))
+            provider_mode, selected_provider, _ = await _resolve_provider_runtime_target(
+                str(runtime_settings.get("provider_id") or ""),
+                auth_payload,
+            )
             provider_id = str(selected_provider.get("id") or "")
             model_name = str(runtime_settings.get("model_name") or "").strip() or str(selected_provider.get("default_model") or "")
             if not model_name:
@@ -1983,7 +3056,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             tools_enabled = bool(runtime_settings.get("auto_use_tools")) and _should_enable_chat_tools(
                 effective_user_message, attachment_names, normalized_images
             )
-            if tools_enabled:
+            if tools_enabled and provider_mode != "local_connector":
                 tools = _collect_runtime_tools(
                     project_id,
                     selected_employee_ids=selected_employee_ids,
@@ -1994,28 +3067,31 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     allow_file_write_tools=bool(runtime_settings.get("allow_file_write_tools", True)),
                 )
 
+            effective_workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
             messages = _build_project_chat_messages(
                 project, effective_user_message, req.history, normalized_images,
                 selected_employee=selected_employee,
-                tools=tools,
-                custom_system_prompt=str(runtime_settings.get("system_prompt") or "").strip() or None,
+                tools=[] if provider_mode == "local_connector" else tools,
+                custom_system_prompt=_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")),
                 history_limit=int(runtime_settings.get("history_limit") or 20),
                 answer_style=str(runtime_settings.get("answer_style") or "concise"),
                 prefer_conclusion_first=bool(runtime_settings.get("prefer_conclusion_first", True)),
+                workspace_path=effective_workspace_path,
+                skill_resource_directory=req.skill_resource_directory,
             )
             
         except Exception as exc:
             await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
             return
 
-            await websocket.send_json({
+        await websocket.send_json({
             "type": "start", "request_id": request_id, "project_id": project_id,
             "provider_id": provider_id, "model_name": model_name,
             "chat_mode": "system",
             "employee_id": employee_id_val,
             "employee_name": str((selected_employee or {}).get("name") or ""),
             "employee_ids": selected_employee_ids,
-            "tools_enabled": bool(tools),
+            "tools_enabled": bool(tools) and provider_mode != "local_connector",
         })
 
         try:
@@ -2024,6 +3100,40 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             final_answer = ""
             stream_error = ""
             llm_service = get_llm_provider_service()
+
+            if provider_mode == "local_connector":
+                connector = _resolve_accessible_local_connector(
+                    parse_local_connector_provider_id(provider_id),
+                    auth_payload,
+                )
+                if connector is None:
+                    raise ValueError("Local connector not found")
+                result = await chat_completion_via_connector(
+                    connector,
+                    model_name=model_name,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=120,
+                )
+                final_answer = str(result.get("content") or "").strip() or "模型未返回有效内容。"
+                await websocket.send_json(
+                    {
+                        "type": "done",
+                        "request_id": request_id,
+                        "content": final_answer,
+                        "provider_id": provider_id,
+                        "model_name": model_name,
+                    }
+                )
+                _append_chat_record(
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content=final_answer,
+                    chat_session_id=chat_session_id,
+                )
+                return
 
             # 创建会话和编排器
             redis_client = await get_redis_client()
@@ -2065,16 +3175,25 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             if stream_error:
                 _append_chat_record(
                     project_id=project_id, username=username, role="assistant", content=f"对话失败：{stream_error}",
+                    chat_session_id=chat_session_id,
                 )
             else:
                 _append_chat_record(
-                    project_id=project_id, username=username, role="assistant", content=final_answer or "模型未返回有效内容。",
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content=final_answer or "模型未返回有效内容。",
+                    chat_session_id=chat_session_id,
                 )
         except asyncio.CancelledError:
             pass
         except Exception as exc:
             _append_chat_record(
-                project_id=project_id, username=username, role="assistant", content=f"对话失败：{str(exc)}",
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=f"对话失败：{str(exc)}",
+                chat_session_id=chat_session_id,
             )
             await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
         finally:
@@ -2138,9 +3257,7 @@ async def stream_project_chat(
     from services.llm_provider_service import get_llm_provider_service
 
     _ensure_permission(auth_payload, "menu.ai.chat")
-    project = project_store.get(project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
+    project = _ensure_project_access(project_id, auth_payload)
     username = _current_username(auth_payload)
 
     user_message = str(req.message or "").strip()
@@ -2150,6 +3267,7 @@ async def stream_project_chat(
         raise HTTPException(400, "message is required")
 
     effective_user_message = user_message
+    chat_session_id = str(req.chat_session_id or "").strip()
     if not effective_user_message and attachment_names:
         effective_user_message = f"我上传了附件：{', '.join(attachment_names)}。请先给我处理建议。"
     elif not effective_user_message and normalized_images:
@@ -2160,6 +3278,8 @@ async def stream_project_chat(
         username=username,
         role="user",
         content=record_content,
+        message_id=str(req.message_id or "").strip(),
+        chat_session_id=chat_session_id,
         attachments=attachment_names,
         images=normalized_images,
     )
@@ -2201,7 +3321,7 @@ async def stream_project_chat(
                 "message",
                 {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-project-meta"},
             )
-            _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer)
+            _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer, chat_session_id=chat_session_id)
 
         return StreamingResponse(
             direct_event_stream(),
@@ -2242,7 +3362,7 @@ async def stream_project_chat(
                 "message",
                 {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-tool-probe"},
             )
-            _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer)
+            _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer, chat_session_id=chat_session_id)
 
         return StreamingResponse(
             direct_tool_event_stream(),
@@ -2276,7 +3396,7 @@ async def stream_project_chat(
                 "message",
                 {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-mcp-modules"},
             )
-            _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer)
+            _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer, chat_session_id=chat_session_id)
 
         return StreamingResponse(
             direct_mcp_event_stream(),
@@ -2288,7 +3408,10 @@ async def stream_project_chat(
             },
         )
 
-    selected_provider, _ = _pick_chat_provider(str(runtime_settings.get("provider_id") or ""))
+    provider_mode, selected_provider, _ = await _resolve_provider_runtime_target(
+        str(runtime_settings.get("provider_id") or ""),
+        auth_payload,
+    )
     provider_id = str(selected_provider.get("id") or "")
     model_name = str(runtime_settings.get("model_name") or "").strip() or str(selected_provider.get("default_model") or "")
     if not model_name:
@@ -2314,17 +3437,20 @@ async def stream_project_chat(
         )
 
     llm_service = get_llm_provider_service()
+    effective_workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
     messages = _build_project_chat_messages(
         project,
         effective_user_message,
         req.history,
         normalized_images,
         selected_employee=selected_employee,
-        tools=tools,
-        custom_system_prompt=str(runtime_settings.get("system_prompt") or "").strip() or None,
+        tools=[] if provider_mode == "local_connector" else tools,
+        custom_system_prompt=_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")),
         history_limit=int(runtime_settings.get("history_limit") or 20),
         answer_style=str(runtime_settings.get("answer_style") or "concise"),
         prefer_conclusion_first=bool(runtime_settings.get("prefer_conclusion_first", True)),
+        workspace_path=effective_workspace_path,
+        skill_resource_directory=req.skill_resource_directory,
     )
 
     async def event_stream() -> AsyncIterator[str]:
@@ -2338,18 +3464,34 @@ async def stream_project_chat(
                 "employee_id": str((selected_employee or {}).get("id") or ""),
                 "employee_name": str((selected_employee or {}).get("name") or ""),
                 "employee_ids": selected_employee_ids,
-                "tools_enabled": bool(tools),
+                "tools_enabled": bool(tools) and provider_mode != "local_connector",
             },
         )
         try:
-            result = await llm_service.chat_completion(
-                provider_id=provider_id,
-                model_name=model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=120,
-            )
+            if provider_mode == "local_connector":
+                connector = _resolve_accessible_local_connector(
+                    parse_local_connector_provider_id(provider_id),
+                    auth_payload,
+                )
+                if connector is None:
+                    raise HTTPException(404, "Local connector not found")
+                result = await chat_completion_via_connector(
+                    connector,
+                    model_name=model_name,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=120,
+                )
+            else:
+                result = await llm_service.chat_completion(
+                    provider_id=provider_id,
+                    model_name=model_name,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=120,
+                )
             answer = str(result.get("content") or "").strip() or "模型未返回有效内容。"
             for part in _chunk_text(answer):
                 yield _sse_payload("message", {"type": "delta", "content": part})
@@ -2367,6 +3509,7 @@ async def stream_project_chat(
                 username=username,
                 role="assistant",
                 content=answer,
+                chat_session_id=chat_session_id,
             )
         except Exception as exc:
             _append_chat_record(
@@ -2374,6 +3517,7 @@ async def stream_project_chat(
                 username=username,
                 role="assistant",
                 content=f"对话失败：{str(exc)}",
+                chat_session_id=chat_session_id,
             )
             yield _sse_payload("message", {"type": "error", "message": str(exc)})
 
@@ -2388,58 +3532,7 @@ async def stream_project_chat(
     )
 
 
-@router.post("/{project_id}/generate-manual")
-async def generate_project_manual(project_id: str):
-    """生成项目使用手册（面向接入方 AI 平台）"""
-    from services.llm_provider_service import get_llm_provider_service
-
-    _assert_project_manual_generation_enabled()
-
-    llm_service = get_llm_provider_service()
-    providers = llm_service.list_providers(enabled_only=True)
-    if not providers:
-        raise HTTPException(400, "未配置 LLM 提供商")
-    default_provider = next((p for p in providers if p.get("is_default")), providers[0])
-
-    template_payload = await get_project_manual_template(project_id)
-    template = str(template_payload.get("template") or "").strip()
-    if not template:
-        raise HTTPException(500, "项目手册模板为空，无法生成使用手册")
-
-    project_name = str(template_payload.get("project_name") or "")
-    system_prompt = (
-        "你是技术文档撰写专家。请严格根据用户提供的手册模板要求生成最终使用手册，"
-        "输出标准 Markdown，不要解释过程。"
-    )
-
-    try:
-        result = await llm_service.chat_completion(
-            provider_id=default_provider["id"],
-            model_name=default_provider.get("default_model") or "gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": template},
-            ],
-            temperature=0.2,
-            max_tokens=2800,
-            timeout=60,
-        )
-        manual = str(result.get("content") or "").strip()
-        return {
-            "status": "success",
-            "manual": manual,
-            "template": template,
-            "provider": default_provider["name"],
-            "model": default_provider.get("default_model") or "gpt-4",
-            "project_id": project_id,
-            "project_name": project_name,
-        }
-    except Exception as exc:
-        raise HTTPException(500, f"生成项目使用手册失败: {str(exc)}") from exc
-
-
-@router.get("/{project_id}/manual-template")
-async def get_project_manual_template(project_id: str):
+def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
     """获取项目手册提示词模板（供用户复制到其他 AI 使用）"""
     project = project_store.get(project_id)
     if project is None:
@@ -2493,9 +3586,15 @@ async def get_project_manual_template(project_id: str):
             if style_hints
             else "  - 无"
         )
+        workflow_text = (
+            "\n".join(f"  - {text}" for text in (getattr(employee, "default_workflow", []) or []))
+            if (getattr(employee, "default_workflow", []) or [])
+            else "  - 无"
+        )
         employee_template_lines.append(
             f"""### {employee.name}（{employee.id}）
 - 角色:{member.role}
+- 核心目标:{getattr(employee, "goal", "-") or "-"}
 - 语调:{getattr(employee, "tone", "-")} / 风格:{getattr(employee, "verbosity", "-")} / 语言:{getattr(employee, "language", "-")}
 - 记忆:scope={getattr(employee, "memory_scope", "-")}，保留{getattr(employee, "memory_retention_days", "-")}天
 
@@ -2507,6 +3606,12 @@ async def get_project_manual_template(project_id: str):
 
 风格提示:
 {style_text}
+
+默认工作流:
+{workflow_text}
+
+工具使用策略:
+  - {str(getattr(employee, "tool_usage_policy", "") or "").strip() or "无"}
 """
         )
     employee_templates_text = "\n".join(employee_template_lines) if employee_template_lines else "无成员"
@@ -2694,4 +3799,67 @@ async def get_project_manual_template(project_id: str):
         "template": template,
         "project_id": project.id,
         "project_name": project.name,
+        "members_summary": members_text,
+        "skills_summary": skills_text,
+        "rule_domains_summary": domains_text,
     }
+
+
+@router.post("/{project_id}/generate-manual")
+async def generate_project_manual(project_id: str, auth_payload: dict = Depends(require_auth)):
+    """生成项目使用手册（面向接入方 AI 平台）"""
+    from services.llm_provider_service import get_llm_provider_service
+
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    _assert_project_manual_generation_enabled()
+
+    llm_service = get_llm_provider_service()
+    providers = llm_service.list_providers(enabled_only=True)
+    if not providers:
+        raise HTTPException(400, "未配置 LLM 提供商")
+    default_provider = next((p for p in providers if p.get("is_default")), providers[0])
+
+    template_payload = _build_project_manual_template_payload(project_id)
+    template = str(template_payload.get("template") or "").strip()
+    if not template:
+        raise HTTPException(500, "项目手册模板为空，无法生成使用手册")
+
+    project_name = str(template_payload.get("project_name") or "")
+    system_prompt = (
+        "你是技术文档撰写专家。请严格根据用户提供的手册模板要求生成最终使用手册，"
+        "输出标准 Markdown，不要解释过程。"
+    )
+
+    try:
+        result = await llm_service.chat_completion(
+            provider_id=default_provider["id"],
+            model_name=default_provider.get("default_model") or "gpt-4",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": template},
+            ],
+            temperature=0.2,
+            max_tokens=2800,
+            timeout=60,
+        )
+        manual = str(result.get("content") or "").strip()
+        return {
+            "status": "success",
+            "manual": manual,
+            "template": template,
+            "provider": default_provider["name"],
+            "model": default_provider.get("default_model") or "gpt-4",
+            "project_id": project_id,
+            "project_name": project_name,
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"生成项目使用手册失败: {str(exc)}") from exc
+
+
+@router.get("/{project_id}/manual-template")
+async def get_project_manual_template(project_id: str, auth_payload: dict = Depends(require_auth)):
+    """获取项目手册提示词模板（供用户复制到其他 AI 使用）"""
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    return _build_project_manual_template_payload(project_id)

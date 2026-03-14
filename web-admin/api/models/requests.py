@@ -48,6 +48,7 @@ class RoleUpdateReq(BaseModel):
 class EmployeeCreateReq(BaseModel):
     name: str
     description: str = ""
+    goal: str = ""
     skills: list[str] = []
     rule_bindings: list[dict[str, Any] | str] = []
     rule_ids: list[str] = []
@@ -58,6 +59,8 @@ class EmployeeCreateReq(BaseModel):
     verbosity: str = "concise"
     language: str = "zh-CN"
     style_hints: list[str] = []
+    default_workflow: list[str] = []
+    tool_usage_policy: str = ""
     auto_evolve: bool = True
     evolve_threshold: float = 0.8
     mcp_enabled: bool = True
@@ -67,6 +70,7 @@ class EmployeeCreateReq(BaseModel):
 class EmployeeUpdateReq(BaseModel):
     name: str | None = None
     description: str | None = None
+    goal: str | None = None
     skills: list[str] | None = None
     rule_bindings: list[dict[str, Any] | str] | None = None
     rule_ids: list[str] | None = None
@@ -77,16 +81,90 @@ class EmployeeUpdateReq(BaseModel):
     verbosity: str | None = None
     language: str | None = None
     style_hints: list[str] | None = None
+    default_workflow: list[str] | None = None
+    tool_usage_policy: str | None = None
     auto_evolve: bool | None = None
     evolve_threshold: float | None = None
     mcp_enabled: bool | None = None
     feedback_upgrade_enabled: bool | None = None
 
 
+class EmployeeDraftGenerateReq(BaseModel):
+    message: str
+    history: list[dict[str, Any]] = []
+    system_prompt: str | None = None
+    provider_id: str = ""
+    model_name: str = ""
+    temperature: float | None = None
+
+
+class EmployeeExternalSkillSuggestReq(BaseModel):
+    name: str = ""
+    description: str = ""
+    goal: str = ""
+    industry: str = ""
+    source_filters: list[str] = []
+    skills: list[str] = []
+    rule_titles: list[str] = []
+    rule_domains: list[str] = []
+    style_hints: list[str] = []
+    default_workflow: list[str] = []
+    tool_usage_policy: str = ""
+
+
+class EmployeeExternalRuleSuggestReq(BaseModel):
+    name: str = ""
+    description: str = ""
+    goal: str = ""
+    industry: str = ""
+    source_filters: list[str] = []
+    skills: list[str] = []
+    rule_titles: list[str] = []
+    rule_domains: list[str] = []
+    style_hints: list[str] = []
+    default_workflow: list[str] = []
+    tool_usage_policy: str = ""
+
+
+class EmployeeRuleDraftReq(BaseModel):
+    title: str = ""
+    domain: str = ""
+    content: str = ""
+    source_label: str = ""
+    source_url: str = ""
+
+
+class EmployeeDraftCreateReq(BaseModel):
+    name: str
+    description: str = ""
+    goal: str = ""
+    skills: list[str] = []
+    selected_system_mcp_servers: list[str] = []
+    rule_ids: list[str] = []
+    rule_titles: list[str] = []
+    rule_domains: list[str] = []
+    rule_drafts: list[EmployeeRuleDraftReq] = []
+    memory_scope: str = "project"
+    memory_retention_days: int = 90
+    tone: str = "professional"
+    verbosity: str = "concise"
+    language: str = "zh-CN"
+    style_hints: list[str] = []
+    default_workflow: list[str] = []
+    tool_usage_policy: str = ""
+    auto_evolve: bool = True
+    evolve_threshold: float = 0.8
+    mcp_enabled: bool = True
+    feedback_upgrade_enabled: bool = False
+    auto_create_missing_skills: bool = True
+    auto_create_missing_rules: bool = True
+
+
 class ProjectCreateReq(BaseModel):
     name: str
     description: str = ""
     workspace_path: str = ""
+    ai_entry_file: str = ""
     mcp_enabled: bool = True
     feedback_upgrade_enabled: bool = True
 
@@ -95,6 +173,7 @@ class ProjectUpdateReq(BaseModel):
     name: str | None = None
     description: str | None = None
     workspace_path: str | None = None
+    ai_entry_file: str | None = None
     mcp_enabled: bool | None = None
     feedback_upgrade_enabled: bool | None = None
 
@@ -105,12 +184,23 @@ class ProjectMemberAddReq(BaseModel):
     enabled: bool = True
 
 
+class ProjectUserAddReq(BaseModel):
+    username: str
+    role: str = "member"
+    enabled: bool = True
+
+
 class ProjectChatReq(BaseModel):
     message: str = ""
+    message_id: str = ""
+    chat_session_id: str = ""
     chat_mode: str = "system"
     external_agent_type: str = "codex_cli"
     external_agent_sandbox_mode: str | None = None
     external_agent_sandbox_mode_explicit: bool | None = None
+    local_connector_id: str = ""
+    connector_workspace_path: str = ""
+    skill_resource_directory: str = ""
     employee_id: str = ""
     employee_ids: list[str] = []
     history: list[dict] = []
@@ -136,6 +226,11 @@ class ProjectChatReq(BaseModel):
     allow_file_write_tools: bool | None = None
     answer_style: str | None = None
     prefer_conclusion_first: bool | None = None
+
+
+class ProjectChatHistoryTruncateReq(BaseModel):
+    chat_session_id: str = ""
+    message_id: str = ""
     system_prompt: str | None = None
 
 
@@ -169,12 +264,63 @@ class ExternalMcpModuleTestReq(BaseModel):
     timeout_sec: int = 8
 
 
+class WorkspaceDirectoryPickReq(BaseModel):
+    initial_path: str = ""
+    title: str = "选择工作区目录"
+
+
+class WorkspaceFilePickReq(BaseModel):
+    initial_path: str = ""
+    title: str = "选择文件"
+
+
+class ProjectAiEntryFileUpdateReq(BaseModel):
+    ai_entry_file: str = ""
+
+
+class LocalConnectorPairCodeCreateReq(BaseModel):
+    note: str = ""
+    ttl_minutes: int = 10
+    permanent: bool = False
+
+
+class LocalConnectorPairActivateReq(BaseModel):
+    pair_code: str
+    connector_name: str = ""
+    platform: str = ""
+    app_version: str = ""
+    advertised_url: str = ""
+    manifest: dict[str, Any] = {}
+    health: dict[str, Any] = {}
+
+
+class LocalConnectorHeartbeatReq(BaseModel):
+    advertised_url: str = ""
+    manifest: dict[str, Any] = {}
+    health: dict[str, Any] = {}
+    status: str = "online"
+    last_error: str = ""
+
+
+class LocalConnectorWorkspacePickConsumeReq(BaseModel):
+    session_id: str
+    session_token: str
+
+
 class SystemConfigUpdateReq(BaseModel):
     enable_project_manual_generation: bool | None = None
     enable_employee_manual_generation: bool | None = None
     enable_user_register: bool | None = None
     chat_upload_max_limit: int | None = None
     chat_max_tokens: int | None = None
+    default_chat_system_prompt: str | None = None
+    employee_auto_rule_generation_enabled: bool | None = None
+    employee_auto_rule_generation_source_filters: list[str] | None = None
+    employee_auto_rule_generation_max_count: int | None = None
+    employee_auto_rule_generation_prompt: str | None = None
+    employee_external_skill_sites: list[dict[str, Any]] | None = None
+    skill_registry_sources: dict[str, Any] | None = None
+    mcp_config: dict[str, Any] | None = None
 
 
 class ReviewReq(BaseModel):
@@ -259,6 +405,16 @@ class FeedbackProjectConfigUpdateReq(BaseModel):
 class SkillInstallReq(BaseModel):
     skill_id: str
     enabled_tools: list[str] = []
+
+
+class SkillResourceResolveReq(BaseModel):
+    input: str
+
+
+class SkillResourceInstallReq(BaseModel):
+    version: str
+    install_dir: str = ""
+    import_to_library: bool = True
 
 
 class RuleUsageReq(BaseModel):
