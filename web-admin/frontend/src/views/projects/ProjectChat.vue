@@ -296,8 +296,75 @@
                           >{{ item.time || item.created_at }}</span
                         >
                       </div>
-                      <div class="message-bubble">
-                        <template v-if="item.displayMode === 'terminal'">
+                      <div
+                        :class="[
+                          'message-bubble',
+                          isInlineEditingMessage(idx)
+                            ? 'message-bubble--editing'
+                            : '',
+                        ]"
+                      >
+                        <template v-if="isInlineEditingMessage(idx)">
+                          <div
+                            class="message-inline-editor"
+                            :data-inline-editor-id="inlineEditingMessageId"
+                          >
+                            <el-input
+                              v-model="inlineEditingDraft"
+                              class="message-inline-editor__input"
+                              type="textarea"
+                              resize="none"
+                              :autosize="{ minRows: 4, maxRows: 10 }"
+                              placeholder="继续润色这条消息…"
+                              @keydown.stop="
+                                handleInlineMessageEditKeydown($event)
+                              "
+                            />
+                            <div class="message-inline-editor__footer">
+                              <div class="message-inline-editor__hint">
+                                <span class="message-inline-editor__hint-label">
+                                  快捷键
+                                </span>
+                                <span class="message-inline-editor__shortcut">
+                                  <kbd>Cmd/Ctrl</kbd>
+                                  <kbd>Enter</kbd>
+                                  <span>重新生成</span>
+                                </span>
+                                <span class="message-inline-editor__shortcut">
+                                  <kbd>Esc</kbd>
+                                  <span>取消</span>
+                                </span>
+                              </div>
+                              <div class="message-inline-editor__actions">
+                                <el-button
+                                  text
+                                  class="message-inline-editor__button message-inline-editor__button--ghost"
+                                  :disabled="inlineEditingBusy"
+                                  @click="cancelInlineMessageEdit"
+                                >
+                                  取消
+                                </el-button>
+                                <el-button
+                                  plain
+                                  class="message-inline-editor__button message-inline-editor__button--soft"
+                                  :disabled="inlineEditingBusy"
+                                  @click="applyInlineMessageEditToComposer"
+                                >
+                                  应用到输入框
+                                </el-button>
+                                <el-button
+                                  type="primary"
+                                  class="message-inline-editor__button message-inline-editor__button--primary"
+                                  :loading="inlineEditingBusy"
+                                  @click="submitInlineMessageEditAndReplay"
+                                >
+                                  保存并重新生成
+                                </el-button>
+                              </div>
+                            </div>
+                          </div>
+                        </template>
+                        <template v-else-if="item.displayMode === 'terminal'">
                           <div
                             v-if="terminalLogLines(item).length"
                             class="message-process"
@@ -590,11 +657,14 @@
                         </div>
                       </div>
                       <div
-                        v-if="getMessageActions(item).length"
+                        v-if="
+                          !isInlineEditingMessage(idx) &&
+                          getMessageActions(item, idx).length
+                        "
                         class="message-actions"
                       >
                         <el-tooltip
-                          v-for="action in getMessageActions(item)"
+                          v-for="action in getMessageActions(item, idx)"
                           :key="`${idx}-${action.key}`"
                           :content="action.tooltip"
                           placement="top"
@@ -605,7 +675,7 @@
                             class="message-action-button"
                             :icon="action.icon"
                             circle
-                            @click="handleMessageAction(item, action.key)"
+                            @click="handleMessageAction(item, idx, action.key)"
                           />
                         </el-tooltip>
                       </div>
@@ -1356,6 +1426,20 @@
                 当前是系统对话模式，外部 Agent 和工作区配置不会参与本轮请求。
               </template>
             </div>
+            <div class="settings-summary-actions">
+              <div class="settings-summary-status">
+                {{ autoSaveStatusText }}
+              </div>
+              <el-button
+                plain
+                size="small"
+                class="settings-summary-sync-button"
+                :loading="settingsSaving"
+                @click="saveProjectChatSettings(false)"
+              >
+                立即同步
+              </el-button>
+            </div>
           </div>
           <el-tabs class="settings-tabs">
             <el-tab-pane label="基础设置">
@@ -1803,7 +1887,7 @@
                       <el-button
                         type="primary"
                         :loading="workspacePathSaving"
-                        @click="saveProjectWorkspacePath"
+                        @click="saveProjectWorkspacePath()"
                         >保存路径</el-button
                       >
                     </div>
@@ -1825,6 +1909,56 @@
                         当前探测结果：{{
                           externalAgentInfo.workspace_access.reason
                         }}
+                      </template>
+                    </div>
+                  </div>
+                </el-form-item>
+
+                <el-form-item v-if="hasSelectedProject">
+                  <template #label>
+                    <span class="label-with-tooltip">
+                      AI 入口文件
+                      <el-tooltip
+                        content="项目级规则入口。系统对话和外部 Agent 都会优先读取它来理解规则、目录约定和实现约束。"
+                        placement="top"
+                      >
+                        <el-icon class="label-icon"><InfoFilled /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                  <div class="workspace-path-editor">
+                    <el-input
+                      v-model="aiEntryFileDraft"
+                      class="full-width"
+                      placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
+                    />
+                    <div class="workspace-path-actions">
+                      <el-button
+                        @click="promptProjectAiEntryFile"
+                        :loading="aiEntryFilePicking"
+                      >
+                        选择文件
+                      </el-button>
+                      <el-button
+                        type="primary"
+                        :loading="aiEntryFileSaving"
+                        @click="saveProjectAiEntryFile()"
+                      >
+                        保存入口
+                      </el-button>
+                    </div>
+                    <div class="workspace-path-hint">
+                      <template v-if="projectWorkspacePath">
+                        当前项目工作区：{{ projectWorkspacePath }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话和外部 Agent 共用。
+                      </template>
+                      <template v-else>
+                        当前项目还没有平台工作区路径时，建议直接填写相对路径或绝对路径。
+                      </template>
+                      <template v-if="aiEntryFileResolved">
+                        当前已保存：{{ aiEntryFileResolved }}
+                      </template>
+                      <template v-if="aiEntryFileDirty">
+                        当前输入尚未保存。
                       </template>
                     </div>
                   </div>
@@ -2316,18 +2450,6 @@
             </el-tab-pane>
           </el-tabs>
 
-          <div class="settings-actions">
-            <el-button @click="showSettingsDialog = false">关闭</el-button>
-            <el-button
-              type="primary"
-              :loading="settingsSaving"
-              @click="saveProjectChatSettings(false)"
-              >立即同步</el-button
-            >
-            <div class="settings-actions__status">
-              {{ autoSaveStatusText }}
-            </div>
-          </div>
         </div>
 
         <div
@@ -2360,7 +2482,9 @@ import {
   Promotion,
   Document,
   DocumentCopy,
+  EditPen,
   Files,
+  RefreshRight,
   VideoPause,
   Setting,
   InfoFilled,
@@ -2368,7 +2492,11 @@ import {
 import { marked } from "marked";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
 import ComposerAssistBar from "@/components/ComposerAssistBar.vue";
-import { pickWorkspaceDirectory } from "@/utils/workspace-picker.js";
+import {
+  pickWorkspaceDirectory,
+  pickWorkspaceFile,
+  toWorkspaceRelativePath,
+} from "@/utils/workspace-picker.js";
 
 // 配置 marked 以支持代码高亮和换行
 marked.setOptions({
@@ -2518,9 +2646,8 @@ const EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS = {
   prompts_chat_curated: "系统规则源",
 };
 
-// 预留开关：后续如果产品决定开放“未选择项目也可进行普通对话”，
-// 只需改成 true，并复用现有 sendGlobalChatWithoutProject 逻辑。
-const ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT = false;
+// 开放未选择项目时的通用对话模式，复用现有 sendGlobalChatWithoutProject 逻辑。
+const ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT = true;
 const LOCAL_CONNECTOR_STORAGE_PREFIX = "project_chat.local_connector";
 
 function resolveCurrentUsername() {
@@ -2783,6 +2910,8 @@ const selectedProjectToolNames = ref([]);
 const projectChatSettings = ref({ ...CHAT_SETTINGS_DEFAULTS });
 const projectWorkspacePath = ref("");
 const workspacePathDraft = ref("");
+const projectAiEntryFile = ref("");
+const aiEntryFileDraft = ref("");
 const singleRoundAnswerOnly = ref(false);
 const employeeCreateSubmitting = ref(false);
 const activeComposerAssist = ref("");
@@ -2795,6 +2924,8 @@ const downloadingDesktopArtifactKey = ref("");
 const localConnectorRefreshing = ref(false);
 const localConnectorPairing = ref(false);
 const workspacePathPicking = ref(false);
+const aiEntryFilePicking = ref(false);
+const aiEntryFileSaving = ref(false);
 let connectorPollTimer = null;
 
 const wsConnected = ref(false);
@@ -2813,6 +2944,10 @@ const terminalPanelStatus = ref("idle");
 const terminalPanelInput = ref("");
 const terminalMirrorConnected = ref(false);
 const terminalDebugInputVisible = ref(false);
+const inlineEditingMessageIndex = ref(-1);
+const inlineEditingMessageId = ref("");
+const inlineEditingDraft = ref("");
+const inlineEditingBusy = ref(false);
 
 const maxUploadLimit = ref(6);
 const chatMaxTokens = ref(512);
@@ -2853,6 +2988,12 @@ const workspacePathResolved = computed(() =>
 const workspacePathDraftNormalized = computed(() =>
   String(workspacePathDraft.value || "").trim(),
 );
+const aiEntryFileResolved = computed(() =>
+  String(projectAiEntryFile.value || "").trim(),
+);
+const aiEntryFileDraftNormalized = computed(() =>
+  String(aiEntryFileDraft.value || "").trim(),
+);
 const workspacePathConfigured = computed(() => !!workspacePathResolved.value);
 const externalAgentConnectorRequired = computed(
   () => isExternalAgentMode.value && !usingLocalConnector.value,
@@ -2861,6 +3002,9 @@ const workspacePathDirty = computed(() => {
   if (!isExternalAgentMode.value) return false;
   return workspacePathDraftNormalized.value !== workspacePathResolved.value;
 });
+const aiEntryFileDirty = computed(
+  () => aiEntryFileDraftNormalized.value !== aiEntryFileResolved.value,
+);
 const activeLocalConnector = computed(() => {
   const connectorId = String(
     projectChatSettings.value.local_connector_id || "",
@@ -4484,20 +4628,262 @@ async function copyMessageMarkdown(item, options = {}) {
   }
 }
 
-function getMessageActions(item) {
+function createLocalMessageId() {
+  return `chat-local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function resolveMessageSource(messageIndex) {
+  const normalizedIndex = Number(messageIndex);
+  if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return null;
+  const current = messages.value[normalizedIndex];
+  if (!current) return null;
+  if (String(current?.role || "").trim() === "user") {
+    return { index: normalizedIndex, item: current };
+  }
+  for (let cursor = normalizedIndex - 1; cursor >= 0; cursor -= 1) {
+    const candidate = messages.value[cursor];
+    if (String(candidate?.role || "").trim() === "user") {
+      return { index: cursor, item: candidate };
+    }
+  }
+  return null;
+}
+
+function messageHasReplayUnsupportedAssets(item) {
+  return (
+    (Array.isArray(item?.attachments) && item.attachments.length > 0) ||
+    (Array.isArray(item?.images) && item.images.length > 0)
+  );
+}
+
+function canReplayMessageSource(messageIndex) {
+  const source = resolveMessageSource(messageIndex);
+  if (!source) return false;
+  if (!String(source.item?.content || "").trim()) return false;
+  if (messageHasReplayUnsupportedAssets(source.item)) return false;
+  return true;
+}
+
+function resetInlineMessageEdit() {
+  inlineEditingMessageIndex.value = -1;
+  inlineEditingMessageId.value = "";
+  inlineEditingDraft.value = "";
+  inlineEditingBusy.value = false;
+}
+
+function isInlineEditingMessage(messageIndex) {
+  const normalizedIndex = Number(messageIndex);
+  if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return false;
+  if (normalizedIndex !== inlineEditingMessageIndex.value) return false;
+  const current = messages.value[normalizedIndex];
+  if (!current) return false;
+  return (
+    String(current?.id || "").trim() === String(inlineEditingMessageId.value || "").trim()
+  );
+}
+
+function focusInlineMessageEditor() {
+  nextTick(() => {
+    const editorRoot = messagesContainer.value?.querySelector?.(
+      `[data-inline-editor-id="${inlineEditingMessageId.value}"]`,
+    );
+    if (editorRoot?.scrollIntoView) {
+      editorRoot.scrollIntoView({
+        block: "center",
+        behavior: "smooth",
+      });
+    }
+    const textarea = editorRoot?.querySelector?.("textarea");
+    if (!textarea) return;
+    textarea.focus();
+    const textLength = String(textarea.value || "").length;
+    if (typeof textarea.setSelectionRange === "function") {
+      textarea.setSelectionRange(textLength, textLength);
+    }
+  });
+}
+
+function getInlineEditingSource() {
+  if (inlineEditingMessageIndex.value < 0) return null;
+  const current = messages.value[inlineEditingMessageIndex.value];
+  if (!current) return null;
+  if (
+    String(current?.id || "").trim() !==
+    String(inlineEditingMessageId.value || "").trim()
+  ) {
+    return null;
+  }
+  return {
+    index: inlineEditingMessageIndex.value,
+    item: current,
+  };
+}
+
+function normalizeInlineEditingDraft() {
+  return String(inlineEditingDraft.value || "").trim();
+}
+
+async function truncateConversationFromSource(source) {
+  if (!source) return;
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (projectId && chatSessionId) {
+    const messageId = String(source.item?.id || "").trim();
+    if (!messageId) {
+      throw new Error("当前消息尚未保存完成，请稍后再试");
+    }
+    await api.post(
+      `/projects/${encodeURIComponent(projectId)}/chat/history/truncate`,
+      {
+        chat_session_id: chatSessionId,
+        message_id: messageId,
+      },
+    );
+  }
+  messages.value = messages.value.slice(0, source.index);
+}
+
+async function openInlineMessageEditor(messageIndex) {
+  if (chatLoading.value) {
+    ElMessage.warning("当前回答进行中，暂时不能编辑历史消息");
+    return;
+  }
+  const source = resolveMessageSource(messageIndex);
+  if (!source) {
+    ElMessage.warning("未找到可编辑的原始用户消息");
+    return;
+  }
+  if (messageHasReplayUnsupportedAssets(source.item)) {
+    ElMessage.warning("带附件或图片的消息暂不支持编辑");
+    return;
+  }
+  inlineEditingMessageIndex.value = source.index;
+  inlineEditingMessageId.value = String(source.item?.id || "").trim();
+  inlineEditingDraft.value = String(source.item?.content || "").trim();
+  focusInlineMessageEditor();
+}
+
+async function replayMessageFromSource(messageIndex, options = {}) {
+  if (chatLoading.value) {
+    ElMessage.warning("当前回答进行中，暂时不能重新生成");
+    return;
+  }
+  const source = resolveMessageSource(messageIndex);
+  if (!source || !canReplayMessageSource(messageIndex)) {
+    ElMessage.warning("当前消息暂不支持重新生成");
+    return;
+  }
+  const nextPrompt = String(
+    options?.message ?? source.item?.content ?? "",
+  ).trim();
+  if (!nextPrompt) {
+    ElMessage.warning("消息不能为空");
+    return;
+  }
+  try {
+    await truncateConversationFromSource(source);
+    draftText.value = nextPrompt;
+    await doSend();
+  } catch (err) {
+    if (options?.throwOnError) {
+      throw err;
+    }
+    ElMessage.error(err?.detail || err?.message || "重新生成失败");
+  }
+}
+
+function cancelInlineMessageEdit() {
+  resetInlineMessageEdit();
+}
+
+function applyInlineMessageEditToComposer() {
+  const edited = normalizeInlineEditingDraft();
+  if (!edited) {
+    ElMessage.warning("消息不能为空");
+    return;
+  }
+  draftText.value = edited;
+  resetInlineMessageEdit();
+  scrollToBottom();
+  ElMessage.success("已填入输入框，可以继续修改后发送");
+}
+
+async function submitInlineMessageEditAndReplay() {
+  if (inlineEditingBusy.value) return;
+  const source = getInlineEditingSource();
+  if (!source) {
+    resetInlineMessageEdit();
+    ElMessage.warning("当前消息不可编辑，请重新操作");
+    return;
+  }
+  const edited = normalizeInlineEditingDraft();
+  if (!edited) {
+    ElMessage.warning("消息不能为空");
+    return;
+  }
+  inlineEditingBusy.value = true;
+  try {
+    await replayMessageFromSource(source.index, {
+      message: edited,
+      throwOnError: true,
+    });
+    resetInlineMessageEdit();
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "重新生成失败");
+  } finally {
+    inlineEditingBusy.value = false;
+  }
+}
+
+function handleInlineMessageEditKeydown(event) {
+  if (!event) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    cancelInlineMessageEdit();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    void submitInlineMessageEditAndReplay();
+  }
+}
+
+function getMessageActions(item, messageIndex) {
   const actions = [];
+  const role = String(item?.role || "").trim();
+  if (role === "user" && canReplayMessageSource(messageIndex)) {
+    actions.push({
+      key: "edit_message",
+      tooltip: "编辑",
+      icon: EditPen,
+    });
+    actions.push({
+      key: "edit_and_regenerate",
+      tooltip: "编辑后重新生成",
+      icon: RefreshRight,
+    });
+  }
+  if (role !== "user" && canReplayMessageSource(messageIndex)) {
+    actions.push({
+      key: "regenerate",
+      tooltip: "重新生成",
+      icon: RefreshRight,
+    });
+    actions.push({
+      key: "edit_and_regenerate",
+      tooltip: "编辑后重新生成",
+      icon: EditPen,
+    });
+  }
   if (hasMessageCopyableContent(item)) {
     actions.push({
       key: "copy_markdown",
-      tooltip:
-        String(item?.role || "").trim() === "user"
-          ? "复制消息"
-          : "复制 Markdown",
+      tooltip: role === "user" ? "复制消息" : "复制 Markdown",
       icon: DocumentCopy,
     });
   }
   if (
-    String(item?.role || "").trim() !== "user" &&
+    role !== "user" &&
     hasMessageCopyableContent(item, { includeProcess: true }) &&
     terminalLogLines(item).length
   ) {
@@ -4510,8 +4896,17 @@ function getMessageActions(item) {
   return actions;
 }
 
-function handleMessageAction(item, actionKey) {
+function handleMessageAction(item, messageIndex, actionKey) {
   switch (String(actionKey || "").trim()) {
+    case "edit_message":
+      void openInlineMessageEditor(messageIndex);
+      return;
+    case "regenerate":
+      void replayMessageFromSource(messageIndex);
+      return;
+    case "edit_and_regenerate":
+      void openInlineMessageEditor(messageIndex);
+      return;
     case "copy_markdown":
       copyMessageMarkdown(item);
       return;
@@ -4869,6 +5264,22 @@ function scrollToBottom() {
     }
   });
 }
+
+watch(
+  messages,
+  (value) => {
+    if (inlineEditingMessageIndex.value < 0) return;
+    const current = value[inlineEditingMessageIndex.value];
+    if (
+      !current ||
+      String(current?.id || "").trim() !==
+        String(inlineEditingMessageId.value || "").trim()
+    ) {
+      resetInlineMessageEdit();
+    }
+  },
+  { deep: false },
+);
 
 function extractImages(message) {
   if (!message || !Array.isArray(message.images)) return [];
@@ -6294,6 +6705,8 @@ async function fetchProvidersByProject(projectId) {
     resetTerminalPanel();
     projectWorkspacePath.value = "";
     workspacePathDraft.value = "";
+    projectAiEntryFile.value = "";
+    aiEntryFileDraft.value = "";
     chatSessions.value = [];
     currentChatSessionId.value = "";
     autoSaveState.value = "idle";
@@ -6365,6 +6778,10 @@ async function fetchProvidersByProject(projectId) {
     projectWorkspacePath.value = String(
       data?.project_workspace_path || "",
     ).trim();
+    projectAiEntryFile.value = String(
+      data?.project_ai_entry_file || "",
+    ).trim();
+    aiEntryFileDraft.value = projectAiEntryFile.value;
     workspacePathDraft.value = String(
       settings.local_connector_id
         ? settings.connector_workspace_path ||
@@ -7486,14 +7903,92 @@ async function promptProjectWorkspacePath() {
   }
 }
 
+function normalizeAiEntryFileForSave(value) {
+  const rawValue = String(value || "").trim();
+  if (!rawValue) return "";
+  const normalizedRelative = toWorkspaceRelativePath(
+    rawValue,
+    projectWorkspacePath.value,
+  );
+  return String(normalizedRelative || rawValue).trim();
+}
+
+async function promptProjectAiEntryFile() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  aiEntryFilePicking.value = true;
+  try {
+    const pickedPath = await pickWorkspaceFile(
+      aiEntryFileDraftNormalized.value || aiEntryFileResolved.value || "",
+      {
+        title: "选择 AI 入口文件",
+        placeholder: ".ai/ENTRY.md",
+        basePath: projectWorkspacePath.value,
+      },
+    );
+    if (!pickedPath) {
+      return;
+    }
+    aiEntryFileDraft.value = normalizeAiEntryFileForSave(pickedPath);
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "打开文件选择器失败");
+  } finally {
+    aiEntryFilePicking.value = false;
+  }
+}
+
+async function saveProjectAiEntryFile(aiEntryFileOverride = null) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  aiEntryFileSaving.value = true;
+  try {
+    const normalizedOverride =
+      typeof Event !== "undefined" && aiEntryFileOverride instanceof Event
+        ? null
+        : aiEntryFileOverride;
+    const aiEntryFile = normalizeAiEntryFileForSave(
+      normalizedOverride ?? aiEntryFileDraft.value ?? "",
+    );
+    const data = await api.patch(
+      `/projects/${encodeURIComponent(projectId)}/chat/ai-entry-file`,
+      {
+        ai_entry_file: aiEntryFile,
+      },
+    );
+    const persisted = String(data?.ai_entry_file || aiEntryFile).trim();
+    projectAiEntryFile.value = persisted;
+    aiEntryFileDraft.value = persisted;
+    projects.value = (projects.value || []).map((item) =>
+      String(item?.id || "").trim() === projectId
+        ? { ...item, ai_entry_file: persisted }
+        : item,
+    );
+    ElMessage.success(persisted ? "AI 入口文件已保存" : "已清空 AI 入口文件");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存 AI 入口文件失败");
+  } finally {
+    aiEntryFileSaving.value = false;
+  }
+}
+
 async function saveProjectWorkspacePath(workspacePathOverride = null) {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) {
     ElMessage.warning("请先选择项目");
     return;
   }
+  const normalizedOverride =
+    typeof Event !== "undefined" && workspacePathOverride instanceof Event
+      ? null
+      : workspacePathOverride;
   const workspacePath = String(
-    workspacePathOverride ?? workspacePathDraft.value ?? "",
+    normalizedOverride ?? workspacePathDraft.value ?? "",
   ).trim();
   workspacePathSaving.value = true;
   try {
@@ -7715,6 +8210,24 @@ async function generateEmployeeDraftWithoutProject() {
     ElMessage.warning("请先描述你要创建的员工");
     return;
   }
+  const userMessage = {
+    id: createLocalMessageId(),
+    role: "user",
+    content: text,
+    images: [],
+    attachments: [],
+    time: nowText(),
+  };
+  const assistantMessage = {
+    id: createLocalMessageId(),
+    role: "assistant",
+    content: "",
+    displayMode: "",
+    terminalLog: [],
+    processExpanded: false,
+    audit: null,
+    time: nowText(),
+  };
 
   const history = messages.value
     .slice(-6)
@@ -7727,22 +8240,8 @@ async function generateEmployeeDraftWithoutProject() {
         ["user", "assistant"].includes(item.role) && item.content.trim(),
     );
 
-  messages.value.push({
-    role: "user",
-    content: text,
-    images: [],
-    attachments: [],
-    time: nowText(),
-  });
-  messages.value.push({
-    role: "assistant",
-    content: "",
-    displayMode: "",
-    terminalLog: [],
-    processExpanded: false,
-    audit: null,
-    time: nowText(),
-  });
+  messages.value.push(userMessage);
+  messages.value.push(assistantMessage);
 
   const assistantIndex = messages.value.length - 1;
   chatLoading.value = true;
@@ -7792,6 +8291,24 @@ async function sendGlobalChatWithoutProject() {
     ElMessage.warning("请输入消息内容");
     return;
   }
+  const userMessage = {
+    id: createLocalMessageId(),
+    role: "user",
+    content: text,
+    images: [],
+    attachments: [],
+    time: nowText(),
+  };
+  const assistantMessage = {
+    id: createLocalMessageId(),
+    role: "assistant",
+    content: "",
+    displayMode: "",
+    terminalLog: [],
+    processExpanded: false,
+    audit: null,
+    time: nowText(),
+  };
 
   const history = messages.value
     .slice(-10)
@@ -7804,22 +8321,8 @@ async function sendGlobalChatWithoutProject() {
         ["user", "assistant"].includes(item.role) && item.content.trim(),
     );
 
-  messages.value.push({
-    role: "user",
-    content: text,
-    images: [],
-    attachments: [],
-    time: nowText(),
-  });
-  messages.value.push({
-    role: "assistant",
-    content: "",
-    displayMode: "",
-    terminalLog: [],
-    processExpanded: false,
-    audit: null,
-    time: nowText(),
-  });
+  messages.value.push(userMessage);
+  messages.value.push(assistantMessage);
 
   const assistantIndex = messages.value.length - 1;
   chatLoading.value = true;
@@ -8014,15 +8517,16 @@ async function doSend() {
             projectChatSettings.value.auto_use_tools ??
             CHAT_SETTINGS_DEFAULTS.auto_use_tools,
           );
-
-  messages.value.push({
+  const userMessage = {
+    id: createLocalMessageId(),
     role: "user",
     content: text || "（发送了附件）",
     images: imageUrls,
     attachments: attachmentNames,
     time: nowText(),
-  });
-  messages.value.push({
+  };
+  const assistantMessage = {
+    id: createLocalMessageId(),
     role: "assistant",
     content: "",
     displayMode: isExternalAgentMode.value ? "terminal" : "",
@@ -8030,7 +8534,10 @@ async function doSend() {
     processExpanded: false,
     audit: null,
     time: nowText(),
-  });
+  };
+
+  messages.value.push(userMessage);
+  messages.value.push(assistantMessage);
 
   if (isExternalAgentMode.value) {
     terminalPanelExpanded.value = true;
@@ -8059,6 +8566,7 @@ async function doSend() {
     const employeeIds = normalizeStringList(selectedEmployeeIds.value || []);
     const requestPayload = {
       request_id: requestId,
+      message_id: userMessage.id,
       chat_session_id: activeChatSessionId,
       chat_mode: selectedChatMode.value || "system",
       external_agent_type: String(
@@ -8991,6 +9499,7 @@ onUnmounted(() => {
   flex: 1;
   width: min(100%, 940px);
   max-width: 940px;
+  padding-bottom: 20px;
 }
 
 .settings-form .el-form-item {
@@ -9164,29 +9673,36 @@ onUnmounted(() => {
   width: 100%;
 }
 
-.settings-actions {
-  position: sticky;
-  bottom: 0;
+.settings-summary-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
-  width: min(100%, 940px);
-  margin-top: 8px;
-  padding: 18px 0 6px;
-  background:
-    linear-gradient(
-      180deg,
-      rgba(246, 243, 238, 0),
-      rgba(246, 243, 238, 0.94) 28%,
-      rgba(245, 245, 246, 0.98) 100%
-    );
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin-left: auto;
 }
 
-.settings-actions__status {
-  margin-left: auto;
+.settings-summary-status {
   font-size: 12px;
   line-height: 1.5;
   color: #737373;
+}
+
+.settings-summary-sync-button {
+  min-height: 32px !important;
+  padding: 0 14px !important;
+  border-radius: 999px !important;
+  border-color: rgba(17, 24, 39, 0.08) !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+  color: #374151 !important;
+  font-weight: 600;
+  box-shadow: none !important;
+}
+
+.settings-summary-sync-button:hover {
+  border-color: rgba(17, 24, 39, 0.14) !important;
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: #111827 !important;
 }
 
 .mcp-source-tabs :deep(.el-tabs__header) {
@@ -9539,6 +10055,153 @@ onUnmounted(() => {
 
 .message-text {
   word-break: break-word;
+}
+
+.message-inline-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(100%, 680px);
+}
+
+.message-inline-editor__input {
+  width: 100%;
+}
+
+.message-inline-editor :deep(.el-textarea__wrapper) {
+  padding: 0;
+  border-radius: 20px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.message-inline-editor :deep(.el-textarea__inner) {
+  min-height: 132px !important;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(250, 250, 252, 0.9));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 2px rgba(15, 23, 42, 0.02);
+  padding: 15px 16px;
+  color: #1f2937;
+  line-height: 1.8;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.message-inline-editor :deep(.el-textarea__inner::placeholder) {
+  color: #9ca3af;
+}
+
+.message-inline-editor :deep(.el-textarea__inner:focus) {
+  border-color: rgba(59, 130, 246, 0.28);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(252, 252, 253, 0.94));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 0 0 4px rgba(255, 255, 255, 0.42);
+}
+
+.message-inline-editor__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.message-inline-editor__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.message-inline-editor__hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6b7280;
+}
+
+.message-inline-editor__hint-label {
+  color: #9ca3af;
+}
+
+.message-inline-editor__shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.5);
+  color: #6b7280;
+}
+
+.message-inline-editor__shortcut kbd {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(255, 255, 255, 0.96);
+  color: #374151;
+  font-size: 11px;
+  font-family:
+    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  line-height: 20px;
+  text-align: center;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.message-inline-editor__button {
+  min-height: 34px !important;
+  padding: 0 14px !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+  font-weight: 500;
+}
+
+.message-inline-editor__button--ghost {
+  color: #6b7280 !important;
+}
+
+.message-inline-editor__button--ghost:hover {
+  color: #111827 !important;
+  background: rgba(15, 23, 42, 0.04) !important;
+}
+
+.message-inline-editor__button--soft {
+  border-color: rgba(148, 163, 184, 0.22) !important;
+  background: rgba(255, 255, 255, 0.68) !important;
+  color: #374151 !important;
+}
+
+.message-inline-editor__button--soft:hover {
+  border-color: rgba(59, 130, 246, 0.18) !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  color: #1f2937 !important;
+}
+
+.message-inline-editor__button--primary {
+  border-color: transparent !important;
+  background: #111827 !important;
+  color: #f9fafb !important;
+}
+
+.message-inline-editor__button--primary:hover {
+  background: #1f2937 !important;
+  color: #ffffff !important;
 }
 
 .message-text-terminal {
@@ -11404,17 +12067,10 @@ onUnmounted(() => {
   flex-direction: column;
   height: 100vh;
   padding: 12px 0 0;
-  border: 1px solid rgba(255, 255, 255, 0.96);
-  border-radius: 34px;
-  background: radial-gradient(
-    circle at top,
-    rgba(255, 255, 255, 0.98),
-    rgba(248, 250, 252, 0.96) 58%,
-    rgba(244, 247, 251, 0.98)
-  );
-  box-shadow:
-    0 26px 64px rgba(15, 23, 42, 0.08),
-    0 4px 14px rgba(15, 23, 42, 0.04);
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .settings-center-context-bar {
@@ -11476,7 +12132,7 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   padding-top: 14px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .settings-center-stage__body--chat {
@@ -11484,7 +12140,7 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   overflow-y: auto;
-  padding: 14px 14px 18px;
+  padding: 14px 14px 28px;
 }
 
 .settings-center-stage__body--frame {
@@ -11498,18 +12154,9 @@ onUnmounted(() => {
 }
 
 .settings-tabs :deep(.el-tabs__header) {
-  position: sticky;
-  top: 0;
-  z-index: 3;
   margin: 0 0 12px;
   padding-bottom: 8px;
-  background:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.94),
-      rgba(248, 250, 252, 0.88) 72%,
-      rgba(248, 250, 252, 0)
-    );
+  background: transparent;
 }
 
 .settings-tabs :deep(.el-tabs__nav-wrap::after) {
@@ -11556,10 +12203,10 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   border: 0;
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.82);
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
-  outline: 1px solid rgba(226, 232, 240, 0.96);
+  outline: 0;
 }
 
 .chat-model-select {
@@ -11913,6 +12560,18 @@ onUnmounted(() => {
   width: fit-content;
   min-width: min(240px, 100%);
   max-width: 100%;
+}
+
+.message-row.is-user .message-bubble.message-bubble--editing {
+  width: min(100%, 680px);
+  min-width: min(320px, 100%);
+  padding: 14px;
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(233, 237, 242, 0.72);
+}
+
+.message-row.is-user .message-inline-editor {
+  width: 100%;
 }
 
 .message-row.is-user .message-text {
@@ -12497,7 +13156,7 @@ onUnmounted(() => {
     height: auto;
     min-height: 0;
     padding-top: 10px;
-    border-radius: 28px;
+    border-radius: 0;
   }
 
   .settings-center-context-bar__title {
@@ -12557,6 +13216,21 @@ onUnmounted(() => {
   .message-bubble {
     padding: 16px;
     border-radius: 20px;
+  }
+
+  .message-row.is-user .message-bubble.message-bubble--editing {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .message-inline-editor__footer {
+    align-items: flex-start;
+  }
+
+  .message-inline-editor__actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
   }
 
   .message-row.is-ai .message-content-wrapper,
@@ -12664,17 +13338,17 @@ onUnmounted(() => {
     gap: 14px;
   }
 
-  .settings-actions {
-    flex-wrap: wrap;
+  .settings-summary-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
-  .settings-actions__status {
+  .settings-summary-status {
     width: 100%;
-    margin-left: 0;
   }
 
   .settings-center-frame {
-    border-radius: 18px;
+    border-radius: 0;
   }
 }
 </style>
