@@ -49,6 +49,12 @@ class LocalConnectorRecord:
     owner_username: str
     connector_token: str
     connector_name: str = ""
+    device_fingerprint: str = ""
+    device_label: str = ""
+    llm_shared_with_usernames: list[str] = field(default_factory=list)
+    llm_shared_with_roles: list[str] = field(default_factory=list)
+    external_agent_shared_with_usernames: list[str] = field(default_factory=list)
+    external_agent_shared_with_roles: list[str] = field(default_factory=list)
     platform: str = ""
     app_version: str = ""
     advertised_url: str = ""

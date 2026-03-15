@@ -518,6 +518,13 @@
                 </span>
               </div>
 
+              <div class="connector-share-summary">
+                本地模型共享：{{ connectorLlmSharingSummary(item) }}
+              </div>
+              <div class="connector-share-summary">
+                外部智能体共享：{{ connectorExternalAgentSharingSummary(item) }}
+              </div>
+
               <el-alert
                 v-if="item.last_error"
                 class="connector-error"
@@ -532,6 +539,23 @@
                   复制 ID
                 </el-button>
                 <el-button
+                  v-if="item.can_manage_llm_sharing"
+                  text
+                  type="primary"
+                  @click="openConnectorLlmSharingDialog(item)"
+                >
+                  模型共享
+                </el-button>
+                <el-button
+                  v-if="item.can_manage_external_agent_sharing"
+                  text
+                  type="primary"
+                  @click="openConnectorExternalAgentSharingDialog(item)"
+                >
+                  外部智能体共享
+                </el-button>
+                <el-button
+                  v-if="item.can_delete"
                   text
                   type="danger"
                   :loading="deletingConnectorId === item.id"
@@ -550,6 +574,153 @@
         </div>
       </div>
     </section>
+
+    <el-dialog
+      v-model="showConnectorLlmSharingDialog"
+      width="720px"
+      destroy-on-close
+      :close-on-click-modal="!savingConnectorLlmSharing"
+      title="本地模型共享"
+    >
+      <div class="connector-sharing-copy">
+        这里只共享该连接器的本地模型桥接能力，不共享目录访问、命令执行或 PTY 能力。
+      </div>
+
+      <el-form label-position="top" class="connector-sharing-form">
+        <el-form-item label="连接器">
+          <el-input :model-value="connectorLlmSharingForm.connector_name" disabled />
+        </el-form-item>
+
+        <el-form-item label="共享给用户">
+          <el-select
+            v-model="connectorLlmSharingForm.llm_shared_with_usernames"
+            multiple
+            filterable
+            clearable
+            collapse-tags
+            collapse-tags-tooltip
+            class="full-width"
+            :loading="connectorShareOptionsLoading"
+            placeholder="选择可使用这台电脑本地模型的用户"
+          >
+            <el-option
+              v-for="item in connectorShareUserOptions"
+              :key="item.username"
+              :label="`${item.username} · ${item.role || '-'}`"
+              :value="item.username"
+            />
+          </el-select>
+        </el-form-item>
+
+        <el-form-item label="共享给角色">
+          <el-select
+            v-model="connectorLlmSharingForm.llm_shared_with_roles"
+            multiple
+            filterable
+            clearable
+            collapse-tags
+            collapse-tags-tooltip
+            class="full-width"
+            :loading="connectorShareOptionsLoading"
+            placeholder="选择可使用这台电脑本地模型的角色"
+          >
+            <el-option
+              v-for="item in connectorShareRoleOptions"
+              :key="item.id"
+              :label="item.name"
+              :value="item.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button :disabled="savingConnectorLlmSharing" @click="showConnectorLlmSharingDialog = false">
+          取消
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="savingConnectorLlmSharing"
+          @click="saveConnectorLlmSharing"
+        >
+          保存共享
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="showConnectorExternalAgentSharingDialog"
+      width="720px"
+      destroy-on-close
+      :close-on-click-modal="!savingConnectorExternalAgentSharing"
+      title="外部智能体共享"
+    >
+      <div class="connector-sharing-copy">
+        这里只共享该连接器上的外部智能体 CLI 调用能力，可供别人使用
+        `Codex / Claude / Gemini`；不开放连接器管理权限。
+      </div>
+
+      <el-form label-position="top" class="connector-sharing-form">
+        <el-form-item label="连接器">
+          <el-input :model-value="connectorExternalAgentSharingForm.connector_name" disabled />
+        </el-form-item>
+
+        <el-form-item label="共享给用户">
+          <el-select
+            v-model="connectorExternalAgentSharingForm.external_agent_shared_with_usernames"
+            multiple
+            filterable
+            clearable
+            collapse-tags
+            collapse-tags-tooltip
+            class="full-width"
+            :loading="connectorShareOptionsLoading"
+            placeholder="选择可使用这台电脑外部智能体 CLI 的用户"
+          >
+            <el-option
+              v-for="item in connectorShareUserOptions"
+              :key="item.username"
+              :label="`${item.username} · ${item.role || '-'}`"
+              :value="item.username"
+            />
+          </el-select>
+        </el-form-item>
+
+        <el-form-item label="共享给角色">
+          <el-select
+            v-model="connectorExternalAgentSharingForm.external_agent_shared_with_roles"
+            multiple
+            filterable
+            clearable
+            collapse-tags
+            collapse-tags-tooltip
+            class="full-width"
+            :loading="connectorShareOptionsLoading"
+            placeholder="选择可使用这台电脑外部智能体 CLI 的角色"
+          >
+            <el-option
+              v-for="item in connectorShareRoleOptions"
+              :key="item.id"
+              :label="item.name"
+              :value="item.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button :disabled="savingConnectorExternalAgentSharing" @click="showConnectorExternalAgentSharingDialog = false">
+          取消
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="savingConnectorExternalAgentSharing"
+          @click="saveConnectorExternalAgentSharing"
+        >
+          保存共享
+        </el-button>
+      </template>
+    </el-dialog>
 
     <section class="panel skill-panel">
       <div class="panel-head">
@@ -742,10 +913,29 @@ const skillsLoading = ref(false);
 const connectorsLoading = ref(false);
 const downloadingDesktopArtifactKey = ref("");
 const deletingConnectorId = ref("");
+const connectorShareOptionsLoading = ref(false);
+const savingConnectorLlmSharing = ref(false);
+const savingConnectorExternalAgentSharing = ref(false);
 const refreshingPanels = ref(false);
 const mcpServers = ref([]);
 const connectorItems = ref([]);
 const desktopArtifactItems = ref([]);
+const showConnectorLlmSharingDialog = ref(false);
+const showConnectorExternalAgentSharingDialog = ref(false);
+const connectorShareUserOptions = ref([]);
+const connectorShareRoleOptions = ref([]);
+const connectorLlmSharingForm = ref({
+  connector_id: "",
+  connector_name: "",
+  llm_shared_with_usernames: [],
+  llm_shared_with_roles: [],
+});
+const connectorExternalAgentSharingForm = ref({
+  connector_id: "",
+  connector_name: "",
+  external_agent_shared_with_usernames: [],
+  external_agent_shared_with_roles: [],
+});
 let connectorRefreshTimer = null;
 
 const form = ref({
@@ -1134,6 +1324,62 @@ function connectorCapabilityLabels(item) {
   return labels.length ? labels : ["已注册"];
 }
 
+function connectorLlmSharingSummary(item) {
+  const usernames = Array.isArray(item?.llm_shared_with_usernames)
+    ? item.llm_shared_with_usernames
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean)
+    : [];
+  const roleIds = Array.isArray(item?.llm_shared_with_roles)
+    ? item.llm_shared_with_roles
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean)
+    : [];
+  if (!usernames.length && !roleIds.length) {
+    return "未共享";
+  }
+  const parts = [];
+  if (usernames.length) {
+    parts.push(`用户 ${usernames.join("、")}`);
+  }
+  if (roleIds.length) {
+    const roleNames = roleIds.map((roleId) => {
+      const matched = connectorShareRoleOptions.value.find((item) => item.id === roleId);
+      return matched?.name || roleId;
+    });
+    parts.push(`角色 ${roleNames.join("、")}`);
+  }
+  return parts.join("；");
+}
+
+function connectorExternalAgentSharingSummary(item) {
+  const usernames = Array.isArray(item?.external_agent_shared_with_usernames)
+    ? item.external_agent_shared_with_usernames
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean)
+    : [];
+  const roleIds = Array.isArray(item?.external_agent_shared_with_roles)
+    ? item.external_agent_shared_with_roles
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean)
+    : [];
+  if (!usernames.length && !roleIds.length) {
+    return "未共享";
+  }
+  const parts = [];
+  if (usernames.length) {
+    parts.push(`用户 ${usernames.join("、")}`);
+  }
+  if (roleIds.length) {
+    const roleNames = roleIds.map((roleId) => {
+      const matched = connectorShareRoleOptions.value.find((item) => item.id === roleId);
+      return matched?.name || roleId;
+    });
+    parts.push(`角色 ${roleNames.join("、")}`);
+  }
+  return parts.join("；");
+}
+
 async function copyText(value) {
   const text = String(value || "").trim();
   if (!text) {
@@ -1182,6 +1428,137 @@ async function fetchLocalConnectors(options = {}) {
     if (!options.silent) {
       connectorsLoading.value = false;
     }
+  }
+}
+
+async function ensureConnectorShareOptionsLoaded() {
+  if (connectorShareUserOptions.value.length || connectorShareRoleOptions.value.length) {
+    return;
+  }
+  connectorShareOptionsLoading.value = true;
+  try {
+    const data = await api.get("/local-connectors/llm-share-options");
+    connectorShareUserOptions.value = Array.isArray(data?.users) ? data.users : [];
+    connectorShareRoleOptions.value = Array.isArray(data?.roles) ? data.roles : [];
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "加载共享范围失败");
+    throw err;
+  } finally {
+    connectorShareOptionsLoading.value = false;
+  }
+}
+
+async function openConnectorLlmSharingDialog(item) {
+  if (!item?.can_manage_llm_sharing) {
+    return;
+  }
+  try {
+    await ensureConnectorShareOptionsLoaded();
+  } catch {
+    return;
+  }
+  connectorLlmSharingForm.value = {
+    connector_id: String(item?.id || "").trim(),
+    connector_name: String(item?.connector_name || item?.id || "").trim(),
+    llm_shared_with_usernames: Array.isArray(item?.llm_shared_with_usernames)
+      ? item.llm_shared_with_usernames
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean)
+      : [],
+    llm_shared_with_roles: Array.isArray(item?.llm_shared_with_roles)
+      ? item.llm_shared_with_roles
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean)
+      : [],
+  };
+  showConnectorLlmSharingDialog.value = true;
+}
+
+async function saveConnectorLlmSharing() {
+  const connectorId = String(connectorLlmSharingForm.value.connector_id || "").trim();
+  if (!connectorId) {
+    ElMessage.warning("缺少连接器 ID");
+    return;
+  }
+  savingConnectorLlmSharing.value = true;
+  try {
+    const data = await api.patch(
+      `/local-connectors/${encodeURIComponent(connectorId)}/llm-sharing`,
+      {
+        llm_shared_with_usernames: connectorLlmSharingForm.value.llm_shared_with_usernames,
+        llm_shared_with_roles: connectorLlmSharingForm.value.llm_shared_with_roles,
+      },
+    );
+    const updatedConnector = data?.connector;
+    if (updatedConnector?.id) {
+      connectorItems.value = connectorItems.value.map((item) =>
+        item.id === updatedConnector.id ? updatedConnector : item,
+      );
+    }
+    showConnectorLlmSharingDialog.value = false;
+    ElMessage.success("本地模型共享设置已更新");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存共享设置失败");
+  } finally {
+    savingConnectorLlmSharing.value = false;
+  }
+}
+
+async function openConnectorExternalAgentSharingDialog(item) {
+  if (!item?.can_manage_external_agent_sharing) {
+    return;
+  }
+  try {
+    await ensureConnectorShareOptionsLoaded();
+  } catch {
+    return;
+  }
+  connectorExternalAgentSharingForm.value = {
+    connector_id: String(item?.id || "").trim(),
+    connector_name: String(item?.connector_name || item?.id || "").trim(),
+    external_agent_shared_with_usernames: Array.isArray(item?.external_agent_shared_with_usernames)
+      ? item.external_agent_shared_with_usernames
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean)
+      : [],
+    external_agent_shared_with_roles: Array.isArray(item?.external_agent_shared_with_roles)
+      ? item.external_agent_shared_with_roles
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean)
+      : [],
+  };
+  showConnectorExternalAgentSharingDialog.value = true;
+}
+
+async function saveConnectorExternalAgentSharing() {
+  const connectorId = String(connectorExternalAgentSharingForm.value.connector_id || "").trim();
+  if (!connectorId) {
+    ElMessage.warning("缺少连接器 ID");
+    return;
+  }
+  savingConnectorExternalAgentSharing.value = true;
+  try {
+    const data = await api.patch(
+      `/local-connectors/${encodeURIComponent(connectorId)}/external-agent-sharing`,
+      {
+        external_agent_shared_with_usernames:
+          connectorExternalAgentSharingForm.value.external_agent_shared_with_usernames,
+        external_agent_shared_with_roles:
+          connectorExternalAgentSharingForm.value.external_agent_shared_with_roles,
+      },
+    );
+    const updatedConnector = data?.connector;
+    if (updatedConnector?.id) {
+      connectorItems.value = connectorItems.value.map((item) =>
+        item.id === updatedConnector.id ? updatedConnector : item,
+      );
+    }
+    showConnectorExternalAgentSharingDialog.value = false;
+    ElMessage.success("外部智能体共享设置已更新");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存共享设置失败");
+  } finally {
+    savingConnectorExternalAgentSharing.value = false;
   }
 }
 
@@ -1879,8 +2256,28 @@ onBeforeUnmount(() => {
   margin-top: 14px;
 }
 
+.connector-share-summary {
+  margin-top: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+  word-break: break-word;
+}
+
 .connector-error {
   margin-top: 14px;
+}
+
+.connector-sharing-copy {
+  margin-bottom: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.connector-sharing-form {
+  display: grid;
+  gap: 4px;
 }
 
 .server-list {

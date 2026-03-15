@@ -1,6 +1,7 @@
 """JSON-backed store exports for web-admin API."""
 
 from stores.json.employee_store import EmployeeStore
+from stores.json.agent_template_store import AgentTemplateStore
 from stores.json.external_mcp_store import ExternalMcpStore
 from stores.json.local_connector_store import LocalConnectorStore
 from stores.json.project_chat_store import ProjectChatStore
@@ -12,6 +13,7 @@ from stores.json.user_store import UserStore
 
 __all__ = [
     "EmployeeStore",
+    "AgentTemplateStore",
     "ExternalMcpStore",
     "LocalConnectorStore",
     "ProjectChatStore",

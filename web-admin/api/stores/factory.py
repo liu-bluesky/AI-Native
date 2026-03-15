@@ -66,6 +66,21 @@ def _create_employee_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_agent_template_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import AgentTemplateStore
+
+        return AgentTemplateStore(DATA_DIR)
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.agent_template_store import AgentTemplateStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return AgentTemplateStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_role_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
@@ -174,6 +189,7 @@ def _create_usage_store() -> Any:
 user_store = _StoreProxy(_create_user_store)
 role_store = _StoreProxy(_create_role_store)
 employee_store = _StoreProxy(_create_employee_store)
+agent_template_store = _StoreProxy(_create_agent_template_store)
 project_store = _StoreProxy(_create_project_store)
 project_chat_store = _StoreProxy(_create_project_chat_store)
 system_config_store = _StoreProxy(_create_system_config_store)
@@ -186,6 +202,7 @@ __all__ = [
     "user_store",
     "role_store",
     "employee_store",
+    "agent_template_store",
     "project_store",
     "project_chat_store",
     "system_config_store",

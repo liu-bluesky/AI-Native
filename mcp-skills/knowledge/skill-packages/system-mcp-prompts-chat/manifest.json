@@ -1,0 +1,11 @@
+{
+  "name": "系统MCP · prompts.chat",
+  "description": "导入自系统 MCP 服务 prompts.chat，包含 tools 10 / prompts 20 / resources 0。 共 30 项能力（tools 10 / prompts 20 / resources 0）",
+  "version": "1.0.0",
+  "tags": [
+    "system-mcp-import",
+    "employee-draft",
+    "system-mcp"
+  ],
+  "mcp_service": "prompts.chat"
+}

@@ -14,10 +14,12 @@ import zipfile
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-from core.deps import local_connector_store, require_auth, role_store
+from core.deps import local_connector_store, require_auth, role_store, user_store
 from core.role_permissions import has_permission, resolve_role_permissions
 from models.requests import (
+    LocalConnectorExternalAgentSharingUpdateReq,
     LocalConnectorHeartbeatReq,
+    LocalConnectorLlmSharingUpdateReq,
     LocalConnectorPairActivateReq,
     LocalConnectorPairCodeCreateReq,
     LocalConnectorWorkspacePickConsumeReq,
@@ -38,8 +40,12 @@ def _current_username(auth_payload: dict) -> str:
     return username or "unknown"
 
 
+def _current_role_id(auth_payload: dict) -> str:
+    return str(auth_payload.get("role") or "").strip().lower()
+
+
 def _is_admin_like(auth_payload: dict) -> bool:
-    role_id = str(auth_payload.get("role") or "").strip().lower()
+    role_id = _current_role_id(auth_payload)
     role = role_store.get(role_id)
     permissions = getattr(role, "permissions", [])
     resolved = resolve_role_permissions(permissions, role_id)
@@ -61,7 +67,79 @@ def _serialize_pair_code(item) -> dict[str, Any]:
     return payload
 
 
-def _serialize_connector(item) -> dict[str, Any]:
+def _normalize_text_list(value: Any, *, limit: int = 80) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_item in value:
+        item = str(raw_item or "").strip()[:limit]
+        if not item:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(item)
+    return normalized
+
+
+def _normalize_device_fingerprint(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    normalized = re.sub(r"[^a-z0-9._:-]+", "", normalized)
+    return normalized[:160]
+
+
+def _normalize_device_label(value: Any) -> str:
+    return str(value or "").strip()[:160]
+
+
+def _connector_llm_shared_with_usernames(item: Any) -> list[str]:
+    return _normalize_text_list(getattr(item, "llm_shared_with_usernames", []), limit=64)
+
+
+def _connector_llm_shared_with_roles(item: Any) -> list[str]:
+    return [item.lower() for item in _normalize_text_list(getattr(item, "llm_shared_with_roles", []), limit=64)]
+
+
+def _connector_llm_access_mode(item: Any, auth_payload: dict) -> str:
+    if _is_admin_like(auth_payload):
+        return "admin"
+    username = _current_username(auth_payload)
+    if str(getattr(item, "owner_username", "") or "").strip() == username:
+        return "owner"
+    if username in _connector_llm_shared_with_usernames(item):
+        return "shared_user"
+    if _current_role_id(auth_payload) in _connector_llm_shared_with_roles(item):
+        return "shared_role"
+    return ""
+
+
+def _connector_external_agent_shared_with_usernames(item: Any) -> list[str]:
+    return _normalize_text_list(getattr(item, "external_agent_shared_with_usernames", []), limit=64)
+
+
+def _connector_external_agent_shared_with_roles(item: Any) -> list[str]:
+    return [
+        item.lower()
+        for item in _normalize_text_list(getattr(item, "external_agent_shared_with_roles", []), limit=64)
+    ]
+
+
+def _connector_external_agent_access_mode(item: Any, auth_payload: dict) -> str:
+    if _is_admin_like(auth_payload):
+        return "admin"
+    username = _current_username(auth_payload)
+    if str(getattr(item, "owner_username", "") or "").strip() == username:
+        return "owner"
+    if username in _connector_external_agent_shared_with_usernames(item):
+        return "shared_user"
+    if _current_role_id(auth_payload) in _connector_external_agent_shared_with_roles(item):
+        return "shared_role"
+    return ""
+
+
+def _serialize_connector(item, auth_payload: dict | None = None) -> dict[str, Any]:
     payload = asdict(item)
     last_seen_raw = str(item.last_seen_at or "").strip()
     online = False
@@ -72,6 +150,30 @@ def _serialize_connector(item) -> dict[str, Any]:
         except ValueError:
             online = False
     payload["online"] = online
+    payload["llm_shared_with_usernames"] = _connector_llm_shared_with_usernames(item)
+    payload["llm_shared_with_roles"] = _connector_llm_shared_with_roles(item)
+    payload["llm_sharing_enabled"] = bool(
+        payload["llm_shared_with_usernames"] or payload["llm_shared_with_roles"]
+    )
+    payload["external_agent_shared_with_usernames"] = _connector_external_agent_shared_with_usernames(item)
+    payload["external_agent_shared_with_roles"] = _connector_external_agent_shared_with_roles(item)
+    payload["external_agent_sharing_enabled"] = bool(
+        payload["external_agent_shared_with_usernames"]
+        or payload["external_agent_shared_with_roles"]
+    )
+    payload["device_fingerprint"] = _normalize_device_fingerprint(getattr(item, "device_fingerprint", ""))
+    payload["device_label"] = _normalize_device_label(getattr(item, "device_label", "")) or str(
+        getattr(item, "connector_name", "") or ""
+    ).strip()
+    if auth_payload is not None:
+        access_mode = _connector_llm_access_mode(item, auth_payload)
+        external_agent_access_mode = _connector_external_agent_access_mode(item, auth_payload)
+        is_owner = str(getattr(item, "owner_username", "") or "").strip() == _current_username(auth_payload)
+        payload["llm_access_mode"] = access_mode
+        payload["external_agent_access_mode"] = external_agent_access_mode
+        payload["can_manage_llm_sharing"] = bool(_is_admin_like(auth_payload) or is_owner)
+        payload["can_manage_external_agent_sharing"] = bool(_is_admin_like(auth_payload) or is_owner)
+        payload["can_delete"] = bool(_is_admin_like(auth_payload) or is_owner)
     return payload
 
 
@@ -99,6 +201,74 @@ def _resolve_accessible_connector(connector_id: str, auth_payload: dict) -> Loca
     if str(getattr(item, "owner_username", "") or "").strip() != _current_username(auth_payload):
         raise HTTPException(403, "Connector access denied")
     return item
+
+
+def _resolve_manageable_connector(connector_id: str, auth_payload: dict) -> LocalConnectorRecord:
+    item = local_connector_store.get_connector(str(connector_id or "").strip())
+    if item is None:
+        raise HTTPException(404, "Connector not found")
+    if _is_admin_like(auth_payload):
+        return item
+    if str(getattr(item, "owner_username", "") or "").strip() != _current_username(auth_payload):
+        raise HTTPException(403, "Connector management denied")
+    return item
+
+
+def _parse_sort_datetime(value: Any) -> datetime:
+    raw = str(value or "").strip()
+    if not raw:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+
+
+def _list_connectors_by_owner_device(
+    owner_username: str,
+    device_fingerprint: str,
+) -> list[LocalConnectorRecord]:
+    normalized_owner = str(owner_username or "").strip()
+    normalized_fingerprint = _normalize_device_fingerprint(device_fingerprint)
+    if not normalized_owner or not normalized_fingerprint:
+        return []
+    items = [
+        item
+        for item in local_connector_store.list_connectors(owner_username=normalized_owner)
+        if _normalize_device_fingerprint(getattr(item, "device_fingerprint", "")) == normalized_fingerprint
+    ]
+    items.sort(
+        key=lambda item: (
+            _parse_sort_datetime(getattr(item, "updated_at", "")),
+            _parse_sort_datetime(getattr(item, "last_seen_at", "")),
+            _parse_sort_datetime(getattr(item, "created_at", "")),
+        ),
+        reverse=True,
+    )
+    return items
+
+
+def _find_legacy_connector_candidate(
+    *,
+    owner_username: str,
+    connector_name: str,
+    platform: str,
+) -> LocalConnectorRecord | None:
+    normalized_owner = str(owner_username or "").strip()
+    normalized_name = str(connector_name or "").strip().lower()
+    normalized_platform = str(platform or "").strip().lower()
+    if not normalized_owner or not normalized_name:
+        return None
+    candidates = [
+        item
+        for item in local_connector_store.list_connectors(owner_username=normalized_owner)
+        if not _normalize_device_fingerprint(getattr(item, "device_fingerprint", ""))
+        and str(getattr(item, "connector_name", "") or "").strip().lower() == normalized_name
+        and str(getattr(item, "platform", "") or "").strip().lower() == normalized_platform
+    ]
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
 
 
 def _normalize_installer_platform(value: str) -> str:
@@ -408,7 +578,33 @@ async def list_local_connectors(auth_payload: dict = Depends(require_auth)):
         items = local_connector_store.list_connectors()
     else:
         items = local_connector_store.list_connectors(owner_username=username)
-    return {"connectors": [_serialize_connector(item) for item in items]}
+    return {"connectors": [_serialize_connector(item, auth_payload) for item in items]}
+
+
+@router.get("/llm-share-options", dependencies=[Depends(require_auth)])
+async def list_local_connector_llm_share_options(
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    users = [
+        {
+            "username": str(item.username or "").strip(),
+            "role": str(item.role or "").strip().lower(),
+        }
+        for item in user_store.list_all()
+        if str(item.username or "").strip()
+    ]
+    roles = [
+        {
+            "id": str(item.id or "").strip().lower(),
+            "name": str(item.name or item.id or "").strip(),
+        }
+        for item in role_store.list_all()
+        if str(item.id or "").strip()
+    ]
+    users.sort(key=lambda item: (item["username"].lower(), item["role"]))
+    roles.sort(key=lambda item: item["id"])
+    return {"users": users, "roles": roles}
 
 
 @router.get("/desktop-artifacts", dependencies=[Depends(require_auth)])
@@ -440,6 +636,81 @@ async def list_pair_codes(auth_payload: dict = Depends(require_auth)):
     else:
         items = local_connector_store.list_pair_codes(owner_username=username)
     return {"pair_codes": [_serialize_pair_code(item) for item in items]}
+
+
+@router.patch("/{connector_id}/llm-sharing", dependencies=[Depends(require_auth)])
+async def update_local_connector_llm_sharing(
+    connector_id: str,
+    req: LocalConnectorLlmSharingUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    item = _resolve_manageable_connector(connector_id, auth_payload)
+    valid_usernames = {
+        str(user.username or "").strip()
+        for user in user_store.list_all()
+        if str(user.username or "").strip()
+    }
+    valid_roles = {
+        str(role.id or "").strip().lower()
+        for role in role_store.list_all()
+        if str(role.id or "").strip()
+    }
+    item.llm_shared_with_usernames = [
+        username
+        for username in _normalize_text_list(req.llm_shared_with_usernames, limit=64)
+        if username in valid_usernames and username != str(item.owner_username or "").strip()
+    ]
+    item.llm_shared_with_roles = [
+        role_id
+        for role_id in (
+            item.lower()
+            for item in _normalize_text_list(req.llm_shared_with_roles, limit=64)
+        )
+        if role_id in valid_roles
+    ]
+    item.updated_at = _now_iso()
+    local_connector_store.save_connector(item)
+    return {"status": "updated", "connector": _serialize_connector(item, auth_payload)}
+
+
+@router.patch("/{connector_id}/external-agent-sharing", dependencies=[Depends(require_auth)])
+async def update_local_connector_external_agent_sharing(
+    connector_id: str,
+    req: LocalConnectorExternalAgentSharingUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    item = _resolve_manageable_connector(connector_id, auth_payload)
+    valid_usernames = {
+        str(user.username or "").strip()
+        for user in user_store.list_all()
+        if str(user.username or "").strip()
+    }
+    valid_roles = {
+        str(role.id or "").strip().lower()
+        for role in role_store.list_all()
+        if str(role.id or "").strip()
+    }
+    item.external_agent_shared_with_usernames = [
+        username
+        for username in _normalize_text_list(
+            req.external_agent_shared_with_usernames,
+            limit=64,
+        )
+        if username in valid_usernames and username != str(item.owner_username or "").strip()
+    ]
+    item.external_agent_shared_with_roles = [
+        role_id
+        for role_id in (
+            item.lower()
+            for item in _normalize_text_list(req.external_agent_shared_with_roles, limit=64)
+        )
+        if role_id in valid_roles
+    ]
+    item.updated_at = _now_iso()
+    local_connector_store.save_connector(item)
+    return {"status": "updated", "connector": _serialize_connector(item, auth_payload)}
 
 
 @router.post("/pair-codes", dependencies=[Depends(require_auth)])
@@ -590,7 +861,22 @@ async def activate_pair(req: LocalConnectorPairActivateReq):
         raise HTTPException(410, "Pair code expired")
 
     now = _now_iso()
-    connector_id = local_connector_store.new_connector_id()
+    normalized_connector_name = str(req.connector_name or "").strip() or "Local Connector"
+    normalized_platform = str(req.platform or "").strip()
+    device_fingerprint = _normalize_device_fingerprint(req.device_fingerprint)
+    device_label = _normalize_device_label(req.device_label) or normalized_connector_name
+    duplicate_records = _list_connectors_by_owner_device(
+        pair_code.owner_username,
+        device_fingerprint,
+    )
+    reused_record = duplicate_records[0] if duplicate_records else None
+    if reused_record is None:
+        reused_record = _find_legacy_connector_candidate(
+            owner_username=pair_code.owner_username,
+            connector_name=normalized_connector_name,
+            platform=normalized_platform,
+        )
+    connector_id = str(getattr(reused_record, "id", "") or "").strip() or local_connector_store.new_connector_id()
     connector_token = local_connector_store.new_connector_token()
     manifest = req.manifest if isinstance(req.manifest, dict) else {}
     health = req.health if isinstance(req.health, dict) else {}
@@ -600,8 +886,18 @@ async def activate_pair(req: LocalConnectorPairActivateReq):
         id=connector_id,
         owner_username=pair_code.owner_username,
         connector_token=connector_token,
-        connector_name=str(req.connector_name or "").strip() or "Local Connector",
-        platform=str(req.platform or "").strip(),
+        connector_name=normalized_connector_name,
+        device_fingerprint=device_fingerprint or str(getattr(reused_record, "device_fingerprint", "") or "").strip(),
+        device_label=device_label or str(getattr(reused_record, "device_label", "") or "").strip(),
+        llm_shared_with_usernames=list(getattr(reused_record, "llm_shared_with_usernames", []) or []),
+        llm_shared_with_roles=list(getattr(reused_record, "llm_shared_with_roles", []) or []),
+        external_agent_shared_with_usernames=list(
+            getattr(reused_record, "external_agent_shared_with_usernames", []) or []
+        ),
+        external_agent_shared_with_roles=list(
+            getattr(reused_record, "external_agent_shared_with_roles", []) or []
+        ),
+        platform=normalized_platform,
         app_version=str(req.app_version or "").strip(),
         advertised_url=str(req.advertised_url or "").strip(),
         status="online",
@@ -609,12 +905,16 @@ async def activate_pair(req: LocalConnectorPairActivateReq):
         capabilities=capabilities,
         manifest=manifest,
         health=health,
-        paired_at=now,
+        paired_at=str(getattr(reused_record, "paired_at", "") or "").strip() or now,
         last_seen_at=now,
-        created_at=now,
+        created_at=str(getattr(reused_record, "created_at", "") or "").strip() or now,
         updated_at=now,
     )
     local_connector_store.save_connector(record)
+    for duplicate in duplicate_records[1:]:
+        duplicate_id = str(getattr(duplicate, "id", "") or "").strip()
+        if duplicate_id and duplicate_id != connector_id:
+            local_connector_store.delete_connector(duplicate_id)
     local_connector_store.consume_pair_code(pair_code.code, connector_id)
     return {
         "connector_id": connector_id,

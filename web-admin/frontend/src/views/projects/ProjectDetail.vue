@@ -757,8 +757,12 @@ function openProjectChat() {
     ElMessage.warning("当前项目 ID 无效");
     return;
   }
-  const target = `/ai/chat?project_id=${encodeURIComponent(currentProjectId)}`;
-  window.location.hash = `#${target}`;
+  void router.push({
+    path: "/ai/chat",
+    query: {
+      project_id: currentProjectId,
+    },
+  });
 }
 
 function openAddMember() {

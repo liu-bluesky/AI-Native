@@ -98,6 +98,54 @@ class EmployeeDraftGenerateReq(BaseModel):
     temperature: float | None = None
 
 
+class EmployeeAgentTemplateImportReq(BaseModel):
+    source_type: str = "git"
+    source: str = ""
+    subdirectory: str = ""
+    branch: str = ""
+    limit: int = 40
+
+
+class AgentTemplateSaveReq(BaseModel):
+    name: str = ""
+    name_zh: str = ""
+    description: str = ""
+    content: str = ""
+    source_name: str = ""
+    source_url: str = ""
+    relative_path: str = ""
+    draft: dict[str, Any] = {}
+
+
+class AgentTemplateBatchSaveReq(BaseModel):
+    templates: list[AgentTemplateSaveReq] = []
+
+
+class AgentTemplateBatchDeleteReq(BaseModel):
+    template_ids: list[str] = []
+
+
+class AgentTemplateDeduplicateReq(BaseModel):
+    template_ids: list[str] = []
+    source_type: str = "internal"
+    provider_id: str = ""
+    model_name: str = ""
+    local_connector_id: str = ""
+    external_agent_type: str = "codex_cli"
+    temperature: float | None = None
+    apply: bool = True
+
+
+class AgentTemplateTranslateNamesReq(BaseModel):
+    template_ids: list[str] = []
+    source_type: str = "internal"
+    provider_id: str = ""
+    model_name: str = ""
+    local_connector_id: str = ""
+    external_agent_type: str = "codex_cli"
+    force: bool = False
+
+
 class EmployeeExternalSkillSuggestReq(BaseModel):
     name: str = ""
     description: str = ""
@@ -208,6 +256,7 @@ class ProjectChatReq(BaseModel):
     model_name: str = ""
     temperature: float = 0.2
     max_tokens: int | None = None
+    system_prompt: str | None = None
     attachment_names: list[str] = []
     images: list[str] = []
     enabled_project_tool_names: list[str] = []
@@ -287,6 +336,8 @@ class LocalConnectorPairCodeCreateReq(BaseModel):
 class LocalConnectorPairActivateReq(BaseModel):
     pair_code: str
     connector_name: str = ""
+    device_fingerprint: str = ""
+    device_label: str = ""
     platform: str = ""
     app_version: str = ""
     advertised_url: str = ""
@@ -305,6 +356,16 @@ class LocalConnectorHeartbeatReq(BaseModel):
 class LocalConnectorWorkspacePickConsumeReq(BaseModel):
     session_id: str
     session_token: str
+
+
+class LocalConnectorLlmSharingUpdateReq(BaseModel):
+    llm_shared_with_usernames: list[str] = []
+    llm_shared_with_roles: list[str] = []
+
+
+class LocalConnectorExternalAgentSharingUpdateReq(BaseModel):
+    external_agent_shared_with_usernames: list[str] = []
+    external_agent_shared_with_roles: list[str] = []
 
 
 class SystemConfigUpdateReq(BaseModel):

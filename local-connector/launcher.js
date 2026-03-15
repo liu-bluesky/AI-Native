@@ -8,6 +8,7 @@ const { spawn } = require("node:child_process");
 
 const ROOT_DIR = path.resolve(process.env.LOCAL_CONNECTOR_APP_ROOT || __dirname);
 const DATA_DIR = path.resolve(process.env.LOCAL_CONNECTOR_DATA_DIR || ROOT_DIR);
+loadEnvFiles([path.join(ROOT_DIR, ".env"), path.join(DATA_DIR, ".env")]);
 const LOG_DIR = path.join(DATA_DIR, "logs");
 const BOOTSTRAP_LOG = path.join(LOG_DIR, "bootstrap.log");
 const CONNECTOR_LOG = path.join(LOG_DIR, "connector.log");
@@ -20,6 +21,51 @@ const PRIMARY_PTY_PACKAGE_DIR = path.join(ROOT_DIR, "node_modules", "@homebridge
 const FALLBACK_PTY_PACKAGE_DIR = path.join(ROOT_DIR, "node_modules", "node-pty");
 const AUTO_INSTALL_DISABLED = String(process.env.LOCAL_CONNECTOR_DISABLE_AUTO_INSTALL || "").trim() === "1";
 let activeServerProcess = null;
+
+function parseEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return {};
+  }
+  const payload = {};
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = String(rawLine || "").trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const normalizedLine = line.startsWith("export ") ? line.slice(7).trim() : line;
+    const separatorIndex = normalizedLine.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    const key = normalizedLine.slice(0, separatorIndex).trim();
+    if (!key) {
+      continue;
+    }
+    let value = normalizedLine.slice(separatorIndex + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith("\"") && value.endsWith("\"")) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    payload[key] = value;
+  }
+  return payload;
+}
+
+function loadEnvFiles(filePaths) {
+  const merged = {};
+  for (const filePath of filePaths) {
+    Object.assign(merged, parseEnvFile(filePath));
+  }
+  for (const [key, value] of Object.entries(merged)) {
+    if (process.env[key] === undefined) {
+      process.env[key] = String(value);
+    }
+  }
+}
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });

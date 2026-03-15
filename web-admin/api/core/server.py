@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import get_settings
 from routers import (
+    agent_templates,
     init_auth,
     system_config,
     local_connectors,
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
 
     for r in (
         init_auth,
+        agent_templates,
         system_config,
         local_connectors,
         projects,

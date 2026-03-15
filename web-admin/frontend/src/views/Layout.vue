@@ -17,7 +17,7 @@
             :key="item.path"
             type="button"
             class="chat-quick-nav__button"
-            :class="{ 'is-active': route.path === item.path }"
+            :class="{ 'is-active': isChatQuickNavActive(item.path) }"
             @click="router.push(item.path)"
           >
             <el-icon><component :is="item.icon" /></el-icon>
@@ -46,6 +46,13 @@
             <el-menu-item v-if="canMenu('menu.employees')" index="/employees">
               <el-icon><User /></el-icon>
               <span>员工管理</span>
+            </el-menu-item>
+            <el-menu-item
+              v-if="canMenu('menu.employees')"
+              index="/agent-templates"
+            >
+              <el-icon><Document /></el-icon>
+              <span>智能体模板</span>
             </el-menu-item>
             <el-menu-item
               v-if="canMenu('menu.employees.create')"
@@ -150,7 +157,7 @@ import { clearPermissionArray, hasPermission } from "@/utils/permissions.js";
 const route = useRoute();
 const router = useRouter();
 const username = computed(() => localStorage.getItem("username") || "admin");
-const isChatRoute = computed(() => route.path === "/ai/chat");
+const isChatRoute = computed(() => route.path.startsWith("/ai/chat"));
 const isEmbeddedMode = computed(() => {
   if (typeof window === "undefined") return false;
   return new URLSearchParams(window.location.search).get("embedded") === "1";
@@ -159,6 +166,7 @@ const chatQuickNavItems = computed(() =>
   [
     { path: "/ai/chat", label: "AI 对话", icon: ChatDotRound, permission: "menu.ai.chat" },
     { path: "/projects", label: "项目", icon: Folder, permission: "menu.projects" },
+    { path: "/agent-templates", label: "模板", icon: Document, permission: "menu.employees" },
     { path: "/employees", label: "员工", icon: User, permission: "menu.employees" },
     { path: "/skills", label: "技能", icon: SetUp, permission: "menu.skills" },
     { path: "/skill-resources", label: "资源", icon: SetUp, permission: "menu.skills" },
@@ -169,6 +177,15 @@ const chatQuickNavItems = computed(() =>
 
 function canMenu(permissionKey) {
   return hasPermission(permissionKey);
+}
+
+function isChatQuickNavActive(path) {
+  const normalized = String(path || "").trim();
+  if (!normalized) return false;
+  if (normalized === "/ai/chat") {
+    return route.path.startsWith("/ai/chat");
+  }
+  return route.path === normalized;
 }
 
 function logout() {

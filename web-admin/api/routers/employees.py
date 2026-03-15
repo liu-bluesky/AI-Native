@@ -14,6 +14,7 @@ from core.deps import ensure_permission, require_auth, employee_store, project_s
 from core.role_permissions import has_permission
 from services.external_rule_service import suggest_external_rules as build_external_rule_suggestions
 from services.external_skill_service import suggest_external_skills as build_external_skill_suggestions
+from services.employee_template_import_service import import_agent_templates
 from stores.json.employee_store import EmployeeConfig, _now_iso
 from services.system_mcp_discovery import list_system_mcp_skills
 from stores.mcp_bridge import (
@@ -27,7 +28,7 @@ from stores.mcp_bridge import (
     skill_store,
     skills_now_iso,
 )
-from models.requests import EmployeeCreateReq, EmployeeDraftCreateReq, EmployeeDraftGenerateReq, EmployeeExternalRuleSuggestReq, EmployeeExternalSkillSuggestReq, EmployeeUpdateReq
+from models.requests import EmployeeAgentTemplateImportReq, EmployeeCreateReq, EmployeeDraftCreateReq, EmployeeDraftGenerateReq, EmployeeExternalRuleSuggestReq, EmployeeExternalSkillSuggestReq, EmployeeUpdateReq
 from core.config import get_settings
 
 def _require_employee_permission(auth_payload: dict = Depends(require_auth)) -> None:
@@ -1233,6 +1234,29 @@ async def create_employee(req: EmployeeCreateReq, auth_payload: dict = Depends(r
         auth_payload=auth_payload,
     )
     return {"status": "created", "employee": _serialize_employee_payload(emp, auth_payload)}
+
+
+@router.post("/import-agent-templates")
+async def preview_agent_templates(
+    req: EmployeeAgentTemplateImportReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    ensure_permission(auth_payload, "menu.employees.create")
+    templates = import_agent_templates(
+        source_type=req.source_type,
+        source=req.source,
+        subdirectory=req.subdirectory,
+        branch=req.branch,
+        limit=req.limit,
+    )
+    return {
+        "templates": templates,
+        "count": len(templates),
+        "source_type": _normalize_text_value(req.source_type, limit=20) or "git",
+        "source": _normalize_text_value(req.source, limit=1000),
+        "subdirectory": _normalize_text_value(req.subdirectory, limit=400),
+        "branch": _normalize_text_value(req.branch, limit=120),
+    }
 
 
 @router.post("/external-skill-suggestions")

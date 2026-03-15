@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-layout" v-loading="loading">
+  <div v-if="!isSettingsCenterRoute" class="chat-layout" v-loading="loading">
     <div class="chat-main">
       <div class="chat-shell">
         <aside class="chat-conversation-sidebar">
@@ -1291,13 +1291,10 @@
     </div>
   </el-dialog>
 
-  <!-- Settings Dialog -->
-  <el-dialog
-    v-model="showSettingsDialog"
-    fullscreen
-    :show-close="false"
-    destroy-on-close
-    class="settings-center-dialog"
+  <div
+    v-if="isSettingsCenterRoute"
+    class="settings-center-page"
+    v-loading="loading"
   >
     <div class="settings-center-shell">
       <aside class="settings-center-sidebar">
@@ -1313,13 +1310,13 @@
             <el-button
               text
               class="settings-center-close-button"
-              @click="showSettingsDialog = false"
+              @click="closeSettingsCenter"
               >关闭</el-button
             >
           </div>
 
           <div class="settings-center-sidebar-copy">
-            当前对话设置和常用管理页都放在这里，左侧切换，右侧直接查看和编辑。
+            当前对话设置和平台管理页统一放到这个真实路由里，左侧切换，右侧直接查看和编辑。
           </div>
 
           <div class="settings-center-nav-group">
@@ -1357,7 +1354,7 @@
               >
                 <span class="settings-center-nav-item__row">
                   <span class="settings-center-nav-item__label">{{ item.label }}</span>
-                  <span class="settings-center-nav-item__badge">管理页</span>
+                  <span class="settings-center-nav-item__badge">当前页</span>
                 </span>
                 <span v-if="item.desc" class="settings-center-nav-item__desc">{{
                   item.desc
@@ -1401,7 +1398,7 @@
               模式：{{ isExternalAgentMode ? externalAgentDisplayLabel : "系统对话" }}
             </span>
             <span>
-              面板：{{ activeSettingsPanelItem?.kind === "route" ? "管理页" : "对话配置" }}
+              面板：{{ activeSettingsPanelItem?.kind === "route" ? "平台页面" : "对话配置" }}
             </span>
           </div>
         </div>
@@ -2449,27 +2446,25 @@
               </el-form>
             </el-tab-pane>
           </el-tabs>
-
         </div>
 
-        <div
-          v-else
-          class="settings-center-stage__body settings-center-stage__body--frame"
-        >
-          <iframe
-            v-if="activeSettingsIframeSrc"
-            class="settings-center-frame"
-            :src="activeSettingsIframeSrc"
-            referrerpolicy="no-referrer"
-          />
+        <div v-else class="settings-center-stage__body settings-center-stage__body--inline">
+          <router-view class="settings-center-inline-page" />
         </div>
       </section>
     </div>
-  </el-dialog>
+  </div>
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
+import {
+  computed,
+  onMounted,
+  onUnmounted,
+  ref,
+  watch,
+  nextTick,
+} from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ExternalMcpManager from "@/components/ExternalMcpManager.vue";
@@ -2497,6 +2492,11 @@ import {
   pickWorkspaceFile,
   toWorkspaceRelativePath,
 } from "@/utils/workspace-picker.js";
+import {
+  buildChatSettingsRoute,
+  inferSettingsPanelFromPath,
+  isChatSettingsRoutePath,
+} from "@/utils/chat-settings-route.js";
 
 // 配置 marked 以支持代码高亮和换行
 marked.setOptions({
@@ -2566,6 +2566,7 @@ markdownRenderer.code = ({ text, lang, escaped }) => {
 
 const route = useRoute();
 const router = useRouter();
+const CHAT_BASE_ROUTE_PATH = "/ai/chat";
 
 const HIGH_RISK_RULES = [
   {
@@ -2903,7 +2904,6 @@ const globalDefaultModelName = ref("");
 const temperature = ref(0.1);
 const systemPrompt = ref("");
 const activeMcpSource = ref("system");
-const showSettingsDialog = ref(false);
 const activeSettingsPanel = ref("chat");
 const activeSystemScope = ref("project_related");
 const selectedProjectToolNames = ref([]);
@@ -3232,6 +3232,14 @@ const settingsCenterItems = computed(() =>
       permission: "menu.projects",
     },
     {
+      id: "agent-templates",
+      label: "智能体模板",
+      desc: "沉淀行业模板，再创建员工",
+      kind: "route",
+      path: "/agent-templates",
+      permission: "menu.employees",
+    },
+    {
       id: "employees",
       label: "员工管理",
       desc: "管理员工与能力绑定",
@@ -3295,12 +3303,9 @@ const activeSettingsPanelItem = computed(
     settingsCenterItems.value[0] ||
     null,
 );
-const activeSettingsIframeSrc = computed(() => {
-  const item = activeSettingsPanelItem.value;
-  if (!item || item.kind !== "route" || !item.path) return "";
-  if (typeof window === "undefined") return "";
-  return `${window.location.pathname}?embedded=1#${item.path}`;
-});
+const isSettingsCenterRoute = computed(() =>
+  isChatSettingsRoutePath(route.path),
+);
 const selectedEmployeeSummary = computed(() => {
   const selectedCount = Array.isArray(selectedEmployeeIds.value)
     ? selectedEmployeeIds.value.length
@@ -6444,13 +6449,31 @@ function toggleComposerAssist(actionId) {
   draftText.value = String(action.seedText || "").trim();
 }
 
+function syncSettingsRouteState() {
+  if (!isChatSettingsRoutePath(route.path)) {
+    activeSettingsPanel.value = "chat";
+    return;
+  }
+  const requestedPanel = inferSettingsPanelFromPath(route.path);
+  const matched =
+    settingsCenterItems.value.find((item) => item.id === requestedPanel) ||
+    settingsInternalItems.value[0] ||
+    settingsCenterItems.value[0] ||
+    null;
+  if (!matched) return;
+  activeSettingsPanel.value = matched.id;
+}
+
 function openSettingsCenter(panelId = "chat") {
   const normalized = String(panelId || "chat").trim() || "chat";
   const matched = settingsCenterItems.value.find(
     (item) => item.id === normalized,
   );
-  activeSettingsPanel.value = matched?.id || "chat";
-  showSettingsDialog.value = true;
+  void router.push(buildChatSettingsRoute(matched?.path || "/chat"));
+}
+
+function closeSettingsCenter() {
+  void router.push(CHAT_BASE_ROUTE_PATH);
 }
 
 function handleProjectCommand(projectId) {
@@ -7073,9 +7096,6 @@ async function saveProjectChatSettings(silent = false) {
     await fetchProvidersByProject(projectId);
     if (selectedChatMode.value === "external_agent") {
       await prepareExternalAgentSession({ force: true, silent: true });
-    }
-    if (!silent) {
-      showSettingsDialog.value = false;
     }
     markAutoSaveSynced();
     autoSaveState.value = "saved";
@@ -8739,12 +8759,25 @@ watch(selectedProviderId, () => {
   handleProviderChange();
 });
 
-watch(showSettingsDialog, async (visible) => {
-  if (!visible) {
-    return;
-  }
-  await refreshLocalConnectorCatalog(true);
-});
+watch(
+  () => [
+    route.path,
+    settingsCenterItems.value.map((item) => item.id).join("|"),
+  ],
+  () => {
+    syncSettingsRouteState();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => isSettingsCenterRoute.value,
+  async (visible) => {
+    if (!visible) return;
+    await refreshLocalConnectorCatalog(true);
+  },
+  { immediate: true },
+);
 
 watch(
   [
@@ -11831,29 +11864,20 @@ onUnmounted(() => {
   padding-top: 4px;
 }
 
-:deep(.settings-center-dialog .el-dialog) {
-  margin: 0 !important;
-  border-radius: 0;
+.settings-center-page {
+  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background:
     radial-gradient(circle at top left, rgba(255, 244, 214, 0.5), transparent 24%),
     linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
-}
-
-:deep(.settings-center-dialog .el-dialog__header) {
-  display: none;
-}
-
-:deep(.settings-center-dialog .el-dialog__body) {
-  padding: 0;
-  height: 100vh;
-  overflow: hidden;
 }
 
 .settings-center-shell {
   display: grid;
   grid-template-columns: 272px minmax(0, 1fr);
   gap: 18px;
-  height: 100vh;
+  height: 100%;
   padding: 14px 16px 16px;
   background: transparent;
 }
@@ -12143,8 +12167,14 @@ onUnmounted(() => {
   padding: 14px 14px 28px;
 }
 
-.settings-center-stage__body--frame {
-  padding: 12px;
+.settings-center-stage__body--inline {
+  min-width: 0;
+  overflow: auto;
+  padding: 14px 14px 28px;
+}
+
+.settings-center-inline-page {
+  min-width: 0;
 }
 
 .settings-tabs {
@@ -12197,16 +12227,6 @@ onUnmounted(() => {
 
 .settings-tabs :deep(.el-tab-pane) {
   width: min(100%, 940px);
-}
-
-.settings-center-frame {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  outline: 0;
 }
 
 .chat-model-select {
@@ -13345,10 +13365,6 @@ onUnmounted(() => {
 
   .settings-summary-status {
     width: 100%;
-  }
-
-  .settings-center-frame {
-    border-radius: 0;
   }
 }
 </style>

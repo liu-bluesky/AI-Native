@@ -496,9 +496,15 @@ async def _build_connector_chat_provider(connector: Any) -> dict[str, Any] | Non
     if not models:
         return None
     connector_name = str(getattr(connector, "connector_name", "") or "").strip() or connector_id
+    connector_owner = str(getattr(connector, "owner_username", "") or "").strip()
+    provider_name = (
+        f"本地连接器 · {connector_name} · {connector_owner}"
+        if connector_owner
+        else f"本地连接器 · {connector_name}"
+    )
     return {
         "id": build_local_connector_provider_id(connector_id),
-        "name": f"本地连接器 · {connector_name}",
+        "name": provider_name,
         "provider_type": "local-connector",
         "base_url": connector_base_url(connector),
         "models": models,
@@ -507,6 +513,7 @@ async def _build_connector_chat_provider(connector: Any) -> dict[str, Any] | Non
         "is_default": False,
         "connector_id": connector_id,
         "connector_name": connector_name,
+        "connector_owner_username": connector_owner,
     }
 
 
@@ -516,7 +523,7 @@ async def _resolve_provider_runtime_target(
 ) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
     connector_id = parse_local_connector_provider_id(provider_id)
     if connector_id:
-        connector = _resolve_accessible_local_connector(connector_id, auth_payload)
+        connector = _resolve_accessible_local_connector_for_llm(connector_id, auth_payload)
         if connector is None:
             raise HTTPException(404, "Local connector not found")
         provider = await _build_connector_chat_provider(connector)
@@ -1149,19 +1156,82 @@ def _current_username(auth_payload: dict) -> str:
     return username or "unknown"
 
 
+def _current_role_id(auth_payload: dict) -> str:
+    return str(auth_payload.get("role") or "").strip().lower()
+
+
 def _is_admin_like(auth_payload: dict) -> bool:
-    role_id = str(auth_payload.get("role") or "").strip().lower()
+    role_id = _current_role_id(auth_payload)
     role = role_store.get(role_id)
     permissions = getattr(role, "permissions", [])
     resolved = resolve_role_permissions(permissions, role_id)
     return "*" in set(resolved)
 
 
-def _list_accessible_local_connectors(auth_payload: dict) -> list[Any]:
-    username = _current_username(auth_payload)
+def _normalize_text_list(value: Any, *, limit: int = 80) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_item in value:
+        item = str(raw_item or "").strip()[:limit]
+        if not item:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(item)
+    return normalized
+
+
+def _connector_llm_shared_with_usernames(item: Any) -> list[str]:
+    return _normalize_text_list(getattr(item, "llm_shared_with_usernames", []), limit=64)
+
+
+def _connector_llm_shared_with_roles(item: Any) -> list[str]:
+    return [item.lower() for item in _normalize_text_list(getattr(item, "llm_shared_with_roles", []), limit=64)]
+
+
+def _connector_llm_accessible(item: Any, auth_payload: dict) -> bool:
     if _is_admin_like(auth_payload):
-        return local_connector_store.list_connectors()
-    return local_connector_store.list_connectors(owner_username=username)
+        return True
+    username = _current_username(auth_payload)
+    if str(getattr(item, "owner_username", "") or "").strip() == username:
+        return True
+    if username in _connector_llm_shared_with_usernames(item):
+        return True
+    return _current_role_id(auth_payload) in _connector_llm_shared_with_roles(item)
+
+
+def _connector_external_agent_shared_with_usernames(item: Any) -> list[str]:
+    return _normalize_text_list(getattr(item, "external_agent_shared_with_usernames", []), limit=64)
+
+
+def _connector_external_agent_shared_with_roles(item: Any) -> list[str]:
+    return [
+        item.lower()
+        for item in _normalize_text_list(getattr(item, "external_agent_shared_with_roles", []), limit=64)
+    ]
+
+
+def _connector_external_agent_accessible(item: Any, auth_payload: dict) -> bool:
+    if _is_admin_like(auth_payload):
+        return True
+    username = _current_username(auth_payload)
+    if str(getattr(item, "owner_username", "") or "").strip() == username:
+        return True
+    if username in _connector_external_agent_shared_with_usernames(item):
+        return True
+    return _current_role_id(auth_payload) in _connector_external_agent_shared_with_roles(item)
+
+
+def _list_accessible_local_connectors(auth_payload: dict) -> list[Any]:
+    return [
+        item
+        for item in local_connector_store.list_connectors()
+        if _connector_external_agent_accessible(item, auth_payload)
+    ]
 
 
 def _resolve_accessible_local_connector(
@@ -1174,9 +1244,28 @@ def _resolve_accessible_local_connector(
     item = local_connector_store.get_connector(normalized)
     if item is None:
         return None
-    if _is_admin_like(auth_payload):
-        return item
-    return item if str(getattr(item, "owner_username", "") or "").strip() == _current_username(auth_payload) else None
+    return item if _connector_external_agent_accessible(item, auth_payload) else None
+
+
+def _list_accessible_local_connectors_for_llm(auth_payload: dict) -> list[Any]:
+    return [
+        item
+        for item in local_connector_store.list_connectors()
+        if _connector_llm_accessible(item, auth_payload)
+    ]
+
+
+def _resolve_accessible_local_connector_for_llm(
+    connector_id: str,
+    auth_payload: dict,
+) -> Any | None:
+    normalized = str(connector_id or "").strip()
+    if not normalized:
+        return None
+    item = local_connector_store.get_connector(normalized)
+    if item is None:
+        return None
+    return item if _connector_llm_accessible(item, auth_payload) else None
 
 
 def _serialize_chat_connector(item: Any) -> dict[str, Any]:
@@ -1366,7 +1455,7 @@ async def chat_without_project(
     llm_service = get_llm_provider_service()
     try:
         if provider_mode == "local_connector":
-            connector = _resolve_accessible_local_connector(
+            connector = _resolve_accessible_local_connector_for_llm(
                 parse_local_connector_provider_id(provider_id),
                 auth_payload,
             )
@@ -2230,9 +2319,14 @@ async def list_project_chat_providers(
         str(chat_settings.get("local_connector_id") or "").strip(),
         auth_payload,
     )
-    connector_provider = await _build_connector_chat_provider(selected_connector) if selected_connector is not None else None
-    if connector_provider is not None:
+    connector_provider_ids = {str(item.get("id") or "").strip() for item in providers}
+    for connector in _list_accessible_local_connectors_for_llm(auth_payload):
+        connector_provider = await _build_connector_chat_provider(connector)
+        connector_provider_id = str((connector_provider or {}).get("id") or "").strip()
+        if connector_provider is None or not connector_provider_id or connector_provider_id in connector_provider_ids:
+            continue
         providers = [*providers, connector_provider]
+        connector_provider_ids.add(connector_provider_id)
     selected_external_agent_type = normalize_external_agent_type(str(chat_settings.get("external_agent_type") or "codex_cli"))
     external_agent = next(
         (
@@ -3102,7 +3196,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             llm_service = get_llm_provider_service()
 
             if provider_mode == "local_connector":
-                connector = _resolve_accessible_local_connector(
+                connector = _resolve_accessible_local_connector_for_llm(
                     parse_local_connector_provider_id(provider_id),
                     auth_payload,
                 )
@@ -3469,7 +3563,7 @@ async def stream_project_chat(
         )
         try:
             if provider_mode == "local_connector":
-                connector = _resolve_accessible_local_connector(
+                connector = _resolve_accessible_local_connector_for_llm(
                     parse_local_connector_provider_id(provider_id),
                     auth_payload,
                 )

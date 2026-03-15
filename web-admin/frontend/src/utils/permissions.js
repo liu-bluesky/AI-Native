@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 
 const PERMISSION_STORAGE_KEY = 'permissions'
+const CHAT_SETTINGS_ROUTE_PREFIX = '/ai/chat/settings'
 const permissionStateVersion = ref(0)
 
 const PATH_PERMISSION_MAP = [
@@ -8,6 +9,7 @@ const PATH_PERMISSION_MAP = [
   { prefix: '/users', permission: 'menu.users' },
   { prefix: '/roles', permission: 'menu.roles' },
   { prefix: '/projects', permission: 'menu.projects' },
+  { prefix: '/agent-templates', permission: 'menu.employees' },
   { prefix: '/employees/create', permission: 'menu.employees.create' },
   { prefix: '/employees', permission: 'menu.employees' },
   { prefix: '/skill-resources', permission: 'menu.skills' },
@@ -29,6 +31,7 @@ const LEGACY_USER_PERMISSION_KEYS = new Set([
 ])
 const FALLBACK_PATHS = [
   '/ai/chat',
+  '/agent-templates',
   '/employees',
   '/projects',
   '/skill-resources',
@@ -90,8 +93,13 @@ export function hasPermission(permissionKey) {
 }
 
 export function pathPermission(path) {
-  const currentPath = String(path || '').trim()
+  let currentPath = String(path || '').trim()
   if (!currentPath) return ''
+  if (currentPath.startsWith(CHAT_SETTINGS_ROUTE_PREFIX)) {
+    const stripped = currentPath.slice(CHAT_SETTINGS_ROUTE_PREFIX.length)
+    currentPath = stripped.startsWith('/') ? stripped : `/${stripped}`
+    if (!currentPath || currentPath === '/') currentPath = '/ai/chat'
+  }
   const matched = PATH_PERMISSION_MAP.find(
     (item) => currentPath === item.prefix || currentPath.startsWith(`${item.prefix}/`),
   )

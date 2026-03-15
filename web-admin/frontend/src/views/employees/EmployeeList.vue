@@ -2,9 +2,20 @@
   <div>
     <div class="toolbar">
       <h3>AI 员工列表</h3>
-      <el-button v-if="canCreateEmployeeEntry" type="primary" @click="$router.push('/employees/create')"
-        >创建员工</el-button
-      >
+      <div class="toolbar-actions">
+        <el-button
+          v-if="canCreateEmployeeEntry"
+          plain
+          @click="goToAgentTemplates"
+          >行业智能体模板</el-button
+        >
+        <el-button
+          v-if="canCreateEmployeeEntry"
+          type="primary"
+          @click="$router.push('/employees/create')"
+          >创建员工</el-button
+        >
+      </div>
     </div>
     <el-alert
       class="usage-alert"
@@ -424,11 +435,355 @@
         <el-button @click="showManualDialog = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="showTemplateImportDialog"
+      class="template-import-dialog"
+      modal-class="template-import-overlay"
+      fullscreen
+      append-to-body
+      :show-close="false"
+      :z-index="4000"
+      destroy-on-close
+      @closed="resetTemplateImportDialog"
+    >
+      <div class="template-import-shell">
+        <div class="template-import-hero">
+          <div class="template-import-hero__copy">
+            <div class="template-import-hero__eyebrow">Employee Import</div>
+            <div class="template-import-hero__title">从 Agent 模板导入员工</div>
+            <div class="template-import-hero__text">
+              直接读取 Git 仓库或本地目录中的 Markdown agent 文件，映射成员工草稿后再创建到员工列表。
+            </div>
+          </div>
+          <div class="template-import-hero__actions">
+            <div class="template-import-hero__status">
+              {{ templateImportStatusText }}
+            </div>
+            <el-button @click="showTemplateImportDialog = false">关闭</el-button>
+            <el-button
+              type="primary"
+              :disabled="!selectedImportedDraftEntries.length"
+              :loading="templateImportCreating"
+              @click="confirmTemplateImport"
+            >
+              {{ templateImportSubmitText }}
+            </el-button>
+          </div>
+        </div>
+
+        <div class="template-import-layout">
+          <div class="template-import-source">
+              <div class="template-import-section__head">
+                <div class="template-import-section__title">模板来源</div>
+                <div class="template-import-section__hint">
+                  支持 Git 仓库 URL、本地目录，也支持直接粘贴 GitHub 的 `tree/...` 子目录网页链接。
+                </div>
+              </div>
+              <el-form label-position="top" class="template-import-form">
+                <el-form-item label="来源类型">
+                  <el-radio-group v-model="templateImportForm.source_type">
+                    <el-radio-button label="git">Git 仓库</el-radio-button>
+                    <el-radio-button label="local">本地目录</el-radio-button>
+                  </el-radio-group>
+                </el-form-item>
+                <el-form-item
+                  :label="templateImportForm.source_type === 'git' ? '仓库地址' : '目录路径'"
+                >
+                  <el-input
+                    v-model="templateImportForm.source"
+                    :placeholder="
+                      templateImportForm.source_type === 'git'
+                        ? '例如：https://github.com/msitarzewski/agency-agents/tree/main/engineering'
+                        : '例如：./agents 或 /abs/path/to/templates'
+                    "
+                  />
+                </el-form-item>
+                <div class="template-import-source__row">
+                  <el-form-item label="子目录">
+                    <el-input
+                      v-model="templateImportForm.subdirectory"
+                      placeholder="可选，例如：engineering"
+                    />
+                  </el-form-item>
+                  <el-form-item
+                    v-if="templateImportForm.source_type === 'git'"
+                    label="分支"
+                  >
+                    <el-input
+                      v-model="templateImportForm.branch"
+                      placeholder="可选"
+                    />
+                  </el-form-item>
+                  <el-form-item v-else label="读取上限">
+                    <el-input-number
+                      v-model="templateImportForm.limit"
+                      :min="1"
+                      :max="80"
+                    />
+                  </el-form-item>
+                </div>
+                <el-form-item
+                  v-if="templateImportForm.source_type === 'git'"
+                  label="读取上限"
+                >
+                  <el-input-number
+                    v-model="templateImportForm.limit"
+                    :min="1"
+                    :max="80"
+                  />
+                </el-form-item>
+              </el-form>
+              <div class="template-import-source__actions">
+                <el-button
+                  type="primary"
+                  :loading="templateImportLoading"
+                  @click="loadTemplateCandidates"
+                  >读取模板</el-button
+                >
+                <span class="template-import-source__status">
+                  读取后直接在右侧勾选要导入的模板。
+                </span>
+              </div>
+          </div>
+
+          <div class="template-import-main">
+            <div class="template-import-candidates">
+              <div class="template-import-section__head">
+                <div class="template-import-section__title">模板列表</div>
+                <div class="template-import-section__hint">
+                  共 {{ importedTemplates.length }} 个候选模板。勾选要导入的项，点击卡片可在右侧预览映射结果。
+                </div>
+              </div>
+              <div
+                v-if="importedTemplates.length"
+                class="template-import-candidates__toolbar"
+              >
+                <div class="template-import-candidates__selection">
+                  待导入 {{ selectedImportedTemplateCount }} 个
+                </div>
+                <div class="template-import-candidates__actions">
+                  <el-button link type="primary" @click="selectAllImportedTemplates"
+                    >全选</el-button
+                  >
+                  <el-button link @click="clearImportedTemplateSelection"
+                    >清空</el-button
+                  >
+                </div>
+              </div>
+              <div
+                v-loading="templateImportLoading"
+                class="template-import-candidates__list"
+              >
+                <el-empty
+                  v-if="!importedTemplates.length"
+                  description="尚未读取到模板"
+                  :image-size="56"
+                />
+                <div
+                  v-for="item in importedTemplates"
+                  :key="item.id"
+                  class="template-candidate-card"
+                  :class="{
+                    'is-active': selectedImportedTemplateId === item.id,
+                    'is-selected': isImportedTemplateSelected(item.id),
+                  }"
+                  @click="selectedImportedTemplateId = item.id"
+                >
+                  <div class="template-candidate-card__select" @click.stop>
+                    <el-checkbox
+                      :model-value="isImportedTemplateSelected(item.id)"
+                      @change="(checked) => setImportedTemplateSelection(item.id, checked)"
+                    />
+                  </div>
+                  <div class="template-candidate-card__body">
+                    <div class="template-candidate-card__head">
+                      <span class="template-candidate-card__name">{{ item.name }}</span>
+                      <span class="template-candidate-card__path">{{
+                        item.relative_path
+                      }}</span>
+                    </div>
+                    <div class="template-candidate-card__desc">
+                      {{ item.description || "暂无描述" }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="template-import-preview">
+              <div class="template-import-section__head">
+                <div class="template-import-section__title">待导入草稿</div>
+                <div class="template-import-section__hint">
+                  勾选的模板会汇总到这里。你可以先确认导入范围，再点击详情查看完整字段。
+                </div>
+              </div>
+
+              <div
+                v-if="selectedImportedDraftEntries.length"
+                class="template-import-preview__body"
+              >
+                <div class="template-import-preview__selected">
+                  <div class="template-import-preview__selected-head">
+                    <div class="template-import-preview__selected-title">
+                      已勾选 {{ selectedImportedTemplateCount }} 个草稿
+                    </div>
+                    <div class="template-import-preview__selected-hint">
+                      点击“详情”查看导入后的完整员工字段。
+                    </div>
+                  </div>
+                  <div class="template-import-preview__selected-list">
+                    <div
+                      v-for="entry in selectedImportedDraftEntries"
+                      :key="entry.id"
+                      class="template-import-preview__selected-card"
+                      :class="{ 'is-active': selectedImportedPreviewId === entry.id }"
+                    >
+                      <div class="template-import-preview__selected-main">
+                        <div class="template-import-preview__selected-name">
+                          {{ entry.draft.name || entry.name || "未命名模板" }}
+                        </div>
+                        <div class="template-import-preview__selected-meta">
+                          <span>{{ entry.draft.template_relative_path || "-" }}</span>
+                          <span>{{ entry.draft.template_source_name || "-" }}</span>
+                        </div>
+                      </div>
+                      <div class="template-import-preview__selected-actions">
+                        <el-button
+                          link
+                          type="primary"
+                          @click="showImportedTemplateDetail(entry.id)"
+                          >详情</el-button
+                        >
+                        <el-button
+                          link
+                          @click="setImportedTemplateSelection(entry.id, false)"
+                          >移除</el-button
+                        >
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="template-import-preview__options">
+                  <el-checkbox v-model="templateImportAutoCreateSkills">
+                    自动补齐缺失技能
+                  </el-checkbox>
+                  <el-checkbox v-model="templateImportAutoCreateRules">
+                    自动补齐缺失规则
+                  </el-checkbox>
+                </div>
+
+                <div
+                  v-if="selectedImportedDraft"
+                  class="template-import-preview__detail"
+                >
+                  <div class="template-import-preview__summary">
+                    <div class="template-import-preview__summary-main">
+                      <div class="template-import-preview__title">
+                        {{ selectedImportedDraft.name || "未命名模板" }}
+                      </div>
+                      <div class="template-import-preview__meta">
+                        <span>来源：{{ selectedImportedDraft.template_source_name || "-" }}</span>
+                        <span>路径：{{ selectedImportedDraft.template_relative_path || "-" }}</span>
+                      </div>
+                    </div>
+                    <div class="template-import-preview__summary-side">
+                      <div class="template-import-preview__pill">
+                        {{ selectedImportedDraft.language || "en-US" }}
+                      </div>
+                      <div class="template-import-preview__pill">
+                        {{ selectedImportedDraft.tone || "professional" }}
+                      </div>
+                      <div class="template-import-preview__pill">
+                        {{ selectedImportedDraft.verbosity || "concise" }}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="template-import-preview__lead">
+                    {{ selectedImportedDraft.description || "暂无描述" }}
+                  </div>
+
+                  <div class="template-import-preview__focus">
+                    <div class="template-import-preview__focus-label">核心目标</div>
+                    <div class="template-import-preview__focus-text">
+                      {{ selectedImportedDraft.goal || "-" }}
+                    </div>
+                  </div>
+
+                  <div class="template-import-preview__grid">
+                    <div class="template-import-preview__panel">
+                      <div class="template-import-preview__panel-title">规则领域</div>
+                      <div class="template-import-preview__field-inline">
+                        {{ selectedImportedDraft.rule_domains?.join(" / ") || "未识别" }}
+                      </div>
+                    </div>
+
+                    <div class="template-import-preview__panel">
+                      <div class="template-import-preview__panel-title">工作流</div>
+                      <ul
+                        v-if="selectedImportedDraft.default_workflow?.length"
+                        class="template-import-preview__list"
+                      >
+                        <li
+                          v-for="item in selectedImportedDraft.default_workflow"
+                          :key="item"
+                        >
+                          {{ item }}
+                        </li>
+                      </ul>
+                      <div v-else class="template-import-preview__empty">
+                        未提取到显式工作流
+                      </div>
+                    </div>
+
+                    <div class="template-import-preview__panel">
+                      <div class="template-import-preview__panel-title">风格提示</div>
+                      <div
+                        v-if="selectedImportedDraft.style_hints?.length"
+                        class="template-import-preview__tags"
+                      >
+                        <el-tag
+                          v-for="item in selectedImportedDraft.style_hints"
+                          :key="item"
+                          size="small"
+                          type="info"
+                        >
+                          {{ item }}
+                        </el-tag>
+                      </div>
+                      <div v-else class="template-import-preview__empty">
+                        未提取到显式风格提示
+                      </div>
+                    </div>
+
+                    <div class="template-import-preview__panel">
+                      <div class="template-import-preview__panel-title">执行约束</div>
+                      <pre class="template-import-preview__policy">{{
+                        selectedImportedDraft.tool_usage_policy || "未提取到显式执行约束"
+                      }}</pre>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="template-import-preview__empty-state">
+                <div class="template-import-preview__empty-title">等待勾选模板</div>
+                <div class="template-import-preview__empty-text">
+                  先读取模板，再勾选要导入的模板。已勾选项会汇总到这里，之后可点击详情查看。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import api from "@/utils/api.js";
@@ -442,6 +797,10 @@ import {
   canUpdateEmployee,
 } from "@/utils/employee-permissions.js";
 import { buildRuntimeUrl } from "@/utils/runtime-url.js";
+import { resolveSettingsAwarePanelPath } from "@/utils/chat-settings-route.js";
+
+const route = useRoute();
+const router = useRouter();
 
 const employees = ref([]);
 const loading = ref(false);
@@ -473,6 +832,21 @@ const manualDialogTitle = ref("使用手册模板");
 const manualLoading = ref(false);
 const manualTargetEmployee = ref(null);
 const generatedManual = ref("");
+const showTemplateImportDialog = ref(false);
+const templateImportLoading = ref(false);
+const templateImportCreating = ref(false);
+const importedTemplates = ref([]);
+const selectedImportedTemplateId = ref("");
+const selectedImportedTemplateIds = ref([]);
+const templateImportAutoCreateSkills = ref(true);
+const templateImportAutoCreateRules = ref(true);
+const templateImportForm = ref({
+  source_type: "git",
+  source: "",
+  subdirectory: "",
+  branch: "",
+  limit: 40,
+});
 const systemConfig = ref({
   enable_project_manual_generation: false,
   enable_employee_manual_generation: false,
@@ -480,6 +854,65 @@ const systemConfig = ref({
 const employeeManualEnabled = computed(
   () => !!systemConfig.value.enable_employee_manual_generation,
 );
+
+function goToAgentTemplates() {
+  void router.push(
+    resolveSettingsAwarePanelPath(route.path, "agent-templates", "/agent-templates"),
+  );
+}
+
+function normalizeImportedDraftPayload(draft) {
+  if (!draft || typeof draft !== "object") return null;
+  return {
+    ...draft,
+    style_hints: Array.isArray(draft.style_hints) ? draft.style_hints : [],
+    default_workflow: Array.isArray(draft.default_workflow)
+      ? draft.default_workflow
+      : [],
+    rule_drafts: Array.isArray(draft.rule_drafts) ? draft.rule_drafts : [],
+    rule_domains: Array.isArray(draft.rule_domains) ? draft.rule_domains : [],
+    skills: Array.isArray(draft.skills) ? draft.skills : [],
+  };
+}
+const selectedImportedTemplate = computed(() =>
+  importedTemplates.value.find((item) => item.id === selectedImportedTemplateId.value) ||
+  null,
+);
+const selectedImportedDraftEntries = computed(() =>
+  importedTemplates.value
+    .filter((item) => selectedImportedTemplateIds.value.includes(item.id))
+    .map((item) => ({
+      id: item.id,
+      name: item.name || item.id,
+      draft: normalizeImportedDraftPayload(item.draft),
+    }))
+    .filter((item) => item.draft),
+);
+const selectedImportedPreviewId = computed(() => {
+  if (!selectedImportedDraftEntries.value.length) return "";
+  const matched = selectedImportedDraftEntries.value.find(
+    (item) => item.id === selectedImportedTemplateId.value,
+  );
+  return matched?.id || selectedImportedDraftEntries.value[0]?.id || "";
+});
+const selectedImportedDraft = computed(() => {
+  const matched = selectedImportedDraftEntries.value.find(
+    (item) => item.id === selectedImportedPreviewId.value,
+  );
+  return matched?.draft || null;
+});
+const selectedImportedTemplateCount = computed(
+  () => selectedImportedDraftEntries.value.length,
+);
+const templateImportSubmitText = computed(() => {
+  if (!selectedImportedTemplateCount.value) return "创建到员工列表";
+  return `创建到员工列表（${selectedImportedTemplateCount.value}）`;
+});
+const templateImportStatusText = computed(() => {
+  if (templateImportLoading.value) return "正在扫描模板...";
+  if (!importedTemplates.value.length) return "输入来源后读取模板";
+  return `已读取 ${importedTemplates.value.length} 个模板，待导入 ${selectedImportedTemplateCount.value} 个`;
+});
 
 const renderedPromptHtml = computed(() => {
   if (!generatedPrompt.value) return "";
@@ -605,6 +1038,159 @@ async function fetchSystemConfig() {
       enable_project_manual_generation: false,
       enable_employee_manual_generation: false,
     };
+  }
+}
+
+function resetTemplateImportDialog() {
+  templateImportLoading.value = false;
+  templateImportCreating.value = false;
+  importedTemplates.value = [];
+  selectedImportedTemplateId.value = "";
+  selectedImportedTemplateIds.value = [];
+  templateImportAutoCreateSkills.value = true;
+  templateImportAutoCreateRules.value = true;
+}
+
+function openTemplateImportDialog() {
+  resetTemplateImportDialog();
+  templateImportForm.value = {
+    source_type: "git",
+    source: "",
+    subdirectory: "",
+    branch: "",
+    limit: 40,
+  };
+  showTemplateImportDialog.value = true;
+}
+
+function isImportedTemplateSelected(templateId) {
+  return selectedImportedTemplateIds.value.includes(templateId);
+}
+
+function setImportedTemplateSelection(templateId, checked) {
+  const normalizedId = String(templateId || "").trim();
+  if (!normalizedId) return;
+  if (checked) {
+    if (!selectedImportedTemplateIds.value.includes(normalizedId)) {
+      selectedImportedTemplateIds.value = [
+        ...selectedImportedTemplateIds.value,
+        normalizedId,
+      ];
+    }
+    if (!selectedImportedTemplateId.value) {
+      selectedImportedTemplateId.value = normalizedId;
+    }
+    return;
+  }
+  selectedImportedTemplateIds.value = selectedImportedTemplateIds.value.filter(
+    (item) => item !== normalizedId,
+  );
+  if (selectedImportedTemplateId.value === normalizedId) {
+    selectedImportedTemplateId.value = selectedImportedTemplateIds.value[0] || "";
+  }
+}
+
+function selectAllImportedTemplates() {
+  selectedImportedTemplateIds.value = importedTemplates.value.map((item) => item.id);
+  if (!selectedImportedTemplateId.value && importedTemplates.value.length) {
+    selectedImportedTemplateId.value = importedTemplates.value[0].id;
+  }
+}
+
+function clearImportedTemplateSelection() {
+  selectedImportedTemplateIds.value = [];
+  selectedImportedTemplateId.value = "";
+}
+
+function showImportedTemplateDetail(templateId) {
+  const normalizedId = String(templateId || "").trim();
+  if (!normalizedId) return;
+  selectedImportedTemplateId.value = normalizedId;
+}
+
+async function loadTemplateCandidates() {
+  const payload = {
+    source_type: String(templateImportForm.value.source_type || "git").trim(),
+    source: String(templateImportForm.value.source || "").trim(),
+    subdirectory: String(templateImportForm.value.subdirectory || "").trim(),
+    branch: String(templateImportForm.value.branch || "").trim(),
+    limit: Number(templateImportForm.value.limit || 40),
+  };
+  if (!payload.source) {
+    ElMessage.warning(
+      payload.source_type === "git" ? "请先输入仓库地址" : "请先输入目录路径",
+    );
+    return;
+  }
+  templateImportLoading.value = true;
+  try {
+    const data = await api.post("/employees/import-agent-templates", payload);
+    importedTemplates.value = Array.isArray(data?.templates) ? data.templates : [];
+    selectedImportedTemplateId.value = importedTemplates.value[0]?.id || "";
+    selectedImportedTemplateIds.value = [];
+    if (!importedTemplates.value.length) {
+      ElMessage.warning("没有找到可导入的 Markdown agent 模板");
+      return;
+    }
+    ElMessage.success(`已读取 ${importedTemplates.value.length} 个模板`);
+  } catch (e) {
+    importedTemplates.value = [];
+    selectedImportedTemplateId.value = "";
+    selectedImportedTemplateIds.value = [];
+    ElMessage.error(e.detail || "模板读取失败");
+  } finally {
+    templateImportLoading.value = false;
+  }
+}
+
+async function confirmTemplateImport() {
+  if (!selectedImportedDraftEntries.value.length) {
+    ElMessage.warning("请先勾选要导入的模板");
+    return;
+  }
+  templateImportCreating.value = true;
+  try {
+    const createdNames = [];
+    const failedEntries = [];
+    for (const entry of selectedImportedDraftEntries.value) {
+      const payload = {
+        ...entry.draft,
+        auto_create_missing_skills: templateImportAutoCreateSkills.value,
+        auto_create_missing_rules: templateImportAutoCreateRules.value,
+      };
+      try {
+        const data = await api.post("/employees/create-from-draft", payload);
+        createdNames.push(data?.employee?.name || entry.draft.name || entry.name);
+      } catch (e) {
+        failedEntries.push({
+          id: entry.id,
+          name: entry.draft.name || entry.name || "员工",
+          detail: e.detail || "创建员工失败",
+        });
+      }
+    }
+    if (createdNames.length) {
+      await fetchList();
+    }
+    if (!failedEntries.length) {
+      ElMessage.success(`已创建 ${createdNames.length} 个员工`);
+      showTemplateImportDialog.value = false;
+      return;
+    }
+    selectedImportedTemplateIds.value = failedEntries.map((item) => item.id);
+    selectedImportedTemplateId.value =
+      failedEntries[0]?.id || importedTemplates.value[0]?.id || "";
+    if (createdNames.length) {
+      ElMessage.warning(
+        `已创建 ${createdNames.length} 个员工，仍有 ${failedEntries.length} 个导入失败`,
+      );
+      return;
+    }
+    ElMessage.error(`${failedEntries[0].name} 导入失败：${failedEntries[0].detail}`);
+  } catch (e) {
+    ElMessage.error(e.detail || "创建员工失败");
+  } finally {
+    templateImportCreating.value = false;
   }
 }
 
@@ -1013,6 +1599,13 @@ onMounted(async () => {
   align-items: center;
   margin-bottom: 16px;
 }
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .usage-alert {
   margin-bottom: 12px;
 }
@@ -1045,6 +1638,546 @@ onMounted(async () => {
 
 .toolbar h3 {
   margin: 0;
+}
+
+:global(.template-import-overlay) {
+  z-index: 4000 !important;
+  background:
+    radial-gradient(circle at top left, rgba(255, 244, 214, 0.5), transparent 24%),
+    linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
+}
+
+:global(.template-import-overlay .el-overlay-dialog) {
+  padding: 0;
+}
+
+:global(.template-import-dialog) {
+  margin: 0;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+:global(.template-import-dialog .el-dialog__header) {
+  display: none;
+}
+
+:global(.template-import-dialog .el-dialog__body) {
+  padding: 0;
+  height: 100%;
+}
+
+.template-import-shell {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 16px;
+  box-sizing: border-box;
+  gap: 18px;
+}
+
+.template-import-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 8px 24px 6px;
+}
+
+.template-import-hero__copy {
+  min-width: 0;
+  max-width: 760px;
+}
+
+.template-import-hero__eyebrow {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: #8b7355;
+}
+
+.template-import-hero__title {
+  margin-top: 10px;
+  font-size: clamp(28px, 3vw, 38px);
+  line-height: 1.08;
+  font-weight: 600;
+  color: #161616;
+}
+
+.template-import-hero__text {
+  margin-top: 10px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #5f6368;
+}
+
+.template-import-hero__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.template-import-hero__status {
+  font-size: 12px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.template-import-layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 18px;
+}
+
+.template-import-main {
+  min-width: 0;
+  min-height: 0;
+  max-height: calc(100dvh - 176px);
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 18px;
+}
+
+.template-import-source,
+.template-import-candidates,
+.template-import-preview {
+  min-width: 0;
+  border: 1px solid rgba(229, 231, 235, 0.88);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(14px);
+}
+
+.template-import-source,
+.template-import-candidates {
+  padding: 18px;
+}
+
+.template-import-preview {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 176px);
+  padding: 18px max(20px, calc((100% - 920px) / 2)) 22px;
+  overflow: hidden;
+}
+
+.template-import-section__head {
+  margin-bottom: 12px;
+}
+
+.template-import-section__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #161616;
+}
+
+.template-import-section__hint {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #6b7280;
+}
+
+.template-import-form {
+  margin-top: 14px;
+}
+
+.template-import-source__row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.template-import-source__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.template-import-source__status {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6b7280;
+}
+
+.template-import-candidates {
+  min-height: 0;
+  max-height: calc(100dvh - 176px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.template-import-candidates__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.template-import-candidates__selection {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.template-import-candidates__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.template-import-candidates__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.template-candidate-card {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.2s ease;
+}
+
+.template-candidate-card:hover {
+  background: rgba(17, 24, 39, 0.04);
+}
+
+.template-candidate-card.is-selected {
+  border-color: rgba(59, 130, 246, 0.24);
+  background: rgba(219, 234, 254, 0.42);
+}
+
+.template-candidate-card.is-active {
+  background: rgba(17, 24, 39, 0.08);
+  transform: translateY(-1px);
+}
+
+.template-candidate-card__select {
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.template-candidate-card__body {
+  min-width: 0;
+  flex: 1;
+}
+
+.template-candidate-card__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.template-candidate-card__name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #161616;
+}
+
+.template-candidate-card__path {
+  font-size: 12px;
+  color: #7a7f87;
+}
+
+.template-candidate-card__desc {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #4b5563;
+}
+
+.template-import-preview__body {
+  width: min(100%, 920px);
+  margin: 0 auto;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.template-import-preview__selected {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(36dvh, 320px);
+  padding: 14px 16px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid rgba(229, 231, 235, 0.84);
+  overflow: hidden;
+}
+
+.template-import-preview__selected-head {
+  display: grid;
+  gap: 4px;
+}
+
+.template-import-preview__selected-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #161616;
+}
+
+.template-import-preview__selected-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #6b7280;
+}
+
+.template-import-preview__selected-list {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.template-import-preview__selected-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(229, 231, 235, 0.9);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.template-import-preview__selected-card.is-active {
+  border-color: rgba(59, 130, 246, 0.28);
+  background: rgba(219, 234, 254, 0.42);
+}
+
+.template-import-preview__selected-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.template-import-preview__selected-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #161616;
+}
+
+.template-import-preview__selected-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #7a7f87;
+}
+
+.template-import-preview__selected-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.template-import-preview__detail {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.template-import-preview__summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 0 10px;
+  border-bottom: 1px solid rgba(229, 231, 235, 0.88);
+}
+
+.template-import-preview__summary-main {
+  min-width: 0;
+}
+
+.template-import-preview__summary-side {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.template-import-preview__title {
+  font-size: 28px;
+  line-height: 1.14;
+  font-weight: 600;
+  color: #161616;
+}
+
+.template-import-preview__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.template-import-preview__pill {
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.05);
+  font-size: 12px;
+  color: #374151;
+}
+
+.template-import-preview__lead {
+  font-size: 15px;
+  line-height: 1.9;
+  color: #374151;
+}
+
+.template-import-preview__focus {
+  display: grid;
+  gap: 8px;
+  padding: 14px 18px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid rgba(229, 231, 235, 0.84);
+}
+
+.template-import-preview__focus-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #8b7355;
+}
+
+.template-import-preview__focus-text {
+  font-size: 16px;
+  line-height: 1.8;
+  color: #111827;
+}
+
+.template-import-preview__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.template-import-preview__panel {
+  padding: 14px 16px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(229, 231, 235, 0.84);
+}
+
+.template-import-preview__panel-title {
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #161616;
+}
+
+.template-import-preview__field-inline {
+  font-size: 14px;
+  line-height: 1.7;
+  color: #374151;
+}
+
+.template-import-preview__list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 14px;
+  line-height: 1.8;
+  color: #374151;
+}
+
+.template-import-preview__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.template-import-preview__tags :deep(.el-tag) {
+  max-width: 100%;
+  height: auto;
+  white-space: normal;
+  line-height: 1.5;
+  align-items: flex-start;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.template-import-preview__tags :deep(.el-tag__content) {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.template-import-preview__policy {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.8;
+  color: #374151;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.template-import-preview__empty {
+  font-size: 13px;
+  color: #9ca3af;
+}
+
+.template-import-preview__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding-top: 4px;
+}
+
+.template-import-preview__empty-state {
+  width: min(100%, 780px);
+  margin: auto;
+  text-align: center;
+  padding: 64px 24px;
+}
+
+.template-import-preview__empty-title {
+  font-size: 30px;
+  line-height: 1.12;
+  font-weight: 600;
+  color: #161616;
+}
+
+.template-import-preview__empty-text {
+  margin-top: 12px;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #6b7280;
 }
 
 .mcp-desc {
@@ -1164,5 +2297,88 @@ onMounted(async () => {
 
 .prompt-rendered strong {
   font-weight: 600;
+}
+
+@media (max-width: 1180px) {
+  .template-import-shell {
+    padding: 12px 14px 14px;
+  }
+
+  .template-import-hero {
+    padding: 6px 12px 4px;
+    flex-direction: column;
+  }
+
+  .template-import-hero__actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .template-import-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .template-import-main {
+    grid-template-columns: 1fr;
+    max-height: none;
+  }
+
+  .template-import-preview {
+    max-height: none;
+    padding: 18px;
+  }
+
+  .template-import-candidates {
+    max-height: min(44dvh, 420px);
+  }
+
+  .template-import-preview__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .template-import-preview__selected-list {
+    flex: 1;
+  }
+}
+
+@media (max-width: 720px) {
+  .template-import-source__row {
+    grid-template-columns: 1fr;
+  }
+
+  .template-import-hero__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .template-import-hero__status {
+    white-space: normal;
+  }
+
+  .template-import-preview__summary {
+    flex-direction: column;
+  }
+
+  .template-import-preview__summary-side {
+    justify-content: flex-start;
+  }
+
+  .template-import-preview__title {
+    font-size: 24px;
+  }
+
+  .template-import-candidates__toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .template-import-preview__selected-card {
+    flex-direction: column;
+  }
+
+  .template-import-preview__selected-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 </style>

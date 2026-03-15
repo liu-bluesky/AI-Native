@@ -14,6 +14,7 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 3931;
 const ROOT_DIR = path.resolve(process.env.LOCAL_CONNECTOR_APP_ROOT || __dirname);
 const DATA_DIR = path.resolve(process.env.LOCAL_CONNECTOR_DATA_DIR || ROOT_DIR);
+loadEnvFiles([path.join(ROOT_DIR, ".env"), path.join(DATA_DIR, ".env")]);
 const STATE_FILE = path.join(DATA_DIR, ".connector-state.json");
 const nativePtyModule = loadNativePtyModule();
 
@@ -55,6 +56,51 @@ class AsyncEventQueue {
     return new Promise((resolve) => {
       this.waiters.push(resolve);
     });
+  }
+}
+
+function parseEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return {};
+  }
+  const payload = {};
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = String(rawLine || "").trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const normalizedLine = line.startsWith("export ") ? line.slice(7).trim() : line;
+    const separatorIndex = normalizedLine.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    const key = normalizedLine.slice(0, separatorIndex).trim();
+    if (!key) {
+      continue;
+    }
+    let value = normalizedLine.slice(separatorIndex + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith("\"") && value.endsWith("\"")) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    payload[key] = value;
+  }
+  return payload;
+}
+
+function loadEnvFiles(filePaths) {
+  const merged = {};
+  for (const filePath of filePaths) {
+    Object.assign(merged, parseEnvFile(filePath));
+  }
+  for (const [key, value] of Object.entries(merged)) {
+    if (process.env[key] === undefined) {
+      process.env[key] = String(value);
+    }
   }
 }
 
@@ -130,6 +176,48 @@ function connectorName() {
     return configured;
   }
   return `${os.hostname()} Connector`;
+}
+
+function deviceLabel() {
+  return os.hostname();
+}
+
+function normalizedMacAddresses() {
+  const interfaces = os.networkInterfaces() || {};
+  const values = [];
+  for (const items of Object.values(interfaces)) {
+    if (!Array.isArray(items)) {
+      continue;
+    }
+    for (const item of items) {
+      const mac = String(item?.mac || "").trim().toLowerCase().replace(/-/g, ":");
+      if (!mac || mac === "00:00:00:00:00:00" || item?.internal) {
+        continue;
+      }
+      values.push(mac);
+    }
+  }
+  return [...new Set(values)].sort();
+}
+
+function resolveDeviceFingerprint() {
+  const state = loadState();
+  const existing = String(state.device_fingerprint || "").trim().toLowerCase();
+  if (existing) {
+    return existing;
+  }
+  const source = JSON.stringify({
+    hostname: os.hostname(),
+    platform: process.platform,
+    arch: process.arch,
+    macs: normalizedMacAddresses()
+  });
+  const fingerprint = crypto.createHash("sha256").update(source).digest("hex").slice(0, 32);
+  updateState({
+    device_fingerprint: fingerprint,
+    device_label: String(state.device_label || "").trim() || deviceLabel()
+  });
+  return fingerprint;
 }
 
 function advertisedUrl() {
@@ -602,6 +690,44 @@ function findExecutable(commandName) {
   return "";
 }
 
+function resolveSpawnCommand(cmd) {
+  const values = Array.isArray(cmd) ? cmd.map((item) => String(item || "")) : [];
+  if (values.length === 0) {
+    return values;
+  }
+  const command = String(values[0] || "").trim();
+  if (!command || path.isAbsolute(command) || command.includes(path.sep)) {
+    return values;
+  }
+  if (!["codex", "claude", "gemini"].includes(command)) {
+    return values;
+  }
+  const resolved = findExecutable(command);
+  if (!resolved) {
+    return values;
+  }
+  return [resolved, ...values.slice(1)];
+}
+
+function sanitizeChildProcessEnv(baseEnv) {
+  const env = { ...(baseEnv && typeof baseEnv === "object" ? baseEnv : {}) };
+  [
+    "ELECTRON_RUN_AS_NODE",
+    "NODE_OPTIONS",
+    "npm_config_prefix",
+    "npm_execpath",
+    "npm_node_execpath",
+    "npm_lifecycle_event",
+    "npm_lifecycle_script",
+    "npm_package_json"
+  ].forEach((key) => {
+    if (key in env) {
+      delete env[key];
+    }
+  });
+  return env;
+}
+
 augmentProcessPath();
 
 async function healthPayload() {
@@ -652,6 +778,8 @@ function pairingStatePayload() {
     platform_url: String(state.platform_url || "").trim(),
     connector_id: String(state.connector_id || "").trim(),
     connector_name: connectorName(),
+    device_fingerprint: String(state.device_fingerprint || resolveDeviceFingerprint()).trim(),
+    device_label: String(state.device_label || deviceLabel()).trim(),
     advertised_url: advertisedUrl(),
     runtime_url: String(state.runtime_url || runtimeBaseUrl()).trim(),
     runtime_port: Number.parseInt(String(state.runtime_port || runtimePort), 10) || runtimePort,
@@ -1032,7 +1160,9 @@ async function materializeWorkspace(reqBody) {
 }
 
 function createExecStream(res, reqBody, req) {
-  const cmd = Array.isArray(reqBody.cmd) ? reqBody.cmd.map((item) => String(item || "")) : [];
+  const cmd = resolveSpawnCommand(
+    Array.isArray(reqBody.cmd) ? reqBody.cmd.map((item) => String(item || "")) : []
+  );
   if (cmd.length === 0 || !cmd[0]) {
     throw new HttpError(400, "cmd is required");
   }
@@ -1042,7 +1172,10 @@ function createExecStream(res, reqBody, req) {
   try {
     child = spawn(cmd[0], cmd.slice(1), {
       cwd: String(reqBody.cwd || "").trim() || process.cwd(),
-      env: { ...process.env, ...(reqBody.env && typeof reqBody.env === "object" ? reqBody.env : {}) },
+      env: sanitizeChildProcessEnv({
+        ...process.env,
+        ...(reqBody.env && typeof reqBody.env === "object" ? reqBody.env : {})
+      }),
       stdio: ["ignore", "pipe", "pipe"]
     });
   } catch (error) {
@@ -1099,14 +1232,19 @@ function createExecStream(res, reqBody, req) {
 }
 
 function createPtySession(reqBody) {
-  const cmd = Array.isArray(reqBody.cmd) ? reqBody.cmd.map((item) => String(item || "")) : [];
+  const cmd = resolveSpawnCommand(
+    Array.isArray(reqBody.cmd) ? reqBody.cmd.map((item) => String(item || "")) : []
+  );
   if (cmd.length === 0 || !cmd[0]) {
     throw new HttpError(400, "cmd is required");
   }
   const sessionId = `pty-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
   const queue = new AsyncEventQueue();
   const cwd = String(reqBody.cwd || "").trim() || process.cwd();
-  const env = { ...process.env, ...(reqBody.env && typeof reqBody.env === "object" ? reqBody.env : {}) };
+  const env = sanitizeChildProcessEnv({
+    ...process.env,
+    ...(reqBody.env && typeof reqBody.env === "object" ? reqBody.env : {})
+  });
   if (nativePtyModule) {
     let nativeProcess;
     try {
@@ -1257,6 +1395,8 @@ async function activatePairing(options = {}) {
   const body = {
     pair_code: normalizedPairCode,
     connector_name: connectorName(),
+    device_fingerprint: resolveDeviceFingerprint(),
+    device_label: deviceLabel(),
     platform: platformLabel(),
     app_version: CONNECTOR_VERSION,
     advertised_url: advertisedUrl(),
@@ -1275,6 +1415,8 @@ async function activatePairing(options = {}) {
     connector_id: String(payload.connector_id || "").trim(),
     connector_token: String(payload.connector_token || "").trim(),
     owner_username: String(payload.owner_username || "").trim(),
+    device_fingerprint: resolveDeviceFingerprint(),
+    device_label: deviceLabel(),
     heartbeat_interval_sec: Number.parseInt(String(payload.heartbeat_interval_sec || heartbeatIntervalSec()), 10) || heartbeatIntervalSec(),
     last_pairing_error: "",
     paired_at: formatLocalTimestamp()
