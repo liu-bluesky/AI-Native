@@ -20,6 +20,7 @@ const routes = [
         children: [
           { path: '', redirect: '/ai/chat/settings/chat' },
           { path: 'chat', component: SettingsCenterChatStub },
+          { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
           { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
           { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
           { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
@@ -52,6 +53,7 @@ const routes = [
       },
       { path: 'users', component: () => import('../views/users/UserList.vue') },
       { path: 'roles', component: () => import('../views/users/RoleList.vue') },
+      { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
       { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
       { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
       { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },

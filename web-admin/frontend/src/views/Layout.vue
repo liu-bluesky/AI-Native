@@ -103,6 +103,10 @@
                 <span>系统设置</span>
               </span>
             </template>
+            <el-menu-item index="/user/settings">
+              <el-icon><UserFilled /></el-icon>
+              <span>用户设置</span>
+            </el-menu-item>
             <el-menu-item
               v-if="canMenu('menu.system.config')"
               index="/system/config"
@@ -165,6 +169,7 @@ const isEmbeddedMode = computed(() => {
 const chatQuickNavItems = computed(() =>
   [
     { path: "/ai/chat", label: "AI 对话", icon: ChatDotRound, permission: "menu.ai.chat" },
+    { path: "/user/settings", label: "设置", icon: UserFilled, permission: "" },
     { path: "/projects", label: "项目", icon: Folder, permission: "menu.projects" },
     { path: "/agent-templates", label: "模板", icon: Document, permission: "menu.employees" },
     { path: "/employees", label: "员工", icon: User, permission: "menu.employees" },

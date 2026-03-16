@@ -4,7 +4,7 @@
       <div>
         <h3>行业智能体模板</h3>
         <div class="toolbar-subtitle">
-          先导入外部 Agent 模板沉淀为模板库，再从模板创建员工。
+          先导入通用模板沉淀为模板库，再从模板创建员工。
         </div>
       </div>
       <div class="toolbar-actions">
@@ -403,19 +403,13 @@
       :description="modelPickerDialogDescription"
       :confirm-text="modelPickerDialogConfirmText"
       :internal-providers="internalAiProviders"
-      :external-connectors="externalAiConnectors"
+      :external-connectors="[]"
       :loading="aiSourcesLoading"
-      :source-type="selectedAiSourceType"
       :provider-id="selectedTranslationProviderId"
       :model-name="selectedTranslationModelName"
-      :local-connector-id="selectedExternalConnectorId"
-      :external-agent-type="selectedExternalAgentType"
       @update:model-value="handleModelPickerDialogVisibilityChange"
-      @update:source-type="selectedAiSourceType = $event"
       @update:provider-id="selectedTranslationProviderId = $event"
       @update:model-name="selectedTranslationModelName = $event"
-      @update:local-connector-id="selectedExternalConnectorId = $event"
-      @update:external-agent-type="selectedExternalAgentType = $event"
       @confirm="handleModelPickerConfirm"
     />
   </div>
@@ -438,13 +432,9 @@ const searchKeyword = ref("");
 const selectedTemplateIds = ref([]);
 const templateTableRef = ref(null);
 const internalAiProviders = ref([]);
-const externalAiConnectors = ref([]);
 const aiSourcesLoading = ref(false);
-const selectedAiSourceType = ref("internal");
 const selectedTranslationProviderId = ref("");
 const selectedTranslationModelName = ref("");
-const selectedExternalConnectorId = ref("");
-const selectedExternalAgentType = ref("codex_cli");
 const showModelPickerDialog = ref(false);
 const pendingModelAction = ref(null);
 const activeTemplate = ref(null);
@@ -547,7 +537,7 @@ const modelPickerDialogTitle = computed(
 const modelPickerDialogDescription = computed(
   () =>
     pendingModelAction.value?.pickerDescription ||
-    "先选择本次操作要使用的内部模型或外部智能体 CLI，再继续执行。",
+    "先选择本次操作要使用的模型，再继续执行。",
 );
 const modelPickerDialogConfirmText = computed(
   () => pendingModelAction.value?.pickerConfirmText || "确认",
@@ -596,11 +586,7 @@ async function fetchAiSources() {
     const providers = Array.isArray(data?.internal_providers)
       ? data.internal_providers
       : [];
-    const connectors = Array.isArray(data?.external_connectors)
-      ? data.external_connectors
-      : [];
     internalAiProviders.value = providers;
-    externalAiConnectors.value = connectors;
     const currentProvider = providers.find(
       (item) => String(item?.id || "").trim() === selectedTranslationProviderId.value,
     );
@@ -624,41 +610,10 @@ async function fetchAiSources() {
           "",
       ).trim();
     }
-    const currentConnector = connectors.find(
-      (item) => String(item?.id || "").trim() === selectedExternalConnectorId.value,
-    );
-    const currentAgentAvailable = Array.isArray(currentConnector?.agent_types)
-      ? currentConnector.agent_types.some(
-          (item) =>
-            String(item?.agent_type || "").trim() === selectedExternalAgentType.value &&
-            Boolean(item?.available),
-        )
-      : false;
-    if (currentConnector && currentAgentAvailable) {
-      // keep current external selection
-    } else {
-      const defaultConnector = connectors[0] || null;
-      const defaultAgent = Array.isArray(defaultConnector?.agent_types)
-        ? defaultConnector.agent_types.find((item) => Boolean(item?.available)) ||
-          defaultConnector.agent_types[0]
-        : null;
-      selectedExternalConnectorId.value = String(defaultConnector?.id || "").trim();
-      selectedExternalAgentType.value = String(
-        defaultAgent?.agent_type || "codex_cli",
-      ).trim();
-    }
-    if (selectedAiSourceType.value === "external" && !connectors.length && providers.length) {
-      selectedAiSourceType.value = "internal";
-    } else if (selectedAiSourceType.value === "internal" && !providers.length && connectors.length) {
-      selectedAiSourceType.value = "external";
-    }
   } catch (e) {
     internalAiProviders.value = [];
-    externalAiConnectors.value = [];
     selectedTranslationProviderId.value = "";
     selectedTranslationModelName.value = "";
-    selectedExternalConnectorId.value = "";
-    selectedExternalAgentType.value = "codex_cli";
     ElMessage.error(e?.detail || "加载 AI 来源失败");
   } finally {
     aiSourcesLoading.value = false;
@@ -667,11 +622,11 @@ async function fetchAiSources() {
 
 async function ensureAiSourcesReady() {
   if (aiSourcesLoading.value) return false;
-  if (!internalAiProviders.value.length && !externalAiConnectors.value.length) {
+  if (!internalAiProviders.value.length) {
     await fetchAiSources();
   }
-  if (!internalAiProviders.value.length && !externalAiConnectors.value.length) {
-    ElMessage.warning("当前没有可用 AI 来源，请先配置内部模型或外部智能体连接器");
+  if (!internalAiProviders.value.length) {
+    ElMessage.warning("当前没有可用 AI 来源，请先配置模型提供商");
     return false;
   }
   return true;
@@ -738,7 +693,7 @@ async function runAiTemplateDeduplication() {
   await openModelPickerForAction({
     kind: "deduplicate",
     pickerTitle: "选择同类去重使用的 AI 来源",
-    pickerDescription: "先选择内部或外部；内部使用系统模型，外部使用共享的外部智能体 CLI。",
+    pickerDescription: "选择用于同类去重的模型来源。",
     pickerConfirmText: "下一步",
   });
 }
@@ -750,15 +705,9 @@ async function executeAiTemplateDeduplication(selection) {
     ElMessage.warning("至少需要 2 个模板才能执行同类去重");
     return;
   }
-  const sourceType = String(selection?.sourceType || "").trim() || "internal";
   const providerId = String(selection?.providerId || "").trim();
   const modelName = String(selection?.modelName || "").trim();
-  const localConnectorId = String(selection?.localConnectorId || "").trim();
-  const externalAgentType = String(selection?.externalAgentType || "").trim();
-  if (
-    (sourceType === "internal" && (!providerId || !modelName)) ||
-    (sourceType === "external" && (!localConnectorId || !externalAgentType))
-  ) {
+  if (!providerId || !modelName) {
     ElMessage.warning("请选择用于同类去重的 AI 来源");
     return;
   }
@@ -777,11 +726,9 @@ async function executeAiTemplateDeduplication(selection) {
   try {
     const data = await api.post("/agent-templates/deduplicate", {
       template_ids: targetIds,
-      source_type: sourceType,
+      source_type: "internal",
       provider_id: providerId,
       model_name: modelName,
-      local_connector_id: localConnectorId,
-      external_agent_type: externalAgentType,
       apply: true,
     });
     const groups = Array.isArray(data?.groups) ? data.groups : [];
@@ -850,7 +797,7 @@ async function retranslateTemplateNames() {
   await openModelPickerForAction({
     kind: "retranslate-name",
     pickerTitle: "选择重译中文名使用的 AI 来源",
-    pickerDescription: "先选择内部或外部；内部使用系统模型，外部使用共享的外部智能体 CLI。",
+    pickerDescription: "选择用于重译中文名的模型来源。",
     pickerConfirmText: "下一步",
   });
 }
@@ -859,7 +806,7 @@ async function fillMissingTemplateNames() {
   await openModelPickerForAction({
     kind: "fill-name",
     pickerTitle: "选择补全中文名使用的 AI 来源",
-    pickerDescription: "先选择内部或外部；内部使用系统模型，外部使用共享的外部智能体 CLI。",
+    pickerDescription: "选择用于补全中文名的模型来源。",
     pickerConfirmText: "下一步",
   });
 }
@@ -871,15 +818,9 @@ async function translateTemplateNames(options, selection) {
     ElMessage.warning("暂无模板可翻译");
     return;
   }
-  const sourceType = String(selection?.sourceType || "").trim() || "internal";
   const providerId = String(selection?.providerId || "").trim();
   const modelName = String(selection?.modelName || "").trim();
-  const localConnectorId = String(selection?.localConnectorId || "").trim();
-  const externalAgentType = String(selection?.externalAgentType || "").trim();
-  if (
-    (sourceType === "internal" && (!providerId || !modelName)) ||
-    (sourceType === "external" && (!localConnectorId || !externalAgentType))
-  ) {
+  if (!providerId || !modelName) {
     ElMessage.warning("请选择用于中文翻译的 AI 来源");
     return;
   }
@@ -902,11 +843,9 @@ async function translateTemplateNames(options, selection) {
   try {
     const data = await api.post("/agent-templates/translate-names", {
       template_ids: targetIds,
-      source_type: sourceType,
+      source_type: "internal",
       provider_id: providerId,
       model_name: modelName,
-      local_connector_id: localConnectorId,
-      external_agent_type: externalAgentType,
       force: Boolean(options.force),
     });
     const updatedCount = Number(data?.updated_count || 0);

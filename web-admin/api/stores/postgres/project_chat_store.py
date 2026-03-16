@@ -98,7 +98,7 @@ class ProjectChatStorePostgres:
         return normalized
 
     def _legacy_session(self, project_id: str, username: str) -> ProjectChatSession | None:
-        messages = self.list_messages(project_id, username, limit=1000, chat_session_id="legacy")
+        messages = self.list_messages(project_id, username, limit=0, chat_session_id="legacy")
         if not messages:
             return None
         first_user = next((item for item in messages if item.role == "user"), messages[0])
@@ -156,47 +156,90 @@ class ProjectChatStorePostgres:
         username: str,
         limit: int = 200,
         chat_session_id: str = "",
+        offset: int = 0,
     ) -> list[ProjectChatMessage]:
-        safe_limit = max(1, min(int(limit or 200), 1000))
+        parsed_limit = int(limit or 0)
+        safe_limit = None if parsed_limit <= 0 else max(1, min(parsed_limit, 1000))
+        safe_offset = max(0, int(offset or 0))
         normalized_session_id = str(chat_session_id or "").strip()
         with self._conn.cursor() as cur:
             if normalized_session_id == "legacy":
-                cur.execute(
-                    """
-                    SELECT payload
-                    FROM project_chat_messages
-                    WHERE project_id = %s
-                      AND username = %s
-                      AND COALESCE(payload->>'chat_session_id', '') = ''
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                    """,
-                    (project_id, username, safe_limit),
-                )
+                if safe_limit is None:
+                    cur.execute(
+                        """
+                        SELECT payload
+                        FROM project_chat_messages
+                        WHERE project_id = %s
+                          AND username = %s
+                          AND COALESCE(payload->>'chat_session_id', '') = ''
+                        ORDER BY created_at DESC
+                        OFFSET %s
+                        """,
+                        (project_id, username, safe_offset),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT payload
+                        FROM project_chat_messages
+                        WHERE project_id = %s
+                          AND username = %s
+                          AND COALESCE(payload->>'chat_session_id', '') = ''
+                        ORDER BY created_at DESC
+                        LIMIT %s OFFSET %s
+                        """,
+                        (project_id, username, safe_limit, safe_offset),
+                    )
             elif normalized_session_id:
-                cur.execute(
-                    """
-                    SELECT payload
-                    FROM project_chat_messages
-                    WHERE project_id = %s
-                      AND username = %s
-                      AND COALESCE(payload->>'chat_session_id', '') = %s
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                    """,
-                    (project_id, username, normalized_session_id, safe_limit),
-                )
+                if safe_limit is None:
+                    cur.execute(
+                        """
+                        SELECT payload
+                        FROM project_chat_messages
+                        WHERE project_id = %s
+                          AND username = %s
+                          AND COALESCE(payload->>'chat_session_id', '') = %s
+                        ORDER BY created_at DESC
+                        OFFSET %s
+                        """,
+                        (project_id, username, normalized_session_id, safe_offset),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT payload
+                        FROM project_chat_messages
+                        WHERE project_id = %s
+                          AND username = %s
+                          AND COALESCE(payload->>'chat_session_id', '') = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s OFFSET %s
+                        """,
+                        (project_id, username, normalized_session_id, safe_limit, safe_offset),
+                    )
             else:
-                cur.execute(
-                    """
-                    SELECT payload
-                    FROM project_chat_messages
-                    WHERE project_id = %s AND username = %s
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                    """,
-                    (project_id, username, safe_limit),
-                )
+                if safe_limit is None:
+                    cur.execute(
+                        """
+                        SELECT payload
+                        FROM project_chat_messages
+                        WHERE project_id = %s AND username = %s
+                        ORDER BY created_at DESC
+                        OFFSET %s
+                        """,
+                        (project_id, username, safe_offset),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT payload
+                        FROM project_chat_messages
+                        WHERE project_id = %s AND username = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s OFFSET %s
+                        """,
+                        (project_id, username, safe_limit, safe_offset),
+                    )
             rows = cur.fetchall()
         items: list[ProjectChatMessage] = []
         for row in reversed(rows):
@@ -334,7 +377,7 @@ class ProjectChatStorePostgres:
         records = self.list_messages(
             project_id,
             username,
-            limit=1000,
+            limit=0,
             chat_session_id=normalized_session_id,
         )
         target_index = next(

@@ -13,15 +13,6 @@ from starlette.concurrency import run_in_threadpool
 from core.config import get_settings
 from stores.postgres.llm_provider_store import LlmProviderStorePostgres
 
-LOCAL_STATIC_PROVIDER_ID = "lmp-local-static-codex"
-LOCAL_STATIC_PROVIDER_NAME = "local-static-codex"
-LOCAL_STATIC_PROVIDER_TYPE = "openai-compatible"
-LOCAL_STATIC_BASE_URL = "https://code.newcli.com/codex/v1"
-LOCAL_STATIC_DEFAULT_MODEL = "gpt-5.3-codex"
-LOCAL_STATIC_API_KEY = (
-    "sk-ant-oat01-X659tZ5JEmzVlwRMBlWrva7D3mjlcvkh_NOp2f6oyWZJylQm2CUHFYREqEHqhW3s5DLxaJxNx6GHmYm4ZVrfMXdYR9lS9AA"
-)
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -30,6 +21,7 @@ def _now_iso() -> str:
 class LlmProviderService:
     def __init__(self, store: LlmProviderStorePostgres) -> None:
         self._store = store
+        self._cleanup_legacy_static_provider()
 
     @staticmethod
     def _normalize_provider_type(value: Any) -> str:
@@ -174,43 +166,149 @@ class LlmProviderService:
         models = provider.get("models") or []
         return str(models[0]).strip() if models else ""
 
-    def list_providers(self, enabled_only: bool = False) -> list[dict[str, Any]]:
-        return self._store.list_providers(include_secret=False, enabled_only=enabled_only)
+    @staticmethod
+    def _normalize_owner_username(value: Any) -> str:
+        return str(value or "").strip()
 
-    def create_provider(self, payload: dict[str, Any]) -> dict[str, Any]:
-        provider = self._store.create_provider(self._validate_create_payload(payload))
+    @classmethod
+    def _provider_owner_username(cls, provider: dict[str, Any]) -> str:
+        return cls._normalize_owner_username(provider.get("owner_username"))
+
+    def _cleanup_legacy_static_provider(self) -> None:
+        self._store.delete_provider("lmp-local-static-codex")
+
+    def _resolve_default_provider_id(self, providers: list[dict[str, Any]], owner_username: str = "") -> str:
+        if not providers:
+            return ""
+        from stores.factory import user_store
+
+        configured_id = ""
+        normalized_owner = self._normalize_owner_username(owner_username)
+        if normalized_owner:
+            user = user_store.get(normalized_owner)
+            configured_id = str(getattr(user, "default_ai_provider_id", "") or "").strip() if user else ""
+        if configured_id and any(str(item.get("id") or "").strip() == configured_id for item in providers):
+            return configured_id
+        return str(providers[0].get("id") or "").strip()
+
+    def _filter_providers_for_actor(
+        self,
+        providers: list[dict[str, Any]],
+        *,
+        owner_username: str = "",
+        include_all: bool = False,
+    ) -> list[dict[str, Any]]:
+        if include_all:
+            return providers
+        normalized_owner = self._normalize_owner_username(owner_username)
+        if not normalized_owner:
+            return []
+        return [
+            provider
+            for provider in providers
+            if self._provider_owner_username(provider) == normalized_owner
+        ]
+
+    def list_providers(
+        self,
+        enabled_only: bool = False,
+        *,
+        owner_username: str = "",
+        include_all: bool = False,
+    ) -> list[dict[str, Any]]:
+        providers = self._store.list_providers(include_secret=False, enabled_only=enabled_only)
+        visible_providers = self._filter_providers_for_actor(
+            providers,
+            owner_username=owner_username,
+            include_all=include_all,
+        )
+        default_provider_id = self._resolve_default_provider_id(visible_providers, owner_username=owner_username)
+        return [
+            {
+                **provider,
+                "is_default": str(provider.get("id") or "").strip() == default_provider_id,
+            }
+            for provider in visible_providers
+        ]
+
+    def get_default_provider(
+        self,
+        include_secret: bool = True,
+        *,
+        owner_username: str = "",
+        include_all: bool = False,
+    ) -> dict[str, Any] | None:
+        providers = self._store.list_providers(include_secret=include_secret, enabled_only=True)
+        visible_providers = self._filter_providers_for_actor(
+            providers,
+            owner_username=owner_username,
+            include_all=include_all,
+        )
+        default_provider_id = self._resolve_default_provider_id(
+            visible_providers,
+            owner_username=owner_username,
+        )
+        if not default_provider_id:
+            return None
+        return next(
+            (item for item in visible_providers if str(item.get("id") or "").strip() == default_provider_id),
+            visible_providers[0] if visible_providers else None,
+        )
+
+    def create_provider(self, payload: dict[str, Any], *, owner_username: str) -> dict[str, Any]:
+        validated = self._validate_create_payload(payload)
+        validated["owner_username"] = self._normalize_owner_username(owner_username)
+        provider = self._store.create_provider(validated)
         return self._store.get_provider(provider["id"], include_secret=False) or provider
 
-    def update_provider(self, provider_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def get_provider_raw(
+        self,
+        provider_id: str,
+        *,
+        owner_username: str = "",
+        include_all: bool = True,
+    ) -> dict[str, Any] | None:
+        provider = self._store.get_provider(provider_id, include_secret=True)
+        if provider is None:
+            return None
+        visible = self._filter_providers_for_actor(
+            [provider],
+            owner_username=owner_username,
+            include_all=include_all,
+        )
+        return visible[0] if visible else None
+
+    def update_provider(
+        self,
+        provider_id: str,
+        payload: dict[str, Any],
+        *,
+        owner_username: str,
+        include_all: bool = False,
+    ) -> dict[str, Any]:
         updates = self._validate_update_payload(payload)
+        current = self.get_provider_raw(
+            provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+        )
+        if current is None:
+            raise LookupError(f"LLM provider {provider_id} not found")
+        updates["owner_username"] = self._provider_owner_username(current)
         updated = self._store.patch_provider(provider_id, updates)
         if updated is None:
             raise LookupError(f"LLM provider {provider_id} not found")
         return self._store.get_provider(provider_id, include_secret=False) or updated
 
-    def delete_provider(self, provider_id: str) -> bool:
+    def delete_provider(self, provider_id: str, *, owner_username: str, include_all: bool = False) -> bool:
+        current = self.get_provider_raw(
+            provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+        )
+        if current is None:
+            return False
         return self._store.delete_provider(provider_id)
-
-    def get_provider_raw(self, provider_id: str) -> dict[str, Any] | None:
-        return self._store.get_provider(provider_id, include_secret=True)
-
-    def ensure_local_static_provider(self) -> None:
-        existing = self._store.get_provider(LOCAL_STATIC_PROVIDER_ID, include_secret=True) or {}
-        now = _now_iso()
-        provider = {
-            "id": LOCAL_STATIC_PROVIDER_ID,
-            "name": LOCAL_STATIC_PROVIDER_NAME,
-            "provider_type": LOCAL_STATIC_PROVIDER_TYPE,
-            "base_url": LOCAL_STATIC_BASE_URL,
-            "api_key": LOCAL_STATIC_API_KEY,
-            "models": [LOCAL_STATIC_DEFAULT_MODEL],
-            "default_model": LOCAL_STATIC_DEFAULT_MODEL,
-            "enabled": True,
-            "extra_headers": {},
-            "created_at": str(existing.get("created_at") or now),
-            "updated_at": now,
-        }
-        self._store.save_provider(provider)
 
     def get_reflection_config(self, project_id: str, employee_id: str) -> dict[str, Any] | None:
         return self._store.get_reflection_config(project_id, employee_id)
@@ -222,10 +320,17 @@ class LlmProviderService:
         provider_id: str,
         model_name: str = "",
         temperature: float = 0.2,
+        *,
+        owner_username: str = "",
+        include_all: bool = False,
     ) -> dict[str, Any]:
         if not employee_id:
             raise ValueError("employee_id is required")
-        provider = self.get_provider_raw(provider_id)
+        provider = self.get_provider_raw(
+            provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+        )
         if provider is None:
             raise LookupError(f"LLM provider {provider_id} not found")
         if not bool(provider.get("enabled", True)):
@@ -245,8 +350,12 @@ class LlmProviderService:
             },
         )
 
-    def list_reflection_options(self) -> dict[str, Any]:
-        providers = self.list_providers(enabled_only=True)
+    def list_reflection_options(self, *, owner_username: str = "", include_all: bool = False) -> dict[str, Any]:
+        providers = self.list_providers(
+            enabled_only=True,
+            owner_username=owner_username,
+            include_all=include_all,
+        )
         options: list[dict[str, Any]] = []
         for provider in providers:
             provider_id = str(provider.get("id") or "").strip()
@@ -271,6 +380,8 @@ class LlmProviderService:
         self,
         project_id: str,
         employee_id: str,
+        owner_username: str = "",
+        include_all: bool = False,
         preferred_provider_id: str = "",
         preferred_model_name: str = "",
         preferred_temperature: float | None = None,
@@ -280,7 +391,11 @@ class LlmProviderService:
         temperature = self._clamp_temperature(preferred_temperature if preferred_temperature is not None else 0.2)
 
         if provider_id:
-            provider = self.get_provider_raw(provider_id)
+            provider = self.get_provider_raw(
+                provider_id,
+                owner_username=owner_username,
+                include_all=include_all,
+            )
             if provider is None:
                 raise LookupError(f"LLM provider {provider_id} not found")
             if not bool(provider.get("enabled", True)):
@@ -298,13 +413,17 @@ class LlmProviderService:
 
         config = self.get_reflection_config(project_id, employee_id)
         if config is None:
-            fallback_provider = self.get_provider_raw(LOCAL_STATIC_PROVIDER_ID)
+            fallback_provider = self.get_default_provider(
+                include_secret=True,
+                owner_username=owner_username,
+                include_all=include_all,
+            )
             if fallback_provider and bool(fallback_provider.get("enabled", True)):
                 chosen_model = model_name or self._pick_default_model(fallback_provider)
                 if chosen_model:
                     return {
                         "provider": fallback_provider,
-                        "provider_id": LOCAL_STATIC_PROVIDER_ID,
+                        "provider_id": str(fallback_provider.get("id") or "").strip(),
                         "model_name": chosen_model,
                         "temperature": temperature,
                         "from_config": False,
@@ -312,15 +431,23 @@ class LlmProviderService:
             return None
 
         cfg_provider_id = str(config.get("provider_id") or "").strip()
-        provider = self.get_provider_raw(cfg_provider_id)
+        provider = self.get_provider_raw(
+            cfg_provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+        )
         if provider is None or not bool(provider.get("enabled", True)):
-            fallback_provider = self.get_provider_raw(LOCAL_STATIC_PROVIDER_ID)
+            fallback_provider = self.get_default_provider(
+                include_secret=True,
+                owner_username=owner_username,
+                include_all=include_all,
+            )
             if fallback_provider and bool(fallback_provider.get("enabled", True)):
                 chosen_model = model_name or self._pick_default_model(fallback_provider)
                 if chosen_model:
                     return {
                         "provider": fallback_provider,
-                        "provider_id": LOCAL_STATIC_PROVIDER_ID,
+                        "provider_id": str(fallback_provider.get("id") or "").strip(),
                         "model_name": chosen_model,
                         "temperature": temperature,
                         "from_config": False,
@@ -1011,8 +1138,19 @@ class LlmProviderService:
             return self._call_responses(provider, model_name, temperature, bug)
         return self._call_chat_completion(provider, model_name, temperature, bug)
 
-    def test_provider_connection(self, provider_id: str, model_name: str = "") -> dict[str, Any]:
-        provider = self.get_provider_raw(provider_id)
+    def test_provider_connection(
+        self,
+        provider_id: str,
+        model_name: str = "",
+        *,
+        owner_username: str = "",
+        include_all: bool = False,
+    ) -> dict[str, Any]:
+        provider = self.get_provider_raw(
+            provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+        )
         if provider is None:
             raise LookupError(f"LLM provider {provider_id} not found")
         if not bool(provider.get("enabled", True)):
@@ -1166,6 +1304,4 @@ def get_llm_provider_service() -> LlmProviderService:
     settings = get_settings()
     if settings.core_store_backend != "postgres":
         raise RuntimeError("LLM provider module requires CORE_STORE_BACKEND=postgres")
-    service = LlmProviderService(LlmProviderStorePostgres(settings.database_url))
-    service.ensure_local_static_provider()
-    return service
+    return LlmProviderService(LlmProviderStorePostgres(settings.database_url))

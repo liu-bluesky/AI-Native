@@ -37,6 +37,9 @@
         </template>
       </el-table-column>
       <el-table-column prop="name" label="名称" width="160" />
+      <el-table-column prop="owner_username" label="创建人" width="140">
+        <template #default="{ row }">{{ row.owner_username || '-' }}</template>
+      </el-table-column>
       <el-table-column prop="provider_type" label="类型" width="150" />
       <el-table-column prop="base_url" label="Base URL" min-width="220" show-overflow-tooltip />
       <el-table-column label="模型列表" min-width="220" show-overflow-tooltip>

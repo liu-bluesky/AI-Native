@@ -5,9 +5,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from core.deps import require_auth, role_store, usage_store
 from models.requests import CreateApiKeyReq
-from core.role_permissions import has_permission, resolve_role_permissions
+from core.role_permissions import has_permission
 
 router = APIRouter(prefix="/api/usage", dependencies=[Depends(require_auth)])
+_LEGACY_DELETABLE_KEY_OWNERS = {"", "unknown", "system-external-agent"}
 
 
 def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
@@ -22,11 +23,13 @@ def _current_username(auth_payload: dict) -> str:
     return str(auth_payload.get("sub") or "").strip()
 
 
-def _is_admin_like(auth_payload: dict) -> bool:
-    role_id = str(auth_payload.get("role") or "").strip().lower()
-    role = role_store.get(role_id)
-    role_permissions = getattr(role, "permissions", None)
-    return "*" in set(resolve_role_permissions(role_permissions, role_id=role_id))
+def _can_delete_key_record(record: dict | None, owner: str) -> bool:
+    if not record:
+        return False
+    record_owner = str(record.get("created_by") or "").strip()
+    if owner and record_owner == owner:
+        return True
+    return record_owner in _LEGACY_DELETABLE_KEY_OWNERS
 
 
 @router.post("/keys")
@@ -42,16 +45,19 @@ async def create_key(req: CreateApiKeyReq, auth_payload: dict = Depends(require_
 @router.get("/keys")
 async def list_keys(auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.usage.keys")
-    if _is_admin_like(auth_payload):
-        return {"keys": usage_store.list_keys()}
     return {"keys": usage_store.list_keys(created_by=_current_username(auth_payload))}
 
 
 @router.delete("/keys/{key}")
-async def deactivate_key(key: str, auth_payload: dict = Depends(require_auth)):
+async def delete_key(key: str, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "button.apikey.deactivate")
-    owner = None if _is_admin_like(auth_payload) else _current_username(auth_payload)
-    if not usage_store.deactivate_key(key, created_by=owner):
+    owner = _current_username(auth_payload)
+    if usage_store.delete_key(key, created_by=owner):
+        return {"ok": True}
+    record = usage_store.get_key(key)
+    if not _can_delete_key_record(record, owner):
+        raise HTTPException(404, "Key not found")
+    if not usage_store.delete_key(key):
         raise HTTPException(404, "Key not found")
     return {"ok": True}
 

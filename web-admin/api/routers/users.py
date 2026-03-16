@@ -6,9 +6,10 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.deps import project_store, require_auth, role_store, user_store
-from models.requests import UserCreateReq, UserPasswordUpdateReq
+from core.deps import is_admin_like, project_store, require_auth, role_store, user_store
+from models.requests import UserCreateReq, UserPasswordUpdateReq, UserSettingsUpdateReq
 from core.role_permissions import has_permission
+from services.llm_provider_service import get_llm_provider_service
 from stores.json.user_store import User, hash_password
 
 router = APIRouter(prefix="/api/users", dependencies=[Depends(require_auth)])
@@ -64,6 +65,65 @@ async def list_user_role_options(auth_payload: dict = Depends(require_auth)):
     }
 
 
+@router.get("/me/settings")
+async def get_current_user_settings(auth_payload: dict = Depends(require_auth)):
+    username = _sanitize_username(str(auth_payload.get("sub") or ""))
+    user = user_store.get(username)
+    if user is None:
+        raise HTTPException(404, "User not found")
+    providers = get_llm_provider_service().list_providers(
+        enabled_only=True,
+        owner_username=username,
+        include_all=is_admin_like(auth_payload),
+    )
+    return {
+        "settings": {
+            "username": user.username,
+            "role": user.role,
+            "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
+            "created_at": user.created_at,
+        },
+        "providers": providers,
+    }
+
+
+@router.put("/me/settings")
+async def update_current_user_settings(
+    req: UserSettingsUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    username = _sanitize_username(str(auth_payload.get("sub") or ""))
+    user = user_store.get(username)
+    if user is None:
+        raise HTTPException(404, "User not found")
+    provider_id = str(req.default_ai_provider_id or "").strip()
+    if provider_id:
+        providers = get_llm_provider_service().list_providers(
+            enabled_only=True,
+            owner_username=username,
+            include_all=is_admin_like(auth_payload),
+        )
+        if not any(str(item.get("id") or "").strip() == provider_id for item in providers):
+            raise HTTPException(400, "default_ai_provider_id is invalid or not accessible")
+    updated = User(
+        username=user.username,
+        password_hash=user.password_hash,
+        role=user.role,
+        default_ai_provider_id=provider_id,
+        created_at=user.created_at,
+    )
+    user_store.save(updated)
+    return {
+        "status": "updated",
+        "settings": {
+            "username": updated.username,
+            "role": updated.role,
+            "default_ai_provider_id": updated.default_ai_provider_id,
+            "created_at": updated.created_at,
+        },
+    }
+
+
 @router.post("")
 async def create_user(req: UserCreateReq, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "button.users.create")
@@ -76,7 +136,11 @@ async def create_user(req: UserCreateReq, auth_payload: dict = Depends(require_a
         raise HTTPException(400, f"Role not found: {role}")
     if user_store.get(username) is not None:
         raise HTTPException(409, "Username already exists")
-    user = User(username=username, password_hash=hash_password(req.password), role=role)
+    user = User(
+        username=username,
+        password_hash=hash_password(req.password),
+        role=role,
+    )
     user_store.save(user)
     return {
         "status": "created",
@@ -104,6 +168,7 @@ async def update_password(username: str, req: UserPasswordUpdateReq, auth_payloa
         username=existing.username,
         password_hash=hash_password(req.password),
         role=existing.role,
+        default_ai_provider_id=existing.default_ai_provider_id,
         created_at=existing.created_at,
     )
     user_store.save(updated)

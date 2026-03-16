@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 from services.conversation_manager import ConversationManager
 from services.tool_executor import ToolExecutor
 from core.observability import logger, metrics
@@ -45,7 +45,10 @@ class AgentOrchestrator:
         project_id: str,
         employee_id: str,
         cancel_event: asyncio.Event,
-        messages: list[dict] | None = None
+        messages: list[dict] | None = None,
+        local_connector: Any | None = None,
+        local_connector_workspace_path: str = "",
+        local_connector_sandbox_mode: str = "workspace-write",
     ) -> AsyncGenerator[dict, None]:
         start_time = time.time()
         metrics.inc_counter("conversation_started", {"project_id": project_id})
@@ -65,6 +68,9 @@ class AgentOrchestrator:
                 employee_id,
                 timeout_sec=self._tool_timeout_sec,
                 max_retries=self._tool_retry_count,
+                local_connector=local_connector,
+                local_connector_workspace_path=local_connector_workspace_path,
+                local_connector_sandbox_mode=local_connector_sandbox_mode,
             )
             loop_count = 0
             completed = False

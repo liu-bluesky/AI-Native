@@ -1,8 +1,0 @@
-node_modules/
-logs/
-.connector-state.json
-.bootstrapped
-desktop/runtime/
-desktop/dist/
-desktop/node_modules/
-.DS_Store

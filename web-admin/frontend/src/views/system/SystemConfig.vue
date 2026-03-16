@@ -3,9 +3,9 @@
     <section class="hero">
       <div>
         <p class="hero-eyebrow">System Control</p>
-        <h2>系统配置、MCP 与本地连接器</h2>
+        <h2>系统配置与 MCP</h2>
         <p class="hero-desc">
-          在这里维护系统级开关、默认 MCP 配置，以及当前远程 MCP 服务和本地连接器暴露出的能力状态。
+          在这里维护系统级开关、默认 MCP 配置，以及当前远程 MCP 服务暴露出的能力状态。
         </p>
       </div>
       <div class="hero-actions">
@@ -33,16 +33,6 @@
         <span class="metric-label">探测异常</span>
         <strong class="metric-value">{{ totalErrorCount }}</strong>
         <span class="metric-foot">协议不兼容或服务不可达时出现</span>
-      </article>
-      <article class="metric-card">
-        <span class="metric-label">本地连接器</span>
-        <strong class="metric-value">{{ connectorItems.length }}</strong>
-        <span class="metric-foot">当前账号可管理的设备连接数</span>
-      </article>
-      <article class="metric-card">
-        <span class="metric-label">在线连接器</span>
-        <strong class="metric-value">{{ onlineConnectorCount }}</strong>
-        <span class="metric-foot">90 秒内有心跳则视为在线</span>
       </article>
     </section>
 
@@ -374,354 +364,6 @@
       </section>
     </div>
 
-    <section class="panel connector-panel">
-      <div class="panel-head">
-        <div>
-          <h3>本地连接器</h3>
-          <p>
-            运行在用户自己的电脑上，用来桥接本地目录、本地命令和本地模型。
-          </p>
-        </div>
-        <div class="panel-actions">
-          <el-button :loading="connectorsLoading" @click="fetchLocalConnectors">
-            刷新连接器
-          </el-button>
-        </div>
-      </div>
-
-      <el-alert
-        type="info"
-        :closable="false"
-        show-icon
-        class="inline-alert"
-        title="本地连接器适合远程用户。当前阶段已支持设备注册、心跳、目录探测、命令执行和本地模型桥接；Windows PTY 与反向连接仍在后续阶段完善。"
-      />
-
-      <div class="connector-metric-row">
-        <div class="connector-metric">
-          <span>桌面安装包</span>
-          <strong>{{ desktopArtifactItems.length }}</strong>
-        </div>
-        <div class="connector-metric">
-          <span>在线设备</span>
-          <strong>{{ onlineConnectorCount }}</strong>
-        </div>
-        <div class="connector-metric">
-          <span>总设备</span>
-          <strong>{{ connectorItems.length }}</strong>
-        </div>
-      </div>
-
-      <div class="connector-grid" v-loading="connectorsLoading">
-        <div class="connector-column">
-          <div class="connector-subhead">
-            <h4>安装与接入</h4>
-            <p>安装包保持通用分发，账号认证改为在 AI 对话中心里点击“匹配本地连接器”完成。</p>
-          </div>
-
-          <div class="pair-create-card desktop-artifact-card">
-            <div class="desktop-artifact-card__head">
-              <div class="desktop-artifact-card__title">桌面通用包</div>
-              <div class="desktop-artifact-card__desc">
-                这里展示当前服务器已经构建好的安装包。它们是通用程序包，不包含当前账号的自动配对信息。
-              </div>
-            </div>
-            <div v-if="desktopArtifactItems.length" class="desktop-artifact-list">
-              <button
-                v-for="item in desktopArtifactItems"
-                :key="item.filename"
-                type="button"
-                class="desktop-artifact-item"
-                :disabled="downloadingDesktopArtifactKey === item.filename"
-                @click="downloadDesktopArtifact(item)"
-              >
-                <div class="desktop-artifact-item__top">
-                  <span class="desktop-artifact-item__label">{{ item.label }}</span>
-                  <span class="desktop-artifact-item__size">{{ formatFileSize(item.size_bytes) }}</span>
-                </div>
-                <div class="desktop-artifact-item__desc">{{ item.description }}</div>
-                <div class="desktop-artifact-item__meta">
-                  {{ item.filename }} · {{ formatDateTime(item.updated_at) }}
-                </div>
-              </button>
-            </div>
-            <div v-else class="field-desc">
-              当前还没有可分发的桌面安装包，请先在 `local-connector/desktop/dist`
-              目录生成 `dmg / exe` 产物。
-            </div>
-          </div>
-
-          <div class="pair-create-card">
-            <div class="field-desc">
-              当前推荐流程是：下载通用安装包，启动本机 Local Connector，然后回到“AI 对话中心 > 系统对话 > 设置”点击“匹配本地连接器”完成认证。
-            </div>
-          </div>
-        </div>
-
-        <div class="connector-column">
-          <div class="connector-subhead">
-            <h4>已连接设备</h4>
-            <p>可查看在线状态、支持能力和最近一次心跳。</p>
-          </div>
-
-          <div v-if="connectorItems.length" class="connector-card-list">
-            <article
-              v-for="item in connectorItems"
-              :key="item.id"
-              class="connector-device-card"
-            >
-              <div class="connector-device-top">
-                <div>
-                  <div class="connector-device-title">
-                    {{ item.connector_name || "Local Connector" }}
-                  </div>
-                  <div class="connector-device-subtitle">
-                    {{ item.id }} · {{ item.owner_username || "unknown" }}
-                  </div>
-                </div>
-                <div class="connector-device-tags">
-                  <el-tag size="small" :type="item.online ? 'success' : 'info'">
-                    {{ item.online ? "在线" : "离线" }}
-                  </el-tag>
-                  <el-tag
-                    size="small"
-                    :type="item.last_error ? 'danger' : 'success'"
-                  >
-                    {{ item.last_error ? "异常" : "正常" }}
-                  </el-tag>
-                </div>
-              </div>
-
-              <div class="connector-device-info">
-                <span>平台：{{ formatPlatform(item.platform) }}</span>
-                <span>版本：{{ item.app_version || "-" }}</span>
-                <span>状态：{{ item.status || "-" }}</span>
-                <span>最近心跳：{{ formatDateTime(item.last_seen_at) }}</span>
-                <span v-if="item.advertised_url">
-                  地址：{{ item.advertised_url }}
-                </span>
-              </div>
-
-              <div class="connector-capability-row">
-                <span
-                  v-for="cap in connectorCapabilityLabels(item)"
-                  :key="`${item.id}-${cap}`"
-                  class="capsule capsule-tool"
-                >
-                  {{ cap }}
-                </span>
-                <span
-                  v-if="item.health?.llm_bridge_enabled"
-                  class="capsule capsule-prompt"
-                >
-                  本地模型已配置
-                </span>
-              </div>
-
-              <div class="connector-share-summary">
-                本地模型共享：{{ connectorLlmSharingSummary(item) }}
-              </div>
-              <div class="connector-share-summary">
-                外部智能体共享：{{ connectorExternalAgentSharingSummary(item) }}
-              </div>
-
-              <el-alert
-                v-if="item.last_error"
-                class="connector-error"
-                type="error"
-                :closable="false"
-                show-icon
-                :title="item.last_error"
-              />
-
-              <div class="connector-device-actions">
-                <el-button text type="primary" @click="copyText(item.id)">
-                  复制 ID
-                </el-button>
-                <el-button
-                  v-if="item.can_manage_llm_sharing"
-                  text
-                  type="primary"
-                  @click="openConnectorLlmSharingDialog(item)"
-                >
-                  模型共享
-                </el-button>
-                <el-button
-                  v-if="item.can_manage_external_agent_sharing"
-                  text
-                  type="primary"
-                  @click="openConnectorExternalAgentSharingDialog(item)"
-                >
-                  外部智能体共享
-                </el-button>
-                <el-button
-                  v-if="item.can_delete"
-                  text
-                  type="danger"
-                  :loading="deletingConnectorId === item.id"
-                  @click="deleteConnector(item)"
-                >
-                  删除
-                </el-button>
-              </div>
-            </article>
-          </div>
-          <el-empty
-            v-else
-            description="当前还没有已连接设备"
-            :image-size="56"
-          />
-        </div>
-      </div>
-    </section>
-
-    <el-dialog
-      v-model="showConnectorLlmSharingDialog"
-      width="720px"
-      destroy-on-close
-      :close-on-click-modal="!savingConnectorLlmSharing"
-      title="本地模型共享"
-    >
-      <div class="connector-sharing-copy">
-        这里只共享该连接器的本地模型桥接能力，不共享目录访问、命令执行或 PTY 能力。
-      </div>
-
-      <el-form label-position="top" class="connector-sharing-form">
-        <el-form-item label="连接器">
-          <el-input :model-value="connectorLlmSharingForm.connector_name" disabled />
-        </el-form-item>
-
-        <el-form-item label="共享给用户">
-          <el-select
-            v-model="connectorLlmSharingForm.llm_shared_with_usernames"
-            multiple
-            filterable
-            clearable
-            collapse-tags
-            collapse-tags-tooltip
-            class="full-width"
-            :loading="connectorShareOptionsLoading"
-            placeholder="选择可使用这台电脑本地模型的用户"
-          >
-            <el-option
-              v-for="item in connectorShareUserOptions"
-              :key="item.username"
-              :label="`${item.username} · ${item.role || '-'}`"
-              :value="item.username"
-            />
-          </el-select>
-        </el-form-item>
-
-        <el-form-item label="共享给角色">
-          <el-select
-            v-model="connectorLlmSharingForm.llm_shared_with_roles"
-            multiple
-            filterable
-            clearable
-            collapse-tags
-            collapse-tags-tooltip
-            class="full-width"
-            :loading="connectorShareOptionsLoading"
-            placeholder="选择可使用这台电脑本地模型的角色"
-          >
-            <el-option
-              v-for="item in connectorShareRoleOptions"
-              :key="item.id"
-              :label="item.name"
-              :value="item.id"
-            />
-          </el-select>
-        </el-form-item>
-      </el-form>
-
-      <template #footer>
-        <el-button :disabled="savingConnectorLlmSharing" @click="showConnectorLlmSharingDialog = false">
-          取消
-        </el-button>
-        <el-button
-          type="primary"
-          :loading="savingConnectorLlmSharing"
-          @click="saveConnectorLlmSharing"
-        >
-          保存共享
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="showConnectorExternalAgentSharingDialog"
-      width="720px"
-      destroy-on-close
-      :close-on-click-modal="!savingConnectorExternalAgentSharing"
-      title="外部智能体共享"
-    >
-      <div class="connector-sharing-copy">
-        这里只共享该连接器上的外部智能体 CLI 调用能力，可供别人使用
-        `Codex / Claude / Gemini`；不开放连接器管理权限。
-      </div>
-
-      <el-form label-position="top" class="connector-sharing-form">
-        <el-form-item label="连接器">
-          <el-input :model-value="connectorExternalAgentSharingForm.connector_name" disabled />
-        </el-form-item>
-
-        <el-form-item label="共享给用户">
-          <el-select
-            v-model="connectorExternalAgentSharingForm.external_agent_shared_with_usernames"
-            multiple
-            filterable
-            clearable
-            collapse-tags
-            collapse-tags-tooltip
-            class="full-width"
-            :loading="connectorShareOptionsLoading"
-            placeholder="选择可使用这台电脑外部智能体 CLI 的用户"
-          >
-            <el-option
-              v-for="item in connectorShareUserOptions"
-              :key="item.username"
-              :label="`${item.username} · ${item.role || '-'}`"
-              :value="item.username"
-            />
-          </el-select>
-        </el-form-item>
-
-        <el-form-item label="共享给角色">
-          <el-select
-            v-model="connectorExternalAgentSharingForm.external_agent_shared_with_roles"
-            multiple
-            filterable
-            clearable
-            collapse-tags
-            collapse-tags-tooltip
-            class="full-width"
-            :loading="connectorShareOptionsLoading"
-            placeholder="选择可使用这台电脑外部智能体 CLI 的角色"
-          >
-            <el-option
-              v-for="item in connectorShareRoleOptions"
-              :key="item.id"
-              :label="item.name"
-              :value="item.id"
-            />
-          </el-select>
-        </el-form-item>
-      </el-form>
-
-      <template #footer>
-        <el-button :disabled="savingConnectorExternalAgentSharing" @click="showConnectorExternalAgentSharingDialog = false">
-          取消
-        </el-button>
-        <el-button
-          type="primary"
-          :loading="savingConnectorExternalAgentSharing"
-          @click="saveConnectorExternalAgentSharing"
-        >
-          保存共享
-        </el-button>
-      </template>
-    </el-dialog>
-
     <section class="panel skill-panel">
       <div class="panel-head">
         <div>
@@ -869,7 +511,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/utils/api.js";
 
@@ -902,6 +544,32 @@ const EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS = [
   },
 ];
 const RISK_LEVEL_OPTIONS = ["none", "low", "medium", "high", "critical"];
+const DESKTOP_ARTIFACT_TARGET_OPTIONS = [
+  {
+    label: "Windows 安装版",
+    value: "windows:setup",
+    platform: "windows",
+    variant: "setup",
+    accept: ".exe",
+    hint: "上传 `.exe` 安装包。新文件会覆盖之前的 Windows 安装版。",
+  },
+  {
+    label: "Windows 便携版",
+    value: "windows:portable",
+    platform: "windows",
+    variant: "portable",
+    accept: ".exe",
+    hint: "上传 `.exe` 便携包。新文件会覆盖之前的 Windows 便携版。",
+  },
+  {
+    label: "macOS 安装包",
+    value: "macos:dmg",
+    platform: "macos",
+    variant: "dmg",
+    accept: ".dmg",
+    hint: "上传 `.dmg` 文件。新文件会覆盖之前的 macOS 安装包。",
+  },
+];
 
 function cloneConfig(value) {
   return JSON.parse(JSON.stringify(value));
@@ -911,32 +579,31 @@ const loading = ref(false);
 const saving = ref(false);
 const skillsLoading = ref(false);
 const connectorsLoading = ref(false);
+const uploadingDesktopArtifact = ref(false);
 const downloadingDesktopArtifactKey = ref("");
 const deletingConnectorId = ref("");
 const connectorShareOptionsLoading = ref(false);
 const savingConnectorLlmSharing = ref(false);
-const savingConnectorExternalAgentSharing = ref(false);
 const refreshingPanels = ref(false);
 const mcpServers = ref([]);
 const connectorItems = ref([]);
 const desktopArtifactItems = ref([]);
+const desktopArtifactUploadRef = ref(null);
+const desktopArtifactUploadFile = ref(null);
+const desktopArtifactUploadFileList = ref([]);
 const showConnectorLlmSharingDialog = ref(false);
-const showConnectorExternalAgentSharingDialog = ref(false);
 const connectorShareUserOptions = ref([]);
 const connectorShareRoleOptions = ref([]);
+const desktopArtifactUploadForm = ref({
+  target: "windows:setup",
+  version: "",
+});
 const connectorLlmSharingForm = ref({
   connector_id: "",
   connector_name: "",
   llm_shared_with_usernames: [],
   llm_shared_with_roles: [],
 });
-const connectorExternalAgentSharingForm = ref({
-  connector_id: "",
-  connector_name: "",
-  external_agent_shared_with_usernames: [],
-  external_agent_shared_with_roles: [],
-});
-let connectorRefreshTimer = null;
 
 const form = ref({
   enable_project_manual_generation: false,
@@ -973,6 +640,20 @@ const totalErrorCount = computed(() =>
 );
 const onlineConnectorCount = computed(
   () => connectorItems.value.filter((item) => item?.online).length,
+);
+const selectedDesktopArtifactTarget = computed(() =>
+  DESKTOP_ARTIFACT_TARGET_OPTIONS.find(
+    (item) => item.value === desktopArtifactUploadForm.value.target,
+  ) || DESKTOP_ARTIFACT_TARGET_OPTIONS[0],
+);
+const desktopArtifactUploadAccept = computed(
+  () => selectedDesktopArtifactTarget.value?.accept || ".exe,.dmg",
+);
+const canUploadDesktopArtifact = computed(
+  () =>
+    !!desktopArtifactUploadFile.value &&
+    !!String(desktopArtifactUploadForm.value.version || "").trim() &&
+    !!selectedDesktopArtifactTarget.value,
 );
 
 const configLineCount = computed(
@@ -1303,6 +984,34 @@ function formatFileSize(value) {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+function handleDesktopArtifactFileChange(uploadFile, uploadFiles) {
+  desktopArtifactUploadFileList.value = uploadFiles.slice(-1);
+  desktopArtifactUploadFile.value = uploadFile?.raw || null;
+}
+
+function handleDesktopArtifactFileRemove() {
+  desktopArtifactUploadFileList.value = [];
+  desktopArtifactUploadFile.value = null;
+}
+
+function handleDesktopArtifactFileExceed() {
+  ElMessage.warning("每次只能上传一个安装包文件");
+}
+
+function resetDesktopArtifactUploadForm(options = {}) {
+  const preserveTarget = options.preserveTarget !== false;
+  const nextTarget = preserveTarget
+    ? String(desktopArtifactUploadForm.value.target || "windows:setup")
+    : "windows:setup";
+  desktopArtifactUploadForm.value = {
+    target: nextTarget,
+    version: "",
+  };
+  desktopArtifactUploadFile.value = null;
+  desktopArtifactUploadFileList.value = [];
+  desktopArtifactUploadRef.value?.clearFiles?.();
+}
+
 function connectorCapabilityLabels(item) {
   const capabilities =
     item?.capabilities && typeof item.capabilities === "object"
@@ -1352,34 +1061,6 @@ function connectorLlmSharingSummary(item) {
   return parts.join("；");
 }
 
-function connectorExternalAgentSharingSummary(item) {
-  const usernames = Array.isArray(item?.external_agent_shared_with_usernames)
-    ? item.external_agent_shared_with_usernames
-        .map((entry) => String(entry || "").trim())
-        .filter(Boolean)
-    : [];
-  const roleIds = Array.isArray(item?.external_agent_shared_with_roles)
-    ? item.external_agent_shared_with_roles
-        .map((entry) => String(entry || "").trim())
-        .filter(Boolean)
-    : [];
-  if (!usernames.length && !roleIds.length) {
-    return "未共享";
-  }
-  const parts = [];
-  if (usernames.length) {
-    parts.push(`用户 ${usernames.join("、")}`);
-  }
-  if (roleIds.length) {
-    const roleNames = roleIds.map((roleId) => {
-      const matched = connectorShareRoleOptions.value.find((item) => item.id === roleId);
-      return matched?.name || roleId;
-    });
-    parts.push(`角色 ${roleNames.join("、")}`);
-  }
-  return parts.join("；");
-}
-
 async function copyText(value) {
   const text = String(value || "").trim();
   if (!text) {
@@ -1406,29 +1087,9 @@ async function copyText(value) {
 }
 
 async function fetchLocalConnectors(options = {}) {
-  if (!options.silent) {
-    connectorsLoading.value = true;
-  }
-  try {
-    const [connectorData, desktopArtifactData] = await Promise.all([
-      api.get("/local-connectors"),
-      api.get("/local-connectors/desktop-artifacts").catch(() => ({ artifacts: [] })),
-    ]);
-    connectorItems.value = Array.isArray(connectorData?.connectors)
-      ? connectorData.connectors
-      : [];
-    desktopArtifactItems.value = Array.isArray(desktopArtifactData?.artifacts)
-      ? desktopArtifactData.artifacts
-      : [];
-  } catch (err) {
-    if (!options.silent) {
-      ElMessage.error(err?.detail || err?.message || "加载本地连接器失败");
-    }
-  } finally {
-    if (!options.silent) {
-      connectorsLoading.value = false;
-    }
-  }
+  connectorItems.value = [];
+  desktopArtifactItems.value = [];
+  connectorsLoading.value = false;
 }
 
 async function ensureConnectorShareOptionsLoaded() {
@@ -1504,64 +1165,6 @@ async function saveConnectorLlmSharing() {
   }
 }
 
-async function openConnectorExternalAgentSharingDialog(item) {
-  if (!item?.can_manage_external_agent_sharing) {
-    return;
-  }
-  try {
-    await ensureConnectorShareOptionsLoaded();
-  } catch {
-    return;
-  }
-  connectorExternalAgentSharingForm.value = {
-    connector_id: String(item?.id || "").trim(),
-    connector_name: String(item?.connector_name || item?.id || "").trim(),
-    external_agent_shared_with_usernames: Array.isArray(item?.external_agent_shared_with_usernames)
-      ? item.external_agent_shared_with_usernames
-          .map((entry) => String(entry || "").trim())
-          .filter(Boolean)
-      : [],
-    external_agent_shared_with_roles: Array.isArray(item?.external_agent_shared_with_roles)
-      ? item.external_agent_shared_with_roles
-          .map((entry) => String(entry || "").trim())
-          .filter(Boolean)
-      : [],
-  };
-  showConnectorExternalAgentSharingDialog.value = true;
-}
-
-async function saveConnectorExternalAgentSharing() {
-  const connectorId = String(connectorExternalAgentSharingForm.value.connector_id || "").trim();
-  if (!connectorId) {
-    ElMessage.warning("缺少连接器 ID");
-    return;
-  }
-  savingConnectorExternalAgentSharing.value = true;
-  try {
-    const data = await api.patch(
-      `/local-connectors/${encodeURIComponent(connectorId)}/external-agent-sharing`,
-      {
-        external_agent_shared_with_usernames:
-          connectorExternalAgentSharingForm.value.external_agent_shared_with_usernames,
-        external_agent_shared_with_roles:
-          connectorExternalAgentSharingForm.value.external_agent_shared_with_roles,
-      },
-    );
-    const updatedConnector = data?.connector;
-    if (updatedConnector?.id) {
-      connectorItems.value = connectorItems.value.map((item) =>
-        item.id === updatedConnector.id ? updatedConnector : item,
-      );
-    }
-    showConnectorExternalAgentSharingDialog.value = false;
-    ElMessage.success("外部智能体共享设置已更新");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "保存共享设置失败");
-  } finally {
-    savingConnectorExternalAgentSharing.value = false;
-  }
-}
-
 async function downloadDesktopArtifact(item) {
   const filename = String(item?.filename || "").trim();
   if (!filename) {
@@ -1585,6 +1188,47 @@ async function downloadDesktopArtifact(item) {
     ElMessage.error(err?.detail || err?.message || "下载桌面安装包失败");
   } finally {
     downloadingDesktopArtifactKey.value = "";
+  }
+}
+
+async function uploadDesktopArtifact() {
+  const target = selectedDesktopArtifactTarget.value;
+  const version = String(desktopArtifactUploadForm.value.version || "").trim();
+  const file = desktopArtifactUploadFile.value;
+  if (!target) {
+    ElMessage.warning("请选择安装包类型");
+    return;
+  }
+  if (!version) {
+    ElMessage.warning("请输入版本号");
+    return;
+  }
+  if (!file) {
+    ElMessage.warning("请先选择安装包文件");
+    return;
+  }
+  if (!String(file.name || "").toLowerCase().endsWith(target.accept.toLowerCase())) {
+    ElMessage.warning(`当前类型只支持上传 ${target.accept} 文件`);
+    return;
+  }
+
+  uploadingDesktopArtifact.value = true;
+  try {
+    const payload = new FormData();
+    payload.append("platform", target.platform);
+    payload.append("variant", target.variant);
+    payload.append("version", version);
+    payload.append("file", file);
+    await api.post("/local-connectors/desktop-artifacts/upload", payload, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    resetDesktopArtifactUploadForm();
+    await fetchLocalConnectors({ silent: true });
+    ElMessage.success(`${target.label} 已上传，旧包已覆盖`);
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "上传桌面安装包失败");
+  } finally {
+    uploadingDesktopArtifact.value = false;
   }
 }
 
@@ -1632,7 +1276,7 @@ async function refreshMcpSkills() {
 async function refreshAllPanels() {
   refreshingPanels.value = true;
   try {
-    await Promise.all([refreshMcpSkills(), fetchLocalConnectors()]);
+    await refreshMcpSkills();
   } finally {
     refreshingPanels.value = false;
   }
@@ -1643,7 +1287,7 @@ async function fetchConfig() {
   try {
     const data = await api.get("/system-config");
     applyConfigToForm(data?.config);
-    await Promise.all([refreshMcpSkills(), fetchLocalConnectors()]);
+    await refreshMcpSkills();
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "加载系统配置失败");
   } finally {
@@ -1712,17 +1356,8 @@ async function saveConfig() {
 
 onMounted(() => {
   fetchConfig();
-  connectorRefreshTimer = window.setInterval(() => {
-    fetchLocalConnectors({ silent: true });
-  }, 30000);
 });
 
-onBeforeUnmount(() => {
-  if (connectorRefreshTimer) {
-    window.clearInterval(connectorRefreshTimer);
-    connectorRefreshTimer = null;
-  }
-});
 </script>
 
 <style scoped>
@@ -2472,6 +2107,38 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
+.desktop-artifact-upload-form {
+  margin-bottom: 14px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(112, 128, 144, 0.14);
+  background: rgba(247, 249, 251, 0.92);
+}
+
+.desktop-artifact-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.desktop-artifact-upload {
+  width: 100%;
+}
+
+.desktop-artifact-upload__hint {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.desktop-artifact-upload-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .desktop-artifact-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2571,6 +2238,7 @@ onBeforeUnmount(() => {
   .connector-grid,
   .connector-metric-row,
   .employee-skill-site-card__grid,
+  .desktop-artifact-upload-grid,
   .skill-section-grid,
   .check-list,
   .overview-grid {
@@ -2621,6 +2289,11 @@ onBeforeUnmount(() => {
 
   .server-summary {
     white-space: normal;
+  }
+
+  .desktop-artifact-upload-actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 </style>

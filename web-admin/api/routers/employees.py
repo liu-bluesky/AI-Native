@@ -10,7 +10,15 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends
 
 from core.ownership import assert_can_manage_record, current_username, ownership_payload
-from core.deps import ensure_permission, require_auth, employee_store, project_store, role_store, system_config_store
+from core.deps import (
+    employee_store,
+    ensure_permission,
+    is_admin_like,
+    project_store,
+    require_auth,
+    role_store,
+    system_config_store,
+)
 from core.role_permissions import has_permission
 from services.external_rule_service import suggest_external_rules as build_external_rule_suggestions
 from services.external_skill_service import suggest_external_skills as build_external_skill_suggestions
@@ -1477,7 +1485,10 @@ async def create_employee_from_draft(req: EmployeeDraftCreateReq, auth_payload: 
 
 
 @router.post("/generate-draft")
-async def generate_employee_draft(req: EmployeeDraftGenerateReq):
+async def generate_employee_draft(
+    req: EmployeeDraftGenerateReq,
+    auth_payload: dict = Depends(require_auth),
+):
     from services.llm_provider_service import get_llm_provider_service
 
     message = _normalize_text_value(req.message, limit=8000)
@@ -1485,7 +1496,11 @@ async def generate_employee_draft(req: EmployeeDraftGenerateReq):
         raise HTTPException(400, "message is required")
 
     llm_service = get_llm_provider_service()
-    providers = llm_service.list_providers(enabled_only=True)
+    providers = llm_service.list_providers(
+        enabled_only=True,
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+    )
     if not providers:
         raise HTTPException(400, "未配置 LLM 提供商")
     preferred_provider_id = str(req.provider_id or "").strip()
@@ -1901,14 +1916,21 @@ def _assert_employee_manual_generation_enabled() -> None:
 
 
 @router.post("/{employee_id}/generate-manual")
-async def generate_employee_manual(employee_id: str):
+async def generate_employee_manual(
+    employee_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
     """生成员工使用手册（面向接入方 AI 平台）"""
     from services.llm_provider_service import get_llm_provider_service
 
     _assert_employee_manual_generation_enabled()
 
     llm_service = get_llm_provider_service()
-    providers = llm_service.list_providers(enabled_only=True)
+    providers = llm_service.list_providers(
+        enabled_only=True,
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+    )
 
     if not providers:
         raise HTTPException(400, "未配置 LLM 提供商")

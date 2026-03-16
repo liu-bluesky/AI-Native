@@ -32,6 +32,7 @@ class UserStorePostgres:
             username=str(payload.get("username") or ""),
             password_hash=str(payload.get("password_hash") or ""),
             role=str(payload.get("role") or "user"),
+            default_ai_provider_id=str(payload.get("default_ai_provider_id") or "").strip(),
             created_at=str(payload.get("created_at") or _now_iso()),
         )
 
@@ -41,6 +42,7 @@ class UserStorePostgres:
                 "username": user.username,
                 "password_hash": user.password_hash,
                 "role": user.role,
+                "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
                 "created_at": user.created_at,
             },
             ensure_ascii=False,

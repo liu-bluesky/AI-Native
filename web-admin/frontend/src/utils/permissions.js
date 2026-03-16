@@ -6,6 +6,7 @@ const permissionStateVersion = ref(0)
 
 const PATH_PERMISSION_MAP = [
   { prefix: '/ai/chat', permission: 'menu.ai.chat' },
+  { prefix: '/user/settings', permission: '' },
   { prefix: '/users', permission: 'menu.users' },
   { prefix: '/roles', permission: 'menu.roles' },
   { prefix: '/projects', permission: 'menu.projects' },
@@ -31,6 +32,7 @@ const LEGACY_USER_PERMISSION_KEYS = new Set([
 ])
 const FALLBACK_PATHS = [
   '/ai/chat',
+  '/user/settings',
   '/agent-templates',
   '/employees',
   '/projects',

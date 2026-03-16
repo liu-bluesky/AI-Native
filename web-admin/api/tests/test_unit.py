@@ -1,7 +1,6 @@
 """模拟测试（无需 Redis）"""
 
 import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -36,6 +35,131 @@ async def test_tool_executor_logic():
     assert executor._timeout == 60
 
 
+def test_build_local_connector_file_tools_respects_write_toggle():
+    from services.local_connector_service import build_local_connector_file_tools
+
+    readonly_names = {
+        item["tool_name"]
+        for item in build_local_connector_file_tools(
+            allow_file_write_tools=False,
+            allow_shell_tools=False,
+        )
+    }
+    writable_names = {
+        item["tool_name"]
+        for item in build_local_connector_file_tools(
+            allow_file_write_tools=True,
+            allow_shell_tools=True,
+        )
+    }
+
+    assert "local_connector_read_file" in readonly_names
+    assert "local_connector_write_file" not in readonly_names
+    assert "local_connector_run_command" not in readonly_names
+    assert "local_connector_write_file" in writable_names
+    assert "local_connector_run_command" in writable_names
+
+
+@pytest.mark.asyncio
+async def test_tool_executor_routes_local_connector_tools(monkeypatch):
+    from services import local_connector_service as connector_svc
+    from services.tool_executor import ToolExecutor
+
+    captured: dict = {}
+
+    async def fake_read(connector, **kwargs):
+        captured["connector"] = connector
+        captured["kwargs"] = kwargs
+        return {"ok": True, "path": kwargs["path"], "content": "demo"}
+
+    monkeypatch.setattr(connector_svc, "read_connector_file", fake_read)
+
+    connector = object()
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        local_connector=connector,
+        local_connector_workspace_path="/tmp/workspace",
+        local_connector_sandbox_mode="workspace-write",
+    )
+
+    result = await executor._execute_tool(
+        "local_connector_read_file",
+        {"path": "src/app.py", "start_line": 5, "end_line": 12},
+    )
+
+    assert result["ok"] is True
+    assert captured["connector"] is connector
+    assert captured["kwargs"]["workspace_path"] == "/tmp/workspace"
+    assert captured["kwargs"]["path"] == "src/app.py"
+    assert captured["kwargs"]["start_line"] == 5
+    assert captured["kwargs"]["end_line"] == 12
+
+
+@pytest.mark.asyncio
+async def test_local_connector_llm_adapter_streams_chunks(monkeypatch):
+    from services import local_connector_service as connector_svc
+
+    async def fake_stream(connector, **kwargs):
+        assert connector == "connector-1"
+        assert kwargs["model_name"] == "local-model"
+        yield {"content": "A"}
+        yield {"tool_calls": [{"id": "call-1"}]}
+
+    monkeypatch.setattr(connector_svc, "chat_completion_stream_via_connector", fake_stream)
+
+    adapter = connector_svc.LocalConnectorLlmAdapter("connector-1")
+    chunks = []
+    async for chunk in adapter.chat_completion_stream(
+        provider_id="local-connector:test",
+        model_name="local-model",
+        messages=[{"role": "user", "content": "hi"}],
+        temperature=0.2,
+        max_tokens=256,
+        timeout=30,
+        tools=[{"type": "function"}],
+    ):
+        chunks.append(chunk)
+
+    assert chunks == [{"content": "A"}, {"tool_calls": [{"id": "call-1"}]}]
+
+
+@pytest.mark.asyncio
+async def test_tool_executor_routes_local_connector_run_command(monkeypatch):
+    from services import local_connector_service as connector_svc
+    from services.tool_executor import ToolExecutor
+
+    captured: dict = {}
+
+    async def fake_run(connector, **kwargs):
+        captured["connector"] = connector
+        captured["kwargs"] = kwargs
+        return {"ok": True, "stdout": "PASS"}
+
+    monkeypatch.setattr(connector_svc, "run_connector_command", fake_run)
+
+    connector = object()
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        local_connector=connector,
+        local_connector_workspace_path="/tmp/workspace",
+        local_connector_sandbox_mode="workspace-write",
+    )
+
+    result = await executor._execute_tool(
+        "local_connector_run_command",
+        {"command": "pytest -q", "cwd": "web-admin/api", "timeout_sec": 30},
+    )
+
+    assert result["ok"] is True
+    assert captured["connector"] is connector
+    assert captured["kwargs"]["workspace_path"] == "/tmp/workspace"
+    assert captured["kwargs"]["command"] == "pytest -q"
+    assert captured["kwargs"]["cwd"] == "web-admin/api"
+    assert captured["kwargs"]["timeout_sec"] == 30
+
+
 @pytest.mark.asyncio
 async def test_conversation_manager_logic():
     """测试 ConversationManager 压缩逻辑"""
@@ -52,6 +176,34 @@ async def test_conversation_manager_logic():
 
     assert "user:" in summary
     assert "assistant:" in summary
+
+
+def test_usage_key_delete_compatibility_allows_legacy_owners():
+    from routers.usage import _can_delete_key_record
+
+    assert _can_delete_key_record({"created_by": "tester"}, "tester") is True
+    assert _can_delete_key_record({"created_by": ""}, "tester") is True
+    assert _can_delete_key_record({"created_by": "unknown"}, "tester") is True
+    assert _can_delete_key_record({"created_by": "system-external-agent"}, "tester") is True
+    assert _can_delete_key_record({"created_by": "someone-else"}, "tester") is False
+    assert _can_delete_key_record(None, "tester") is False
+
+
+def test_filter_project_tools_by_names_keeps_tools_when_empty_selection():
+    from routers.projects import _filter_project_tools_by_names
+
+    tools = [
+        {"tool_name": "query_project_members"},
+        {"tool_name": "search_project_context"},
+    ]
+
+    assert _filter_project_tools_by_names(tools, [], explicit_filter=True) == tools
+    assert _filter_project_tools_by_names(tools, None, explicit_filter=True) == tools
+    assert _filter_project_tools_by_names(
+        tools,
+        ["query_project_members"],
+        explicit_filter=True,
+    ) == [{"tool_name": "query_project_members"}]
 
 
 def test_project_chat_store_truncate_messages_updates_session_snapshot(tmp_path):
@@ -120,88 +272,120 @@ def test_project_chat_store_truncate_messages_updates_session_snapshot(tmp_path)
     assert sessions[0].message_count == 2
 
 
-def test_prepare_external_agent_workspace_context_generates_gemini_settings(tmp_path, monkeypatch):
-    """Gemini 外部 Agent 应生成工作区 settings，并且不再依赖 .ai-employee 目录"""
-    from services import external_agent_service as svc
+def test_project_chat_store_keeps_full_history_without_auto_trim(tmp_path):
+    """聊天记录不应因为条数过多被自动裁掉"""
+    from stores.json.project_chat_store import ProjectChatMessage, ProjectChatStore
 
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    host_gemini_dir = tmp_path / "host-home" / ".gemini"
-    host_gemini_dir.mkdir(parents=True)
-    (host_gemini_dir / "oauth_creds.json").write_text("{}", encoding="utf-8")
+    store = ProjectChatStore(tmp_path / "data")
+    session = store.create_session("proj-test", "tester", title="新对话")
 
-    monkeypatch.setattr(svc, "_gemini_host_user_dir", lambda: host_gemini_dir)
+    for index in range(1005):
+        store.append_message(
+            ProjectChatMessage(
+                id=f"msg-{index}",
+                project_id="proj-test",
+                username="tester",
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"消息 {index}",
+                chat_session_id=session.id,
+            )
+        )
 
-    context = svc.prepare_external_agent_workspace_context(
-        project_id="proj-test",
-        project_name="Test",
-        project_description="",
-        workspace_path=str(workspace),
-        sandbox_mode="workspace-write",
-        agent_type="gemini_cli",
-        selected_employee_names=[],
-        candidate_preview=[],
-        system_prompt="",
-        mcp_bridge={
-            "enabled": True,
-            "server_name": "project_proj_test",
-            "url": "http://127.0.0.1:8000/mcp/projects/proj-test/sse?key=test-key",
+    messages = store.list_messages(
+        "proj-test",
+        "tester",
+        limit=0,
+        chat_session_id=session.id,
+    )
+    assert len(messages) == 1005
+    assert messages[0].id == "msg-0"
+    assert messages[-1].id == "msg-1004"
+
+
+def test_project_chat_store_list_messages_supports_offset_pagination(tmp_path):
+    """聊天记录应支持按最新消息向前分页读取"""
+    from stores.json.project_chat_store import ProjectChatMessage, ProjectChatStore
+
+    store = ProjectChatStore(tmp_path / "data")
+    session = store.create_session("proj-test", "tester", title="新对话")
+
+    for index in range(6):
+        store.append_message(
+            ProjectChatMessage(
+                id=f"msg-{index}",
+                project_id="proj-test",
+                username="tester",
+                role="user",
+                content=f"消息 {index}",
+                chat_session_id=session.id,
+            )
+        )
+
+    latest = store.list_messages(
+        "proj-test",
+        "tester",
+        limit=2,
+        offset=0,
+        chat_session_id=session.id,
+    )
+    previous = store.list_messages(
+        "proj-test",
+        "tester",
+        limit=2,
+        offset=2,
+        chat_session_id=session.id,
+    )
+    oldest = store.list_messages(
+        "proj-test",
+        "tester",
+        limit=2,
+        offset=4,
+        chat_session_id=session.id,
+    )
+
+    assert [item.id for item in latest] == ["msg-4", "msg-5"]
+    assert [item.id for item in previous] == ["msg-2", "msg-3"]
+    assert [item.id for item in oldest] == ["msg-0", "msg-1"]
+
+
+def test_public_project_chat_settings_preserves_connector_configuration():
+    """对话设置标准化后应保留连接器工作区配置。"""
+    from routers import projects as projects_router
+
+    settings = projects_router._public_project_chat_settings(
+        {
+            "chat_mode": "system",
+            "connector_sandbox_mode": "workspace-write",
+            "local_connector_id": "connector-1",
+            "connector_workspace_path": "/tmp/workspace",
+        }
+    )
+
+    assert settings["chat_mode"] == "system"
+    assert settings["connector_sandbox_mode"] == "workspace-write"
+    assert settings["local_connector_id"] == "connector-1"
+    assert settings["connector_workspace_path"] == "/tmp/workspace"
+
+
+def test_merge_project_chat_settings_overrides_keeps_persisted_connector_when_query_empty():
+    """providers 接口在没有覆盖参数时，应保留已保存的连接器和工作区"""
+    from routers import projects as projects_router
+
+    merged = projects_router._merge_project_chat_settings_overrides(
+        {
+            "chat_mode": "system",
+            "connector_sandbox_mode": "workspace-write",
+            "local_connector_id": "connector-1",
+            "connector_workspace_path": "/tmp/workspace",
         },
-        write_files=False,
+        local_connector_id="",
+        connector_workspace_path="",
     )
 
-    materialized_files = list((context.get("materialization") or {}).get("files") or [])
-    gemini_settings = next(
-        item for item in materialized_files if item.get("kind") == "generated_gemini_workspace_settings"
-    )
-    gemini_settings_payload = json.loads(str(gemini_settings.get("content") or "{}"))
-    assert gemini_settings_payload["mcpServers"]["project_proj_test"]["type"] == "sse"
-
-    support_files = list(context.get("support_files") or [])
-    assert any(item.get("kind") == "generated_gemini_workspace_settings" for item in support_files)
-    assert not any(str(item.get("path") or "").startswith(".ai-employee/") for item in support_files)
-    assert context.get("support_dir") == ""
-
-    materialized_copies = list((context.get("materialization") or {}).get("copies") or [])
-    materialized_files = list((context.get("materialization") or {}).get("files") or [])
-    assert any(str(item.get("target_path") or "").endswith("/.gemini-home/.gemini/oauth_creds.json") for item in materialized_copies)
-    assert not any(".ai-employee" in str(item.get("path") or "") for item in materialized_files)
-
-
-def test_detect_gemini_auth_mode_from_user_env_file(tmp_path, monkeypatch):
-    """Gemini 认证模式应能从用户 .env 探测到 API Key"""
-    from services import external_agent_service as svc
-
-    host_gemini_dir = tmp_path / "host-home" / ".gemini"
-    host_gemini_dir.mkdir(parents=True)
-    (host_gemini_dir / ".env").write_text("GEMINI_API_KEY=test-key\n", encoding="utf-8")
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-
-    monkeypatch.setattr(svc, "_gemini_host_user_dir", lambda: host_gemini_dir)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-
-    assert svc._detect_gemini_auth_mode(str(workspace)) == "gemini-api-key"
-
-
-def test_resolve_gemini_passthrough_env_from_user_env_file(tmp_path, monkeypatch):
-    """Gemini 运行时应透传自定义 base url 和 model"""
-    from services import external_agent_service as svc
-
-    host_gemini_dir = tmp_path / "host-home" / ".gemini"
-    host_gemini_dir.mkdir(parents=True)
-    (host_gemini_dir / ".env").write_text(
-        "GOOGLE_GEMINI_BASE_URL=https://example-proxy.invalid\nGEMINI_MODEL=gemini-2.5-pro\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(svc, "_gemini_host_user_dir", lambda: host_gemini_dir)
-    monkeypatch.delenv("GOOGLE_GEMINI_BASE_URL", raising=False)
-    monkeypatch.delenv("GEMINI_MODEL", raising=False)
-
-    env = svc._resolve_gemini_passthrough_env()
-    assert env["GOOGLE_GEMINI_BASE_URL"] == "https://example-proxy.invalid"
-    assert env["GEMINI_MODEL"] == "gemini-2.5-pro"
+    assert merged["chat_mode"] == "system"
+    assert merged["connector_sandbox_mode"] == "workspace-write"
+    assert merged["local_connector_id"] == "connector-1"
+    assert merged["connector_workspace_path"] == "/tmp/workspace"
 
 
 @pytest.mark.asyncio

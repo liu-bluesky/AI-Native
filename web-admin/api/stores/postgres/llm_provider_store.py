@@ -116,6 +116,7 @@ class LlmProviderStorePostgres:
             "default_model": str(payload.get("default_model") or "").strip(),
             "enabled": bool(payload.get("enabled", True)),
             "extra_headers": payload.get("extra_headers") or {},
+            "owner_username": str(payload.get("owner_username") or "").strip(),
             "created_at": now,
             "updated_at": now,
         }

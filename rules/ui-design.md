@@ -63,7 +63,11 @@
 
 ```css
 background:
-  radial-gradient(circle at top left, rgba(255, 244, 214, 0.5), transparent 24%),
+  radial-gradient(
+    circle at top left,
+    rgba(255, 244, 214, 0.5),
+    transparent 24%
+  ),
   linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
 ```
 

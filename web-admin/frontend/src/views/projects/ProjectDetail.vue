@@ -207,6 +207,11 @@
         <el-button type="primary" :loading="memoryLoading" @click="fetchProjectMemories"
           >筛选</el-button
         >
+        <el-button
+          :disabled="memoryLoading || !filteredMemoryRows.length"
+          @click="exportProjectMemories"
+          >导出</el-button
+        >
         <el-button :disabled="memoryLoading" @click="resetMemoryFilters"
           >重置</el-button
         >
@@ -247,16 +252,6 @@
           <code>{{ projectMcpHttpUrl }}</code>
         </el-descriptions-item>
       </el-descriptions>
-    </div>
-
-    <div class="block">
-      <div class="block-header">
-        <h4>外部 MCP</h4>
-      </div>
-      <ExternalMcpManager
-        :project-id="project.id || projectId"
-        tip="项目侧也可直接维护外部 MCP；该配置会与 AI 对话页共用。"
-      />
     </div>
 
     <el-dialog v-model="showAddDialog" title="添加项目成员" width="520px">
@@ -420,7 +415,6 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
-import ExternalMcpManager from "@/components/ExternalMcpManager.vue";
 import api from "@/utils/api.js";
 import {
   pickWorkspaceDirectory as openWorkspaceDirectoryPicker,
@@ -659,6 +653,64 @@ function normalizeMemory(memory, employeeId = "") {
 function getMemoryTypeLabel(type) {
   const key = String(type || "").trim();
   return MEMORY_TYPE_LABELS[key] || key || "-";
+}
+
+function buildMemoryExportFilename() {
+  const projectName = String(project.value?.name || projectId || "project").trim() || "project";
+  const safeProjectName = projectName.replace(/[\\/:*?"<>|]+/g, "-");
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${safeProjectName}-project-memories-${timestamp}.csv`;
+}
+
+function escapeCsvField(value) {
+  const text = String(value ?? "");
+  if (/[",\r\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function buildMemoryExportCsv(rows) {
+  const headers = ["员工", "员工ID", "类型", "内容", "重要度", "作用域", "项目名称", "创建时间"];
+  const lines = rows.map((row) =>
+    [
+      row.employee_name || row.employee_id || "",
+      row.employee_id || "",
+      getMemoryTypeLabel(row.type),
+      row.content || "",
+      row.importance ?? "",
+      row.scope || "",
+      row.project_name || "",
+      row.created_at || "",
+    ]
+      .map((item) => escapeCsvField(item))
+      .join(","),
+  );
+  return `\uFEFF${headers.join(",")}\n${lines.join("\n")}`;
+}
+
+function downloadTextFile(content, filename, mimeType = "text/plain;charset=utf-8;") {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportProjectMemories() {
+  if (!filteredMemoryRows.value.length) {
+    ElMessage.warning("暂无可导出的项目记忆");
+    return;
+  }
+  try {
+    const content = buildMemoryExportCsv(filteredMemoryRows.value);
+    downloadTextFile(content, buildMemoryExportFilename(), "text/csv;charset=utf-8;");
+    ElMessage.success(`已导出 ${filteredMemoryRows.value.length} 条项目记忆`);
+  } catch {
+    ElMessage.error("导出项目记忆失败");
+  }
 }
 
 async function fetchProjectMemories() {

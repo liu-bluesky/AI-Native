@@ -36,6 +36,7 @@ class User:
     username: str
     password_hash: str
     role: str = "admin"
+    default_ai_provider_id: str = ""
     created_at: str = field(default_factory=_now_iso)
 
 
@@ -59,6 +60,7 @@ class UserStore:
             "username": user.username,
             "password_hash": user.password_hash,
             "role": user.role,
+            "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
             "created_at": user.created_at,
         }
         self._path(user.username).write_text(
@@ -96,5 +98,6 @@ class UserStore:
             username=str(data.get("username") or ""),
             password_hash=str(data.get("password_hash") or ""),
             role=str(data.get("role") or "user"),
+            default_ai_provider_id=str(data.get("default_ai_provider_id") or "").strip(),
             created_at=str(data.get("created_at") or _now_iso()),
         )

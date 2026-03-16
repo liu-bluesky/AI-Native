@@ -29,7 +29,7 @@ BUTTON_PERMISSION_ITEMS = [
     {"key": "button.roles.update", "label": "角色管理-编辑角色"},
     {"key": "button.roles.delete", "label": "角色管理-删除角色"},
     {"key": "button.apikey.create", "label": "API Key-创建"},
-    {"key": "button.apikey.deactivate", "label": "API Key-停用"},
+    {"key": "button.apikey.deactivate", "label": "API Key-删除"},
 ]
 
 ALL_PERMISSION_KEYS = {item["key"] for item in MENU_PERMISSION_ITEMS + BUTTON_PERMISSION_ITEMS}

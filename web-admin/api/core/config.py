@@ -107,13 +107,6 @@ class Settings:
     # 工具
     tool_timeout: int
     max_tool_retries: int
-    # 外部 Agent
-    external_agent_codex_bin: str
-    external_agent_claude_bin: str
-    external_agent_gemini_bin: str
-    external_agent_runner_url: str
-
-
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings(
@@ -136,8 +129,4 @@ def get_settings() -> Settings:
         compression_threshold=int(_get_env("COMPRESSION_THRESHOLD", "15")),
         tool_timeout=int(_get_env("TOOL_TIMEOUT", "60")),
         max_tool_retries=int(_get_env("MAX_TOOL_RETRIES", "3")),
-        external_agent_codex_bin=_get_env("EXTERNAL_AGENT_CODEX_BIN", "").strip(),
-        external_agent_claude_bin=_get_env("EXTERNAL_AGENT_CLAUDE_BIN", "").strip(),
-        external_agent_gemini_bin=_get_env("EXTERNAL_AGENT_GEMINI_BIN", "").strip(),
-        external_agent_runner_url=_get_env("EXTERNAL_AGENT_RUNNER_URL", "").strip(),
     )

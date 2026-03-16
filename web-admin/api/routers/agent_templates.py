@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-import httpx
 
 from core.deps import (
     agent_template_store,
     ensure_permission,
+    is_admin_like,
     local_connector_store,
     require_auth,
     role_store,
@@ -32,9 +31,7 @@ from services.employee_template_import_service import import_agent_templates
 from services.llm_provider_service import get_llm_provider_service
 from services.local_connector_service import (
     build_local_connector_provider_id,
-    connector_agent_available,
     connector_base_url,
-    connector_headers,
     list_connector_llm_models,
     parse_local_connector_provider_id,
 )
@@ -44,22 +41,6 @@ router = APIRouter(
     prefix="/api/agent-templates",
     dependencies=[Depends(require_auth)],
 )
-
-_EXTERNAL_AGENT_SPECS: dict[str, dict[str, str]] = {
-    "codex_cli": {
-        "label": "Codex CLI",
-        "binary_name": "codex",
-    },
-    "claude_cli": {
-        "label": "Claude Code",
-        "binary_name": "claude",
-    },
-    "gemini_cli": {
-        "label": "Gemini CLI",
-        "binary_name": "gemini",
-    },
-}
-
 
 def _serialize_agent_template(template: AgentTemplate) -> dict[str, Any]:
     return {
@@ -130,16 +111,6 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _normalize_external_agent_type(value: Any) -> str:
-    agent_type = str(value or "codex_cli").strip().lower()
-    return agent_type if agent_type in _EXTERNAL_AGENT_SPECS else "codex_cli"
-
-
-def _normalize_source_type(value: Any) -> str:
-    normalized = str(value or "internal").strip().lower()
-    return normalized if normalized in {"internal", "external"} else "internal"
-
-
 def _normalize_text_list(value: Any, *, limit: int = 80) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -176,28 +147,6 @@ def _connector_llm_accessible(item: Any, auth_payload: dict) -> bool:
     return _current_role_id(auth_payload) in _connector_llm_shared_with_roles(item)
 
 
-def _connector_external_agent_shared_with_usernames(item: Any) -> list[str]:
-    return _normalize_text_list(getattr(item, "external_agent_shared_with_usernames", []), limit=64)
-
-
-def _connector_external_agent_shared_with_roles(item: Any) -> list[str]:
-    return [
-        item.lower()
-        for item in _normalize_text_list(getattr(item, "external_agent_shared_with_roles", []), limit=64)
-    ]
-
-
-def _connector_external_agent_accessible(item: Any, auth_payload: dict) -> bool:
-    if _is_admin_like(auth_payload):
-        return True
-    username = _current_username(auth_payload)
-    if str(getattr(item, "owner_username", "") or "").strip() == username:
-        return True
-    if username in _connector_external_agent_shared_with_usernames(item):
-        return True
-    return _current_role_id(auth_payload) in _connector_external_agent_shared_with_roles(item)
-
-
 def _list_accessible_local_connectors(auth_payload: dict) -> list[Any]:
     return [
         item
@@ -217,27 +166,6 @@ def _resolve_accessible_local_connector(
     if item is None:
         return None
     return item if _connector_llm_accessible(item, auth_payload) else None
-
-
-def _list_accessible_external_agent_connectors(auth_payload: dict) -> list[Any]:
-    return [
-        item
-        for item in local_connector_store.list_connectors()
-        if _connector_external_agent_accessible(item, auth_payload)
-    ]
-
-
-def _resolve_accessible_external_agent_connector(
-    connector_id: str,
-    auth_payload: dict,
-) -> Any | None:
-    normalized = str(connector_id or "").strip()
-    if not normalized:
-        return None
-    item = local_connector_store.get_connector(normalized)
-    if item is None:
-        return None
-    return item if _connector_external_agent_accessible(item, auth_payload) else None
 
 
 def _normalize_text_list(values: Any, *, limit: int = 32, item_limit: int = 240) -> list[str]:
@@ -621,39 +549,6 @@ def _connector_online(item: Any) -> bool:
     return (_now_utc() - last_seen).total_seconds() <= 90
 
 
-def _build_external_agent_statuses_for_connector(connector: Any) -> list[dict[str, Any]]:
-    connector_name = str(getattr(connector, "connector_name", "") or getattr(connector, "id", "") or "当前连接器").strip()
-    statuses: list[dict[str, Any]] = []
-    for agent_type, spec in _EXTERNAL_AGENT_SPECS.items():
-        available = connector_agent_available(connector, agent_type)
-        reason = ""
-        if not available:
-            reason = f"{connector_name} 暂未检测到 {spec['label']}，请先在该电脑安装并启动对应 CLI"
-        statuses.append(
-            {
-                "agent_type": agent_type,
-                "label": spec["label"],
-                "available": available,
-                "reason": reason,
-            }
-        )
-    return statuses
-
-
-def _serialize_external_agent_connector(connector: Any) -> dict[str, Any]:
-    connector_id = str(getattr(connector, "id", "") or "").strip()
-    connector_name = str(getattr(connector, "connector_name", "") or connector_id or "Local Connector").strip()
-    return {
-        "id": connector_id,
-        "name": connector_name,
-        "owner_username": str(getattr(connector, "owner_username", "") or "").strip(),
-        "platform": str(getattr(connector, "platform", "") or "").strip(),
-        "online": _connector_online(connector),
-        "advertised_url": connector_base_url(connector),
-        "agent_types": _build_external_agent_statuses_for_connector(connector),
-    }
-
-
 def _build_template_compare_prompt(templates: list[AgentTemplate]) -> str:
     payload = []
     for template in templates:
@@ -702,185 +597,6 @@ def _build_template_name_translate_prompt(items: list[dict[str, str]]) -> str:
     )
 
 
-def _build_external_agent_translate_prompt(items: list[dict[str, str]]) -> str:
-    return (
-        "你是智能体模板命名助手。你负责把英文或其他非中文模板名翻译成简洁准确的中文名称。"
-        "你必须只输出合法 JSON，不要输出任何解释。\n\n"
-        f"{_build_template_name_translate_prompt(items)}"
-    )
-
-
-def _build_external_agent_deduplicate_prompt(templates: list[AgentTemplate]) -> str:
-    return (
-        "你是模板库治理助手。你擅长识别职责重复的智能体模板，并从重复模板里选出质量最佳版本。"
-        "你必须只输出合法 JSON，不要输出任何解释。\n\n"
-        f"{_build_template_compare_prompt(templates)}"
-    )
-
-
-def _build_external_agent_exec_command(agent_type: str, prompt: str) -> list[str]:
-    normalized = _normalize_external_agent_type(agent_type)
-    spec = _EXTERNAL_AGENT_SPECS.get(normalized) or _EXTERNAL_AGENT_SPECS["codex_cli"]
-    binary_name = spec["binary_name"]
-    if normalized == "claude_cli":
-        return [
-            binary_name,
-            "-p",
-            prompt,
-            "--verbose",
-            "--output-format",
-            "stream-json",
-            "--include-partial-messages",
-            "--permission-mode",
-            "plan",
-        ]
-    if normalized == "gemini_cli":
-        return [
-            binary_name,
-            "--output-format",
-            "stream-json",
-            "--approval-mode",
-            "plan",
-            "-p",
-            prompt,
-        ]
-    return [
-        binary_name,
-        "exec",
-        "--json",
-        "--color",
-        "never",
-        "--skip-git-repo-check",
-        "-s",
-        "read-only",
-        prompt,
-    ]
-
-
-def _merge_external_agent_output(
-    previous: str,
-    raw_chunk: str,
-    agent_type: str,
-) -> str:
-    normalized = _normalize_external_agent_type(agent_type)
-    raw = str(raw_chunk or "").strip()
-    if not raw:
-        return previous
-    try:
-        payload = json.loads(raw)
-    except Exception:
-        updated, _ = _compute_incremental_text(previous, raw)
-        return updated
-    if normalized == "codex_cli":
-        event_type = str(payload.get("type") or "").strip()
-        if event_type == "item.completed":
-            item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
-            if str(item.get("type") or "").strip() == "agent_message":
-                text = str(item.get("text") or "").strip()
-                if text:
-                    return text
-        if event_type.endswith(".delta"):
-            text = _extract_text_payload(payload)
-            return previous + text if text else previous
-        if event_type == "turn.completed":
-            text = _extract_text_payload(payload)
-            if text:
-                updated, _ = _compute_incremental_text(previous, text)
-                return updated
-        return previous
-    if normalized == "claude_cli":
-        event_type = str(payload.get("type") or "").strip().lower()
-        if event_type == "error":
-            message = _extract_text_payload(payload) or "Claude Code 执行失败"
-            raise RuntimeError(message)
-        if event_type not in {"assistant", "result"}:
-            return previous
-        text = _extract_text_payload(payload.get("message") or payload.get("content") or payload)
-        updated, _ = _compute_incremental_text(previous, text)
-        return updated
-    event_type = str(payload.get("type") or "").strip().lower()
-    if event_type == "error":
-        message = _extract_text_payload(payload) or "Gemini CLI 执行失败"
-        raise RuntimeError(message)
-    if event_type != "message":
-        return previous
-    if str(payload.get("role") or "").strip().lower() == "user":
-        return previous
-    text = _extract_text_payload(payload.get("content") or payload)
-    if not text:
-        return previous
-    if bool(payload.get("delta")):
-        return previous + text
-    updated, _ = _compute_incremental_text(previous, text)
-    return updated
-
-
-async def _run_external_agent_prompt(
-    connector: Any,
-    *,
-    agent_type: str,
-    prompt: str,
-    timeout: float = 180.0,
-) -> str:
-    normalized_agent_type = _normalize_external_agent_type(agent_type)
-    if not connector_base_url(connector):
-        raise RuntimeError("当前连接器未提供可访问地址")
-    if not connector_agent_available(connector, normalized_agent_type):
-        label = (_EXTERNAL_AGENT_SPECS.get(normalized_agent_type) or {}).get("label") or normalized_agent_type
-        raise RuntimeError(f"当前连接器暂未检测到 {label}")
-    cmd = _build_external_agent_exec_command(normalized_agent_type, prompt)
-    stderr_lines: list[str] = []
-    final_content = ""
-    exit_code: int | None = None
-    env = os.environ.copy()
-    env["TERM"] = env.get("TERM") or "xterm-256color"
-    env["NO_COLOR"] = "1"
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0)) as client:
-        async with client.stream(
-            "POST",
-            f"{connector_base_url(connector)}/exec/stream",
-            headers=connector_headers(connector),
-            json={
-                "cmd": cmd,
-                "env": env,
-            },
-        ) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                raw = str(line or "").strip()
-                if not raw:
-                    continue
-                try:
-                    event = json.loads(raw)
-                except Exception:
-                    continue
-                event_type = str(event.get("type") or "").strip()
-                if event_type == "stderr":
-                    text = str(event.get("data") or "").strip()
-                    if text:
-                        stderr_lines.append(text)
-                    continue
-                if event_type == "exit":
-                    try:
-                        exit_code = int(event.get("returncode"))
-                    except Exception:
-                        exit_code = None
-                    break
-                if event_type != "stdout":
-                    continue
-                final_content = _merge_external_agent_output(
-                    final_content,
-                    str(event.get("data") or ""),
-                    normalized_agent_type,
-                )
-    if not final_content.strip():
-        stderr_text = "\n".join(stderr_lines[-8:]).strip()
-        if exit_code not in (None, 0) and stderr_text:
-            raise RuntimeError(stderr_text)
-        raise RuntimeError(stderr_text or "外部智能体未返回有效内容")
-    return final_content
-
-
 async def _ai_translate_template_names(
     items: list[dict[str, str]],
     *,
@@ -908,39 +624,6 @@ async def _ai_translate_template_names(
         timeout=60,
     )
     payload = _extract_json_payload(result.get("content") or "")
-    raw_items = payload.get("items")
-    if not isinstance(raw_items, list):
-        return {}
-    valid_ids = {_normalize_text(item.get("id"), limit=80) for item in items}
-    translated: dict[str, str] = {}
-    for item in raw_items:
-        if not isinstance(item, dict):
-            continue
-        item_id = _normalize_text(item.get("id"), limit=80)
-        if item_id not in valid_ids:
-            continue
-        name_zh = _normalize_text(item.get("name_zh"), limit=160)
-        if not _is_chinese_display_name(name_zh):
-            continue
-        translated[item_id] = name_zh
-    return translated
-
-
-async def _ai_translate_template_names_via_external_agent(
-    items: list[dict[str, str]],
-    *,
-    connector: Any,
-    agent_type: str,
-) -> dict[str, str]:
-    if not items:
-        return {}
-    payload = _extract_json_payload(
-        await _run_external_agent_prompt(
-            connector,
-            agent_type=agent_type,
-            prompt=_build_external_agent_translate_prompt(items),
-        )
-    )
     raw_items = payload.get("items")
     if not isinstance(raw_items, list):
         return {}
@@ -1009,7 +692,14 @@ async def _build_connector_translation_provider(connector: Any) -> dict[str, Any
 
 async def _list_translation_model_providers(auth_payload: dict) -> list[dict[str, Any]]:
     llm_service = get_llm_provider_service()
-    providers = list(llm_service.list_providers(enabled_only=True) or [])
+    providers = list(
+        llm_service.list_providers(
+            enabled_only=True,
+            owner_username=_current_username(auth_payload),
+            include_all=is_admin_like(auth_payload),
+        )
+        or []
+    )
     connector_items = _list_accessible_local_connectors(auth_payload)
     for connector in connector_items:
         provider = await _build_connector_translation_provider(connector)
@@ -1023,9 +713,15 @@ def _resolve_llm_provider(
     preferred_provider_id: str = "",
     preferred_model_name: str = "",
     required: bool = True,
+    auth_payload: dict | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     llm_service = get_llm_provider_service()
-    providers = llm_service.list_providers(enabled_only=True)
+    payload = auth_payload or {}
+    providers = llm_service.list_providers(
+        enabled_only=True,
+        owner_username=_current_username(payload),
+        include_all=is_admin_like(payload) if auth_payload is not None else False,
+    )
     if not providers:
         if required:
             raise HTTPException(400, "未配置可用的大模型提供商")
@@ -1086,6 +782,7 @@ async def _resolve_llm_provider_async(
         preferred_provider_id=preferred_provider_id,
         preferred_model_name=preferred_model_name,
         required=required,
+        auth_payload=auth_payload,
     )
 
 
@@ -1094,11 +791,8 @@ async def _ensure_template_name_translations(
     *,
     persist: bool,
     force: bool = False,
-    source_type: str = "internal",
     provider_id: str = "",
     model_name: str = "",
-    external_connector: Any | None = None,
-    external_agent_type: str = "codex_cli",
     strict: bool = False,
     auth_payload: dict | None = None,
 ) -> list[AgentTemplate]:
@@ -1130,37 +824,19 @@ async def _ensure_template_name_translations(
     if not pending:
         return normalized_templates
 
-    normalized_source_type = _normalize_source_type(source_type)
-    provider = None
-    resolved_model_name = ""
-    if normalized_source_type == "external":
-        if external_connector is None:
-            if strict:
-                raise RuntimeError("未找到可用的外部智能体连接器")
-            return normalized_templates
-    else:
-        provider, resolved_model_name = await _resolve_llm_provider_async(
-            preferred_provider_id=provider_id,
-            preferred_model_name=model_name,
-            required=False,
-            auth_payload=auth_payload,
-        )
-        if provider is None or not resolved_model_name:
-            return normalized_templates
+    provider, resolved_model_name = await _resolve_llm_provider_async(
+        preferred_provider_id=provider_id,
+        preferred_model_name=model_name,
+        required=False,
+        auth_payload=auth_payload,
+    )
+    if provider is None or not resolved_model_name:
+        return normalized_templates
 
     translated_by_id: dict[str, str] = {}
     try:
         for index in range(0, len(pending), 20):
             chunk = pending[index : index + 20]
-            if normalized_source_type == "external":
-                translated_by_id.update(
-                    await _ai_translate_template_names_via_external_agent(
-                        chunk,
-                        connector=external_connector,
-                        agent_type=external_agent_type,
-                    )
-                )
-                continue
             translated_by_id.update(
                 await _ai_translate_template_names(
                     chunk,
@@ -1251,59 +927,11 @@ async def _ai_pick_duplicate_clusters(
     return normalized_clusters
 
 
-async def _ai_pick_duplicate_clusters_via_external_agent(
-    templates: list[AgentTemplate],
-    *,
-    connector: Any,
-    agent_type: str,
-) -> list[dict[str, Any]]:
-    if len(templates) < 2:
-        return []
-    payload = _extract_json_payload(
-        await _run_external_agent_prompt(
-            connector,
-            agent_type=agent_type,
-            prompt=_build_external_agent_deduplicate_prompt(templates),
-            timeout=240.0,
-        )
-    )
-    clusters = payload.get("clusters")
-    if not isinstance(clusters, list):
-        return []
-    valid_ids = {template.id for template in templates}
-    normalized_clusters: list[dict[str, Any]] = []
-    for item in clusters:
-        if not isinstance(item, dict):
-            continue
-        template_ids = [
-            _normalize_text(value, limit=80)
-            for value in (item.get("template_ids") or [])
-            if _normalize_text(value, limit=80) in valid_ids
-        ]
-        seen_ids: set[str] = set()
-        template_ids = [value for value in template_ids if not (value in seen_ids or seen_ids.add(value))]
-        keep_id = _normalize_text(item.get("keep_id"), limit=80)
-        if len(template_ids) < 2 or keep_id not in template_ids:
-            continue
-        normalized_clusters.append(
-            {
-                "type_label": _normalize_text(item.get("type_label"), limit=120) or "同类型模板",
-                "template_ids": template_ids,
-                "keep_id": keep_id,
-                "reason": _normalize_text(item.get("reason"), limit=800),
-            }
-        )
-    return normalized_clusters
-
-
 async def _deduplicate_templates_by_ai(
     templates: list[AgentTemplate],
     *,
-    source_type: str = "internal",
     provider_id: str,
     model_name: str,
-    external_connector: Any | None = None,
-    external_agent_type: str = "codex_cli",
     temperature: float,
 ) -> list[dict[str, Any]]:
     dedup_groups = _deduplicate_exact_templates(templates)
@@ -1320,19 +948,12 @@ async def _deduplicate_templates_by_ai(
     ]
     candidate_groups = _build_template_candidate_groups(remaining_templates)
     for bucket_templates in candidate_groups:
-        if _normalize_source_type(source_type) == "external":
-            clusters = await _ai_pick_duplicate_clusters_via_external_agent(
-                bucket_templates,
-                connector=external_connector,
-                agent_type=external_agent_type,
-            )
-        else:
-            clusters = await _ai_pick_duplicate_clusters(
-                bucket_templates,
-                provider_id=provider_id,
-                model_name=model_name,
-                temperature=temperature,
-            )
+        clusters = await _ai_pick_duplicate_clusters(
+            bucket_templates,
+            provider_id=provider_id,
+            model_name=model_name,
+            temperature=temperature,
+        )
         id_map = {template.id: template for template in bucket_templates}
         for cluster in clusters:
             cluster_ids = [item for item in cluster["template_ids"] if item not in used_template_ids]
@@ -1418,16 +1039,15 @@ async def list_agent_template_ai_sources(
 ):
     ensure_permission(auth_payload, "menu.employees.create")
     llm_service = get_llm_provider_service()
-    providers = list(llm_service.list_providers(enabled_only=True) or [])
-    external_connectors = [
-        _serialize_external_agent_connector(item)
-        for item in _list_accessible_external_agent_connectors(auth_payload)
-        if str(getattr(item, "id", "") or "").strip()
-    ]
-    return {
-        "internal_providers": providers,
-        "external_connectors": external_connectors,
-    }
+    providers = list(
+        llm_service.list_providers(
+            enabled_only=True,
+            owner_username=_current_username(auth_payload),
+            include_all=is_admin_like(auth_payload),
+        )
+        or []
+    )
+    return {"internal_providers": providers, "external_connectors": []}
 
 
 @router.get("/{template_id}")
@@ -1527,44 +1147,28 @@ async def translate_agent_template_names(
     if not templates:
         raise HTTPException(400, "没有可处理的模板")
 
-    normalized_source_type = _normalize_source_type(req.source_type)
+    normalized_source_type = "internal"
     provider = None
     model_name = ""
-    external_connector = None
-    external_agent_type = _normalize_external_agent_type(req.external_agent_type)
     if any(
         not _is_chinese_display_name(item.name)
         and (bool(req.force) or not _is_chinese_display_name(item.name_zh))
         for item in templates
     ):
-        if normalized_source_type == "external":
-            external_connector = _resolve_accessible_external_agent_connector(
-                req.local_connector_id,
-                auth_payload,
-            )
-            if external_connector is None:
-                raise HTTPException(404, "未找到可用的外部智能体连接器")
-            if not connector_agent_available(external_connector, external_agent_type):
-                label = (_EXTERNAL_AGENT_SPECS.get(external_agent_type) or {}).get("label") or external_agent_type
-                raise HTTPException(400, f"当前连接器暂未检测到 {label}")
-        else:
-            provider, model_name = await _resolve_llm_provider_async(
-                preferred_provider_id=req.provider_id,
-                preferred_model_name=req.model_name,
-                required=True,
-                auth_payload=auth_payload,
-            )
+        provider, model_name = await _resolve_llm_provider_async(
+            preferred_provider_id=req.provider_id,
+            preferred_model_name=req.model_name,
+            required=True,
+            auth_payload=auth_payload,
+        )
 
     try:
         updated_templates = await _ensure_template_name_translations(
             templates,
             persist=True,
             force=bool(req.force),
-            source_type=normalized_source_type,
             provider_id=str(provider.get("id") or "") if provider else "",
             model_name=model_name,
-            external_connector=external_connector,
-            external_agent_type=external_agent_type,
             strict=True,
             auth_payload=auth_payload,
         )
@@ -1586,8 +1190,7 @@ async def translate_agent_template_names(
         "source_type": normalized_source_type,
         "provider_id": str(provider.get("id") or "") if provider else "",
         "model_name": model_name,
-        "local_connector_id": str(getattr(external_connector, "id", "") or "").strip(),
-        "external_agent_type": external_agent_type if normalized_source_type == "external" else "",
+        "local_connector_id": "",
         "count": len(items),
         "updated_count": updated_count,
         "force": bool(req.force),
@@ -1613,37 +1216,19 @@ async def deduplicate_agent_templates(
     if len(templates) < 2:
         raise HTTPException(400, "至少需要 2 个模板才能执行同类去重")
 
-    normalized_source_type = _normalize_source_type(req.source_type)
-    provider = None
-    model_name = ""
-    external_connector = None
-    external_agent_type = _normalize_external_agent_type(req.external_agent_type)
-    if normalized_source_type == "external":
-        external_connector = _resolve_accessible_external_agent_connector(
-            req.local_connector_id,
-            auth_payload,
-        )
-        if external_connector is None:
-            raise HTTPException(404, "未找到可用的外部智能体连接器")
-        if not connector_agent_available(external_connector, external_agent_type):
-            label = (_EXTERNAL_AGENT_SPECS.get(external_agent_type) or {}).get("label") or external_agent_type
-            raise HTTPException(400, f"当前连接器暂未检测到 {label}")
-    else:
-        provider, model_name = await _resolve_llm_provider_async(
-            preferred_provider_id=req.provider_id,
-            preferred_model_name=req.model_name,
-            required=True,
-            auth_payload=auth_payload,
-        )
+    normalized_source_type = "internal"
+    provider, model_name = await _resolve_llm_provider_async(
+        preferred_provider_id=req.provider_id,
+        preferred_model_name=req.model_name,
+        required=True,
+        auth_payload=auth_payload,
+    )
 
     try:
         groups = await _deduplicate_templates_by_ai(
             templates,
-            source_type=normalized_source_type,
             provider_id=str(provider.get("id") or "") if provider else "",
             model_name=model_name,
-            external_connector=external_connector,
-            external_agent_type=external_agent_type,
             temperature=float(req.temperature if req.temperature is not None else 0.1),
         )
     except HTTPException:
@@ -1683,8 +1268,7 @@ async def deduplicate_agent_templates(
         "source_type": normalized_source_type,
         "provider_id": str(provider.get("id") or "") if provider else "",
         "model_name": model_name,
-        "local_connector_id": str(getattr(external_connector, "id", "") or "").strip(),
-        "external_agent_type": external_agent_type if normalized_source_type == "external" else "",
+        "local_connector_id": "",
         "groups": groups,
         "group_count": len(groups),
         "remove_count": len(remove_ids),

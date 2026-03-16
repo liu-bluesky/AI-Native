@@ -8,24 +8,16 @@
     <el-table :data="keys" stripe>
       <el-table-column prop="key" label="Key" width="340" />
       <el-table-column prop="developer_name" label="用户" width="140" />
-      <el-table-column prop="created_by" label="创建人" width="120" />
-      <el-table-column label="状态" width="80">
-        <template #default="{ row }">
-          <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-            {{ row.is_active ? '启用' : '停用' }}
-          </el-tag>
-        </template>
-      </el-table-column>
       <el-table-column prop="created_at" label="创建时间" />
       <el-table-column label="操作" width="100" fixed="right">
         <template #default="{ row }">
           <el-button
-            v-if="row.is_active && canDeactivateKey"
+            v-if="canDeleteKey"
             text
             type="danger"
-            @click="handleDeactivate(row)"
+            @click="handleDelete(row)"
           >
-            停用
+            删除
           </el-button>
         </template>
       </el-table-column>
@@ -58,7 +50,7 @@ const showCreate = ref(false)
 const creating = ref(false)
 const form = reactive({ developer_name: '' })
 const canCreateKey = computed(() => hasPermission('button.apikey.create'))
-const canDeactivateKey = computed(() => hasPermission('button.apikey.deactivate'))
+const canDeleteKey = computed(() => hasPermission('button.apikey.deactivate'))
 
 async function fetchKeys() {
   loading.value = true
@@ -91,11 +83,11 @@ async function handleCreate() {
   }
 }
 
-async function handleDeactivate(row) {
-  await ElMessageBox.confirm(`确定停用「${row.developer_name}」的 Key？`, '确认')
+async function handleDelete(row) {
+  await ElMessageBox.confirm(`确定删除「${row.developer_name}」的 Key？删除后不可恢复。`, '确认')
   try {
     await api.delete(`/usage/keys/${row.key}`)
-    ElMessage.success('已停用')
+    ElMessage.success('已删除')
     fetchKeys()
   } catch {
     ElMessage.error('操作失败')

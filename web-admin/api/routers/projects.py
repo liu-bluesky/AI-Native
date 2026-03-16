@@ -7,7 +7,6 @@ import re
 import shutil
 import subprocess
 import sys
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import asdict, replace
@@ -21,23 +20,18 @@ import asyncio
 from services.agent_orchestrator import AgentOrchestrator
 from services.conversation_manager import ConversationManager
 from core.redis_client import get_redis_client
-from core.config import get_settings
 
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
 from core.auth import decode_token
-from core.deps import employee_store, external_mcp_store, local_connector_store, project_chat_store, project_store, require_auth, role_store, system_config_store, usage_store, user_store
+from core.deps import employee_store, external_mcp_store, is_admin_like, local_connector_store, project_chat_store, project_store, require_auth, role_store, system_config_store, user_store
 from services.feedback_service import get_feedback_service
-from services.external_agent_service import ExternalAgentSession, create_external_agent_session, detect_external_agent_risk_signals, has_meaningful_workspace_changes, list_external_agent_statuses, normalize_external_agent_type, prepare_external_agent_workspace_context, probe_workspace_access, resolve_external_agent_status
 from services.local_connector_service import (
+    LocalConnectorLlmAdapter,
     build_local_connector_provider_id,
     chat_completion_via_connector,
-    connector_agent_available,
-    connector_headers,
     connector_base_url,
     list_connector_llm_models,
-    materialize_connector_workspace,
     parse_local_connector_provider_id,
-    probe_connector_workspace,
 )
 from models.requests import (
     ProjectAiEntryFileUpdateReq,
@@ -61,11 +55,10 @@ router = APIRouter(prefix="/api/projects", dependencies=[Depends(require_auth)])
 
 _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "chat_mode": "system",
-    "external_agent_type": "codex_cli",
-    "external_agent_sandbox_mode": "workspace-write",
-    "external_agent_sandbox_mode_explicit": False,
     "local_connector_id": "",
     "connector_workspace_path": "",
+    "connector_sandbox_mode": "workspace-write",
+    "connector_sandbox_mode_explicit": False,
     "selected_employee_id": "",
     "selected_employee_ids": [],
     "provider_id": "",
@@ -168,17 +161,32 @@ def _coerce_float(value: Any, default: float, *, min_value: float, max_value: fl
 def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
     source = raw if isinstance(raw, dict) else {}
     settings = dict(_PROJECT_CHAT_SETTINGS_DEFAULTS)
-    chat_mode = str(source.get("chat_mode", settings["chat_mode"]) or "").strip().lower()
-    settings["chat_mode"] = chat_mode if chat_mode in {"system", "external_agent"} else settings["chat_mode"]
-    agent_type = str(source.get("external_agent_type", settings["external_agent_type"]) or "").strip().lower()
-    settings["external_agent_type"] = normalize_external_agent_type(agent_type)
-    sandbox_mode_explicit = _coerce_bool(source.get("external_agent_sandbox_mode_explicit"), settings["external_agent_sandbox_mode_explicit"])
-    sandbox_mode = str(source.get("external_agent_sandbox_mode", settings["external_agent_sandbox_mode"]) or "").strip().lower()
-    normalized_sandbox_mode = sandbox_mode if sandbox_mode in {"read-only", "workspace-write"} else settings["external_agent_sandbox_mode"]
+    settings["chat_mode"] = "system"
+    sandbox_mode_explicit = _coerce_bool(
+        source.get(
+            "connector_sandbox_mode_explicit",
+            source.get(
+                "external_agent_sandbox_mode_explicit",
+                settings["connector_sandbox_mode_explicit"],
+            ),
+        ),
+        settings["connector_sandbox_mode_explicit"],
+    )
+    sandbox_mode = str(
+        source.get(
+            "connector_sandbox_mode",
+            source.get(
+                "external_agent_sandbox_mode",
+                settings["connector_sandbox_mode"],
+            ),
+        )
+        or ""
+    ).strip().lower()
+    normalized_sandbox_mode = sandbox_mode if sandbox_mode in {"read-only", "workspace-write"} else settings["connector_sandbox_mode"]
     if normalized_sandbox_mode == "read-only" and not sandbox_mode_explicit:
-        normalized_sandbox_mode = settings["external_agent_sandbox_mode"]
-    settings["external_agent_sandbox_mode"] = normalized_sandbox_mode
-    settings["external_agent_sandbox_mode_explicit"] = sandbox_mode_explicit
+        normalized_sandbox_mode = settings["connector_sandbox_mode"]
+    settings["connector_sandbox_mode"] = normalized_sandbox_mode
+    settings["connector_sandbox_mode_explicit"] = sandbox_mode_explicit
     settings["local_connector_id"] = str(source.get("local_connector_id", settings["local_connector_id"]) or "").strip()
     settings["connector_workspace_path"] = str(source.get("connector_workspace_path", settings["connector_workspace_path"]) or "").strip()
     settings["selected_employee_id"] = str(source.get("selected_employee_id", settings["selected_employee_id"]) or "").strip()
@@ -218,10 +226,23 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
 
 
 def _public_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
-    settings = _normalize_project_chat_settings(raw)
-    settings["local_connector_id"] = ""
-    settings["connector_workspace_path"] = ""
-    return settings
+    return _normalize_project_chat_settings(raw)
+
+
+def _merge_project_chat_settings_overrides(
+    persisted_settings: dict[str, Any] | None,
+    *,
+    local_connector_id: str = "",
+    connector_workspace_path: str = "",
+) -> dict[str, Any]:
+    merged = dict(_normalize_project_chat_settings(persisted_settings))
+    normalized_connector_id = str(local_connector_id or "").strip()
+    normalized_workspace_path = str(connector_workspace_path or "").strip()
+    if normalized_connector_id:
+        merged["local_connector_id"] = normalized_connector_id
+    if normalized_workspace_path:
+        merged["connector_workspace_path"] = normalized_workspace_path
+    return _normalize_project_chat_settings(merged)
 
 
 def _sync_feedback_project_flag(project_id: str, enabled: bool) -> None:
@@ -454,11 +475,15 @@ def _cleanup_project_chat_employee_selection(project_id: str, employee_id: str) 
     return True
 
 
-def _pick_chat_provider(provider_id: str) -> tuple[dict, list[dict]]:
+def _pick_chat_provider(provider_id: str, auth_payload: dict) -> tuple[dict, list[dict]]:
     from services.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
-    providers = llm_service.list_providers(enabled_only=True)
+    providers = llm_service.list_providers(
+        enabled_only=True,
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+    )
     if not providers:
         raise HTTPException(400, "未配置可用的 LLM 提供商")
     expected = str(provider_id or "").strip()
@@ -530,49 +555,8 @@ async def _resolve_provider_runtime_target(
         if provider is None:
             raise HTTPException(400, "当前本地连接器未配置可用模型")
         return "local_connector", provider, [provider]
-    provider, providers = _pick_chat_provider(provider_id)
+    provider, providers = _pick_chat_provider(provider_id, auth_payload)
     return "provider", provider, providers
-
-
-def _resolve_agent_statuses_for_connector(connector: Any | None) -> list[dict[str, Any]]:
-    statuses = list_external_agent_statuses()
-    runner_url = connector_base_url(connector)
-    resolved: list[dict[str, Any]] = []
-    for item in statuses:
-        agent_type = str(item.get("agent_type") or "codex_cli").strip()
-        label = str(item.get("label") or agent_type).strip() or agent_type
-        if connector is None:
-            resolved.append(
-                {
-                    **item,
-                    "available": False,
-                    "installed": False,
-                    "command_source": "local_connector_required",
-                    "execution_mode": "local_connector",
-                    "runner_url": "",
-                    "resolved_command": "",
-                    "reason": f"请先选择并连接本地连接器后再使用 {label}",
-                }
-            )
-            continue
-        available = connector_agent_available(connector, agent_type)
-        connector_name = str(getattr(connector, "connector_name", "") or getattr(connector, "id", "") or "当前连接器").strip()
-        reason = ""
-        if not available:
-            reason = f"{connector_name} 暂未检测到 {label} 能力，请先在该电脑安装并启动对应 CLI"
-        resolved.append(
-            {
-                **item,
-                "available": available,
-                "installed": available,
-                "command_source": "local_connector",
-                "execution_mode": "local_connector",
-                "runner_url": runner_url,
-                "resolved_command": "",
-                "reason": reason,
-            }
-        )
-    return resolved
 
 
 def _project_tool_display_name(tool_name: str) -> str:
@@ -775,7 +759,7 @@ def _filter_project_tools_by_names(
     normalized = [str(item or "").strip() for item in (enabled_tool_names or []) if str(item or "").strip()]
     allowed = set(normalized)
     if not allowed:
-        return [] if explicit_filter else tools
+        return tools
     filtered = []
     for item in tools:
         tool_name = str(item.get("tool_name") or "").strip()
@@ -882,16 +866,51 @@ def _collect_runtime_tools(
     return tools
 
 
+def _summarize_effective_tools(
+    tools: list[dict[str, Any]] | None,
+    *,
+    max_items: int = 24,
+) -> tuple[list[dict[str, str]], int]:
+    source_tools = tools if isinstance(tools, list) else []
+    summarized: list[dict[str, str]] = []
+    for item in source_tools[:max_items]:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool_name") or "").strip()
+        if not tool_name:
+            continue
+        module_type = str(item.get("module_type") or "").strip().lower()
+        if tool_name.startswith("local_connector_"):
+            source = "local_connector"
+        elif module_type == "external_mcp_tool":
+            source = "external_mcp"
+        elif module_type == "system_mcp_tool":
+            source = "system_mcp"
+        elif bool(item.get("builtin")) or str(item.get("skill_id") or "").strip() == "__builtin__":
+            source = "builtin"
+        elif str(item.get("employee_id") or "").strip():
+            source = "project_skill"
+        else:
+            source = "project_tool"
+        summarized.append(
+            {
+                "tool_name": tool_name,
+                "source": source,
+                "description": str(item.get("description") or "").strip(),
+            }
+        )
+    return summarized, len(source_tools)
+
+
 def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) -> dict[str, Any]:
     base = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
     merged = dict(base)
     override = {
         "chat_mode": req.chat_mode,
-        "external_agent_type": req.external_agent_type,
-        "external_agent_sandbox_mode": req.external_agent_sandbox_mode,
-        "external_agent_sandbox_mode_explicit": req.external_agent_sandbox_mode_explicit,
         "local_connector_id": req.local_connector_id,
         "connector_workspace_path": req.connector_workspace_path,
+        "connector_sandbox_mode": req.connector_sandbox_mode,
+        "connector_sandbox_mode_explicit": req.connector_sandbox_mode_explicit,
         "selected_employee_id": req.employee_id,
         "selected_employee_ids": req.employee_ids,
         "provider_id": req.provider_id,
@@ -1019,6 +1038,7 @@ def _build_project_chat_messages(
         base_prompt = "你是项目开发助手。"
         base_prompt += "\n可按需调用工具检索最新项目上下文并完成用户请求。"
         base_prompt += "\n当用户询问项目信息、员工信息、规则、MCP 服务时，优先调用 search_project_context 再回答。"
+        base_prompt += "\n当用户询问当前项目有哪些员工、成员、规则、工具或 MCP 能力时，不要先说无法获取；先调用 query_project_members、query_project_rules 或 search_project_context。"
 
     style_hint = {
         "concise": "输出风格：简洁，避免冗长。",
@@ -1204,33 +1224,17 @@ def _connector_llm_accessible(item: Any, auth_payload: dict) -> bool:
     return _current_role_id(auth_payload) in _connector_llm_shared_with_roles(item)
 
 
-def _connector_external_agent_shared_with_usernames(item: Any) -> list[str]:
-    return _normalize_text_list(getattr(item, "external_agent_shared_with_usernames", []), limit=64)
-
-
-def _connector_external_agent_shared_with_roles(item: Any) -> list[str]:
-    return [
-        item.lower()
-        for item in _normalize_text_list(getattr(item, "external_agent_shared_with_roles", []), limit=64)
-    ]
-
-
-def _connector_external_agent_accessible(item: Any, auth_payload: dict) -> bool:
+def _connector_workspace_accessible(item: Any, auth_payload: dict) -> bool:
     if _is_admin_like(auth_payload):
         return True
-    username = _current_username(auth_payload)
-    if str(getattr(item, "owner_username", "") or "").strip() == username:
-        return True
-    if username in _connector_external_agent_shared_with_usernames(item):
-        return True
-    return _current_role_id(auth_payload) in _connector_external_agent_shared_with_roles(item)
+    return str(getattr(item, "owner_username", "") or "").strip() == _current_username(auth_payload)
 
 
 def _list_accessible_local_connectors(auth_payload: dict) -> list[Any]:
     return [
         item
         for item in local_connector_store.list_connectors()
-        if _connector_external_agent_accessible(item, auth_payload)
+        if _connector_workspace_accessible(item, auth_payload)
     ]
 
 
@@ -1244,7 +1248,7 @@ def _resolve_accessible_local_connector(
     item = local_connector_store.get_connector(normalized)
     if item is None:
         return None
-    return item if _connector_external_agent_accessible(item, auth_payload) else None
+    return item if _connector_workspace_accessible(item, auth_payload) else None
 
 
 def _list_accessible_local_connectors_for_llm(auth_payload: dict) -> list[Any]:
@@ -1298,10 +1302,16 @@ def _resolve_project_workspace_for_chat(
     project: ProjectConfig,
     settings: dict[str, Any],
 ) -> str:
-    connector_id = str(settings.get("local_connector_id") or "").strip()
-    if connector_id:
-        return str(settings.get("connector_workspace_path") or "").strip()
     return str(project.workspace_path or "").strip()
+
+
+def _resolve_local_connector_coding_tools(
+    auth_payload: dict,
+    settings: dict[str, Any],
+    workspace_path: str,
+) -> tuple[list[dict[str, Any]], Any | None, str]:
+    _ = (auth_payload, settings, workspace_path)
+    return [], None, ""
 
 
 def _get_project_user_member(project_id: str, username: str) -> ProjectUserMember | None:
@@ -1394,8 +1404,6 @@ async def chat_without_project(
     from services.llm_provider_service import get_llm_provider_service
 
     _ensure_permission(auth_payload, "menu.ai.chat")
-    if str(req.chat_mode or "system").strip().lower() == "external_agent":
-        raise HTTPException(400, "Global chat does not support external_agent")
 
     user_message = str(req.message or "").strip()
     normalized_images = _normalize_image_inputs(req.images)
@@ -1682,122 +1690,6 @@ def _pick_file_via_native_dialog(
     raise RuntimeError("当前服务端环境不支持原生文件选择器，或运行在无桌面界面的 headless 模式")
 
 
-def _build_external_agent_startup_context(
-    project: ProjectConfig,
-    *,
-    agent_label: str,
-    candidates: list[dict[str, Any]],
-    selected_employees: list[dict[str, Any]],
-    system_prompt: str,
-    sandbox_mode: str,
-    workspace_path: str = "",
-    skill_resource_directory: str = "",
-) -> str:
-    selected_names = [str(item.get("name") or item.get("id") or "").strip() for item in selected_employees]
-    candidate_preview = [
-        f"{str(item.get('name') or item.get('id') or '').strip()}({str(item.get('role') or 'member').strip() or 'member'})"
-        for item in candidates[:8]
-        if str(item.get("id") or "").strip()
-    ]
-    lines = [
-        "你正在 AI 设计规范平台托管的外部 Agent 会话中运行。",
-        f"当前 Agent：{agent_label or '外部 Agent'}。",
-        f"当前项目：{project.name} ({project.id})。",
-        f"工作目录：{project.workspace_path or '-'}。",
-        f"沙箱模式：{sandbox_mode}。",
-        "请优先使用中文输出，保持结论清晰、行动明确。",
-        "当前阶段不接入平台审批流，也未桥接平台技能 MCP；请仅基于本地工作区与当前外部 Agent CLI 自身能力完成任务。",
-        "如需修改文件或执行命令，请严格限制在当前工作区范围内。",
-    ]
-    if project.description:
-        lines.append(f"项目说明：{project.description}")
-    effective_workspace_path = str(workspace_path or project.workspace_path or "").strip()
-    ai_entry_file = str(project.ai_entry_file or "").strip()
-    if ai_entry_file:
-        lines.append(f"AI 入口文件：{ai_entry_file}")
-        if effective_workspace_path and not Path(ai_entry_file).expanduser().is_absolute():
-            lines.append(f"按当前工作目录解析时，对应路径：{str(Path(effective_workspace_path) / ai_entry_file)}")
-        lines.append("开始执行前优先读取该入口文件，并按其中说明理解项目规则、目录约定和实现约束；仅在入口文件缺失或信息不足时，再补充读取其他规则文件。")
-    if selected_names:
-        lines.append(f"当前选定成员：{', '.join(selected_names)}")
-    elif candidate_preview:
-        lines.append(f"项目成员参考：{', '.join(candidate_preview)}")
-    normalized_skill_dir = _normalize_skill_resource_directory(
-        skill_resource_directory,
-    )
-    if normalized_skill_dir:
-        lines.append(f"当前本地技能目录：{normalized_skill_dir}")
-        lines.append(
-            "如用户要求补技能、找技能模板、下载技能或复用本地 skill，请优先查看该目录中的 SKILL.md、模板和脚本。"
-        )
-        lines.append("如当前执行环境无法直接访问该目录，请先说明限制，再给可执行替代方案。")
-    if system_prompt:
-        lines.append(f"补充上下文：{system_prompt}")
-    return "\n".join(lines)
-
-
-def _normalize_mcp_server_name(project_id: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9_]+", "_", str(project_id or "").strip())
-    normalized = normalized.strip("_") or "project"
-    return f"project_{normalized}"
-
-
-def _find_external_agent_bridge_key(project_id: str) -> str:
-    expected_name = f"external-agent-{project_id}"
-    try:
-        keys = usage_store.list_keys()
-    except Exception:
-        return ""
-    for item in keys:
-        if not bool(item.get("is_active", True)):
-            continue
-        if str(item.get("developer_name") or "").strip() != expected_name:
-            continue
-        return str(item.get("key") or "").strip()
-    return ""
-
-
-def _build_external_agent_mcp_bridge(project: ProjectConfig, *, create_if_missing: bool = False) -> dict[str, Any]:
-    if not bool(getattr(project, "mcp_enabled", True)):
-        return {
-            "enabled": False,
-            "reason": "项目未启用 MCP",
-            "server_name": _normalize_mcp_server_name(project.id),
-            "config_overrides": [],
-        }
-
-    key = _find_external_agent_bridge_key(project.id)
-    if not key and create_if_missing:
-        try:
-            created = usage_store.create_key(
-                developer_name=f"external-agent-{project.id}",
-                created_by="system-external-agent",
-            )
-            key = str(created.get("key") or "").strip()
-        except Exception:
-            key = ""
-
-    server_name = _normalize_mcp_server_name(project.id)
-    if not key:
-        return {
-            "enabled": False,
-            "reason": "缺少可用 API Key，启动外部 Agent 时会自动补齐",
-            "server_name": server_name,
-            "config_overrides": [],
-        }
-
-    settings = get_settings()
-    url = f"http://127.0.0.1:{int(settings.api_port)}/mcp/projects/{project.id}/sse?key={key}"
-    override = f'mcp_servers.{server_name}={{type="sse",url={json.dumps(url, ensure_ascii=False)}}}'
-    return {
-        "enabled": True,
-        "reason": "",
-        "server_name": server_name,
-        "url": url,
-        "config_overrides": [override],
-    }
-
-
 def _chunk_text(content: str, chunk_size: int = 42) -> list[str]:
     text = str(content or "")
     if not text:
@@ -2021,7 +1913,11 @@ async def smart_query_project(project_id: str, request: dict, auth_payload: dict
         raise HTTPException(400, "message is required")
 
     llm_service = get_llm_provider_service()
-    providers = llm_service.list_providers(enabled_only=True)
+    providers = llm_service.list_providers(
+        enabled_only=True,
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+    )
     if not providers:
         raise HTTPException(400, "No LLM provider configured")
 
@@ -2290,8 +2186,6 @@ async def remove_project_member(project_id: str, employee_id: str, auth_payload:
 @router.get("/{project_id}/chat/providers")
 async def list_project_chat_providers(
     project_id: str,
-    local_connector_id: str = Query(""),
-    connector_workspace_path: str = Query(""),
     auth_payload: dict = Depends(require_auth),
 ):
     _ensure_permission(auth_payload, "menu.ai.chat")
@@ -2299,7 +2193,7 @@ async def list_project_chat_providers(
 
     project = _ensure_project_access(project_id, auth_payload)
     try:
-        selected_provider, providers = _pick_chat_provider("")
+        selected_provider, providers = _pick_chat_provider("", auth_payload)
     except HTTPException as exc:
         if exc.status_code != 400:
             raise
@@ -2307,125 +2201,24 @@ async def list_project_chat_providers(
     default_employee, candidates = _resolve_project_chat_employee(project_id, "")
     mcp_modules = _build_chat_mcp_modules(project_id)
     persisted_chat_settings = _normalize_project_chat_settings(getattr(project, "chat_settings", {}) or {})
-    chat_settings = _normalize_project_chat_settings(
-        {
-            **persisted_chat_settings,
-            "local_connector_id": str(local_connector_id or "").strip(),
-            "connector_workspace_path": str(connector_workspace_path or "").strip(),
-        }
-    )
-    connector_items = [_serialize_chat_connector(item) for item in _list_accessible_local_connectors(auth_payload)]
-    selected_connector = _resolve_accessible_local_connector(
-        str(chat_settings.get("local_connector_id") or "").strip(),
-        auth_payload,
-    )
-    connector_provider_ids = {str(item.get("id") or "").strip() for item in providers}
-    for connector in _list_accessible_local_connectors_for_llm(auth_payload):
-        connector_provider = await _build_connector_chat_provider(connector)
-        connector_provider_id = str((connector_provider or {}).get("id") or "").strip()
-        if connector_provider is None or not connector_provider_id or connector_provider_id in connector_provider_ids:
-            continue
-        providers = [*providers, connector_provider]
-        connector_provider_ids.add(connector_provider_id)
-    selected_external_agent_type = normalize_external_agent_type(str(chat_settings.get("external_agent_type") or "codex_cli"))
-    external_agent = next(
-        (
-            item
-            for item in _resolve_agent_statuses_for_connector(selected_connector)
-            if str(item.get("agent_type") or "").strip() == selected_external_agent_type
-        ),
-        resolve_external_agent_status(selected_external_agent_type),
-    )
-    external_agent_bridge = _build_external_agent_mcp_bridge(project, create_if_missing=False)
+    chat_settings = dict(persisted_chat_settings)
     runtime_external_tools = list_project_external_tools_runtime(project_id)
     effective_workspace_path = _resolve_project_workspace_for_chat(project, chat_settings)
-    external_agent_context = prepare_external_agent_workspace_context(
-        project_id=project_id,
-        project_name=str(project.name or "").strip(),
-        project_description=str(project.description or "").strip(),
-        workspace_path=effective_workspace_path,
-        sandbox_mode=str(chat_settings.get("external_agent_sandbox_mode") or "workspace-write").strip() or "workspace-write",
-        agent_type=selected_external_agent_type,
-        selected_employee_names=[],
-        candidate_preview=[
-            f"{str(item.get('name') or item.get('id') or '').strip()}({str(item.get('role') or 'member').strip() or 'member'})"
-            for item in candidates[:8]
-            if str(item.get("id") or "").strip()
-        ],
-        system_prompt=str(_resolve_default_chat_system_prompt(chat_settings.get("system_prompt")) or ""),
-        mcp_bridge=external_agent_bridge,
-        write_files=False,
-    )
-    sandbox_mode = str(chat_settings.get("external_agent_sandbox_mode") or "workspace-write").strip() or "workspace-write"
-    if selected_connector is None:
-        effective_workspace_access = {
-            "configured": bool(effective_workspace_path),
-            "exists": False,
-            "is_dir": False,
-            "read_ok": False,
-            "write_ok": False,
-            "source": "local_connector",
-            "sandbox_mode": sandbox_mode,
-            "reason": "请先选择并连接本地连接器后再测试工作区",
-        }
-    elif effective_workspace_path:
-        try:
-            effective_workspace_access = await probe_connector_workspace(
-                selected_connector,
-                effective_workspace_path,
-                sandbox_mode,
-            )
-        except Exception as exc:
-            effective_workspace_access = {
-                "configured": bool(effective_workspace_path),
-                "exists": False,
-                "is_dir": False,
-                "read_ok": False,
-                "write_ok": False,
-                "source": "local_connector",
-                "sandbox_mode": sandbox_mode,
-                "reason": str(exc),
-            }
-    else:
-        effective_workspace_access = probe_workspace_access(effective_workspace_path, sandbox_mode)
-        effective_workspace_access["source"] = "local_connector"
-        if not str(effective_workspace_access.get("reason") or "").strip():
-            effective_workspace_access["reason"] = "请先填写连接器所在电脑上的工作区绝对路径"
 
     return {
         "project_id": project_id,
         "workspace_path": effective_workspace_path,
         "project_workspace_path": str(project.workspace_path or "").strip(),
         "project_ai_entry_file": str(project.ai_entry_file or "").strip(),
-        "chat_modes": [
-            {"id": "system", "label": "系统对话"},
-            {"id": "external_agent", "label": "外部 Agent"},
-        ],
+        "chat_modes": [{"id": "system", "label": "系统对话"}],
         "providers": providers,
         "default_provider_id": str(selected_provider.get("id") or ""),
         "default_model_name": str(selected_provider.get("default_model") or ""),
-        "local_connectors": connector_items,
-        "selected_local_connector_id": str(chat_settings.get("local_connector_id") or ""),
         "employees": candidates,
         "default_employee_id": str((default_employee or {}).get("id") or ""),
         "mcp_modules": mcp_modules,
         "runtime_external_tools": runtime_external_tools,
         "chat_settings": _public_project_chat_settings(persisted_chat_settings),
-        "external_agent": {
-            **external_agent,
-            "workspace_path": effective_workspace_path,
-            "local_connector_id": str(chat_settings.get("local_connector_id") or ""),
-            "local_connector_name": str(getattr(selected_connector, "connector_name", "") or "").strip() if selected_connector is not None else "",
-            "local_connector_online": bool(next((item.get("online") for item in connector_items if item.get("id") == str(chat_settings.get("local_connector_id") or "").strip()), False)),
-            "context_root": str(external_agent_context.get("context_root") or ""),
-            "support_dir": str(external_agent_context.get("support_dir") or ""),
-            "support_files": list(external_agent_context.get("support_files") or []),
-            "mcp_bridge_enabled": bool(external_agent_bridge.get("enabled")),
-            "mcp_bridge_reason": str(external_agent_bridge.get("reason") or ""),
-            "mcp_server_name": str(external_agent_bridge.get("server_name") or ""),
-            "workspace_access": effective_workspace_access or external_agent_context.get("workspace_access") or probe_workspace_access(effective_workspace_path, str(chat_settings.get("external_agent_sandbox_mode") or "workspace-write")),
-            "agent_types": _resolve_agent_statuses_for_connector(selected_connector),
-        },
     }
 
 
@@ -2484,6 +2277,7 @@ async def update_project_chat_ai_entry_file(
 async def list_project_chat_history(
     project_id: str,
     limit: int = 200,
+    offset: int = 0,
     chat_session_id: str = "",
     auth_payload: dict = Depends(require_auth),
 ):
@@ -2494,6 +2288,7 @@ async def list_project_chat_history(
         project_id,
         username,
         limit=limit,
+        offset=offset,
         chat_session_id=str(chat_session_id or "").strip(),
     )
     return {"messages": [asdict(item) for item in records]}
@@ -2595,135 +2390,9 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
 
     active_tasks: dict[str, asyncio.Task] = {}
     cancel_events: dict[str, asyncio.Event] = {}
-    approval_waiters: dict[str, asyncio.Future] = {}
-    review_waiters: dict[str, asyncio.Future] = {}
-    external_session: Any = None
-
-    async def ensure_external_agent_session(req: ProjectChatReq) -> dict[str, Any]:
-        nonlocal external_session
-        runtime_settings = _resolve_chat_runtime_settings(req, project)
-        selected_employees, candidates = _resolve_project_chat_employees(
-            project_id,
-            list(runtime_settings.get("selected_employee_ids") or []),
-            str(runtime_settings.get("selected_employee_id") or ""),
-        )
-        selected_employee = selected_employees[0] if len(selected_employees) == 1 else None
-        selected_employee_ids = [
-            str(item.get("id") or "")
-            for item in selected_employees
-            if str(item.get("id") or "")
-        ]
-        employee_id_val = selected_employee_ids[0] if len(selected_employee_ids) == 1 else ""
-        agent_type = normalize_external_agent_type(str(runtime_settings.get("external_agent_type") or "codex_cli"))
-        sandbox_mode = str(runtime_settings.get("external_agent_sandbox_mode") or "workspace-write").strip().lower() or "workspace-write"
-        local_connector = _resolve_accessible_local_connector(
-            str(runtime_settings.get("local_connector_id") or "").strip(),
-            auth_payload,
-        )
-        if local_connector is None:
-            raise RuntimeError("外部 Agent 已改为仅支持本地连接器模式，请先在设置中选择一个在线连接器")
-        effective_workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
-        external_agent_bridge = _build_external_agent_mcp_bridge(project, create_if_missing=True)
-        approval_risks = detect_external_agent_risk_signals(str(req.message or "").strip())
-        selected_employee_names = [
-            str(item.get("name") or item.get("id") or "").strip()
-            for item in selected_employees
-            if str(item.get("id") or "").strip()
-        ]
-        candidate_preview = [
-            f"{str(item.get('name') or item.get('id') or '').strip()}({str(item.get('role') or 'member').strip() or 'member'})"
-            for item in candidates[:8]
-            if str(item.get("id") or "").strip()
-        ]
-        external_agent_context = prepare_external_agent_workspace_context(
-            project_id=project_id,
-            project_name=str(project.name or "").strip(),
-            project_description=str(project.description or "").strip(),
-            workspace_path=effective_workspace_path,
-            sandbox_mode=sandbox_mode,
-            agent_type=agent_type,
-            selected_employee_names=selected_employee_names,
-            candidate_preview=candidate_preview,
-            system_prompt=str(_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")) or ""),
-            mcp_bridge=external_agent_bridge,
-            write_files=False,
-            skill_resource_directory=req.skill_resource_directory,
-        )
-        materialization = external_agent_context.get("materialization") if isinstance(external_agent_context.get("materialization"), dict) else {}
-        if materialization and effective_workspace_path:
-            runner_payload = await materialize_connector_workspace(
-                local_connector,
-                str(materialization.get("workspace_path") or ""),
-                str(materialization.get("sandbox_mode") or sandbox_mode),
-                list(materialization.get("files") or []),
-                list(materialization.get("copies") or []),
-            )
-            external_agent_context["materialized_by"] = "local_connector"
-            if isinstance(runner_payload.get("workspace_access"), dict):
-                external_agent_context["workspace_access"] = runner_payload.get("workspace_access")
-        else:
-            external_agent_context["materialized_by"] = "local_connector"
-        agent_status = next(
-            (
-                item
-                for item in _resolve_agent_statuses_for_connector(local_connector)
-                if str(item.get("agent_type") or "").strip() == agent_type
-            ),
-            resolve_external_agent_status(agent_type),
-        )
-        if not bool(agent_status.get("available")):
-            raise RuntimeError(str(agent_status.get("reason") or f"当前本地连接器暂不可用 {agent_type}"))
-        startup_context = str(external_agent_context.get("startup_context") or "").strip() or _build_external_agent_startup_context(
-            project,
-            agent_label=str(agent_status.get("label") or agent_type),
-            candidates=candidates,
-            selected_employees=selected_employees,
-            system_prompt=str(_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")) or ""),
-            sandbox_mode=sandbox_mode,
-            workspace_path=effective_workspace_path,
-            skill_resource_directory=req.skill_resource_directory,
-        )
-        session_overrides = list(external_agent_bridge.get("config_overrides") or [])
-        if (
-            external_session is None
-            or str(getattr(external_session, "agent_type", "codex_cli") or "codex_cli") != agent_type
-            or external_session.workspace_path != effective_workspace_path
-            or external_session.sandbox_mode != sandbox_mode
-            or list(getattr(external_session, "codex_config_overrides", []) or []) != session_overrides
-            or str(getattr(external_session, "startup_context", "") or "").strip() != startup_context
-            or str(getattr(external_session, "runner_url_override", "") or "").strip() != (connector_base_url(local_connector) if local_connector is not None else "")
-        ):
-            if external_session is not None:
-                await external_session.close()
-            external_session = create_external_agent_session(
-                project_id=project_id,
-                project_name=str(project.name or "").strip(),
-                username=username,
-                workspace_path=effective_workspace_path,
-                startup_context=startup_context,
-                agent_type=agent_type,
-                sandbox_mode=sandbox_mode,
-                codex_config_overrides=session_overrides,
-                runner_url_override=connector_base_url(local_connector) if local_connector is not None else "",
-                runner_headers=connector_headers(local_connector) if local_connector is not None else None,
-            )
-        await external_session.prepare_session()
-        return {
-            "runtime_settings": runtime_settings,
-            "selected_employee": selected_employee,
-            "selected_employee_ids": selected_employee_ids,
-            "employee_id_val": employee_id_val,
-            "agent_type": agent_type,
-            "sandbox_mode": sandbox_mode,
-            "external_agent_context": external_agent_context,
-            "external_agent_bridge": external_agent_bridge,
-            "approval_risks": approval_risks,
-            "session": external_session,
-            "agent_status": agent_status,
-        }
 
     async def handle_request(payload: dict):
-        nonlocal active_tasks, cancel_events, external_session
+        nonlocal active_tasks, cancel_events
         request_id = str(payload.get("request_id") or "").strip()
         if str(payload.get("type") or "").strip().lower() == "ping":
             await websocket.send_json({"type": "pong", "request_id": request_id})
@@ -2734,102 +2403,10 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 cancel_events[request_id].set()
             return
 
-        if str(payload.get("type") or "").strip().lower() == "approval_response":
-            approval_id = str(payload.get("approval_id") or "").strip()
-            future = approval_waiters.get(approval_id)
-            if future is not None and not future.done():
-                future.set_result(bool(payload.get("approved")))
-            return
-
-        if str(payload.get("type") or "").strip().lower() == "terminal_mirror_start":
-            try:
-                req = ProjectChatReq.model_validate(payload)
-                external_meta = await ensure_external_agent_session(req)
-                session = external_meta["session"]
-                async def _emit_terminal(event: dict[str, Any]) -> None:
-                    event["project_id"] = project_id
-                    await websocket.send_json(event)
-                await session.start_terminal_mirror(on_event=_emit_terminal)
-            except Exception as exc:
-                await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
-            return
-
-        if str(payload.get("type") or "").strip().lower() == "terminal_mirror_input":
-            try:
-                req = ProjectChatReq.model_validate(payload)
-                external_meta = await ensure_external_agent_session(req)
-                session = external_meta["session"]
-                if session is None:
-                    raise RuntimeError("外部 Agent 会话未初始化")
-                await session.start_terminal_mirror(on_event=None)
-                await session.write_terminal_input(str(payload.get("content") or ""))
-            except Exception as exc:
-                await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
-            return
-
-        if str(payload.get("type") or "").strip().lower() == "terminal_mirror_stop":
-            try:
-                if external_session is not None:
-                    await external_session.stop_terminal_mirror()
-            except Exception as exc:
-                await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
-            return
-
         try:
             req = ProjectChatReq.model_validate(payload)
         except Exception as exc:
             await websocket.send_json({"type": "error", "request_id": request_id, "message": f"Invalid payload: {str(exc)}"})
-            return
-
-        if str(payload.get("type") or "").strip().lower() == "agent_prepare":
-            try:
-                external_meta = await ensure_external_agent_session(req)
-                session = external_meta["session"]
-                external_agent_context = external_meta["external_agent_context"]
-                external_agent_bridge = external_meta["external_agent_bridge"]
-                agent_status = external_meta["agent_status"]
-                agent_type = str(external_meta.get("agent_type") or "codex_cli")
-                sandbox_mode = str(external_meta.get("sandbox_mode") or "workspace-write")
-                effective_workspace_path = str(getattr(session, "workspace_path", "") or "").strip()
-                selected_connector = _resolve_accessible_local_connector(
-                    str(req.local_connector_id or external_meta.get("runtime_settings", {}).get("local_connector_id") or "").strip(),
-                    auth_payload,
-                )
-                await websocket.send_json(
-                    {
-                        "type": "agent_ready",
-                        "request_id": request_id,
-                        "project_id": project_id,
-                        "chat_mode": "external_agent",
-                        "agent_type": agent_type,
-                        "agent_session_id": session.session_id,
-                        "thread_id": session.thread_id,
-                        "workspace_path": effective_workspace_path,
-                        "sandbox_mode": sandbox_mode,
-                        "model_name": str(agent_status.get("runtime_model_name") or agent_type),
-                        "label": str(agent_status.get("label") or agent_type),
-                        "support_dir": str(external_agent_context.get("support_dir") or ""),
-                        "support_files": list(external_agent_context.get("support_files") or []),
-                        "workspace_access": external_agent_context.get("workspace_access") or probe_workspace_access(effective_workspace_path, sandbox_mode),
-                        "mcp_bridge_enabled": bool(external_agent_bridge.get("enabled")),
-                        "mcp_server_name": str(external_agent_bridge.get("server_name") or ""),
-                        "mcp_bridge_reason": str(external_agent_bridge.get("reason") or ""),
-                        "command": str(agent_status.get("command") or ""),
-                        "resolved_command": str(agent_status.get("resolved_command") or ""),
-                        "command_source": str(agent_status.get("command_source") or "missing"),
-                        "execution_mode": str(agent_status.get("execution_mode") or "local"),
-                        "runner_url": str(agent_status.get("runner_url") or ""),
-                        "implemented": bool(agent_status.get("implemented")),
-                        "installed": bool(agent_status.get("installed")),
-                        "reason": str(agent_status.get("reason") or ""),
-                        "supports_terminal_mirror": bool(agent_status.get("supports_terminal_mirror")),
-                        "supports_workspace_write": bool(agent_status.get("supports_workspace_write")),
-                        "agent_types": _resolve_agent_statuses_for_connector(selected_connector),
-                        "materialized_by": str(external_agent_context.get("materialized_by") or ""),
-                    }
-                )
-            except Exception as exc:
-                await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
             return
 
         user_message = str(req.message or "").strip()
@@ -2866,189 +2443,9 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             selected_employee = selected_employees[0] if len(selected_employees) == 1 else None
             selected_employee_ids = [str(item.get("id") or "") for item in selected_employees if str(item.get("id") or "")]
             employee_id_val = selected_employee_ids[0] if len(selected_employee_ids) == 1 else ""
-            chat_mode = str(runtime_settings.get("chat_mode") or "system").strip().lower()
-            if chat_mode == "external_agent":
-                external_meta = await ensure_external_agent_session(req)
-                sandbox_mode = str(external_meta.get("sandbox_mode") or "workspace-write")
-                external_agent_bridge = external_meta["external_agent_bridge"]
-                approval_risks = list(external_meta.get("approval_risks") or [])
-                external_agent_context = external_meta["external_agent_context"]
-                external_session = external_meta["session"]
-                selected_employee = external_meta.get("selected_employee")
-                selected_employee_ids = list(external_meta.get("selected_employee_ids") or [])
-                employee_id_val = str(external_meta.get("employee_id_val") or "")
-                agent_status = external_meta.get("agent_status") or {}
-                if approval_risks:
-                    approval_id = f"approval-{uuid.uuid4().hex[:10]}"
-                    approval_future = asyncio.get_running_loop().create_future()
-                    approval_waiters[approval_id] = approval_future
-                    await websocket.send_json(
-                        {
-                            "type": "approval_required",
-                            "request_id": request_id,
-                            "approval_id": approval_id,
-                            "chat_mode": "external_agent",
-                            "title": "检测到高风险操作",
-                            "message": "外部 Agent 请求命中高风险规则，需确认后才继续执行。",
-                            "risk_signals": approval_risks,
-                        }
-                    )
-                    approved = False
-                    try:
-                        while True:
-                            if cancel_event.is_set():
-                                break
-                            try:
-                                approved = bool(await asyncio.wait_for(asyncio.shield(approval_future), timeout=0.25))
-                                break
-                            except asyncio.TimeoutError:
-                                continue
-                    finally:
-                        approval_waiters.pop(approval_id, None)
-                    await websocket.send_json(
-                        {
-                            "type": "approval_resolved",
-                            "request_id": request_id,
-                            "approval_id": approval_id,
-                            "approved": bool(approved),
-                        }
-                    )
-                    if not approved:
-                        denied_message = "已取消执行：审批未通过。"
-                        await websocket.send_json(
-                            {
-                                "type": "done",
-                                "request_id": request_id,
-                                "content": denied_message,
-                                "chat_mode": "external_agent",
-                            }
-                        )
-                        _append_chat_record(
-                            project_id=project_id,
-                            username=username,
-                            role="assistant",
-                            content=denied_message,
-                            chat_session_id=chat_session_id,
-                            display_mode="terminal",
-                        )
-                        return
-                await websocket.send_json(
-                    {
-                        "type": "start",
-                        "request_id": request_id,
-                        "project_id": project_id,
-                        "provider_id": "",
-                        "chat_mode": "external_agent",
-                        "agent_type": str(external_session.agent_type or "codex_cli"),
-                        "agent_session_id": external_session.session_id,
-                        "thread_id": external_session.thread_id,
-                        "workspace_path": str(getattr(external_session, "workspace_path", "") or ""),
-                        "sandbox_mode": sandbox_mode,
-                        "model_name": str(resolve_external_agent_status(getattr(external_session, "agent_type", "codex_cli")).get("runtime_model_name") or getattr(external_session, "agent_type", "codex_cli")),
-                        "support_dir": str(external_agent_context.get("support_dir") or ""),
-                        "support_files": list(external_agent_context.get("support_files") or []),
-                        "mcp_bridge_enabled": bool(external_agent_bridge.get("enabled")),
-                        "mcp_server_name": str(external_agent_bridge.get("server_name") or ""),
-                        "mcp_bridge_reason": str(external_agent_bridge.get("reason") or ""),
-                        "employee_id": employee_id_val,
-                        "employee_name": str((selected_employee or {}).get("name") or ""),
-                        "employee_ids": selected_employee_ids,
-                        "tools_enabled": False,
-                        "command": str(agent_status.get("command") or ""),
-                        "resolved_command": str(agent_status.get("resolved_command") or ""),
-                        "command_source": str(agent_status.get("command_source") or "missing"),
-                        "label": str(agent_status.get("label") or getattr(external_session, "agent_type", "codex_cli")),
-                        "execution_mode": str(agent_status.get("execution_mode") or "local"),
-                        "runner_url": str(agent_status.get("runner_url") or ""),
-                        "implemented": bool(agent_status.get("implemented")),
-                        "installed": bool(agent_status.get("installed")),
-                        "reason": str(agent_status.get("reason") or ""),
-                        "supports_terminal_mirror": bool(agent_status.get("supports_terminal_mirror")),
-                        "supports_workspace_write": bool(agent_status.get("supports_workspace_write")),
-                        "agent_types": _resolve_agent_statuses_for_connector(
-                            _resolve_accessible_local_connector(
-                                str(runtime_settings.get("local_connector_id") or "").strip(),
-                                auth_payload,
-                            )
-                        ),
-                    }
-                )
-                final_output = ""
-                file_review_status = "not_required"
-                approval_context = {
-                    "mode": "websocket_confirm" if approval_risks else "none",
-                    "status": "approved" if approval_risks else "not_required",
-                }
-                async for event in external_session.send_prompt(
-                    effective_user_message,
-                    cancel_event=cancel_event,
-                    approval_context=approval_context,
-                    history=req.history,
-                ):
-                    if str(event.get("type") or "") == "audit":
-                        audit_payload = event.get("audit") if isinstance(event.get("audit"), dict) else {}
-                        before_diff_summary = audit_payload.get("before_diff_summary") if isinstance(audit_payload.get("before_diff_summary"), dict) else {}
-                        diff_summary = audit_payload.get("after_diff_summary") if isinstance(audit_payload.get("after_diff_summary"), dict) else {}
-                        if has_meaningful_workspace_changes(before_diff_summary, diff_summary):
-                            review_id = f"review-{uuid.uuid4().hex[:10]}"
-                            review_future = asyncio.get_running_loop().create_future()
-                            review_waiters[review_id] = review_future
-                            event["request_id"] = request_id
-                            event["chat_mode"] = "external_agent"
-                            await websocket.send_json(event)
-                            await websocket.send_json(
-                                {
-                                    "type": "file_review_required",
-                                    "request_id": request_id,
-                                    "review_id": review_id,
-                                    "chat_mode": "external_agent",
-                                    "title": "检测到文件改动",
-                                    "message": "外部 Agent 已修改工作区文件，请先审查 Git diff 摘要后确认。",
-                                    "diff_summary": diff_summary,
-                                }
-                            )
-                            reviewed = False
-                            try:
-                                while True:
-                                    if cancel_event.is_set():
-                                        break
-                                    try:
-                                        reviewed = bool(await asyncio.wait_for(asyncio.shield(review_future), timeout=0.25))
-                                        break
-                                    except asyncio.TimeoutError:
-                                        continue
-                            finally:
-                                review_waiters.pop(review_id, None)
-                            file_review_status = "approved" if reviewed else "rejected"
-                            await websocket.send_json(
-                                {
-                                    "type": "file_review_resolved",
-                                    "request_id": request_id,
-                                    "review_id": review_id,
-                                    "approved": bool(reviewed),
-                                }
-                            )
-                            continue
-                    event["request_id"] = request_id
-                    event["chat_mode"] = "external_agent"
-                    if str(event.get("type") or "") == "audit":
-                        audit_payload = event.get("audit") if isinstance(event.get("audit"), dict) else {}
-                        audit_payload["file_review_status"] = file_review_status
-                        event["audit"] = audit_payload
-                    await websocket.send_json(event)
-                    if str(event.get("type") or "") == "done":
-                        final_output = str(event.get("content") or "")
-                _append_chat_record(
-                    project_id=project_id,
-                    username=username,
-                    role="assistant",
-                    content=final_output or "外部 Agent 未返回有效内容。",
-                    display_mode="terminal",
-                )
-                return
 
             enabled_tool_names = list(runtime_settings.get("enabled_project_tool_names") or [])
-            explicit_tool_filter = ("enabled_project_tool_names" in req.model_fields_set) or bool(enabled_tool_names)
+            explicit_tool_filter = bool(enabled_tool_names)
             if _is_project_meta_query(effective_user_message):
                 direct_answer = _build_project_meta_reply(project, selected_employee, candidates)
                 await websocket.send_json(
@@ -3072,7 +2469,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "model_name": "direct-project-meta",
                     }
                 )
-                _append_chat_record(project_id=project_id, username=username, role="assistant", content=direct_answer)
+                _append_chat_record(
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content=direct_answer,
+                    chat_session_id=chat_session_id,
+                )
                 return
 
             tool_probe_name = _extract_tool_probe_name(effective_user_message)
@@ -3105,7 +2508,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "model_name": "direct-tool-probe",
                     }
                 )
-                _append_chat_record(project_id=project_id, username=username, role="assistant", content=direct_answer)
+                _append_chat_record(
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content=direct_answer,
+                    chat_session_id=chat_session_id,
+                )
                 return
 
             if _is_mcp_modules_query(effective_user_message):
@@ -3131,7 +2540,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "model_name": "direct-mcp-modules",
                     }
                 )
-                _append_chat_record(project_id=project_id, username=username, role="assistant", content=direct_answer)
+                _append_chat_record(
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content=direct_answer,
+                    chat_session_id=chat_session_id,
+                )
                 return
 
             provider_mode, selected_provider, _ = await _resolve_provider_runtime_target(
@@ -3145,12 +2560,16 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             max_tokens = _resolve_chat_max_tokens(runtime_settings.get("max_tokens"))
             temperature = float(runtime_settings.get("temperature") if runtime_settings.get("temperature") is not None else 0.1)
             temperature = max(0.0, min(temperature, 2.0))
+            effective_workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
 
             tools: list[dict] = []
+            local_connector_tools: list[dict] = []
+            selected_local_connector = None
+            local_connector_sandbox_mode = ""
             tools_enabled = bool(runtime_settings.get("auto_use_tools")) and _should_enable_chat_tools(
                 effective_user_message, attachment_names, normalized_images
             )
-            if tools_enabled and provider_mode != "local_connector":
+            if tools_enabled:
                 tools = _collect_runtime_tools(
                     project_id,
                     selected_employee_ids=selected_employee_ids,
@@ -3160,12 +2579,22 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     allow_shell_tools=bool(runtime_settings.get("allow_shell_tools", True)),
                     allow_file_write_tools=bool(runtime_settings.get("allow_file_write_tools", True)),
                 )
-
-            effective_workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
+            (
+                local_connector_tools,
+                selected_local_connector,
+                local_connector_sandbox_mode,
+            ) = _resolve_local_connector_coding_tools(
+                auth_payload,
+                runtime_settings,
+                effective_workspace_path,
+            )
+            if local_connector_tools:
+                tools.extend(local_connector_tools)
+            effective_tools, effective_tool_total = _summarize_effective_tools(tools)
             messages = _build_project_chat_messages(
                 project, effective_user_message, req.history, normalized_images,
                 selected_employee=selected_employee,
-                tools=[] if provider_mode == "local_connector" else tools,
+                tools=tools,
                 custom_system_prompt=_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")),
                 history_limit=int(runtime_settings.get("history_limit") or 20),
                 answer_style=str(runtime_settings.get("answer_style") or "concise"),
@@ -3185,7 +2614,9 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             "employee_id": employee_id_val,
             "employee_name": str((selected_employee or {}).get("name") or ""),
             "employee_ids": selected_employee_ids,
-            "tools_enabled": bool(tools) and provider_mode != "local_connector",
+            "tools_enabled": bool(tools),
+            "effective_tools": effective_tools,
+            "effective_tool_total": effective_tool_total,
         })
 
         try:
@@ -3202,32 +2633,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 )
                 if connector is None:
                     raise ValueError("Local connector not found")
-                result = await chat_completion_via_connector(
-                    connector,
-                    model_name=model_name,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=120,
-                )
-                final_answer = str(result.get("content") or "").strip() or "模型未返回有效内容。"
-                await websocket.send_json(
-                    {
-                        "type": "done",
-                        "request_id": request_id,
-                        "content": final_answer,
-                        "provider_id": provider_id,
-                        "model_name": model_name,
-                    }
-                )
-                _append_chat_record(
-                    project_id=project_id,
-                    username=username,
-                    role="assistant",
-                    content=final_answer,
-                    chat_session_id=chat_session_id,
-                )
-                return
+                llm_service = LocalConnectorLlmAdapter(connector)
 
             # 创建会话和编排器
             redis_client = await get_redis_client()
@@ -3257,7 +2663,10 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 project_id=project_id,
                 employee_id=employee_id_val,
                 cancel_event=cancel_event,
-                messages=messages
+                messages=messages,
+                local_connector=selected_local_connector,
+                local_connector_workspace_path=effective_workspace_path,
+                local_connector_sandbox_mode=local_connector_sandbox_mode,
             ):
                 chunk_data["request_id"] = request_id
                 await websocket.send_json(chunk_data)
@@ -3307,36 +2716,16 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 if request_id in cancel_events:
                     cancel_events[request_id].set()
                 continue
-            if payload_type == "approval_response":
-                approval_id = str(payload.get("approval_id") or "").strip()
-                future = approval_waiters.get(approval_id)
-                if future is not None and not future.done():
-                    future.set_result(bool(payload.get("approved")))
-                continue
-            if payload_type == "file_review_response":
-                review_id = str(payload.get("review_id") or "").strip()
-                future = review_waiters.get(review_id)
-                if future is not None and not future.done():
-                    future.set_result(bool(payload.get("approved")))
-                continue
 
             task = asyncio.create_task(handle_request(payload))
-            if request_id and payload_type != "agent_prepare":
+            if request_id:
                 active_tasks[request_id] = task
                 
         except WebSocketDisconnect:
             for ev in cancel_events.values():
                 ev.set()
-            for future in approval_waiters.values():
-                if not future.done():
-                    future.set_result(False)
-            for future in review_waiters.values():
-                if not future.done():
-                    future.set_result(False)
             for t in active_tasks.values():
                 t.cancel()
-            if external_session is not None:
-                await external_session.close()
             break
         except Exception:
             await websocket.send_json({"type": "error", "message": "Invalid JSON payload"})
@@ -3392,7 +2781,7 @@ async def stream_project_chat(
     selected_employee_ids = [str(item.get("id") or "") for item in selected_employees if str(item.get("id") or "")]
     employee_id_val = selected_employee_ids[0] if len(selected_employee_ids) == 1 else ""
     enabled_tool_names = list(runtime_settings.get("enabled_project_tool_names") or [])
-    explicit_tool_filter = ("enabled_project_tool_names" in req.model_fields_set) or bool(enabled_tool_names)
+    explicit_tool_filter = bool(enabled_tool_names)
     if _is_project_meta_query(effective_user_message):
         answer = _build_project_meta_reply(project, selected_employee, candidates)
 
@@ -3516,6 +2905,9 @@ async def stream_project_chat(
     temperature = max(0.0, min(temperature, 2.0))
 
     tools: list[dict] = []
+    local_connector_tools: list[dict] = []
+    selected_local_connector = None
+    local_connector_sandbox_mode = ""
     tools_enabled = bool(runtime_settings.get("auto_use_tools")) and _should_enable_chat_tools(
         effective_user_message, attachment_names, normalized_images
     )
@@ -3530,15 +2922,28 @@ async def stream_project_chat(
             allow_file_write_tools=bool(runtime_settings.get("allow_file_write_tools", True)),
         )
 
-    llm_service = get_llm_provider_service()
     effective_workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
+    (
+        local_connector_tools,
+        selected_local_connector,
+        local_connector_sandbox_mode,
+    ) = _resolve_local_connector_coding_tools(
+        auth_payload,
+        runtime_settings,
+        effective_workspace_path,
+    )
+    if local_connector_tools:
+        tools.extend(local_connector_tools)
+    effective_tools, effective_tool_total = _summarize_effective_tools(tools)
+
+    llm_service = get_llm_provider_service()
     messages = _build_project_chat_messages(
         project,
         effective_user_message,
         req.history,
         normalized_images,
         selected_employee=selected_employee,
-        tools=[] if provider_mode == "local_connector" else tools,
+        tools=tools,
         custom_system_prompt=_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")),
         history_limit=int(runtime_settings.get("history_limit") or 20),
         answer_style=str(runtime_settings.get("answer_style") or "concise"),
@@ -3558,7 +2963,9 @@ async def stream_project_chat(
                 "employee_id": str((selected_employee or {}).get("id") or ""),
                 "employee_name": str((selected_employee or {}).get("name") or ""),
                 "employee_ids": selected_employee_ids,
-                "tools_enabled": bool(tools) and provider_mode != "local_connector",
+                "tools_enabled": bool(tools),
+                "effective_tools": effective_tools,
+                "effective_tool_total": effective_tool_total,
             },
         )
         try:
@@ -3569,42 +2976,67 @@ async def stream_project_chat(
                 )
                 if connector is None:
                     raise HTTPException(404, "Local connector not found")
-                result = await chat_completion_via_connector(
-                    connector,
-                    model_name=model_name,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=120,
+                llm_service_runtime = LocalConnectorLlmAdapter(connector)
+            else:
+                llm_service_runtime = llm_service
+
+            redis_client = await get_redis_client()
+            conv_manager = ConversationManager(redis_client)
+            session_id = await conv_manager.create_session(project_id, employee_id_val)
+            orchestrator = AgentOrchestrator(
+                llm_service_runtime,
+                conv_manager,
+                max_loops=int(runtime_settings.get("max_loop_rounds") or 20),
+                max_tool_rounds=int(runtime_settings.get("max_tool_rounds") or 6),
+                repeated_tool_call_threshold=int(runtime_settings.get("repeated_tool_call_threshold") or 2),
+                tool_only_threshold=int(runtime_settings.get("tool_only_threshold") or 3),
+                tool_budget_strategy=str(runtime_settings.get("tool_budget_strategy") or "finalize"),
+                max_tool_calls_per_round=int(runtime_settings.get("max_tool_calls_per_round") or 6),
+                tool_timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 60),
+                tool_retry_count=int(runtime_settings.get("tool_retry_count") or 0),
+            )
+
+            final_answer = ""
+            stream_error = ""
+            cancel_event = asyncio.Event()
+            async for chunk_data in orchestrator.run(
+                session_id=session_id,
+                user_message=effective_user_message,
+                tools=tools,
+                provider_id=provider_id,
+                model_name=model_name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                project_id=project_id,
+                employee_id=employee_id_val,
+                cancel_event=cancel_event,
+                messages=messages,
+                local_connector=selected_local_connector,
+                local_connector_workspace_path=effective_workspace_path,
+                local_connector_sandbox_mode=local_connector_sandbox_mode,
+            ):
+                yield _sse_payload("message", chunk_data)
+                if chunk_data.get("type") == "done":
+                    final_answer = str(chunk_data.get("content") or "")
+                if chunk_data.get("type") == "error":
+                    stream_error = str(chunk_data.get("message") or "未知错误")
+
+            if stream_error:
+                _append_chat_record(
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content=f"对话失败：{stream_error}",
+                    chat_session_id=chat_session_id,
                 )
             else:
-                result = await llm_service.chat_completion(
-                    provider_id=provider_id,
-                    model_name=model_name,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=120,
+                _append_chat_record(
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content=final_answer or "模型未返回有效内容。",
+                    chat_session_id=chat_session_id,
                 )
-            answer = str(result.get("content") or "").strip() or "模型未返回有效内容。"
-            for part in _chunk_text(answer):
-                yield _sse_payload("message", {"type": "delta", "content": part})
-            yield _sse_payload(
-                "message",
-                {
-                    "type": "done",
-                    "content": answer,
-                    "provider_id": provider_id,
-                    "model_name": model_name,
-                },
-            )
-            _append_chat_record(
-                project_id=project_id,
-                username=username,
-                role="assistant",
-                content=answer,
-                chat_session_id=chat_session_id,
-            )
         except Exception as exc:
             _append_chat_record(
                 project_id=project_id,
@@ -3909,7 +3341,11 @@ async def generate_project_manual(project_id: str, auth_payload: dict = Depends(
     _assert_project_manual_generation_enabled()
 
     llm_service = get_llm_provider_service()
-    providers = llm_service.list_providers(enabled_only=True)
+    providers = llm_service.list_providers(
+        enabled_only=True,
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+    )
     if not providers:
         raise HTTPException(400, "未配置 LLM 提供商")
     default_provider = next((p for p in providers if p.get("is_default")), providers[0])

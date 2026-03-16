@@ -32,6 +32,10 @@ class UserPasswordUpdateReq(BaseModel):
     password: str
 
 
+class UserSettingsUpdateReq(BaseModel):
+    default_ai_provider_id: str = ""
+
+
 class RoleCreateReq(BaseModel):
     id: str
     name: str
@@ -131,7 +135,6 @@ class AgentTemplateDeduplicateReq(BaseModel):
     provider_id: str = ""
     model_name: str = ""
     local_connector_id: str = ""
-    external_agent_type: str = "codex_cli"
     temperature: float | None = None
     apply: bool = True
 
@@ -142,7 +145,6 @@ class AgentTemplateTranslateNamesReq(BaseModel):
     provider_id: str = ""
     model_name: str = ""
     local_connector_id: str = ""
-    external_agent_type: str = "codex_cli"
     force: bool = False
 
 
@@ -243,11 +245,10 @@ class ProjectChatReq(BaseModel):
     message_id: str = ""
     chat_session_id: str = ""
     chat_mode: str = "system"
-    external_agent_type: str = "codex_cli"
-    external_agent_sandbox_mode: str | None = None
-    external_agent_sandbox_mode_explicit: bool | None = None
     local_connector_id: str = ""
     connector_workspace_path: str = ""
+    connector_sandbox_mode: str | None = None
+    connector_sandbox_mode_explicit: bool | None = None
     skill_resource_directory: str = ""
     employee_id: str = ""
     employee_ids: list[str] = []
@@ -361,11 +362,6 @@ class LocalConnectorWorkspacePickConsumeReq(BaseModel):
 class LocalConnectorLlmSharingUpdateReq(BaseModel):
     llm_shared_with_usernames: list[str] = []
     llm_shared_with_roles: list[str] = []
-
-
-class LocalConnectorExternalAgentSharingUpdateReq(BaseModel):
-    external_agent_shared_with_usernames: list[str] = []
-    external_agent_shared_with_roles: list[str] = []
 
 
 class SystemConfigUpdateReq(BaseModel):

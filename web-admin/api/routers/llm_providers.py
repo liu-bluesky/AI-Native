@@ -6,7 +6,7 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.deps import ensure_any_permission, ensure_permission, require_auth
+from core.deps import ensure_any_permission, ensure_permission, is_admin_like, require_auth
 from services.llm_provider_service import get_llm_provider_service
 from models.requests import LlmProviderCreateReq, LlmProviderTestReq, LlmProviderUpdateReq
 
@@ -30,24 +30,36 @@ async def list_llm_providers(
         _require_llm_provider_read_permission(auth_payload)
     else:
         _require_llm_provider_permission(auth_payload)
-    providers = get_llm_provider_service().list_providers(enabled_only=enabled_only)
+    providers = get_llm_provider_service().list_providers(
+        enabled_only=enabled_only,
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+    )
     return {"providers": providers}
 
 
 @router.get("/providers/options")
 async def list_reflection_options(
-    _: None = Depends(_require_llm_provider_permission),
+    auth_payload: dict = Depends(require_auth),
 ):
-    return get_llm_provider_service().list_reflection_options()
+    _require_llm_provider_permission(auth_payload)
+    return get_llm_provider_service().list_reflection_options(
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+    )
 
 
 @router.post("/providers")
 async def create_llm_provider(
     req: LlmProviderCreateReq,
-    _: None = Depends(_require_llm_provider_permission),
+    auth_payload: dict = Depends(require_auth),
 ):
+    _require_llm_provider_permission(auth_payload)
     try:
-        provider = get_llm_provider_service().create_provider(req.model_dump())
+        provider = get_llm_provider_service().create_provider(
+            req.model_dump(),
+            owner_username=str(auth_payload.get("sub") or "").strip(),
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"status": "created", "provider": provider}
@@ -57,11 +69,17 @@ async def create_llm_provider(
 async def update_llm_provider(
     provider_id: str,
     req: LlmProviderUpdateReq,
-    _: None = Depends(_require_llm_provider_permission),
+    auth_payload: dict = Depends(require_auth),
 ):
+    _require_llm_provider_permission(auth_payload)
     updates = req.model_dump(exclude_unset=True)
     try:
-        provider = get_llm_provider_service().update_provider(provider_id, updates)
+        provider = get_llm_provider_service().update_provider(
+            provider_id,
+            updates,
+            owner_username=str(auth_payload.get("sub") or "").strip(),
+            include_all=is_admin_like(auth_payload),
+        )
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
@@ -72,9 +90,14 @@ async def update_llm_provider(
 @router.delete("/providers/{provider_id}")
 async def delete_llm_provider(
     provider_id: str,
-    _: None = Depends(_require_llm_provider_permission),
+    auth_payload: dict = Depends(require_auth),
 ):
-    if not get_llm_provider_service().delete_provider(provider_id):
+    _require_llm_provider_permission(auth_payload)
+    if not get_llm_provider_service().delete_provider(
+        provider_id,
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+    ):
         raise HTTPException(404, f"LLM provider {provider_id} not found")
     return {"status": "deleted", "provider_id": provider_id}
 
@@ -83,12 +106,15 @@ async def delete_llm_provider(
 async def test_llm_provider(
     provider_id: str,
     req: LlmProviderTestReq,
-    _: None = Depends(_require_llm_provider_permission),
+    auth_payload: dict = Depends(require_auth),
 ):
+    _require_llm_provider_permission(auth_payload)
     try:
         result = get_llm_provider_service().test_provider_connection(
             provider_id=provider_id,
             model_name=req.model_name,
+            owner_username=str(auth_payload.get("sub") or "").strip(),
+            include_all=is_admin_like(auth_payload),
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc

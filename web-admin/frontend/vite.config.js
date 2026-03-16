@@ -47,7 +47,7 @@ function resolveApiRuntimeConfig() {
   const rawHost = process.env.API_HOST || fileEnv.API_HOST || ''
   const apiPort = process.env.API_PORT || fileEnv.API_PORT || '8000'
   const normalizedHost =
-    !rawHost || rawHost === '0.0.0.0' || rawHost === '::' ? resolveLanIp() : rawHost
+    !rawHost || rawHost === '0.0.0.0' || rawHost === '::' ? '127.0.0.1' : rawHost
   return {
     host: normalizedHost,
     port: apiPort,

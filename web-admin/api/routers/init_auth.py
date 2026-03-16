@@ -77,6 +77,7 @@ async def auth_me(auth_payload: dict = Depends(require_auth)):
     return {
         "username": user.username,
         "role": user.role,
+        "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
         "permissions": permissions,
     }
 

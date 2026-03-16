@@ -159,13 +159,7 @@
                 hasSelectedProject ? currentProjectLabel : "通用对话"
               }}</span>
               <span>{{ chatModeLabel }}</span>
-              <span>
-                {{
-                  isExternalAgentMode
-                    ? externalAgentDisplayLabel
-                    : currentModelSummary
-                }}
-              </span>
+              <span>{{ currentModelSummary }}</span>
               <span>{{ chatHeaderStatusText }}</span>
             </div>
             <div class="chat-context-bar__actions">
@@ -179,70 +173,6 @@
               </el-button>
             </div>
           </div>
-          <div
-            v-if="externalAgentConnectorRequired"
-            class="workspace-guide-banner workspace-guide-banner--warning"
-          >
-            <div class="workspace-guide-content">
-              <div class="workspace-guide-title">请先选择本地连接器</div>
-              <div class="workspace-guide-text">
-                外部 Agent
-                已统一改为本地连接器模式。先选择一台在线连接器，再配置该电脑上的工作区路径。
-              </div>
-            </div>
-            <div class="workspace-guide-actions">
-              <el-button type="primary" @click="openSettingsCenter('chat')"
-                >打开设置</el-button
-              >
-            </div>
-          </div>
-
-          <div
-            v-else-if="isExternalAgentMode && !workspacePathConfigured"
-            class="workspace-guide-banner workspace-guide-banner--warning"
-          >
-            <div class="workspace-guide-content">
-              <div class="workspace-guide-title">
-                当前连接器未配置工作区路径
-              </div>
-              <div class="workspace-guide-text">
-                外部 Agent
-                只有拿到项目绝对路径后，才能像命令行一样在该目录创建文件、修改代码和执行命令。
-              </div>
-            </div>
-            <div class="workspace-guide-actions">
-              <el-button @click="promptProjectWorkspacePath"
-                >选择目录</el-button
-              >
-              <el-button type="primary" @click="openSettingsCenter('chat')"
-                >打开设置</el-button
-              >
-            </div>
-          </div>
-
-          <div
-            v-else-if="isExternalAgentMode && workspacePathDirty"
-            class="workspace-guide-banner workspace-guide-banner--info"
-          >
-            <div class="workspace-guide-content">
-              <div class="workspace-guide-title">工作区路径有未保存修改</div>
-              <div class="workspace-guide-text">
-                当前输入框里的路径还没保存，外部 Agent 仍然会使用旧的工作目录。
-              </div>
-            </div>
-            <div class="workspace-guide-actions">
-              <el-button @click="promptProjectWorkspacePath"
-                >继续填写</el-button
-              >
-              <el-button
-                type="primary"
-                :loading="workspacePathSaving"
-                @click="saveProjectWorkspacePath"
-                >保存路径</el-button
-              >
-            </div>
-          </div>
-
           <div class="chat-messages-shell">
             <div
               class="chat-messages"
@@ -267,6 +197,23 @@
                   </div>
                 </div>
                 <template v-else>
+                  <div
+                    v-if="chatHistoryHasMore || chatHistoryLoadingMore"
+                    class="chat-history-loader"
+                  >
+                    <el-button
+                      text
+                      class="chat-history-loader__button"
+                      :loading="chatHistoryLoadingMore"
+                      @click="loadOlderMessages"
+                    >
+                      {{
+                        chatHistoryLoadingMore
+                          ? "正在加载更早消息..."
+                          : "加载更早消息"
+                      }}
+                    </el-button>
+                  </div>
                   <div
                     v-for="(item, idx) in messages"
                     :key="idx"
@@ -685,6 +632,52 @@
               </div>
             </div>
           </div>
+
+          <el-dialog
+            v-model="terminalApprovalDialogVisible"
+            title="等待操作确认"
+            width="min(560px, calc(100vw - 32px))"
+            :close-on-click-modal="false"
+            :close-on-press-escape="false"
+            :show-close="false"
+            class="terminal-approval-dialog"
+          >
+            <div v-if="terminalApprovalPrompt" class="terminal-approval-card">
+              <div class="terminal-approval-card__title">
+                {{ terminalApprovalPrompt.title }}
+              </div>
+              <div
+                v-if="terminalApprovalPrompt.description"
+                class="terminal-approval-card__desc"
+              >
+                {{ terminalApprovalPrompt.description }}
+              </div>
+              <pre
+                v-if="terminalApprovalPrompt.message"
+                class="terminal-approval-card__message"
+              >{{ terminalApprovalPrompt.message }}</pre>
+            </div>
+            <template #footer>
+              <div class="terminal-approval-dialog__footer">
+                <el-button
+                  type="danger"
+                  plain
+                  @click="sendTerminalApprovalChoice('3')"
+                >
+                  取消
+                </el-button>
+                <el-button @click="sendTerminalApprovalChoice('2')">
+                  本会话批准
+                </el-button>
+                <el-button
+                  type="primary"
+                  @click="sendTerminalApprovalChoice('1')"
+                >
+                  批准一次
+                </el-button>
+              </div>
+            </template>
+          </el-dialog>
 
           <!-- Composer Area -->
           <div class="chat-composer">
@@ -1129,12 +1122,7 @@
           }}
         </div>
         <div class="skill-resource-dialog__directory-meta">
-          <template v-if="usingLocalConnector">
-            已连接本地连接器，可直接选择访问者电脑上的目录。
-          </template>
-          <template v-else>
-            未连接本地连接器时，可手动填写或先配置工作区路径。
-          </template>
+          优先使用当前项目工作区，也可以单独指定一个技能下载目录。
         </div>
       </div>
 
@@ -1394,9 +1382,7 @@
           </div>
           <div class="settings-center-context-bar__meta">
             <span>项目：{{ currentProjectLabel }}</span>
-            <span>
-              模式：{{ isExternalAgentMode ? externalAgentDisplayLabel : "系统对话" }}
-            </span>
+            <span>模式：系统对话</span>
             <span>
               面板：{{ activeSettingsPanelItem?.kind === "route" ? "平台页面" : "对话配置" }}
             </span>
@@ -1413,14 +1399,10 @@
               这里集中管理运行模式、执行员工、系统提示词、输出风格，以及 MCP
               与工具调用上限等高级参数。
               <template v-if="!hasSelectedProject">
-                当前还没有选中项目，所以外部 Agent、项目员工和项目级 MCP
-                配置暂不可用。
-              </template>
-              <template v-if="isExternalAgentMode">
-                当前是外部 Agent 模式，模型供应商和模型版本不会参与本轮请求。
+                当前还没有选中项目，所以项目员工、项目级 MCP 和项目工作区配置暂不可用。
               </template>
               <template v-else>
-                当前是系统对话模式，外部 Agent 和工作区配置不会参与本轮请求。
+                当前通过系统对话统一调度模型、项目工具与项目级 MCP 能力。
               </template>
             </div>
             <div class="settings-summary-actions">
@@ -1519,404 +1501,12 @@
                   </el-select>
                 </el-form-item>
 
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      本地连接器
-                      <el-tooltip
-                        content="连接器运行在用户自己的电脑上，可桥接本地目录、本地命令和本地模型。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <div class="full-width">
-                    <el-select
-                      v-model="projectChatSettings.local_connector_id"
-                      clearable
-                      filterable
-                      placeholder="请选择当前用户的本地连接器"
-                      class="full-width"
-                    >
-                      <el-option
-                        v-for="item in localConnectors"
-                        :key="item.id"
-                        :label="item.connector_name || item.id"
-                        :value="item.id"
-                      >
-                        <div class="settings-employee-option">
-                          <div class="settings-employee-option__head">
-                            <span class="settings-employee-option__name">
-                              {{ item.connector_name || item.id }}
-                            </span>
-                            <el-tag
-                              size="small"
-                              :type="item.online ? 'success' : 'info'"
-                            >
-                              {{ item.online ? "在线" : "离线" }}
-                            </el-tag>
-                          </div>
-                          <div class="settings-employee-option__meta">
-                            {{ item.platform || "-" }} ·
-                            {{ item.owner_username || "-" }}
-                          </div>
-                        </div>
-                      </el-option>
-                    </el-select>
-                    <div class="workspace-path-actions">
-                      <el-button
-                        size="small"
-                        :loading="localConnectorRefreshing"
-                        @click="refreshLocalConnectorCatalog(false)"
-                      >
-                        刷新连接器
-                      </el-button>
-                    </div>
-                    <div class="workspace-path-hint">
-                      <template v-if="activeLocalConnector">
-                        当前设备：{{
-                          activeLocalConnector.connector_name ||
-                          activeLocalConnector.id
-                        }}
-                        <span v-if="activeLocalConnector.online">，在线</span>
-                        <span v-else>，离线</span>
-                        。选择后，外部 Agent
-                        会固定在这台电脑执行；可用的本地模型也会优先走这台电脑。
-                      </template>
-                      <template v-else>
-                        未选择时，系统对话仍可使用平台模型；外部 Agent
-                        不可用。若你刚启动或刚配对连接器，请点“刷新连接器”。
-                      </template>
-                    </div>
-                    <div class="external-agent-download-card">
-                      <div class="external-agent-download-card__text">
-                        如果当前用户本机还没有安装本地连接器，先下载下面的通用安装包。
-                        安装并启动桌面连接器后，回到这里点击“匹配本地连接器”，当前浏览器会把这台电脑认证到当前账号。
-                      </div>
-                      <div
-                        v-if="desktopConnectorArtifacts.length"
-                        class="external-agent-download-card__subtitle"
-                      >
-                        桌面安装包
-                      </div>
-                      <div
-                        v-if="desktopConnectorArtifacts.length"
-                        class="external-agent-download-card__actions"
-                      >
-                        <el-button
-                          v-for="item in desktopConnectorArtifacts"
-                          :key="item.filename"
-                          size="small"
-                          plain
-                          :loading="
-                            downloadingDesktopArtifactKey === item.filename
-                          "
-                          @click="downloadDesktopConnectorArtifact(item)"
-                        >
-                          {{ item.label }}
-                        </el-button>
-                      </div>
-                      <div class="external-agent-download-card__subtitle">
-                        本机认证
-                      </div>
-                      <div class="external-agent-download-card__actions">
-                        <el-button
-                          size="small"
-                          type="primary"
-                          :loading="localConnectorPairing"
-                          @click="pairBrowserLocalConnector"
-                        >
-                          匹配本地连接器
-                        </el-button>
-                      </div>
-                      <div class="workspace-path-hint">
-                        浏览器会优先连接
-                        `127.0.0.1:3931`，若主端口被占用，会继续探测连接器自动切换的备用端口。
-                      </div>
-                    </div>
-                  </div>
-                </el-form-item>
-
-                <el-form-item v-if="isExternalAgentMode">
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      外部 Agent
-                      <el-tooltip
-                        content="选择要托管到聊天框里的外部 CLI 智能体。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <div class="full-width">
-                    <el-select
-                      v-model="projectChatSettings.external_agent_type"
-                      class="full-width"
-                    >
-                      <el-option
-                        v-for="item in externalAgentOptions"
-                        :key="item.agent_type"
-                        :label="`${item.label}${item.implemented ? '' : '（待接入）'}`"
-                        :value="item.agent_type"
-                      />
-                    </el-select>
-                    <div
-                      v-if="externalAgentInfo.reason"
-                      class="workspace-path-hint"
-                    >
-                      当前状态：{{ externalAgentInfo.reason }}
-                    </div>
-                  </div>
-                </el-form-item>
-
-                <el-form-item v-if="isExternalAgentMode">
-                  <template #label>
-                    <span class="label-with-tooltip"> Agent 状态 </span>
-                  </template>
-                  <div class="full-width external-agent-status-card">
-                    <button
-                      type="button"
-                      class="external-agent-status-toggle"
-                      @click="agentStatusExpanded = !agentStatusExpanded"
-                    >
-                      <div class="external-agent-status-head">
-                        <span class="external-agent-status-title">
-                          {{ externalAgentStatusSummary }}
-                        </span>
-                        <div class="external-agent-status-tags">
-                          <el-tag
-                            :type="
-                              externalAgentInfo.available
-                                ? 'success'
-                                : externalAgentInfo.installed
-                                  ? 'warning'
-                                  : 'info'
-                            "
-                            size="small"
-                            effect="plain"
-                          >
-                            {{ externalAgentAvailabilityLabel }}
-                          </el-tag>
-                          <el-tag
-                            :type="externalAgentInfo.ready ? 'success' : 'info'"
-                            size="small"
-                            effect="plain"
-                          >
-                            {{ externalAgentInfo.ready ? "已就绪" : "未就绪" }}
-                          </el-tag>
-                        </div>
-                      </div>
-                      <span class="external-agent-status-meta">
-                        {{ agentStatusExpanded ? "收起详情" : "展开详情" }}
-                      </span>
-                    </button>
-
-                    <div
-                      v-show="agentStatusExpanded"
-                      class="external-agent-meta"
-                    >
-                      <div class="external-agent-row external-agent-command">
-                        命令：{{
-                          externalAgentInfo.resolved_command ||
-                          externalAgentInfo.command ||
-                          "codex"
-                        }}
-                      </div>
-                      <div class="external-agent-row external-agent-command">
-                        来源：{{
-                          externalAgentInfo.command_source === "local_connector"
-                            ? "本地连接器"
-                            : externalAgentInfo.command_source ===
-                                "local_connector_required"
-                              ? "需先选择连接器"
-                              : externalAgentInfo.command_source === "system"
-                                ? "系统 PATH"
-                                : externalAgentInfo.command_source ===
-                                    "override"
-                                  ? "手动覆盖"
-                                  : "未找到"
-                        }}
-                      </div>
-                      <div class="external-agent-row external-agent-command">
-                        运行标识：{{ externalAgentRuntimeLabel }}
-                      </div>
-                      <div class="external-agent-row external-agent-command">
-                        精确模型：{{
-                          externalAgentInfo.exact_model_name || "当前未暴露"
-                        }}
-                      </div>
-                      <div
-                        v-if="externalAgentInfo.thread_id"
-                        class="external-agent-row external-agent-command"
-                      >
-                        Thread：{{ externalAgentInfo.thread_id }}
-                      </div>
-                      <div
-                        v-if="externalAgentInfo.session_id"
-                        class="external-agent-row external-agent-command"
-                      >
-                        Session：{{ externalAgentInfo.session_id }}
-                      </div>
-                      <div
-                        v-if="externalAgentInfo.runner_url"
-                        class="external-agent-row external-agent-command"
-                      >
-                        连接器地址：{{ externalAgentInfo.runner_url }}
-                      </div>
-                      <div
-                        v-if="externalAgentInfo.materialized_by"
-                        class="external-agent-row external-agent-command"
-                      >
-                        上下文写入：{{ externalAgentInfo.materialized_by }}
-                      </div>
-                      <div
-                        v-if="externalAgentInfo.support_dir"
-                        class="external-agent-row external-agent-command"
-                      >
-                        上下文目录：{{ externalAgentInfo.support_dir }}
-                      </div>
-                      <div class="external-agent-row">
-                        <span>
-                          项目 MCP：
-                          {{
-                            externalAgentInfo.mcp_bridge_enabled
-                              ? `已注入 (${externalAgentInfo.mcp_server_name || "project_mcp"})`
-                              : "未注入"
-                          }}
-                        </span>
-                        <el-tag
-                          :type="
-                            externalAgentInfo.mcp_bridge_enabled
-                              ? 'success'
-                              : 'warning'
-                          "
-                          size="small"
-                          effect="plain"
-                        >
-                          {{
-                            externalAgentInfo.mcp_bridge_enabled
-                              ? "可调用项目工具"
-                              : "暂不可用"
-                          }}
-                        </el-tag>
-                      </div>
-                      <div
-                        v-if="
-                          externalAgentInfo.mcp_bridge_reason &&
-                          !externalAgentInfo.mcp_bridge_enabled
-                        "
-                        class="external-agent-row external-agent-command"
-                      >
-                        原因：{{ externalAgentInfo.mcp_bridge_reason }}
-                      </div>
-                      <div
-                        v-if="externalAgentInfo.support_files?.length"
-                        class="external-agent-support-list"
-                      >
-                        <div
-                          v-for="item in externalAgentInfo.support_files"
-                          :key="`${item.kind}-${item.path}`"
-                          class="external-agent-support-item"
-                        >
-                          <span>{{ item.label }}</span>
-                          <code>{{ item.path }}</code>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </el-form-item>
-
-                <el-form-item v-if="isExternalAgentMode">
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      沙箱模式
-                      <el-tooltip
-                        content="先支持只读或工作区受限写入，不接复杂审批流。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-select
-                    v-model="projectChatSettings.external_agent_sandbox_mode"
-                    class="full-width"
-                  >
-                    <el-option label="只读 (read-only)" value="read-only" />
-                    <el-option
-                      label="工作区写入 (workspace-write)"
-                      value="workspace-write"
-                    />
-                  </el-select>
-                </el-form-item>
-
-                <el-form-item v-if="isExternalAgentMode">
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      工作区路径
-                      <el-tooltip
-                        content="外部 Agent 启动时会将此路径作为 CLI 工作目录。请填写项目绝对路径。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <div class="workspace-path-editor">
-                    <el-input
-                      v-model="workspacePathDraft"
-                      class="full-width"
-                      placeholder="/Users/yourname/project"
-                    />
-                    <div class="workspace-path-actions">
-                      <el-button
-                        @click="promptProjectWorkspacePath"
-                        :loading="workspacePathPicking"
-                        >选择目录</el-button
-                      >
-                      <el-button
-                        @click="testProjectWorkspacePath"
-                        :loading="workspacePathTesting"
-                        >测试工作区</el-button
-                      >
-                      <el-button
-                        type="primary"
-                        :loading="workspacePathSaving"
-                        @click="saveProjectWorkspacePath()"
-                        >保存路径</el-button
-                      >
-                    </div>
-                    <div class="workspace-path-hint">
-                      <template v-if="usingLocalConnector">
-                        当前会话会把这里当作连接器所在电脑上的绝对路径；保存后，聊天框里的外部
-                        Agent 会在该目录执行。现在支持通过本机 Local Connector
-                        直接弹出访问者电脑上的目录选择器；手动填写仅作为兜底。
-                      </template>
-                      <template v-else>
-                        请先选择本地连接器；工作区路径必须填写连接器所在电脑上的绝对路径。
-                      </template>
-                      <template v-if="externalAgentInfo.execution_mode">
-                        当前执行模式：本地连接器。
-                      </template>
-                      <template
-                        v-if="externalAgentInfo.workspace_access?.reason"
-                      >
-                        当前探测结果：{{
-                          externalAgentInfo.workspace_access.reason
-                        }}
-                      </template>
-                    </div>
-                  </div>
-                </el-form-item>
-
                 <el-form-item v-if="hasSelectedProject">
                   <template #label>
                     <span class="label-with-tooltip">
                       AI 入口文件
                       <el-tooltip
-                        content="项目级规则入口。系统对话和外部 Agent 都会优先读取它来理解规则、目录约定和实现约束。"
+                        content="项目级规则入口。系统对话会优先读取它来理解规则、目录约定和实现约束。"
                         placement="top"
                       >
                         <el-icon class="label-icon"><InfoFilled /></el-icon>
@@ -1946,7 +1536,7 @@
                     </div>
                     <div class="workspace-path-hint">
                       <template v-if="projectWorkspacePath">
-                        当前项目工作区：{{ projectWorkspacePath }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话和外部 Agent 共用。
+                        当前项目工作区：{{ projectWorkspacePath }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话统一复用。
                       </template>
                       <template v-else>
                         当前项目还没有平台工作区路径时，建议直接填写相对路径或绝对路径。
@@ -1961,23 +1551,12 @@
                   </div>
                 </el-form-item>
 
-                <el-alert
-                  v-if="isExternalAgentMode && !externalAgentInfo.available"
-                  title="当前选中的外部 Agent 不可用，保存设置后仍无法正常启动。"
-                  type="warning"
-                  :closable="false"
-                  show-icon
-                />
                 <el-form-item>
                   <template #label>
                     <span class="label-with-tooltip">
                       系统提示词
                       <el-tooltip
-                        :content="
-                          isExternalAgentMode
-                            ? '外部 Agent 首轮会把这里作为启动上下文的一部分注入。'
-                            : '(System Prompt) 设定 AI 的角色背景和最高优先级的行为准则。'
-                        "
+                        content="(System Prompt) 设定 AI 的角色背景和最高优先级的行为准则。"
                         placement="top"
                       >
                         <el-icon class="label-icon"><InfoFilled /></el-icon>
@@ -2597,11 +2176,10 @@ const HIGH_RISK_RULES = [
 
 const CHAT_SETTINGS_DEFAULTS = {
   chat_mode: "system",
-  external_agent_type: "codex_cli",
-  external_agent_sandbox_mode: "workspace-write",
-  external_agent_sandbox_mode_explicit: false,
   local_connector_id: "",
   connector_workspace_path: "",
+  connector_sandbox_mode: "workspace-write",
+  connector_sandbox_mode_explicit: false,
   selected_employee_id: "",
   selected_employee_ids: [],
   provider_id: "",
@@ -2722,31 +2300,24 @@ function writePreferredLocalWorkspacePath(
   localStorage.removeItem(key);
 }
 
-function skillResourceDirectoryStorageKey(projectId, connectorId) {
+function skillResourceDirectoryStorageKey(projectId) {
   return [
     LOCAL_CONNECTOR_STORAGE_PREFIX,
     "skill_dir",
     resolveCurrentUsername(),
     String(projectId || "").trim() || "default",
-    String(connectorId || "").trim() || "default",
   ].join(".");
 }
 
-function readPreferredSkillResourceDirectory(projectId, connectorId) {
+function readPreferredSkillResourceDirectory(projectId) {
   return String(
-    localStorage.getItem(
-      skillResourceDirectoryStorageKey(projectId, connectorId),
-    ) || "",
+    localStorage.getItem(skillResourceDirectoryStorageKey(projectId)) || "",
   ).trim();
 }
 
-function writePreferredSkillResourceDirectory(
-  projectId,
-  connectorId,
-  directoryPath,
-) {
+function writePreferredSkillResourceDirectory(projectId, directoryPath) {
   const normalized = String(directoryPath || "").trim();
-  const key = skillResourceDirectoryStorageKey(projectId, connectorId);
+  const key = skillResourceDirectoryStorageKey(projectId);
   if (normalized) {
     localStorage.setItem(key, normalized);
     return;
@@ -2754,53 +2325,15 @@ function writePreferredSkillResourceDirectory(
   localStorage.removeItem(key);
 }
 
-function buildProjectProvidersRequestUrl(
-  projectId,
-  connectorId,
-  workspacePath,
-) {
+function buildProjectProvidersRequestUrl(projectId) {
   const normalizedProjectId = String(projectId || "").trim();
-  const params = new URLSearchParams();
-  const normalizedConnectorId = String(connectorId || "").trim();
-  const normalizedWorkspacePath = String(workspacePath || "").trim();
-  if (normalizedConnectorId) {
-    params.set("local_connector_id", normalizedConnectorId);
-  }
-  if (normalizedConnectorId && normalizedWorkspacePath) {
-    params.set("connector_workspace_path", normalizedWorkspacePath);
-  }
-  const query = params.toString();
-  return `/projects/${encodeURIComponent(normalizedProjectId)}/chat/providers${query ? `?${query}` : ""}`;
+  return `/projects/${encodeURIComponent(normalizedProjectId)}/chat/providers`;
 }
 
-function applyLocalConnectorRuntimeSettings(
-  baseSettings,
-  projectId,
-  connectors = [],
-) {
-  const normalizedProjectId = String(projectId || "").trim();
-  const availableConnectors = Array.isArray(connectors) ? connectors : [];
-  let connectorId = String(
-    baseSettings?.local_connector_id || readPreferredLocalConnectorId() || "",
-  ).trim();
-  if (
-    connectorId &&
-    availableConnectors.length &&
-    !availableConnectors.some(
-      (item) => String(item?.id || "").trim() === connectorId,
-    )
-  ) {
-    connectorId = "";
-    writePreferredLocalConnectorId("");
-  }
-  const workspacePath = connectorId
-    ? readPreferredLocalWorkspacePath(normalizedProjectId, connectorId)
-    : "";
-  return normalizeProjectChatSettings({
-    ...(baseSettings && typeof baseSettings === "object" ? baseSettings : {}),
-    local_connector_id: connectorId,
-    connector_workspace_path: workspacePath,
-  });
+function applyLocalConnectorRuntimeSettings(baseSettings) {
+  return normalizeProjectChatSettings(
+    baseSettings && typeof baseSettings === "object" ? baseSettings : {},
+  );
 }
 
 const loading = ref(false);
@@ -2813,10 +2346,7 @@ const autoSaveUpdatedAt = ref("");
 const projectSettingsHydrating = ref(false);
 
 const projects = ref([]);
-const chatModes = ref([
-  { id: "system", label: "系统对话" },
-  { id: "external_agent", label: "外部 Agent" },
-]);
+const chatModes = ref([{ id: "system", label: "系统对话" }]);
 const providers = ref([]);
 const localConnectors = ref([]);
 const desktopConnectorArtifacts = ref([]);
@@ -2927,6 +2457,7 @@ const workspacePathPicking = ref(false);
 const aiEntryFilePicking = ref(false);
 const aiEntryFileSaving = ref(false);
 let connectorPollTimer = null;
+let terminalApprovalFallbackTimer = null;
 
 const wsConnected = ref(false);
 const wsClient = ref(null);
@@ -2937,13 +2468,16 @@ const activeApprovalIds = new Set();
 const activeReviewIds = new Set();
 const externalAgentWarmupLoading = ref(false);
 const externalAgentWarmupKey = ref("");
-const terminalPanelExpanded = ref(true);
+const terminalPanelExpanded = ref(false);
 const terminalPanelLines = ref([]);
 const terminalPanelRef = ref(null);
 const terminalPanelStatus = ref("idle");
 const terminalPanelInput = ref("");
 const terminalMirrorConnected = ref(false);
-const terminalDebugInputVisible = ref(false);
+const activeTerminalMirrorAssistantIndex = ref(-1);
+const terminalApprovalDialogVisible = ref(false);
+const terminalApprovalHandledKey = ref("");
+const terminalApprovalFallbackPrompt = ref(null);
 const inlineEditingMessageIndex = ref(-1);
 const inlineEditingMessageId = ref("");
 const inlineEditingDraft = ref("");
@@ -2966,20 +2500,9 @@ const selectedChatMode = computed({
 const hasSelectedProject = computed(() =>
   Boolean(String(selectedProjectId.value || "").trim()),
 );
-const canUseExternalAgent = computed(
-  () =>
-    hasSelectedProject.value &&
-    (chatModes.value || []).some(
-      (item) => String(item?.id || "").trim() === "external_agent",
-    ),
-);
-const isExternalAgentMode = computed(
-  () =>
-    canUseExternalAgent.value && selectedChatMode.value === "external_agent",
-);
-const chatModeLabel = computed(() =>
-  isExternalAgentMode.value ? "外部 Agent" : "系统对话",
-);
+const canUseExternalAgent = computed(() => false);
+const isExternalAgentMode = computed(() => false);
+const chatModeLabel = computed(() => "系统对话");
 const wsStatusText = computed(() => (wsConnected.value ? "已连接" : "未连接"));
 const wsStatusType = computed(() => (wsConnected.value ? "success" : "info"));
 const workspacePathResolved = computed(() =>
@@ -3188,10 +2711,7 @@ const skillResourceSites = computed(() =>
     .filter((item) => item.title && item.url),
 );
 const skillResourceDirectoryStored = computed(() =>
-  readPreferredSkillResourceDirectory(
-    selectedProjectId.value,
-    projectChatSettings.value.local_connector_id,
-  ),
+  readPreferredSkillResourceDirectory(selectedProjectId.value),
 );
 const skillResourceDirectoryResolved = computed(
   () =>
@@ -3206,6 +2726,13 @@ const settingsCenterItems = computed(() =>
       label: "对话设置",
       desc: "当前项目的 AI 对话运行参数",
       kind: "internal",
+    },
+    {
+      id: "user-settings",
+      label: "用户设置",
+      desc: "当前账号默认 AI 与个人偏好",
+      kind: "route",
+      path: "/user/settings",
     },
     {
       id: "system-config",
@@ -3325,9 +2852,6 @@ const selectedEmployeeSummary = computed(() => {
   return `${selectedCount} 名员工`;
 });
 const currentModelSummary = computed(() => {
-  if (isExternalAgentMode.value) {
-    return externalAgentDisplayLabel.value || "外部 Agent";
-  }
   const provider = String(
     selectedProviderId.value || defaultProviderId.value || "",
   ).trim();
@@ -3348,6 +2872,12 @@ const activeChatSessionTitle = computed(() => {
   );
   return String(matched?.title || "新对话").trim() || "新对话";
 });
+const currentChatSession = computed(
+  () =>
+    (chatSessions.value || []).find(
+      (item) => item.id === String(currentChatSessionId.value || "").trim(),
+    ) || null,
+);
 const autoSaveStatusText = computed(() => {
   if (!selectedProjectId.value) return "未选择项目";
   if (projectSettingsHydrating.value) return "正在同步项目配置...";
@@ -3389,13 +2919,6 @@ const starterPrompts = computed(() => {
     ];
   }
   if (!hasAccessibleProjects.value || !hasSelectedProject.value) return [];
-  if (isExternalAgentMode.value) {
-    return [
-      "先帮我审一下当前项目结构",
-      "读取工作区并总结关键模块",
-      "先看代码再给修改建议",
-    ];
-  }
   return [
     "帮我分析这个项目的当前问题",
     "先给一个实现方案",
@@ -3424,13 +2947,8 @@ const emptyStateText = computed(() => {
     return activeComposerAssistMeta.value?.id === "employee_create"
       ? "当前将直接生成员工草稿，无需选择项目；确认后会直接创建到员工管理。"
       : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-        ? "当前是通用对话模式。你可以直接聊天；如果需要项目上下文、项目员工或外部 Agent，再从顶部选择项目。"
-        : "请先从顶部选择一个项目，再进行普通对话、上传附件或使用项目级外部 Agent。";
-  }
-  if (isExternalAgentMode.value) {
-    return workspacePathConfigured.value
-      ? `当前会话会把消息发送给 ${externalAgentDisplayLabel.value}，你可以直接让它查看代码、修改文件或执行工作区内任务。`
-      : `先配置项目工作区路径，然后就可以像在 ${externalAgentDisplayLabel.value} 里直接下任务一样使用。`;
+        ? "当前是通用对话模式。你可以直接聊天；如果需要项目上下文或项目员工，再从顶部选择项目。"
+        : "请先从顶部选择一个项目，再进行普通对话或上传附件。";
   }
   return "选择项目后，你可以直接提问、上传附件，或让系统基于项目上下文给方案与实现建议。";
 });
@@ -3448,9 +2966,7 @@ const composerPlaceholder = computed(() =>
         : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
           ? "直接输入问题开始通用对话；如需项目上下文，再从顶部选择项目。"
           : "请先从顶部选择项目；如需快速创建员工，也可直接点击“创建员工”。"
-      : isExternalAgentMode.value
-        ? `向${externalAgentDisplayLabel.value}发送输入，按 Enter 发送，Shift + Enter 换行。`
-        : "输入你的问题，按 Enter 发送，Shift + Enter 换行。支持粘贴图片。",
+      : "输入你的问题，按 Enter 发送，Shift + Enter 换行。支持粘贴图片。",
 );
 const composerHintText = computed(() => {
   if (!hasAccessibleProjects.value) {
@@ -3467,19 +2983,10 @@ const composerHintText = computed(() => {
         ? "当前是通用对话，Enter 发送"
         : "请先选择项目";
   }
-  if (!isExternalAgentMode.value) {
-    if (activeComposerAssistMeta.value) {
-      return `${activeComposerAssistMeta.value.label} 已激活，Enter 发送`;
-    }
-    return "Enter 发送，Shift + Enter 换行";
+  if (activeComposerAssistMeta.value) {
+    return `${activeComposerAssistMeta.value.label} 已激活，Enter 发送`;
   }
-  if (!workspacePathConfigured.value) return "先配置项目工作区路径";
-  if (workspacePathDirty.value) return "工作区路径有未保存修改";
-  if (externalAgentWarmupLoading.value)
-    return `${externalAgentDisplayLabel.value} 预热中...`;
-  if (externalAgentInfo.value.ready)
-    return `${externalAgentDisplayLabel.value} 已就绪，Enter 发送，Shift + Enter 换行`;
-  return `Enter 发送到 ${externalAgentDisplayLabel.value}，Shift + Enter 换行`;
+  return "Enter 发送，Shift + Enter 换行";
 });
 const shortThreadId = computed(() => {
   const value = String(externalAgentInfo.value.thread_id || "").trim();
@@ -3516,6 +3023,92 @@ const terminalPanelText = computed(() => {
     .filter(Boolean)
     .join("\n");
 });
+function extractTerminalApprovalPrompt(rawText) {
+  const raw = String(rawText || "");
+  const lowered = raw.toLowerCase();
+  const hasOnceChoice =
+    lowered.includes("approve once") ||
+    lowered.includes("allow once") ||
+    lowered.includes("approve for this request") ||
+    lowered.includes("allow for this request");
+  const hasSessionChoice =
+    lowered.includes("approve this session") ||
+    lowered.includes("allow this session") ||
+    lowered.includes("approve for this session") ||
+    lowered.includes("allow for this session");
+  const hasRejectChoice =
+    lowered.includes("cancel") ||
+    lowered.includes("reject") ||
+    lowered.includes("deny");
+  const hasApprovalContext =
+    lowered.includes("run the tool") ||
+    lowered.includes("mcp server") ||
+    lowered.includes("allow this action") ||
+    lowered.includes("approval");
+  if (!(hasApprovalContext && hasOnceChoice && hasSessionChoice && hasRejectChoice)) {
+    return null;
+  }
+  const toolMatch = raw.match(/run the tool "([^"]+)"/i);
+  const serverMatch = raw.match(/the ([a-z0-9_-]+) mcp server/i);
+  const toolName = String(toolMatch?.[1] || "").trim();
+  const serverName = String(serverMatch?.[1] || "").trim();
+  const titleParts = [];
+  if (serverName) titleParts.push(serverName);
+  if (toolName) titleParts.push(toolName);
+  return {
+    key: raw,
+    title:
+      titleParts.length > 0
+        ? `检测到审批请求：${titleParts.join(" / ")}`
+        : "检测到审批请求",
+    description: "该工具调用需要确认后才会继续执行。",
+    message: clipText(raw, 1200),
+  };
+}
+const terminalApprovalPromptFromOutput = computed(() =>
+  extractTerminalApprovalPrompt(terminalPanelText.value),
+);
+const terminalApprovalPrompt = computed(
+  () =>
+    terminalApprovalPromptFromOutput.value ||
+    terminalApprovalFallbackPrompt.value,
+);
+
+function clearTerminalApprovalFallback() {
+  if (terminalApprovalFallbackTimer !== null) {
+    window.clearTimeout(terminalApprovalFallbackTimer);
+    terminalApprovalFallbackTimer = null;
+  }
+  terminalApprovalFallbackPrompt.value = null;
+}
+
+function setTerminalApprovalPrompt(payload) {
+  const key = String(payload?.key || "").trim();
+  if (!key) return;
+  terminalApprovalFallbackPrompt.value = {
+    key,
+    title: String(payload?.title || "检测到审批请求").trim(),
+    description: String(
+      payload?.description || "终端请求确认后才会继续执行。",
+    ).trim(),
+    message: String(payload?.message || "").trim(),
+  };
+  terminalApprovalDialogVisible.value = true;
+}
+
+function scheduleTerminalApprovalFallback(requestMeta) {
+  clearTerminalApprovalFallback();
+  const requestId = String(requestMeta?.requestId || "").trim() || `${Date.now()}`;
+  const toolName = String(requestMeta?.lastToolName || "").trim();
+  terminalApprovalFallbackTimer = window.setTimeout(() => {
+    if (terminalApprovalPromptFromOutput.value) return;
+    setTerminalApprovalPrompt({
+      key: `fallback:${requestId}:${toolName || "approval"}`,
+      title: toolName ? `检测到审批请求：${toolName}` : "检测到审批请求",
+      description: "真实终端已进入审批等待状态；如果原始提示未同步到页面，可直接在这里继续。",
+    });
+  }, 1200);
+}
 
 const availableModels = computed(() => {
   const selected = (providers.value || []).find(
@@ -3713,6 +3306,9 @@ const isDragging = ref(false);
 let autoSaveTimer = null;
 let lastAutoSavedFingerprint = "";
 const projectSwitcherMenuWidth = ref(0);
+const CHAT_HISTORY_PAGE_SIZE = 120;
+const chatHistoryLoadedCount = ref(0);
+const chatHistoryLoadingMore = ref(false);
 const IMAGE_EXTENSIONS = new Set([
   "png",
   "jpg",
@@ -3801,6 +3397,14 @@ function normalizeChatSession(item) {
     last_message_at: String(item?.last_message_at || "").trim(),
   };
 }
+
+const chatHistoryHasMore = computed(() => {
+  const total = Number(currentChatSession.value?.message_count || 0);
+  if (total > 0) {
+    return chatHistoryLoadedCount.value < total;
+  }
+  return chatHistoryLoadedCount.value >= CHAT_HISTORY_PAGE_SIZE;
+});
 
 function formatChatSessionMeta(session) {
   const count = Number(session?.message_count || 0);
@@ -4263,6 +3867,44 @@ function normalizeExternalAgentInfo(raw) {
   };
 }
 
+function normalizeEffectiveTools(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => ({
+      tool_name: String(item?.tool_name || "").trim(),
+      source: String(item?.source || "project_tool").trim() || "project_tool",
+      description: String(item?.description || "").trim(),
+    }))
+    .filter((item) => item.tool_name)
+    .slice(0, 24);
+}
+
+function effectiveToolSourceLabel(source) {
+  return (
+    {
+      external_mcp: "外部 MCP",
+      system_mcp: "系统 MCP",
+      project_skill: "项目技能",
+      builtin: "内置",
+      local_connector: "本地连接器",
+      project_tool: "项目工具",
+    }[String(source || "").trim()] || "工具"
+  );
+}
+
+function effectiveToolSourceTagType(source) {
+  return (
+    {
+      external_mcp: "success",
+      system_mcp: "warning",
+      project_skill: "",
+      builtin: "info",
+      local_connector: "danger",
+      project_tool: "",
+    }[String(source || "").trim()] || ""
+  );
+}
+
 function normalizeProjectChatSettings(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   const legacySelected = String(source.selected_employee_id || "").trim();
@@ -4277,42 +3919,30 @@ function normalizeProjectChatSettings(raw) {
     .trim()
     .toLowerCase();
   const sandboxModeExplicit = Boolean(
-    source.external_agent_sandbox_mode_explicit,
+    source.connector_sandbox_mode_explicit ??
+      source.external_agent_sandbox_mode_explicit,
   );
   const sandboxMode = String(
-    source.external_agent_sandbox_mode ||
-      CHAT_SETTINGS_DEFAULTS.external_agent_sandbox_mode,
+    source.connector_sandbox_mode ||
+      source.external_agent_sandbox_mode ||
+      CHAT_SETTINGS_DEFAULTS.connector_sandbox_mode,
   )
     .trim()
     .toLowerCase();
   const normalizedSandboxMode =
     sandboxMode === "read-only" || sandboxMode === "workspace-write"
       ? sandboxMode
-      : CHAT_SETTINGS_DEFAULTS.external_agent_sandbox_mode;
+      : CHAT_SETTINGS_DEFAULTS.connector_sandbox_mode;
   const effectiveSandboxMode =
     normalizedSandboxMode === "read-only" && !sandboxModeExplicit
-      ? CHAT_SETTINGS_DEFAULTS.external_agent_sandbox_mode
+      ? CHAT_SETTINGS_DEFAULTS.connector_sandbox_mode
       : normalizedSandboxMode;
   return {
     ...CHAT_SETTINGS_DEFAULTS,
     ...source,
-    chat_mode:
-      chatMode === "external_agent"
-        ? "external_agent"
-        : CHAT_SETTINGS_DEFAULTS.chat_mode,
-    external_agent_type: ["codex_cli", "claude_cli", "gemini_cli"].includes(
-      String(
-        source.external_agent_type ||
-          CHAT_SETTINGS_DEFAULTS.external_agent_type,
-      ).trim(),
-    )
-      ? String(
-          source.external_agent_type ||
-            CHAT_SETTINGS_DEFAULTS.external_agent_type,
-        ).trim()
-      : CHAT_SETTINGS_DEFAULTS.external_agent_type,
-    external_agent_sandbox_mode: effectiveSandboxMode,
-    external_agent_sandbox_mode_explicit: sandboxModeExplicit,
+    chat_mode: chatMode === "system" ? "system" : CHAT_SETTINGS_DEFAULTS.chat_mode,
+    connector_sandbox_mode: effectiveSandboxMode,
+    connector_sandbox_mode_explicit: sandboxModeExplicit,
     local_connector_id: String(
       source.local_connector_id || CHAT_SETTINGS_DEFAULTS.local_connector_id,
     ).trim(),
@@ -4460,7 +4090,10 @@ function resetTerminalPanel() {
   terminalPanelStatus.value = "idle";
   terminalPanelInput.value = "";
   terminalMirrorConnected.value = false;
-  terminalDebugInputVisible.value = false;
+  activeTerminalMirrorAssistantIndex.value = -1;
+  terminalApprovalDialogVisible.value = false;
+  terminalApprovalHandledKey.value = "";
+  clearTerminalApprovalFallback();
   scrollTerminalPanelBottom();
 }
 
@@ -4499,13 +4132,22 @@ async function stopTerminalMirror() {
 async function sendTerminalMirrorInput() {
   const content = String(terminalPanelInput.value || "").trim();
   if (!content) return;
+  await sendTerminalMirrorContent(content);
+  terminalPanelInput.value = "";
+}
+
+async function sendTerminalMirrorContent(content, options = {}) {
+  const normalizedContent = String(content || "").trim();
+  if (!normalizedContent) return;
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) return;
   const client = await ensureWsClient(projectId);
   if (!terminalMirrorConnected.value) {
     await startTerminalMirror();
   }
-  appendTerminalPanelLine(`› ${content}`);
+  if (options?.echo !== false) {
+    appendTerminalPanelLine(`› ${normalizedContent}`);
+  }
   client.send({
     type: "terminal_mirror_input",
     request_id: `mirror-input-${Date.now()}`,
@@ -4517,9 +4159,46 @@ async function sendTerminalMirrorInput() {
       projectChatSettings.value.external_agent_sandbox_mode ||
       "workspace-write",
     external_agent_sandbox_mode_explicit: true,
-    content,
+    content:
+      options?.appendNewline === false
+        ? normalizedContent
+        : `${normalizedContent}\r`,
   });
-  terminalPanelInput.value = "";
+}
+
+async function sendTerminalApprovalChoice(choice) {
+  const activePromptKey = String(terminalApprovalPrompt.value?.key || "").trim();
+  if (activePromptKey) {
+    terminalApprovalHandledKey.value = activePromptKey;
+  }
+  clearTerminalApprovalFallback();
+  terminalApprovalDialogVisible.value = false;
+  await sendTerminalMirrorContent(String(choice || "").trim());
+  const activeRequestId = getActiveRequestId();
+  if (activeRequestId) {
+    const pending = pendingRequests.get(activeRequestId);
+    if (pending?.awaitingTerminalApproval) {
+      pending.awaitingTerminalApproval = false;
+      pending.resolve(
+        String(messages.value[pending.assistantIndex]?.content || "").trim(),
+      );
+    }
+  }
+}
+
+function appendAssistantStatusNote(row, text) {
+  if (!row) return;
+  const note = String(text || "").trim();
+  if (!note) return;
+  const current = String(row.content || "").trim();
+  if (!current) {
+    row.content = note;
+    return;
+  }
+  if (current.endsWith(note)) {
+    return;
+  }
+  row.content = `${current}\n\n${note}`;
 }
 
 function appendTerminalLog(row, text) {
@@ -4534,6 +4213,44 @@ function appendTerminalLog(row, text) {
   }
   row.terminalLog = logs;
   appendTerminalPanelLine(line);
+}
+
+function isMcpApprovalCancelledMessage(value) {
+  return String(value || "")
+    .toLowerCase()
+    .includes("user cancelled mcp tool call");
+}
+
+async function handoffExternalAgentRequestToTerminal(row, requestMeta) {
+  if (!isExternalAgentMode.value || !row || !requestMeta) return false;
+  const userPrompt = String(requestMeta.userPrompt || "").trim();
+  if (!userPrompt || requestMeta.handoffTriggered) return false;
+  requestMeta.handoffTriggered = true;
+  terminalPanelStatus.value = "running";
+  activeTerminalMirrorAssistantIndex.value = Number(
+    requestMeta.assistantIndex ?? -1,
+  );
+  appendTerminalLog(
+    row,
+    "# 检测到 MCP 写操作需要交互审批，已切换到真实终端继续执行",
+  );
+  try {
+    await sendTerminalMirrorContent(userPrompt);
+    scheduleTerminalApprovalFallback(requestMeta);
+    appendAssistantStatusNote(
+      row,
+      "> ⏳ 已切换到交互审批模式，请在弹出的确认框里继续。",
+    );
+    scrollToBottom();
+    return true;
+  } catch (err) {
+    appendTerminalLog(
+      row,
+      `! 自动切换真实终端失败：${String(err?.message || err || "未知错误").trim()}`,
+    );
+    clearTerminalApprovalFallback();
+    return false;
+  }
 }
 
 function terminalLogLines(item) {
@@ -5857,7 +5574,6 @@ const employeeDraftDialogMatchedRuleLabels = computed(() =>
 function syncSkillResourceDirectoryDraft() {
   skillResourceDirectoryDraft.value = readPreferredSkillResourceDirectory(
     selectedProjectId.value,
-    projectChatSettings.value.local_connector_id,
   );
 }
 
@@ -5865,11 +5581,7 @@ function setSkillResourceDirectory(directoryPath, options = {}) {
   const normalized = String(directoryPath || "").trim();
   const previous = String(skillResourceDirectoryResolved.value || "").trim();
   skillResourceDirectoryDraft.value = normalized;
-  writePreferredSkillResourceDirectory(
-    selectedProjectId.value,
-    projectChatSettings.value.local_connector_id,
-    normalized,
-  );
+  writePreferredSkillResourceDirectory(selectedProjectId.value, normalized);
   if (previous !== normalized) {
     externalAgentWarmupKey.value = "";
   }
@@ -5884,9 +5596,7 @@ function openSkillResourceCenter() {
 }
 
 function useWorkspaceAsSkillDirectory() {
-  const nextDirectory = String(
-    workspacePathDraftNormalized.value || workspacePathResolved.value || "",
-  ).trim();
+  const nextDirectory = String(projectWorkspacePath.value || "").trim();
   if (!nextDirectory) {
     ElMessage.warning("当前还没有可复用的工作区路径");
     return;
@@ -5897,39 +5607,17 @@ function useWorkspaceAsSkillDirectory() {
 async function pickSkillResourceDirectory() {
   const title = `选择技能下载目录 · ${String(currentProjectLabel.value || "").trim() || "AI 对话"}`;
   const initialPath = String(
-    skillResourceDirectoryResolved.value ||
-      workspacePathDraftNormalized.value ||
-      workspacePathResolved.value ||
-      "",
+    skillResourceDirectoryResolved.value || projectWorkspacePath.value || "",
   ).trim();
   skillResourceDirectoryPicking.value = true;
   try {
-    let pickedPath = "";
-    if (usingLocalConnector.value) {
-      const connectorId = String(
-        projectChatSettings.value.local_connector_id || "",
-      ).trim();
-      if (!connectorId) {
-        ElMessage.warning("请先选择本地连接器");
-        return;
-      }
-      const payload = await pickWorkspaceViaLocalConnector(connectorId, {
-        title,
-        initialPath,
-      });
-      pickedPath = String(payload?.path || "").trim();
-      if (payload?.cancelled || !pickedPath) {
-        return;
-      }
-    } else {
-      const picked = await pickWorkspaceDirectory(initialPath, {
-        title,
-        placeholder: "/Users/yourname/.codex/skills",
-      });
-      pickedPath = String(picked || "").trim();
-      if (!pickedPath) {
-        return;
-      }
+    const picked = await pickWorkspaceDirectory(initialPath, {
+      title,
+      placeholder: "/Users/yourname/.codex/skills",
+    });
+    const pickedPath = String(picked || "").trim();
+    if (!pickedPath) {
+      return;
     }
     setSkillResourceDirectory(pickedPath);
   } catch (err) {
@@ -6598,27 +6286,15 @@ async function fetchProjects() {
 }
 
 async function fetchGlobalProviders() {
-  const [providerData, connectorData, desktopArtifactData] = await Promise.all([
-    api.get("/llm/providers", {
-      params: { enabled_only: true },
-    }),
-    api.get("/local-connectors").catch(() => ({ connectors: [] })),
-    api
-      .get("/local-connectors/desktop-artifacts")
-      .catch(() => ({ artifacts: [] })),
-  ]);
+  const providerData = await api.get("/llm/providers", {
+    params: { enabled_only: true },
+  });
   const list = Array.isArray(providerData?.providers)
     ? providerData.providers
     : [];
   providers.value = list;
-  localConnectors.value = Array.isArray(connectorData?.connectors)
-    ? connectorData.connectors
-    : [];
-  desktopConnectorArtifacts.value = Array.isArray(
-    desktopArtifactData?.artifacts,
-  )
-    ? desktopArtifactData.artifacts
-    : [];
+  localConnectors.value = [];
+  desktopConnectorArtifacts.value = [];
   globalDefaultProviderId.value = String(
     list.find((item) => Boolean(item?.is_default))?.id || list[0]?.id || "",
   ).trim();
@@ -6739,65 +6415,37 @@ async function fetchProvidersByProject(projectId) {
       selectedChatMode.value = "system";
     }
     await fetchGlobalProviders();
-    projectChatSettings.value = applyLocalConnectorRuntimeSettings(
-      { ...CHAT_SETTINGS_DEFAULTS },
-      "",
-      localConnectors.value,
-    );
+    projectChatSettings.value = applyLocalConnectorRuntimeSettings({
+      ...CHAT_SETTINGS_DEFAULTS,
+    });
     projectSettingsHydrating.value = false;
     return;
   }
   let hydrated = false;
   try {
-    const preferredConnectorId = String(
-      projectChatSettings.value.local_connector_id ||
-        readPreferredLocalConnectorId() ||
-        "",
-    ).trim();
-    const preferredWorkspacePath = preferredConnectorId
-      ? String(
-          workspacePathDraftNormalized.value ||
-            readPreferredLocalWorkspacePath(projectId, preferredConnectorId) ||
-            "",
-        ).trim()
-      : "";
-    const data = await api.get(
-      buildProjectProvidersRequestUrl(
-        projectId,
-        preferredConnectorId,
-        preferredWorkspacePath,
-      ),
-    );
+    const data = await api.get(buildProjectProvidersRequestUrl(projectId));
     const rawSettings =
       data?.chat_settings && typeof data.chat_settings === "object"
         ? data.chat_settings
         : {};
-    chatModes.value =
-      Array.isArray(data?.chat_modes) && data.chat_modes.length
-        ? data.chat_modes
-        : chatModes.value;
-    if (
-      selectedChatMode.value === "external_agent" &&
-      !chatModes.value.some(
-        (item) => String(item?.id || "").trim() === "external_agent",
-      )
-    ) {
+    chatModes.value = [{ id: "system", label: "系统对话" }];
+    if (selectedChatMode.value !== "system") {
       selectedChatMode.value = "system";
     }
     providers.value = data.providers || [];
-    localConnectors.value = Array.isArray(data?.local_connectors)
-      ? data.local_connectors
-      : [];
-    const settings = applyLocalConnectorRuntimeSettings(
-      rawSettings,
-      projectId,
-      localConnectors.value,
-    );
+    localConnectors.value = [];
+    const settings = applyLocalConnectorRuntimeSettings(rawSettings);
     projectChatSettings.value = settings;
     projectEmployees.value = data.employees || [];
-    externalAgentInfo.value = normalizeExternalAgentInfo(
-      data?.external_agent || {},
-    );
+    externalAgentInfo.value = normalizeExternalAgentInfo({
+      ...(data?.external_agent && typeof data.external_agent === "object"
+        ? data.external_agent
+        : {}),
+      workspace_access:
+        data?.workspace_access ||
+        data?.external_agent?.workspace_access ||
+        undefined,
+    });
     projectWorkspacePath.value = String(
       data?.project_workspace_path || "",
     ).trim();
@@ -6806,14 +6454,10 @@ async function fetchProvidersByProject(projectId) {
     ).trim();
     aiEntryFileDraft.value = projectAiEntryFile.value;
     workspacePathDraft.value = String(
-      settings.local_connector_id
-        ? settings.connector_workspace_path ||
-            data?.external_agent?.workspace_path ||
-            ""
-        : projectWorkspacePath.value ||
-            data?.workspace_path ||
-            data?.external_agent?.workspace_path ||
-            "",
+      projectWorkspacePath.value ||
+        data?.workspace_path ||
+        data?.external_agent?.workspace_path ||
+        "",
     ).trim();
     mcpModules.value = normalizeMcpModules(data.mcp_modules || {});
     runtimeExternalTools.value = normalizeRuntimeExternalTools(
@@ -6865,20 +6509,12 @@ async function fetchProvidersByProject(projectId) {
     defaultModelName.value = String(data.default_model_name || "");
 
     const preferredProviderId = String(settings.provider_id || "").trim();
-    const connectorProviderId = String(
-      providers.value.find(
-        (item) =>
-          item?.provider_type === "local-connector" &&
-          String(item?.connector_id || "").trim() ===
-            String(settings.local_connector_id || "").trim(),
-      )?.id || "",
-    ).trim();
     const hasPreferredProvider = providers.value.some(
       (item) => item.id === preferredProviderId,
     );
-    selectedProviderId.value =
-      connectorProviderId ||
-      (hasPreferredProvider ? preferredProviderId : defaultProviderId.value);
+    selectedProviderId.value = hasPreferredProvider
+      ? preferredProviderId
+      : defaultProviderId.value;
 
     const providerModels = (
       providers.value.find((item) => item.id === selectedProviderId.value)
@@ -7013,16 +6649,6 @@ function buildProjectChatSettingsPayload() {
   return normalizeProjectChatSettings({
     ...projectChatSettings.value,
     chat_mode: String(selectedChatMode.value || "system").trim(),
-    external_agent_type: String(
-      projectChatSettings.value.external_agent_type || "codex_cli",
-    ).trim(),
-    external_agent_sandbox_mode: String(
-      projectChatSettings.value.external_agent_sandbox_mode ||
-        "workspace-write",
-    ).trim(),
-    external_agent_sandbox_mode_explicit: true,
-    local_connector_id: "",
-    connector_workspace_path: "",
     selected_employee_id: employeeIds.length === 1 ? employeeIds[0] : "",
     selected_employee_ids: employeeIds,
     provider_id: String(selectedProviderId.value || "").trim(),
@@ -7089,14 +6715,9 @@ async function saveProjectChatSettings(silent = false) {
     );
     projectChatSettings.value = applyLocalConnectorRuntimeSettings(
       data?.settings || payload,
-      projectId,
-      localConnectors.value,
     );
     // 以服务端回读结果为准，避免“保存成功但界面仍旧值”的状态分叉。
     await fetchProvidersByProject(projectId);
-    if (selectedChatMode.value === "external_agent") {
-      await prepareExternalAgentSession({ force: true, silent: true });
-    }
     markAutoSaveSynced();
     autoSaveState.value = "saved";
     autoSaveUpdatedAt.value = new Date().toLocaleTimeString("zh-CN", {
@@ -7139,6 +6760,7 @@ async function fetchChatSessions(projectId, preferredSessionId = "") {
     chatSessions.value = [];
     currentChatSessionId.value = "";
     messages.value = [];
+    chatHistoryLoadedCount.value = 0;
     return "";
   }
   try {
@@ -7163,6 +6785,7 @@ async function fetchChatSessions(projectId, preferredSessionId = "") {
   } catch (err) {
     chatSessions.value = [];
     currentChatSessionId.value = "";
+    chatHistoryLoadedCount.value = 0;
     ElMessage.error(err?.detail || err?.message || "加载会话列表失败");
     return "";
   }
@@ -7171,30 +6794,83 @@ async function fetchChatSessions(projectId, preferredSessionId = "") {
 async function fetchChatHistory(
   projectId,
   chatSessionId = currentChatSessionId.value,
+  options = {},
 ) {
   if (!projectId) {
     messages.value = [];
+    chatHistoryLoadedCount.value = 0;
     return;
   }
   const normalizedSessionId = String(chatSessionId || "").trim();
   currentChatSessionId.value = normalizedSessionId;
   if (!normalizedSessionId) {
     messages.value = [];
+    chatHistoryLoadedCount.value = 0;
     return;
   }
+  const append = options.append === true;
+  const offset = Math.max(0, Number(options.offset ?? 0) || 0);
+  const limit = Math.max(
+    1,
+    Number(options.limit || CHAT_HISTORY_PAGE_SIZE) || CHAT_HISTORY_PAGE_SIZE,
+  );
+  const container = messagesContainer.value;
+  const previousScrollHeight = Number(container?.scrollHeight || 0);
+  const previousScrollTop = Number(container?.scrollTop || 0);
   try {
     const data = await api.get(
       `/projects/${encodeURIComponent(projectId)}/chat/history`,
       {
-        params: { limit: 200, chat_session_id: normalizedSessionId },
+        params: {
+          limit,
+          offset,
+          chat_session_id: normalizedSessionId,
+        },
       },
     );
-    messages.value = (data.messages || []).map(mapHistoryMessage);
+    const historyRows = (data.messages || []).map(mapHistoryMessage);
+    messages.value = append
+      ? [...historyRows, ...messages.value]
+      : historyRows;
+    chatHistoryLoadedCount.value = messages.value.length;
     rememberChatSession(projectId, normalizedSessionId);
-    scrollToBottom();
+    if (append) {
+      nextTick(() => {
+        if (!messagesContainer.value) return;
+        const nextScrollHeight = Number(messagesContainer.value.scrollHeight || 0);
+        messagesContainer.value.scrollTop =
+          nextScrollHeight - previousScrollHeight + previousScrollTop;
+      });
+    } else {
+      scrollToBottom();
+    }
   } catch (err) {
-    messages.value = [];
-    ElMessage.error(err?.detail || err?.message || "加载聊天记录失败");
+    if (!append) {
+      messages.value = [];
+      chatHistoryLoadedCount.value = 0;
+    }
+    ElMessage.error(
+      err?.detail ||
+        err?.message ||
+        (append ? "加载更早消息失败" : "加载聊天记录失败"),
+    );
+  }
+}
+
+async function loadOlderMessages() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!projectId || !chatSessionId || chatHistoryLoadingMore.value) return;
+  if (!chatHistoryHasMore.value) return;
+  chatHistoryLoadingMore.value = true;
+  try {
+    await fetchChatHistory(projectId, chatSessionId, {
+      append: true,
+      offset: chatHistoryLoadedCount.value,
+      limit: CHAT_HISTORY_PAGE_SIZE,
+    });
+  } finally {
+    chatHistoryLoadingMore.value = false;
   }
 }
 
@@ -7259,6 +6935,7 @@ async function createChatSession(options = {}) {
       currentChatSessionId.value = session.id;
       rememberChatSession(projectId, session.id);
       messages.value = [];
+      chatHistoryLoadedCount.value = 0;
       scrollToBottom();
     }
     return session;
@@ -7433,6 +7110,7 @@ async function handleCreateNewConversation() {
   ) {
     currentChatSessionId.value = "";
     messages.value = [];
+    chatHistoryLoadedCount.value = 0;
     activeComposerAssist.value = "";
     resetDraft();
     scrollToBottom();
@@ -7521,6 +7199,7 @@ async function clearMessages() {
       },
     );
     messages.value = [];
+    chatHistoryLoadedCount.value = 0;
     chatSessions.value = chatSessions.value.filter(
       (item) => item.id !== chatSessionId,
     );
@@ -7547,7 +7226,7 @@ function isIntentOnlyReply(text) {
   );
 }
 
-function handleSocketMessage(eventData) {
+async function handleSocketMessage(eventData) {
   const eventType = String(eventData?.type || "")
     .trim()
     .toLowerCase();
@@ -7583,16 +7262,52 @@ function handleSocketMessage(eventData) {
     appendTerminalPanelLine(
       `# 真实终端镜像已连接 · thread=${String(eventData?.thread_id || "-").trim() || "-"}`,
     );
+    const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+    if (mirrorRow) {
+      appendTerminalLog(
+        mirrorRow,
+        `# 真实终端镜像已连接 · thread=${String(eventData?.thread_id || "-").trim() || "-"}`,
+      );
+    }
     return;
   }
   if (eventType === "terminal_mirror_stopped") {
     terminalMirrorConnected.value = false;
     appendTerminalPanelLine(`# 真实终端镜像已停止`);
+    const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+    if (mirrorRow) {
+      appendTerminalLog(mirrorRow, "# 真实终端镜像已停止");
+    }
+    activeTerminalMirrorAssistantIndex.value = -1;
     return;
   }
   if (eventType === "terminal_mirror_chunk") {
     terminalMirrorConnected.value = true;
-    appendTerminalPanelLine(String(eventData?.content || ""));
+    const chunk = String(eventData?.content || "");
+    appendTerminalPanelLine(chunk);
+    const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+    if (mirrorRow) {
+      appendTerminalLog(mirrorRow, chunk);
+    }
+    return;
+  }
+  if (eventType === "terminal_approval_required") {
+    const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+    if (mirrorRow) {
+      appendAssistantStatusNote(
+        mirrorRow,
+        "> ⏳ 终端请求审批，请在弹框中继续。",
+      );
+    }
+    setTerminalApprovalPrompt({
+      key: String(eventData?.key || "").trim(),
+      title: String(eventData?.title || "检测到终端审批").trim(),
+      description: String(
+        eventData?.description || "当前操作需要用户确认后才会继续执行。",
+      ).trim(),
+      message: String(eventData?.message || "").trim(),
+    });
+    scrollToBottom();
     return;
   }
   if (!requestId) {
@@ -7630,6 +7345,10 @@ function handleSocketMessage(eventData) {
       String(eventData?.chat_mode || "").trim() === "external_agent"
         ? "terminal"
         : "";
+    row.effectiveTools = normalizeEffectiveTools(eventData?.effective_tools);
+    row.effectiveToolTotal = Number(
+      eventData?.effective_tool_total || row.effectiveTools.length || 0,
+    );
     if (String(eventData?.chat_mode || "").trim() === "external_agent") {
       externalAgentInfo.value = normalizeExternalAgentInfo({
         ...externalAgentInfo.value,
@@ -7711,9 +7430,11 @@ function handleSocketMessage(eventData) {
   }
   if (eventType === "approval_resolved") {
     const approved = Boolean(eventData?.approved);
-    row.content = approved
-      ? `${row.content || ""}\n> ✅ 已批准，继续执行`.trim()
-      : `${row.content || ""}\n> ❌ 已拒绝，本次执行取消`.trim();
+    terminalApprovalDialogVisible.value = false;
+    appendAssistantStatusNote(
+      row,
+      approved ? "> ✅ 已批准，继续执行" : "> ❌ 已拒绝，本次执行取消",
+    );
     scrollToBottom();
     return;
   }
@@ -7772,6 +7493,9 @@ function handleSocketMessage(eventData) {
     const outputPreview = String(eventData?.output_preview || "").trim();
     if (outputPreview) {
       appendTerminalLog(row, outputPreview);
+      if (isMcpApprovalCancelledMessage(outputPreview) && pending) {
+        pending.mcpApprovalCancelled = true;
+      }
     }
     scrollToBottom();
     return;
@@ -7800,13 +7524,39 @@ function handleSocketMessage(eventData) {
   }
   if (eventType === "tool_start") {
     const toolName = String(eventData?.tool_name || "工具");
-    row.content = `${row.content || ""}\n\n> ⏳ 正在调用工具：\`${toolName}\``;
+    if (pending) {
+      pending.lastToolName = toolName;
+    }
+    appendAssistantStatusNote(row, `> ⏳ 正在调用工具：\`${toolName}\``);
     scrollToBottom();
     return;
   }
   if (eventType === "tool_result") {
     const toolName = String(eventData?.tool_name || "工具");
-    row.content = `${row.content || ""}\n\n> ✅ 工具调用完成：\`${toolName}\``;
+    const statusText = String(eventData?.status || "").trim().toLowerCase();
+    const outputPreview = String(eventData?.output_preview || "").trim();
+    const success = !statusText || ["success", "completed", "ok"].includes(statusText);
+    const approvalPending = isMcpApprovalCancelledMessage(outputPreview);
+    if (approvalPending && pending) {
+      pending.mcpApprovalCancelled = true;
+      pending.lastToolName = toolName;
+    }
+    if (approvalPending) {
+      appendAssistantStatusNote(
+        row,
+        `> ⏳ 工具调用等待审批：\`${toolName}\``,
+      );
+    } else if (success) {
+      appendAssistantStatusNote(
+        row,
+        `> ✅ 工具调用完成：\`${toolName}\``,
+      );
+    } else {
+      appendAssistantStatusNote(
+        row,
+        `> ❌ 工具调用失败：\`${toolName}\``,
+      );
+    }
     scrollToBottom();
     return;
   }
@@ -7822,6 +7572,14 @@ function handleSocketMessage(eventData) {
         /达到最大处理轮次|已停止生成/.test(doneContent)
       ) {
         row.content = doneContent;
+      }
+    }
+    if (pending?.mcpApprovalCancelled) {
+      const handedOff = await handoffExternalAgentRequestToTerminal(row, pending);
+      if (handedOff) {
+        pending.awaitingTerminalApproval = true;
+        scrollToBottom();
+        return;
       }
     }
     pendingRequests.delete(requestId);
@@ -8054,10 +7812,6 @@ async function testProjectWorkspacePath() {
     ElMessage.warning("请先选择本地连接器");
     return;
   }
-  if (!externalAgentInfo.value.available) {
-    ElMessage.error("当前选中的外部 Agent 不可用，无法测试工作区");
-    return;
-  }
   if (!workspacePathDraftNormalized.value && !workspacePathResolved.value) {
     ElMessage.warning("请先填写工作区绝对路径");
     return;
@@ -8068,8 +7822,14 @@ async function testProjectWorkspacePath() {
       await saveProjectWorkspacePath();
     }
     await fetchProvidersByProject(projectId);
-    await prepareExternalAgentSession({ force: true, silent: false });
-    ElMessage.success("工作区可用，外部 Agent 已按该目录完成预热");
+    if (!externalAgentInfo.value.workspace_access?.read_ok) {
+      throw new Error(
+        String(
+          externalAgentInfo.value.workspace_access?.reason || "工作区不可访问",
+        ),
+      );
+    }
+    ElMessage.success("工作区可用，本地连接器工具已可在该目录执行");
   } catch (err) {
     ElMessage.error(err?.message || "工作区测试失败");
   } finally {
@@ -8118,7 +7878,10 @@ async function prepareExternalAgentSession({
       external_agent_sandbox_mode:
         projectChatSettings.value.external_agent_sandbox_mode ||
         "workspace-write",
-      external_agent_sandbox_mode_explicit: true,
+      connector_sandbox_mode: String(
+        projectChatSettings.value.connector_sandbox_mode || "workspace-write",
+      ).trim(),
+      connector_sandbox_mode_explicit: true,
       local_connector_id: String(
         projectChatSettings.value.local_connector_id || "",
       ).trim(),
@@ -8411,28 +8174,6 @@ async function doSend() {
     return;
   }
 
-  if (isExternalAgentMode.value) {
-    if (!usingLocalConnector.value) {
-      ElMessage.error("请先在设置中选择本地连接器");
-      return;
-    }
-    if (!externalAgentInfo.value.available) {
-      ElMessage.error("当前选中的外部 Agent 不可用，无法启动外部 Agent 模式");
-      return;
-    }
-    if (!String(externalAgentInfo.value.workspace_path || "").trim()) {
-      ElMessage.warning(
-        usingLocalConnector.value
-          ? "当前连接器未配置工作区路径"
-          : "当前项目未配置 workspace_path",
-      );
-      return;
-    }
-    if (uploadFiles.value.length > 0) {
-      ElMessage.warning("外部 Agent 模式暂不支持附件，本次只发送文本内容");
-    }
-  }
-
   const text = String(draftText.value || "").trim();
   let activeChatSessionId = String(currentChatSessionId.value || "").trim();
   if (!activeChatSessionId) {
@@ -8442,9 +8183,7 @@ async function doSend() {
       return;
     }
   }
-  const files = isExternalAgentMode.value
-    ? []
-    : uploadFiles.value.map((item) => item.raw).filter(Boolean);
+  const files = uploadFiles.value.map((item) => item.raw).filter(Boolean);
   const imageFiles = files.filter((file) => isImageFile(file));
 
   const historyRows = toHistoryRows(messages.value, historyLimit.value);
@@ -8549,7 +8288,9 @@ async function doSend() {
     id: createLocalMessageId(),
     role: "assistant",
     content: "",
-    displayMode: isExternalAgentMode.value ? "terminal" : "",
+    displayMode: "",
+    effectiveTools: [],
+    effectiveToolTotal: 0,
     terminalLog: [],
     processExpanded: false,
     audit: null,
@@ -8559,15 +8300,6 @@ async function doSend() {
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
 
-  if (isExternalAgentMode.value) {
-    terminalPanelExpanded.value = true;
-    appendTerminalPanelLine(`
-# ${nowText()} · 新请求`);
-    appendTerminalPanelLine(
-      `> ${String(text || userPrompt || "").trim() || "（空输入）"}`,
-    );
-  }
-
   const assistantIndex = messages.value.length - 1;
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -8576,12 +8308,19 @@ async function doSend() {
   scrollToBottom();
 
   try {
-    if (isExternalAgentMode.value) {
-      await prepareExternalAgentSession({ silent: true });
-    }
     const client = await ensureWsClient(selectedProjectId.value);
     const donePromise = new Promise((resolve, reject) => {
-      pendingRequests.set(requestId, { resolve, reject, assistantIndex });
+      pendingRequests.set(requestId, {
+        resolve,
+        reject,
+        requestId,
+        assistantIndex,
+        userPrompt: effectiveUserPrompt,
+        mcpApprovalCancelled: false,
+        awaitingTerminalApproval: false,
+        handoffTriggered: false,
+        lastToolName: "",
+      });
     });
     const employeeIds = normalizeStringList(selectedEmployeeIds.value || []);
     const requestPayload = {
@@ -8589,19 +8328,6 @@ async function doSend() {
       message_id: userMessage.id,
       chat_session_id: activeChatSessionId,
       chat_mode: selectedChatMode.value || "system",
-      external_agent_type: String(
-        projectChatSettings.value.external_agent_type || "codex_cli",
-      ).trim(),
-      external_agent_sandbox_mode:
-        projectChatSettings.value.external_agent_sandbox_mode ||
-        "workspace-write",
-      external_agent_sandbox_mode_explicit: true,
-      local_connector_id: String(
-        projectChatSettings.value.local_connector_id || "",
-      ).trim(),
-      connector_workspace_path: String(
-        workspacePathDraftNormalized.value || workspacePathResolved.value || "",
-      ).trim(),
       skill_resource_directory: String(
         skillResourceDirectoryResolved.value || "",
       ).trim(),
@@ -8609,12 +8335,8 @@ async function doSend() {
       employee_ids: employeeIds,
       employee_id: employeeIds.length === 1 ? employeeIds[0] : undefined,
       history: historyRows,
-      provider_id: isExternalAgentMode.value
-        ? undefined
-        : selectedProviderId.value || undefined,
-      model_name: isExternalAgentMode.value
-        ? undefined
-        : selectedModelName.value || undefined,
+      provider_id: selectedProviderId.value || undefined,
+      model_name: selectedModelName.value || undefined,
       temperature: Number(temperature.value),
       max_tokens: Number(chatMaxTokens.value || 512),
       system_prompt: systemPrompt.value || undefined,
@@ -8720,7 +8442,6 @@ watch(
       ) || {};
     externalAgentWarmupKey.value = "";
     externalAgentWarmupLoading.value = false;
-    terminalDebugInputVisible.value = false;
     externalAgentInfo.value = normalizeExternalAgentInfo({
       ...externalAgentInfo.value,
       ...option,
@@ -8736,28 +8457,31 @@ watch(
 
 watch(selectedChatMode, async (value) => {
   const normalized = String(value || "").trim();
-  if (normalized === "external_agent" && !canUseExternalAgent.value) {
+  if (normalized !== "system") {
     selectedChatMode.value = "system";
-    return;
   }
-  if (normalized !== "external_agent") {
-    agentStatusExpanded.value = false;
-    resetExternalAgentRuntimeState();
-    return;
-  }
-  terminalPanelExpanded.value = true;
-  if (selectedProjectId.value) {
-    try {
-      await prepareExternalAgentSession({ silent: true });
-    } catch {
-      // ignore; user can retry by sending message
-    }
-  }
+  agentStatusExpanded.value = false;
+  resetExternalAgentRuntimeState();
 });
 
 watch(selectedProviderId, () => {
   handleProviderChange();
 });
+
+watch(
+  () => terminalApprovalPrompt.value?.key || "",
+  (nextKey) => {
+    const normalizedKey = String(nextKey || "").trim();
+    if (!normalizedKey) {
+      terminalApprovalDialogVisible.value = false;
+      return;
+    }
+    if (normalizedKey === String(terminalApprovalHandledKey.value || "").trim()) {
+      return;
+    }
+    terminalApprovalDialogVisible.value = true;
+  },
+);
 
 watch(
   () => [
@@ -8772,81 +8496,18 @@ watch(
 
 watch(
   () => isSettingsCenterRoute.value,
-  async (visible) => {
+  (visible) => {
     if (!visible) return;
-    await refreshLocalConnectorCatalog(true);
   },
   { immediate: true },
 );
 
 watch(
-  [
-    () => String(selectedProjectId.value || "").trim(),
-    () => String(projectChatSettings.value.local_connector_id || "").trim(),
-  ],
+  () => String(selectedProjectId.value || "").trim(),
   () => {
     syncSkillResourceDirectoryDraft();
   },
   { immediate: true },
-);
-
-watch(
-  () => String(projectChatSettings.value.local_connector_id || "").trim(),
-  async (nextConnectorId, prevConnectorId) => {
-    if (nextConnectorId === prevConnectorId) return;
-    const projectId = String(selectedProjectId.value || "").trim();
-    const currentProvider = (providers.value || []).find(
-      (item) => item.id === selectedProviderId.value,
-    );
-    const currentUsesConnector =
-      String(currentProvider?.provider_type || "").trim() === "local-connector";
-    const fallbackProviderId = String(
-      (providers.value || []).find(
-        (item) =>
-          String(item?.provider_type || "").trim() !== "local-connector",
-      )?.id ||
-        defaultProviderId.value ||
-        "",
-    ).trim();
-    if (projectId && prevConnectorId) {
-      writePreferredLocalWorkspacePath(
-        projectId,
-        prevConnectorId,
-        workspacePathDraftNormalized.value,
-      );
-    }
-    writePreferredLocalConnectorId(nextConnectorId);
-    if (nextConnectorId) {
-      const nextWorkspacePath = projectId
-        ? readPreferredLocalWorkspacePath(projectId, nextConnectorId)
-        : "";
-      projectChatSettings.value = normalizeProjectChatSettings({
-        ...projectChatSettings.value,
-        connector_workspace_path: nextWorkspacePath,
-      });
-      workspacePathDraft.value = String(nextWorkspacePath || "").trim();
-      if (activeLocalConnectorProviderId.value) {
-        selectedProviderId.value = activeLocalConnectorProviderId.value;
-      } else if (currentUsesConnector) {
-        selectedProviderId.value = fallbackProviderId;
-      }
-    } else {
-      projectChatSettings.value = normalizeProjectChatSettings({
-        ...projectChatSettings.value,
-        connector_workspace_path: "",
-      });
-      workspacePathDraft.value = String(
-        projectWorkspacePath.value || "",
-      ).trim();
-      if (currentUsesConnector) {
-        selectedProviderId.value = fallbackProviderId;
-      }
-    }
-    resetExternalAgentRuntimeState();
-    if (projectId && !projectSettingsHydrating.value) {
-      await fetchProvidersByProject(projectId);
-    }
-  },
 );
 
 watch(autoSaveFingerprint, (nextFingerprint, prevFingerprint) => {
@@ -8890,7 +8551,6 @@ watch(selectedProjectId, async (value) => {
   rejectPendingRequests("已切换项目，当前请求取消");
   disconnectWs("switch project");
   singleRoundAnswerOnly.value = false;
-  void stopTerminalMirror().catch(() => {});
   resetTerminalPanel();
   try {
     agentStatusExpanded.value = false;
@@ -8901,9 +8561,6 @@ watch(selectedProjectId, async (value) => {
       chatSessionId = String(created?.id || "").trim();
     }
     await fetchChatHistory(projectId, chatSessionId);
-    if (selectedChatMode.value === "external_agent") {
-      await prepareExternalAgentSession({ silent: true });
-    }
   } catch (err) {
     if (
       err?.status === 403 ||
@@ -8944,9 +8601,6 @@ onMounted(async () => {
   }
   syncProjectSwitcherMenuWidth();
   window.addEventListener("resize", syncProjectSwitcherMenuWidth);
-  connectorPollTimer = window.setInterval(() => {
-    void refreshLocalConnectorCatalog(true);
-  }, 10000);
 });
 
 onUnmounted(() => {
@@ -9424,6 +9078,41 @@ onUnmounted(() => {
   line-height: 1.55;
 }
 
+.terminal-approval-card {
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  background: rgba(120, 53, 15, 0.35);
+}
+
+.terminal-approval-card__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #fde68a;
+}
+
+.terminal-approval-card__desc {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #fef3c7;
+}
+
+.terminal-approval-card__message {
+  margin: 10px 0 0;
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.28);
+  color: #f8fafc;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family:
+    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .terminal-panel-pre {
   margin: 0;
   white-space: pre-wrap;
@@ -9442,6 +9131,14 @@ onUnmounted(() => {
   padding: 10px 12px 12px;
   border-top: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(15, 23, 42, 0.8);
+}
+
+.terminal-approval-dialog__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .chat-header-left h2 {
@@ -9967,6 +9664,22 @@ onUnmounted(() => {
   box-shadow: 0 10px 24px rgba(17, 24, 39, 0.06);
 }
 
+.chat-history-loader {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+
+.chat-history-loader__button {
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  color: #4b5563;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+}
+
 .message-list-inner {
   display: flex;
   flex-direction: column;
@@ -10319,6 +10032,33 @@ onUnmounted(() => {
   border-radius: 16px;
   background: #f9fafb;
   border: 1px solid rgba(229, 231, 235, 0.95);
+}
+
+.message-tool-summary {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: #fffdf5;
+  border: 1px solid rgba(245, 223, 77, 0.35);
+}
+
+.message-tool-summary__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.message-tool-summary__count {
+  margin-left: 6px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.message-tool-summary__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 .message-audit-title {

@@ -252,8 +252,11 @@ class ProjectChatStore:
         username: str,
         limit: int = 200,
         chat_session_id: str = "",
+        offset: int = 0,
     ) -> list[ProjectChatMessage]:
-        safe_limit = max(1, min(int(limit or 200), 1000))
+        parsed_limit = int(limit or 0)
+        safe_limit = None if parsed_limit <= 0 else max(1, min(parsed_limit, 1000))
+        safe_offset = max(0, int(offset or 0))
         messages = self._read_messages(project_id, username)
         normalized_session_id = str(chat_session_id or "").strip()
         if normalized_session_id:
@@ -267,7 +270,11 @@ class ProjectChatStore:
                     for item in messages
                     if str(item.chat_session_id or "").strip() == normalized_session_id
                 ]
-        if len(messages) <= safe_limit:
+        if safe_offset:
+            if safe_offset >= len(messages):
+                return []
+            messages = messages[: len(messages) - safe_offset]
+        if safe_limit is None or len(messages) <= safe_limit:
             return messages
         return messages[-safe_limit:]
 
@@ -300,8 +307,6 @@ class ProjectChatStore:
         )
         current = self._read_messages(project_id, username)
         current.append(normalized)
-        if len(current) > 1000:
-            current = current[-1000:]
         self._rewrite_messages(project_id, username, current)
         if normalized.chat_session_id:
             sessions = self._read_sessions(project_id, username)

@@ -67,15 +67,19 @@ class UsageStore:
             rows = self._db.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
         return [dict(r) for r in rows]
 
-    def deactivate_key(self, key: str, created_by: str | None = None) -> bool:
+    def get_key(self, key: str) -> dict | None:
+        row = self._db.execute("SELECT * FROM api_keys WHERE key = ?", (key,)).fetchone()
+        return dict(row) if row else None
+
+    def delete_key(self, key: str, created_by: str | None = None) -> bool:
         owner = str(created_by or "").strip()
         if owner:
             cur = self._db.execute(
-                "UPDATE api_keys SET is_active = 0 WHERE key = ? AND created_by = ?",
+                "DELETE FROM api_keys WHERE key = ? AND created_by = ?",
                 (key, owner),
             )
         else:
-            cur = self._db.execute("UPDATE api_keys SET is_active = 0 WHERE key = ?", (key,))
+            cur = self._db.execute("DELETE FROM api_keys WHERE key = ?", (key,))
         self._db.commit()
         return cur.rowcount > 0
 

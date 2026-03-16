@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import json
+from typing import Any
 from core.config import get_settings
 
 class ToolExecutor:
@@ -12,6 +13,9 @@ class ToolExecutor:
         timeout_sec: int | None = None,
         max_retries: int = 0,
         allowed_tool_names: list[str] | None = None,
+        local_connector: Any | None = None,
+        local_connector_workspace_path: str = "",
+        local_connector_sandbox_mode: str = "workspace-write",
     ):
         self._project_id = project_id
         self._employee_id = employee_id
@@ -33,6 +37,12 @@ class ToolExecutor:
             for name in (allowed_tool_names or [])
             if str(name or "").strip()
         }
+        self._local_connector = local_connector
+        self._local_connector_workspace_path = str(local_connector_workspace_path or "").strip()
+        self._local_connector_sandbox_mode = (
+            str(local_connector_sandbox_mode or "workspace-write").strip()
+            or "workspace-write"
+        )
 
     async def execute_parallel(self, tool_calls: list[dict], timeout: int | None = None) -> list[dict]:
         timeout = timeout or self._timeout
@@ -67,6 +77,8 @@ class ToolExecutor:
             attempt += 1
 
     async def _execute_tool(self, tool_name: str, args: dict) -> dict:
+        if str(tool_name or "").strip().startswith("local_connector_"):
+            return await self._execute_local_connector_tool(tool_name, args)
         from services.dynamic_mcp_runtime import invoke_project_tool_runtime
         from starlette.concurrency import run_in_threadpool
         result = await run_in_threadpool(
@@ -79,3 +91,75 @@ class ToolExecutor:
             timeout_sec=self._timeout
         )
         return result
+
+    async def _execute_local_connector_tool(self, tool_name: str, args: dict) -> dict:
+        from services.local_connector_service import (
+            LOCAL_CONNECTOR_FILE_TOOL_NAMES,
+            list_connector_workspace_files,
+            read_connector_file,
+            run_connector_command,
+            search_connector_workspace_files,
+            write_connector_file,
+        )
+
+        normalized_tool_name = str(tool_name or "").strip()
+        if normalized_tool_name not in LOCAL_CONNECTOR_FILE_TOOL_NAMES:
+            return {"error": f"Unsupported local connector tool: {normalized_tool_name}"}
+        if self._local_connector is None:
+            return {"error": "Local connector is not configured for current chat"}
+        if not self._local_connector_workspace_path:
+            return {"error": "Local connector workspace_path is empty"}
+
+        if normalized_tool_name == "local_connector_list_files":
+            return await list_connector_workspace_files(
+                self._local_connector,
+                workspace_path=self._local_connector_workspace_path,
+                path=str(args.get("path") or "").strip(),
+                depth=int(args.get("depth", 3) or 3),
+                limit=int(args.get("limit", 200) or 200),
+                include_hidden=bool(args.get("include_hidden")),
+                sandbox_mode=self._local_connector_sandbox_mode,
+            )
+
+        if normalized_tool_name == "local_connector_search_files":
+            return await search_connector_workspace_files(
+                self._local_connector,
+                workspace_path=self._local_connector_workspace_path,
+                query=str(args.get("query") or "").strip(),
+                path=str(args.get("path") or "").strip(),
+                depth=int(args.get("depth", 8) or 8),
+                limit=int(args.get("limit", 100) or 100),
+                case_sensitive=bool(args.get("case_sensitive")),
+                include_hidden=bool(args.get("include_hidden")),
+                sandbox_mode=self._local_connector_sandbox_mode,
+            )
+
+        if normalized_tool_name == "local_connector_read_file":
+            end_line = args.get("end_line")
+            return await read_connector_file(
+                self._local_connector,
+                workspace_path=self._local_connector_workspace_path,
+                path=str(args.get("path") or "").strip(),
+                start_line=int(args.get("start_line", 1) or 1),
+                end_line=int(end_line) if end_line is not None else None,
+                sandbox_mode=self._local_connector_sandbox_mode,
+            )
+
+        if normalized_tool_name == "local_connector_run_command":
+            return await run_connector_command(
+                self._local_connector,
+                workspace_path=self._local_connector_workspace_path,
+                command=str(args.get("command") or "").strip(),
+                cwd=str(args.get("cwd") or "").strip(),
+                timeout_sec=int(args.get("timeout_sec", 20) or 20),
+                max_output_chars=int(args.get("max_output_chars", 12000) or 12000),
+                sandbox_mode=self._local_connector_sandbox_mode,
+            )
+
+        return await write_connector_file(
+            self._local_connector,
+            workspace_path=self._local_connector_workspace_path,
+            path=str(args.get("path") or "").strip(),
+            content=str(args.get("content") or ""),
+            sandbox_mode=self._local_connector_sandbox_mode,
+        )

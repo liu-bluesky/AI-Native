@@ -48,13 +48,7 @@ python init_admin.py
 python server.py
 ```
 
-当前版本外部 Agent 已统一切到“本地连接器”模式，不再推荐配置 `EXTERNAL_AGENT_RUNNER_URL`，也不再建议通过旧 Runner 启动脚本托管外部 Agent。
-
-说明：
-
-- 普通系统对话仍然直接走平台模型。
-- 外部 Agent 一律通过用户自己的本地连接器执行。
-- 如果需要代码工作区、本地命令或本地大模型，请先安装并配对 Local Connector。
+当前版本统一使用平台模型与平台内工具能力，不再提供本地连接器或外部 Agent 运行链路。
 
 ### 2. Docker 启动整套服务
 
@@ -113,7 +107,6 @@ ai设计规范/
 ├── docs/
 ├── rules/
 ├── agents/
-├── local-connector/
 ├── mcp-skills/
 ├── mcp-rules/
 ├── mcp-memory/
@@ -130,7 +123,6 @@ ai设计规范/
 
 - [项目总览](docs/00-项目总览/PROJECT.md)
 - [Docker 使用说明](docker/README.md)
-- [本地连接器说明](local-connector/README.md)
 - [编码规范](rules/)
 
 ## License

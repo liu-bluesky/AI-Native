@@ -450,6 +450,8 @@ class FeedbackService:
         provider_id = str(options.get("provider_id") or "").strip()
         model_name = str(options.get("model_name") or "").strip()
         temperature = options.get("temperature")
+        owner_username = str(options.get("owner_username") or "").strip()
+        include_all = bool(options.get("include_all", False))
         use_explicit_model = bool(provider_id or model_name)
         llm_service = get_llm_provider_service()
 
@@ -459,6 +461,8 @@ class FeedbackService:
         target = llm_service.resolve_reflection_target(
             project_id=project_id,
             employee_id=employee_id,
+            owner_username=owner_username,
+            include_all=include_all,
             preferred_provider_id=provider_id,
             preferred_model_name=model_name,
             preferred_temperature=temperature,

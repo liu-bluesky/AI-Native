@@ -84,16 +84,22 @@ class UsageStorePostgres:
             rows = cur.fetchall()
         return [_normalize_row(r) for r in rows]
 
-    def deactivate_key(self, key: str, created_by: str | None = None) -> bool:
+    def get_key(self, key: str) -> dict | None:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT * FROM api_keys WHERE key = %s", (key,))
+            row = cur.fetchone()
+        return _normalize_row(row) if row else None
+
+    def delete_key(self, key: str, created_by: str | None = None) -> bool:
         owner = str(created_by or "").strip()
         with self._conn.cursor() as cur:
             if owner:
                 cur.execute(
-                    "UPDATE api_keys SET is_active = FALSE WHERE key = %s AND created_by = %s",
+                    "DELETE FROM api_keys WHERE key = %s AND created_by = %s",
                     (key, owner),
                 )
             else:
-                cur.execute("UPDATE api_keys SET is_active = FALSE WHERE key = %s", (key,))
+                cur.execute("DELETE FROM api_keys WHERE key = %s", (key,))
             return cur.rowcount > 0
 
     def validate_key(self, key: str) -> str | None:

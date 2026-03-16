@@ -184,7 +184,11 @@ async def analyze_feedback_bug(
         result = get_feedback_service().analyze_bug(
             project_id,
             feedback_id,
-            analyze_options=req.model_dump() if req is not None else None,
+            analyze_options={
+                **(req.model_dump() if req is not None else {}),
+                "owner_username": str(auth_payload.get("sub") or "").strip(),
+                "include_all": _is_admin_like(auth_payload),
+            },
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -212,6 +216,8 @@ async def analyze_feedback_bugs_batch(
                 "provider_id": req.provider_id,
                 "model_name": req.model_name,
                 "temperature": req.temperature,
+                "owner_username": str(auth_payload.get("sub") or "").strip(),
+                "include_all": _is_admin_like(auth_payload),
             },
         )
     except LookupError as exc:
@@ -357,7 +363,10 @@ async def get_feedback_reflection_config(
     if not employee_id_value:
         raise HTTPException(400, "employee_id is required")
     service = get_llm_provider_service()
-    options = service.list_reflection_options()
+    options = service.list_reflection_options(
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=_is_admin_like(auth_payload),
+    )
     config = service.get_reflection_config(project_id, employee_id_value)
     return {"config": config, **options}
 
@@ -377,6 +386,8 @@ async def update_feedback_reflection_config(
             provider_id=str(req.provider_id or "").strip(),
             model_name=str(req.model_name or "").strip(),
             temperature=req.temperature,
+            owner_username=str(auth_payload.get("sub") or "").strip(),
+            include_all=_is_admin_like(auth_payload),
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
