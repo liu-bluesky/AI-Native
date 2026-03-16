@@ -1,7 +1,7 @@
 {
   "name": "local-connector-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Electron desktop shell for Local Connector",
   "author": "AI Employee",
   "main": "src/main.js",
