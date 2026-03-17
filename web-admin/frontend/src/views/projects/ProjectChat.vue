@@ -154,7 +154,7 @@
 
         <div class="chat-stage">
           <div class="chat-context-bar">
-          <div class="chat-context-bar__meta">
+            <div class="chat-context-bar__meta">
               <span>{{
                 hasSelectedProject ? currentProjectLabel : "通用对话"
               }}</span>
@@ -655,7 +655,8 @@
               <pre
                 v-if="terminalApprovalPrompt.message"
                 class="terminal-approval-card__message"
-              >{{ terminalApprovalPrompt.message }}</pre>
+                >{{ terminalApprovalPrompt.message }}</pre
+              >
             </div>
             <template #footer>
               <div class="terminal-approval-dialog__footer">
@@ -1187,10 +1188,7 @@
               {{ site.latestVersionLabel }}
             </el-tag>
           </div>
-          <div
-            v-if="site.description"
-            class="skill-resource-site-card__desc"
-          >
+          <div v-if="site.description" class="skill-resource-site-card__desc">
             {{ site.description }}
           </div>
           <div
@@ -1203,11 +1201,7 @@
             {{ site.url }}
           </div>
           <div class="skill-resource-site-card__actions">
-            <el-link
-              :href="site.url"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
+            <el-link :href="site.url" target="_blank" rel="noopener noreferrer">
               打开网站
             </el-link>
             <el-button
@@ -1250,19 +1244,12 @@
             <div class="skill-resource-site-card__title">{{ site.title }}</div>
             <div class="skill-resource-site-card__badge">推荐</div>
           </div>
-          <div
-            v-if="site.description"
-            class="skill-resource-site-card__desc"
-          >
+          <div v-if="site.description" class="skill-resource-site-card__desc">
             {{ site.description }}
           </div>
           <div class="skill-resource-site-card__url">{{ site.url }}</div>
           <div class="skill-resource-site-card__actions">
-            <el-link
-              :href="site.url"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
+            <el-link :href="site.url" target="_blank" rel="noopener noreferrer">
               打开网站
             </el-link>
             <el-button text size="small" @click="copySkillResourceSite(site)">
@@ -1271,11 +1258,7 @@
           </div>
         </article>
       </div>
-      <el-empty
-        v-else
-        description="当前还没有配置技能网站"
-        :image-size="56"
-      />
+      <el-empty v-else description="当前还没有配置技能网站" :image-size="56" />
     </div>
   </el-dialog>
 
@@ -1319,7 +1302,9 @@
                 @click="openSettingsCenter(item.id)"
               >
                 <span class="settings-center-nav-item__row">
-                  <span class="settings-center-nav-item__label">{{ item.label }}</span>
+                  <span class="settings-center-nav-item__label">{{
+                    item.label
+                  }}</span>
                   <span class="settings-center-nav-item__badge">本页</span>
                 </span>
                 <span v-if="item.desc" class="settings-center-nav-item__desc">{{
@@ -1341,7 +1326,9 @@
                 @click="openSettingsCenter(item.id)"
               >
                 <span class="settings-center-nav-item__row">
-                  <span class="settings-center-nav-item__label">{{ item.label }}</span>
+                  <span class="settings-center-nav-item__label">{{
+                    item.label
+                  }}</span>
                   <span class="settings-center-nav-item__badge">当前页</span>
                 </span>
                 <span v-if="item.desc" class="settings-center-nav-item__desc">{{
@@ -1356,7 +1343,9 @@
               {{ currentUsernameInitial }}
             </div>
             <div class="settings-center-account__meta">
-              <div class="settings-center-account__name">{{ currentUsername }}</div>
+              <div class="settings-center-account__name">
+                {{ currentUsername }}
+              </div>
               <div class="settings-center-account__role">当前账号</div>
             </div>
             <el-button
@@ -1384,7 +1373,11 @@
             <span>项目：{{ currentProjectLabel }}</span>
             <span>模式：系统对话</span>
             <span>
-              面板：{{ activeSettingsPanelItem?.kind === "route" ? "平台页面" : "对话配置" }}
+              面板：{{
+                activeSettingsPanelItem?.kind === "route"
+                  ? "平台页面"
+                  : "对话配置"
+              }}
             </span>
           </div>
         </div>
@@ -1396,10 +1389,11 @@
           <div class="settings-summary-card">
             <div class="settings-summary-title">影响当前回答</div>
             <div class="settings-summary-text">
-              这里集中管理运行模式、执行员工、系统提示词、输出风格，以及 MCP
+              这里集中管理执行员工、系统提示词、输出风格，以及 MCP
               与工具调用上限等高级参数。
               <template v-if="!hasSelectedProject">
-                当前还没有选中项目，所以项目员工、项目级 MCP 和项目工作区配置暂不可用。
+                当前还没有选中项目，所以项目员工、项目级 MCP
+                和项目工作区配置暂不可用。
               </template>
               <template v-else>
                 当前通过系统对话统一调度模型、项目工具与项目级 MCP 能力。
@@ -1428,24 +1422,6 @@
                 class="settings-form"
                 size="default"
               >
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">运行模式</span>
-                  </template>
-                  <el-radio-group
-                    v-model="selectedChatMode"
-                    class="settings-mode-group"
-                  >
-                    <el-radio-button
-                      v-for="item in chatModes"
-                      :key="item.id"
-                      :label="item.id"
-                    >
-                      {{ item.label }}
-                    </el-radio-button>
-                  </el-radio-group>
-                </el-form-item>
-
                 <el-form-item>
                   <template #label>
                     <span class="label-with-tooltip">执行员工</span>
@@ -1536,7 +1512,9 @@
                     </div>
                     <div class="workspace-path-hint">
                       <template v-if="projectWorkspacePath">
-                        当前项目工作区：{{ projectWorkspacePath }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话统一复用。
+                        当前项目工作区：{{
+                          projectWorkspacePath
+                        }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话统一复用。
                       </template>
                       <template v-else>
                         当前项目还没有平台工作区路径时，建议直接填写相对路径或绝对路径。
@@ -1860,38 +1838,6 @@
                 <el-form-item>
                   <template #label>
                     <span class="label-with-tooltip">
-                      允许 Shell 类工具
-                      <el-tooltip
-                        content="开启后，AI 可以通过终端执行命令行指令（存在一定安全风险）。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-switch v-model="projectChatSettings.allow_shell_tools" />
-                </el-form-item>
-
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      允许写文件类工具
-                      <el-tooltip
-                        content="开启后，AI 可以直接修改或创建您的项目文件。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-switch
-                    v-model="projectChatSettings.allow_file_write_tools"
-                  />
-                </el-form-item>
-
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
                       工具执行超时
                       <el-tooltip
                         content="单个工具允许执行的最长时间（秒），避免某个耗时任务卡死整个对话。"
@@ -2014,20 +1960,15 @@
                     <el-option label="直接停止 (Stop)" value="stop" />
                   </el-select>
                 </el-form-item>
-
-                <div class="settings-subtle-card">
-                  <div class="settings-subtle-title">暂时降权的配置</div>
-                  <div class="settings-subtle-text">
-                    `高风险二次确认`
-                    当前只做配置保存，主执行链还没有完全按这个开关分流，所以先不放在主要设置项里，避免误导。
-                  </div>
-                </div>
               </el-form>
             </el-tab-pane>
           </el-tabs>
         </div>
 
-        <div v-else class="settings-center-stage__body settings-center-stage__body--inline">
+        <div
+          v-else
+          class="settings-center-stage__body settings-center-stage__body--inline"
+        >
           <router-view class="settings-center-inline-page" />
         </div>
       </section>
@@ -2036,14 +1977,7 @@
 </template>
 
 <script setup>
-import {
-  computed,
-  onMounted,
-  onUnmounted,
-  ref,
-  watch,
-  nextTick,
-} from "vue";
+import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ExternalMcpManager from "@/components/ExternalMcpManager.vue";
@@ -2215,8 +2149,6 @@ const CHAT_SETTINGS_DEFAULTS = {
   high_risk_tool_confirm: true,
   tool_timeout_sec: 60,
   tool_retry_count: 0,
-  allow_shell_tools: true,
-  allow_file_write_tools: true,
   answer_style: "concise",
   prefer_conclusion_first: true,
 };
@@ -2346,7 +2278,6 @@ const autoSaveUpdatedAt = ref("");
 const projectSettingsHydrating = ref(false);
 
 const projects = ref([]);
-const chatModes = ref([{ id: "system", label: "系统对话" }]);
 const providers = ref([]);
 const localConnectors = ref([]);
 const desktopConnectorArtifacts = ref([]);
@@ -2486,17 +2417,6 @@ const inlineEditingBusy = ref(false);
 const maxUploadLimit = ref(6);
 const chatMaxTokens = ref(512);
 
-const selectedChatMode = computed({
-  get() {
-    return String(projectChatSettings.value.chat_mode || "system").trim();
-  },
-  set(value) {
-    projectChatSettings.value = normalizeProjectChatSettings({
-      ...projectChatSettings.value,
-      chat_mode: String(value || "system").trim(),
-    });
-  },
-});
 const hasSelectedProject = computed(() =>
   Boolean(String(selectedProjectId.value || "").trim()),
 );
@@ -2713,11 +2633,10 @@ const skillResourceSites = computed(() =>
 const skillResourceDirectoryStored = computed(() =>
   readPreferredSkillResourceDirectory(selectedProjectId.value),
 );
-const skillResourceDirectoryResolved = computed(
-  () =>
-    String(
-      skillResourceDirectoryDraft.value || skillResourceDirectoryStored.value,
-    ).trim(),
+const skillResourceDirectoryResolved = computed(() =>
+  String(
+    skillResourceDirectoryDraft.value || skillResourceDirectoryStored.value,
+  ).trim(),
 );
 const settingsCenterItems = computed(() =>
   [
@@ -3045,7 +2964,14 @@ function extractTerminalApprovalPrompt(rawText) {
     lowered.includes("mcp server") ||
     lowered.includes("allow this action") ||
     lowered.includes("approval");
-  if (!(hasApprovalContext && hasOnceChoice && hasSessionChoice && hasRejectChoice)) {
+  if (
+    !(
+      hasApprovalContext &&
+      hasOnceChoice &&
+      hasSessionChoice &&
+      hasRejectChoice
+    )
+  ) {
     return null;
   }
   const toolMatch = raw.match(/run the tool "([^"]+)"/i);
@@ -3098,14 +3024,16 @@ function setTerminalApprovalPrompt(payload) {
 
 function scheduleTerminalApprovalFallback(requestMeta) {
   clearTerminalApprovalFallback();
-  const requestId = String(requestMeta?.requestId || "").trim() || `${Date.now()}`;
+  const requestId =
+    String(requestMeta?.requestId || "").trim() || `${Date.now()}`;
   const toolName = String(requestMeta?.lastToolName || "").trim();
   terminalApprovalFallbackTimer = window.setTimeout(() => {
     if (terminalApprovalPromptFromOutput.value) return;
     setTerminalApprovalPrompt({
       key: `fallback:${requestId}:${toolName || "approval"}`,
       title: toolName ? `检测到审批请求：${toolName}` : "检测到审批请求",
-      description: "真实终端已进入审批等待状态；如果原始提示未同步到页面，可直接在这里继续。",
+      description:
+        "真实终端已进入审批等待状态；如果原始提示未同步到页面，可直接在这里继续。",
     });
   }, 1200);
 }
@@ -3920,7 +3848,7 @@ function normalizeProjectChatSettings(raw) {
     .toLowerCase();
   const sandboxModeExplicit = Boolean(
     source.connector_sandbox_mode_explicit ??
-      source.external_agent_sandbox_mode_explicit,
+    source.external_agent_sandbox_mode_explicit,
   );
   const sandboxMode = String(
     source.connector_sandbox_mode ||
@@ -3940,7 +3868,8 @@ function normalizeProjectChatSettings(raw) {
   return {
     ...CHAT_SETTINGS_DEFAULTS,
     ...source,
-    chat_mode: chatMode === "system" ? "system" : CHAT_SETTINGS_DEFAULTS.chat_mode,
+    chat_mode:
+      chatMode === "system" ? "system" : CHAT_SETTINGS_DEFAULTS.chat_mode,
     connector_sandbox_mode: effectiveSandboxMode,
     connector_sandbox_mode_explicit: sandboxModeExplicit,
     local_connector_id: String(
@@ -4167,7 +4096,9 @@ async function sendTerminalMirrorContent(content, options = {}) {
 }
 
 async function sendTerminalApprovalChoice(choice) {
-  const activePromptKey = String(terminalApprovalPrompt.value?.key || "").trim();
+  const activePromptKey = String(
+    terminalApprovalPrompt.value?.key || "",
+  ).trim();
   if (activePromptKey) {
     terminalApprovalHandledKey.value = activePromptKey;
   }
@@ -4400,7 +4331,8 @@ function isInlineEditingMessage(messageIndex) {
   const current = messages.value[normalizedIndex];
   if (!current) return false;
   return (
-    String(current?.id || "").trim() === String(inlineEditingMessageId.value || "").trim()
+    String(current?.id || "").trim() ===
+    String(inlineEditingMessageId.value || "").trim()
   );
 }
 
@@ -5239,7 +5171,9 @@ function normalizeEmployeeDraftExternalSkillSite(raw) {
 }
 
 function buildVettSkillPageUrl(slug) {
-  const normalized = String(slug || "").trim().replace(/^\/+|\/+$/g, "");
+  const normalized = String(slug || "")
+    .trim()
+    .replace(/^\/+|\/+$/g, "");
   return normalized ? `https://vett.sh/skills/${normalized}` : "";
 }
 
@@ -5358,7 +5292,9 @@ function buildSkillResourceSearchQueries(query) {
   const seen = new Set();
   pushSkillResourceSearchQuery(queries, seen, rawQuery);
   const asciiTokens = rawQuery.match(/[A-Za-z][A-Za-z0-9.+#-]*/g) || [];
-  asciiTokens.forEach((token) => pushSkillResourceSearchQuery(queries, seen, token));
+  asciiTokens.forEach((token) =>
+    pushSkillResourceSearchQuery(queries, seen, token),
+  );
   skillResourceIntentAliasGroups.forEach((group) => {
     const matched = group.match.some((token) => {
       const compactToken = normalizeSearchAliasKey(token);
@@ -5379,19 +5315,29 @@ function buildSkillResourceSearchQueries(query) {
 
 function inferChineseSkillSummary(raw) {
   const name = String(raw?.name || raw?.slug || "").trim();
-  const slug = String(raw?.slug || "").trim().toLowerCase();
+  const slug = String(raw?.slug || "")
+    .trim()
+    .toLowerCase();
   const description = String(raw?.description || "").trim();
   const joined = `${name} ${slug} ${description}`.toLowerCase();
   if (joined.includes("ui") || joined.includes("interface")) {
     return "适合界面审美、排版层级、交互一致性和设计系统类员工。";
   }
-  if (joined.includes("css") || joined.includes("style") || joined.includes("responsive")) {
+  if (
+    joined.includes("css") ||
+    joined.includes("style") ||
+    joined.includes("responsive")
+  ) {
     return "适合布局系统、响应式、动画和样式治理相关任务。";
   }
   if (joined.includes("vue")) {
     return "适合 Vue 组件设计、Composition API 和工程实践相关任务。";
   }
-  if (joined.includes("chrome") || joined.includes("devtools") || joined.includes("browser")) {
+  if (
+    joined.includes("chrome") ||
+    joined.includes("devtools") ||
+    joined.includes("browser")
+  ) {
     return "适合浏览器调试、渲染链路分析和性能定位相关任务。";
   }
   if (joined.includes("architect") || joined.includes("architecture")) {
@@ -5426,27 +5372,28 @@ function normalizeSkillResourceSearchItem(raw) {
     raw?.latest_version && typeof raw.latest_version === "object"
       ? raw.latest_version
       : {};
-  const risk = String(latestVersion.risk || "").trim().toLowerCase();
-  const scanStatus = String(latestVersion.scan_status || "").trim().toLowerCase();
-  const policyAction = String(latestVersion.policy_action || "").trim().toLowerCase();
+  const risk = String(latestVersion.risk || "")
+    .trim()
+    .toLowerCase();
+  const scanStatus = String(latestVersion.scan_status || "")
+    .trim()
+    .toLowerCase();
+  const policyAction = String(latestVersion.policy_action || "")
+    .trim()
+    .toLowerCase();
   const latestVersionNumber = String(latestVersion.version || "").trim();
-  const installCount = Number(raw?.install_count ?? raw?.installCount ?? 0) || 0;
+  const installCount =
+    Number(raw?.install_count ?? raw?.installCount ?? 0) || 0;
   const pageUrl =
-    buildVettSkillPageUrl(raw?.slug) ||
-    String(raw?.source_url || "").trim();
+    buildVettSkillPageUrl(raw?.slug) || String(raw?.source_url || "").trim();
   return {
     id: String(raw?.id || "").trim(),
     slug: String(raw?.slug || "").trim(),
     title: String(raw?.name || raw?.slug || "").trim(),
     description: String(raw?.description || "").trim(),
     url: pageUrl,
-    localizedDescription: resolveLocalizedSkillSummary(
-      raw,
-      pageUrl,
-    ),
-    latestVersionLabel: latestVersionNumber
-      ? `v${latestVersionNumber}`
-      : "",
+    localizedDescription: resolveLocalizedSkillSummary(raw, pageUrl),
+    latestVersionLabel: latestVersionNumber ? `v${latestVersionNumber}` : "",
     canInstall:
       !!latestVersionNumber &&
       scanStatus === "completed" &&
@@ -5460,7 +5407,12 @@ function normalizeSkillResourceSearchItem(raw) {
   };
 }
 
-function scoreSkillResourceSearchItem(item, rawQuery, matchedQuery, queryIndex) {
+function scoreSkillResourceSearchItem(
+  item,
+  rawQuery,
+  matchedQuery,
+  queryIndex,
+) {
   const joined = normalizeMatchKey(
     `${item?.title || ""} ${item?.slug || ""} ${item?.description || ""}`,
   );
@@ -5628,7 +5580,9 @@ async function pickSkillResourceDirectory() {
 }
 
 async function copySkillResourceDirectory() {
-  const directoryPath = String(skillResourceDirectoryResolved.value || "").trim();
+  const directoryPath = String(
+    skillResourceDirectoryResolved.value || "",
+  ).trim();
   if (!directoryPath) {
     ElMessage.warning("请先选择技能目录");
     return;
@@ -5667,7 +5621,9 @@ async function searchSkillResources() {
   skillResourceSearchLoading.value = true;
   try {
     const settled = await Promise.allSettled(
-      expandedQueries.map((searchQuery) => fetchSkillResourceSearchItems(searchQuery)),
+      expandedQueries.map((searchQuery) =>
+        fetchSkillResourceSearchItems(searchQuery),
+      ),
     );
     const groups = settled
       .map((entry, index) => {
@@ -5685,7 +5641,10 @@ async function searchSkillResources() {
       const failed = settled.find((entry) => entry.status === "rejected");
       throw failed?.reason || new Error("搜索技能资源失败");
     }
-    skillResourceSearchResults.value = mergeSkillResourceSearchResults(groups, query);
+    skillResourceSearchResults.value = mergeSkillResourceSearchResults(
+      groups,
+      query,
+    );
   } catch (err) {
     skillResourceSearchResults.value = [];
     ElMessage.error(err?.detail || err?.message || "搜索技能资源失败");
@@ -5721,14 +5680,11 @@ async function installSkillResource(site) {
   }
   skillResourceInstallingSlug.value = slug;
   try {
-    const result = await api.post(
-      `/skill-resources/vett/${slug}/install`,
-      {
-        version,
-        install_dir: installDir,
-        import_to_library: false,
-      },
-    );
+    const result = await api.post(`/skill-resources/vett/${slug}/install`, {
+      version,
+      install_dir: installDir,
+      import_to_library: false,
+    });
     const resolvedInstallDir = String(result?.install_dir || installDir).trim();
     ElMessage.success(
       resolvedInstallDir
@@ -5789,9 +5745,6 @@ function resetEmployeeDraftDialogState() {
 }
 
 function handleStartEmployeeCreation() {
-  if (isExternalAgentMode.value) {
-    selectedChatMode.value = "system";
-  }
   toggleComposerAssist("employee_create");
 }
 
@@ -6387,7 +6340,6 @@ function syncProjectFromRoute() {
 async function fetchProvidersByProject(projectId) {
   projectSettingsHydrating.value = true;
   if (!projectId) {
-    chatModes.value = [{ id: "system", label: "系统对话" }];
     projectEmployees.value = [];
     externalAgentInfo.value = normalizeExternalAgentInfo({});
     mcpModules.value = normalizeMcpModules({});
@@ -6411,9 +6363,6 @@ async function fetchProvidersByProject(projectId) {
     autoSaveState.value = "idle";
     autoSaveUpdatedAt.value = "";
     lastAutoSavedFingerprint = "";
-    if (selectedChatMode.value !== "system") {
-      selectedChatMode.value = "system";
-    }
     await fetchGlobalProviders();
     projectChatSettings.value = applyLocalConnectorRuntimeSettings({
       ...CHAT_SETTINGS_DEFAULTS,
@@ -6428,10 +6377,6 @@ async function fetchProvidersByProject(projectId) {
       data?.chat_settings && typeof data.chat_settings === "object"
         ? data.chat_settings
         : {};
-    chatModes.value = [{ id: "system", label: "系统对话" }];
-    if (selectedChatMode.value !== "system") {
-      selectedChatMode.value = "system";
-    }
     providers.value = data.providers || [];
     localConnectors.value = [];
     const settings = applyLocalConnectorRuntimeSettings(rawSettings);
@@ -6449,9 +6394,7 @@ async function fetchProvidersByProject(projectId) {
     projectWorkspacePath.value = String(
       data?.project_workspace_path || "",
     ).trim();
-    projectAiEntryFile.value = String(
-      data?.project_ai_entry_file || "",
-    ).trim();
+    projectAiEntryFile.value = String(data?.project_ai_entry_file || "").trim();
     aiEntryFileDraft.value = projectAiEntryFile.value;
     workspacePathDraft.value = String(
       projectWorkspacePath.value ||
@@ -6648,7 +6591,7 @@ function buildProjectChatSettingsPayload() {
   const employeeIds = normalizeStringList(selectedEmployeeIds.value || []);
   return normalizeProjectChatSettings({
     ...projectChatSettings.value,
-    chat_mode: String(selectedChatMode.value || "system").trim(),
+    chat_mode: "system",
     selected_employee_id: employeeIds.length === 1 ? employeeIds[0] : "",
     selected_employee_ids: employeeIds,
     provider_id: String(selectedProviderId.value || "").trim(),
@@ -6829,15 +6772,15 @@ async function fetchChatHistory(
       },
     );
     const historyRows = (data.messages || []).map(mapHistoryMessage);
-    messages.value = append
-      ? [...historyRows, ...messages.value]
-      : historyRows;
+    messages.value = append ? [...historyRows, ...messages.value] : historyRows;
     chatHistoryLoadedCount.value = messages.value.length;
     rememberChatSession(projectId, normalizedSessionId);
     if (append) {
       nextTick(() => {
         if (!messagesContainer.value) return;
-        const nextScrollHeight = Number(messagesContainer.value.scrollHeight || 0);
+        const nextScrollHeight = Number(
+          messagesContainer.value.scrollHeight || 0,
+        );
         messagesContainer.value.scrollTop =
           nextScrollHeight - previousScrollHeight + previousScrollTop;
       });
@@ -7533,29 +7476,23 @@ async function handleSocketMessage(eventData) {
   }
   if (eventType === "tool_result") {
     const toolName = String(eventData?.tool_name || "工具");
-    const statusText = String(eventData?.status || "").trim().toLowerCase();
+    const statusText = String(eventData?.status || "")
+      .trim()
+      .toLowerCase();
     const outputPreview = String(eventData?.output_preview || "").trim();
-    const success = !statusText || ["success", "completed", "ok"].includes(statusText);
+    const success =
+      !statusText || ["success", "completed", "ok"].includes(statusText);
     const approvalPending = isMcpApprovalCancelledMessage(outputPreview);
     if (approvalPending && pending) {
       pending.mcpApprovalCancelled = true;
       pending.lastToolName = toolName;
     }
     if (approvalPending) {
-      appendAssistantStatusNote(
-        row,
-        `> ⏳ 工具调用等待审批：\`${toolName}\``,
-      );
+      appendAssistantStatusNote(row, `> ⏳ 工具调用等待审批：\`${toolName}\``);
     } else if (success) {
-      appendAssistantStatusNote(
-        row,
-        `> ✅ 工具调用完成：\`${toolName}\``,
-      );
+      appendAssistantStatusNote(row, `> ✅ 工具调用完成：\`${toolName}\``);
     } else {
-      appendAssistantStatusNote(
-        row,
-        `> ❌ 工具调用失败：\`${toolName}\``,
-      );
+      appendAssistantStatusNote(row, `> ❌ 工具调用失败：\`${toolName}\``);
     }
     scrollToBottom();
     return;
@@ -7575,7 +7512,10 @@ async function handleSocketMessage(eventData) {
       }
     }
     if (pending?.mcpApprovalCancelled) {
-      const handedOff = await handoffExternalAgentRequestToTerminal(row, pending);
+      const handedOff = await handoffExternalAgentRequestToTerminal(
+        row,
+        pending,
+      );
       if (handedOff) {
         pending.awaitingTerminalApproval = true;
         scrollToBottom();
@@ -8327,7 +8267,7 @@ async function doSend() {
       request_id: requestId,
       message_id: userMessage.id,
       chat_session_id: activeChatSessionId,
-      chat_mode: selectedChatMode.value || "system",
+      chat_mode: "system",
       skill_resource_directory: String(
         skillResourceDirectoryResolved.value || "",
       ).trim(),
@@ -8379,14 +8319,6 @@ async function doSend() {
       tool_retry_count: Number(
         projectChatSettings.value.tool_retry_count ||
           CHAT_SETTINGS_DEFAULTS.tool_retry_count,
-      ),
-      allow_shell_tools: Boolean(
-        projectChatSettings.value.allow_shell_tools ??
-        CHAT_SETTINGS_DEFAULTS.allow_shell_tools,
-      ),
-      allow_file_write_tools: Boolean(
-        projectChatSettings.value.allow_file_write_tools ??
-        CHAT_SETTINGS_DEFAULTS.allow_file_write_tools,
       ),
       answer_style: String(
         projectChatSettings.value.answer_style ||
@@ -8455,15 +8387,6 @@ watch(
   },
 );
 
-watch(selectedChatMode, async (value) => {
-  const normalized = String(value || "").trim();
-  if (normalized !== "system") {
-    selectedChatMode.value = "system";
-  }
-  agentStatusExpanded.value = false;
-  resetExternalAgentRuntimeState();
-});
-
 watch(selectedProviderId, () => {
   handleProviderChange();
 });
@@ -8476,7 +8399,9 @@ watch(
       terminalApprovalDialogVisible.value = false;
       return;
     }
-    if (normalizedKey === String(terminalApprovalHandledKey.value || "").trim()) {
+    if (
+      normalizedKey === String(terminalApprovalHandledKey.value || "").trim()
+    ) {
       return;
     }
     terminalApprovalDialogVisible.value = true;
@@ -9825,8 +9750,11 @@ onUnmounted(() => {
   min-height: 132px !important;
   border-radius: 20px;
   border: 1px solid rgba(148, 163, 184, 0.26);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(250, 250, 252, 0.9));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.94),
+    rgba(250, 250, 252, 0.9)
+  );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.7),
     0 1px 2px rgba(15, 23, 42, 0.02);
@@ -9845,8 +9773,11 @@ onUnmounted(() => {
 
 .message-inline-editor :deep(.el-textarea__inner:focus) {
   border-color: rgba(59, 130, 246, 0.28);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(252, 252, 253, 0.94));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.98),
+    rgba(252, 252, 253, 0.94)
+  );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.82),
     0 0 0 4px rgba(255, 255, 255, 0.42);
@@ -11609,7 +11540,11 @@ onUnmounted(() => {
   height: 100vh;
   overflow: hidden;
   background:
-    radial-gradient(circle at top left, rgba(255, 244, 214, 0.5), transparent 24%),
+    radial-gradient(
+      circle at top left,
+      rgba(255, 244, 214, 0.5),
+      transparent 24%
+    ),
     linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
 }
 
@@ -12058,9 +11993,10 @@ onUnmounted(() => {
 }
 
 .chat-messages {
-  height: 100%;
-  padding: 14px 24px 18px;
+  height: 84%;
+  padding: 14px 24px 24px;
   overflow-y: auto;
+  scroll-padding-bottom: 24px;
   background: transparent;
 }
 
@@ -12160,9 +12096,15 @@ onUnmounted(() => {
 }
 
 .chat-composer {
+  flex-shrink: 0;
   display: flex;
   justify-content: center;
   padding: 0 24px 24px;
+  position: static;
+  bottom: auto;
+  z-index: auto;
+  background: transparent;
+  border-top: 0;
 }
 
 .chat-composer-panel {
@@ -12871,7 +12813,8 @@ onUnmounted(() => {
   }
 
   .chat-messages {
-    padding: 8px 18px 18px;
+    padding: 8px 18px 22px;
+    scroll-padding-bottom: 22px;
   }
 
   .chat-context-bar {
@@ -12944,7 +12887,8 @@ onUnmounted(() => {
 
 @media (max-width: 640px) {
   .chat-messages {
-    padding: 8px 14px 16px;
+    padding: 8px 14px 20px;
+    scroll-padding-bottom: 20px;
   }
 
   .chat-composer {

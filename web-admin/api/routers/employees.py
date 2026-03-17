@@ -1500,6 +1500,7 @@ async def generate_employee_draft(
         enabled_only=True,
         owner_username=str(auth_payload.get("sub") or "").strip(),
         include_all=is_admin_like(auth_payload),
+        include_shared=True,
     )
     if not providers:
         raise HTTPException(400, "未配置 LLM 提供商")
@@ -1930,6 +1931,7 @@ async def generate_employee_manual(
         enabled_only=True,
         owner_username=str(auth_payload.get("sub") or "").strip(),
         include_all=is_admin_like(auth_payload),
+        include_shared=True,
     )
 
     if not providers:

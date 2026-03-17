@@ -75,6 +75,7 @@ async def get_current_user_settings(auth_payload: dict = Depends(require_auth)):
         enabled_only=True,
         owner_username=username,
         include_all=is_admin_like(auth_payload),
+        include_shared=True,
     )
     return {
         "settings": {
@@ -102,6 +103,7 @@ async def update_current_user_settings(
             enabled_only=True,
             owner_username=username,
             include_all=is_admin_like(auth_payload),
+            include_shared=True,
         )
         if not any(str(item.get("id") or "").strip() == provider_id for item in providers):
             raise HTTPException(400, "default_ai_provider_id is invalid or not accessible")

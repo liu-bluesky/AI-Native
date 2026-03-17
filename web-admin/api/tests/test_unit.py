@@ -34,30 +34,14 @@ async def test_tool_executor_logic():
     executor = ToolExecutor("test-proj", "test-emp")
     assert executor._timeout == 60
 
-
-def test_build_local_connector_file_tools_respects_write_toggle():
+def test_build_local_connector_file_tools_includes_coding_tools():
     from services.local_connector_service import build_local_connector_file_tools
 
-    readonly_names = {
-        item["tool_name"]
-        for item in build_local_connector_file_tools(
-            allow_file_write_tools=False,
-            allow_shell_tools=False,
-        )
-    }
-    writable_names = {
-        item["tool_name"]
-        for item in build_local_connector_file_tools(
-            allow_file_write_tools=True,
-            allow_shell_tools=True,
-        )
-    }
+    tool_names = {item["tool_name"] for item in build_local_connector_file_tools()}
 
-    assert "local_connector_read_file" in readonly_names
-    assert "local_connector_write_file" not in readonly_names
-    assert "local_connector_run_command" not in readonly_names
-    assert "local_connector_write_file" in writable_names
-    assert "local_connector_run_command" in writable_names
+    assert "local_connector_read_file" in tool_names
+    assert "local_connector_write_file" in tool_names
+    assert "local_connector_run_command" in tool_names
 
 
 @pytest.mark.asyncio
@@ -189,6 +173,131 @@ def test_usage_key_delete_compatibility_allows_legacy_owners():
     assert _can_delete_key_record(None, "tester") is False
 
 
+def test_llm_provider_service_allows_shared_users_on_enabled_list(monkeypatch):
+    from services.llm_provider_service import LlmProviderService
+    import stores.factory as factory_mod
+
+    class DummyStore:
+        def __init__(self):
+            self.providers = [
+                {
+                    "id": "p-owned",
+                    "name": "Owned Provider",
+                    "enabled": True,
+                    "models": ["gpt-4.1"],
+                    "default_model": "gpt-4.1",
+                    "owner_username": "alice",
+                    "shared_usernames": [],
+                },
+                {
+                    "id": "p-shared",
+                    "name": "Shared Provider",
+                    "enabled": True,
+                    "models": ["gpt-4.1-mini"],
+                    "default_model": "gpt-4.1-mini",
+                    "owner_username": "alice",
+                    "shared_usernames": ["bob"],
+                },
+                {
+                    "id": "p-disabled",
+                    "name": "Disabled Provider",
+                    "enabled": False,
+                    "models": ["gpt-4o"],
+                    "default_model": "gpt-4o",
+                    "owner_username": "alice",
+                    "shared_usernames": ["bob"],
+                },
+            ]
+
+        def delete_provider(self, provider_id):
+            return True
+
+        def list_providers(self, include_secret=False, enabled_only=False):
+            providers = self.providers
+            if enabled_only:
+                providers = [item for item in providers if bool(item.get("enabled", True))]
+            return [dict(item) for item in providers]
+
+        def get_provider(self, provider_id, include_secret=False):
+            for item in self.providers:
+                if item["id"] == provider_id:
+                    return dict(item)
+            return None
+
+    service = LlmProviderService(DummyStore())
+    monkeypatch.setattr(
+        factory_mod,
+        "user_store",
+        type(
+            "DummyUserStore",
+            (),
+            {"get": staticmethod(lambda username: type("User", (), {"default_ai_provider_id": ""})())},
+        )(),
+    )
+
+    manageable = service.list_providers(
+        enabled_only=False,
+        owner_username="bob",
+        include_all=False,
+        include_shared=False,
+    )
+    visible = service.list_providers(
+        enabled_only=True,
+        owner_username="bob",
+        include_all=False,
+        include_shared=True,
+    )
+
+    assert manageable == []
+    assert [item["id"] for item in visible] == ["p-shared"]
+    assert visible[0]["is_default"] is True
+
+
+def test_llm_provider_service_blocks_shared_user_from_editing_provider():
+    from services.llm_provider_service import LlmProviderService
+
+    class DummyStore:
+        def __init__(self):
+            self.providers = {
+                "p-shared": {
+                    "id": "p-shared",
+                    "name": "Shared Provider",
+                    "enabled": True,
+                    "models": ["gpt-4.1-mini"],
+                    "default_model": "gpt-4.1-mini",
+                    "owner_username": "alice",
+                    "shared_usernames": ["bob"],
+                }
+            }
+
+        def delete_provider(self, provider_id):
+            return provider_id in self.providers
+
+        def list_providers(self, include_secret=False, enabled_only=False):
+            return [dict(item) for item in self.providers.values()]
+
+        def get_provider(self, provider_id, include_secret=False):
+            item = self.providers.get(provider_id)
+            return dict(item) if item else None
+
+        def patch_provider(self, provider_id, updates):
+            item = self.providers.get(provider_id)
+            if item is None:
+                return None
+            item.update(updates)
+            return dict(item)
+
+    service = LlmProviderService(DummyStore())
+
+    with pytest.raises(LookupError):
+        service.update_provider(
+            "p-shared",
+            {"name": "Mutated"},
+            owner_username="bob",
+            include_all=False,
+        )
+
+
 def test_filter_project_tools_by_names_keeps_tools_when_empty_selection():
     from routers.projects import _filter_project_tools_by_names
 
@@ -204,6 +313,184 @@ def test_filter_project_tools_by_names_keeps_tools_when_empty_selection():
         ["query_project_members"],
         explicit_filter=True,
     ) == [{"tool_name": "query_project_members"}]
+
+
+def test_project_detail_runtime_includes_full_config_and_member_lists(tmp_path, monkeypatch):
+    from services import dynamic_mcp_context as context_svc
+    from stores.json.employee_store import EmployeeConfig, EmployeeStore
+    from stores.json.project_store import ProjectConfig, ProjectMember, ProjectStore, ProjectUserMember
+
+    data_dir = tmp_path / "data"
+    employee_store = EmployeeStore(data_dir)
+    project_store = ProjectStore(data_dir)
+
+    employee_store.save(
+        EmployeeConfig(
+            id="emp-1",
+            name="员工一",
+            created_by="tester",
+            style_hints=["严谨"],
+            auto_evolve=False,
+        )
+    )
+    project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            workspace_path="/tmp/workspace",
+            chat_settings={"auto_use_tools": False, "model_name": "demo-model"},
+        )
+    )
+    project_store.upsert_member(
+        ProjectMember(project_id="proj-1", employee_id="emp-1", role="owner", enabled=True)
+    )
+    project_store.upsert_user_member(
+        ProjectUserMember(project_id="proj-1", username="tester", role="owner", enabled=True)
+    )
+
+    monkeypatch.setattr(context_svc, "employee_store", employee_store)
+    monkeypatch.setattr(context_svc, "project_store", project_store)
+
+    project_detail = context_svc.get_project_detail_runtime("proj-1")
+    employee_detail = context_svc.get_project_employee_detail_runtime("proj-1", "emp-1")
+
+    assert project_detail["id"] == "proj-1"
+    assert project_detail["chat_settings"]["auto_use_tools"] is False
+    assert project_detail["member_count"] == 1
+    assert project_detail["user_count"] == 1
+    assert project_detail["members"][0]["employee_id"] == "emp-1"
+    assert project_detail["user_members"][0]["username"] == "tester"
+
+    assert employee_detail["project_id"] == "proj-1"
+    assert employee_detail["member"]["role"] == "owner"
+    assert employee_detail["employee_exists"] is True
+    assert employee_detail["employee"]["id"] == "emp-1"
+    assert employee_detail["employee"]["style_hints"] == ["严谨"]
+    assert employee_detail["employee"]["auto_evolve"] is False
+    assert "rule_ids" in employee_detail["employee"]
+
+
+def test_project_runtime_builtin_tools_include_and_invoke_full_detail_helpers(monkeypatch):
+    from services import dynamic_mcp_runtime as runtime_svc
+
+    monkeypatch.setattr(runtime_svc, "_build_project_proxy_specs", lambda project_id: ({}, {}))
+
+    tool_names = {
+        item["tool_name"]
+        for item in runtime_svc.list_project_proxy_tools_runtime("proj-test", "")
+    }
+
+    monkeypatch.setattr(
+        runtime_svc,
+        "get_project_detail_runtime",
+        lambda project_id: {"id": project_id, "chat_settings": {"auto_use_tools": True}},
+    )
+    monkeypatch.setattr(
+        runtime_svc,
+        "get_project_employee_detail_runtime",
+        lambda project_id, employee_id: {
+            "project_id": project_id,
+            "employee_id": employee_id,
+            "employee_exists": True,
+        },
+    )
+
+    project_result = runtime_svc.invoke_project_skill_tool_runtime("proj-test", "get_project_detail")
+    employee_result = runtime_svc.invoke_project_skill_tool_runtime(
+        "proj-test",
+        "get_project_employee_detail",
+        args={"employee_id": "emp-9"},
+    )
+
+    assert "get_project_detail" in tool_names
+    assert "get_project_employee_detail" in tool_names
+    assert project_result["tool_name"] == "get_project_detail"
+    assert project_result["id"] == "proj-test"
+    assert project_result["chat_settings"]["auto_use_tools"] is True
+    assert employee_result["tool_name"] == "get_project_employee_detail"
+    assert employee_result["employee_id"] == "emp-9"
+    assert employee_result["employee_exists"] is True
+
+
+def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monkeypatch, tmp_path):
+    from services import dynamic_mcp_apps_project as project_mcp_svc
+
+    registered_tools: dict[str, object] = {}
+    captured: dict = {}
+
+    class FakeMcp:
+        def tool(self, name=None, description=None):
+            def decorator(fn):
+                registered_tools[name or fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, *_args, **_kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        def sse_app(self):
+            return "sse-app"
+
+        def streamable_http_app(self):
+            return "http-app"
+
+    class FakeCtx:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self, default=""):
+            return self.value if self.value is not None else default
+
+    spec = {
+        "employee_id": "emp-1",
+        "skill_id": "skill-db",
+        "skill_name": "数据库助手",
+        "entry_name": "query-db",
+        "script_type": "py",
+        "script_path": "/tmp/query-db.py",
+        "base_tool_name": "skill_db__query_db",
+        "scoped_tool_name": "emp_1__skill_db__query_db",
+        "description": "Proxy tool for skill-db:query-db",
+    }
+
+    monkeypatch.setattr(project_mcp_svc, "_new_mcp", lambda _service_name: FakeMcp())
+    monkeypatch.setattr(project_mcp_svc, "_apply_mcp_arguments_compat", lambda app: app)
+    monkeypatch.setattr(project_mcp_svc, "_DualTransportMcpApp", lambda sse_app, http_app: (sse_app, http_app))
+    monkeypatch.setattr(
+        project_mcp_svc,
+        "_build_project_proxy_specs",
+        lambda _project_id: ({spec["scoped_tool_name"]: spec}, {"emp-1": {spec["base_tool_name"]: spec}}),
+    )
+    monkeypatch.setattr(project_mcp_svc, "list_project_external_tools_runtime", lambda _project_id: [])
+
+    def fake_execute(spec_item, **kwargs):
+        captured["spec"] = spec_item
+        captured["kwargs"] = kwargs
+        return {"status": "ok"}
+
+    monkeypatch.setattr(project_mcp_svc, "_execute_skill_proxy", fake_execute)
+
+    project_mcp_svc.create_project_mcp(
+        "proj-1",
+        current_api_key_ctx=FakeCtx("api-key-123"),
+        current_developer_name_ctx=FakeCtx("tester"),
+        project_root=tmp_path,
+        recall_limit=20,
+    )
+
+    result = registered_tools[spec["scoped_tool_name"]](args={"sql": "show tables"}, timeout_sec=15)
+
+    assert result["status"] == "ok"
+    assert captured["spec"] == spec
+    assert captured["kwargs"]["project_root"] == tmp_path
+    assert captured["kwargs"]["current_api_key"] == "api-key-123"
+    assert captured["kwargs"]["employee_id"] == "emp-1"
+    assert captured["kwargs"]["args"] == {"sql": "show tables"}
+    assert captured["kwargs"]["timeout_sec"] == 15
 
 
 def test_project_chat_store_truncate_messages_updates_session_snapshot(tmp_path):

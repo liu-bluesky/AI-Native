@@ -117,6 +117,7 @@ class LlmProviderStorePostgres:
             "enabled": bool(payload.get("enabled", True)),
             "extra_headers": payload.get("extra_headers") or {},
             "owner_username": str(payload.get("owner_username") or "").strip(),
+            "shared_usernames": payload.get("shared_usernames") or [],
             "created_at": now,
             "updated_at": now,
         }

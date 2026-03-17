@@ -171,8 +171,25 @@ class LlmProviderService:
         return str(value or "").strip()
 
     @classmethod
+    def _normalize_shared_usernames(cls, value: Any) -> list[str]:
+        raw_items = value if isinstance(value, list) else []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            username = cls._normalize_owner_username(item)
+            if not username or username in seen:
+                continue
+            seen.add(username)
+            normalized.append(username)
+        return normalized
+
+    @classmethod
     def _provider_owner_username(cls, provider: dict[str, Any]) -> str:
         return cls._normalize_owner_username(provider.get("owner_username"))
+
+    @classmethod
+    def _provider_shared_usernames(cls, provider: dict[str, Any]) -> list[str]:
+        return cls._normalize_shared_usernames(provider.get("shared_usernames"))
 
     def _cleanup_legacy_static_provider(self) -> None:
         self._store.delete_provider("lmp-local-static-codex")
@@ -197,17 +214,25 @@ class LlmProviderService:
         *,
         owner_username: str = "",
         include_all: bool = False,
+        include_shared: bool = False,
+        owner_only: bool = False,
     ) -> list[dict[str, Any]]:
         if include_all:
             return providers
         normalized_owner = self._normalize_owner_username(owner_username)
         if not normalized_owner:
             return []
-        return [
-            provider
-            for provider in providers
-            if self._provider_owner_username(provider) == normalized_owner
-        ]
+        visible: list[dict[str, Any]] = []
+        for provider in providers:
+            provider_owner = self._provider_owner_username(provider)
+            if provider_owner == normalized_owner:
+                visible.append(provider)
+                continue
+            if owner_only or not include_shared:
+                continue
+            if normalized_owner in self._provider_shared_usernames(provider):
+                visible.append(provider)
+        return visible
 
     def list_providers(
         self,
@@ -215,12 +240,14 @@ class LlmProviderService:
         *,
         owner_username: str = "",
         include_all: bool = False,
+        include_shared: bool = False,
     ) -> list[dict[str, Any]]:
         providers = self._store.list_providers(include_secret=False, enabled_only=enabled_only)
         visible_providers = self._filter_providers_for_actor(
             providers,
             owner_username=owner_username,
             include_all=include_all,
+            include_shared=include_shared,
         )
         default_provider_id = self._resolve_default_provider_id(visible_providers, owner_username=owner_username)
         return [
@@ -237,12 +264,14 @@ class LlmProviderService:
         *,
         owner_username: str = "",
         include_all: bool = False,
+        include_shared: bool = True,
     ) -> dict[str, Any] | None:
         providers = self._store.list_providers(include_secret=include_secret, enabled_only=True)
         visible_providers = self._filter_providers_for_actor(
             providers,
             owner_username=owner_username,
             include_all=include_all,
+            include_shared=include_shared,
         )
         default_provider_id = self._resolve_default_provider_id(
             visible_providers,
@@ -258,6 +287,7 @@ class LlmProviderService:
     def create_provider(self, payload: dict[str, Any], *, owner_username: str) -> dict[str, Any]:
         validated = self._validate_create_payload(payload)
         validated["owner_username"] = self._normalize_owner_username(owner_username)
+        validated["shared_usernames"] = self._normalize_shared_usernames(payload.get("shared_usernames"))
         provider = self._store.create_provider(validated)
         return self._store.get_provider(provider["id"], include_secret=False) or provider
 
@@ -267,6 +297,8 @@ class LlmProviderService:
         *,
         owner_username: str = "",
         include_all: bool = True,
+        include_shared: bool = True,
+        owner_only: bool = False,
     ) -> dict[str, Any] | None:
         provider = self._store.get_provider(provider_id, include_secret=True)
         if provider is None:
@@ -275,6 +307,8 @@ class LlmProviderService:
             [provider],
             owner_username=owner_username,
             include_all=include_all,
+            include_shared=include_shared,
+            owner_only=owner_only,
         )
         return visible[0] if visible else None
 
@@ -291,10 +325,14 @@ class LlmProviderService:
             provider_id,
             owner_username=owner_username,
             include_all=include_all,
+            include_shared=False,
+            owner_only=True,
         )
         if current is None:
             raise LookupError(f"LLM provider {provider_id} not found")
         updates["owner_username"] = self._provider_owner_username(current)
+        if "shared_usernames" in payload:
+            updates["shared_usernames"] = self._normalize_shared_usernames(payload.get("shared_usernames"))
         updated = self._store.patch_provider(provider_id, updates)
         if updated is None:
             raise LookupError(f"LLM provider {provider_id} not found")
@@ -305,6 +343,8 @@ class LlmProviderService:
             provider_id,
             owner_username=owner_username,
             include_all=include_all,
+            include_shared=False,
+            owner_only=True,
         )
         if current is None:
             return False
@@ -330,6 +370,7 @@ class LlmProviderService:
             provider_id,
             owner_username=owner_username,
             include_all=include_all,
+            include_shared=True,
         )
         if provider is None:
             raise LookupError(f"LLM provider {provider_id} not found")
@@ -355,6 +396,7 @@ class LlmProviderService:
             enabled_only=True,
             owner_username=owner_username,
             include_all=include_all,
+            include_shared=True,
         )
         options: list[dict[str, Any]] = []
         for provider in providers:
@@ -395,6 +437,7 @@ class LlmProviderService:
                 provider_id,
                 owner_username=owner_username,
                 include_all=include_all,
+                include_shared=True,
             )
             if provider is None:
                 raise LookupError(f"LLM provider {provider_id} not found")
@@ -417,6 +460,7 @@ class LlmProviderService:
                 include_secret=True,
                 owner_username=owner_username,
                 include_all=include_all,
+                include_shared=True,
             )
             if fallback_provider and bool(fallback_provider.get("enabled", True)):
                 chosen_model = model_name or self._pick_default_model(fallback_provider)
@@ -435,12 +479,14 @@ class LlmProviderService:
             cfg_provider_id,
             owner_username=owner_username,
             include_all=include_all,
+            include_shared=True,
         )
         if provider is None or not bool(provider.get("enabled", True)):
             fallback_provider = self.get_default_provider(
                 include_secret=True,
                 owner_username=owner_username,
                 include_all=include_all,
+                include_shared=True,
             )
             if fallback_provider and bool(fallback_provider.get("enabled", True)):
                 chosen_model = model_name or self._pick_default_model(fallback_provider)

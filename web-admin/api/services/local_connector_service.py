@@ -212,11 +212,7 @@ class LocalConnectorLlmAdapter:
             yield chunk
 
 
-def build_local_connector_file_tools(
-    *,
-    allow_file_write_tools: bool = True,
-    allow_shell_tools: bool = False,
-) -> list[dict[str, Any]]:
+def build_local_connector_file_tools() -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = [
         {
             "tool_name": "local_connector_list_files",
@@ -301,56 +297,54 @@ def build_local_connector_file_tools(
             },
         },
     ]
-    if allow_file_write_tools:
-        tools.append(
-            {
-                "tool_name": "local_connector_write_file",
-                "description": "覆盖写入本地连接器工作区内的单个文本文件，会自动创建缺失目录。",
-                "parameters_schema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "必填，相对工作区的文件路径。",
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "必填，要写入的新文件内容。",
-                        },
+    tools.append(
+        {
+            "tool_name": "local_connector_write_file",
+            "description": "覆盖写入本地连接器工作区内的单个文本文件，会自动创建缺失目录。",
+            "parameters_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "必填，相对工作区的文件路径。",
                     },
-                    "required": ["path", "content"],
-                },
-            }
-        )
-    if allow_shell_tools:
-        tools.append(
-            {
-                "tool_name": "local_connector_run_command",
-                "description": "在本地连接器工作区内执行命令，适合运行测试、构建或代码格式检查。",
-                "parameters_schema": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "必填，要执行的 shell 命令。",
-                        },
-                        "cwd": {
-                            "type": "string",
-                            "description": "可选，相对工作区的子目录；留空表示工作区根目录。",
-                        },
-                        "timeout_sec": {
-                            "type": "integer",
-                            "description": "超时时间秒数，默认 20，范围 1-120。",
-                        },
-                        "max_output_chars": {
-                            "type": "integer",
-                            "description": "stdout/stderr 各自最多保留的字符数，默认 12000。",
-                        },
+                    "content": {
+                        "type": "string",
+                        "description": "必填，要写入的新文件内容。",
                     },
-                    "required": ["command"],
                 },
-            }
-        )
+                "required": ["path", "content"],
+            },
+        }
+    )
+    tools.append(
+        {
+            "tool_name": "local_connector_run_command",
+            "description": "在本地连接器工作区内执行命令，适合运行测试、构建或代码格式检查。",
+            "parameters_schema": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "必填，要执行的 shell 命令。",
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "可选，相对工作区的子目录；留空表示工作区根目录。",
+                    },
+                    "timeout_sec": {
+                        "type": "integer",
+                        "description": "超时时间秒数，默认 20，范围 1-120。",
+                    },
+                    "max_output_chars": {
+                        "type": "integer",
+                        "description": "stdout/stderr 各自最多保留的字符数，默认 12000。",
+                    },
+                },
+                "required": ["command"],
+            },
+        }
+    )
     return tools
 
 

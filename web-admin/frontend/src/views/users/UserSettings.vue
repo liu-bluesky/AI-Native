@@ -51,7 +51,7 @@
         </div>
 
         <div v-if="!providerOptions.length" class="settings-empty">
-          当前没有可用的已启用模型供应商，请先到“模型供应商”页面配置。
+          当前没有可用的已启用模型供应商，请先创建供应商或让其他用户共享给你。
         </div>
 
         <el-form v-else label-position="top" class="settings-form">
@@ -97,7 +97,7 @@
         </div>
 
         <div class="settings-note">
-          仅可选择你当前有权限使用且已启用的模型供应商；不设置时，后端会回退到当前可见列表中的第一个供应商。
+          仅可选择你当前有权限使用且已启用的模型供应商；这些供应商可以是你自己创建的，也可以是他人共享给你的。
         </div>
       </article>
     </section>

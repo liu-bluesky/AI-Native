@@ -2,13 +2,78 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from core.deps import employee_store, external_mcp_store, project_store
 from services.dynamic_mcp_profiles import (
+    employee_rule_summary,
     list_project_member_profiles_runtime,
     query_project_rules_runtime,
 )
 from services.dynamic_mcp_skill_proxies import list_project_proxy_tools_runtime
 from stores.mcp_bridge import rule_store, skill_store
+
+
+def _serialize_employee_detail_runtime(employee) -> dict:
+    payload = asdict(employee)
+    skill_names: list[str] = []
+    for skill_id in payload.get("skills", []) or []:
+        normalized_skill_id = str(skill_id or "").strip()
+        if not normalized_skill_id:
+            continue
+        skill = skill_store.get(normalized_skill_id)
+        skill_name = str(getattr(skill, "name", "") or "").strip() if skill else ""
+        skill_names.append(skill_name or normalized_skill_id)
+    payload["skill_names"] = skill_names
+    payload["rule_bindings"] = employee_rule_summary(employee, limit=200)
+    return payload
+
+
+def get_project_detail_runtime(project_id: str) -> dict:
+    project = project_store.get(project_id)
+    if project is None:
+        return {"error": f"项目 {project_id} 不存在"}
+
+    members = project_store.list_members(project_id)
+    user_members = project_store.list_user_members(project_id)
+    payload = asdict(project)
+    payload["members"] = [asdict(item) for item in members]
+    payload["user_members"] = [asdict(item) for item in user_members]
+    payload["member_count"] = len(members)
+    payload["active_member_count"] = sum(1 for item in members if bool(getattr(item, "enabled", True)))
+    payload["user_count"] = len(user_members)
+    payload["active_user_count"] = sum(1 for item in user_members if bool(getattr(item, "enabled", True)))
+    return payload
+
+
+def get_project_employee_detail_runtime(project_id: str, employee_id: str) -> dict:
+    project = project_store.get(project_id)
+    if project is None:
+        return {"error": f"项目 {project_id} 不存在"}
+
+    employee_id_value = str(employee_id or "").strip()
+    if not employee_id_value:
+        return {"error": "employee_id is required"}
+
+    member = project_store.get_member(project_id, employee_id_value)
+    if member is None:
+        return {"error": f"Employee {employee_id_value} is not a member of project {project_id}"}
+
+    employee = employee_store.get(employee_id_value)
+    result = {
+        "project_id": project_id,
+        "project_name": str(getattr(project, "name", "") or ""),
+        "employee_id": employee_id_value,
+        "member": asdict(member),
+    }
+    if employee is None:
+        result["employee_exists"] = False
+        result["employee"] = None
+        return result
+
+    result["employee_exists"] = True
+    result["employee"] = _serialize_employee_detail_runtime(employee)
+    return result
 
 
 def query_project_mcp_modules_runtime(project_id: str, keyword: str = "", limit: int = 20) -> dict:

@@ -6,7 +6,7 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.deps import ensure_any_permission, ensure_permission, is_admin_like, require_auth
+from core.deps import ensure_any_permission, ensure_permission, is_admin_like, require_auth, user_store
 from services.llm_provider_service import get_llm_provider_service
 from models.requests import LlmProviderCreateReq, LlmProviderTestReq, LlmProviderUpdateReq
 
@@ -34,8 +34,27 @@ async def list_llm_providers(
         enabled_only=enabled_only,
         owner_username=str(auth_payload.get("sub") or "").strip(),
         include_all=is_admin_like(auth_payload),
+        include_shared=enabled_only,
     )
     return {"providers": providers}
+
+
+@router.get("/providers/share-options")
+async def list_llm_provider_share_options(
+    auth_payload: dict = Depends(require_auth),
+):
+    _require_llm_provider_permission(auth_payload)
+    current_username = str(auth_payload.get("sub") or "").strip()
+    users = [
+        {
+            "username": item.username,
+            "role": item.role,
+            "created_at": item.created_at,
+        }
+        for item in user_store.list_all()
+        if str(item.username or "").strip() and str(item.username or "").strip() != current_username
+    ]
+    return {"users": users}
 
 
 @router.get("/providers/options")

@@ -697,6 +697,7 @@ async def _list_translation_model_providers(auth_payload: dict) -> list[dict[str
             enabled_only=True,
             owner_username=_current_username(auth_payload),
             include_all=is_admin_like(auth_payload),
+            include_shared=True,
         )
         or []
     )
@@ -721,6 +722,7 @@ def _resolve_llm_provider(
         enabled_only=True,
         owner_username=_current_username(payload),
         include_all=is_admin_like(payload) if auth_payload is not None else False,
+        include_shared=True,
     )
     if not providers:
         if required:
@@ -1044,6 +1046,7 @@ async def list_agent_template_ai_sources(
             enabled_only=True,
             owner_username=_current_username(auth_payload),
             include_all=is_admin_like(auth_payload),
+            include_shared=True,
         )
         or []
     )

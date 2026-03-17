@@ -2,16 +2,30 @@
   <div v-loading="loading">
     <div class="toolbar">
       <h3>项目管理</h3>
-      <el-button type="primary" size="small" @click="openCreate">新建项目</el-button>
+      <el-button v-if="showProjectCreateEntry" type="primary" size="small" @click="openCreate">
+        新建项目
+      </el-button>
     </div>
 
     <el-table :data="projects" stripe>
       <el-table-column prop="id" label="项目 ID" width="150" />
       <el-table-column prop="name" label="项目名称" width="180" show-overflow-tooltip />
-      <el-table-column prop="workspace_path" label="工作区路径" width="220" show-overflow-tooltip>
+      <el-table-column
+        v-if="showProjectLocationFields"
+        prop="workspace_path"
+        label="工作区路径"
+        width="220"
+        show-overflow-tooltip
+      >
         <template #default="{ row }">{{ row.workspace_path || '-' }}</template>
       </el-table-column>
-      <el-table-column prop="ai_entry_file" label="AI 入口文件" width="220" show-overflow-tooltip>
+      <el-table-column
+        v-if="showProjectLocationFields"
+        prop="ai_entry_file"
+        label="AI 入口文件"
+        width="220"
+        show-overflow-tooltip
+      >
         <template #default="{ row }">{{ row.ai_entry_file || '-' }}</template>
       </el-table-column>
       <el-table-column prop="description" label="描述" show-overflow-tooltip />
@@ -46,7 +60,7 @@
 
     <el-empty v-if="!projects.length && !loading" description="暂无项目" />
 
-    <el-dialog v-model="showCreateDialog" title="新建项目" width="520px">
+    <el-dialog v-if="showProjectCreateEntry" v-model="showCreateDialog" title="新建项目" width="520px">
       <el-form :model="createForm" label-width="110px">
         <el-form-item label="项目名称" required>
           <el-input v-model="createForm.name" placeholder="例如：web-admin" />
@@ -59,14 +73,22 @@
             placeholder="项目说明（可选）"
           />
         </el-form-item>
-        <el-form-item label="工作区路径">
+        <el-form-item label="MCP 使用说明">
+          <el-input
+            v-model="createForm.mcp_instruction"
+            type="textarea"
+            :rows="4"
+            placeholder="给外部模型看的接入说明，例如先读 usage guide，再看项目成员和工具"
+          />
+        </el-form-item>
+        <el-form-item v-if="showProjectLocationFields" label="工作区路径">
           <el-input v-model="createForm.workspace_path" placeholder="可手动输入或点击选择目录">
             <template #append>
               <el-button @click="selectWorkspaceDirectory">选择目录</el-button>
             </template>
           </el-input>
         </el-form-item>
-        <el-form-item label="AI 入口文件">
+        <el-form-item v-if="showProjectLocationFields" label="AI 入口文件">
           <el-input v-model="createForm.ai_entry_file" placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md">
             <template #append>
               <el-button @click="selectCreateAiEntryFile">选择文件</el-button>
@@ -94,14 +116,22 @@
         <el-form-item label="项目描述">
           <el-input v-model="editForm.description" type="textarea" :rows="3" />
         </el-form-item>
-        <el-form-item label="工作区路径">
+        <el-form-item label="MCP 使用说明">
+          <el-input
+            v-model="editForm.mcp_instruction"
+            type="textarea"
+            :rows="4"
+            placeholder="给外部模型看的接入说明，例如先读 usage guide，再看项目成员和工具"
+          />
+        </el-form-item>
+        <el-form-item v-if="showProjectLocationFields" label="工作区路径">
           <el-input v-model="editForm.workspace_path" placeholder="可手动输入或点击选择目录">
             <template #append>
               <el-button @click="selectEditWorkspaceDirectory">选择目录</el-button>
             </template>
           </el-input>
         </el-form-item>
-        <el-form-item label="AI 入口文件">
+        <el-form-item v-if="showProjectLocationFields" label="AI 入口文件">
           <el-input v-model="editForm.ai_entry_file" placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md">
             <template #append>
               <el-button @click="selectEditAiEntryFile">选择文件</el-button>
@@ -122,6 +152,28 @@
     </el-dialog>
 
     <el-dialog v-model="showMcpDialog" :title="`项目 MCP 接入: ${currentProject?.name || ''}`" width="620px">
+      <div class="mcp-guide-card">
+        <div class="mcp-guide-card__title">接入后推荐先读</div>
+        <div class="mcp-guide-card__item">
+          <span class="mcp-guide-card__label">Usage Guide</span>
+          <code>{{ mcpUsageGuideResource }}</code>
+        </div>
+        <div class="mcp-guide-card__item">
+          <span class="mcp-guide-card__label">首个 Tool</span>
+          <code>{{ mcpRecommendedFirstTool }}</code>
+        </div>
+        <div class="mcp-guide-card__item" v-if="mcpConfigDescription">
+          <span class="mcp-guide-card__label">描述</span>
+          <span>{{ mcpConfigDescription }}</span>
+        </div>
+        <div class="mcp-guide-card__item" v-if="showProjectLocationFields && currentProject?.ai_entry_file">
+          <span class="mcp-guide-card__label">AI 入口文件</span>
+          <code>{{ currentProject.ai_entry_file }}</code>
+        </div>
+        <div class="mcp-guide-card__hint">
+          建议外部模型先读取 Usage Guide，再获取项目画像、运行时上下文和可用工具列表。
+        </div>
+      </div>
       <el-tabs v-model="mcpTab">
         <el-tab-pane label="SSE" name="sse">
           <div class="mcp-code-wrap">
@@ -146,6 +198,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { hasPermission } from '@/utils/permissions.js'
 import { buildRuntimeUrl } from '@/utils/runtime-url.js'
 import {
   pickWorkspaceDirectory as openWorkspaceDirectoryPicker,
@@ -157,12 +210,15 @@ const loading = ref(false)
 const creating = ref(false)
 const updating = ref(false)
 const projects = ref([])
+const showProjectCreateEntry = computed(() => hasPermission('menu.projects'))
+const showProjectLocationFields = false
 
 const showCreateDialog = ref(false)
 const showEditDialog = ref(false)
 const createForm = ref({
   name: '',
   description: '',
+  mcp_instruction: '',
   workspace_path: '',
   ai_entry_file: '',
   mcp_enabled: true,
@@ -173,6 +229,7 @@ const editForm = ref({
   id: '',
   name: '',
   description: '',
+  mcp_instruction: '',
   workspace_path: '',
   ai_entry_file: '',
   mcp_enabled: true,
@@ -183,48 +240,62 @@ const showMcpDialog = ref(false)
 const mcpTab = ref('sse')
 const currentProject = ref(null)
 
+const mcpConfigDescription = computed(() =>
+  String(
+    currentProject.value?.mcp_instruction || currentProject.value?.description || '',
+  ).trim(),
+)
+
 const mcpSseConfig = computed(() => {
   if (!currentProject.value) return ''
   const serviceName = `project-${currentProject.value.id}`
-  return JSON.stringify(
-    {
-      mcpServers: {
-        [serviceName]: {
-          type: 'sse',
-          url: buildRuntimeUrl(`/mcp/projects/${currentProject.value.id}/sse?key=YOUR_API_KEY`),
-        },
+  const config = {
+    mcpServers: {
+      [serviceName]: {
+        type: 'sse',
+        url: buildRuntimeUrl(`/mcp/projects/${currentProject.value.id}/sse?key=YOUR_API_KEY`),
       },
     },
-    null,
-    2,
-  )
+  }
+  if (mcpConfigDescription.value) {
+    config.mcpServers[serviceName].description = mcpConfigDescription.value
+  }
+  return JSON.stringify(config, null, 2)
 })
 
 const mcpHttpConfig = computed(() => {
   if (!currentProject.value) return ''
   const serviceName = `project-${currentProject.value.id}`
-  return JSON.stringify(
-    {
-      mcpServers: {
-        [serviceName]: {
-          command: 'npx',
-          args: [
-            '-y',
-            '@modelcontextprotocol/inspector',
-            buildRuntimeUrl(`/mcp/projects/${currentProject.value.id}/mcp?key=YOUR_API_KEY`),
-          ],
-        },
+  const config = {
+    mcpServers: {
+      [serviceName]: {
+        command: 'npx',
+        args: [
+          '-y',
+          '@modelcontextprotocol/inspector',
+          buildRuntimeUrl(`/mcp/projects/${currentProject.value.id}/mcp?key=YOUR_API_KEY`),
+        ],
       },
     },
-    null,
-    2,
-  )
+  }
+  if (mcpConfigDescription.value) {
+    config.mcpServers[serviceName].description = mcpConfigDescription.value
+  }
+  return JSON.stringify(config, null, 2)
 })
+
+const mcpUsageGuideResource = computed(() => {
+  if (!currentProject.value) return ''
+  return `project://${currentProject.value.id}/usage-guide`
+})
+
+const mcpRecommendedFirstTool = computed(() => 'get_project_usage_guide')
 
 function openCreate() {
   createForm.value = {
     name: '',
     description: '',
+    mcp_instruction: '',
     workspace_path: '',
     ai_entry_file: '',
     mcp_enabled: true,
@@ -253,6 +324,7 @@ function openEdit(project) {
     id: project.id,
     name: project.name || '',
     description: project.description || '',
+    mcp_instruction: project.mcp_instruction || '',
     workspace_path: project.workspace_path || '',
     ai_entry_file: project.ai_entry_file || '',
     mcp_enabled: project.mcp_enabled ?? true,
@@ -303,6 +375,7 @@ async function updateProject() {
     await api.put(`/projects/${editForm.value.id}`, {
       name: editForm.value.name,
       description: editForm.value.description,
+      mcp_instruction: editForm.value.mcp_instruction,
       workspace_path: editForm.value.workspace_path,
       ai_entry_file: editForm.value.ai_entry_file,
       mcp_enabled: editForm.value.mcp_enabled,
@@ -357,6 +430,7 @@ async function createProject() {
     await api.post('/projects', {
       name,
       description: createForm.value.description,
+      mcp_instruction: createForm.value.mcp_instruction,
       workspace_path: createForm.value.workspace_path,
       ai_entry_file: createForm.value.ai_entry_file,
       mcp_enabled: !!createForm.value.mcp_enabled,
@@ -413,6 +487,44 @@ onMounted(fetchProjects)
   border-radius: 6px;
   padding: 12px;
   overflow-x: auto;
+}
+
+.mcp-guide-card {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.mcp-guide-card__title {
+  margin-bottom: 10px;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mcp-guide-card__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  color: #374151;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.mcp-guide-card__label {
+  width: 88px;
+  flex-shrink: 0;
+  color: #6b7280;
+}
+
+.mcp-guide-card__hint {
+  margin-top: 10px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .mcp-code {

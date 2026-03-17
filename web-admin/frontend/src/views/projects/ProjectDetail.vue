@@ -33,10 +33,10 @@
       <el-descriptions-item label="项目名称">{{
         project.name
       }}</el-descriptions-item>
-      <el-descriptions-item label="工作区路径" :span="2">{{
+      <el-descriptions-item v-if="showProjectLocationFields" label="工作区路径" :span="2">{{
         project.workspace_path || "-"
       }}</el-descriptions-item>
-      <el-descriptions-item label="AI 入口文件" :span="2">{{
+      <el-descriptions-item v-if="showProjectLocationFields" label="AI 入口文件" :span="2">{{
         project.ai_entry_file || "-"
       }}</el-descriptions-item>
       <el-descriptions-item label="MCP">
@@ -51,6 +51,9 @@
       </el-descriptions-item>
       <el-descriptions-item label="描述" :span="2">{{
         project.description || "-"
+      }}</el-descriptions-item>
+      <el-descriptions-item label="MCP 使用说明" :span="2">{{
+        project.mcp_instruction || "-"
       }}</el-descriptions-item>
     </el-descriptions>
 
@@ -240,7 +243,7 @@
       />
     </div>
 
-    <div class="block">
+    <div v-if="showProjectAddressFields" class="block">
       <div class="block-header">
         <h4>项目 MCP 地址</h4>
       </div>
@@ -332,14 +335,22 @@
         <el-form-item label="项目描述">
           <el-input v-model="editForm.description" type="textarea" :rows="3" />
         </el-form-item>
-        <el-form-item label="工作区路径">
+        <el-form-item label="MCP 使用说明">
+          <el-input
+            v-model="editForm.mcp_instruction"
+            type="textarea"
+            :rows="4"
+            placeholder="给外部模型看的接入说明，例如先读 usage guide，再看项目成员和工具"
+          />
+        </el-form-item>
+        <el-form-item v-if="showProjectLocationFields" label="工作区路径">
           <el-input v-model="editForm.workspace_path" placeholder="可手动输入或点击选择目录">
             <template #append>
               <el-button @click="selectWorkspaceDirectory">选择目录</el-button>
             </template>
           </el-input>
         </el-form-item>
-        <el-form-item label="AI 入口文件">
+        <el-form-item v-if="showProjectLocationFields" label="AI 入口文件">
           <el-input v-model="editForm.ai_entry_file" placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md">
             <template #append>
               <el-button @click="selectAiEntryFile">选择文件</el-button>
@@ -427,6 +438,8 @@ import { buildRuntimeUrl } from "@/utils/runtime-url.js";
 const route = useRoute();
 const router = useRouter();
 const projectId = String(route.params.id || "");
+const showProjectLocationFields = false;
+const showProjectAddressFields = false;
 
 const loading = ref(false);
 const saving = ref(false);
@@ -484,6 +497,7 @@ const userForm = ref({
 const editForm = ref({
   name: "",
   description: "",
+  mcp_instruction: "",
   workspace_path: "",
   ai_entry_file: "",
   mcp_enabled: true,
@@ -831,6 +845,7 @@ function openEditDialog() {
   editForm.value = {
     name: project.value.name || "",
     description: project.value.description || "",
+    mcp_instruction: project.value.mcp_instruction || "",
     workspace_path: project.value.workspace_path || "",
     ai_entry_file: project.value.ai_entry_file || "",
     mcp_enabled: project.value.mcp_enabled ?? true,

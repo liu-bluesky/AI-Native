@@ -213,6 +213,7 @@ class EmployeeDraftCreateReq(BaseModel):
 class ProjectCreateReq(BaseModel):
     name: str
     description: str = ""
+    mcp_instruction: str = ""
     workspace_path: str = ""
     ai_entry_file: str = ""
     mcp_enabled: bool = True
@@ -222,6 +223,7 @@ class ProjectCreateReq(BaseModel):
 class ProjectUpdateReq(BaseModel):
     name: str | None = None
     description: str | None = None
+    mcp_instruction: str | None = None
     workspace_path: str | None = None
     ai_entry_file: str | None = None
     mcp_enabled: bool | None = None
@@ -272,8 +274,6 @@ class ProjectChatReq(BaseModel):
     history_limit: int | None = None
     tool_timeout_sec: int | None = None
     tool_retry_count: int | None = None
-    allow_shell_tools: bool | None = None
-    allow_file_write_tools: bool | None = None
     answer_style: str | None = None
     prefer_conclusion_first: bool | None = None
 
@@ -549,6 +549,7 @@ class LlmProviderCreateReq(BaseModel):
     default_model: str = ""
     enabled: bool = True
     extra_headers: dict = {}
+    shared_usernames: list[str] = []
 
 
 class LlmProviderUpdateReq(BaseModel):
@@ -560,6 +561,7 @@ class LlmProviderUpdateReq(BaseModel):
     default_model: str | None = None
     enabled: bool | None = None
     extra_headers: dict | None = None
+    shared_usernames: list[str] | None = None
 
 
 class LlmProviderTestReq(BaseModel):

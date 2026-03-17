@@ -42,6 +42,11 @@
       </el-table-column>
       <el-table-column prop="provider_type" label="类型" width="150" />
       <el-table-column prop="base_url" label="Base URL" min-width="220" show-overflow-tooltip />
+      <el-table-column label="共享用户" min-width="200" show-overflow-tooltip>
+        <template #default="{ row }">
+          {{ formatSharedUsers(row.shared_usernames) }}
+        </template>
+      </el-table-column>
       <el-table-column label="模型列表" min-width="220" show-overflow-tooltip>
         <template #default="{ row }">{{ (row.models || []).join(', ') || '-' }}</template>
       </el-table-column>
@@ -108,6 +113,25 @@
             placeholder='例如：{"X-Provider":"demo"}'
           />
         </el-form-item>
+        <el-form-item label="共享给用户">
+          <el-select
+            v-model="form.shared_usernames"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            filterable
+            clearable
+            placeholder="选择可使用该模型的用户"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in shareUserOptions"
+              :key="item.username"
+              :label="item.label"
+              :value="item.username"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" />
         </el-form-item>
@@ -128,6 +152,7 @@ import api from '@/utils/api.js'
 const loading = ref(false)
 const saving = ref(false)
 const providers = ref([])
+const shareUserOptions = ref([])
 const showDialog = ref(false)
 const editingId = ref('')
 const dialogMode = ref('create')
@@ -143,6 +168,7 @@ const form = reactive({
   default_model: '',
   enabled: true,
   extra_headers_text: '',
+  shared_usernames: [],
 })
 
 function splitModels(text) {
@@ -162,6 +188,7 @@ function resetForm() {
   form.default_model = ''
   form.enabled = true
   form.extra_headers_text = ''
+  form.shared_usernames = []
 }
 
 function buildDuplicateName(name) {
@@ -179,6 +206,7 @@ function populateForm(row, { duplicate = false } = {}) {
   form.enabled = row?.enabled !== false
   const headers = row?.extra_headers && typeof row.extra_headers === 'object' ? row.extra_headers : {}
   form.extra_headers_text = Object.keys(headers).length ? JSON.stringify(headers, null, 2) : ''
+  form.shared_usernames = Array.isArray(row?.shared_usernames) ? row.shared_usernames.map((item) => String(item || '').trim()).filter(Boolean) : []
 }
 
 function openCreate() {
@@ -247,6 +275,27 @@ async function fetchProviders() {
   }
 }
 
+async function fetchShareUserOptions() {
+  try {
+    const data = await api.get('/llm/providers/share-options')
+    const users = Array.isArray(data?.users) ? data.users : []
+    shareUserOptions.value = users
+      .map((item) => {
+        const username = String(item?.username || '').trim()
+        if (!username) return null
+        const role = String(item?.role || '').trim()
+        return {
+          username,
+          label: role ? `${username} (${role})` : username,
+        }
+      })
+      .filter(Boolean)
+  } catch (e) {
+    shareUserOptions.value = []
+    ElMessage.error(e.detail || '加载共享用户失败')
+  }
+}
+
 async function submitForm() {
   if (!form.name.trim() || !form.base_url.trim()) {
     ElMessage.warning('请填写供应商名称和 Base URL')
@@ -269,6 +318,9 @@ async function submitForm() {
     default_model: form.default_model.trim(),
     enabled: Boolean(form.enabled),
     extra_headers: extraHeaders,
+    shared_usernames: Array.isArray(form.shared_usernames)
+      ? form.shared_usernames.map((item) => String(item || '').trim()).filter(Boolean)
+      : [],
   }
 
   if (!editingId.value || form.api_key.trim()) {
@@ -291,6 +343,13 @@ async function submitForm() {
   } finally {
     saving.value = false
   }
+}
+
+function formatSharedUsers(usernames) {
+  const values = Array.isArray(usernames)
+    ? usernames.map((item) => String(item || '').trim()).filter(Boolean)
+    : []
+  return values.join(', ') || '-'
 }
 
 async function removeProvider(row) {
@@ -351,7 +410,9 @@ async function testConnection(row) {
   }
 }
 
-onMounted(fetchProviders)
+onMounted(async () => {
+  await Promise.all([fetchProviders(), fetchShareUserOptions()])
+})
 </script>
 
 <style scoped>

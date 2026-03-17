@@ -1,11 +1,13 @@
 .ace-tool/
 .claude
 .db-config*.json
+.DS_Store
+.pytest_cache/
 
 # Python runtime artifacts
 __pycache__/
 *.py[cod]
-
+rules
 # Local virtualenvs
 .venv/
 web-admin/api/.venv/

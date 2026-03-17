@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,10 @@ from core.deps import employee_store, project_store
 from services.dynamic_mcp_external_tools import (
     invoke_external_mcp_tool_runtime,
     list_project_external_tools_runtime,
+)
+from services.dynamic_mcp_context import (
+    get_project_detail_runtime,
+    get_project_employee_detail_runtime,
 )
 from services.dynamic_mcp_profiles import (
     employee_rule_summary as _employee_rule_summary,
@@ -75,17 +80,131 @@ def create_project_mcp(
     def _member_employee_ids() -> set[str]:
         return {employee.id for _member, employee in _list_member_pairs()}
 
+    def _resolve_mcp_instruction(project) -> str:
+        return (
+            str(getattr(project, "mcp_instruction", "") or "").strip()
+            or str(getattr(project, "description", "") or "").strip()
+        )
+
+    def _resolve_ai_entry_path(project) -> tuple[str, Path | None]:
+        ai_entry_file = str(getattr(project, "ai_entry_file", "") or "").strip()
+        if not ai_entry_file:
+            return "", None
+        workspace_path = str(getattr(project, "workspace_path", "") or "").strip()
+        entry_path = Path(ai_entry_file).expanduser()
+        if entry_path.is_absolute():
+            return ai_entry_file, entry_path.resolve()
+        if workspace_path:
+            return ai_entry_file, (Path(workspace_path).expanduser() / entry_path).resolve()
+        return ai_entry_file, (project_root / entry_path).resolve()
+
+    def _read_ai_entry_excerpt(project, max_chars: int = 6000) -> tuple[str, str]:
+        display_path, resolved_path = _resolve_ai_entry_path(project)
+        if not display_path:
+            return "", "未配置项目 AI 入口文件。"
+        if resolved_path is None:
+            return display_path, "AI 入口文件路径解析失败。"
+        if not resolved_path.exists() or not resolved_path.is_file():
+            return display_path, f"AI 入口文件不存在或不可读取：{resolved_path}"
+        try:
+            content = resolved_path.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception as exc:
+            return display_path, f"读取 AI 入口文件失败：{exc}"
+        if not content:
+            return display_path, "AI 入口文件为空。"
+        if len(content) > max_chars:
+            content = f"{content[:max_chars].rstrip()}\n\n[内容已截断，请按需继续读取原文件]"
+        return display_path, content
+
+    def _build_usage_guide(project) -> dict:
+        display_path, ai_entry_excerpt = _read_ai_entry_excerpt(project)
+        mcp_instruction = _resolve_mcp_instruction(project)
+        proxy_tool_count = len(scoped_proxy_specs)
+        external_tool_count = len(external_tool_specs)
+        guide_lines = [
+            f"# {project.name} Project MCP Usage Guide",
+            "",
+            f"- 项目 ID: {project.id}",
+            f"- 项目描述: {project.description or '-'}",
+            f"- MCP 使用说明: {mcp_instruction or '-'}",
+            f"- 适用场景: 读取项目画像、项目成员、项目规则、项目成员技能代理工具，以及当前项目挂载的外部 MCP 工具。",
+            "",
+            "## 推荐调用顺序",
+            f"1. 先调用 get_project_usage_guide 或读取 project://{project.id}/usage-guide，了解项目范围与约定。",
+            "2. 调用 get_project_profile，确认项目基础配置、工作区与入口文件配置。",
+            "3. 调用 get_project_runtime_context，快速了解成员数量、规则规模和代理工具规模。",
+            f"4. 如需选人，先调用 list_project_members；如需选工具，先调用 list_project_proxy_tools 或读取 project://{project.id}/proxy-tools。",
+            "5. 规则检索用 query_project_rules；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
+            "",
+            "## 调用建议",
+            "- 当 tool_name 可能重名时，给 invoke_project_skill_tool 同时传 employee_id 做消歧。",
+            "- 在直接调用技能脚本前，先读取项目规则和成员信息，避免工具选错。",
+            "- 外部 MCP 工具的参数以远端工具 schema 为准，先用 list_external_mcp_tools 查看。",
+            "",
+            "## 当前项目能力概览",
+            f"- 项目成员技能代理工具数: {proxy_tool_count}",
+            f"- 外部 MCP 工具数: {external_tool_count}",
+        ]
+        if display_path:
+            guide_lines.extend(
+                [
+                    "",
+                    "## 项目 AI 入口文件",
+                    f"- 配置值: {display_path}",
+                    "- 建议在深入调用工具前，先阅读下面摘录的入口文件内容。",
+                    "",
+                    ai_entry_excerpt,
+                ]
+            )
+        else:
+            guide_lines.extend(
+                [
+                    "",
+                    "## 项目 AI 入口文件",
+                    ai_entry_excerpt,
+                ]
+            )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "project_description": str(project.description or ""),
+            "mcp_instruction": mcp_instruction,
+            "workspace_path": str(getattr(project, "workspace_path", "") or ""),
+            "ai_entry_file": display_path,
+            "proxy_tool_count": proxy_tool_count,
+            "external_tool_count": external_tool_count,
+            "recommended_flow": [
+                "get_project_usage_guide",
+                "get_project_profile",
+                "get_project_runtime_context",
+                "list_project_members or list_project_proxy_tools",
+                "query_project_rules / invoke_project_skill_tool / invoke_external_mcp_tool",
+            ],
+            "guide_markdown": "\n".join(guide_lines),
+        }
+
     @mcp.resource(f"project://{project_id}/profile")
     def project_profile() -> str:
         project = _get_project()
         if not project:
             return "Project deleted or unavailable."
+        mcp_instruction = _resolve_mcp_instruction(project)
         return (
             f"[{project.id}] {project.name}\n"
             f"description: {project.description or '-'}\n"
+            f"mcp_instruction: {mcp_instruction or '-'}\n"
+            f"usage_guide=project://{project.id}/usage-guide\n"
+            f"recommended_first_tool=get_project_usage_guide\n"
             f"mcp_enabled={project.mcp_enabled} "
             f"feedback_upgrade_enabled={project.feedback_upgrade_enabled}"
         )
+
+    @mcp.resource(f"project://{project_id}/usage-guide")
+    def project_usage_guide() -> str:
+        project = _get_project()
+        if not project:
+            return "Project deleted or unavailable."
+        return str(_build_usage_guide(project).get("guide_markdown") or "")
 
     @mcp.resource(f"project://{project_id}/members")
     def project_members() -> str:
@@ -112,7 +231,7 @@ def create_project_mcp(
         lines = []
         for tool_name, spec in sorted(scoped_proxy_specs.items()):
             lines.append(
-                f"- {tool_name}: {spec['employee_id']} / {spec['skill_id']} / "
+                f"- {tool_name}: {spec['employee_id']} / {spec['skill_name']} / {spec['skill_id']} / "
                 f"{spec['entry_name']} ({spec['script_type']})"
             )
         return "\n".join(lines)
@@ -132,12 +251,35 @@ def create_project_mcp(
         return "\n".join(lines)
 
     @mcp.tool()
+    def get_project_usage_guide() -> dict:
+        """获取当前项目 MCP 的使用说明、推荐调用顺序和项目入口文件摘录"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        return _build_usage_guide(project)
+
+    @mcp.tool()
     def get_project_profile() -> dict:
         """获取项目画像配置"""
         project = _get_project()
         if not project:
             return {"error": "Project not found"}
-        return asdict(project)
+        payload = asdict(project)
+        payload["usage_guide_resource"] = f"project://{project.id}/usage-guide"
+        payload["proxy_tools_resource"] = f"project://{project.id}/proxy-tools"
+        payload["external_tools_resource"] = f"project://{project.id}/external-mcp-tools"
+        payload["recommended_first_tool"] = "get_project_usage_guide"
+        return payload
+
+    @mcp.tool()
+    def get_project_detail() -> dict:
+        """获取当前项目完整详情（含聊天配置、成员清单、用户成员清单）"""
+        return get_project_detail_runtime(project_id)
+
+    @mcp.tool()
+    def get_project_employee_detail(employee_id: str) -> dict:
+        """获取指定项目成员的完整员工详情（含成员关系和员工完整配置）"""
+        return get_project_employee_detail_runtime(project_id, employee_id)
 
     @mcp.tool()
     def list_project_members() -> list[dict]:
@@ -323,6 +465,7 @@ def create_project_mcp(
                     "tool_name": tool_name,
                     "employee_id": spec["employee_id"],
                     "base_tool_name": spec["base_tool_name"],
+                    "skill_name": spec["skill_name"],
                     "skill_id": spec["skill_id"],
                     "entry_name": spec["entry_name"],
                     "script_type": spec["script_type"],
@@ -406,25 +549,27 @@ def create_project_mcp(
         )
 
     for tool_name, spec in sorted(scoped_proxy_specs.items()):
-        def _make_proxy_tool(spec_item: dict):
+        def _make_proxy_tool(spec_item: dict, tool_name_value: str):
             def _proxy_tool(args: dict | None = None, args_json: str = "{}", timeout_sec: int = 30) -> dict:
                 return _execute_skill_proxy(
                     spec_item,
+                    project_root=project_root,
+                    current_api_key=current_api_key_ctx.get(""),
                     args=args,
                     args_json=args_json,
                     timeout_sec=timeout_sec,
                     employee_id=spec_item["employee_id"],
                 )
-            _proxy_tool.__name__ = f"project_proxy_{tool_name}"
+            _proxy_tool.__name__ = f"project_proxy_{tool_name_value}"
             return _proxy_tool
 
         mcp.tool(
             name=tool_name,
             description=(
-                f"Proxy of {spec['employee_id']}:{spec['skill_id']}:{spec['entry_name']}. "
+                f"Proxy of {spec['employee_id']}:{spec['skill_name']}:{spec['entry_name']}. "
                 "Pass CLI args via args(object) or args_json(string), e.g. args={\"sql\":\"SHOW TABLES\"}."
             ),
-        )(_make_proxy_tool(spec))
+        )(_make_proxy_tool(spec, tool_name))
 
     for external_spec in external_tool_specs:
         scoped_tool_name = str(external_spec.get("tool_name") or "").strip()

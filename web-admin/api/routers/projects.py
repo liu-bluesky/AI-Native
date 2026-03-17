@@ -94,8 +94,6 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "high_risk_tool_confirm": True,
     "tool_timeout_sec": 60,
     "tool_retry_count": 0,
-    "allow_shell_tools": True,
-    "allow_file_write_tools": True,
     "answer_style": "concise",
     "prefer_conclusion_first": True,
 }
@@ -217,8 +215,6 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     settings["high_risk_tool_confirm"] = _coerce_bool(source.get("high_risk_tool_confirm"), settings["high_risk_tool_confirm"])
     settings["tool_timeout_sec"] = _coerce_int(source.get("tool_timeout_sec"), settings["tool_timeout_sec"], min_value=1, max_value=600)
     settings["tool_retry_count"] = _coerce_int(source.get("tool_retry_count"), settings["tool_retry_count"], min_value=0, max_value=5)
-    settings["allow_shell_tools"] = _coerce_bool(source.get("allow_shell_tools"), settings["allow_shell_tools"])
-    settings["allow_file_write_tools"] = _coerce_bool(source.get("allow_file_write_tools"), settings["allow_file_write_tools"])
     style = str(source.get("answer_style", settings["answer_style"]) or "").strip().lower()
     settings["answer_style"] = style if style in {"concise", "balanced", "detailed"} else settings["answer_style"]
     settings["prefer_conclusion_first"] = _coerce_bool(source.get("prefer_conclusion_first"), settings["prefer_conclusion_first"])
@@ -483,6 +479,7 @@ def _pick_chat_provider(provider_id: str, auth_payload: dict) -> tuple[dict, lis
         enabled_only=True,
         owner_username=str(auth_payload.get("sub") or "").strip(),
         include_all=is_admin_like(auth_payload),
+        include_shared=True,
     )
     if not providers:
         raise HTTPException(400, "未配置可用的 LLM 提供商")
@@ -567,6 +564,10 @@ def _project_tool_display_name(tool_name: str) -> str:
         return "查询项目成员"
     if normalized == "search_project_context":
         return "搜索项目上下文"
+    if normalized == "get_project_detail":
+        return "获取项目完整详情"
+    if normalized == "get_project_employee_detail":
+        return "获取员工完整详情"
     return normalized
 
 
@@ -782,59 +783,6 @@ def _sort_tools_by_priority(tools: list[dict[str, Any]], tool_priority: list[str
     )
 
 
-def _is_shell_like_tool(tool: dict[str, Any]) -> bool:
-    merged = " ".join(
-        [
-            str(tool.get("tool_name") or ""),
-            str(tool.get("entry_name") or ""),
-            str(tool.get("description") or ""),
-        ]
-    ).lower()
-    keywords = ("shell", "bash", "terminal", "command", "exec", "run_cmd", "run command")
-    return any(word in merged for word in keywords)
-
-
-def _is_file_write_like_tool(tool: dict[str, Any]) -> bool:
-    merged = " ".join(
-        [
-            str(tool.get("tool_name") or ""),
-            str(tool.get("entry_name") or ""),
-            str(tool.get("description") or ""),
-        ]
-    ).lower()
-    keywords = (
-        "write",
-        "save",
-        "update",
-        "delete",
-        "remove",
-        "create",
-        "edit",
-        "patch",
-        "rename",
-        "mkdir",
-        "touch",
-        "file",
-    )
-    return any(word in merged for word in keywords)
-
-
-def _apply_tool_safety_filters(
-    tools: list[dict[str, Any]],
-    *,
-    allow_shell_tools: bool,
-    allow_file_write_tools: bool,
-) -> list[dict[str, Any]]:
-    filtered: list[dict[str, Any]] = []
-    for item in tools:
-        if not allow_shell_tools and _is_shell_like_tool(item):
-            continue
-        if not allow_file_write_tools and _is_file_write_like_tool(item):
-            continue
-        filtered.append(item)
-    return filtered
-
-
 def _collect_runtime_tools(
     project_id: str,
     *,
@@ -842,8 +790,6 @@ def _collect_runtime_tools(
     enabled_tool_names: list[str] | None,
     explicit_tool_filter: bool,
     tool_priority: list[str] | None,
-    allow_shell_tools: bool,
-    allow_file_write_tools: bool,
 ) -> list[dict[str, Any]]:
     from services.dynamic_mcp_runtime import list_project_external_tools_runtime, list_project_proxy_tools_runtime
 
@@ -858,11 +804,6 @@ def _collect_runtime_tools(
     external_tools = list_project_external_tools_runtime(project_id)
     tools = internal_tools + external_tools
     tools = _sort_tools_by_priority(tools, list(tool_priority or []))
-    tools = _apply_tool_safety_filters(
-        tools,
-        allow_shell_tools=allow_shell_tools,
-        allow_file_write_tools=allow_file_write_tools,
-    )
     return tools
 
 
@@ -930,8 +871,6 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
         "history_limit": req.history_limit,
         "tool_timeout_sec": req.tool_timeout_sec,
         "tool_retry_count": req.tool_retry_count,
-        "allow_shell_tools": req.allow_shell_tools,
-        "allow_file_write_tools": req.allow_file_write_tools,
         "answer_style": req.answer_style,
         "prefer_conclusion_first": req.prefer_conclusion_first,
     }
@@ -1039,6 +978,7 @@ def _build_project_chat_messages(
         base_prompt += "\n可按需调用工具检索最新项目上下文并完成用户请求。"
         base_prompt += "\n当用户询问项目信息、员工信息、规则、MCP 服务时，优先调用 search_project_context 再回答。"
         base_prompt += "\n当用户询问当前项目有哪些员工、成员、规则、工具或 MCP 能力时，不要先说无法获取；先调用 query_project_members、query_project_rules 或 search_project_context。"
+        base_prompt += "\n当用户明确要完整项目配置、聊天配置、成员原始关系或单员工完整档案时，优先调用 get_project_detail 或 get_project_employee_detail。"
 
     style_hint = {
         "concise": "输出风格：简洁，避免冗长。",
@@ -1868,6 +1808,7 @@ async def create_project(req: ProjectCreateReq, auth_payload: dict = Depends(req
         id=project_store.new_id(),
         name=str(req.name or "").strip(),
         description=req.description,
+        mcp_instruction=_normalize_project_mcp_instruction_for_save(req.mcp_instruction),
         workspace_path=_normalize_workspace_path_for_save(req.workspace_path),
         ai_entry_file=_normalize_ai_entry_file_for_save(req.ai_entry_file),
         mcp_enabled=req.mcp_enabled,
@@ -1917,6 +1858,7 @@ async def smart_query_project(project_id: str, request: dict, auth_payload: dict
         enabled_only=True,
         owner_username=str(auth_payload.get("sub") or "").strip(),
         include_all=is_admin_like(auth_payload),
+        include_shared=True,
     )
     if not providers:
         raise HTTPException(400, "No LLM provider configured")
@@ -1968,6 +1910,10 @@ def _normalize_ai_entry_file_for_save(value: Any) -> str:
     return str(value or "").strip()[:500]
 
 
+def _normalize_project_mcp_instruction_for_save(value: Any) -> str:
+    return str(value or "").strip()[:4000]
+
+
 def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
     project = project_store.get(project_id)
     if project is None:
@@ -1983,6 +1929,10 @@ def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
         updates["workspace_path"] = _normalize_workspace_path_for_save(updates.get("workspace_path"))
     if "ai_entry_file" in updates:
         updates["ai_entry_file"] = _normalize_ai_entry_file_for_save(updates.get("ai_entry_file"))
+    if "mcp_instruction" in updates:
+        updates["mcp_instruction"] = _normalize_project_mcp_instruction_for_save(
+            updates.get("mcp_instruction")
+        )
     updates["updated_at"] = _now_iso()
     updated = replace(project, **updates)
     project_store.save(updated)
@@ -2576,8 +2526,6 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     enabled_tool_names=enabled_tool_names,
                     explicit_tool_filter=explicit_tool_filter,
                     tool_priority=list(runtime_settings.get("tool_priority") or []),
-                    allow_shell_tools=bool(runtime_settings.get("allow_shell_tools", True)),
-                    allow_file_write_tools=bool(runtime_settings.get("allow_file_write_tools", True)),
                 )
             (
                 local_connector_tools,
@@ -2918,8 +2866,6 @@ async def stream_project_chat(
             enabled_tool_names=enabled_tool_names,
             explicit_tool_filter=explicit_tool_filter,
             tool_priority=list(runtime_settings.get("tool_priority") or []),
-            allow_shell_tools=bool(runtime_settings.get("allow_shell_tools", True)),
-            allow_file_write_tools=bool(runtime_settings.get("allow_file_write_tools", True)),
         )
 
     effective_workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
@@ -3345,6 +3291,7 @@ async def generate_project_manual(project_id: str, auth_payload: dict = Depends(
         enabled_only=True,
         owner_username=str(auth_payload.get("sub") or "").strip(),
         include_all=is_admin_like(auth_payload),
+        include_shared=True,
     )
     if not providers:
         raise HTTPException(400, "未配置 LLM 提供商")

@@ -23,6 +23,8 @@ from services.dynamic_mcp_apps_project import create_project_mcp as _create_proj
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from services.dynamic_mcp_context import (
+    get_project_detail_runtime,
+    get_project_employee_detail_runtime,
     query_project_mcp_modules_runtime,
     search_project_context_runtime,
 )
@@ -223,6 +225,7 @@ def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> 
                     "base_tool_name": spec["base_tool_name"],
                     "scoped_tool_name": spec["scoped_tool_name"],
                     "skill_id": spec["skill_id"],
+                    "skill_name": spec["skill_name"],
                     "entry_name": spec["entry_name"],
                     "script_type": spec["script_type"],
                     "description": spec["description"],
@@ -237,6 +240,7 @@ def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> 
                     "base_tool_name": spec["base_tool_name"],
                     "scoped_tool_name": spec["scoped_tool_name"],
                     "skill_id": spec["skill_id"],
+                    "skill_name": spec["skill_name"],
                     "entry_name": spec["entry_name"],
                     "script_type": spec["script_type"],
                     "description": spec["description"],
@@ -330,6 +334,49 @@ def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> 
                 },
             }
         )
+    if "get_project_detail" not in existing_names:
+        tools.append(
+            {
+                "tool_name": "get_project_detail",
+                "employee_id": employee_id_value,
+                "base_tool_name": "get_project_detail",
+                "scoped_tool_name": "get_project_detail",
+                "skill_id": "__builtin__",
+                "entry_name": "get_project_detail",
+                "script_type": "builtin",
+                "description": "获取当前项目完整详情，包含基础配置、聊天配置、成员清单和用户成员清单。",
+                "builtin": True,
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+            }
+        )
+    if "get_project_employee_detail" not in existing_names:
+        tools.append(
+            {
+                "tool_name": "get_project_employee_detail",
+                "employee_id": employee_id_value,
+                "base_tool_name": "get_project_employee_detail",
+                "scoped_tool_name": "get_project_employee_detail",
+                "skill_id": "__builtin__",
+                "entry_name": "get_project_employee_detail",
+                "script_type": "builtin",
+                "description": "获取单个项目成员的完整员工详情，包含成员关系和员工完整配置。",
+                "builtin": True,
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {
+                        "employee_id": {
+                            "type": "string",
+                            "description": "必填，项目成员 employee_id。",
+                        },
+                    },
+                    "required": ["employee_id"],
+                },
+            }
+        )
     return tools
 
 
@@ -412,6 +459,35 @@ def invoke_project_skill_tool_runtime(
         )
         return {
             "tool_name": "search_project_context",
+            "employee_id": target_employee_id,
+            **result,
+        }
+
+    if normalized_tool_name == "get_project_detail":
+        result = get_project_detail_runtime(project_id)
+        return {
+            "tool_name": "get_project_detail",
+            "employee_id": employee_id_value,
+            **result,
+        }
+
+    if normalized_tool_name == "get_project_employee_detail":
+        payload: dict = {}
+        if args is not None:
+            if not isinstance(args, dict):
+                return {"error": "args must be an object"}
+            payload = args
+        else:
+            try:
+                payload = json.loads(args_json or "{}")
+            except Exception as exc:
+                return {"error": f"Invalid args_json: {exc}"}
+            if not isinstance(payload, dict):
+                return {"error": "args_json must be a JSON object"}
+        target_employee_id = str(payload.get("employee_id") or employee_id_value).strip()
+        result = get_project_employee_detail_runtime(project_id, target_employee_id)
+        return {
+            "tool_name": "get_project_employee_detail",
             "employee_id": target_employee_id,
             **result,
         }
