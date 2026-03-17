@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 import shutil
@@ -17,6 +18,7 @@ from stores.mcp_bridge import ResourceDef, Skill, ToolDef, skill_store
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 TOOL_SUFFIXES = {".py", ".js"}
+SENSITIVE_SKILL_FILE_PATTERNS = (".db-config*.json",)
 
 
 @dataclass(frozen=True)
@@ -193,6 +195,19 @@ def _allocate_skill_id(source_dir: Path, manifest: dict[str, Any], frontmatter: 
     return skill_id
 
 
+def _skill_copy_ignore(_: str, names: list[str]) -> set[str]:
+    ignored: set[str] = set()
+    for pattern in SENSITIVE_SKILL_FILE_PATTERNS:
+        ignored.update(fnmatch.filter(names, pattern))
+    return ignored
+
+
+def copy_skill_dir(source_dir: Path, target_dir: Path) -> Path:
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_dir, target_dir, dirs_exist_ok=True, ignore=_skill_copy_ignore)
+    return target_dir
+
+
 def import_skill_from_dir(
     req: SkillCreateReq,
     auth_payload: dict | None = None,
@@ -237,7 +252,7 @@ def import_skill_from_dir(
     if package_path.exists():
         raise HTTPException(409, f"Skill package already exists: {package_path}")
     try:
-        shutil.copytree(source_dir, package_path)
+        copy_skill_dir(source_dir, package_path)
     except Exception as exc:
         raise HTTPException(400, f"Failed to import skill directory: {exc}") from exc
 

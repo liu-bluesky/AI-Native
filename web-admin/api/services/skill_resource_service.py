@@ -15,7 +15,12 @@ from typing import Any
 from fastapi import HTTPException
 
 from models.requests import SkillCreateReq
-from services.skill_import_service import PROJECT_ROOT, import_skill_from_dir, pick_extracted_skill_dir
+from services.skill_import_service import (
+    PROJECT_ROOT,
+    copy_skill_dir,
+    import_skill_from_dir,
+    pick_extracted_skill_dir,
+)
 from services.vett_registry_service import VettRegistryService
 from stores.factory import system_config_store
 
@@ -199,9 +204,7 @@ class SkillResourceService:
     @staticmethod
     def _export_skill_dir(source_dir: Path, install_dir: Path, dir_name: str) -> Path:
         target_dir = install_dir / str(dir_name or source_dir.name).strip()
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)
-        return target_dir
+        return copy_skill_dir(source_dir, target_dir)
 
     @staticmethod
     def _extract_json_artifact(content: bytes, extract_dir: Path) -> Path | None:

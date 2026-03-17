@@ -120,12 +120,12 @@ python3 skills/db-query/scripts/db_query.py --reset --sql ""
 
 1. 默认只读，写操作需 `--allow-write`
 2. SELECT 自动限行 50
-3. `.db-config*.json` 需加入 `.gitignore`，禁止提交
+3. `.db-config*.json` 必须由技能包目录内的 `.gitignore` 和平台导入/导出过滤共同拦截，禁止提交或上传
 
 ---
 
 ## 分享给其他项目
 
-1. 复制 `skills/db-query/` 目录（不含 `.db-config*.json`）
+1. 复制 `skills/db-query/` 目录（保留目录内 `.gitignore`，且不包含 `.db-config*.json`）
 2. 安装依赖：`pip3 install pymysql psycopg2-binary`
 3. 首次使用时脚本会自动引导配置

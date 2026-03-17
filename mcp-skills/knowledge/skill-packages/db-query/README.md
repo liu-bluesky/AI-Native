@@ -133,12 +133,12 @@ python3 skills/db-query/scripts/db_query.py \
 - 首次传参后自动保存，后续免传
 - 连接失败时脚本返回错误信息，更新参数重新执行即可覆盖
 - 重置配置：`--reset --sql ""`
-- **注意**：`.db-config*.json` 已加入 `.gitignore`，不会提交到仓库
+- **注意**：技能包目录内自带 `.gitignore`，且平台导入/导出技能包时会自动过滤 `.db-config*.json`，避免数据库配置进入仓库或远程制品
 
 ---
 
 ## 移植到其他项目
 
-1. 复制 `skills/db-query/` 目录（不含 `.db-config*.json`）
+1. 复制 `skills/db-query/` 目录（保留目录内 `.gitignore`，且不要包含 `.db-config*.json`）
 2. `pip3 install pymysql psycopg2-binary`
 3. 首次运行时提供连接信息，自动保存
