@@ -1,6 +1,0 @@
-{"ts": "2026-03-10T10:31:09.897069+00:00", "type": "session_start", "session_id": "agent-3c661291ef", "agent_type": "claude_cli", "project_id": "proj-550d976c", "project_name": "全域通", "username": "admin", "workspace_path": "/Users/liulantian/work/公司/全域通/qyt-admin/web/", "sandbox_mode": "workspace-write", "mode": "exec_json_resume"}
-{"ts": "2026-03-10T10:31:09.897263+00:00", "type": "bootstrap_done", "thread_id": "c473dbca-5396-4340-b1d1-d68009e62913", "content": "READY"}
-{"ts": "2026-03-10T10:31:09.925107+00:00", "type": "bootstrap_done", "thread_id": "c473dbca-5396-4340-b1d1-d68009e62913", "content": "READY"}
-{"ts": "2026-03-10T10:31:09.958805+00:00", "type": "bootstrap_done", "thread_id": "c473dbca-5396-4340-b1d1-d68009e62913", "content": "READY"}
-{"ts": "2026-03-10T10:31:12.682298+00:00", "type": "interrupt", "thread_id": "c473dbca-5396-4340-b1d1-d68009e62913"}
-{"ts": "2026-03-10T10:31:12.682796+00:00", "type": "session_closed", "thread_id": "c473dbca-5396-4340-b1d1-d68009e62913"}

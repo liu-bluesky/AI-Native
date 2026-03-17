@@ -121,9 +121,11 @@ docker compose up -d --build
 ```bash
 cd /Users/liulantian/self/ai设计规范/web-admin/api
 python scripts/migrate_usage_to_pg.py \
-  --sqlite-path ./data/usage.db \
+  --sqlite-path ~/.ai-native/web-admin-api/usage.db \
   --database-url postgresql://admin:changeme@localhost:5432/ai_employee
 ```
+
+说明：`web-admin/api/data/` 已废弃，API 本地运行时数据默认改为 `~/.ai-native/web-admin-api/`，也可通过 `API_DATA_DIR` 覆盖。
 
 ## Core 数据迁移（JSON/SQLite -> PostgreSQL）
 

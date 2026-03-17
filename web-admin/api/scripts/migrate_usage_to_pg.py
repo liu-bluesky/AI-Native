@@ -2,7 +2,7 @@
 
 用法示例：
     python scripts/migrate_usage_to_pg.py \
-        --sqlite-path ./data/usage.db \
+        --sqlite-path ~/.ai-native/web-admin-api/usage.db \
         --database-url postgresql://admin:changeme@localhost:5432/ai_employee
 """
 
@@ -10,8 +10,14 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import sys
 from pathlib import Path
 
+API_DIR = Path(__file__).resolve().parents[1]
+if str(API_DIR) not in sys.path:
+    sys.path.insert(0, str(API_DIR))
+
+from core.config import get_api_data_dir
 from psycopg import connect
 
 
@@ -120,8 +126,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Migrate usage SQLite data to PostgreSQL")
     parser.add_argument(
         "--sqlite-path",
-        default=str(Path(__file__).resolve().parents[1] / "data" / "usage.db"),
-        help="Path to SQLite usage.db",
+        default=str(get_api_data_dir(create=False) / "usage.db"),
+        help="Path to SQLite usage.db；旧仓库内 ./data/usage.db 已废弃，请显式传参",
     )
     parser.add_argument("--database-url", required=True, help="PostgreSQL DSN")
     args = parser.parse_args()
@@ -130,4 +136,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -6,9 +6,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
 
-from core.config import get_settings
-
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+from core.config import get_api_data_dir, get_settings
 
 
 class _StoreProxy:
@@ -36,12 +34,16 @@ def _missing_driver(setting_name: str) -> RuntimeError:
     )
 
 
+def _data_dir() -> Path:
+    return get_api_data_dir()
+
+
 def _create_user_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
         from stores.json import UserStore
 
-        return UserStore(DATA_DIR)
+        return UserStore(_data_dir())
     if settings.core_store_backend == "postgres":
         try:
             from stores.postgres.user_store import UserStorePostgres
@@ -56,7 +58,7 @@ def _create_employee_store() -> Any:
     if settings.core_store_backend == "json":
         from stores.json import EmployeeStore
 
-        return EmployeeStore(DATA_DIR)
+        return EmployeeStore(_data_dir())
     if settings.core_store_backend == "postgres":
         try:
             from stores.postgres.employee_store import EmployeeStorePostgres
@@ -71,7 +73,7 @@ def _create_agent_template_store() -> Any:
     if settings.core_store_backend == "json":
         from stores.json import AgentTemplateStore
 
-        return AgentTemplateStore(DATA_DIR)
+        return AgentTemplateStore(_data_dir())
     if settings.core_store_backend == "postgres":
         try:
             from stores.postgres.agent_template_store import AgentTemplateStorePostgres
@@ -86,7 +88,7 @@ def _create_role_store() -> Any:
     if settings.core_store_backend == "json":
         from stores.json import RoleStore
 
-        return RoleStore(DATA_DIR)
+        return RoleStore(_data_dir())
     if settings.core_store_backend == "postgres":
         try:
             from stores.postgres.role_store import RoleStorePostgres
@@ -101,7 +103,7 @@ def _create_project_store() -> Any:
     if settings.core_store_backend == "json":
         from stores.json import ProjectStore
 
-        return ProjectStore(DATA_DIR)
+        return ProjectStore(_data_dir())
     if settings.core_store_backend == "postgres":
         try:
             from stores.postgres.project_store import ProjectStorePostgres
@@ -116,7 +118,7 @@ def _create_project_chat_store() -> Any:
     if settings.core_store_backend == "json":
         from stores.json import ProjectChatStore
 
-        return ProjectChatStore(DATA_DIR)
+        return ProjectChatStore(_data_dir())
     if settings.core_store_backend == "postgres":
         try:
             from stores.postgres.project_chat_store import ProjectChatStorePostgres
@@ -131,7 +133,7 @@ def _create_system_config_store() -> Any:
     if settings.core_store_backend == "json":
         from stores.json import SystemConfigStore
 
-        return SystemConfigStore(DATA_DIR)
+        return SystemConfigStore(_data_dir())
     if settings.core_store_backend == "postgres":
         try:
             from stores.postgres.system_config_store import SystemConfigStorePostgres
@@ -146,7 +148,7 @@ def _create_external_mcp_store() -> Any:
     if settings.core_store_backend == "json":
         from stores.json import ExternalMcpStore
 
-        return ExternalMcpStore(DATA_DIR)
+        return ExternalMcpStore(_data_dir())
     if settings.core_store_backend == "postgres":
         try:
             from stores.postgres.external_mcp_store import ExternalMcpStorePostgres
@@ -161,7 +163,7 @@ def _create_local_connector_store() -> Any:
     if settings.core_store_backend == "json":
         from stores.json import LocalConnectorStore
 
-        return LocalConnectorStore(DATA_DIR)
+        return LocalConnectorStore(_data_dir())
     if settings.core_store_backend == "postgres":
         try:
             from stores.postgres.local_connector_store import LocalConnectorStorePostgres
@@ -176,7 +178,7 @@ def _create_usage_store() -> Any:
     if settings.usage_store_backend == "sqlite":
         from stores.json import UsageStore
 
-        return UsageStore(DATA_DIR / "usage.db")
+        return UsageStore(_data_dir() / "usage.db")
     if settings.usage_store_backend == "postgres":
         try:
             from stores.postgres.usage_store import UsageStorePostgres

@@ -64,7 +64,7 @@
 ### 数据隔离
 
 - 每个 MCP 服务独占 `knowledge/` 目录，禁止跨服务读写
-- `web-admin/api/data/` 仅承载网关侧 Core Store 数据，不直接替代 `mcp-* / knowledge/`
+- 网关侧 Core Store 本地运行时数据统一走 `API_DATA_DIR`（默认 `~/.ai-native/web-admin-api/`），禁止继续落盘到仓库 `web-admin/api/data/`
 - Memory 服务支持 4 级分类：public / internal / confidential / restricted
 - 记忆作用域隔离：employee-private / team-shared / global-verified
 

@@ -11,6 +11,7 @@
 
 用法示例：
     python scripts/migrate_core_to_pg.py \\
+        --api-data-dir ~/.ai-native/web-admin-api \\
         --database-url postgresql://admin:changeme@localhost:5432/ai_employee
 """
 
@@ -54,12 +55,27 @@ def main() -> None:
         default=str(Path(__file__).resolve().parents[3]),
         help="项目根目录（默认自动推断）",
     )
+    parser.add_argument(
+        "--api-data-dir",
+        default="",
+        help="Core JSON 数据目录；默认读取 API_DATA_DIR 或 ~/.ai-native/web-admin-api",
+    )
     args = parser.parse_args()
 
     project_root = Path(args.project_root).resolve()
     api_dir = project_root / "web-admin" / "api"
-    data_dir = api_dir / "data"
     sys.path.insert(0, str(api_dir))
+
+    from core.config import get_api_data_dir
+
+    if args.api_data_dir.strip():
+        data_dir = Path(args.api_data_dir).expanduser()
+        if not data_dir.is_absolute():
+            data_dir = (api_dir / data_dir).resolve()
+        else:
+            data_dir = data_dir.resolve()
+    else:
+        data_dir = get_api_data_dir(create=False)
 
     from stores.json.employee_store import EmployeeStore
     from stores.postgres.employee_store import EmployeeStorePostgres
@@ -217,6 +233,7 @@ def main() -> None:
         migrated["sync_events"] += 1
 
     print("Core migration completed.")
+    print(f"- api_data_dir: {data_dir}")
     for key, value in migrated.items():
         print(f"- {key}: {value}")
 

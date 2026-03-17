@@ -11,6 +11,7 @@ from urllib.parse import quote
 DEFAULT_DEV_DATABASE_URL = "postgresql://admin:changeme@127.0.0.1:5432/ai_employee"
 _API_ROOT = Path(__file__).resolve().parents[1]
 _ENV_FILE_NAMES = (".env", ".env.local")
+_DEFAULT_API_DATA_DIR = Path.home() / ".ai-native" / "web-admin-api"
 
 
 def _parse_env_line(raw_line: str) -> tuple[str, str] | None:
@@ -83,6 +84,14 @@ def _build_database_url_from_env() -> str:
     return f"postgresql://{quote(user)}:{quote(password)}@{host}:{port}/{quote(db_name)}"
 
 
+def _build_api_data_dir_from_env() -> Path:
+    raw = _get_env("API_DATA_DIR", "").strip()
+    path = Path(raw).expanduser() if raw else _DEFAULT_API_DATA_DIR
+    if path.is_absolute():
+        return path.resolve()
+    return (_API_ROOT / path).resolve()
+
+
 @dataclass(frozen=True)
 class Settings:
     api_host: str
@@ -96,6 +105,7 @@ class Settings:
     usage_store_backend: str
     feedback_upgrade_enabled_global: bool
     database_url: str
+    api_data_dir: Path
     # Redis
     redis_host: str
     redis_port: int
@@ -107,6 +117,15 @@ class Settings:
     # 工具
     tool_timeout: int
     max_tool_retries: int
+
+
+def get_api_data_dir(*, create: bool = True) -> Path:
+    path = get_settings().api_data_dir
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings(
@@ -121,6 +140,7 @@ def get_settings() -> Settings:
         usage_store_backend=_get_env("USAGE_STORE_BACKEND", "postgres").strip().lower(),
         feedback_upgrade_enabled_global=_env_bool("FEEDBACK_UPGRADE_ENABLED_GLOBAL", True),
         database_url=_build_database_url_from_env(),
+        api_data_dir=_build_api_data_dir_from_env(),
         redis_host=_get_env("REDIS_HOST", "localhost"),
         redis_port=int(_get_env("REDIS_PORT", "6379")),
         redis_db=int(_get_env("REDIS_DB", "0")),
