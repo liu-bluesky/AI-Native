@@ -12,7 +12,7 @@
             <el-descriptions-item label="连接状态">
               <el-tag :type="connectionTagType(row.id)" size="small">{{ connectionTagText(row.id) }}</el-tag>
             </el-descriptions-item>
-            <el-descriptions-item label="最近测试时间">{{ getConnectionMeta(row.id, 'tested_at') || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="最近测试时间">{{ formatDateTime(getConnectionMeta(row.id, 'tested_at')) }}</el-descriptions-item>
             <el-descriptions-item label="测试模型">{{ getConnectionMeta(row.id, 'model_tested') || '-' }}</el-descriptions-item>
             <el-descriptions-item label="延迟(ms)">{{ getConnectionMeta(row.id, 'latency_ms') || '-' }}</el-descriptions-item>
             <el-descriptions-item label="返回信息" :span="2">
@@ -59,7 +59,9 @@
           <el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="updated_at" label="更新时间" min-width="200" />
+      <el-table-column label="更新时间" min-width="220">
+        <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
           <el-button text type="success" :loading="testingProviderId === row.id" @click="testConnection(row)">测试连接</el-button>
@@ -148,6 +150,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 
 const loading = ref(false)
 const saving = ref(false)

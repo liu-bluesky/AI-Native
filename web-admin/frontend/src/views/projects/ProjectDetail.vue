@@ -10,17 +10,9 @@
         <el-button
           type="success"
           :loading="manualLoading"
-          @click="showProjectManualTemplate"
-          >手册模板</el-button
+          @click="showProjectManual"
+          >使用手册</el-button
         >
-        <el-button
-          v-if="projectManualEnabled"
-          type="primary"
-          :loading="manualLoading"
-          @click="showGenerateProjectManual"
-          >生成使用手册</el-button
-        >
-        <el-button v-else type="info" disabled>大模型生成已禁用</el-button>
         <el-button @click="$router.push('/projects')">返回列表</el-button>
         <el-button @click="refresh">刷新</el-button>
       </div>
@@ -125,7 +117,18 @@
 
       <el-table :data="members" stripe>
         <el-table-column prop="employee_id" label="员工 ID" width="150" />
-        <el-table-column prop="employee_name" label="员工名称" width="180" />
+        <el-table-column label="员工名称" width="180">
+          <template #default="{ row }">
+            <el-button
+              text
+              type="primary"
+              :disabled="!row.employee_id"
+              @click="openEmployeeDetail(row)"
+            >
+              {{ row.employee_name || row.employee_id || "-" }}
+            </el-button>
+          </template>
+        </el-table-column>
         <el-table-column prop="role" label="角色" width="120" />
         <el-table-column label="状态" width="120">
           <template #default="{ row }">
@@ -144,8 +147,16 @@
         <el-table-column label="加入时间" min-width="220" show-overflow-tooltip>
           <template #default="{ row }">{{ row.joined_at || "-" }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column label="操作" width="190" fixed="right">
           <template #default="{ row }">
+            <el-button
+              text
+              type="primary"
+              size="small"
+              :disabled="!row.employee_id"
+              @click="openEmployeeDetail(row)"
+              >详情</el-button
+            >
             <el-button
               text
               type="danger"
@@ -235,7 +246,9 @@
         <el-table-column prop="content" label="内容" min-width="320" show-overflow-tooltip />
         <el-table-column prop="importance" label="重要度" width="90" />
         <el-table-column prop="scope" label="作用域" width="140" />
-        <el-table-column prop="created_at" label="创建时间" min-width="180" />
+        <el-table-column label="创建时间" min-width="220">
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+        </el-table-column>
       </el-table>
       <el-empty
         v-if="!filteredMemoryRows.length && !memoryLoading"
@@ -378,11 +391,7 @@
       <div v-loading="manualLoading">
         <el-alert
           v-if="generatedManual"
-          :title="
-            manualMode === 'template'
-              ? '项目手册模板加载成功'
-              : '项目使用手册生成成功'
-          "
+          title="项目使用手册加载成功"
           type="success"
           show-icon
           :closable="false"
@@ -393,27 +402,19 @@
         </div>
         <el-empty
           v-else
-          :description="
-            manualMode === 'template'
-              ? '点击下方按钮加载手册模板'
-              : '点击下方按钮生成使用手册'
-          "
+          description="点击下方按钮加载使用手册"
           :image-size="60"
         />
       </div>
       <template #footer>
         <el-button v-if="generatedManual" type="primary" @click="copyManual"
-          >{{ manualMode === "template" ? "复制手册模板" : "复制使用手册" }}</el-button
+          >复制使用手册</el-button
         >
         <el-button
           type="success"
           :loading="manualLoading"
-          @click="
-            manualMode === 'template'
-              ? showProjectManualTemplate()
-              : runGenerateProjectManual()
-          "
-          >{{ manualMode === "template" ? "加载手册模板" : "生成使用手册" }}</el-button
+          @click="showProjectManual"
+          >加载使用手册</el-button
         >
         <el-button @click="showManualDialog = false">关闭</el-button>
       </template>
@@ -427,6 +428,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import api from "@/utils/api.js";
+import { formatDateTime } from "@/utils/date.js";
 import {
   pickWorkspaceDirectory as openWorkspaceDirectoryPicker,
   pickWorkspaceFile as openWorkspaceFilePicker,
@@ -450,11 +452,6 @@ const showManualDialog = ref(false);
 const manualDialogTitle = ref("项目手册");
 const manualLoading = ref(false);
 const generatedManual = ref("");
-const manualMode = ref("generate");
-const systemConfig = ref({
-  enable_project_manual_generation: false,
-  enable_employee_manual_generation: false,
-});
 const memoryLoading = ref(false);
 
 const project = ref({});
@@ -536,9 +533,6 @@ const availableUserOptions = computed(() => {
   });
 });
 
-const projectManualEnabled = computed(
-  () => !!systemConfig.value.enable_project_manual_generation,
-);
 const canOpenProjectChat = computed(() => hasPermission("button.project.chat"));
 const projectMcpSseUrl = computed(() => {
   if (!project.value?.id) return "";
@@ -630,23 +624,6 @@ async function fetchProjectUsers() {
 async function fetchMembers() {
   const data = await api.get(`/projects/${projectId}/members`);
   members.value = data.members || [];
-}
-
-async function fetchSystemConfig() {
-  try {
-    const data = await api.get("/system-config");
-    systemConfig.value = {
-      enable_project_manual_generation:
-        !!data?.config?.enable_project_manual_generation,
-      enable_employee_manual_generation:
-        !!data?.config?.enable_employee_manual_generation,
-    };
-  } catch {
-    systemConfig.value = {
-      enable_project_manual_generation: false,
-      enable_employee_manual_generation: false,
-    };
-  }
 }
 
 function normalizeMemory(memory, employeeId = "") {
@@ -803,7 +780,6 @@ async function refresh() {
       fetchProjectUsers(),
       fetchMembers(),
       fetchEmployees(),
-      fetchSystemConfig(),
     ]);
     await fetchProjectMemories();
   } catch (err) {
@@ -834,6 +810,15 @@ function openProjectChat() {
 function openAddMember() {
   resetAddForm();
   showAddDialog.value = true;
+}
+
+function openEmployeeDetail(row) {
+  const employeeId = String(row?.employee_id || "").trim();
+  if (!employeeId) {
+    ElMessage.warning("当前员工 ID 无效");
+    return;
+  }
+  void router.push(`/employees/${employeeId}`);
 }
 
 function openAddUserDialog() {
@@ -904,46 +889,16 @@ async function saveEdit() {
   }
 }
 
-async function showGenerateProjectManual() {
-  if (!projectManualEnabled.value) {
-    ElMessage.warning("项目手册功能已被系统配置禁用");
-    return;
-  }
-  manualMode.value = "generate";
-  manualDialogTitle.value = `生成使用手册: ${project.value?.name || projectId}`;
-  generatedManual.value = "";
-  showManualDialog.value = true;
-  await runGenerateProjectManual();
-}
-
-async function runGenerateProjectManual() {
-  if (!projectManualEnabled.value) {
-    ElMessage.warning("项目手册功能已被系统配置禁用");
-    return;
-  }
-  manualLoading.value = true;
-  try {
-    const data = await api.post(`/projects/${projectId}/generate-manual`);
-    generatedManual.value = data.manual || "";
-    ElMessage.success("项目使用手册生成成功");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "生成使用手册失败");
-  } finally {
-    manualLoading.value = false;
-  }
-}
-
-async function showProjectManualTemplate() {
+async function showProjectManual() {
   manualLoading.value = true;
   try {
     const data = await api.get(`/projects/${projectId}/manual-template`);
     generatedManual.value = data.template || "";
-    manualMode.value = "template";
-    manualDialogTitle.value = `项目手册模板: ${project.value?.name || projectId}`;
+    manualDialogTitle.value = `项目使用手册: ${project.value?.name || projectId}`;
     showManualDialog.value = true;
-    ElMessage.success("项目手册模板加载成功");
+    ElMessage.success("项目使用手册加载成功");
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "加载项目手册模板失败");
+    ElMessage.error(err?.detail || err?.message || "加载项目使用手册失败");
   } finally {
     manualLoading.value = false;
   }

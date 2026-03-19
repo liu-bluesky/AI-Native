@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import HTTPException
+from core.deps import is_admin_like
 
 
 def current_username(auth_payload: dict | None) -> str:
@@ -16,6 +17,8 @@ def created_by_username(item: Any) -> str:
 
 
 def can_manage_record(item: Any, auth_payload: dict | None) -> bool:
+    if is_admin_like(auth_payload or {}):
+        return True
     username = current_username(auth_payload)
     created_by = created_by_username(item)
     return bool(username and created_by and username == created_by)
@@ -23,10 +26,12 @@ def can_manage_record(item: Any, auth_payload: dict | None) -> bool:
 
 def ownership_payload(item: Any, auth_payload: dict | None) -> dict[str, Any]:
     created_by = created_by_username(item)
+    username = current_username(auth_payload)
+    is_owner = bool(username and created_by and username == created_by)
     can_manage = can_manage_record(item, auth_payload)
     return {
         "created_by": created_by,
-        "is_owner": can_manage,
+        "is_owner": is_owner,
         "can_manage": can_manage,
         "is_shared": not created_by,
     }

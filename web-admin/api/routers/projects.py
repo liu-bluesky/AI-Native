@@ -48,7 +48,7 @@ from models.requests import (
 from stores.json.project_chat_store import ProjectChatMessage
 from stores.json.project_store import ProjectConfig, ProjectMember, ProjectUserMember, _now_iso
 from core.role_permissions import has_permission, resolve_role_permissions
-from stores.mcp_bridge import rule_store, skill_store
+from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType, memory_store, rule_store, skill_store
 
 router = APIRouter(prefix="/api/projects", dependencies=[Depends(require_auth)])
 
@@ -319,11 +319,14 @@ def _project_member_details(project_id: str) -> list[dict]:
         skill_items = []
         for skill_id in employee.skills or []:
             skill = skill_store.get(skill_id)
+            entry_count, sample_entries = _scan_skill_entries(skill) if skill else (0, [])
             skill_items.append(
                 {
                     "id": skill_id,
                     "name": getattr(skill, "name", "") or skill_id,
                     "description": getattr(skill, "description", "") if skill else "",
+                    "entry_count": entry_count,
+                    "sample_entries": sample_entries,
                 }
             )
         rule_bindings = _resolve_employee_rule_bindings(employee)
@@ -338,10 +341,119 @@ def _project_member_details(project_id: str) -> list[dict]:
     return items
 
 
-def _assert_project_manual_generation_enabled() -> None:
-    cfg = system_config_store.get_global()
-    if not bool(getattr(cfg, "enable_project_manual_generation", False)):
-        raise HTTPException(403, "Project manual generation is disabled by system config")
+def _scan_skill_entries(skill) -> tuple[int, list[str]]:
+    package_dir = str(getattr(skill, "package_dir", "") or "").strip() if skill else ""
+    if not package_dir:
+        return 0, []
+    package_path = Path(package_dir)
+    if not package_path.is_absolute():
+        package_path = Path(__file__).resolve().parents[3] / package_path
+    package_path = package_path.resolve()
+    if not package_path.exists() or not package_path.is_dir():
+        return 0, []
+
+    entries: list[str] = []
+    for base_dir in ("tools", "scripts"):
+        root = package_path / base_dir
+        if not root.exists():
+            continue
+        for file in sorted(root.rglob("*")):
+            if not file.is_file() or file.suffix.lower() not in {".py", ".js"}:
+                continue
+            entries.append(file.relative_to(package_path).as_posix())
+    return len(entries), entries[:8]
+
+
+def _format_manual_skill_item(
+    skill_id: str,
+    name: str,
+    description: str,
+    *,
+    entry_count: int = 0,
+    sample_entries: list[str] | None = None,
+    list_tool_name: str,
+    invoke_tool_name: str,
+    employee_id: str = "",
+) -> str:
+    normalized_skill_id = str(skill_id or "").strip() or str(name or "").strip() or "unknown-skill"
+    normalized_name = str(name or "").strip() or normalized_skill_id
+    normalized_description = str(description or "").strip() or "未提供描述"
+    entry_examples = "、".join(f"`{item}`" for item in (sample_entries or []) if str(item or "").strip()) or "无"
+    match_parts = []
+    if employee_id:
+        match_parts.append(f'`employee_id="{employee_id}"`')
+    match_parts.append(f'`skill_id="{normalized_skill_id}"`')
+    invoke_args = [f'"tool_name": "<从 {list_tool_name} 返回结果里选出的 tool_name>"']
+    if employee_id:
+        invoke_args.append(f'"employee_id": "{employee_id}"')
+    invoke_args.append('"args": { "...": "..." }')
+    invoke_example = ", ".join(invoke_args)
+    return (
+        f"#### {normalized_name} (`{normalized_skill_id}`)\n"
+        f"- 描述：{normalized_description}\n"
+        f"- 可执行入口数量：{entry_count}\n"
+        f"- 可执行入口示例：{entry_examples}\n"
+        f"- MCP 查看详情：先调用 `{list_tool_name}`，在返回结果中按 {' + '.join(match_parts)} 匹配该技能对应的 `tool_name`、`entry_name`、`description`\n"
+        f"- MCP 调用示例：`{invoke_tool_name}({{{invoke_example}}})`\n"
+        "- 手册写作要求：必须补出“何时使用这个技能”的触发条件，并基于上面的 MCP 查询/调用路径给出至少 1 个最小使用案例"
+    )
+
+
+def _format_manual_rule_index(
+    rule_bindings: list[dict[str, str]],
+    *,
+    query_tool_name: str,
+    employee_id: str = "",
+) -> str:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for item in rule_bindings:
+        domain = str(item.get("domain", "") or "").strip() or "未分类"
+        grouped.setdefault(domain, []).append(item)
+    if not grouped:
+        return "无"
+
+    sections: list[str] = []
+    for domain in sorted(grouped):
+        items = grouped[domain]
+        lines = [
+            f"- {str(rule.get('title', '') or '').strip() or str(rule.get('id', '') or '').strip() or '未命名规则'} (`{str(rule.get('id', '') or '').strip() or 'unknown-rule'}`)"
+            for rule in items
+        ]
+        query_parts = ['keyword="<规则标题关键词>"']
+        if employee_id:
+            query_parts.append(f'employee_id="{employee_id}"')
+        sections.append(
+            "\n".join(
+                [
+                    f"#### {domain}",
+                    *lines,
+                    (
+                        f"- MCP 获取详情：调用 `{query_tool_name}({', '.join(query_parts)})`，"
+                        "再以返回结果中的 `id`、`title`、`content` 作为最终依据"
+                    ),
+                ]
+            )
+        )
+    return "\n\n".join(sections)
+
+
+def _format_rule_domain_summary(rule_bindings: list[dict[str, str]]) -> str:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for item in rule_bindings:
+        domain = str(item.get("domain", "") or "").strip() or "未分类"
+        grouped.setdefault(domain, []).append(item)
+    if not grouped:
+        return "无"
+
+    lines: list[str] = []
+    for domain in sorted(grouped):
+        items = grouped[domain]
+        labels = [
+            f"{str(rule.get('title', '') or '').strip() or str(rule.get('id', '') or '').strip() or '未命名规则'} (`{str(rule.get('id', '') or '').strip() or 'unknown-rule'}`)"
+            for rule in items
+        ]
+        lines.append(f"- {domain}：{'；'.join(labels)}")
+    return "\n".join(lines)
 
 
 def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
@@ -1332,6 +1444,77 @@ def _append_chat_record(
         )
     except Exception:
         pass
+
+
+def _resolve_project_memory_target_employee_ids(
+    project_id: str,
+    selected_employee_ids: list[str] | None = None,
+) -> list[str]:
+    preferred = [
+        str(item or "").strip()
+        for item in (selected_employee_ids or [])
+        if str(item or "").strip()
+    ]
+    member_ids = [
+        str(getattr(member, "employee_id", "") or "").strip()
+        for member in project_store.list_members(project_id)
+    ]
+    ordered_ids = preferred + member_ids
+    result: list[str] = []
+    seen: set[str] = set()
+    for employee_id in ordered_ids:
+        if not employee_id or employee_id in seen:
+            continue
+        if employee_store.get(employee_id) is None:
+            continue
+        seen.add(employee_id)
+        result.append(employee_id)
+    return result
+
+
+def _save_project_chat_memory_snapshot(
+    *,
+    project_id: str,
+    user_message: str,
+    answer: str,
+    selected_employee_ids: list[str] | None = None,
+    source: str = "project-chat",
+) -> None:
+    project = project_store.get(project_id)
+    if project is None:
+        return
+    question = str(user_message or "").strip()
+    conclusion = str(answer or "").strip()
+    if not question or not conclusion:
+        return
+    if conclusion in {"[已停止]", "模型未返回有效内容。"}:
+        return
+    if conclusion.startswith("对话失败："):
+        return
+
+    target_ids = _resolve_project_memory_target_employee_ids(project_id, selected_employee_ids)
+    if not target_ids:
+        return
+
+    project_name = str(getattr(project, "name", "") or project_id).strip() or "default"
+    content = f"[用户问题] {question[:1200]}\n[最终结论] {conclusion[:2800]}"
+    for employee_id in target_ids:
+        try:
+            memory_store.save(
+                Memory(
+                    id=memory_store.new_id(),
+                    employee_id=employee_id,
+                    type=MemoryType.PROJECT_CONTEXT,
+                    content=content,
+                    project_name=project_name,
+                    importance=0.6,
+                    scope=MemoryScope.EMPLOYEE_PRIVATE,
+                    classification=Classification.INTERNAL,
+                    purpose_tags=("auto-capture", "project-chat", source),
+                )
+            )
+        except Exception:
+            continue
 
 
 @router.post("/chat/global")
@@ -2426,6 +2609,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     content=direct_answer,
                     chat_session_id=chat_session_id,
                 )
+                _save_project_chat_memory_snapshot(
+                    project_id=project_id,
+                    user_message=effective_user_message,
+                    answer=direct_answer,
+                    selected_employee_ids=selected_employee_ids,
+                    source="project-chat-ws-direct-meta",
+                )
                 return
 
             tool_probe_name = _extract_tool_probe_name(effective_user_message)
@@ -2465,6 +2655,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     content=direct_answer,
                     chat_session_id=chat_session_id,
                 )
+                _save_project_chat_memory_snapshot(
+                    project_id=project_id,
+                    user_message=effective_user_message,
+                    answer=direct_answer,
+                    selected_employee_ids=selected_employee_ids,
+                    source="project-chat-ws-direct-tool-probe",
+                )
                 return
 
             if _is_mcp_modules_query(effective_user_message):
@@ -2496,6 +2693,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     role="assistant",
                     content=direct_answer,
                     chat_session_id=chat_session_id,
+                )
+                _save_project_chat_memory_snapshot(
+                    project_id=project_id,
+                    user_message=effective_user_message,
+                    answer=direct_answer,
+                    selected_employee_ids=selected_employee_ids,
+                    source="project-chat-ws-direct-mcp-modules",
                 )
                 return
 
@@ -2636,6 +2840,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     content=final_answer or "模型未返回有效内容。",
                     chat_session_id=chat_session_id,
                 )
+                _save_project_chat_memory_snapshot(
+                    project_id=project_id,
+                    user_message=effective_user_message,
+                    answer=final_answer,
+                    selected_employee_ids=selected_employee_ids,
+                    source="project-chat-ws",
+                )
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -2753,6 +2964,13 @@ async def stream_project_chat(
                 {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-project-meta"},
             )
             _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer, chat_session_id=chat_session_id)
+            _save_project_chat_memory_snapshot(
+                project_id=project_id,
+                user_message=effective_user_message,
+                answer=answer,
+                selected_employee_ids=selected_employee_ids,
+                source="project-chat-sse-direct-meta",
+            )
 
         return StreamingResponse(
             direct_event_stream(),
@@ -2794,6 +3012,13 @@ async def stream_project_chat(
                 {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-tool-probe"},
             )
             _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer, chat_session_id=chat_session_id)
+            _save_project_chat_memory_snapshot(
+                project_id=project_id,
+                user_message=effective_user_message,
+                answer=answer,
+                selected_employee_ids=selected_employee_ids,
+                source="project-chat-sse-direct-tool-probe",
+            )
 
         return StreamingResponse(
             direct_tool_event_stream(),
@@ -2828,6 +3053,13 @@ async def stream_project_chat(
                 {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-mcp-modules"},
             )
             _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer, chat_session_id=chat_session_id)
+            _save_project_chat_memory_snapshot(
+                project_id=project_id,
+                user_message=effective_user_message,
+                answer=answer,
+                selected_employee_ids=selected_employee_ids,
+                source="project-chat-sse-direct-mcp-modules",
+            )
 
         return StreamingResponse(
             direct_mcp_event_stream(),
@@ -2983,6 +3215,13 @@ async def stream_project_chat(
                     content=final_answer or "模型未返回有效内容。",
                     chat_session_id=chat_session_id,
                 )
+                _save_project_chat_memory_snapshot(
+                    project_id=project_id,
+                    user_message=effective_user_message,
+                    answer=final_answer,
+                    selected_employee_ids=selected_employee_ids,
+                    source="project-chat-sse",
+                )
         except Exception as exc:
             _append_chat_record(
                 project_id=project_id,
@@ -3005,7 +3244,9 @@ async def stream_project_chat(
 
 
 def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
-    """获取项目手册提示词模板（供用户复制到其他 AI 使用）"""
+    """构建项目使用手册正文。"""
+    from routers.employees import _build_employee_manual_payload
+
     project = project_store.get(project_id)
     if project is None:
         raise HTTPException(404, f"Project {project_id} not found")
@@ -3031,244 +3272,157 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
 
     members_text = "\n".join(member_lines) if member_lines else "无"
     skills_text = (
-        "\n".join(f"- {s['name']}:{s.get('description', '')}" for s in unique_skills.values())
+        "\n\n".join(
+            _format_manual_skill_item(
+                str(s["id"]),
+                str(s["name"]),
+                str(s.get("description", "")),
+                entry_count=int(s.get("entry_count", 0) or 0),
+                sample_entries=list(s.get("sample_entries") or []),
+                list_tool_name="list_project_proxy_tools",
+                invoke_tool_name="invoke_project_skill_tool",
+            )
+            for s in unique_skills.values()
+        )
         if unique_skills
         else "无"
     )
-    domains_text = "\n".join(f"- {d}" for d in sorted(all_domains)) if all_domains else "无"
+    project_rule_bindings: list[dict[str, str]] = []
+    for item in member_items:
+        project_rule_bindings.extend(list(item["rule_bindings"] or []))
+    domains_text = _format_rule_domain_summary(project_rule_bindings) if project_rule_bindings else "无"
     employee_template_lines: list[str] = []
     for item in member_items:
         employee = item["employee"]
         member = item["member"]
-        skills = item["skills"]
-        domains = _collect_rule_domains(list(item["rule_bindings"] or []))
-        style_hints = list(getattr(employee, "style_hints", []) or [])
-        employee_skills_text = (
-            "\n".join(f"  - {s['name']}:{s.get('description', '')}" for s in skills)
-            if skills
-            else "  - 无"
-        )
-        employee_domains_text = (
-            "\n".join(f"  - {d}" for d in domains)
-            if domains
-            else "  - 无"
-        )
-        style_text = (
-            "\n".join(f"  - {text}" for text in style_hints)
-            if style_hints
-            else "  - 无"
-        )
-        workflow_text = (
-            "\n".join(f"  - {text}" for text in (getattr(employee, "default_workflow", []) or []))
-            if (getattr(employee, "default_workflow", []) or [])
-            else "  - 无"
-        )
+        employee_manual_payload = _build_employee_manual_payload(employee.id)
+        employee_manual = str(employee_manual_payload.get("manual") or "").strip() or "无"
         employee_template_lines.append(
             f"""### {employee.name}（{employee.id}）
-- 角色:{member.role}
-- 核心目标:{getattr(employee, "goal", "-") or "-"}
-- 语调:{getattr(employee, "tone", "-")} / 风格:{getattr(employee, "verbosity", "-")} / 语言:{getattr(employee, "language", "-")}
-- 记忆:scope={getattr(employee, "memory_scope", "-")}，保留{getattr(employee, "memory_retention_days", "-")}天
+- 项目角色:{member.role}
+- 复用来源:`/api/employees/{employee.id}/manual-template`
+- 说明: 以下内容直接复用该员工的使用手册正文；员工手册调整后，项目手册会自动同步，无需在项目侧重复维护。
 
-技能:
-{employee_skills_text}
-
-规则领域:
-{employee_domains_text}
-
-风格提示:
-{style_text}
-
-默认工作流:
-{workflow_text}
-
-工具使用策略:
-  - {str(getattr(employee, "tool_usage_policy", "") or "").strip() or "无"}
+{employee_manual}
 """
         )
     employee_templates_text = "\n".join(employee_template_lines) if employee_template_lines else "无成员"
 
-    template = f"""请根据以下信息，为"{project.name}"AI 项目模块生成一份完整的使用手册。
+    manual = f"""# {project.name} 项目使用手册
 
-## 项目基本信息
+## 项目总览
 
 - **项目 ID**：`{project.id}`
 - **项目名称**：{project.name}
 - **项目定位**：{project.description or "AI 开发团队"}
 - **反馈升级**：{"已启用" if project.feedback_upgrade_enabled else "未启用"}
+- **成员概览**：
+{members_text}
 
-## 项目成员
+### 强制执行流程
+1. 收到用户提问后，先调用 `get_project_runtime_context` 或 `list_project_members` 了解成员和能力范围。
+2. 再调用 `recall_project_memory` 检索相关记忆，优先传 `project_name="{project.name}"`。
+3. 每次有效对话都必须记录到项目记忆；当前宿主系统对项目聊天默认自动记录问答快照，如当前入口未覆盖自动记录链路，则在本轮结束后立即调用 `save_project_memory` 补记。
+4. 开始实现或排查前，调用 `query_project_rules` 和 `list_project_proxy_tools` 搜索匹配的规则与技能。
+5. 锁定匹配项后，再调用 `invoke_project_skill_tool`，必要时补 `employee_id` 消歧。
+6. 如需沉淀结构化结论、排查经验或关键决策，在自动记录之外显式调用 `save_project_memory` 追加一条可复用记忆。
+7. 发现规则缺口、工具异常或稳定性问题时，调用 `submit_project_feedback_bug`。
+
+### 记忆保存示例
+```json
+save_project_memory({{
+  "employee_id": "<项目成员ID>",
+  "content": "问题：<问题摘要>\\n结论：<最终方案>\\n关键决策：<需要沉淀的信息>",
+  "project_name": "{project.name}"
+}})
+```
+
+## 项目成员与员工使用手册
 
 {employee_templates_text}
 
----
+## 项目共享技能索引（写手册时不要只写技能名，需结合下面信息展开）
 
-## 手册生成要求
+{skills_text}
 
-**重要：自动记忆规则**
+## 项目规则领域概览（仅用于快速筛选，不可替代具体规则）
 
-在生成的使用手册中，必须在开头添加以下强制规则：
+{domains_text}
 
-> **每次对话流程（强制执行）：**
-> 1. 收到用户提问后，先检索相关记忆（`recall_project_memory`）
-> 2. 解决问题过程中的关键信息会自动保存到记忆系统
-> 3. 问题解决后，系统会自动记录本次对话的要点
-> 
-> **记忆自动保存的内容包括：**
-> - 用户提出的问题
-> - 使用的解决方案
-> - 调用的工具和参数
-> - 遇到的问题和解决方法
-> - 重要的技术决策
-> 
-> **注意：**
-> - 记忆系统会自动工作，无需手动调用保存
-> - 如果遇到重要问题或发现 Bug，可手动提交反馈工单（`submit_project_feedback_bug`）用于规则进化
+## 核心工具说明
 
-请按以下结构生成完整的使用手册：
+- **`get_project_usage_guide`**：获取项目 MCP 使用说明与推荐调用顺序。
+- **`get_project_manual`**：直接获取项目使用手册正文；也可读取 `project://<project_id>/manual` 资源。
+- **`list_project_members`**：列出项目成员，用于先确定可协作员工。
+- **`get_project_profile`**：读取项目基础配置、工作区和入口文件信息。
+- **`get_project_runtime_context`**：查看项目运行时上下文、成员、规则和技能规模。
+- **`recall_project_memory`**：检索项目记忆，优先传 `project_name="{project.name}"`。
+- **`save_project_memory`**：手动补记项目级结论、经验和关键决策；当当前入口未自动记录或需要追加结构化沉淀时必须调用。
+- **`query_project_rules`**：按关键词查询项目规则，最终以具体规则正文为准。
+- **`list_project_proxy_tools`**：列出项目可调用的成员技能工具。
+- **`invoke_project_skill_tool`**：调用项目成员技能，必要时补 `employee_id` 消歧。
+- **`submit_project_feedback_bug`**：提交结构化反馈工单。
 
-### 第一部分：项目总览
+## 推荐工作流
 
-#### 1. 项目简介
-- **定位**：{project.name}是什么项目？解决什么问题？
-- **适用场景**：什么时候应该使用这个项目？
-- **能力边界**：项目能做什么，不能做什么？
-
-#### 2. 核心工具说明
-
-逐个说明以下工具的用途、参数、返回值和使用场景：
-
-- **`list_project_members`**：列出项目所有成员
-- **`get_project_profile`**：获取项目配置信息
-- **`get_project_runtime_context`**：获取项目运行时上下文
-- **`recall_project_memory`**：检索项目记忆
-- **`query_project_rules`**：查询项目规则
-- **`list_project_proxy_tools`**：列出项目可用技能工具
-- **`invoke_project_skill_tool`**：调用项目技能
-- **`submit_project_feedback_bug`**：提交反馈问题
-
----
-
-### 第二部分：项目成员能力清单
-
-为每个成员详细说明：
-- 职责定位
-- 核心技能
-- 规则领域
-- 风格特点（如有）
-
----
-
-### 第三部分：推荐工作流
-
-#### 标准开发流程
-
-```
-1. 获取项目上下文 → get_project_runtime_context
+```text
+1. 获取项目上下文 / 成员信息 → get_project_runtime_context 或 list_project_members
 2. 记忆检索 → recall_project_memory
-3. 规则检索 → query_project_rules
-4. 技能调用 → invoke_project_skill_tool
-5. 反馈闭环 → submit_project_feedback_bug
+3. 每次对话记录 → 默认自动记录；未覆盖入口则立刻 save_project_memory 补记
+4. 先搜索匹配的规则与技能 → query_project_rules + list_project_proxy_tools
+5. 锁定匹配项后再调用技能 → invoke_project_skill_tool
+6. 结构化沉淀结论 → save_project_memory
+7. 反馈闭环 → submit_project_feedback_bug
 ```
 
-#### 典型场景示例
+## 常见问题与故障排查
 
-**场景 1：新增数据库表**
-1. 获取上下文
-2. 检索记忆（"数据库表设计"）
-3. 检索规则（"数据库设计"）
-4. 查看现有表结构（db-query）
-5. 提交反馈
+### Q1：数据库查询失败
+- 首次使用需提供数据库配置。
+- 检查连接信息是否正确。
+- 仅支持当前技能暴露的查询能力和约束，不要越权执行。
 
-**场景 2：开发新的 Vue 组件**
-1. 获取上下文
-2. 检索记忆（"Element Plus 表格组件"）
-3. 检索规则（"UI 设计"）
-4. 查询数据结构（db-query）
-5. 提交反馈
+### Q2：记忆检索无结果
+- 先更换关键词。
+- 检查 `project_name` 是否为 `{project.name}`。
+- 必要时放宽 `employee_id` 过滤，从项目级范围继续搜索。
 
-**场景 3：跨端协作（前后端联调）**
-1. 获取项目成员
-2. 检索后端记忆（"API 接口设计"）
-3. 检索前端记忆（"API 调用"）
-4. 查看数据库结构（db-query）
-5. 提交联调反馈
+### Q3：规则查询返回多条结果
+- 优先选择标题和当前任务最匹配的规则。
+- 再比较 `domain`、`id`、`content`，不要只凭领域名判断。
 
----
+### Q4：技能调用参数错误
+- 先确认 `tool_name`、`employee_id` 是否真实存在。
+- 再检查 `args` 是否满足工具要求。
+- 无匹配技能时，改为给分析结论或转交合适成员。
 
-### 第四部分：常见问题与故障排查
+## 最佳实践
 
-#### Q1：数据库查询失败
-- 首次使用需提供数据库配置
-- 检查连接信息是否正确
-- 仅支持 SELECT 语句
-- 单次查询最多返回 1000 行
+### 参数规范
+- 调用记忆时，必须传 `project_name="{project.name}"`。
+- 调用技能时，优先传 `employee_id`，避免歧义。
+- 提交反馈时，至少传 `employee_id`、`title`、`symptom`、`expected`。
 
-#### Q2：记忆检索无结果
-- 尝试更换关键词
-- 检查 `project_name` 参数（必须是"{project.name}"）
-- 确认记忆保留期（90 天）内是否有记录
-- 尝试不指定 `employee_id` 进行全局检索
+### 员工选择
+- 根据任务类型选择合适员工。
+- 跨端任务拆分给相关员工分别处理，再做汇总。
 
-#### Q3：规则查询返回多条结果
-- 优先使用最近更新的规则
-- 根据 `domain` 字段筛选
-- 可以同时参考多条规则
+### 记忆与规则
+- 先检索记忆，再检索规则，再决定是否调用技能。
+- 每次有效对话都要留下项目记忆；自动记录未覆盖时，必须手动补记。
+- 结构化结论和关键决策建议额外补一条高质量记忆，便于后续复用。
+- 不要把领域名直接当作规则正文。
 
-#### Q4：技能调用参数错误
-- 查看错误信息中的参数提示
-- 确认 `employee_id` 是否正确
-- 确认技能名称是否正确
-- 确认 `args` 参数格式正确（JSON 对象）
-
-#### Q5：反馈提交失败
-- 检查必填参数是否完整
-- 确认项目反馈升级功能已启用
-- 检查 `employee_id` 是否属于该项目成员
-
----
-
-### 第五部分：最佳实践
-
-#### 1. 参数规范
-- 调用记忆时，必须传 `project_name="{project.name}"`
-- 调用技能时，必须传 `employee_id`
-- 提交反馈时，必须传 `employee_id`、`title`、`symptom`、`expected`
-
-#### 2. 员工选择
-- 根据任务类型选择合适的员工
-- 跨端任务：分别调用相关员工的能力
-
-#### 3. 记忆管理
-- 定期检索记忆，避免重复踩坑
-- 及时提交反馈，积累项目经验
-- 使用精确的关键词提高检索准确率
-
-#### 4. 规则遵循
-- 开发前先检索相关规则
-- 遵循规则中的最佳实践
-- 发现规则不适用时及时反馈
-
-#### 5. 技能使用
-- 首次使用技能时注意配置要求
-- 数据库查询注意安全限制
-- 技能调用失败时查看详细错误信息
-
----
-
-## 生成要求
-
-1. **语言**：全部使用中文
-2. **格式**：标准 Markdown
-3. **完整性**：必须包含以上所有章节
-4. **实用性**：提供具体的使用场景和示例
-5. **清晰度**：每个工具的用途、参数、返回值都要说明清楚
-
-请开始生成完整的使用手册。"""
+### 事实边界
+- 当前宿主系统已实现项目聊天自动记忆快照；若当前入口未接入该链路，仍需显式调用 `save_project_memory`。
+- 不得臆造不存在的 `skill_id`、`tool_name`、`rule_id` 或规则正文。
+- 面向接入方 AI 平台时，默认按 MCP 显式调用描述。
+"""
 
     return {
         "status": "success",
-        "template": template,
+        "manual": manual,
+        "template": manual,
         "project_id": project.id,
         "project_name": project.name,
         "members_summary": members_text,
@@ -3277,66 +3431,9 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
     }
 
 
-@router.post("/{project_id}/generate-manual")
-async def generate_project_manual(project_id: str, auth_payload: dict = Depends(require_auth)):
-    """生成项目使用手册（面向接入方 AI 平台）"""
-    from services.llm_provider_service import get_llm_provider_service
-
-    _ensure_permission(auth_payload, "menu.projects")
-    _ensure_project_access(project_id, auth_payload)
-    _assert_project_manual_generation_enabled()
-
-    llm_service = get_llm_provider_service()
-    providers = llm_service.list_providers(
-        enabled_only=True,
-        owner_username=str(auth_payload.get("sub") or "").strip(),
-        include_all=is_admin_like(auth_payload),
-        include_shared=True,
-    )
-    if not providers:
-        raise HTTPException(400, "未配置 LLM 提供商")
-    default_provider = next((p for p in providers if p.get("is_default")), providers[0])
-
-    template_payload = _build_project_manual_template_payload(project_id)
-    template = str(template_payload.get("template") or "").strip()
-    if not template:
-        raise HTTPException(500, "项目手册模板为空，无法生成使用手册")
-
-    project_name = str(template_payload.get("project_name") or "")
-    system_prompt = (
-        "你是技术文档撰写专家。请严格根据用户提供的手册模板要求生成最终使用手册，"
-        "输出标准 Markdown，不要解释过程。"
-    )
-
-    try:
-        result = await llm_service.chat_completion(
-            provider_id=default_provider["id"],
-            model_name=default_provider.get("default_model") or "gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": template},
-            ],
-            temperature=0.2,
-            max_tokens=2800,
-            timeout=60,
-        )
-        manual = str(result.get("content") or "").strip()
-        return {
-            "status": "success",
-            "manual": manual,
-            "template": template,
-            "provider": default_provider["name"],
-            "model": default_provider.get("default_model") or "gpt-4",
-            "project_id": project_id,
-            "project_name": project_name,
-        }
-    except Exception as exc:
-        raise HTTPException(500, f"生成项目使用手册失败: {str(exc)}") from exc
-
-
 @router.get("/{project_id}/manual-template")
 async def get_project_manual_template(project_id: str, auth_payload: dict = Depends(require_auth)):
-    """获取项目手册提示词模板（供用户复制到其他 AI 使用）"""
+    """获取项目使用手册正文。"""
     _ensure_permission(auth_payload, "menu.projects")
     _ensure_project_access(project_id, auth_payload)
     return _build_project_manual_template_payload(project_id)

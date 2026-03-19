@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import io
 import json
 import shutil
@@ -17,7 +18,13 @@ from fastapi.responses import StreamingResponse
 from core.deps import employee_store, ensure_permission, require_auth, usage_store
 from core.ownership import assert_can_manage_record, ownership_payload
 from models.requests import SkillCreateReq, SkillInstallReq, SkillUpdateReq
-from services.skill_import_service import PROJECT_ROOT, import_skill_from_dir, pick_extracted_skill_dir
+from services.skill_import_service import (
+    PROJECT_ROOT,
+    SENSITIVE_SKILL_FILE_PATTERNS,
+    backfill_existing_skill_packages,
+    import_skill_from_dir,
+    pick_extracted_skill_dir,
+)
 from stores.mcp_bridge import (
     EmployeeSkillBinding,
     Skill,
@@ -36,6 +43,11 @@ router = APIRouter(
     dependencies=[Depends(require_auth), Depends(_require_skill_permission)],
 )
 _MAX_ZIP_SIZE = 20 * 1024 * 1024
+_MAX_FILE_PREVIEW_SIZE = 200 * 1024
+
+
+def _ensure_historical_skills_registered() -> None:
+    backfill_existing_skill_packages()
 
 
 def _cleanup_employee_skill_references(skill_id: str) -> list[str]:
@@ -65,24 +77,128 @@ def _serialize_skill_payload(skill: Skill, auth_payload: dict | None = None) -> 
     return payload
 
 
+def _resolve_skill_package(skill_id: str) -> tuple[Skill, Path]:
+    _ensure_historical_skills_registered()
+    skill = skill_store.get(skill_id)
+    if skill is None:
+        raise HTTPException(404, f"Skill {skill_id} not found")
+    package_path = PROJECT_ROOT / str(skill.package_dir or "").strip()
+    if not package_path.exists() or not package_path.is_dir():
+        raise HTTPException(404, f"Skill package directory for {skill_id} not found")
+    return skill, package_path
+
+
+def _is_sensitive_skill_path(rel_path: Path) -> bool:
+    name = rel_path.name
+    return any(fnmatch.fnmatch(name, pattern) for pattern in SENSITIVE_SKILL_FILE_PATTERNS)
+
+
+def _is_hidden_skill_path(rel_path: Path) -> bool:
+    return any(part.startswith(".") for part in rel_path.parts)
+
+
+def _should_skip_skill_path(rel_path: Path) -> bool:
+    return (
+        "__pycache__" in rel_path.parts
+        or _is_hidden_skill_path(rel_path)
+        or _is_sensitive_skill_path(rel_path)
+    )
+
+
+def _build_skill_package_tree(root: Path, current: Path) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in sorted(current.iterdir(), key=lambda path: (path.is_file(), path.name.lower())):
+        rel_path = item.relative_to(root)
+        if _should_skip_skill_path(rel_path):
+            continue
+        node: dict[str, Any] = {
+            "label": item.name,
+            "path": rel_path.as_posix(),
+            "kind": "dir" if item.is_dir() else "file",
+        }
+        if item.is_dir():
+            node["children"] = _build_skill_package_tree(root, item)
+        else:
+            node["size"] = item.stat().st_size
+        items.append(node)
+    return items
+
+
+def _resolve_skill_file_path(package_path: Path, raw_path: str) -> tuple[Path, Path]:
+    normalized = str(raw_path or "").strip()
+    if not normalized:
+        raise HTTPException(400, "path is required")
+    rel_path = Path(normalized)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        raise HTTPException(400, "Invalid file path")
+    if _should_skip_skill_path(rel_path):
+        raise HTTPException(404, "Skill file not found")
+    resolved = (package_path / rel_path).resolve()
+    try:
+        resolved.relative_to(package_path.resolve())
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid file path") from exc
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(404, "Skill file not found")
+    return rel_path, resolved
+
+
+def _read_skill_file_preview(file_path: Path) -> tuple[str, bool, bool]:
+    size = file_path.stat().st_size
+    with file_path.open("rb") as handle:
+        sample = handle.read(_MAX_FILE_PREVIEW_SIZE + 1)
+    truncated = size > _MAX_FILE_PREVIEW_SIZE
+    payload = sample[:_MAX_FILE_PREVIEW_SIZE]
+    is_binary = b"\x00" in payload
+    if is_binary:
+        return "", True, truncated
+    return payload.decode("utf-8", errors="replace"), False, truncated
+
+
 @router.get("/skills")
 async def list_skills(auth_payload: dict = Depends(require_auth)):
+    _ensure_historical_skills_registered()
     skills = skill_store.list_all()
     return {"skills": [_serialize_skill_payload(skill, auth_payload) for skill in skills]}
 
 
 @router.get("/skills/query/{domain}")
 async def query_skills(domain: str, auth_payload: dict = Depends(require_auth)):
+    _ensure_historical_skills_registered()
     results = skill_store.query(domain=domain)
     return {"skills": [_serialize_skill_payload(skill, auth_payload) for skill in results]}
 
 
 @router.get("/skills/{skill_id}")
 async def get_skill(skill_id: str, auth_payload: dict = Depends(require_auth)):
+    _ensure_historical_skills_registered()
     skill = skill_store.get(skill_id)
     if skill is None:
         raise HTTPException(404, f"Skill {skill_id} not found")
     return {"skill": _serialize_skill_payload(skill, auth_payload)}
+
+
+@router.get("/skills/{skill_id}/package-tree")
+async def get_skill_package_tree(skill_id: str):
+    _, package_path = _resolve_skill_package(skill_id)
+    return {"tree": _build_skill_package_tree(package_path, package_path)}
+
+
+@router.get("/skills/{skill_id}/package-file")
+async def get_skill_package_file(skill_id: str, path: str):
+    _, package_path = _resolve_skill_package(skill_id)
+    rel_path, file_path = _resolve_skill_file_path(package_path, path)
+    content, is_binary, truncated = _read_skill_file_preview(file_path)
+    return {
+        "file": {
+            "name": file_path.name,
+            "path": rel_path.as_posix(),
+            "size": file_path.stat().st_size,
+            "is_binary": is_binary,
+            "truncated": truncated,
+            "content": content,
+        }
+    }
 
 
 @router.get("/employees/{employee_id}/skills")
@@ -183,13 +299,7 @@ async def import_skill_file(
 
 @router.get("/skills/{skill_id}/export")
 async def export_skill(skill_id: str):
-    skill = skill_store.get(skill_id)
-    if skill is None:
-        raise HTTPException(404, f"Skill {skill_id} not found")
-
-    package_path = PROJECT_ROOT / skill.package_dir
-    if not package_path.exists() or not package_path.is_dir():
-        raise HTTPException(404, f"Skill package directory for {skill_id} not found")
+    _, package_path = _resolve_skill_package(skill_id)
 
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:

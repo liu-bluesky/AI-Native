@@ -17,7 +17,7 @@
       <el-descriptions-item label="Owner">{{ detail.skill.owner || "-" }}</el-descriptions-item>
       <el-descriptions-item label="Repo">{{ detail.skill.repo || "-" }}</el-descriptions-item>
       <el-descriptions-item label="安装量">{{ detail.skill.install_count || 0 }}</el-descriptions-item>
-      <el-descriptions-item label="创建时间">{{ detail.skill.created_at || "-" }}</el-descriptions-item>
+      <el-descriptions-item label="创建时间">{{ formatDateTime(detail.skill.created_at) }}</el-descriptions-item>
       <el-descriptions-item label="描述" :span="2">{{ detail.skill.description || "-" }}</el-descriptions-item>
       <el-descriptions-item label="来源地址" :span="2">
         <el-link v-if="detail.skill.source_url" :href="detail.skill.source_url" target="_blank" type="primary">
@@ -46,7 +46,9 @@
       </el-table-column>
       <el-table-column prop="commit_sha" label="Commit SHA" min-width="150" show-overflow-tooltip />
       <el-table-column prop="hash" label="Hash" min-width="220" show-overflow-tooltip />
-      <el-table-column prop="created_at" label="创建时间" width="180" />
+      <el-table-column label="创建时间" width="220">
+        <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="220" fixed="right">
         <template #default="{ row }">
           <el-button
@@ -71,6 +73,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/utils/api.js";
+import { formatDateTime } from "@/utils/date.js";
 
 const route = useRoute();
 const router = useRouter();

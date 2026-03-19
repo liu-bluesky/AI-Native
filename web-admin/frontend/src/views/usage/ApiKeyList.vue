@@ -8,7 +8,9 @@
     <el-table :data="keys" stripe>
       <el-table-column prop="key" label="Key" width="340" />
       <el-table-column prop="developer_name" label="用户" width="140" />
-      <el-table-column prop="created_at" label="创建时间" />
+      <el-table-column label="创建时间" min-width="220">
+        <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="100" fixed="right">
         <template #default="{ row }">
           <el-button
@@ -42,6 +44,7 @@
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 import { hasPermission } from '@/utils/permissions.js'
 
 const loading = ref(false)

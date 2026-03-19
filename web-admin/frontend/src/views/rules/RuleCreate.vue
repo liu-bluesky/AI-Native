@@ -3,7 +3,21 @@
     <h3>新建规则</h3>
     <el-form :model="form" :rules="rules" ref="formRef" label-width="120px" class="form-wrap">
       <el-form-item label="领域" prop="domain">
-        <el-input v-model="form.domain" placeholder="如：error-handling" />
+        <el-select
+          v-model="form.domain"
+          class="select-wide"
+          filterable
+          allow-create
+          default-first-option
+          clearable
+          :reserve-keyword="false"
+          placeholder="选择已有领域，或输入新领域后回车"
+        >
+          <el-option v-for="item in domainOptions" :key="item" :label="item" :value="item" />
+        </el-select>
+        <div class="field-hint">
+          可直接选择已有领域，也可手动输入新的领域名称。
+        </div>
       </el-form-item>
       <el-form-item label="标题" prop="title">
         <el-input v-model="form.title" placeholder="规则标题" />
@@ -78,7 +92,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api.js'
@@ -87,6 +101,7 @@ const router = useRouter()
 const formRef = ref(null)
 const loading = ref(false)
 const employees = ref([])
+const knownDomains = ref([])
 
 const form = reactive({
   domain: '',
@@ -99,8 +114,20 @@ const form = reactive({
   bound_employees: [],
 })
 
+const domainOptions = computed(() => {
+  const seen = new Set()
+  const values = [...knownDomains.value, String(form.domain || '').trim()]
+  return values.filter((item) => {
+    const value = String(item || '').trim()
+    const key = value.toLowerCase()
+    if (!value || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+})
+
 const rules = {
-  domain: [{ required: true, message: '请输入领域', trigger: 'blur' }],
+  domain: [{ required: true, message: '请输入领域', trigger: ['blur', 'change'] }],
   title: [{ required: true, message: '请输入标题', trigger: 'blur' }],
   content: [{ required: true, message: '请输入内容', trigger: 'blur' }],
 }
@@ -109,7 +136,14 @@ async function handleCreate() {
   await formRef.value.validate()
   loading.value = true
   try {
-    const { rule } = await api.post('/rules', { ...form })
+    const payload = {
+      ...form,
+      domain: String(form.domain || '').trim(),
+      title: String(form.title || '').trim(),
+      content: String(form.content || '').trim(),
+      mcp_service: String(form.mcp_service || '').trim(),
+    }
+    const { rule } = await api.post('/rules', payload)
     ElMessage.success(`规则「${rule.title}」创建成功`)
     router.push('/rules')
   } catch (e) {
@@ -128,7 +162,19 @@ async function fetchEmployees() {
   }
 }
 
-onMounted(fetchEmployees)
+async function fetchDomains() {
+  try {
+    const data = await api.get('/rules/domains')
+    knownDomains.value = Array.isArray(data.domains) ? data.domains : []
+  } catch {
+    knownDomains.value = []
+  }
+}
+
+onMounted(() => {
+  fetchEmployees()
+  fetchDomains()
+})
 </script>
 
 <style scoped>

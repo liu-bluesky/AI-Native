@@ -44,7 +44,7 @@
       <el-descriptions-item label="反馈升级">{{ emp.feedback_upgrade_enabled ? '开启' : '关闭' }}</el-descriptions-item>
       <el-descriptions-item label="进化阈值">{{ emp.evolve_threshold }}</el-descriptions-item>
       <el-descriptions-item label="创建人">{{ formatRecordOwner(emp) }}</el-descriptions-item>
-      <el-descriptions-item label="创建时间">{{ emp.created_at }}</el-descriptions-item>
+      <el-descriptions-item label="创建时间">{{ formatDateTime(emp.created_at) }}</el-descriptions-item>
     </el-descriptions>
 
     <h4 class="section-title">技能</h4>
@@ -106,6 +106,7 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 import {
   formatRecordOwner,
   getOwnershipDeniedMessage,

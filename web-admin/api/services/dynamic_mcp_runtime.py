@@ -20,6 +20,7 @@ from services.dynamic_mcp_apps_basic import (
 )
 from services.dynamic_mcp_apps_employee import create_employee_mcp as _create_employee_mcp_impl
 from services.dynamic_mcp_apps_project import create_project_mcp as _create_project_mcp_impl
+from services.dynamic_mcp_apps_query import create_query_mcp as _create_query_mcp_impl
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from services.dynamic_mcp_context import (
@@ -57,9 +58,11 @@ from services.dynamic_mcp_transports import (
 from core.deps import employee_store, external_mcp_store, project_store, usage_store
 from services.feedback_service import get_feedback_service
 from services.dynamic_mcp_audit import (
+    save_auto_query_memory as _save_auto_query_memory,
     save_auto_user_question_memory as _save_auto_user_question_memory,
 )
 from services.dynamic_mcp_proxy_apps import EmployeeMcpProxyApp, ProjectMcpProxyApp
+from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
 from stores.mcp_bridge import (
     rule_store,
     skill_store,
@@ -538,6 +541,14 @@ def _create_project_mcp(project_id: str):
     )
 
 
+def _create_query_mcp():
+    mcp = _create_query_mcp_impl()
+    return _DualTransportMcpApp(
+        _apply_mcp_arguments_compat(mcp.sse_app()),
+        mcp.streamable_http_app(),
+    )
+
+
 class _RuleMcpProxyApp:
     async def __call__(self, scope, receive, send):
         rule_id = scope.get("path_params", {}).get("rule_id")
@@ -611,6 +622,16 @@ employee_mcp_proxy_app = EmployeeMcpProxyApp(
     replace_path_suffix=_replace_path_suffix,
     dual_transport_app_type=_DualTransportMcpApp,
     employee_mcp_app_rev=_EMPLOYEE_MCP_APP_REV,
+)
+
+query_mcp_proxy_app = QueryMcpProxyApp(
+    usage_store=usage_store,
+    current_api_key_ctx=_current_api_key,
+    current_developer_name_ctx=_current_developer_name,
+    session_keys=_session_keys,
+    query_app=_create_query_mcp(),
+    save_auto_query_memory=_save_auto_query_memory,
+    replace_path_suffix=_replace_path_suffix,
 )
 
 rule_mcp_proxy_app = _RuleMcpProxyApp()

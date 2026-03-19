@@ -57,9 +57,9 @@
           <div class="switch-list">
             <div class="switch-card">
               <div>
-                <div class="switch-title">允许生成项目使用手册</div>
+                <div class="switch-title">项目手册旧开关</div>
                 <div class="switch-desc">
-                  控制项目页中的大模型生成使用手册入口。
+                  兼容保留字段，当前项目使用手册已改为直接读取内容，不再调用大模型。
                 </div>
               </div>
               <el-switch v-model="form.enable_project_manual_generation" />
@@ -67,9 +67,9 @@
 
             <div class="switch-card">
               <div>
-                <div class="switch-title">允许生成员工手册</div>
+                <div class="switch-title">员工手册旧开关</div>
                 <div class="switch-desc">
-                  控制员工页中的大模型生成使用手册入口。
+                  兼容保留字段，当前员工使用手册已改为直接读取内容，不再调用大模型。
                 </div>
               </div>
               <el-switch v-model="form.enable_employee_manual_generation" />

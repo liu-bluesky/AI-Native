@@ -221,6 +221,63 @@ def create_employee_mcp(
         return [serialize_memory(mem) for mem in filtered]
 
     @mcp.tool()
+    def save_employee_memory(
+        content: str,
+        type: str = "project-context",
+        importance: float = 0.6,
+        project_name: str = "",
+    ) -> dict:
+        """向当前员工写入记忆（支持项目隔离）
+
+        Args:
+            project_name: 项目名称（为空则自动读取 .mcp-project.json）
+        """
+        employee = _get_employee()
+        if not employee:
+            return {"error": "Employee not found"}
+
+        content_value = str(content or "").strip()
+        if not content_value:
+            return {"error": "content is required"}
+
+        if not project_name:
+            project_config = load_project_config_fn()
+            project_name = project_config.get("project_name") or "default"
+        project_name = str(project_name).strip()
+
+        memory_type_value = str(type or "").strip() or "project-context"
+        try:
+            memory_type = MemoryType(memory_type_value)
+        except ValueError:
+            return {"error": f"Invalid type: {memory_type_value}. Valid: {[item.value for item in MemoryType]}"}
+        try:
+            importance_value = float(importance)
+        except (TypeError, ValueError):
+            return {"error": "importance must be a number"}
+        importance_value = max(0.0, min(1.0, importance_value))
+
+        memory = Memory(
+            id=memory_store.new_id(),
+            employee_id=employee.id,
+            type=memory_type,
+            content=content_value,
+            project_name=project_name,
+            importance=importance_value,
+            scope=MemoryScope.EMPLOYEE_PRIVATE,
+            classification=Classification.INTERNAL,
+            purpose_tags=("employee-mcp", "manual-write"),
+        )
+        memory_store.save(memory)
+        return {
+            "status": "saved",
+            "memory_id": memory.id,
+            "employee_id": employee.id,
+            "project_name": project_name,
+            "type": memory_type.value,
+            "importance": importance_value,
+        }
+
+    @mcp.tool()
     def get_employee_runtime_context() -> dict:
         """返回员工运行时上下文摘要（技能、规则、记忆统计）"""
         employee = _get_employee()

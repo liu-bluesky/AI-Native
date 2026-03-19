@@ -27,6 +27,11 @@ class SkillImportResult:
     already_exists: bool = False
 
 
+@dataclass(frozen=True)
+class SkillBackfillResult:
+    created: tuple[Skill, ...] = ()
+
+
 def _slugify(value: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9-]+", "-", value.strip().lower())
     normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
@@ -82,6 +87,96 @@ def _as_tags(raw: Any) -> tuple[str, ...]:
     if isinstance(raw, str):
         return tuple(item.strip() for item in raw.split(",") if item.strip())
     return ()
+
+
+def _resolve_package_dir_for_storage(source_dir: Path) -> str:
+    try:
+        return str(source_dir.resolve().relative_to(PROJECT_ROOT).as_posix())
+    except ValueError:
+        return str(source_dir.resolve())
+
+
+def _existing_skill_package_paths() -> set[Path]:
+    paths: set[Path] = set()
+    for item in skill_store.list_all():
+        package_dir = str(getattr(item, "package_dir", "") or "").strip()
+        if not package_dir:
+            continue
+        path = Path(package_dir)
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        paths.add(path.resolve())
+    return paths
+
+
+def _preferred_skill_id(
+    source_dir: Path,
+    manifest: dict[str, Any],
+    frontmatter: dict[str, Any],
+    name: str,
+) -> str:
+    for raw in (
+        manifest.get("id"),
+        frontmatter.get("slug"),
+        source_dir.name,
+        frontmatter.get("name"),
+        name,
+    ):
+        candidate = _slugify(str(raw or ""))
+        if candidate:
+            return candidate
+    return ""
+
+
+def _allocate_backfill_skill_id(
+    source_dir: Path,
+    manifest: dict[str, Any],
+    frontmatter: dict[str, Any],
+    name: str,
+) -> str:
+    base = _preferred_skill_id(source_dir, manifest, frontmatter, name)
+    if not base:
+        return skill_store.new_id()
+    skill_id = base
+    suffix = 2
+    while skill_store.get(skill_id) is not None:
+        skill_id = f"{base}-{suffix}"
+        suffix += 1
+    return skill_id
+
+
+def build_skill_record_from_package_dir(
+    source_dir: Path,
+    *,
+    skill_id: str | None = None,
+    created_by: str = "",
+) -> Skill:
+    manifest = read_manifest(source_dir)
+    frontmatter = read_skill_frontmatter(source_dir)
+    name = str(manifest.get("name") or frontmatter.get("name") or source_dir.name).strip() or source_dir.name
+    description = str(manifest.get("description") or frontmatter.get("description") or "").strip()
+    version = str(manifest.get("version") or frontmatter.get("version") or "1.0.0").strip() or "1.0.0"
+    mcp_service = str(manifest.get("mcp_service") or frontmatter.get("mcp_service") or "").strip()
+    tags = _as_tags(manifest.get("tags", frontmatter.get("tags", [])))
+    resolved_skill_id = str(skill_id or "").strip() or _allocate_backfill_skill_id(
+        source_dir,
+        manifest,
+        frontmatter,
+        name,
+    )
+    return Skill(
+        id=resolved_skill_id,
+        name=name,
+        version=version,
+        description=description,
+        mcp_service=mcp_service,
+        created_by=created_by,
+        package_dir=_resolve_package_dir_for_storage(source_dir),
+        tools=scan_tools(source_dir, manifest),
+        resources=scan_resources(source_dir),
+        tags=tags,
+        mcp_enabled=bool(manifest.get("mcp_enabled", False)),
+    )
 
 
 def resolve_source_dir(source_dir: str) -> Path:
@@ -160,6 +255,26 @@ def looks_like_skill_dir(path: Path) -> bool:
         or (path / "manifest.json").exists()
         or (path / "tools").exists()
     )
+
+
+def backfill_existing_skill_packages() -> SkillBackfillResult:
+    packages_root = skill_store.package_path("__backfill__").parent
+    if not packages_root.exists() or not packages_root.is_dir():
+        return SkillBackfillResult()
+
+    existing_paths = _existing_skill_package_paths()
+    created: list[Skill] = []
+    for source_dir in sorted(path for path in packages_root.iterdir() if path.is_dir()):
+        resolved = source_dir.resolve()
+        if resolved in existing_paths:
+            continue
+        if not looks_like_skill_dir(source_dir):
+            continue
+        skill = build_skill_record_from_package_dir(source_dir)
+        skill_store.save(skill)
+        existing_paths.add(resolved)
+        created.append(skill)
+    return SkillBackfillResult(created=tuple(created))
 
 
 def pick_extracted_skill_dir(extract_dir: Path) -> Path:

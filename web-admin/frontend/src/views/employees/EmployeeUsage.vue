@@ -30,7 +30,9 @@
       <el-table-column prop="developer_name" label="用户" width="140" />
       <el-table-column prop="api_key" label="Key" width="300" />
       <el-table-column prop="cnt" label="事件数" width="100" />
-      <el-table-column prop="last_seen" label="最近活跃" />
+      <el-table-column label="最近活跃">
+        <template #default="{ row }">{{ formatDateTime(row.last_seen) }}</template>
+      </el-table-column>
     </el-table>
 
     <h4 class="section-title">按工具统计</h4>
@@ -86,7 +88,9 @@
       </el-table-column>
       <el-table-column prop="tool_name" label="工具" width="160" />
       <el-table-column prop="client_ip" label="IP" width="120" />
-      <el-table-column prop="created_at" label="时间" />
+      <el-table-column label="时间">
+        <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+      </el-table-column>
     </el-table>
     <el-empty v-if="!loading && !(stats.recent || []).length" description="暂无使用记录" :image-size="60" />
   </div>
@@ -97,6 +101,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 
 const route = useRoute()
 const employeeId = computed(() => route.params.id)

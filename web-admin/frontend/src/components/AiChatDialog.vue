@@ -21,7 +21,7 @@
                 {{ roleLabel(item.role) }}
               </el-tag>
               <span v-if="item.created_at || item.time" class="time-text">
-                {{ item.created_at || item.time }}
+                {{ formatRelativeDateTime(item.created_at || item.time) }}
               </span>
             </div>
             <div class="message-content">{{ item.content || '' }}</div>
@@ -94,6 +94,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { formatRelativeDateTime } from '@/utils/date.js'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },

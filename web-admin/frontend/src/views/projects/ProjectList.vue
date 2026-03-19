@@ -151,55 +151,21 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showMcpDialog" :title="`项目 MCP 接入: ${currentProject?.name || ''}`" width="620px">
-      <div class="mcp-guide-card">
-        <div class="mcp-guide-card__title">接入后推荐先读</div>
-        <div class="mcp-guide-card__item">
-          <span class="mcp-guide-card__label">Usage Guide</span>
-          <code>{{ mcpUsageGuideResource }}</code>
-        </div>
-        <div class="mcp-guide-card__item">
-          <span class="mcp-guide-card__label">首个 Tool</span>
-          <code>{{ mcpRecommendedFirstTool }}</code>
-        </div>
-        <div class="mcp-guide-card__item" v-if="mcpConfigDescription">
-          <span class="mcp-guide-card__label">描述</span>
-          <span>{{ mcpConfigDescription }}</span>
-        </div>
-        <div class="mcp-guide-card__item" v-if="showProjectLocationFields && currentProject?.ai_entry_file">
-          <span class="mcp-guide-card__label">AI 入口文件</span>
-          <code>{{ currentProject.ai_entry_file }}</code>
-        </div>
-        <div class="mcp-guide-card__hint">
-          建议外部模型先读取 Usage Guide，再获取项目画像、运行时上下文和可用工具列表。
-        </div>
-      </div>
-      <el-tabs v-model="mcpTab">
-        <el-tab-pane label="SSE" name="sse">
-          <div class="mcp-code-wrap">
-            <pre class="mcp-code"><code>{{ mcpSseConfig }}</code></pre>
-          </div>
-        </el-tab-pane>
-        <el-tab-pane label="HTTP" name="http">
-          <div class="mcp-code-wrap">
-            <pre class="mcp-code"><code>{{ mcpHttpConfig }}</code></pre>
-          </div>
-        </el-tab-pane>
-      </el-tabs>
-      <template #footer>
-        <el-button type="primary" @click="copyMcpConfig">复制当前配置</el-button>
-        <el-button @click="showMcpDialog = false">关闭</el-button>
-      </template>
-    </el-dialog>
+    <UnifiedMcpAccessDialog
+      v-model="showMcpDialog"
+      :title="`统一 MCP 接入: ${currentProject?.name || ''}`"
+      :project-id="currentProject?.id || ''"
+      :project-label="currentProject?.name || currentProject?.id || ''"
+    />
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import UnifiedMcpAccessDialog from '@/components/UnifiedMcpAccessDialog.vue'
 import api from '@/utils/api.js'
 import { hasPermission } from '@/utils/permissions.js'
-import { buildRuntimeUrl } from '@/utils/runtime-url.js'
 import {
   pickWorkspaceDirectory as openWorkspaceDirectoryPicker,
   pickWorkspaceFile as openWorkspaceFilePicker,
@@ -237,59 +203,7 @@ const editForm = ref({
 })
 
 const showMcpDialog = ref(false)
-const mcpTab = ref('sse')
 const currentProject = ref(null)
-
-const mcpConfigDescription = computed(() =>
-  String(
-    currentProject.value?.mcp_instruction || currentProject.value?.description || '',
-  ).trim(),
-)
-
-const mcpSseConfig = computed(() => {
-  if (!currentProject.value) return ''
-  const serviceName = `project-${currentProject.value.id}`
-  const config = {
-    mcpServers: {
-      [serviceName]: {
-        type: 'sse',
-        url: buildRuntimeUrl(`/mcp/projects/${currentProject.value.id}/sse?key=YOUR_API_KEY`),
-      },
-    },
-  }
-  if (mcpConfigDescription.value) {
-    config.mcpServers[serviceName].description = mcpConfigDescription.value
-  }
-  return JSON.stringify(config, null, 2)
-})
-
-const mcpHttpConfig = computed(() => {
-  if (!currentProject.value) return ''
-  const serviceName = `project-${currentProject.value.id}`
-  const config = {
-    mcpServers: {
-      [serviceName]: {
-        command: 'npx',
-        args: [
-          '-y',
-          '@modelcontextprotocol/inspector',
-          buildRuntimeUrl(`/mcp/projects/${currentProject.value.id}/mcp?key=YOUR_API_KEY`),
-        ],
-      },
-    },
-  }
-  if (mcpConfigDescription.value) {
-    config.mcpServers[serviceName].description = mcpConfigDescription.value
-  }
-  return JSON.stringify(config, null, 2)
-})
-
-const mcpUsageGuideResource = computed(() => {
-  if (!currentProject.value) return ''
-  return `project://${currentProject.value.id}/usage-guide`
-})
-
-const mcpRecommendedFirstTool = computed(() => 'get_project_usage_guide')
 
 function openCreate() {
   createForm.value = {
@@ -393,18 +307,7 @@ async function updateProject() {
 
 function showMcpConfig(project) {
   currentProject.value = project
-  mcpTab.value = 'sse'
   showMcpDialog.value = true
-}
-
-async function copyMcpConfig() {
-  const text = mcpTab.value === 'sse' ? mcpSseConfig.value : mcpHttpConfig.value
-  try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success('配置已复制')
-  } catch {
-    ElMessage.error('复制失败')
-  }
 }
 
 async function fetchProjects() {
@@ -482,55 +385,4 @@ onMounted(fetchProjects)
   margin: 0;
 }
 
-.mcp-code-wrap {
-  background: #1e1e1e;
-  border-radius: 6px;
-  padding: 12px;
-  overflow-x: auto;
-}
-
-.mcp-guide-card {
-  margin-bottom: 14px;
-  padding: 12px 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f8fafc;
-}
-
-.mcp-guide-card__title {
-  margin-bottom: 10px;
-  color: #111827;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.mcp-guide-card__item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 28px;
-  color: #374151;
-  font-size: 13px;
-  word-break: break-all;
-}
-
-.mcp-guide-card__label {
-  width: 88px;
-  flex-shrink: 0;
-  color: #6b7280;
-}
-
-.mcp-guide-card__hint {
-  margin-top: 10px;
-  color: #6b7280;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.mcp-code {
-  margin: 0;
-  color: #d4d4d4;
-  font-size: 13px;
-  line-height: 1.5;
-}
 </style>

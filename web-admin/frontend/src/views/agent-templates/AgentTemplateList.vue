@@ -4,7 +4,7 @@
       <div>
         <h3>行业智能体模板</h3>
         <div class="toolbar-subtitle">
-          先导入通用模板沉淀为模板库，再从模板创建员工。
+          先导入通用模板沉淀为模板库，支持查看、复制与复用模板内容。
         </div>
       </div>
       <div class="toolbar-actions">
@@ -14,7 +14,10 @@
           clearable
           placeholder="搜索原名 / 中文名 / 来源 / 描述"
         />
-        <div v-if="selectedTemplateIds.length" class="template-selection-summary">
+        <div
+          v-if="selectedTemplateIds.length"
+          class="template-selection-summary"
+        >
           已选 {{ selectedTemplateIds.length }} 个
           <el-button link type="primary" @click="clearTemplateSelection">
             清空
@@ -96,14 +99,16 @@
           {{ (row.style_hints || []).join(" / ") || "-" }}
         </template>
       </el-table-column>
-      <el-table-column prop="updated_at" label="更新时间" width="220" />
-      <el-table-column label="操作" width="220" fixed="right">
+      <el-table-column label="更新时间" width="220">
+        <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="260" fixed="right">
         <template #default="{ row }">
           <el-button text type="primary" @click="openTemplateDetail(row)"
             >详情</el-button
           >
-          <el-button text type="primary" @click="createEmployeeFromTemplate(row)"
-            >创建员工</el-button
+          <el-button text type="primary" @click="copyTemplateContent(row)"
+            >复制</el-button
           >
           <el-button text type="danger" @click="deleteTemplate(row)"
             >删除</el-button
@@ -134,7 +139,8 @@
             <div class="template-import-hero__eyebrow">Template Library</div>
             <div class="template-import-hero__title">导入行业智能体模板</div>
             <div class="template-import-hero__text">
-              从 Git 仓库或本地目录读取 Markdown agent 文件，保存为可复用的模板库。
+              从 Git 仓库或本地目录读取 Markdown agent
+              文件，保存为可复用的模板库。
             </div>
           </div>
           <div class="template-import-hero__actions">
@@ -158,7 +164,8 @@
             <div class="template-import-section__head">
               <div class="template-import-section__title">模板来源</div>
               <div class="template-import-section__hint">
-                支持 Git 仓库 URL、本地目录，也支持 GitHub 的 `tree/...` 子目录链接。
+                支持 Git 仓库 URL、本地目录，也支持 GitHub 的 `tree/...`
+                子目录链接。
               </div>
             </div>
             <el-form label-position="top" class="template-import-form">
@@ -169,7 +176,9 @@
                 </el-radio-group>
               </el-form-item>
               <el-form-item
-                :label="importForm.source_type === 'git' ? '仓库地址' : '目录路径'"
+                :label="
+                  importForm.source_type === 'git' ? '仓库地址' : '目录路径'
+                "
               >
                 <el-input
                   v-model="importForm.source"
@@ -194,14 +203,22 @@
                   <el-input v-model="importForm.branch" placeholder="可选" />
                 </el-form-item>
                 <el-form-item v-else label="读取上限">
-                  <el-input-number v-model="importForm.limit" :min="1" :max="80" />
+                  <el-input-number
+                    v-model="importForm.limit"
+                    :min="1"
+                    :max="80"
+                  />
                 </el-form-item>
               </div>
               <el-form-item
                 v-if="importForm.source_type === 'git'"
                 label="读取上限"
               >
-                <el-input-number v-model="importForm.limit" :min="1" :max="80" />
+                <el-input-number
+                  v-model="importForm.limit"
+                  :min="1"
+                  :max="80"
+                />
               </el-form-item>
             </el-form>
             <div class="template-import-source__actions">
@@ -222,7 +239,11 @@
               <div class="template-import-section__head">
                 <div class="template-import-section__title">模板列表</div>
                 <div class="template-import-section__hint">
-                  共 {{ importedTemplates.length }} 个候选模板。勾选后会进入右侧待保存区。
+                  共
+                  {{
+                    importedTemplates.length
+                  }}
+                  个候选模板。勾选后会进入右侧待保存区。
                 </div>
               </div>
               <div
@@ -233,7 +254,10 @@
                   待保存 {{ selectedImportedTemplateCount }} 个
                 </div>
                 <div class="template-import-candidates__actions">
-                  <el-button link type="primary" @click="selectAllImportedTemplates"
+                  <el-button
+                    link
+                    type="primary"
+                    @click="selectAllImportedTemplates"
                     >全选</el-button
                   >
                   <el-button link @click="clearImportedTemplateSelection"
@@ -241,7 +265,10 @@
                   >
                 </div>
               </div>
-              <div v-loading="importLoading" class="template-import-candidates__list">
+              <div
+                v-loading="importLoading"
+                class="template-import-candidates__list"
+              >
                 <el-empty
                   v-if="!importedTemplates.length"
                   description="尚未读取到模板"
@@ -260,12 +287,17 @@
                   <div class="template-candidate-card__select" @click.stop>
                     <el-checkbox
                       :model-value="isImportedTemplateSelected(item.id)"
-                      @change="(checked) => setImportedTemplateSelection(item.id, checked)"
+                      @change="
+                        (checked) =>
+                          setImportedTemplateSelection(item.id, checked)
+                      "
                     />
                   </div>
                   <div class="template-candidate-card__body">
                     <div class="template-candidate-card__head">
-                      <span class="template-candidate-card__name">{{ item.name }}</span>
+                      <span class="template-candidate-card__name">{{
+                        item.name
+                      }}</span>
                       <span class="template-candidate-card__path">{{
                         item.relative_path
                       }}</span>
@@ -304,15 +336,21 @@
                       v-for="entry in selectedImportedDraftEntries"
                       :key="entry.id"
                       class="template-import-preview__selected-card"
-                      :class="{ 'is-active': selectedImportedPreviewId === entry.id }"
+                      :class="{
+                        'is-active': selectedImportedPreviewId === entry.id,
+                      }"
                     >
                       <div class="template-import-preview__selected-main">
                         <div class="template-import-preview__selected-name">
                           {{ entry.draft.name || entry.name || "未命名模板" }}
                         </div>
                         <div class="template-import-preview__selected-meta">
-                          <span>{{ entry.draft.template_relative_path || "-" }}</span>
-                          <span>{{ entry.draft.template_source_name || "-" }}</span>
+                          <span>{{
+                            entry.draft.template_relative_path || "-"
+                          }}</span>
+                          <span>{{
+                            entry.draft.template_source_name || "-"
+                          }}</span>
                         </div>
                       </div>
                       <div class="template-import-preview__selected-actions">
@@ -342,8 +380,16 @@
                         {{ selectedImportedDraft.name || "未命名模板" }}
                       </div>
                       <div class="template-import-preview__meta">
-                        <span>来源：{{ selectedImportedDraft.template_source_name || "-" }}</span>
-                        <span>路径：{{ selectedImportedDraft.template_relative_path || "-" }}</span>
+                        <span
+                          >来源：{{
+                            selectedImportedDraft.template_source_name || "-"
+                          }}</span
+                        >
+                        <span
+                          >路径：{{
+                            selectedImportedDraft.template_relative_path || "-"
+                          }}</span
+                        >
                       </div>
                     </div>
                   </div>
@@ -353,7 +399,9 @@
                 </div>
               </div>
               <div v-else class="template-import-preview__empty-state">
-                <div class="template-import-preview__empty-title">等待勾选模板</div>
+                <div class="template-import-preview__empty-title">
+                  等待勾选模板
+                </div>
                 <div class="template-import-preview__empty-text">
                   先读取模板，再勾选要保存到模板库的项。
                 </div>
@@ -370,15 +418,23 @@
       size="min(720px, 92vw)"
     >
       <div v-if="activeTemplate" class="detail">
-        <div class="detail-title">{{ activeTemplate.name || "未命名模板" }}</div>
+        <div class="detail-title">
+          {{ activeTemplate.name || "未命名模板" }}
+        </div>
         <div class="detail-meta">
-          <span>中文名：{{ activeTemplate.name_zh || activeTemplate.name || "-" }}</span>
+          <span
+            >中文名：{{
+              activeTemplate.name_zh || activeTemplate.name || "-"
+            }}</span
+          >
           <span>来源：{{ activeTemplate.source_name || "-" }}</span>
           <span>路径：{{ activeTemplate.relative_path || "-" }}</span>
         </div>
         <div class="detail-section">
           <div class="detail-section__label">模板内容</div>
-          <pre class="detail-policy">{{ activeTemplate.content || "模板内容为空" }}</pre>
+          <pre class="detail-policy">{{
+            activeTemplate.content || "模板内容为空"
+          }}</pre>
         </div>
       </div>
 
@@ -388,10 +444,9 @@
           <el-button
             v-if="activeTemplate"
             type="primary"
-            :loading="creatingEmployee"
-            @click="createEmployeeFromTemplate(activeTemplate)"
+            @click="copyTemplateContent(activeTemplate)"
           >
-            从模板创建员工
+            复制模板
           </el-button>
         </div>
       </template>
@@ -420,6 +475,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/utils/api.js";
+import { formatDateTime } from "@/utils/date.js";
 import ModelProviderPickerDialog from "@/components/ModelProviderPickerDialog.vue";
 import { resolveSettingsAwarePanelPath } from "@/utils/chat-settings-route.js";
 
@@ -439,7 +495,6 @@ const showModelPickerDialog = ref(false);
 const pendingModelAction = ref(null);
 const activeTemplate = ref(null);
 const showDetailDrawer = ref(false);
-const creatingEmployee = ref(false);
 const deduplicatingTemplates = ref(false);
 const translatingTemplateNames = ref(false);
 const batchDeletingTemplates = ref(false);
@@ -514,7 +569,9 @@ const importStatusText = computed(() => {
   return `已读取 ${importedTemplates.value.length} 个模板，待保存 ${selectedImportedTemplateCount.value} 个`;
 });
 const filteredTemplates = computed(() => {
-  const keyword = String(searchKeyword.value || "").trim().toLowerCase();
+  const keyword = String(searchKeyword.value || "")
+    .trim()
+    .toLowerCase();
   if (!keyword) return templates.value;
   return templates.value.filter((item) => {
     const haystacks = [
@@ -588,7 +645,8 @@ async function fetchAiSources() {
       : [];
     internalAiProviders.value = providers;
     const currentProvider = providers.find(
-      (item) => String(item?.id || "").trim() === selectedTranslationProviderId.value,
+      (item) =>
+        String(item?.id || "").trim() === selectedTranslationProviderId.value,
     );
     const currentModels = Array.isArray(currentProvider?.models)
       ? currentProvider.models
@@ -597,16 +655,24 @@ async function fetchAiSources() {
       : [];
     if (
       currentProvider &&
-      currentModels.includes(String(selectedTranslationModelName.value || "").trim())
+      currentModels.includes(
+        String(selectedTranslationModelName.value || "").trim(),
+      )
     ) {
       // keep current internal selection
     } else {
       const defaultProvider =
-        providers.find((item) => Boolean(item?.is_default)) || providers[0] || null;
-      selectedTranslationProviderId.value = String(defaultProvider?.id || "").trim();
+        providers.find((item) => Boolean(item?.is_default)) ||
+        providers[0] ||
+        null;
+      selectedTranslationProviderId.value = String(
+        defaultProvider?.id || "",
+      ).trim();
       selectedTranslationModelName.value = String(
         defaultProvider?.default_model ||
-          (Array.isArray(defaultProvider?.models) ? defaultProvider.models[0] : "") ||
+          (Array.isArray(defaultProvider?.models)
+            ? defaultProvider.models[0]
+            : "") ||
           "",
       ).trim();
     }
@@ -733,7 +799,11 @@ async function executeAiTemplateDeduplication(selection) {
     });
     const groups = Array.isArray(data?.groups) ? data.groups : [];
     if (!groups.length) {
-      ElMessage.success(targetIds.length ? "选中模板里没有发现需要去重的同类型项" : "没有发现需要去重的同类型模板");
+      ElMessage.success(
+        targetIds.length
+          ? "选中模板里没有发现需要去重的同类型项"
+          : "没有发现需要去重的同类型模板",
+      );
       return;
     }
     const lines = groups.map((group) => {
@@ -766,7 +836,7 @@ async function executeAiTemplateDeduplication(selection) {
       `${summaryLines.join("\n")}\n\n${lines.join("\n\n")}`,
       "同类去重结果",
       {
-      confirmButtonText: "知道了",
+        confirmButtonText: "知道了",
       },
     );
     ElMessage.success(
@@ -911,12 +981,15 @@ function setImportedTemplateSelection(templateId, checked) {
     (item) => item !== normalizedId,
   );
   if (selectedImportedTemplateId.value === normalizedId) {
-    selectedImportedTemplateId.value = selectedImportedTemplateIds.value[0] || "";
+    selectedImportedTemplateId.value =
+      selectedImportedTemplateIds.value[0] || "";
   }
 }
 
 function selectAllImportedTemplates() {
-  selectedImportedTemplateIds.value = importedTemplates.value.map((item) => item.id);
+  selectedImportedTemplateIds.value = importedTemplates.value.map(
+    (item) => item.id,
+  );
   if (!selectedImportedTemplateId.value && importedTemplates.value.length) {
     selectedImportedTemplateId.value = importedTemplates.value[0].id;
   }
@@ -948,7 +1021,9 @@ async function loadTemplateCandidates() {
   importLoading.value = true;
   try {
     const data = await api.post("/agent-templates/import-preview", payload);
-    importedTemplates.value = Array.isArray(data?.templates) ? data.templates : [];
+    importedTemplates.value = Array.isArray(data?.templates)
+      ? data.templates
+      : [];
     selectedImportedTemplateId.value = importedTemplates.value[0]?.id || "";
     selectedImportedTemplateIds.value = [];
     if (!importedTemplates.value.length) {
@@ -1000,22 +1075,17 @@ function openTemplateDetail(template) {
   showDetailDrawer.value = true;
 }
 
-async function createEmployeeFromTemplate(template) {
-  if (!template?.draft) return;
-  creatingEmployee.value = true;
+async function copyTemplateContent(template) {
+  const content = String(template?.content || "");
+  if (!content) {
+    ElMessage.warning("模板内容为空，无法复制");
+    return;
+  }
   try {
-    const payload = {
-      ...template.draft,
-      auto_create_missing_skills: true,
-      auto_create_missing_rules: true,
-    };
-    const data = await api.post("/employees/create-from-draft", payload);
-    ElMessage.success(`已创建员工：${data?.employee?.name || template.name || "员工"}`);
-    await fetchTemplates();
+    await navigator.clipboard.writeText(content);
+    ElMessage.success("模板内容已复制");
   } catch (e) {
-    ElMessage.error(e.detail || "创建员工失败");
-  } finally {
-    creatingEmployee.value = false;
+    ElMessage.error(e?.detail || e?.message || "复制失败");
   }
 }
 
@@ -1069,9 +1139,7 @@ async function batchDeleteTemplates() {
         activeTemplate.value = null;
       }
     }
-    ElMessage.success(
-      `已删除 ${Number(data?.deleted_count || 0)} 个模板`,
-    );
+    ElMessage.success(`已删除 ${Number(data?.deleted_count || 0)} 个模板`);
     clearTemplateSelection();
     await fetchTemplates();
   } catch (e) {
@@ -1194,7 +1262,11 @@ onMounted(async () => {
 :global(.template-import-overlay) {
   z-index: 4000 !important;
   background:
-    radial-gradient(circle at top left, rgba(255, 244, 214, 0.5), transparent 24%),
+    radial-gradient(
+      circle at top left,
+      rgba(255, 244, 214, 0.5),
+      transparent 24%
+    ),
     linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
 }
 

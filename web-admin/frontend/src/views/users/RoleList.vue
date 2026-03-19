@@ -24,7 +24,9 @@
           {{ row.permissions?.includes('*') ? '全部' : row.permissions?.length || 0 }}
         </template>
       </el-table-column>
-      <el-table-column prop="updated_at" label="更新时间" min-width="180" />
+      <el-table-column label="更新时间" min-width="220">
+        <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
           <el-button v-if="canUpdate" text type="primary" @click="openEditDialog(row)">编辑</el-button>
@@ -101,6 +103,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 import { getFallbackPath, hasPermission, setPermissionArray } from '@/utils/permissions.js'
 
 const router = useRouter()

@@ -18,7 +18,9 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" min-width="220" />
+      <el-table-column label="创建时间" min-width="220">
+        <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="220" fixed="right">
         <template #default="{ row }">
           <el-button
@@ -88,6 +90,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 import { hasPermission } from '@/utils/permissions.js'
 
 const loading = ref(false)

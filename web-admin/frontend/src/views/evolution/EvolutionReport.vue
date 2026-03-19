@@ -41,7 +41,7 @@
       <el-timeline-item
         v-for="evt in report.recent_events"
         :key="evt.id"
-        :timestamp="evt.created_at"
+        :timestamp="formatDateTime(evt.created_at)"
         placement="top"
       >
         {{ evt.type }} — {{ evt.target }}
@@ -83,6 +83,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 
 const route = useRoute()
 const loading = ref(false)

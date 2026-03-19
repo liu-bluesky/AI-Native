@@ -26,12 +26,13 @@
       <el-table-column label="工具数" width="80" align="center">
         <template #default="{ row }">{{ row.tools?.length || 0 }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="300" fixed="right">
+      <el-table-column label="操作" width="350" fixed="right">
         <template #default="{ row }">
           <el-button v-if="row.mcp_enabled" text type="success" size="small" @click="showSingleMcpConfig(row)">接入</el-button>
           <el-button v-if="row.mcp_enabled" text type="warning" size="small" :disabled="!canManageRow(row)" @click="disableMcp(row)">关闭 MCP</el-button>
           <el-button v-else text type="warning" size="small" :disabled="!canManageRow(row)" @click="enableMcp(row)">开启 MCP</el-button>
           <el-button text type="info" size="small" @click="showConfigs(row)">配置</el-button>
+          <el-button text type="primary" size="small" @click="$router.push(`/skills/${row.id}`)">详情</el-button>
           <el-button text type="primary" size="small" :disabled="!canManageRow(row)" @click="$router.push(`/skills/${row.id}/edit`)">编辑</el-button>
           <el-button text type="success" size="small" @click="handleDownload(row.id, row.name)">下载</el-button>
           <el-button text type="danger" size="small" :disabled="!canManageRow(row)" @click="handleDelete(row.id)">删除</el-button>

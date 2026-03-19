@@ -16,8 +16,8 @@
       <el-descriptions-item label="风格">{{ persona.verbosity }}</el-descriptions-item>
       <el-descriptions-item label="语言">{{ persona.language }}</el-descriptions-item>
       <el-descriptions-item label="对齐分">{{ persona.alignment_score }}</el-descriptions-item>
-      <el-descriptions-item label="创建时间">{{ persona.created_at }}</el-descriptions-item>
-      <el-descriptions-item label="更新时间">{{ persona.updated_at }}</el-descriptions-item>
+      <el-descriptions-item label="创建时间">{{ formatDateTime(persona.created_at) }}</el-descriptions-item>
+      <el-descriptions-item label="更新时间">{{ formatDateTime(persona.updated_at) }}</el-descriptions-item>
     </el-descriptions>
 
     <h4 class="section-title">行为准则</h4>
@@ -53,6 +53,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 
 const route = useRoute()
 const router = useRouter()

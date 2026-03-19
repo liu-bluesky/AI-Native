@@ -37,7 +37,6 @@ from stores.mcp_bridge import (
     skills_now_iso,
 )
 from models.requests import EmployeeAgentTemplateImportReq, EmployeeCreateReq, EmployeeDraftCreateReq, EmployeeDraftGenerateReq, EmployeeExternalRuleSuggestReq, EmployeeExternalSkillSuggestReq, EmployeeUpdateReq
-from core.config import get_settings
 
 def _require_employee_permission(auth_payload: dict = Depends(require_auth)) -> None:
     ensure_permission(auth_payload, "menu.employees")
@@ -348,6 +347,98 @@ def _scan_skill_entries(skill) -> tuple[int, list[str]]:
             rel = file.relative_to(package_path).as_posix()
             entries.append(rel)
     return len(entries), entries[:8]
+
+
+def _format_manual_skill_item(
+    skill_id: str,
+    name: str,
+    description: str,
+    *,
+    entry_count: int = 0,
+    sample_entries: list[str] | None = None,
+    list_tool_name: str,
+    invoke_tool_name: str,
+    employee_id: str = "",
+) -> str:
+    normalized_skill_id = str(skill_id or "").strip() or str(name or "").strip() or "unknown-skill"
+    normalized_name = str(name or "").strip() or normalized_skill_id
+    normalized_description = str(description or "").strip() or "未提供描述"
+    entry_examples = "、".join(f"`{item}`" for item in (sample_entries or []) if str(item or "").strip()) or "无"
+    match_parts = []
+    if employee_id:
+        match_parts.append(f'`employee_id="{employee_id}"`')
+    match_parts.append(f'`skill_id="{normalized_skill_id}"`')
+    invoke_args = [f'"tool_name": "<从 {list_tool_name} 返回结果里选出的 tool_name>"']
+    if employee_id:
+        invoke_args.append(f'"employee_id": "{employee_id}"')
+    invoke_args.append('"args": { "...": "..." }')
+    invoke_example = ", ".join(invoke_args)
+    return (
+        f"#### {normalized_name} (`{normalized_skill_id}`)\n"
+        f"- 描述：{normalized_description}\n"
+        f"- 可执行入口数量：{entry_count}\n"
+        f"- 可执行入口示例：{entry_examples}\n"
+        f"- MCP 查看详情：先调用 `{list_tool_name}`，在返回结果中按 {' + '.join(match_parts)} 匹配该技能对应的 `tool_name`、`entry_name`、`description`\n"
+        f"- MCP 调用示例：`{invoke_tool_name}({{{invoke_example}}})`\n"
+        "- 手册写作要求：必须补出“何时使用这个技能”的触发条件，并基于上面的 MCP 查询/调用路径给出至少 1 个最小使用案例"
+    )
+
+
+def _format_manual_rule_index(
+    rule_bindings: list[dict[str, str]],
+    *,
+    query_tool_name: str,
+    employee_id: str = "",
+) -> str:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for item in rule_bindings:
+        domain = str(item.get("domain", "") or "").strip() or "未分类"
+        grouped.setdefault(domain, []).append(item)
+    if not grouped:
+        return "无"
+
+    sections: list[str] = []
+    for domain in sorted(grouped):
+        items = grouped[domain]
+        lines = [
+            f"- {str(rule.get('title', '') or '').strip() or str(rule.get('id', '') or '').strip() or '未命名规则'} (`{str(rule.get('id', '') or '').strip() or 'unknown-rule'}`)"
+            for rule in items
+        ]
+        query_parts = ['keyword="<规则标题关键词>"']
+        if employee_id:
+            query_parts.append(f'employee_id="{employee_id}"')
+        sections.append(
+            "\n".join(
+                [
+                    f"#### {domain}",
+                    *lines,
+                    (
+                        f"- MCP 获取详情：调用 `{query_tool_name}({', '.join(query_parts)})`，"
+                        "再以返回结果中的 `id`、`title`、`content` 作为最终依据"
+                    ),
+                ]
+            )
+        )
+    return "\n\n".join(sections)
+
+
+def _format_rule_domain_summary(rule_bindings: list[dict[str, str]]) -> str:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for item in rule_bindings:
+        domain = str(item.get("domain", "") or "").strip() or "未分类"
+        grouped.setdefault(domain, []).append(item)
+    if not grouped:
+        return "无"
+
+    lines: list[str] = []
+    for domain in sorted(grouped):
+        items = grouped[domain]
+        labels = [
+            f"{str(rule.get('title', '') or '').strip() or str(rule.get('id', '') or '').strip() or '未命名规则'} (`{str(rule.get('id', '') or '').strip() or 'unknown-rule'}`)"
+            for rule in items
+        ]
+        lines.append(f"- {domain}：{'；'.join(labels)}")
+    return "\n".join(lines)
 
 
 def _build_employee_draft_catalog_context() -> str:
@@ -1872,135 +1963,65 @@ async def test_employee_mcp(employee_id: str):
 
 
 
-@router.get("/{employee_id}/prompt-history")
-async def get_prompt_history(employee_id: str, limit: int = 20):
-    """获取员工提示词生成历史"""
-    from stores.postgres.prompt_history_store import PromptHistoryStorePostgres
-
+def _build_employee_manual_payload(employee_id: str) -> dict[str, Any]:
+    """构建员工使用手册正文。"""
     emp = employee_store.get(employee_id)
     if emp is None:
         raise HTTPException(404, f"Employee {employee_id} not found")
 
-    settings = get_settings()
-    if settings.core_store_backend != "postgres":
-        return {"history": []}
-
-    store = PromptHistoryStorePostgres(settings.database_url)
-    history = store.list_by_employee(employee_id, limit)
-    return {"history": history}
-
-
-@router.delete("/{employee_id}/prompt-history/{record_id}")
-async def delete_prompt_history(employee_id: str, record_id: str):
-    """删除提示词历史记录"""
-    from stores.postgres.prompt_history_store import PromptHistoryStorePostgres
-
-    emp = employee_store.get(employee_id)
-    if emp is None:
-        raise HTTPException(404, f"Employee {employee_id} not found")
-
-    settings = get_settings()
-    if settings.core_store_backend != "postgres":
-        raise HTTPException(400, "仅 PostgreSQL 模式支持此功能")
-
-    store = PromptHistoryStorePostgres(settings.database_url)
-    if not store.delete(record_id):
-        raise HTTPException(404, "记录不存在")
-
-    return {"status": "deleted"}
-
-
-def _assert_employee_manual_generation_enabled() -> None:
-    cfg = system_config_store.get_global()
-    if not bool(getattr(cfg, "enable_employee_manual_generation", False)):
-        raise HTTPException(403, "Employee manual generation is disabled by system config")
-
-
-@router.post("/{employee_id}/generate-manual")
-async def generate_employee_manual(
-    employee_id: str,
-    auth_payload: dict = Depends(require_auth),
-):
-    """生成员工使用手册（面向接入方 AI 平台）"""
-    from services.llm_provider_service import get_llm_provider_service
-
-    _assert_employee_manual_generation_enabled()
-
-    llm_service = get_llm_provider_service()
-    providers = llm_service.list_providers(
-        enabled_only=True,
-        owner_username=str(auth_payload.get("sub") or "").strip(),
-        include_all=is_admin_like(auth_payload),
-        include_shared=True,
-    )
-
-    if not providers:
-        raise HTTPException(400, "未配置 LLM 提供商")
-
-    default_provider = next((p for p in providers if p.get("is_default")), providers[0])
-    template_payload = await get_manual_template(employee_id)
-    template = str(template_payload.get("template") or "").strip()
-    if not template:
-        raise HTTPException(500, "手册模板为空，无法生成使用手册")
-
-    system_prompt = (
-        "你是技术文档撰写专家。请严格根据用户提供的手册模板要求生成最终使用手册，"
-        "输出标准 Markdown，不要解释过程。"
-    )
-
-    try:
-        result = await llm_service.chat_completion(
-            provider_id=default_provider["id"],
-            model_name=default_provider.get("default_model") or "gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": template},
-            ],
-            temperature=0.2,
-            max_tokens=2500,
-            timeout=60,
-        )
-
-        manual = result.get("content", "").strip()
-
-        return {
-            "status": "success",
-            "manual": manual,
-            "template": template,
-            "provider": default_provider["name"],
-            "model": default_provider.get("default_model") or "gpt-4",
-        }
-    except Exception as e:
-        raise HTTPException(500, f"生成使用手册失败: {str(e)}")
-
-
-@router.get("/{employee_id}/manual-template")
-async def get_manual_template(employee_id: str):
-    """获取手册生成提示词模板（供用户复制到其他 AI 使用）"""
-    emp = employee_store.get(employee_id)
-    if emp is None:
-        raise HTTPException(404, f"Employee {employee_id} not found")
-
-    # 获取技能详情
     bound_skills = []
     for skill_id in emp.skills or []:
         skill = skill_store.get(skill_id)
         if skill:
-            bound_skills.append({"id": skill_id, "name": skill.name, "description": skill.description or ""})
+            entry_count, sample_entries = _scan_skill_entries(skill)
+            bound_skills.append(
+                {
+                    "id": skill_id,
+                    "name": skill.name,
+                    "description": skill.description or "",
+                    "entry_count": entry_count,
+                    "sample_entries": sample_entries,
+                }
+            )
+            continue
+        bound_skills.append(
+            {
+                "id": skill_id,
+                "name": skill_id,
+                "description": "",
+                "entry_count": 0,
+                "sample_entries": [],
+            }
+        )
 
-    skills_text = "\n".join(f"- {s['name']}：{s['description']}" for s in bound_skills) if bound_skills else "无"
-    rule_ids, rule_domains, rule_bindings, _rule_mode = _resolve_employee_rule_bindings(emp)
-    titles_text = "\n".join(
-        f"- {item['title']} ({item['id']}) / {item['domain'] or '未知领域'}"
-        for item in rule_bindings
+    skills_text = (
+        "\n\n".join(
+            _format_manual_skill_item(
+                str(item["id"]),
+                str(item["name"]),
+                str(item["description"]),
+                entry_count=int(item.get("entry_count", 0) or 0),
+                sample_entries=list(item.get("sample_entries") or []),
+                list_tool_name="list_employee_proxy_tools",
+                invoke_tool_name="invoke_employee_skill_tool",
+            )
+            for item in bound_skills
+        )
+        if bound_skills
+        else "无"
+    )
+    _rule_ids, rule_domains, rule_bindings, _rule_mode = _resolve_employee_rule_bindings(emp)
+    rules_text = _format_manual_rule_index(
+        rule_bindings,
+        query_tool_name="query_employee_rules",
     ) if rule_bindings else "无"
-    domains_text = "\n".join(f"- {d}" for d in rule_domains) if rule_domains else "无"
+    domains_text = _format_rule_domain_summary(rule_bindings) if rule_bindings else "无"
     style_hints_text = "\n".join(f"- {h}" for h in (emp.style_hints or [])) if emp.style_hints else "无"
     workflow_text = "\n".join(f"- {item}" for item in (emp.default_workflow or [])) if (emp.default_workflow or []) else "无"
 
-    template = f"""请根据以下信息，为"{emp.name}"AI 员工生成一份完整的使用手册。
+    manual = f"""# {emp.name} 使用手册
 
-## 员工基本信息
+## 员工总览
 
 - **员工 ID**：`{emp.id}`
 - **员工名称**：{emp.name}
@@ -2010,15 +2031,64 @@ async def get_manual_template(employee_id: str):
 - **风格**：{emp.verbosity}
 - **语言**：{emp.language}
 
-## 员工能力
+### 适用场景
+- 适用于当前员工主责范围内的实现、排查、设计、评审、重构和技术选型任务。
+- 适用于需要结合既有规则、项目记忆和员工技能做出工程化决策的场景。
+- 不适用于明显超出当前员工能力边界的任务；遇到不匹配任务必须转交项目层处理。
+
+### 强制执行流程
+1. 收到用户提问后，先整理问题记录：问题原文、问题摘要、检索关键词。
+2. 识别任务类型，并判断是否属于当前员工职责范围。
+3. 若属于当前员工职责范围，先调用 `get_employee_runtime_context`、`recall_employee_memory`。
+4. 每次有效对话都必须记录到员工记忆；当前宿主系统已接入自动记录链路，若当前入口未覆盖自动记录，则在本轮结束后立即调用 `save_employee_memory` 补记。
+5. 再调用 `query_employee_rules` 和 `list_employee_proxy_tools`，先搜索匹配的规则与技能。
+6. 锁定匹配项后，才调用 `invoke_employee_skill_tool`。
+7. 如需沉淀结构化结论、排查经验或关键决策，在自动记录之外显式调用 `save_employee_memory` 追加一条可复用记忆。
+8. 发现稳定性问题、规则缺口或实现缺陷时，再调用 `submit_feedback_bug`。
+
+### 问题记录格式
+```text
+【问题记录】
+- 问题原文：<用户原始提问>
+- 问题摘要：<一句话归纳>
+- 检索关键词：<3-5个关键词>
+```
+
+### 类型判断格式
+```text
+【类型判断】
+- 任务类型：<类型名称>
+- 处理归属：<当前员工处理 | 转交项目层>
+- 判断依据：<命中的技能/规则领域或不匹配原因>
+```
+
+### 转交建议格式
+```text
+【转交建议】
+- 建议动作：转项目层处理
+- 原因：当前员工能力与任务类型不匹配
+- 下一步：在项目层执行“任务类型识别 -> 自动分配员工 -> 写入并检索记忆”
+```
+
+## 核心工具说明
+
+- **`get_employee_runtime_context`**：获取员工运行时上下文，先确认技能、规则、风格、记忆范围，再决定是否继续。
+- **`recall_employee_memory`**：按问题摘要或关键词检索员工历史记忆；适用于延续上下文、避免重复踩坑。
+- **`save_employee_memory`**：手动补记稳定结论、关键决策和排查经验；当当前入口未自动记录或需要追加结构化沉淀时必须调用。
+- **`query_employee_rules`**：按关键词查询员工绑定规则；规则领域只用于索引，最终必须以 `id`、`title`、`content` 为准。
+- **`list_employee_proxy_tools`**：列出当前员工可直接调用的技能工具；先搜索匹配项，再决定是否调用。
+- **`invoke_employee_skill_tool`**：调用员工技能工具；只有锁定 `tool_name` 后才执行。
+- **`submit_feedback_bug`**：提交结构化反馈工单；用于沉淀规则缺口、稳定性问题或工具异常。
+
+## 员工能力清单
 
 ### 绑定技能
 {skills_text}
 
-### 绑定规则标题
-{titles_text}
+### 规则索引（领域仅用于分组，引用时必须带标题和 ID）
+{rules_text}
 
-### 规则领域（聚合）
+### 规则领域概览（仅用于快速筛选，不可替代具体规则）
 {domains_text}
 
 ### 风格提示
@@ -2034,175 +2104,95 @@ async def get_manual_template(employee_id: str):
 - **作用域**：{emp.memory_scope}
 - **保留期**：{emp.memory_retention_days}天
 
----
+## 推荐工作流
 
-## 手册生成要求
-
-**重要：自动记忆规则**
-
-在生成的使用手册中，必须在开头添加以下强制规则：
-
-> **每次对话流程（强制执行）：**
-> 1. 收到用户提问后，第一步必须先记录“用户问题”（至少包含：问题原文、问题摘要、检索关键词）
-> 2. 完成问题记录后，必须先自动识别任务类型，并判断是否属于当前员工职责范围
-> 3. 若属于当前员工职责范围：调用 `recall_employee_memory` 检索相关记忆（`query` 必须来自问题摘要/关键词）
-> 4. 若不属于当前员工职责范围：输出“转交建议”，并要求转到项目层按员工分配流程处理
-> 5. 解决问题之前的关键信息会自动保存到记忆系统
-> 6. 问题解决后，系统会自动记录本次对话的要点
-> 
-> **问题记录格式（必须写入手册并要求严格执行）：**
-> ```text
-> 【问题记录】
-> - 问题原文：<用户原始提问>
-> - 问题摘要：<一句话归纳>
-> - 检索关键词：<3-5个关键词>
-> ```
-> 
-> **任务类型与归属分配规则（必须写入手册并严格执行）：**
-> 1. 根据问题内容识别任务类型：当前员工主责类型 / 非主责类型
-> 2. 当前员工主责类型：继续执行员工内流程（记忆检索、规则检索、技能调用）
-> 3. 非主责类型：必须给出“转交建议”，建议转到项目层由 AI 自动分配合适员工
-> 
-> **类型判断输出格式（必须写入手册）：**
-> ```text
-> 【类型判断】
-> - 任务类型：<类型名称>
-> - 处理归属：<当前员工处理 | 转交项目层>
-> - 判断依据：<命中的技能/规则领域或不匹配原因>
-> ```
-> 
-> **记忆检索调用示例（必须写入手册）：**
-> ```json
-> recall_employee_memory({{
->   "query": "<问题摘要或关键词组合>"
-> }})
-> ```
-> 
-> **转交建议格式（必须写入手册）：**
-> ```text
-> 【转交建议】
-> - 建议动作：转项目层处理
-> - 原因：当前员工能力与任务类型不匹配
-> - 下一步：在项目层执行“任务类型识别 -> 自动分配员工 -> 写入并检索记忆”
-> ```
-> 
-> **记忆自动保存的内容包括：**
-> - 用户提出的问题
-> - 使用的解决方案
-> - 调用的工具和参数
-> - 遇到的问题和解决方法
-> - 重要的技术决策
-> 
-> **注意：**
-> - 记忆系统会自动工作，无需手动调用保存
-> - 如果遇到重要问题或发现 Bug，可手动提交反馈工单（`submit_feedback_bug`）用于规则进化
-
-请按以下结构生成完整的使用手册：
-
-### 第一部分：员工总览
-
-#### 1. 员工简介
-- **定位**：{emp.name}是什么角色？负责什么工作？
-- **适用场景**：什么时候应该使用这个员工？
-- **能力边界**：员工能做什么，不能做什么？
-
-#### 2. 核心工具说明
-
-逐个说明以下工具的用途、参数、返回值和使用场景：
-
-- **`recall_employee_memory`**：检索员工记忆
-- **`query_employee_rules`**：查询员工规则
-- **`list_employee_tools`**：列出员工可用技能工具
-- **`invoke_employee_skill_tool`**：调用员工技能
-- **`submit_feedback_bug`**：提交反馈问题
-
----
-
-### 第二部分：员工能力清单
-
-详细说明：
-- 职责定位
-- 核心技能（每个技能的用途和触发条件）
-- 规则领域（每个领域的适用场景）
-- 风格特点（如何影响回答方式）
-- 记忆策略（作用域和保留期）
-
----
-
-### 第三部分：推荐工作流
-
-#### 标准开发流程
-
-```
+```text
 1. 问题登记（记录问题原文/摘要/关键词）
 2. 类型识别与归属判断（当前员工处理 / 转交项目层）
-3. 记忆检索（仅当前员工处理时）→ recall_employee_memory
-4. 规则检索 → query_employee_rules
-5. 技能调用 → invoke_employee_skill_tool
-6. 反馈闭环 → submit_feedback_bug
+3. 员工上下文检查 → get_employee_runtime_context
+4. 记忆检索（仅当前员工处理时）→ recall_employee_memory
+5. 每次对话记录 → 默认走自动记录；未覆盖入口则立刻 save_employee_memory 补记
+6. 先搜索匹配的规则与技能 → query_employee_rules + list_employee_proxy_tools
+7. 锁定匹配项后再调用技能 → invoke_employee_skill_tool
+8. 结构化沉淀结论 → save_employee_memory
+9. 反馈闭环 → submit_feedback_bug（如已启用）
 ```
 
-#### 典型场景示例
+### 记忆调用示例
+```json
+recall_employee_memory({{
+  "query": "<问题摘要或关键词组合>"
+}})
+```
 
-提供 2-3 个具体的使用场景，包含完整的工具调用示例；每个场景都必须先给出“问题记录”和“类型判断”，并体现“当前员工处理”或“转交项目层”的分配结果。
+```json
+save_employee_memory({{
+  "content": "问题：<问题摘要>\\n结论：<最终方案>\\n关键决策：<需要沉淀的信息>",
+  "project_name": "<当前项目名>"
+}})
+```
 
----
+## 常见问题与故障排查
 
-### 第四部分：常见问题与故障排查
+### Q1：记忆检索无结果
+- 先检查问题摘要和关键词是否过泛。
+- 优先使用业务实体、模块名、报错关键字重新检索。
+- 如仍无结果，可继续按规则检索和技能检索流程处理，并在形成稳定结论后补记忆。
 
-#### Q1：记忆检索无结果
-- 排查步骤和解决方案
+### Q2：规则查询返回多条结果
+- 优先选与当前任务关键词最贴近的规则标题。
+- 再比较 `domain`、`id`、`content`，不要只凭领域名判断。
+- 多条都相关时，以约束更强、更新更明确的规则优先。
 
-#### Q2：规则查询返回多条结果
-- 如何选择合适的规则
+### Q3：技能调用参数错误
+- 先用 `list_employee_proxy_tools` 确认 `tool_name` 是否真实存在。
+- 再核对调用参数结构，避免臆造字段。
+- 工具不存在时，不要强行调用，改为转交或仅给分析建议。
 
-#### Q3：技能调用参数错误
-- 常见错误和修正方法
+### Q4：反馈提交失败
+- 检查必填字段是否齐全。
+- 确认当前环境启用了反馈能力。
+- 仅在问题可复现且具备可行动信息时提交反馈。
 
-#### Q4：反馈提交失败
-- 检查必填参数
+## 最佳实践
 
----
+### 参数规范
+- 调用记忆时，`query` 应来自问题摘要或检索关键词。
+- 调用技能前，必须先通过 `list_employee_proxy_tools` 确认 `tool_name`。
+- 查询规则时，先用标题关键词匹配，再读取具体 `content`。
 
-### 第五部分：最佳实践
+### 记忆管理
+- 每次有效对话都要留下员工记忆；自动记录未覆盖时，必须手动补记。
+- 结构化结论、关键决策和可复用经验建议额外补一条高质量记忆。
+- 若本轮内容明显无效、失败或噪音过高，可跳过追加结构化记忆，但不能误写错误结论。
+- 保存内容要尽量结构化，方便后续检索与复用。
 
-#### 1. 参数规范
-- 调用记忆时的参数要求
-- 调用技能时的参数要求
-- 提交反馈时的参数要求
+### 规则遵循
+- 开发、排查、设计前先检索规则。
+- 规则领域只是索引，最终必须回到具体规则正文。
+- 如规则不适配当前问题，说明原因并考虑提交反馈。
 
-#### 2. 记忆管理
-- 检索策略
-- 记忆自动保存机制
+### 技能使用
+- 先搜索匹配技能，再决定是否调用。
+- 有直接代理工具时优先走工具；没有代理工具时，将技能作为分析框架和输出约束使用。
+- 涉及数据结构、接口数据、脏数据核验或联调排查时优先考虑 `db-query (db-query)`。
 
-#### 3. 规则遵循
-- 开发前检索规则
-- 遵循最佳实践
-
-#### 4. 技能使用
-- 首次使用注意事项
-- 失败处理建议
-
-#### 5. 类型分配
-- 先识别任务类型，再判断是否属于当前员工主责范围
-- 非主责类型必须给出转交建议，不得强行在当前员工内处理
-
----
-
-## 生成要求
-
-1. **语言**：全部使用中文
-2. **格式**：标准 Markdown
-3. **完整性**：必须包含以上所有章节
-4. **实用性**：提供具体的使用场景和示例
-5. **清晰度**：每个工具的用途、参数、返回值都要说明清楚
-
-请开始生成完整的使用手册。"""
-
+### 事实边界
+- 当前宿主系统已接入对话记忆自动记录链路；若当前入口未覆盖自动记录，仍需显式调用 `save_employee_memory`。
+- 不得臆造不存在的 `skill_id`、`tool_name`、`rule_id` 或规则正文。
+- 手册面向接入方 AI 平台时，默认按显式工具调用描述。
+"""
 
     return {
         "status": "success",
-        "template": template,
+        "manual": manual,
+        "template": manual,
         "employee_id": emp.id,
         "employee_name": emp.name,
     }
+
+
+@router.get("/{employee_id}/manual-template")
+async def get_manual_template(employee_id: str):
+    """获取员工使用手册正文。"""
+    return _build_employee_manual_payload(employee_id)

@@ -18,7 +18,8 @@ class LoginReq(BaseModel):
 
 
 class RegisterReq(BaseModel):
-    username: str
+    username: str = ""
+    email: str = ""
     password: str
 
 

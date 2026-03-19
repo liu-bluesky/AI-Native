@@ -599,7 +599,7 @@ class LlmProviderService:
         model_name: str,
         messages: list[dict[str, Any]],
         temperature: float,
-        max_tokens: int,
+        max_tokens: int | None,
         timeout: int,
     ) -> dict[str, Any]:
         provider = self.get_provider_raw(provider_id)
@@ -619,11 +619,15 @@ class LlmProviderService:
             raise ValueError("messages is required")
 
         normalized_temperature = self._clamp_temperature(temperature)
-        try:
-            normalized_max_tokens = int(max_tokens)
-        except (TypeError, ValueError):
-            normalized_max_tokens = 1024
-        normalized_max_tokens = max(16, min(normalized_max_tokens, 8192))
+        normalized_max_tokens: int | None
+        if max_tokens is None:
+            normalized_max_tokens = None
+        else:
+            try:
+                normalized_max_tokens = int(max_tokens)
+            except (TypeError, ValueError):
+                normalized_max_tokens = 1024
+            normalized_max_tokens = max(16, min(normalized_max_tokens, 8192))
 
         if self._is_responses_provider(provider):
             endpoint = self._build_responses_url(str(provider.get("base_url") or ""))
@@ -633,8 +637,9 @@ class LlmProviderService:
                 "model": chosen_model,
                 "temperature": normalized_temperature,
                 "input": self._messages_to_responses_input(normalized_messages),
-                "max_output_tokens": normalized_max_tokens,
             }
+            if normalized_max_tokens is not None:
+                body["max_output_tokens"] = normalized_max_tokens
             payload = self._request_json("POST", endpoint, self._build_headers(provider), body=body, timeout=timeout)
         else:
             endpoint = self._build_chat_completion_url(str(provider.get("base_url") or ""))
@@ -644,9 +649,10 @@ class LlmProviderService:
                 "model": chosen_model,
                 "temperature": normalized_temperature,
                 "messages": normalized_messages,
-                "max_tokens": normalized_max_tokens,
                 "stream": False,
             }
+            if normalized_max_tokens is not None:
+                body["max_tokens"] = normalized_max_tokens
             payload = self._request_json("POST", endpoint, self._build_headers(provider), body=body, timeout=timeout)
 
         return {
@@ -662,7 +668,7 @@ class LlmProviderService:
         model_name: str,
         messages: list[dict[str, Any]],
         temperature: float = 0.2,
-        max_tokens: int = 1024,
+        max_tokens: int | None = 1024,
         timeout: int = 45,
     ) -> dict[str, Any]:
         return await run_in_threadpool(
@@ -756,7 +762,7 @@ class LlmProviderService:
             next_tool_index += 1
             return tool_index_by_call_id[call_id]
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             async with client.stream("POST", url, headers=headers, json=body) as resp:
                 if resp.status_code >= 400:
                     error_text = await resp.aread()
@@ -880,16 +886,18 @@ class LlmProviderService:
     @staticmethod
     def _request_json(method: str, url: str, headers: dict[str, str], body: dict[str, Any] | None = None, timeout: int = 45) -> dict[str, Any]:
         try:
-            with requests.request(
-                method.upper(),
-                url,
-                headers=headers,
-                json=body if body is not None else None,
-                timeout=timeout,
-            ) as resp:
-                raw = resp.text or ""
-                if resp.status_code >= 400:
-                    raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {raw[:300]}")
+            with requests.Session() as session:
+                session.trust_env = False
+                with session.request(
+                    method.upper(),
+                    url,
+                    headers=headers,
+                    json=body if body is not None else None,
+                    timeout=timeout,
+                ) as resp:
+                    raw = resp.text or ""
+                    if resp.status_code >= 400:
+                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {raw[:300]}")
         except requests.RequestException as exc:
             raise RuntimeError(f"LLM request failed: {exc}") from exc
 
@@ -918,27 +926,29 @@ class LlmProviderService:
         stream: bool = False,
     ) -> str:
         try:
-            with requests.request(
-                method.upper(),
-                url,
-                headers=headers,
-                json=body if body is not None else None,
-                timeout=timeout,
-                stream=stream,
-            ) as resp:
-                if resp.status_code >= 400:
-                    raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {(resp.text or '')[:300]}")
-                if not stream:
-                    return resp.text or ""
-                lines: list[str] = []
-                for line in resp.iter_lines(decode_unicode=True):
-                    if line is None:
-                        continue
-                    if isinstance(line, bytes):
-                        lines.append(line.decode("utf-8", errors="ignore"))
-                    else:
-                        lines.append(str(line))
-                return "\n".join(lines)
+            with requests.Session() as session:
+                session.trust_env = False
+                with session.request(
+                    method.upper(),
+                    url,
+                    headers=headers,
+                    json=body if body is not None else None,
+                    timeout=timeout,
+                    stream=stream,
+                ) as resp:
+                    if resp.status_code >= 400:
+                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {(resp.text or '')[:300]}")
+                    if not stream:
+                        return resp.text or ""
+                    lines: list[str] = []
+                    for line in resp.iter_lines(decode_unicode=True):
+                        if line is None:
+                            continue
+                        if isinstance(line, bytes):
+                            lines.append(line.decode("utf-8", errors="ignore"))
+                        else:
+                            lines.append(str(line))
+                    return "\n".join(lines)
         except requests.RequestException as exc:
             raise RuntimeError(f"LLM request failed: {exc}") from exc
 

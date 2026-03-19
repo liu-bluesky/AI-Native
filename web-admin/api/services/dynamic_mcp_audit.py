@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
-from core.deps import usage_store
+from core.deps import employee_store, project_store, usage_store
 from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType, memory_store
 
 _QUESTION_FIELD_KEYS = {
     "question",
     "query",
+    "keyword",
     "prompt",
     "content",
     "message",
@@ -32,6 +33,13 @@ _PROJECT_FIELD_KEYS = {
     "repository",
 }
 
+_EMPLOYEE_FIELD_KEYS = {
+    "employee_id",
+    "employee",
+    "member_id",
+    "member",
+}
+
 
 def normalize_text(value: str) -> str:
     return " ".join(str(value or "").split()).strip()
@@ -39,6 +47,14 @@ def normalize_text(value: str) -> str:
 
 def normalize_project_name(value: str) -> str:
     return normalize_text(value)
+
+
+def _looks_like_project_id(value: str) -> bool:
+    return normalize_text(value).lower().startswith("proj-")
+
+
+def _looks_like_employee_id(value: str) -> bool:
+    return normalize_text(value).lower().startswith("emp-")
 
 
 def extract_text_nodes(node: object) -> list[str]:
@@ -83,34 +99,59 @@ def collect_question_values(node: object, key_hint: str = "") -> list[tuple[str,
     return values
 
 
-def collect_project_values(node: object, key_hint: str = "") -> list[str]:
-    values: list[str] = []
+def collect_field_values(
+    node: object,
+    allowed_keys: set[str],
+    key_hint: str = "",
+) -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
     if isinstance(node, dict):
         for key, val in node.items():
             key_name = str(key or "").strip().lower()
-            if isinstance(val, str) and key_name in _PROJECT_FIELD_KEYS:
-                values.append(val)
+            if isinstance(val, str) and key_name in allowed_keys:
+                values.append((key_name, val))
             else:
-                values.extend(collect_project_values(val, key_name))
+                values.extend(collect_field_values(val, allowed_keys, key_name))
     elif isinstance(node, list):
         for item in node:
-            values.extend(collect_project_values(item, key_hint))
-    elif isinstance(node, str) and key_hint in _PROJECT_FIELD_KEYS:
-        values.append(node)
+            values.extend(collect_field_values(item, allowed_keys, key_hint))
+    elif isinstance(node, str) and key_hint in allowed_keys:
+        values.append((key_hint, node))
     return values
 
 
-def extract_user_questions_from_rpc_payload(rpc_payload: dict) -> tuple[str, str, list[str], str]:
+def collect_project_values(node: object, key_hint: str = "") -> list[tuple[str, str]]:
+    return collect_field_values(node, _PROJECT_FIELD_KEYS, key_hint)
+
+
+def collect_employee_values(node: object, key_hint: str = "") -> list[tuple[str, str]]:
+    return collect_field_values(node, _EMPLOYEE_FIELD_KEYS, key_hint)
+
+
+def _build_query_fallback_question(tool_name: str, context: dict[str, str]) -> str:
+    # Lookup-only query tools are often called as mandatory bootstrap steps
+    # without any original user utterance in the RPC payload. Synthesizing
+    # pseudo questions here pollutes memory with entries like
+    # "[用户提问] 查询项目手册 proj-xxx", which are not the user's actual issue.
+    if tool_name in {"get_manual_content", "get_content"}:
+        return ""
+    return ""
+
+
+def extract_user_questions_from_rpc_payload(
+    rpc_payload: dict,
+) -> tuple[str, str, list[str], dict[str, str]]:
     method_name = str(rpc_payload.get("method") or "")
     params = rpc_payload.get("params")
     if not isinstance(params, dict):
-        return method_name, "", [], ""
+        return method_name, "", [], {"project_id": "", "project_name": "", "employee_id": ""}
 
     tool_name = ""
     user_values: list[str] = []
     context_values: list[str] = []
     query_values: list[str] = []
-    project_values: list[str] = []
+    project_values: list[tuple[str, str]] = []
+    employee_values: list[tuple[str, str]] = []
     if method_name == "tools/call":
         tool_name = str(params.get("name") or "")
         arguments = params.get("arguments")
@@ -140,6 +181,7 @@ def extract_user_questions_from_rpc_payload(rpc_payload: dict) -> tuple[str, str
             else:
                 context_values.append(text)
         project_values.extend(collect_project_values(parsed_arguments))
+        employee_values.extend(collect_employee_values(parsed_arguments))
 
     messages = params.get("messages")
     if isinstance(messages, list):
@@ -161,6 +203,34 @@ def extract_user_questions_from_rpc_payload(rpc_payload: dict) -> tuple[str, str
         if merged:
             user_values.append(merged)
     project_values.extend(collect_project_values(params))
+    employee_values.extend(collect_employee_values(params))
+
+    context = {
+        "project_id": "",
+        "project_name": "",
+        "employee_id": "",
+    }
+    for key_name, raw in project_values:
+        value = normalize_project_name(raw)
+        if not value:
+            continue
+        if key_name == "project_id" or _looks_like_project_id(value):
+            if not context["project_id"]:
+                context["project_id"] = value
+            continue
+        if key_name == "project_name":
+            if not context["project_name"]:
+                context["project_name"] = value
+            continue
+        if not context["project_name"]:
+            context["project_name"] = value
+    for key_name, raw in employee_values:
+        value = normalize_text(raw)
+        if not value:
+            continue
+        if key_name == "employee_id" or _looks_like_employee_id(value):
+            context["employee_id"] = value
+            break
 
     captured: list[str] = []
     seen: set[str] = set()
@@ -171,13 +241,11 @@ def extract_user_questions_from_rpc_payload(rpc_payload: dict) -> tuple[str, str
             continue
         seen.add(raw)
         captured.append(raw)
-
-    project_name = ""
-    for raw in project_values:
-        project_name = normalize_project_name(raw)
-        if project_name:
-            break
-    return method_name, tool_name, captured, project_name
+    if not captured and tool_name:
+        fallback = _build_query_fallback_question(tool_name, context)
+        if fallback:
+            captured.append(fallback)
+    return method_name, tool_name, captured, context
 
 
 def save_auto_user_question_memory(
@@ -244,6 +312,67 @@ def save_auto_user_question_memory(
         return
 
 
+def save_auto_query_memory(
+    questions: list[str],
+    source: str,
+    *,
+    project_id: str = "",
+    employee_id: str = "",
+    project_name: str = "",
+) -> None:
+    target_employee_id = normalize_text(employee_id)
+    if target_employee_id and employee_store.get(target_employee_id) is not None:
+        resolved_project_name = normalize_project_name(project_name)
+        if not resolved_project_name and project_id:
+            project = project_store.get(str(project_id).strip())
+            if project is not None:
+                resolved_project_name = normalize_project_name(getattr(project, "name", ""))
+        save_auto_user_question_memory(
+            target_employee_id,
+            questions,
+            source,
+            resolved_project_name or "default",
+        )
+        return
+
+    resolved_project = None
+    normalized_project_id = normalize_text(project_id)
+    if normalized_project_id:
+        resolved_project = project_store.get(normalized_project_id)
+
+    resolved_project_name = normalize_project_name(project_name)
+    if resolved_project is None and resolved_project_name:
+        for candidate in project_store.list_all():
+            candidate_name = normalize_project_name(getattr(candidate, "name", ""))
+            if candidate_name and candidate_name == resolved_project_name:
+                resolved_project = candidate
+                normalized_project_id = str(getattr(candidate, "id", "") or "").strip()
+                break
+
+    if resolved_project is not None and not resolved_project_name:
+        resolved_project_name = normalize_project_name(getattr(resolved_project, "name", ""))
+
+    if resolved_project is None:
+        return
+
+    seen: set[str] = set()
+    for member in project_store.list_members(normalized_project_id or resolved_project.id):
+        if not bool(getattr(member, "enabled", True)):
+            continue
+        member_employee_id = normalize_text(getattr(member, "employee_id", ""))
+        if not member_employee_id or member_employee_id in seen:
+            continue
+        if employee_store.get(member_employee_id) is None:
+            continue
+        seen.add(member_employee_id)
+        save_auto_user_question_memory(
+            member_employee_id,
+            questions,
+            source,
+            resolved_project_name or "default",
+        )
+
+
 def get_client_ip(scope: dict[str, Any]) -> str:
     for header_name, header_val in scope.get("headers", []):
         if header_name == b"x-forwarded-for":
@@ -289,7 +418,7 @@ def create_tracking_receive(
     api_key: str,
     developer_name: str,
     client_ip: str,
-    on_questions: Callable[[str, str, list[str], str], None] | None = None,
+    on_questions: Callable[[str, str, list[str], dict[str, str]], None] | None = None,
 ):
     request_body_buffer = bytearray()
     request_body_captured = False
@@ -313,7 +442,7 @@ def create_tracking_receive(
             for rpc_payload in rpc_payloads:
                 if not isinstance(rpc_payload, dict):
                     continue
-                method_name, tool_name, questions, project_name = extract_user_questions_from_rpc_payload(rpc_payload)
+                method_name, tool_name, questions, context = extract_user_questions_from_rpc_payload(rpc_payload)
                 if method_name == "tools/call":
                     usage_store.record_event(
                         usage_scope_id,
@@ -324,7 +453,7 @@ def create_tracking_receive(
                         client_ip=client_ip,
                     )
                 if questions and on_questions is not None:
-                    on_questions(method_name, tool_name, questions, project_name)
+                    on_questions(method_name, tool_name, questions, context)
         except Exception:
             pass
         return message

@@ -108,6 +108,7 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
+import { formatDateTime } from "@/utils/date.js";
 
 const loading = ref(false);
 const saving = ref(false);
@@ -136,17 +137,7 @@ const roleLabel = computed(() => {
 });
 
 const createdAtText = computed(() => {
-  const raw = String(form.created_at || "").trim();
-  if (!raw) return "-";
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return raw;
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
+  return formatDateTime(form.created_at);
 });
 
 const providerOptions = computed(() =>

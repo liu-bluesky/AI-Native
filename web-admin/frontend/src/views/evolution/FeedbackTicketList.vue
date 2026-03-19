@@ -162,7 +162,9 @@
         <el-table-column prop="total" label="总数" width="80" align="center" />
         <el-table-column prop="pending_review_count" label="待审核" width="90" align="center" />
         <el-table-column prop="closed_count" label="已关闭" width="90" align="center" />
-        <el-table-column prop="latest_updated_at" label="最近更新" min-width="180" />
+        <el-table-column label="最近更新" min-width="220">
+          <template #default="{ row }">{{ formatDateTime(row.latest_updated_at) }}</template>
+        </el-table-column>
         <el-table-column label="样例标题" min-width="220" show-overflow-tooltip>
           <template #default="{ row }">{{ (row.sample_titles || []).join(' / ') || '-' }}</template>
         </el-table-column>
@@ -198,7 +200,9 @@
           <el-tag :type="statusTag(row.status)" size="small">{{ row.status }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="updated_at" label="更新时间" min-width="220" />
+      <el-table-column label="更新时间" min-width="220">
+        <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="290" fixed="right">
         <template #default="{ row }">
           <el-button text type="primary" @click="openDetail(row.id)">详情</el-button>
@@ -395,6 +399,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 
 const route = useRoute()
 const router = useRouter()

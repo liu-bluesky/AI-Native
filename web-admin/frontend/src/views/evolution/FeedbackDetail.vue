@@ -93,7 +93,7 @@
         <el-descriptions-item label="会话 ID">{{ bug.session_id || '-' }}</el-descriptions-item>
         <el-descriptions-item label="规则 ID">{{ bug.rule_id || '-' }}</el-descriptions-item>
         <el-descriptions-item label="提交人">{{ bug.reporter || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="更新时间">{{ bug.updated_at }}</el-descriptions-item>
+        <el-descriptions-item label="更新时间">{{ formatDateTime(bug.updated_at) }}</el-descriptions-item>
       </el-descriptions>
       <template v-if="isBatchAggregateBug">
         <h4 class="section-title">来源反馈工单</h4>
@@ -122,7 +122,7 @@
           <el-descriptions-item label="类型">{{ analysis.bug_type }}</el-descriptions-item>
           <el-descriptions-item label="置信度">{{ analysis.confidence }}</el-descriptions-item>
           <el-descriptions-item label="模型">{{ analysis.model_name }}</el-descriptions-item>
-          <el-descriptions-item label="生成时间">{{ analysis.generated_at }}</el-descriptions-item>
+          <el-descriptions-item label="生成时间">{{ formatDateTime(analysis.generated_at) }}</el-descriptions-item>
         </el-descriptions>
         <h4 class="section-title">直接原因</h4>
         <p class="plain-text">{{ analysis.direct_cause }}</p>
@@ -180,7 +180,9 @@
       <template #header>审核日志</template>
       <el-empty v-if="!reviews.length" description="暂无审核日志" :image-size="60" />
       <el-table v-else :data="reviews" stripe>
-        <el-table-column prop="created_at" label="时间" width="220" />
+        <el-table-column label="时间" width="220">
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+        </el-table-column>
         <el-table-column prop="reviewer" label="审核人" width="120" />
         <el-table-column prop="action" label="动作" width="120" />
         <el-table-column prop="comment" label="备注" min-width="220" show-overflow-tooltip />
@@ -272,6 +274,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 
 const route = useRoute()
 const router = useRouter()

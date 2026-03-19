@@ -315,6 +315,91 @@ def test_filter_project_tools_by_names_keeps_tools_when_empty_selection():
     ) == [{"tool_name": "query_project_members"}]
 
 
+def test_extract_user_questions_from_query_payload_includes_context():
+    from services.dynamic_mcp_audit import extract_user_questions_from_rpc_payload
+
+    payload = {
+        "method": "tools/call",
+        "params": {
+            "name": "search_ids",
+            "arguments": {
+                "keyword": "当前项目",
+                "project_id": "proj-1",
+                "employee_id": "emp-1",
+            },
+        },
+    }
+
+    method_name, tool_name, questions, context = extract_user_questions_from_rpc_payload(payload)
+
+    assert method_name == "tools/call"
+    assert tool_name == "search_ids"
+    assert questions == ["当前项目"]
+    assert context["project_id"] == "proj-1"
+    assert context["employee_id"] == "emp-1"
+
+
+def test_extract_user_questions_from_lookup_only_query_payload_skips_fallback():
+    from services.dynamic_mcp_audit import extract_user_questions_from_rpc_payload
+
+    payload = {
+        "method": "tools/call",
+        "params": {
+            "name": "get_manual_content",
+            "arguments": {
+                "project_id": "proj-1",
+            },
+        },
+    }
+
+    method_name, tool_name, questions, context = extract_user_questions_from_rpc_payload(payload)
+
+    assert method_name == "tools/call"
+    assert tool_name == "get_manual_content"
+    assert questions == []
+    assert context["project_id"] == "proj-1"
+
+
+def test_save_auto_query_memory_writes_to_active_project_members(tmp_path, monkeypatch):
+    from services import dynamic_mcp_audit as audit_svc
+    from stores.json.employee_store import EmployeeConfig, EmployeeStore
+    from stores.json.project_store import ProjectConfig, ProjectMember, ProjectStore
+
+    data_dir = tmp_path / "data"
+    employee_store = EmployeeStore(data_dir)
+    project_store = ProjectStore(data_dir)
+    employee_store.save(EmployeeConfig(id="emp-1", name="员工一", created_by="tester"))
+    employee_store.save(EmployeeConfig(id="emp-2", name="员工二", created_by="tester"))
+    project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    project_store.upsert_member(ProjectMember(project_id="proj-1", employee_id="emp-1", enabled=True))
+    project_store.upsert_member(ProjectMember(project_id="proj-1", employee_id="emp-2", enabled=False))
+
+    saved_memories = []
+    memory_store = MagicMock()
+    memory_store.recent.side_effect = lambda employee_id, limit: []
+    memory_store.new_id.side_effect = ["mem-1", "mem-2"]
+    memory_store.save.side_effect = saved_memories.append
+
+    monkeypatch.setattr(audit_svc, "employee_store", employee_store)
+    monkeypatch.setattr(audit_svc, "project_store", project_store)
+    monkeypatch.setattr(audit_svc, "memory_store", memory_store)
+
+    audit_svc.save_auto_query_memory(
+        ["查询项目手册 proj-1"],
+        "mcp:tools/call:get_manual_content",
+        project_id="proj-1",
+    )
+
+    assert len(saved_memories) == 1
+    assert saved_memories[0].employee_id == "emp-1"
+    assert saved_memories[0].project_name == "项目一"
+    assert saved_memories[0].purpose_tags == (
+        "auto-capture",
+        "user-question",
+        "mcp:tools/call:get_manual_content",
+    )
+
+
 def test_project_detail_runtime_includes_full_config_and_member_lists(tmp_path, monkeypatch):
     from services import dynamic_mcp_context as context_svc
     from stores.json.employee_store import EmployeeConfig, EmployeeStore
@@ -761,6 +846,82 @@ async def test_create_employee_from_draft_auto_creates_missing_skill_and_rule(tm
     assert created_rule is not None
     assert created_rule.domain == "product"
     assert "需求澄清优先" in created_rule.title
+
+
+@pytest.mark.asyncio
+async def test_skill_package_tree_and_file_preview(tmp_path, monkeypatch):
+    from routers import skills as skills_router
+    from stores import mcp_bridge
+
+    package_dir = tmp_path / "skill-packages" / "skill-demo"
+    (package_dir / "tools").mkdir(parents=True)
+    (package_dir / "assets").mkdir(parents=True)
+    (package_dir / "SKILL.md").write_text("# Demo Skill\n", encoding="utf-8")
+    (package_dir / "tools" / "run.py").write_text("print('hello')\n", encoding="utf-8")
+    (package_dir / ".db-config-secret.json").write_text('{"password":"secret"}', encoding="utf-8")
+    (package_dir / "assets" / "logo.bin").write_bytes(b"\x00\x01\x02\x03")
+
+    skill = mcp_bridge.Skill(
+        id="skill-demo",
+        version="1.0.0",
+        name="Skill Demo",
+        description="",
+        mcp_service="",
+        created_by="tester",
+        package_dir=str(package_dir.relative_to(tmp_path)),
+    )
+
+    class StubSkillStore:
+        def get(self, skill_id):
+            return skill if skill_id == "skill-demo" else None
+
+    monkeypatch.setattr(skills_router, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(skills_router, "skill_store", StubSkillStore())
+    monkeypatch.setattr(skills_router, "_ensure_historical_skills_registered", lambda: None)
+
+    tree_result = await skills_router.get_skill_package_tree("skill-demo")
+    root_names = [item["label"] for item in tree_result["tree"]]
+
+    assert "SKILL.md" in root_names
+    assert "tools" in root_names
+    assert ".db-config-secret.json" not in root_names
+
+    file_result = await skills_router.get_skill_package_file("skill-demo", "tools/run.py")
+    assert file_result["file"]["path"] == "tools/run.py"
+    assert "print('hello')" in file_result["file"]["content"]
+    assert file_result["file"]["is_binary"] is False
+
+    binary_result = await skills_router.get_skill_package_file("skill-demo", "assets/logo.bin")
+    assert binary_result["file"]["is_binary"] is True
+    assert binary_result["file"]["content"] == ""
+
+
+def test_backfill_existing_skill_packages_registers_history(tmp_path, monkeypatch):
+    from services import skill_import_service as import_svc
+    from stores import mcp_bridge
+
+    skill_store = mcp_bridge._skills_mod.SkillStore(tmp_path)
+    css_dir = tmp_path / "skill-packages" / "css"
+    css_dir.mkdir(parents=True)
+    (css_dir / "SKILL.md").write_text(
+        "---\nname: CSS\nslug: css\nversion: 1.0.1\ndescription: CSS helper\n---\n",
+        encoding="utf-8",
+    )
+    system_dir = tmp_path / "skill-packages" / "system-mcp-prompts-chat"
+    system_dir.mkdir(parents=True)
+    (system_dir / "manifest.json").write_text(
+        '{"name":"系统MCP · prompts.chat","version":"1.0.0","description":"system skill"}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(import_svc, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(import_svc, "skill_store", skill_store)
+
+    result = import_svc.backfill_existing_skill_packages()
+
+    assert [skill.id for skill in result.created] == ["css", "system-mcp-prompts-chat"]
+    assert skill_store.get("css") is not None
+    assert skill_store.get("system-mcp-prompts-chat") is not None
 
 
 if __name__ == "__main__":

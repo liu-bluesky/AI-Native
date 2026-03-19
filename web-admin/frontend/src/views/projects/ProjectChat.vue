@@ -167,6 +167,14 @@
                 size="small"
                 plain
                 class="chat-context-bar__action-button"
+                @click="openUnifiedMcpDialog"
+              >
+                MCP 接入
+              </el-button>
+              <el-button
+                size="small"
+                plain
+                class="chat-context-bar__action-button"
                 @click="openSkillResourceCenter"
               >
                 技能资源
@@ -240,7 +248,9 @@
                         <span
                           v-if="item.time || item.created_at"
                           class="message-time"
-                          >{{ item.time || item.created_at }}</span
+                          >{{
+                            formatRelativeDateTime(item.time || item.created_at)
+                          }}</span
                         >
                       </div>
                       <div
@@ -842,6 +852,13 @@
       </div>
     </div>
   </div>
+
+  <UnifiedMcpAccessDialog
+    v-model="unifiedMcpDialogVisible"
+    title="统一 MCP 接入"
+    :project-id="selectedProjectId"
+    :project-label="currentProjectLabel"
+  />
 
   <el-dialog
     v-model="codePreviewVisible"
@@ -1981,6 +1998,7 @@ import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ExternalMcpManager from "@/components/ExternalMcpManager.vue";
+import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
 import api from "@/utils/api.js";
 import { createProjectChatWsClient } from "@/utils/ws-chat.js";
 import { clearPermissionArray, hasPermission } from "@/utils/permissions.js";
@@ -2000,6 +2018,11 @@ import {
 import { marked } from "marked";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
 import ComposerAssistBar from "@/components/ComposerAssistBar.vue";
+import { buildRuntimeUrl } from "@/utils/runtime-url.js";
+import {
+  formatDateGroupLabel,
+  formatRelativeDateTime,
+} from "@/utils/date.js";
 import {
   pickWorkspaceDirectory,
   pickWorkspaceFile,
@@ -2341,6 +2364,7 @@ const employeeDraftAutoRuleGenerationSourceFilters = ref([
   "prompts_chat_curated",
 ]);
 const employeeDraftAutoRuleGenerationMaxCount = ref(3);
+const unifiedMcpDialogVisible = ref(false);
 const skillResourceDialogVisible = ref(false);
 const skillResourceDirectoryDraft = ref("");
 const skillResourceDirectoryPicking = ref(false);
@@ -3346,30 +3370,7 @@ function formatChatSessionMeta(session) {
 }
 
 function formatChatSessionTime(value) {
-  const source = String(value || "").trim();
-  if (!source) return "刚刚";
-  const timestamp = Date.parse(source.replace(" ", "T"));
-  if (Number.isNaN(timestamp)) return source;
-  const target = new Date(timestamp);
-  const now = new Date();
-  const isSameYear = target.getFullYear() === now.getFullYear();
-  const isSameDay =
-    isSameYear &&
-    target.getMonth() === now.getMonth() &&
-    target.getDate() === now.getDate();
-  if (isSameDay) {
-    return `${String(target.getHours()).padStart(2, "0")}:${String(
-      target.getMinutes(),
-    ).padStart(2, "0")}`;
-  }
-  if (isSameYear) {
-    return `${String(target.getMonth() + 1).padStart(2, "0")}-${String(
-      target.getDate(),
-    ).padStart(2, "0")}`;
-  }
-  return `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}-${String(
-    target.getDate(),
-  ).padStart(2, "0")}`;
+  return formatRelativeDateTime(value, { fallback: "刚刚" });
 }
 
 function resolveChatSessionGroupLabel(session) {
@@ -3379,27 +3380,7 @@ function resolveChatSessionGroupLabel(session) {
       session?.created_at ||
       "",
   ).trim();
-  const normalized = source.replace(" ", "T");
-  const timestamp = Date.parse(normalized);
-  if (Number.isNaN(timestamp)) {
-    return "更早";
-  }
-  const now = new Date();
-  const target = new Date(timestamp);
-  const todayStart = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-  ).getTime();
-  const targetStart = new Date(
-    target.getFullYear(),
-    target.getMonth(),
-    target.getDate(),
-  ).getTime();
-  const diffDays = Math.floor((todayStart - targetStart) / 86400000);
-  if (diffDays <= 0) return "今天";
-  if (diffDays <= 30) return "30 天内";
-  return `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, "0")}`;
+  return formatDateGroupLabel(source, { fallback: "更早" });
 }
 
 function extractEmployeeDraftPayload(text) {
@@ -4317,6 +4298,82 @@ function canReplayMessageSource(messageIndex) {
   return true;
 }
 
+function canDeleteMessage(item, messageIndex) {
+  const normalizedIndex = Number(messageIndex);
+  if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return false;
+  if (!item) return false;
+  if (!String(currentChatSessionId.value || "").trim()) return false;
+  if (String(item?.role || "").trim() === "user") {
+    return Boolean(String(item?.id || "").trim());
+  }
+  return Boolean(resolveMessageSource(normalizedIndex));
+}
+
+function resolveDeleteTarget(messageIndex) {
+  const normalizedIndex = Number(messageIndex);
+  if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return null;
+  const item = messages.value[normalizedIndex];
+  if (!item) return null;
+  const role = String(item?.role || "").trim();
+  if (role === "user") {
+    const messageId = String(item?.id || "").trim();
+    if (!messageId) return null;
+    return {
+      mode: "truncate",
+      item,
+      index: normalizedIndex,
+      messageId,
+    };
+  }
+  const source = resolveMessageSource(normalizedIndex);
+  const sourceMessageId = String(source?.item?.id || "").trim();
+  if (!source || !sourceMessageId) return null;
+  return {
+    mode: "truncate",
+    item,
+    index: normalizedIndex,
+    messageId: sourceMessageId,
+    sourceIndex: source.index,
+  };
+}
+
+function getDeleteActionTooltip(item) {
+  const role = String(item?.role || "").trim();
+  return role === "user" ? "删除此条及后续" : "删除这轮对话";
+}
+
+function buildDeleteMessageConfirmText(item) {
+  const role = String(item?.role || "").trim();
+  if (role === "user") {
+    return "确认删除这条消息及其后续内容吗？删除后不可恢复。";
+  }
+  return "确认删除这条 AI 回复所在整轮对话吗？会同时删除对应提问与后续内容。";
+}
+
+function applyDeleteTargetLocally(target) {
+  if (!target) return;
+  const role = String(target?.item?.role || "").trim();
+  const sliceIndex =
+    role === "user"
+      ? Number(target?.index)
+      : Number(
+          target?.sourceIndex ?? target?.index,
+        );
+  if (!Number.isInteger(sliceIndex) || sliceIndex < 0) return;
+  messages.value = messages.value.slice(0, sliceIndex);
+  chatHistoryLoadedCount.value = messages.value.length;
+}
+
+function buildDeleteSuccessText(item) {
+  const role = String(item?.role || "").trim();
+  return role === "user" ? "消息已删除" : "该轮对话已删除";
+}
+
+function buildDeleteErrorText(item) {
+  const role = String(item?.role || "").trim();
+  return role === "user" ? "删除消息失败" : "删除该轮对话失败";
+}
+
 function resetInlineMessageEdit() {
   inlineEditingMessageIndex.value = -1;
   inlineEditingMessageId.value = "";
@@ -4395,6 +4452,52 @@ async function truncateConversationFromSource(source) {
     );
   }
   messages.value = messages.value.slice(0, source.index);
+  chatHistoryLoadedCount.value = messages.value.length;
+}
+
+async function deleteMessageAt(messageIndex) {
+  if (chatLoading.value) {
+    ElMessage.warning("当前回答进行中，暂时不能删除消息");
+    return;
+  }
+  const normalizedIndex = Number(messageIndex);
+  if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return;
+  const item = messages.value[normalizedIndex];
+  const target = resolveDeleteTarget(normalizedIndex);
+  if (!item || !target || !canDeleteMessage(item, normalizedIndex)) {
+    ElMessage.warning("当前消息尚未保存完成，请稍后再试");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      buildDeleteMessageConfirmText(item),
+      "删除消息",
+      {
+        confirmButtonText: "删除",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+  } catch {
+    return;
+  }
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  try {
+    await api.post(
+      `/projects/${encodeURIComponent(projectId)}/chat/history/truncate`,
+      {
+        chat_session_id: chatSessionId,
+        message_id: target.messageId,
+      },
+    );
+    applyDeleteTargetLocally(target);
+    ElMessage.success(buildDeleteSuccessText(item));
+  } catch (err) {
+    ElMessage.error(
+      err?.detail || err?.message || buildDeleteErrorText(item),
+    );
+  }
 }
 
 async function openInlineMessageEditor(messageIndex) {
@@ -4547,6 +4650,13 @@ function getMessageActions(item, messageIndex) {
       icon: Files,
     });
   }
+  if (canDeleteMessage(item, messageIndex)) {
+    actions.push({
+      key: "delete_message",
+      tooltip: getDeleteActionTooltip(item),
+      icon: Delete,
+    });
+  }
   return actions;
 }
 
@@ -4566,6 +4676,9 @@ function handleMessageAction(item, messageIndex, actionKey) {
       return;
     case "copy_with_process":
       copyMessageMarkdown(item, { includeProcess: true });
+      return;
+    case "delete_message":
+      void deleteMessageAt(messageIndex);
       return;
     default:
       return;
@@ -5545,6 +5658,10 @@ function setSkillResourceDirectory(directoryPath, options = {}) {
 function openSkillResourceCenter() {
   syncSkillResourceDirectoryDraft();
   skillResourceDialogVisible.value = true;
+}
+
+function openUnifiedMcpDialog() {
+  unifiedMcpDialogVisible.value = true;
 }
 
 function useWorkspaceAsSkillDirectory() {
@@ -12230,8 +12347,9 @@ onUnmounted(() => {
 }
 
 .message-row.is-ai .message-content-wrapper {
-  width: min(100%, 860px);
-  max-width: 100%;
+  width: auto;
+  max-width: min(860px, 100%);
+  align-items: flex-start;
 }
 
 .message-row.is-ai .message-bubble > .message-text,
@@ -12260,7 +12378,7 @@ onUnmounted(() => {
   background: #e9edf2;
   box-shadow: none;
   width: fit-content;
-  min-width: min(240px, 100%);
+  min-width: 0;
   max-width: 100%;
 }
 
@@ -12287,6 +12405,10 @@ onUnmounted(() => {
   border: 0;
   background: transparent;
   box-shadow: none;
+  display: inline-flex;
+  flex-direction: column;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .message-row.is-ai .message-text {

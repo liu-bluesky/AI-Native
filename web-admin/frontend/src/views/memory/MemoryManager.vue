@@ -43,7 +43,9 @@
       <el-table-column prop="importance" label="重要度" width="80" align="center" />
       <el-table-column prop="scope" label="作用域" width="120" />
       <el-table-column prop="access_count" label="访问" width="70" align="center" />
-      <el-table-column prop="created_at" label="创建时间" width="180" />
+      <el-table-column label="创建时间" width="220">
+        <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="80" fixed="right">
         <template #default="{ row }">
           <el-button text type="danger" size="small" @click="handleDelete(row.id)">删除</el-button>
@@ -60,6 +62,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 
 const route = useRoute()
 const loading = ref(false)

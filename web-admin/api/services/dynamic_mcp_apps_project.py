@@ -117,6 +117,7 @@ def create_project_mcp(
         return display_path, content
 
     def _build_usage_guide(project) -> dict:
+        manual_resource = f"project://{project.id}/manual"
         display_path, ai_entry_excerpt = _read_ai_entry_excerpt(project)
         mcp_instruction = _resolve_mcp_instruction(project)
         proxy_tool_count = len(scoped_proxy_specs)
@@ -128,13 +129,15 @@ def create_project_mcp(
             f"- 项目描述: {project.description or '-'}",
             f"- MCP 使用说明: {mcp_instruction or '-'}",
             f"- 适用场景: 读取项目画像、项目成员、项目规则、项目成员技能代理工具，以及当前项目挂载的外部 MCP 工具。",
+            f"- 项目使用手册 Resource: {manual_resource}",
             "",
             "## 推荐调用顺序",
             f"1. 先调用 get_project_usage_guide 或读取 project://{project.id}/usage-guide，了解项目范围与约定。",
-            "2. 调用 get_project_profile，确认项目基础配置、工作区与入口文件配置。",
-            "3. 调用 get_project_runtime_context，快速了解成员数量、规则规模和代理工具规模。",
-            f"4. 如需选人，先调用 list_project_members；如需选工具，先调用 list_project_proxy_tools 或读取 project://{project.id}/proxy-tools。",
-            "5. 规则检索用 query_project_rules；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
+            "2. 如需项目手册，直接读取 project://<project_id>/manual 或调用 get_project_manual。",
+            "3. 调用 get_project_profile，确认项目基础配置、工作区与入口文件配置。",
+            "4. 调用 get_project_runtime_context，快速了解成员数量、规则规模和代理工具规模。",
+            f"5. 如需选人，先调用 list_project_members；如需选工具，先调用 list_project_proxy_tools 或读取 project://{project.id}/proxy-tools。",
+            "6. 规则检索用 query_project_rules；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
             "",
             "## 调用建议",
             "- 当 tool_name 可能重名时，给 invoke_project_skill_tool 同时传 employee_id 做消歧。",
@@ -175,6 +178,7 @@ def create_project_mcp(
             "external_tool_count": external_tool_count,
             "recommended_flow": [
                 "get_project_usage_guide",
+                "get_project_manual",
                 "get_project_profile",
                 "get_project_runtime_context",
                 "list_project_members or list_project_proxy_tools",
@@ -194,6 +198,7 @@ def create_project_mcp(
             f"description: {project.description or '-'}\n"
             f"mcp_instruction: {mcp_instruction or '-'}\n"
             f"usage_guide=project://{project.id}/usage-guide\n"
+            f"manual=project://{project.id}/manual\n"
             f"recommended_first_tool=get_project_usage_guide\n"
             f"mcp_enabled={project.mcp_enabled} "
             f"feedback_upgrade_enabled={project.feedback_upgrade_enabled}"
@@ -205,6 +210,16 @@ def create_project_mcp(
         if not project:
             return "Project deleted or unavailable."
         return str(_build_usage_guide(project).get("guide_markdown") or "")
+
+    @mcp.resource(f"project://{project_id}/manual")
+    def project_manual() -> str:
+        project = _get_project()
+        if not project:
+            return "Project deleted or unavailable."
+        from routers.projects import _build_project_manual_template_payload
+
+        payload = _build_project_manual_template_payload(project.id)
+        return str(payload.get("manual") or "")
 
     @mcp.resource(f"project://{project_id}/members")
     def project_members() -> str:
@@ -266,10 +281,27 @@ def create_project_mcp(
             return {"error": "Project not found"}
         payload = asdict(project)
         payload["usage_guide_resource"] = f"project://{project.id}/usage-guide"
+        payload["manual_resource"] = f"project://{project.id}/manual"
         payload["proxy_tools_resource"] = f"project://{project.id}/proxy-tools"
         payload["external_tools_resource"] = f"project://{project.id}/external-mcp-tools"
         payload["recommended_first_tool"] = "get_project_usage_guide"
         return payload
+
+    @mcp.tool()
+    def get_project_manual() -> dict:
+        """获取当前项目使用手册正文"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        from routers.projects import _build_project_manual_template_payload
+
+        payload = _build_project_manual_template_payload(project.id)
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "manual_resource": f"project://{project.id}/manual",
+            "manual": str(payload.get("manual") or ""),
+        }
 
     @mcp.tool()
     def get_project_detail() -> dict:

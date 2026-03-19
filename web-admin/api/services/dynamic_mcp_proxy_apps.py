@@ -310,13 +310,18 @@ class EmployeeMcpProxyApp:
             session_keys=self._session_keys,
         )
 
-        def _handle_questions(method_name: str, tool_name: str, questions: list[str], project_name: str) -> None:
+        def _handle_questions(
+            method_name: str,
+            tool_name: str,
+            questions: list[str],
+            context: dict[str, str],
+        ) -> None:
             source = f"mcp:{method_name or 'unknown'}:{tool_name or '-'}"
             self._save_auto_user_question_memory(
                 employee_id,
                 questions,
                 source,
-                project_name or project_name_from_query or "default",
+                str((context or {}).get("project_name") or project_name_from_query or "default"),
             )
 
         tracking_receive = create_tracking_receive(
@@ -351,3 +356,103 @@ class EmployeeMcpProxyApp:
             replace_path_suffix=self._replace_path_suffix,
         )
         await self._employee_apps[employee_id](downstream_scope, tracking_receive, tracking_send)
+
+
+class QueryMcpProxyApp:
+    def __init__(
+        self,
+        *,
+        usage_store,
+        current_api_key_ctx,
+        current_developer_name_ctx,
+        session_keys: dict[str, tuple[str, str]],
+        query_app,
+        save_auto_query_memory: Callable[..., None],
+        replace_path_suffix: Callable[[str, str, str], str],
+    ) -> None:
+        self._usage_store = usage_store
+        self._current_api_key_ctx = current_api_key_ctx
+        self._current_developer_name_ctx = current_developer_name_ctx
+        self._session_keys = session_keys
+        self._query_app = query_app
+        self._save_auto_query_memory = save_auto_query_memory
+        self._replace_path_suffix = replace_path_suffix
+
+    async def __call__(self, scope, receive, send):
+        path = str(scope.get("path", ""))
+        if _is_well_known_probe(path):
+            response = Response(status_code=204)
+            await response(scope, receive, send)
+            return
+
+        auth_state, auth_error = _resolve_request_auth(scope, self._usage_store, self._session_keys)
+        if auth_error is not None:
+            await auth_error(scope, receive, send)
+            return
+        assert auth_state is not None
+
+        api_key = auth_state["api_key"]
+        developer_name = auth_state["developer_name"]
+        method = auth_state["method"]
+        query = auth_state["query"]
+        is_sse = auth_state["is_sse"]
+        project_name_from_query = (
+            (query.get("project_name") or query.get("project") or [""])[0]
+        ).strip()
+        project_id_from_query = ((query.get("project_id") or [""])[0]).strip()
+        employee_id_from_query = ((query.get("employee_id") or [""])[0]).strip()
+
+        client_ip = get_client_ip(scope)
+        self._current_api_key_ctx.set(api_key)
+        self._current_developer_name_ctx.set(developer_name)
+
+        usage_scope_id = "mcp:query"
+        if is_sse and method == "GET":
+            self._usage_store.record_event(
+                usage_scope_id,
+                api_key,
+                developer_name,
+                "connection",
+                client_ip=client_ip,
+            )
+
+        tracking_send = create_tracking_send(
+            send,
+            is_sse=is_sse,
+            method=method,
+            api_key=api_key,
+            developer_name=developer_name,
+            session_keys=self._session_keys,
+        )
+
+        def _handle_questions(
+            method_name: str,
+            tool_name: str,
+            questions: list[str],
+            context: dict[str, str],
+        ) -> None:
+            source = f"mcp:{method_name or 'unknown'}:{tool_name or '-'}"
+            self._save_auto_query_memory(
+                questions,
+                source,
+                project_id=str((context or {}).get("project_id") or project_id_from_query),
+                employee_id=str((context or {}).get("employee_id") or employee_id_from_query),
+                project_name=str((context or {}).get("project_name") or project_name_from_query),
+            )
+
+        tracking_receive = create_tracking_receive(
+            receive,
+            usage_scope_id=usage_scope_id,
+            api_key=api_key,
+            developer_name=developer_name,
+            client_ip=client_ip,
+            on_questions=_handle_questions,
+        )
+
+        downstream_scope = _rewrite_downstream_scope(
+            scope,
+            is_sse=is_sse,
+            method=method,
+            replace_path_suffix=self._replace_path_suffix,
+        )
+        await self._query_app(downstream_scope, tracking_receive, tracking_send)

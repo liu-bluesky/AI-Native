@@ -92,7 +92,7 @@
             <el-button text type="info" @click="showEmployeeConfigTest(row)"
               >测试</el-button
             >
-            <el-button text type="success" @click="showGenerateManual(row)"
+            <el-button text type="success" @click="showEmployeeManual(row)"
               >使用手册</el-button
             >
             <el-button
@@ -315,89 +315,6 @@
     </el-dialog>
 
     <el-dialog
-      v-model="showPromptDialog"
-      :title="promptDialogTitle"
-      width="700px"
-    >
-      <div v-loading="promptLoading">
-        <el-tabs v-model="promptTab">
-          <el-tab-pane label="生成使用手册" name="generate">
-            <el-alert
-              v-if="generatedPrompt"
-              title="使用手册生成成功"
-              type="success"
-              show-icon
-              :closable="false"
-              style="margin-bottom: 16px"
-            >
-              <template #default>
-                <div style="margin-top: 8px; font-size: 13px">
-                  供应商: {{ promptProvider }} | 模型: {{ promptModel }}
-                </div>
-              </template>
-            </el-alert>
-
-            <div v-if="generatedPrompt" class="prompt-content">
-              <div class="prompt-rendered" v-html="renderedPromptHtml"></div>
-            </div>
-            <el-empty
-              v-else
-              description="点击下方按钮生成员工使用手册"
-              :image-size="50"
-            />
-          </el-tab-pane>
-
-          <el-tab-pane label="历史记录" name="history">
-            <el-table
-              :data="promptHistory"
-              stripe
-              size="small"
-              v-loading="historyLoading"
-            >
-              <el-table-column prop="created_at" label="生成时间" width="160" />
-              <el-table-column prop="provider" label="供应商" width="120" />
-              <el-table-column prop="model" label="模型" width="120" />
-              <el-table-column label="操作" width="150">
-                <template #default="{ row }">
-                  <el-button text type="primary" @click="viewHistoryPrompt(row)"
-                    >查看</el-button
-                  >
-                  <el-button
-                    text
-                    type="danger"
-                    @click="deleteHistoryPrompt(row)"
-                    >删除</el-button
-                  >
-                </template>
-              </el-table-column>
-            </el-table>
-            <el-empty
-              v-if="!promptHistory.length && !historyLoading"
-              description="暂无历史记录"
-              :image-size="50"
-            />
-          </el-tab-pane>
-        </el-tabs>
-      </div>
-
-      <template #footer>
-        <el-button v-if="generatedPrompt" type="primary" @click="copyPrompt"
-          >复制手册</el-button
-        >
-        <el-button type="info" @click="copyTemplate">复制提示词模板</el-button>
-        <el-button
-          v-if="employeeManualEnabled"
-          type="success"
-          :loading="promptLoading"
-          @click="runGeneratePrompt"
-          >生成使用手册</el-button
-        >
-        <el-button v-else type="info" disabled>大模型生成已禁用</el-button>
-        <el-button @click="showPromptDialog = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
       v-model="showManualDialog"
       :title="manualDialogTitle"
       width="700px"
@@ -405,7 +322,7 @@
       <div v-loading="manualLoading">
         <el-alert
           v-if="generatedManual"
-          title="使用手册模板加载成功"
+          title="使用手册加载成功"
           type="success"
           show-icon
           :closable="false"
@@ -417,20 +334,20 @@
         </div>
         <el-empty
           v-else
-          description="点击下方按钮加载手册模板"
+          description="点击下方按钮加载使用手册"
           :image-size="50"
         />
       </div>
 
       <template #footer>
         <el-button v-if="generatedManual" type="primary" @click="copyManual"
-          >复制手册模板</el-button
+          >复制使用手册</el-button
         >
         <el-button
           type="success"
           :loading="manualLoading"
-          @click="runGenerateManual"
-          >加载手册模板</el-button
+          @click="loadEmployeeManual"
+          >加载使用手册</el-button
         >
         <el-button @click="showManualDialog = false">关闭</el-button>
       </template>
@@ -817,18 +734,8 @@ const testLoading = ref(false);
 const testTargetEmployee = ref(null);
 const testResult = ref(null);
 const mcpTestResult = ref(null);
-const showPromptDialog = ref(false);
-const promptDialogTitle = ref("生成员工使用手册");
-const promptLoading = ref(false);
-const promptTargetEmployee = ref(null);
-const generatedPrompt = ref("");
-const promptProvider = ref("");
-const promptModel = ref("");
-const promptTab = ref("generate");
-const promptHistory = ref([]);
-const historyLoading = ref(false);
 const showManualDialog = ref(false);
-const manualDialogTitle = ref("使用手册模板");
+const manualDialogTitle = ref("使用手册");
 const manualLoading = ref(false);
 const manualTargetEmployee = ref(null);
 const generatedManual = ref("");
@@ -847,13 +754,6 @@ const templateImportForm = ref({
   branch: "",
   limit: 40,
 });
-const systemConfig = ref({
-  enable_project_manual_generation: false,
-  enable_employee_manual_generation: false,
-});
-const employeeManualEnabled = computed(
-  () => !!systemConfig.value.enable_employee_manual_generation,
-);
 
 function goToAgentTemplates() {
   void router.push(
@@ -912,15 +812,6 @@ const templateImportStatusText = computed(() => {
   if (templateImportLoading.value) return "正在扫描模板...";
   if (!importedTemplates.value.length) return "输入来源后读取模板";
   return `已读取 ${importedTemplates.value.length} 个模板，待导入 ${selectedImportedTemplateCount.value} 个`;
-});
-
-const renderedPromptHtml = computed(() => {
-  if (!generatedPrompt.value) return "";
-  try {
-    return marked.parse(generatedPrompt.value);
-  } catch (e) {
-    return generatedPrompt.value.replace(/\n/g, "<br>");
-  }
 });
 
 const renderedManualHtml = computed(() => {
@@ -1021,23 +912,6 @@ async function fetchList() {
     ElMessage.error("加载失败");
   } finally {
     loading.value = false;
-  }
-}
-
-async function fetchSystemConfig() {
-  try {
-    const data = await api.get("/system-config");
-    systemConfig.value = {
-      enable_project_manual_generation:
-        !!data?.config?.enable_project_manual_generation,
-      enable_employee_manual_generation:
-        !!data?.config?.enable_employee_manual_generation,
-    };
-  } catch {
-    systemConfig.value = {
-      enable_project_manual_generation: false,
-      enable_employee_manual_generation: false,
-    };
   }
 }
 
@@ -1352,109 +1226,15 @@ async function showEmployeeConfigTest(row) {
   await runConfigTest();
 }
 
-async function showGeneratePrompt(row) {
-  if (!employeeManualEnabled.value) {
-    ElMessage.warning("员工手册功能已被系统配置禁用");
-    return;
-  }
-  promptTargetEmployee.value = row;
-  promptDialogTitle.value = `生成使用手册: ${row.name}`;
-  generatedPrompt.value = "";
-  promptProvider.value = "";
-  promptModel.value = "";
-  promptTab.value = "generate";
-  showPromptDialog.value = true;
-  await fetchPromptHistory();
-}
-
-async function fetchPromptHistory() {
-  if (!promptTargetEmployee.value?.id) return;
-  historyLoading.value = true;
-  try {
-    const data = await api.get(
-      `/employees/${promptTargetEmployee.value.id}/prompt-history`,
-    );
-    promptHistory.value = data.history || [];
-  } catch (e) {
-    promptHistory.value = [];
-  } finally {
-    historyLoading.value = false;
-  }
-}
-
-function viewHistoryPrompt(row) {
-  generatedPrompt.value = row.prompt || "";
-  promptProvider.value = row.provider || "";
-  promptModel.value = row.model || "";
-  promptTab.value = "generate";
-}
-
-async function deleteHistoryPrompt(row) {
-  await ElMessageBox.confirm("确定删除此历史记录？", "确认");
-  try {
-    await api.delete(
-      `/employees/${promptTargetEmployee.value.id}/prompt-history/${row.id}`,
-    );
-    ElMessage.success("已删除");
-    await fetchPromptHistory();
-  } catch (e) {
-    ElMessage.error(e.detail || "删除失败");
-  }
-}
-
-async function runGeneratePrompt() {
-  if (!employeeManualEnabled.value) {
-    ElMessage.warning("员工手册功能已被系统配置禁用");
-    return;
-  }
-  if (!promptTargetEmployee.value?.id) return;
-  promptLoading.value = true;
-  try {
-    const data = await api.post(
-      `/employees/${promptTargetEmployee.value.id}/generate-manual`,
-    );
-    generatedPrompt.value = data.manual || "";
-    promptProvider.value = data.provider || "";
-    promptModel.value = data.model || "";
-    ElMessage.success("使用手册生成成功");
-  } catch (e) {
-    ElMessage.error(e.detail || "生成使用手册失败");
-  } finally {
-    promptLoading.value = false;
-  }
-}
-
-async function copyPrompt() {
-  try {
-    await navigator.clipboard.writeText(generatedPrompt.value);
-    ElMessage.success("使用手册已复制到剪贴板");
-  } catch {
-    ElMessage.error("复制失败");
-  }
-}
-
-async function copyTemplate() {
-  if (!promptTargetEmployee.value?.id) return;
-  try {
-    const data = await api.get(
-      `/employees/${promptTargetEmployee.value.id}/manual-template`,
-    );
-    await navigator.clipboard.writeText(data.template || "");
-    ElMessage.success("提示词模板已复制，可粘贴到任何 AI 使用");
-  } catch (e) {
-    ElMessage.error(e.detail || "复制失败");
-  }
-}
-
-async function showGenerateManual(row) {
+async function showEmployeeManual(row) {
   manualTargetEmployee.value = row;
-  manualDialogTitle.value = `使用手册模板: ${row.name}`;
+  manualDialogTitle.value = `使用手册: ${row.name}`;
   generatedManual.value = "";
   showManualDialog.value = true;
-  await runGenerateManual();
+  await loadEmployeeManual();
 }
 
-async function runGenerateManual() {
+async function loadEmployeeManual() {
   if (!manualTargetEmployee.value?.id) return;
   manualLoading.value = true;
   try {
@@ -1462,9 +1242,9 @@ async function runGenerateManual() {
       `/employees/${manualTargetEmployee.value.id}/manual-template`,
     );
     generatedManual.value = data.template || "";
-    ElMessage.success("使用手册模板加载成功");
+    ElMessage.success("使用手册加载成功");
   } catch (e) {
-    ElMessage.error(e.detail || "加载使用手册模板失败");
+    ElMessage.error(e.detail || "加载使用手册失败");
   } finally {
     manualLoading.value = false;
   }
@@ -1473,7 +1253,7 @@ async function runGenerateManual() {
 async function copyManual() {
   try {
     await navigator.clipboard.writeText(generatedManual.value);
-    ElMessage.success("手册模板已复制到剪贴板");
+    ElMessage.success("使用手册已复制到剪贴板");
   } catch {
     ElMessage.error("复制失败");
   }
@@ -1490,105 +1270,8 @@ async function copyActiveMcpConfig() {
   }
 }
 
-function copyManualTemplate(row) {
-  manualTargetEmployee.value = row;
-  manualDialogTitle.value = `使用手册模板: ${row.name}`;
-
-  // 生成模板内容
-  const skillsText = row.skills?.length
-    ? row.skills
-        .map((s) => `- ${s.name || s}：${s.description || ""}`)
-        .join("\n")
-    : "无";
-  const domainsText = (() => {
-    const seen = new Set();
-    const domains = [];
-    for (const item of row.rule_bindings || []) {
-      const domain = String(item?.domain || "").trim();
-      const key = domain.toLowerCase();
-      if (!domain || seen.has(key)) continue;
-      seen.add(key);
-      domains.push(domain);
-    }
-    return domains.length ? domains.map((d) => `- ${d}`).join("\n") : "无";
-  })();
-  const styleHintsText = row.style_hints?.length
-    ? row.style_hints.map((h) => `- ${h}`).join("\n")
-    : "无";
-
-  generatedManual.value = `请为以下 AI 员工生成一份使用手册，面向接入方 AI 平台。
-
-员工信息：
-- ID：${row.id}
-- 名称：${row.name}
-- 描述：${row.description || ""}
-- 语调：${row.tone || ""}
-- 风格：${row.verbosity || ""}
-- 语言：${row.language || ""}
-
-绑定技能：
-${skillsText}
-
-规则领域：
-${domainsText}
-
-风格提示：
-${styleHintsText}
-
-记忆配置：
-- 作用域：${row.memory_scope || ""}
-- 保留期：${row.memory_retention_days || 0}天
-
-手册要求：
-1. 员工简介（定位、适用场景）
-2. MCP 接入配置（SSE 和 HTTP 两种方式，使用 \`\`\`json 代码块）
-3. 项目配置（重要）
-   - 在项目根目录创建 .mcp-project.json 文件
-   - 配置示例（\`\`\`json 代码块）：
-     {
-       "project_name": "Your Project Name",
-       "description": "项目描述（可选）"
-     }
-   - 参考示例文件：.mcp-project.json.example
-   - 如果不传 project_name 参数，系统会自动读取此文件
-   - 如果文件不存在，系统会自动创建默认配置（project_name: "default"）
-4. 核心功能：
-   - 技能列表（列出每个技能及用途）
-   - 规则领域（列出每个领域及适用场景）
-   - 风格约束（列出风格提示）
-   - 记忆功能：recall_employee_memory(query, project_name)，作用域 ${row.memory_scope || ""}，保留 ${row.memory_retention_days || 0}天
-     调用示例（\`\`\`json 代码块）：
-     {
-       "name": "recall_employee_memory",
-       "arguments": {
-         "query": "登录页改版决策",
-         "project_name": "my-project"
-       }
-     }
-     注意：project_name 可省略，系统会自动从 .mcp-project.json 读取
-   - 反馈工单：submit_feedback_bug(title, symptom, expected, project_name, category, severity, session_id, rule_id, source_context)
-     调用示例（\`\`\`json 代码块）：
-     {
-       "name": "submit_feedback_bug",
-       "arguments": {
-         "title": "登录按钮样式错误",
-         "symptom": "按钮颜色与设计稿不符",
-         "expected": "按钮应为主题色",
-         "project_name": "my-project",
-         "category": "frontend",
-         "severity": "medium"
-       }
-     }
-     注意：project_name 可省略，系统会自动从 .mcp-project.json 读取
-5. 使用建议（project_name 作用、推荐工作流、注意事项）
-
-格式：标准 Markdown，所有 JSON 用 \`\`\`json 代码块`;
-
-  showManualDialog.value = true;
-}
-
 onMounted(async () => {
-  await Promise.all([fetchList(), fetchSystemConfig()]);
+  await fetchList();
 });
 </script>
 

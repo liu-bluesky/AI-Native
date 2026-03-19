@@ -15,6 +15,9 @@ from models.requests import InitSetupReq, LoginReq, RegisterReq
 router = APIRouter(prefix="/api")
 
 
+_EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+
+
 def _sanitize_username(username: str) -> str:
     value = str(username or "").strip()
     if not value:
@@ -22,6 +25,22 @@ def _sanitize_username(username: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,63}", value):
         raise HTTPException(400, "Invalid username format")
     return value
+
+
+def _sanitize_email(email: str) -> str:
+    value = str(email or "").strip()
+    if not value:
+        raise HTTPException(400, "Email is required")
+    if not _EMAIL_PATTERN.fullmatch(value):
+        raise HTTPException(400, "Invalid email format")
+    return value
+
+
+def _sanitize_user_identity(value: str) -> str:
+    identity = str(value or "").strip()
+    if "@" in identity:
+        return _sanitize_email(identity)
+    return _sanitize_username(identity)
 
 
 def _load_permissions(role_id: str) -> list[str]:
@@ -53,7 +72,7 @@ async def init_setup(req: InitSetupReq):
 
 @router.post("/auth/login")
 async def login(req: LoginReq):
-    username = _sanitize_username(req.username)
+    username = _sanitize_user_identity(req.username)
     user = user_store.get(username)
     if user is None or not verify_password(req.password, user.password_hash):
         raise HTTPException(401, "Invalid credentials")
@@ -69,7 +88,7 @@ async def login(req: LoginReq):
 
 @router.get("/auth/me")
 async def auth_me(auth_payload: dict = Depends(require_auth)):
-    username = _sanitize_username(str(auth_payload.get("sub") or ""))
+    username = _sanitize_user_identity(str(auth_payload.get("sub") or ""))
     user = user_store.get(username)
     if user is None:
         raise HTTPException(404, "User not found")
@@ -89,11 +108,11 @@ async def register(req: RegisterReq):
     cfg = system_config_store.get_global()
     if not bool(getattr(cfg, "enable_user_register", True)):
         raise HTTPException(403, "User registration is disabled")
-    username = _sanitize_username(req.username)
+    username = _sanitize_email(req.email or req.username)
     if len(req.password or "") < 6:
         raise HTTPException(400, "Password must be >= 6 chars")
     if user_store.get(username) is not None:
-        raise HTTPException(409, "Username already exists")
+        raise HTTPException(409, "Email already exists")
     role_item = role_store.get("user")
     if role_item is None:
         raise HTTPException(500, "Role user not initialized")

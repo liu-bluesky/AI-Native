@@ -25,7 +25,9 @@
       <el-table-column prop="delivered" label="已推送" width="80" align="center">
         <template #default="{ row }">{{ row.delivered ? '是' : '否' }}</template>
       </el-table-column>
-      <el-table-column prop="created_at" label="时间" width="180" />
+      <el-table-column label="时间" width="220">
+        <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+      </el-table-column>
     </el-table>
 
     <el-empty v-if="!events.length && !loading" description="暂无同步事件" />
@@ -37,6 +39,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api.js'
+import { formatDateTime } from '@/utils/date.js'
 
 const route = useRoute()
 const loading = ref(false)
