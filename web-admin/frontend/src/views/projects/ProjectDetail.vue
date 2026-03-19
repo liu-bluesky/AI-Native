@@ -7,6 +7,7 @@
         <el-button v-if="canOpenProjectChat" type="primary" @click="openProjectChat"
           >AI 对话</el-button
         >
+        <el-button type="primary" plain @click="openMaterialLibrary">素材库</el-button>
         <el-button
           type="success"
           :loading="manualLoading"
@@ -25,6 +26,11 @@
       <el-descriptions-item label="项目名称">{{
         project.name
       }}</el-descriptions-item>
+      <el-descriptions-item label="项目类型">
+        <el-tag :type="getProjectTypeTagType(project.type)">
+          {{ getProjectTypeLabel(project.type) }}
+        </el-tag>
+      </el-descriptions-item>
       <el-descriptions-item v-if="showProjectLocationFields" label="工作区路径" :span="2">{{
         project.workspace_path || "-"
       }}</el-descriptions-item>
@@ -348,6 +354,22 @@
         <el-form-item label="项目描述">
           <el-input v-model="editForm.description" type="textarea" :rows="3" />
         </el-form-item>
+        <el-form-item label="项目类型">
+          <el-select v-model="editForm.type" style="width: 100%">
+            <el-option
+              v-for="item in projectTypeOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            >
+              <div class="project-type-option">
+                <div class="project-type-option__label">{{ item.label }}</div>
+                <div class="project-type-option__desc">{{ item.description }}</div>
+              </div>
+            </el-option>
+          </el-select>
+          <div class="project-type-help">{{ getProjectTypeDescription(editForm.type) }}</div>
+        </el-form-item>
         <el-form-item label="MCP 使用说明">
           <el-input
             v-model="editForm.mcp_instruction"
@@ -442,6 +464,23 @@ const router = useRouter();
 const projectId = String(route.params.id || "");
 const showProjectLocationFields = false;
 const showProjectAddressFields = false;
+const projectTypeOptions = [
+  {
+    value: "image",
+    label: "图片项目",
+    description: "适合海报、KV、插画、商品图等以图片产出为主的项目。",
+  },
+  {
+    value: "storyboard_video",
+    label: "分镜视频项目",
+    description: "适合镜头脚本、分镜规划、视频生成等以视频产出为主的项目。",
+  },
+  {
+    value: "mixed",
+    label: "综合项目",
+    description: "适合图文混合或方向未定的项目，默认工作流更中性。",
+  },
+];
 
 const loading = ref(false);
 const saving = ref(false);
@@ -494,6 +533,7 @@ const userForm = ref({
 const editForm = ref({
   name: "",
   description: "",
+  type: "mixed",
   mcp_instruction: "",
   workspace_path: "",
   ai_entry_file: "",
@@ -611,7 +651,38 @@ async function fetchEmployees() {
 
 async function fetchProject() {
   const data = await api.get(`/projects/${projectId}`);
-  project.value = data.project || {};
+  project.value = {
+    ...(data.project || {}),
+    type: normalizeProjectType(data.project?.type),
+  };
+}
+
+function normalizeProjectType(value) {
+  const normalized = String(value || "").trim();
+  return projectTypeOptions.some((item) => item.value === normalized)
+    ? normalized
+    : "mixed";
+}
+
+function getProjectTypeLabel(value) {
+  const matched = projectTypeOptions.find(
+    (item) => item.value === normalizeProjectType(value),
+  );
+  return matched?.label || "综合项目";
+}
+
+function getProjectTypeDescription(value) {
+  const matched = projectTypeOptions.find(
+    (item) => item.value === normalizeProjectType(value),
+  );
+  return matched?.description || "适合图文混合或方向未定的项目，默认工作流更中性。";
+}
+
+function getProjectTypeTagType(value) {
+  const normalized = normalizeProjectType(value);
+  if (normalized === "image") return "success";
+  if (normalized === "storyboard_video") return "warning";
+  return "info";
 }
 
 async function fetchProjectUsers() {
@@ -807,6 +878,15 @@ function openProjectChat() {
   });
 }
 
+function openMaterialLibrary() {
+  const currentProjectId = String(project.value?.id || projectId || "").trim();
+  if (!currentProjectId) {
+    ElMessage.warning("当前项目 ID 无效");
+    return;
+  }
+  void router.push({ path: "/materials", query: { project_id: currentProjectId } });
+}
+
 function openAddMember() {
   resetAddForm();
   showAddDialog.value = true;
@@ -830,6 +910,7 @@ function openEditDialog() {
   editForm.value = {
     name: project.value.name || "",
     description: project.value.description || "",
+    type: normalizeProjectType(project.value.type),
     mcp_instruction: project.value.mcp_instruction || "",
     workspace_path: project.value.workspace_path || "",
     ai_entry_file: project.value.ai_entry_file || "",
@@ -1071,6 +1152,30 @@ onMounted(refresh);
 .toolbar-actions {
   display: flex;
   gap: 8px;
+}
+
+.project-type-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-type-option__label {
+  font-weight: 600;
+  color: #111827;
+}
+
+.project-type-option__desc {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #6b7280;
+}
+
+.project-type-help {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6b7280;
 }
 
 .block {

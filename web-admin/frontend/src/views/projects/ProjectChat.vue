@@ -164,6 +164,15 @@
             </div>
             <div class="chat-context-bar__actions">
               <el-button
+                v-if="hasSelectedProject"
+                size="small"
+                plain
+                class="chat-context-bar__action-button"
+                @click="openCurrentMaterialLibrary"
+              >
+                素材库
+              </el-button>
+              <el-button
                 size="small"
                 plain
                 class="chat-context-bar__action-button"
@@ -227,8 +236,12 @@
                     :key="idx"
                     :class="[
                       'message-row',
+                      String(item?.id || '').trim() === highlightedMessageId
+                        ? 'is-highlighted'
+                        : '',
                       item.role === 'user' ? 'is-user' : 'is-ai',
                     ]"
+                    :data-message-id="String(item?.id || '').trim() || undefined"
                   >
                     <div class="message-avatar">
                       <el-avatar
@@ -881,214 +894,41 @@
     </div>
   </el-dialog>
 
-  <el-dialog
+  <ProjectEmployeeDraftCreateDialog
     v-model="employeeDraftDialogVisible"
-    title="确认创建 AI 员工"
-    width="min(880px, calc(100vw - 32px))"
-    destroy-on-close
-    class="employee-draft-create-dialog"
-    @closed="resetEmployeeDraftDialogState"
-  >
-    <div
-      v-if="employeeDraftDialogPayload"
-      class="employee-draft-dialog"
-      v-loading="employeeDraftDialogLoading"
-    >
-      <div class="employee-draft-dialog__summary">
-        <div class="employee-draft-dialog__title">
-          {{ employeeDraftDialogPayload.name || "未命名员工" }}
-        </div>
-        <div
-          v-if="employeeDraftDialogPayload.description"
-          class="employee-draft-dialog__desc"
-        >
-          {{ employeeDraftDialogPayload.description }}
-        </div>
-        <div class="employee-draft-dialog__meta">
-          <span>核心目标：{{ employeeDraftDialogPayload.goal || "-" }}</span>
-          <span>
-            风格：{{ employeeDraftDialogPayload.tone || "professional" }} /
-            {{ employeeDraftDialogPayload.verbosity || "concise" }}
-          </span>
-          <span>
-            记忆：{{ employeeDraftDialogPayload.memory_scope || "project" }} /
-            {{ employeeDraftDialogPayload.memory_retention_days || 90 }} 天
-          </span>
-        </div>
-      </div>
+    :loading="employeeDraftDialogLoading"
+    :submitting="employeeCreateSubmitting"
+    :payload="employeeDraftDialogPayload"
+    :matched-skill-labels="employeeDraftDialogMatchedSkillLabels"
+    :matched-rule-labels="employeeDraftDialogMatchedRuleLabels"
+    :rule-draft-labels="employeeDraftDialogRuleDraftLabels"
+    :auto-rule-generation-enabled="employeeDraftAutoRuleGenerationEnabled"
+    :auto-rule-generation-max-count="employeeDraftAutoRuleGenerationMaxCount"
+    :auto-rule-source-labels="employeeDraftAutoRuleSourceLabels"
+    :can-add-to-project="Boolean(String(selectedProjectId || '').trim())"
+    @confirm="confirmEmployeeDraftCreation"
+    @close="resetEmployeeDraftDialogState"
+  />
 
-      <div class="employee-draft-dialog__section">
-        <div class="employee-draft-dialog__section-title">本地已匹配能力</div>
-        <div class="employee-draft-dialog__grid">
-          <div class="employee-draft-dialog__panel">
-            <div class="employee-draft-dialog__panel-title">
-              技能 {{ employeeDraftDialogMatchedSkillLabels.length }}
-            </div>
-            <div class="employee-draft-dialog__tag-list">
-              <el-tag
-                v-for="label in employeeDraftDialogMatchedSkillLabels"
-                :key="`employee-draft-skill-${label}`"
-                size="small"
-                effect="plain"
-              >
-                {{ label }}
-              </el-tag>
-              <span
-                v-if="!employeeDraftDialogMatchedSkillLabels.length"
-                class="employee-draft-dialog__empty"
-              >
-                暂无可直接匹配的本地技能，将按下面开关决定是否自动补齐。
-              </span>
-            </div>
-          </div>
-          <div class="employee-draft-dialog__panel">
-            <div class="employee-draft-dialog__panel-title">
-              规则 {{ employeeDraftDialogMatchedRuleLabels.length }}
-            </div>
-            <div class="employee-draft-dialog__tag-list">
-              <el-tag
-                v-for="label in employeeDraftDialogMatchedRuleLabels"
-                :key="`employee-draft-rule-${label}`"
-                size="small"
-                effect="plain"
-                type="success"
-              >
-                {{ label }}
-              </el-tag>
-              <span
-                v-if="!employeeDraftDialogMatchedRuleLabels.length"
-                class="employee-draft-dialog__empty"
-              >
-                暂无可直接匹配的本地规则，将按下面开关决定是否自动补齐。
-              </span>
-            </div>
-            <div
-              v-if="employeeDraftDialogRuleDraftLabels.length"
-              class="employee-draft-dialog__subsection"
-            >
-              <div class="employee-draft-dialog__subsection-title">
-                待落地规则草稿 {{ employeeDraftDialogRuleDraftLabels.length }}
-              </div>
-              <div class="employee-draft-dialog__tag-list">
-                <el-tag
-                  v-for="label in employeeDraftDialogRuleDraftLabels"
-                  :key="`employee-draft-rule-draft-${label}`"
-                  size="small"
-                  effect="plain"
-                  type="warning"
-                >
-                  {{ label }}
-                </el-tag>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="employee-draft-dialog__section">
-        <div class="employee-draft-dialog__section-head">
-          <div class="employee-draft-dialog__section-title">规则自动生成</div>
-          <el-tag
-            size="small"
-            effect="plain"
-            :type="employeeDraftAutoRuleGenerationEnabled ? 'success' : 'info'"
-          >
-            {{
-              employeeDraftAutoRuleGenerationEnabled
-                ? "系统已启用"
-                : "系统已停用"
-            }}
-          </el-tag>
-        </div>
-        <div class="employee-draft-dialog__section-hint">
-          规则不再由当前页面手动选择。创建时系统会按后台配置自动补全规则草稿，再落地并绑定到当前员工。
-        </div>
-        <div class="employee-draft-dialog__grid">
-          <div class="employee-draft-dialog__panel">
-            <div class="employee-draft-dialog__panel-title">当前策略</div>
-            <div class="employee-draft-dialog__tag-list">
-              <el-tag
-                size="small"
-                effect="plain"
-                :type="
-                  employeeDraftAutoRuleGenerationEnabled ? 'success' : 'info'
-                "
-              >
-                {{
-                  employeeDraftAutoRuleGenerationEnabled
-                    ? "自动生成已启用"
-                    : "自动生成已停用"
-                }}
-              </el-tag>
-              <el-tag
-                v-if="employeeDraftAutoRuleGenerationEnabled"
-                size="small"
-                effect="plain"
-                type="warning"
-              >
-                最多 {{ employeeDraftAutoRuleGenerationMaxCount }} 条
-              </el-tag>
-              <el-tag
-                v-for="label in employeeDraftAutoRuleSourceLabels"
-                :key="`employee-draft-rule-source-${label}`"
-                size="small"
-                effect="plain"
-              >
-                {{ label }}
-              </el-tag>
-            </div>
-            <div class="employee-draft-dialog__empty">
-              {{
-                employeeDraftAutoRuleGenerationEnabled
-                  ? "系统会结合员工描述、已选技能和系统规则源自动补全规则。"
-                  : "当前系统配置已关闭自动补规则，仅使用已匹配规则和已有规则草稿。"
-              }}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="employee-draft-dialog__section">
-        <div class="employee-draft-dialog__section-title">创建策略</div>
-        <div class="employee-draft-dialog__section-hint">
-          员工技能仍以草稿内容和系统自动补齐为准。规则来源不在这里选择，而是由系统按后台配置自动生成。
-        </div>
-        <div class="employee-draft-dialog__switches">
-          <el-switch
-            v-model="employeeDraftAutoCreateSkills"
-            inline-prompt
-            active-text="自动补技能"
-            inactive-text="手动处理技能"
-          />
-          <el-switch
-            v-model="employeeDraftAutoCreateRules"
-            inline-prompt
-            active-text="自动补规则"
-            inactive-text="手动处理规则"
-          />
-          <el-switch
-            v-model="employeeDraftAddToProject"
-            inline-prompt
-            active-text="加入当前项目"
-            inactive-text="仅创建员工"
-            :disabled="!selectedProjectId"
-          />
-        </div>
-      </div>
-    </div>
-
-    <template #footer>
-      <el-button @click="employeeDraftDialogVisible = false">取消</el-button>
-      <el-button
-        type="primary"
-        :loading="employeeCreateSubmitting"
-        :disabled="!employeeDraftDialogPayload"
-        @click="confirmEmployeeDraftCreation"
-      >
-        创建并绑定
-      </el-button>
-    </template>
-  </el-dialog>
+  <ProjectMaterialSaveDialog
+    v-model="materialDialogVisible"
+    :loading="materialDialogSaving"
+    :project-label="currentProjectLabel"
+    :message-role-label="
+      materialDialogPayload ? messageRoleName(materialDialogPayload.message) : ''
+    "
+    :image-count="
+      materialDialogPayload ? extractImages(materialDialogPayload.message).length : 0
+    "
+    :source-chat-session-id="
+      materialDialogPayload?.source_chat_session_id || ''
+    "
+    :initial-form="materialDialogPayload?.form || {}"
+    :asset-type-options="MATERIAL_ASSET_TYPE_OPTIONS"
+    :mime-type-options="MATERIAL_MIME_TYPE_OPTIONS"
+    @submit="submitMaterialDialog"
+    @close="resetMaterialDialogState"
+  />
 
   <el-dialog
     v-model="skillResourceDialogVisible"
@@ -1998,6 +1838,8 @@ import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ExternalMcpManager from "@/components/ExternalMcpManager.vue";
+import ProjectEmployeeDraftCreateDialog from "@/components/ProjectEmployeeDraftCreateDialog.vue";
+import ProjectMaterialSaveDialog from "@/components/ProjectMaterialSaveDialog.vue";
 import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
 import api from "@/utils/api.js";
 import { createProjectChatWsClient } from "@/utils/ws-chat.js";
@@ -2008,6 +1850,7 @@ import {
   Promotion,
   Document,
   DocumentCopy,
+  CollectionTag,
   EditPen,
   Files,
   RefreshRight,
@@ -2023,6 +1866,12 @@ import {
   formatDateGroupLabel,
   formatRelativeDateTime,
 } from "@/utils/date.js";
+import {
+  buildMaterialDialogPayload,
+  canSaveMessageAsMaterial as canSaveMessageAsMaterialEntry,
+  MATERIAL_ASSET_TYPE_OPTIONS,
+  MATERIAL_MIME_TYPE_OPTIONS,
+} from "@/utils/project-materials.js";
 import {
   pickWorkspaceDirectory,
   pickWorkspaceFile,
@@ -2355,6 +2204,9 @@ const employeeDraftDialogVisible = ref(false);
 const employeeDraftDialogLoading = ref(false);
 const employeeDraftDialogPayload = ref(null);
 const employeeDraftDialogItem = ref(null);
+const materialDialogVisible = ref(false);
+const materialDialogSaving = ref(false);
+const materialDialogPayload = ref(null);
 const employeeDraftExternalSkillSites = ref([]);
 const employeeDraftAutoCreateSkills = ref(true);
 const employeeDraftAutoCreateRules = ref(true);
@@ -2437,6 +2289,7 @@ const inlineEditingMessageIndex = ref(-1);
 const inlineEditingMessageId = ref("");
 const inlineEditingDraft = ref("");
 const inlineEditingBusy = ref(false);
+const highlightedMessageId = ref("");
 
 const maxUploadLimit = ref(6);
 const chatMaxTokens = ref(512);
@@ -3257,6 +3110,7 @@ const inputFocused = ref(false);
 const isDragging = ref(false);
 let autoSaveTimer = null;
 let lastAutoSavedFingerprint = "";
+let highlightedMessageTimer = null;
 const projectSwitcherMenuWidth = ref(0);
 const CHAT_HISTORY_PAGE_SIZE = 120;
 const chatHistoryLoadedCount = ref(0);
@@ -4650,6 +4504,13 @@ function getMessageActions(item, messageIndex) {
       icon: Files,
     });
   }
+  if (canSaveMessageAsMaterial(item)) {
+    actions.push({
+      key: "save_to_material_library",
+      tooltip: "加入素材库",
+      icon: CollectionTag,
+    });
+  }
   if (canDeleteMessage(item, messageIndex)) {
     actions.push({
       key: "delete_message",
@@ -4676,6 +4537,9 @@ function handleMessageAction(item, messageIndex, actionKey) {
       return;
     case "copy_with_process":
       copyMessageMarkdown(item, { includeProcess: true });
+      return;
+    case "save_to_material_library":
+      void openMaterialDialog(item, messageIndex);
       return;
     case "delete_message":
       void deleteMessageAt(messageIndex);
@@ -5032,6 +4896,69 @@ function scrollToBottom() {
   });
 }
 
+function clearHighlightedMessage() {
+  if (highlightedMessageTimer !== null) {
+    window.clearTimeout(highlightedMessageTimer);
+    highlightedMessageTimer = null;
+  }
+  highlightedMessageId.value = "";
+}
+
+function routeChatTarget() {
+  return {
+    projectId: String(route.query.project_id || "").trim(),
+    chatSessionId: String(route.query.chat_session_id || "").trim(),
+    messageId: String(route.query.message_id || "").trim(),
+  };
+}
+
+async function focusMessageById(messageId, options = {}) {
+  const normalizedMessageId = String(messageId || "").trim();
+  if (!normalizedMessageId) return false;
+  await nextTick();
+  const container = messagesContainer.value;
+  const candidates = Array.from(
+    container?.querySelectorAll?.(".message-row[data-message-id]") || [],
+  );
+  const target = candidates.find(
+    (node) => String(node?.dataset?.messageId || "").trim() === normalizedMessageId,
+  );
+  if (!target) {
+    return false;
+  }
+  target.scrollIntoView({
+    behavior: options.smooth === false ? "auto" : "smooth",
+    block: "center",
+  });
+  if (target instanceof HTMLElement) {
+    target.focus?.({ preventScroll: true });
+  }
+  highlightedMessageId.value = normalizedMessageId;
+  if (highlightedMessageTimer !== null) {
+    window.clearTimeout(highlightedMessageTimer);
+  }
+  highlightedMessageTimer = window.setTimeout(() => {
+    highlightedMessageId.value = "";
+    highlightedMessageTimer = null;
+  }, 2600);
+  return true;
+}
+
+async function applyRouteMessageFocus() {
+  const { messageId, chatSessionId } = routeChatTarget();
+  if (!messageId) {
+    clearHighlightedMessage();
+    return;
+  }
+  if (
+    chatSessionId &&
+    chatSessionId !== String(currentChatSessionId.value || "").trim()
+  ) {
+    return;
+  }
+  await focusMessageById(messageId, { smooth: false });
+}
+
 watch(
   messages,
   (value) => {
@@ -5053,6 +4980,36 @@ function extractImages(message) {
   return message.images
     .map((item) => String(item || "").trim())
     .filter(Boolean);
+}
+
+function mergeImageUrls(...groups) {
+  const urls = [];
+  const seen = new Set();
+  for (const group of groups) {
+    for (const item of Array.isArray(group) ? group : []) {
+      const url = String(item || "").trim();
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+  return urls;
+}
+
+function collectArtifactImageUrls(payload) {
+  const urls = [];
+  const directImages = Array.isArray(payload?.images) ? payload.images : [];
+  const artifacts = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
+  return mergeImageUrls(
+    directImages,
+    artifacts.flatMap((item) => [
+      item?.preview_url,
+      item?.content_url,
+      item?.previewUrl,
+      item?.contentUrl,
+      item?.url,
+    ]),
+  );
 }
 
 function fileExtension(name) {
@@ -5093,6 +5050,64 @@ function clipText(text, maxChars) {
   if (!value) return "";
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}\n（内容已截断）`;
+}
+
+function canSaveMessageAsMaterial(message) {
+  return canSaveMessageAsMaterialEntry(
+    message,
+    String(selectedProjectId.value || "").trim(),
+  );
+}
+
+function resetMaterialDialogState() {
+  materialDialogSaving.value = false;
+  materialDialogPayload.value = null;
+}
+
+async function openMaterialDialog(message, messageIndex) {
+  if (!canSaveMessageAsMaterial(message)) {
+    ElMessage.warning("当前消息暂无可入库的内容");
+    return;
+  }
+  materialDialogPayload.value = buildMaterialDialogPayload({
+    message,
+    messageIndex,
+    currentChatSessionId: String(currentChatSessionId.value || "").trim(),
+    currentUsername: String(currentUsername.value || "").trim(),
+  });
+  materialDialogVisible.value = true;
+}
+
+async function submitMaterialDialog(formPayload) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const payloadState = materialDialogPayload.value;
+  if (!projectId || !payloadState || !formPayload) {
+    materialDialogVisible.value = false;
+    return;
+  }
+  materialDialogSaving.value = true;
+  try {
+    await api.post(`/projects/${projectId}/materials`, {
+      asset_type: formPayload.asset_type,
+      title: formPayload.title,
+      summary: formPayload.summary,
+      preview_url: formPayload.preview_url,
+      content_url: formPayload.content_url,
+      mime_type: formPayload.mime_type,
+      status: "ready",
+      source_message_id: payloadState.source_message_id,
+      source_chat_session_id: payloadState.source_chat_session_id,
+      source_username: payloadState.source_username,
+      structured_content: formPayload.structured_content,
+      metadata: formPayload.metadata,
+    });
+    ElMessage.success("已加入当前项目素材库");
+    materialDialogVisible.value = false;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存素材失败");
+  } finally {
+    materialDialogSaving.value = false;
+  }
 }
 
 async function ensureEmployeeDraftCatalog(force = false) {
@@ -5660,6 +5675,15 @@ function openSkillResourceCenter() {
   skillResourceDialogVisible.value = true;
 }
 
+function openCurrentMaterialLibrary() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  void router.push({ path: "/materials", query: { project_id: projectId } });
+}
+
 function openUnifiedMcpDialog() {
   unifiedMcpDialogVisible.value = true;
 }
@@ -5917,7 +5941,7 @@ async function createEmployeeFromDraft(item) {
   } catch {}
 }
 
-async function confirmEmployeeDraftCreation() {
+async function confirmEmployeeDraftCreation(options = {}) {
   const payload = employeeDraftDialogPayload.value;
   const item = employeeDraftDialogItem.value;
   if (!payload || !item) {
@@ -5932,9 +5956,14 @@ async function confirmEmployeeDraftCreation() {
       rule_drafts: Array.isArray(payload.rule_drafts)
         ? payload.rule_drafts
         : [],
-      add_to_current_project: employeeDraftAddToProject.value,
-      auto_create_missing_skills: employeeDraftAutoCreateSkills.value,
-      auto_create_missing_rules: employeeDraftAutoCreateRules.value,
+      add_to_current_project:
+        options?.add_to_current_project ?? employeeDraftAddToProject.value,
+      auto_create_missing_skills:
+        options?.auto_create_missing_skills ??
+        employeeDraftAutoCreateSkills.value,
+      auto_create_missing_rules:
+        options?.auto_create_missing_rules ??
+        employeeDraftAutoCreateRules.value,
     });
     item.employeeDraftCreatedName = String(
       employee?.name || payload.name || "",
@@ -6439,7 +6468,7 @@ async function refreshLocalConnectorCatalog(silent = true) {
 }
 
 function syncProjectFromRoute() {
-  const routeProjectId = String(route.query.project_id || "").trim();
+  const { projectId: routeProjectId } = routeChatTarget();
   const savedProjectId = String(
     localStorage.getItem("project_id") || "",
   ).trim();
@@ -7577,6 +7606,14 @@ async function handleSocketMessage(eventData) {
     scrollToBottom();
     return;
   }
+  if (eventType === "artifact") {
+    row.images = mergeImageUrls(
+      extractImages(row),
+      collectArtifactImageUrls(eventData),
+    );
+    scrollToBottom();
+    return;
+  }
   if (eventType === "audit") {
     row.audit = normalizeAuditPayload(eventData?.audit || {});
     scrollToBottom();
@@ -7616,6 +7653,10 @@ async function handleSocketMessage(eventData) {
   }
   if (eventType === "done") {
     terminalPanelStatus.value = "idle";
+    row.images = mergeImageUrls(
+      extractImages(row),
+      collectArtifactImageUrls(eventData),
+    );
     const doneContent = String(eventData?.content || "").trim();
     const currentContent = String(row.content || "").trim();
     if (!currentContent) {
@@ -8345,6 +8386,8 @@ async function doSend() {
     id: createLocalMessageId(),
     role: "assistant",
     content: "",
+    images: [],
+    attachments: [],
     displayMode: "",
     effectiveTools: [],
     effectiveToolTotal: 0,
@@ -8383,6 +8426,7 @@ async function doSend() {
     const requestPayload = {
       request_id: requestId,
       message_id: userMessage.id,
+      assistant_message_id: assistantMessage.id,
       chat_session_id: activeChatSessionId,
       chat_mode: "system",
       skill_resource_directory: String(
@@ -8597,12 +8641,14 @@ watch(selectedProjectId, async (value) => {
   try {
     agentStatusExpanded.value = false;
     await fetchProvidersByProject(projectId);
-    let chatSessionId = await fetchChatSessions(projectId);
+    const { chatSessionId: routeChatSessionId } = routeChatTarget();
+    let chatSessionId = await fetchChatSessions(projectId, routeChatSessionId);
     if (!chatSessionId) {
       const created = await createChatSession({ switchTo: true });
       chatSessionId = String(created?.id || "").trim();
     }
     await fetchChatHistory(projectId, chatSessionId);
+    await applyRouteMessageFocus();
   } catch (err) {
     if (
       err?.status === 403 ||
@@ -8623,6 +8669,34 @@ watch(selectedProjectId, async (value) => {
     ElMessage.error(err?.detail || err?.message || "加载模型供应商失败");
   }
 });
+
+watch(
+  () => [
+    String(route.query.project_id || "").trim(),
+    String(route.query.chat_session_id || "").trim(),
+    String(route.query.message_id || "").trim(),
+  ],
+  async ([routeProjectId, routeChatSessionId, routeMessageId], previous) => {
+    const previousKey = Array.isArray(previous) ? previous.join("|") : "";
+    const currentKey = [routeProjectId, routeChatSessionId, routeMessageId].join(
+      "|",
+    );
+    if (currentKey === previousKey) return;
+    const activeProjectId = String(selectedProjectId.value || "").trim();
+    if (routeProjectId && routeProjectId !== activeProjectId) {
+      selectedProjectId.value = resolveAvailableProjectId(routeProjectId);
+      return;
+    }
+    if (!activeProjectId) return;
+    if (
+      routeChatSessionId &&
+      routeChatSessionId !== String(currentChatSessionId.value || "").trim()
+    ) {
+      await fetchChatHistory(activeProjectId, routeChatSessionId);
+    }
+    await applyRouteMessageFocus();
+  },
+);
 
 onMounted(async () => {
   loading.value = true;
@@ -8651,6 +8725,7 @@ onUnmounted(() => {
     clearInterval(connectorPollTimer);
     connectorPollTimer = null;
   }
+  clearHighlightedMessage();
   clearAutoSaveTimer();
   rejectPendingRequests("页面已关闭");
   disconnectWs("page closed");
@@ -9733,6 +9808,13 @@ onUnmounted(() => {
 
 .message-row {
   display: block;
+}
+
+.message-row.is-highlighted .message-bubble {
+  border-color: rgba(37, 99, 235, 0.38) !important;
+  box-shadow:
+    0 0 0 3px rgba(59, 130, 246, 0.14),
+    0 18px 36px rgba(37, 99, 235, 0.08);
 }
 
 .message-row-process {

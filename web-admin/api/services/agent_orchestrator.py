@@ -1,11 +1,277 @@
 from __future__ import annotations
 import asyncio
 import json
+import re
 import time
 from typing import Any, AsyncGenerator
 from services.conversation_manager import ConversationManager
 from services.tool_executor import ToolExecutor
 from core.observability import logger, metrics
+
+
+_IMAGE_URL_PATTERN = re.compile(
+    r"^https?://.+\.(?:png|jpe?g|gif|webp|bmp|svg)(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+
+
+def _is_image_url(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if lower.startswith("data:image/"):
+        return True
+    return bool(_IMAGE_URL_PATTERN.match(text))
+
+
+def _normalize_image_url(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if _is_image_url(text) else ""
+
+
+def _guess_mime_type(url: str, fallback: str = "") -> str:
+    preferred = str(fallback or "").strip().lower()
+    if preferred.startswith("image/"):
+        return preferred
+    lower = str(url or "").lower()
+    if lower.startswith("data:image/"):
+        prefix = lower.split(";", 1)[0]
+        return prefix.replace("data:", "", 1)
+    if ".png" in lower:
+        return "image/png"
+    if ".jpg" in lower or ".jpeg" in lower:
+        return "image/jpeg"
+    if ".gif" in lower:
+        return "image/gif"
+    if ".webp" in lower:
+        return "image/webp"
+    if ".bmp" in lower:
+        return "image/bmp"
+    if ".svg" in lower:
+        return "image/svg+xml"
+    return "image/png"
+
+
+def _image_data_url_from_base64(value: Any, mime_type: str = "") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.lower().startswith("data:image/"):
+        return raw
+    normalized = re.sub(r"\s+", "", raw)
+    if not normalized:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9+/=]+", normalized):
+        return ""
+    return f"data:{_guess_mime_type('', mime_type)};base64,{normalized}"
+
+
+def _preview_tool_result(result: Any, *, limit: int = 600) -> str:
+    if isinstance(result, str):
+        text = result
+    else:
+        try:
+            text = json.dumps(result, ensure_ascii=False)
+        except Exception:
+            text = str(result)
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def _dedupe_image_artifacts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for item in items:
+        preview_url = str(item.get("preview_url") or "").strip()
+        content_url = str(item.get("content_url") or "").strip()
+        key = f"{preview_url}||{content_url}"
+        if not preview_url and not content_url:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _normalize_single_image_artifact(
+    item: Any,
+    *,
+    default_title: str,
+    index: int,
+) -> dict[str, Any] | None:
+    if isinstance(item, str):
+        image_url = _normalize_image_url(item)
+        if not image_url:
+            return None
+        return {
+            "asset_type": "image",
+            "title": f"{default_title} #{index}",
+            "summary": "",
+            "preview_url": image_url,
+            "content_url": image_url,
+            "mime_type": _guess_mime_type(image_url),
+            "metadata": {},
+        }
+    if not isinstance(item, dict):
+        return None
+
+    mime_type = str(
+        item.get("mime_type")
+        or item.get("mimeType")
+        or item.get("content_type")
+        or item.get("contentType")
+        or item.get("media_type")
+        or item.get("mediaType")
+        or ""
+    ).strip()
+
+    preview_url = ""
+    for key in ("preview_url", "previewUrl", "thumbnail_url", "thumbnailUrl"):
+        preview_url = _normalize_image_url(item.get(key))
+        if preview_url:
+            break
+
+    content_url = ""
+    for key in (
+        "content_url",
+        "contentUrl",
+        "image_url",
+        "imageUrl",
+        "url",
+        "source_url",
+        "sourceUrl",
+        "download_url",
+        "downloadUrl",
+        "href",
+        "uri",
+    ):
+        content_url = _normalize_image_url(item.get(key))
+        if content_url:
+            break
+
+    if not preview_url:
+        preview_url = content_url
+    if not content_url:
+        content_url = preview_url
+
+    if not preview_url and not content_url:
+        for key in ("b64_json", "base64", "image_base64", "imageBase64", "contentBase64"):
+            data_url = _image_data_url_from_base64(item.get(key), mime_type)
+            if data_url:
+                preview_url = data_url
+                content_url = data_url
+                break
+
+    if not preview_url and not content_url:
+        return None
+
+    title = str(
+        item.get("title")
+        or item.get("name")
+        or item.get("filename")
+        or item.get("file_name")
+        or item.get("label")
+        or f"{default_title} #{index}"
+    ).strip()
+    summary = str(
+        item.get("summary")
+        or item.get("description")
+        or item.get("caption")
+        or item.get("prompt")
+        or ""
+    ).strip()
+    metadata = item.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    return {
+        "asset_type": "image",
+        "title": title[:120] or f"{default_title} #{index}",
+        "summary": summary[:1000],
+        "preview_url": preview_url,
+        "content_url": content_url,
+        "mime_type": _guess_mime_type(content_url or preview_url, mime_type),
+        "metadata": metadata,
+    }
+
+
+def _extract_image_artifacts(
+    payload: Any,
+    *,
+    default_title: str,
+    _depth: int = 0,
+) -> list[dict[str, Any]]:
+    if _depth > 4 or payload is None:
+        return []
+
+    if isinstance(payload, str):
+        normalized = _normalize_single_image_artifact(
+            payload,
+            default_title=default_title,
+            index=1,
+        )
+        return [normalized] if normalized else []
+
+    if isinstance(payload, list):
+        result: list[dict[str, Any]] = []
+        for idx, item in enumerate(payload, start=1):
+            result.extend(
+                _extract_image_artifacts(
+                    item,
+                    default_title=default_title,
+                    _depth=_depth + 1,
+                )
+            )
+            if isinstance(item, (str, dict)):
+                normalized = _normalize_single_image_artifact(
+                    item,
+                    default_title=default_title,
+                    index=idx,
+                )
+                if normalized:
+                    result.append(normalized)
+        return _dedupe_image_artifacts(result)
+
+    if not isinstance(payload, dict):
+        return []
+
+    result: list[dict[str, Any]] = []
+    normalized_self = _normalize_single_image_artifact(
+        payload,
+        default_title=default_title,
+        index=1,
+    )
+    if normalized_self:
+        result.append(normalized_self)
+
+    for key in (
+        "artifacts",
+        "images",
+        "image_urls",
+        "imageUrls",
+        "generated_images",
+        "generatedImages",
+        "results",
+        "items",
+        "data",
+        "output",
+        "result",
+        "assets",
+    ):
+        if key not in payload:
+            continue
+        result.extend(
+            _extract_image_artifacts(
+                payload.get(key),
+                default_title=default_title,
+                _depth=_depth + 1,
+            )
+        )
+    return _dedupe_image_artifacts(result)
 
 class AgentOrchestrator:
     def __init__(
@@ -78,10 +344,20 @@ class AgentOrchestrator:
             tool_rounds = 0
             last_tool_signature = ""
             repeated_tool_signature_rounds = 0
+            collected_artifacts: list[dict[str, Any]] = []
 
             while loop_count < self._max_loops:
                 if cancel_event.is_set():
-                    yield {"type": "done", "content": "[已停止]"}
+                    yield {
+                        "type": "done",
+                        "content": "[已停止]",
+                        "artifacts": collected_artifacts,
+                        "images": [
+                            str(item.get("preview_url") or item.get("content_url") or "").strip()
+                            for item in collected_artifacts
+                            if str(item.get("preview_url") or item.get("content_url") or "").strip()
+                        ],
+                    }
                     completed = True
                     break
 
@@ -158,7 +434,16 @@ class AgentOrchestrator:
                             max_tokens=max_tokens,
                             default_message="工具调用已达到预算上限，已停止生成。请补充更明确的参数后重试。",
                         )
-                        yield {"type": "done", "content": fallback}
+                        yield {
+                            "type": "done",
+                            "content": fallback,
+                            "artifacts": collected_artifacts,
+                            "images": [
+                                str(item.get("preview_url") or item.get("content_url") or "").strip()
+                                for item in collected_artifacts
+                                if str(item.get("preview_url") or item.get("content_url") or "").strip()
+                            ],
+                        }
                         await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                         await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})
                         duration = time.time() - start_time
@@ -185,7 +470,16 @@ class AgentOrchestrator:
                             max_tokens=max_tokens,
                             default_message="检测到重复工具调用且未产出正文，已停止生成。请调整问题或补充参数后重试。",
                         )
-                        yield {"type": "done", "content": fallback}
+                        yield {
+                            "type": "done",
+                            "content": fallback,
+                            "artifacts": collected_artifacts,
+                            "images": [
+                                str(item.get("preview_url") or item.get("content_url") or "").strip()
+                                for item in collected_artifacts
+                                if str(item.get("preview_url") or item.get("content_url") or "").strip()
+                            ],
+                        }
                         await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                         await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})
                         duration = time.time() - start_time
@@ -207,6 +501,11 @@ class AgentOrchestrator:
                         tool_only_loops = 0
                     messages.append({"role": "assistant", "content": response_content or None, "tool_calls": ordered_tool_calls})
 
+                    for tc in ordered_tool_calls:
+                        yield {
+                            "type": "tool_start",
+                            "tool_name": str((tc.get("function") or {}).get("name") or "tool"),
+                        }
                     tool_start = time.time()
                     tool_results = await tool_executor.execute_parallel(ordered_tool_calls)
                     tool_duration = time.time() - tool_start
@@ -220,6 +519,30 @@ class AgentOrchestrator:
                         tool_name = tc["function"]["name"]
                         success = "error" not in result
                         metrics.inc_counter("tool_call", {"tool": tool_name, "status": "success" if success else "error"})
+                        yield {
+                            "type": "tool_result",
+                            "tool_name": tool_name,
+                            "status": "success" if success else "error",
+                            "output_preview": _preview_tool_result(result),
+                        }
+                        artifacts = _extract_image_artifacts(
+                            result,
+                            default_title=str(tool_name or "AI 生成图片"),
+                        )
+                        if artifacts:
+                            collected_artifacts = _dedupe_image_artifacts(
+                                [*collected_artifacts, *artifacts]
+                            )
+                            yield {
+                                "type": "artifact",
+                                "tool_name": tool_name,
+                                "artifacts": artifacts,
+                                "images": [
+                                    str(item.get("preview_url") or item.get("content_url") or "").strip()
+                                    for item in artifacts
+                                    if str(item.get("preview_url") or item.get("content_url") or "").strip()
+                                ],
+                            }
                         messages.append({"role": "tool", "tool_call_id": tc["id"], "content": json.dumps(result, ensure_ascii=False)})
                     if tool_only_loops >= self._tool_only_threshold:
                         fallback = await self._resolve_guard_fallback(
@@ -230,7 +553,16 @@ class AgentOrchestrator:
                             max_tokens=max_tokens,
                             default_message="工具调用连续多轮未产出正文，已停止生成。请补充更明确的参数后重试。",
                         )
-                        yield {"type": "done", "content": fallback}
+                        yield {
+                            "type": "done",
+                            "content": fallback,
+                            "artifacts": collected_artifacts,
+                            "images": [
+                                str(item.get("preview_url") or item.get("content_url") or "").strip()
+                                for item in collected_artifacts
+                                if str(item.get("preview_url") or item.get("content_url") or "").strip()
+                            ],
+                        }
                         await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                         await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})
                         duration = time.time() - start_time
@@ -241,7 +573,16 @@ class AgentOrchestrator:
                         break
                     continue
 
-                yield {"type": "done", "content": response_content}
+                yield {
+                    "type": "done",
+                    "content": response_content,
+                    "artifacts": collected_artifacts,
+                    "images": [
+                        str(item.get("preview_url") or item.get("content_url") or "").strip()
+                        for item in collected_artifacts
+                        if str(item.get("preview_url") or item.get("content_url") or "").strip()
+                    ],
+                }
                 await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                 await self._conv.append_message(session_id, {"role": "assistant", "content": response_content})
 
@@ -253,7 +594,16 @@ class AgentOrchestrator:
                 break
             if not completed:
                 fallback = "达到最大处理轮次，已停止生成。"
-                yield {"type": "done", "content": fallback}
+                yield {
+                    "type": "done",
+                    "content": fallback,
+                    "artifacts": collected_artifacts,
+                    "images": [
+                        str(item.get("preview_url") or item.get("content_url") or "").strip()
+                        for item in collected_artifacts
+                        if str(item.get("preview_url") or item.get("content_url") or "").strip()
+                    ],
+                }
                 await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                 await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})
                 duration = time.time() - start_time

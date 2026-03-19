@@ -18,6 +18,7 @@ class ProjectConfig:
     id: str
     name: str
     description: str = ""
+    type: str = "mixed"
     mcp_instruction: str = ""
     workspace_path: str = ""
     ai_entry_file: str = ""

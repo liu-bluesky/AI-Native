@@ -57,6 +57,7 @@ const routes = [
       { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
       { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
       { path: 'projects/:id', component: () => import('../views/projects/ProjectDetail.vue') },
+      { path: 'materials', component: () => import('../views/projects/ProjectMaterialLibrary.vue') },
       { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
       { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
       { path: 'agent-templates', component: () => import('../views/agent-templates/AgentTemplateList.vue') },
@@ -98,14 +99,19 @@ const router = createRouter({
 
 const PUBLIC_PATHS = new Set(['/init', '/intro', '/login', '/register'])
 router.beforeEach((to, from) => {
+  const normalizedPath = String(to.path || '').trim() || '/'
+  if (normalizedPath === '/') {
+    return '/intro'
+  }
+
   const token = localStorage.getItem('token')
-  const isPublic = PUBLIC_PATHS.has(to.path)
+  const isPublic = PUBLIC_PATHS.has(normalizedPath)
 
   if (!token && !isPublic) {
     return '/login'
   }
 
-  if (token && (to.path === '/login' || to.path === '/register')) {
+  if (token && (normalizedPath === '/login' || normalizedPath === '/register')) {
     return getFallbackPath()
   }
 

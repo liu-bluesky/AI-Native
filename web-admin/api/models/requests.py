@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -214,6 +214,7 @@ class EmployeeDraftCreateReq(BaseModel):
 class ProjectCreateReq(BaseModel):
     name: str
     description: str = ""
+    type: Literal["image", "storyboard_video", "mixed"] = "mixed"
     mcp_instruction: str = ""
     workspace_path: str = ""
     ai_entry_file: str = ""
@@ -224,11 +225,38 @@ class ProjectCreateReq(BaseModel):
 class ProjectUpdateReq(BaseModel):
     name: str | None = None
     description: str | None = None
+    type: Literal["image", "storyboard_video", "mixed"] | None = None
     mcp_instruction: str | None = None
     workspace_path: str | None = None
     ai_entry_file: str | None = None
     mcp_enabled: bool | None = None
     feedback_upgrade_enabled: bool | None = None
+
+
+class ProjectMaterialAssetCreateReq(BaseModel):
+    asset_type: Literal["image", "storyboard", "video"]
+    title: str
+    summary: str = ""
+    source_message_id: str = ""
+    source_chat_session_id: str = ""
+    source_username: str = ""
+    preview_url: str = ""
+    content_url: str = ""
+    mime_type: str = ""
+    status: str = "ready"
+    structured_content: dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
+
+
+class ProjectMaterialAssetUpdateReq(BaseModel):
+    title: str | None = None
+    summary: str | None = None
+    preview_url: str | None = None
+    content_url: str | None = None
+    mime_type: str | None = None
+    status: str | None = None
+    structured_content: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class ProjectMemberAddReq(BaseModel):
@@ -246,6 +274,7 @@ class ProjectUserAddReq(BaseModel):
 class ProjectChatReq(BaseModel):
     message: str = ""
     message_id: str = ""
+    assistant_message_id: str = ""
     chat_session_id: str = ""
     chat_mode: str = "system"
     local_connector_id: str = ""

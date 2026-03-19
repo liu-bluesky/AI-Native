@@ -10,6 +10,7 @@ const PATH_PERMISSION_MAP = [
   { prefix: '/users', permission: 'menu.users' },
   { prefix: '/roles', permission: 'menu.roles' },
   { prefix: '/projects', permission: 'menu.projects' },
+  { prefix: '/materials', permission: 'menu.projects' },
   { prefix: '/agent-templates', permission: 'menu.employees' },
   { prefix: '/employees/create', permission: 'menu.employees.create' },
   { prefix: '/employees', permission: 'menu.employees' },

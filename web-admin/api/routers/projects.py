@@ -23,7 +23,7 @@ from core.redis_client import get_redis_client
 
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
 from core.auth import decode_token
-from core.deps import employee_store, external_mcp_store, is_admin_like, local_connector_store, project_chat_store, project_store, require_auth, role_store, system_config_store, user_store
+from core.deps import employee_store, external_mcp_store, is_admin_like, local_connector_store, project_chat_store, project_material_store, project_store, require_auth, role_store, system_config_store, user_store
 from services.feedback_service import get_feedback_service
 from services.local_connector_service import (
     LocalConnectorLlmAdapter,
@@ -39,6 +39,8 @@ from models.requests import (
     ProjectChatReq,
     ProjectChatSettingsUpdateReq,
     ProjectCreateReq,
+    ProjectMaterialAssetCreateReq,
+    ProjectMaterialAssetUpdateReq,
     ProjectMemberAddReq,
     ProjectUserAddReq,
     ProjectUpdateReq,
@@ -46,6 +48,7 @@ from models.requests import (
     WorkspaceFilePickReq,
 )
 from stores.json.project_chat_store import ProjectChatMessage
+from stores.json.project_material_store import ProjectMaterialAsset
 from stores.json.project_store import ProjectConfig, ProjectMember, ProjectUserMember, _now_iso
 from core.role_permissions import has_permission, resolve_role_permissions
 from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType, memory_store, rule_store, skill_store
@@ -98,13 +101,110 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "prefer_conclusion_first": True,
 }
 
+_PROJECT_TYPE_VALUES = {"image", "storyboard_video", "mixed"}
+_PROJECT_TYPE_LABELS = {
+    "image": "图片项目",
+    "storyboard_video": "分镜视频项目",
+    "mixed": "综合项目",
+}
+_PROJECT_MATERIAL_ASSET_TYPES = {"image", "storyboard", "video"}
+_PROJECT_MATERIAL_GROUP_LABELS = {
+    "image": "图片",
+    "storyboard_video": "分镜 / 视频",
+}
+_PROJECT_MATERIAL_ASSET_LABELS = {
+    "image": "图片",
+    "storyboard": "分镜",
+    "video": "视频",
+}
+_PROJECT_MATERIAL_STATUS_VALUES = {"draft", "ready", "archived"}
+_PROJECT_MATERIAL_STATUS_LABELS = {
+    "draft": "草稿",
+    "ready": "可用",
+    "archived": "归档",
+}
+
 
 def _serialize_project(project: ProjectConfig) -> dict:
     data = asdict(project)
     data.pop("chat_settings", None)
+    normalized_type = _normalize_project_type(getattr(project, "type", "mixed"))
+    data["type"] = normalized_type
+    data["type_label"] = _PROJECT_TYPE_LABELS.get(normalized_type, _PROJECT_TYPE_LABELS["mixed"])
     data["member_count"] = len(project_store.list_members(project.id))
     data["user_count"] = len(project_store.list_user_members(project.id))
     return data
+
+
+def _infer_material_group_type(asset_type: str) -> str:
+    return "image" if asset_type == "image" else "storyboard_video"
+
+
+def _normalize_material_asset_type(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in _PROJECT_MATERIAL_ASSET_TYPES:
+        return normalized
+    raise HTTPException(400, f"asset_type must be one of {sorted(_PROJECT_MATERIAL_ASSET_TYPES)}")
+
+
+def _normalize_material_status(value: Any) -> str:
+    normalized = str(value or "").strip().lower() or "ready"
+    if normalized in _PROJECT_MATERIAL_STATUS_VALUES:
+        return normalized
+    raise HTTPException(400, f"status must be one of {sorted(_PROJECT_MATERIAL_STATUS_VALUES)}")
+
+
+def _normalize_material_text(value: Any, *, limit: int = 500) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _normalize_material_url(value: Any, *, limit: int = 20000) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _normalize_material_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _serialize_project_material_asset(asset: ProjectMaterialAsset) -> dict[str, Any]:
+    payload = asdict(asset)
+    payload["asset_type_label"] = _PROJECT_MATERIAL_ASSET_LABELS.get(asset.asset_type, asset.asset_type)
+    payload["group_type_label"] = _PROJECT_MATERIAL_GROUP_LABELS.get(asset.group_type, asset.group_type)
+    payload["status_label"] = _PROJECT_MATERIAL_STATUS_LABELS.get(asset.status, asset.status)
+    return payload
+
+
+def _filter_project_material_assets(
+    items: list[ProjectMaterialAsset],
+    *,
+    group_type: str = "",
+    asset_type: str = "",
+    query: str = "",
+) -> list[ProjectMaterialAsset]:
+    normalized_group_type = str(group_type or "").strip().lower()
+    normalized_asset_type = str(asset_type or "").strip().lower()
+    normalized_query = str(query or "").strip().lower()
+    result: list[ProjectMaterialAsset] = []
+    for item in items:
+        if normalized_group_type and item.group_type != normalized_group_type:
+            continue
+        if normalized_asset_type and item.asset_type != normalized_asset_type:
+            continue
+        if normalized_query:
+            haystacks = [
+                item.title,
+                item.summary,
+                item.source_message_id,
+                item.source_chat_session_id,
+                item.source_username,
+                item.created_by,
+            ]
+            if not any(normalized_query in str(text or "").lower() for text in haystacks):
+                continue
+        result.append(item)
+    return result
 
 
 def _to_unique_string_list(values: Any, *, max_items: int = 100, max_item_len: int = 120) -> list[str]:
@@ -126,6 +226,171 @@ def _to_unique_string_list(values: Any, *, max_items: int = 100, max_item_len: i
         if len(result) >= max_items:
             break
     return result
+
+
+def _guess_material_image_mime_type(url: str, fallback: Any = "") -> str:
+    preferred = str(fallback or "").strip().lower()
+    if preferred.startswith("image/"):
+        return preferred[:120]
+    lower = str(url or "").lower()
+    if lower.startswith("data:image/"):
+        return lower.split(";", 1)[0].replace("data:", "", 1)[:120]
+    if ".png" in lower:
+        return "image/png"
+    if ".jpg" in lower or ".jpeg" in lower:
+        return "image/jpeg"
+    if ".gif" in lower:
+        return "image/gif"
+    if ".webp" in lower:
+        return "image/webp"
+    if ".bmp" in lower:
+        return "image/bmp"
+    if ".svg" in lower:
+        return "image/svg+xml"
+    return "image/png"
+
+
+def _normalize_chat_image_artifacts(values: Any) -> list[dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(values, start=1):
+        if not isinstance(item, dict):
+            continue
+        preview_url = _normalize_material_url(
+            item.get("preview_url") or item.get("previewUrl") or item.get("thumbnail_url") or item.get("thumbnailUrl"),
+        )
+        content_url = _normalize_material_url(
+            item.get("content_url")
+            or item.get("contentUrl")
+            or item.get("image_url")
+            or item.get("imageUrl")
+            or item.get("url"),
+        )
+        if not preview_url:
+            preview_url = content_url
+        if not content_url:
+            content_url = preview_url
+        if not preview_url and not content_url:
+            continue
+        artifact_key = f"{preview_url}||{content_url}"
+        if artifact_key in seen:
+            continue
+        seen.add(artifact_key)
+        metadata = _normalize_material_mapping(item.get("metadata"))
+        result.append(
+            {
+                "asset_type": "image",
+                "title": _normalize_material_text(
+                    item.get("title") or f"AI 生成图片 #{index}",
+                    limit=120,
+                ) or f"AI 生成图片 #{index}",
+                "summary": _normalize_material_text(item.get("summary"), limit=1000),
+                "preview_url": preview_url,
+                "content_url": content_url,
+                "mime_type": _guess_material_image_mime_type(
+                    content_url or preview_url,
+                    item.get("mime_type") or item.get("mimeType"),
+                ),
+                "metadata": metadata,
+            }
+        )
+    return result
+
+
+def _merge_chat_image_artifacts(
+    current: list[dict[str, Any]] | None,
+    incoming: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    return _normalize_chat_image_artifacts([*(current or []), *(incoming or [])])
+
+
+def _collect_chat_image_urls(values: list[dict[str, Any]] | None) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for item in values or []:
+        for candidate in (
+            str((item or {}).get("preview_url") or "").strip(),
+            str((item or {}).get("content_url") or "").strip(),
+        ):
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            urls.append(candidate)
+    return urls
+
+
+def _save_chat_image_artifacts_to_materials(
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    source_message_id: str,
+    artifacts: list[dict[str, Any]] | None,
+    tool_name: str = "",
+) -> list[ProjectMaterialAsset]:
+    normalized_artifacts = _normalize_chat_image_artifacts(artifacts)
+    if not normalized_artifacts:
+        return []
+    existing_items = project_material_store.list_by_project(project_id)
+    existing_keys: set[str] = set()
+    for item in existing_items:
+        if getattr(item, "asset_type", "") != "image":
+            continue
+        metadata = item.metadata if isinstance(item.metadata, dict) else {}
+        artifact_key = str(metadata.get("artifact_key") or "").strip()
+        if artifact_key:
+            existing_keys.add(artifact_key)
+    saved: list[ProjectMaterialAsset] = []
+    for artifact in normalized_artifacts:
+        preview_url = str(artifact.get("preview_url") or "").strip()
+        content_url = str(artifact.get("content_url") or "").strip()
+        artifact_key = "||".join(
+            [
+                str(source_message_id or "").strip(),
+                str(chat_session_id or "").strip(),
+                preview_url,
+                content_url,
+            ]
+        )
+        if artifact_key in existing_keys:
+            continue
+        metadata = {
+            **_normalize_material_mapping(artifact.get("metadata")),
+            "artifact_key": artifact_key,
+            "artifact_source": "project-chat-auto-artifact",
+            "tool_name": str(tool_name or "").strip(),
+        }
+        asset = ProjectMaterialAsset(
+            id=project_material_store.new_id(),
+            project_id=project_id,
+            asset_type="image",
+            group_type="image",
+            title=_normalize_material_text(
+                artifact.get("title") or "AI 生成图片",
+                limit=120,
+            ) or "AI 生成图片",
+            summary=_normalize_material_text(artifact.get("summary"), limit=1000),
+            source_message_id=_normalize_material_text(source_message_id, limit=120),
+            source_chat_session_id=_normalize_material_text(chat_session_id, limit=120),
+            source_username=_normalize_material_text(username, limit=120),
+            created_by=_normalize_material_text(username, limit=120),
+            preview_url=_normalize_material_url(preview_url),
+            content_url=_normalize_material_url(content_url),
+            mime_type=_normalize_material_text(
+                artifact.get("mime_type")
+                or _guess_material_image_mime_type(content_url or preview_url),
+                limit=120,
+            ),
+            status="ready",
+            structured_content={},
+            metadata=metadata,
+        )
+        project_material_store.save(asset)
+        existing_keys.add(artifact_key)
+        saved.append(asset)
+    return saved
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
@@ -1991,6 +2256,7 @@ async def create_project(req: ProjectCreateReq, auth_payload: dict = Depends(req
         id=project_store.new_id(),
         name=str(req.name or "").strip(),
         description=req.description,
+        type=_normalize_project_type(req.type),
         mcp_instruction=_normalize_project_mcp_instruction_for_save(req.mcp_instruction),
         workspace_path=_normalize_workspace_path_for_save(req.workspace_path),
         ai_entry_file=_normalize_ai_entry_file_for_save(req.ai_entry_file),
@@ -2019,6 +2285,118 @@ async def get_project(project_id: str, auth_payload: dict = Depends(require_auth
     _ensure_permission(auth_payload, "menu.projects")
     project = _ensure_project_access(project_id, auth_payload)
     return {"project": _serialize_project(project)}
+
+
+@router.get("/{project_id}/materials")
+async def list_project_materials(
+    project_id: str,
+    group_type: str = Query(""),
+    asset_type: str = Query(""),
+    query: str = Query(""),
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    items = _filter_project_material_assets(
+        project_material_store.list_by_project(project_id),
+        group_type=group_type,
+        asset_type=asset_type,
+        query=query,
+    )
+    return {
+        "items": [_serialize_project_material_asset(item) for item in items],
+        "summary": {
+            "total": len(items),
+            "image_count": sum(1 for item in items if item.asset_type == "image"),
+            "storyboard_count": sum(1 for item in items if item.asset_type == "storyboard"),
+            "video_count": sum(1 for item in items if item.asset_type == "video"),
+        },
+    }
+
+
+@router.post("/{project_id}/materials")
+async def create_project_material(
+    project_id: str,
+    req: ProjectMaterialAssetCreateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    asset_type = _normalize_material_asset_type(req.asset_type)
+    asset = ProjectMaterialAsset(
+        id=project_material_store.new_id(),
+        project_id=project_id,
+        asset_type=asset_type,
+        group_type=_infer_material_group_type(asset_type),
+        title=_normalize_material_text(req.title, limit=120),
+        summary=_normalize_material_text(req.summary, limit=1000),
+        source_message_id=_normalize_material_text(req.source_message_id, limit=120),
+        source_chat_session_id=_normalize_material_text(req.source_chat_session_id, limit=120),
+        source_username=_normalize_material_text(req.source_username, limit=120),
+        created_by=_normalize_material_text(auth_payload.get("sub"), limit=120),
+        preview_url=_normalize_material_url(req.preview_url),
+        content_url=_normalize_material_url(req.content_url),
+        mime_type=_normalize_material_text(req.mime_type, limit=120),
+        status=_normalize_material_status(req.status),
+        structured_content=_normalize_material_mapping(req.structured_content),
+        metadata=_normalize_material_mapping(req.metadata),
+    )
+    if not asset.title:
+        raise HTTPException(400, "title is required")
+    project_material_store.save(asset)
+    return {"status": "created", "item": _serialize_project_material_asset(asset)}
+
+
+@router.patch("/{project_id}/materials/{asset_id}")
+async def update_project_material(
+    project_id: str,
+    asset_id: str,
+    req: ProjectMaterialAssetUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    current = project_material_store.get(project_id, asset_id)
+    if current is None:
+        raise HTTPException(404, f"Material asset {asset_id} not found")
+    updates = req.model_dump(exclude_none=True)
+    if not updates:
+        return {"status": "no_change", "item": _serialize_project_material_asset(current)}
+    if "title" in updates:
+        updates["title"] = _normalize_material_text(updates["title"], limit=120)
+        if not updates["title"]:
+            raise HTTPException(400, "title cannot be empty")
+    if "summary" in updates:
+        updates["summary"] = _normalize_material_text(updates["summary"], limit=1000)
+    if "preview_url" in updates:
+        updates["preview_url"] = _normalize_material_url(updates["preview_url"])
+    if "content_url" in updates:
+        updates["content_url"] = _normalize_material_url(updates["content_url"])
+    if "mime_type" in updates:
+        updates["mime_type"] = _normalize_material_text(updates["mime_type"], limit=120)
+    if "status" in updates:
+        updates["status"] = _normalize_material_status(updates["status"])
+    if "structured_content" in updates:
+        updates["structured_content"] = _normalize_material_mapping(updates["structured_content"])
+    if "metadata" in updates:
+        updates["metadata"] = _normalize_material_mapping(updates["metadata"])
+    updates["updated_at"] = _now_iso()
+    updated = replace(current, **updates)
+    project_material_store.save(updated)
+    return {"status": "updated", "item": _serialize_project_material_asset(updated)}
+
+
+@router.delete("/{project_id}/materials/{asset_id}")
+async def delete_project_material(
+    project_id: str,
+    asset_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    if not project_material_store.delete(project_id, asset_id):
+        raise HTTPException(404, f"Material asset {asset_id} not found")
+    return {"status": "deleted", "asset_id": asset_id}
 
 
 @router.post("/{project_id}/smart-query")
@@ -2097,6 +2475,13 @@ def _normalize_project_mcp_instruction_for_save(value: Any) -> str:
     return str(value or "").strip()[:4000]
 
 
+def _normalize_project_type(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in _PROJECT_TYPE_VALUES:
+        return normalized
+    return "mixed"
+
+
 def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
     project = project_store.get(project_id)
     if project is None:
@@ -2116,6 +2501,8 @@ def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
         updates["mcp_instruction"] = _normalize_project_mcp_instruction_for_save(
             updates.get("mcp_instruction")
         )
+    if "type" in updates:
+        updates["type"] = _normalize_project_type(updates.get("type"))
     updates["updated_at"] = _now_iso()
     updated = replace(project, **updates)
     project_store.save(updated)
@@ -2543,6 +2930,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             return
 
         user_message = str(req.message or "").strip()
+        assistant_message_id = str(req.assistant_message_id or "").strip()
         normalized_images = _normalize_image_inputs(req.images)
         attachment_names = [str(name or "").strip() for name in (req.attachment_names or []) if str(name or "").strip()]
         if not user_message and not normalized_images and not attachment_names:
@@ -2607,6 +2995,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     username=username,
                     role="assistant",
                     content=direct_answer,
+                    message_id=assistant_message_id,
                     chat_session_id=chat_session_id,
                 )
                 _save_project_chat_memory_snapshot(
@@ -2653,6 +3042,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     username=username,
                     role="assistant",
                     content=direct_answer,
+                    message_id=assistant_message_id,
                     chat_session_id=chat_session_id,
                 )
                 _save_project_chat_memory_snapshot(
@@ -2692,6 +3082,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     username=username,
                     role="assistant",
                     content=direct_answer,
+                    message_id=assistant_message_id,
                     chat_session_id=chat_session_id,
                 )
                 _save_project_chat_memory_snapshot(
@@ -2776,6 +3167,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
 
             final_answer = ""
             stream_error = ""
+            assistant_artifacts: list[dict[str, Any]] = []
             llm_service = get_llm_provider_service()
 
             if provider_mode == "local_connector":
@@ -2820,30 +3212,66 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 local_connector_workspace_path=effective_workspace_path,
                 local_connector_sandbox_mode=local_connector_sandbox_mode,
             ):
-                chunk_data["request_id"] = request_id
-                await websocket.send_json(chunk_data)
-                if chunk_data.get("type") == "done":
-                    final_answer = chunk_data.get("content", "")
-                if chunk_data.get("type") == "error":
-                    stream_error = str(chunk_data.get("message") or "未知错误")
+                outgoing = dict(chunk_data)
+                event_type = str(outgoing.get("type") or "").strip().lower()
+                if event_type == "artifact":
+                    artifact_batch = _normalize_chat_image_artifacts(outgoing.get("artifacts"))
+                    if artifact_batch:
+                        _save_chat_image_artifacts_to_materials(
+                            project_id=project_id,
+                            username=username,
+                            chat_session_id=chat_session_id,
+                            source_message_id=assistant_message_id,
+                            artifacts=artifact_batch,
+                            tool_name=str(outgoing.get("tool_name") or "").strip(),
+                        )
+                        assistant_artifacts = _merge_chat_image_artifacts(
+                            assistant_artifacts,
+                            artifact_batch,
+                        )
+                        outgoing["artifacts"] = artifact_batch
+                        outgoing["images"] = _collect_chat_image_urls(artifact_batch)
+                    else:
+                        outgoing["artifacts"] = []
+                        outgoing["images"] = []
+                if event_type == "done":
+                    assistant_artifacts = _merge_chat_image_artifacts(
+                        assistant_artifacts,
+                        _normalize_chat_image_artifacts(outgoing.get("artifacts")),
+                    )
+                    outgoing["artifacts"] = assistant_artifacts
+                    outgoing["images"] = _collect_chat_image_urls(assistant_artifacts)
+                    final_answer = str(outgoing.get("content") or "")
+                if event_type == "error":
+                    stream_error = str(outgoing.get("message") or "未知错误")
+                outgoing["request_id"] = request_id
+                await websocket.send_json(outgoing)
 
             if stream_error:
                 _append_chat_record(
                     project_id=project_id, username=username, role="assistant", content=f"对话失败：{stream_error}",
+                    message_id=assistant_message_id,
                     chat_session_id=chat_session_id,
                 )
             else:
+                assistant_images = _collect_chat_image_urls(assistant_artifacts)
+                persisted_answer = (
+                    final_answer
+                    or ("已生成图片，请查看下方结果。" if assistant_images else "模型未返回有效内容。")
+                )
                 _append_chat_record(
                     project_id=project_id,
                     username=username,
                     role="assistant",
-                    content=final_answer or "模型未返回有效内容。",
+                    content=persisted_answer,
+                    message_id=assistant_message_id,
                     chat_session_id=chat_session_id,
+                    images=assistant_images,
                 )
                 _save_project_chat_memory_snapshot(
                     project_id=project_id,
                     user_message=effective_user_message,
-                    answer=final_answer,
+                    answer=final_answer or persisted_answer,
                     selected_employee_ids=selected_employee_ids,
                     source="project-chat-ws",
                 )
@@ -2855,6 +3283,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 username=username,
                 role="assistant",
                 content=f"对话失败：{str(exc)}",
+                message_id=assistant_message_id,
                 chat_session_id=chat_session_id,
             )
             await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
@@ -2903,6 +3332,7 @@ async def stream_project_chat(
     username = _current_username(auth_payload)
 
     user_message = str(req.message or "").strip()
+    assistant_message_id = str(req.assistant_message_id or "").strip()
     normalized_images = _normalize_image_inputs(req.images)
     attachment_names = [str(name or "").strip() for name in (req.attachment_names or []) if str(name or "").strip()]
     if not user_message and not normalized_images and not attachment_names:
@@ -2963,7 +3393,14 @@ async def stream_project_chat(
                 "message",
                 {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-project-meta"},
             )
-            _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer, chat_session_id=chat_session_id)
+            _append_chat_record(
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=answer,
+                message_id=assistant_message_id,
+                chat_session_id=chat_session_id,
+            )
             _save_project_chat_memory_snapshot(
                 project_id=project_id,
                 user_message=effective_user_message,
@@ -3011,7 +3448,14 @@ async def stream_project_chat(
                 "message",
                 {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-tool-probe"},
             )
-            _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer, chat_session_id=chat_session_id)
+            _append_chat_record(
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=answer,
+                message_id=assistant_message_id,
+                chat_session_id=chat_session_id,
+            )
             _save_project_chat_memory_snapshot(
                 project_id=project_id,
                 user_message=effective_user_message,
@@ -3052,7 +3496,14 @@ async def stream_project_chat(
                 "message",
                 {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-mcp-modules"},
             )
-            _append_chat_record(project_id=project_id, username=username, role="assistant", content=answer, chat_session_id=chat_session_id)
+            _append_chat_record(
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=answer,
+                message_id=assistant_message_id,
+                chat_session_id=chat_session_id,
+            )
             _save_project_chat_memory_snapshot(
                 project_id=project_id,
                 user_message=effective_user_message,
@@ -3176,6 +3627,7 @@ async def stream_project_chat(
 
             final_answer = ""
             stream_error = ""
+            assistant_artifacts: list[dict[str, Any]] = []
             cancel_event = asyncio.Event()
             async for chunk_data in orchestrator.run(
                 session_id=session_id,
@@ -3193,11 +3645,39 @@ async def stream_project_chat(
                 local_connector_workspace_path=effective_workspace_path,
                 local_connector_sandbox_mode=local_connector_sandbox_mode,
             ):
-                yield _sse_payload("message", chunk_data)
-                if chunk_data.get("type") == "done":
-                    final_answer = str(chunk_data.get("content") or "")
-                if chunk_data.get("type") == "error":
-                    stream_error = str(chunk_data.get("message") or "未知错误")
+                outgoing = dict(chunk_data)
+                event_type = str(outgoing.get("type") or "").strip().lower()
+                if event_type == "artifact":
+                    artifact_batch = _normalize_chat_image_artifacts(outgoing.get("artifacts"))
+                    if artifact_batch:
+                        _save_chat_image_artifacts_to_materials(
+                            project_id=project_id,
+                            username=username,
+                            chat_session_id=chat_session_id,
+                            source_message_id=assistant_message_id,
+                            artifacts=artifact_batch,
+                            tool_name=str(outgoing.get("tool_name") or "").strip(),
+                        )
+                        assistant_artifacts = _merge_chat_image_artifacts(
+                            assistant_artifacts,
+                            artifact_batch,
+                        )
+                        outgoing["artifacts"] = artifact_batch
+                        outgoing["images"] = _collect_chat_image_urls(artifact_batch)
+                    else:
+                        outgoing["artifacts"] = []
+                        outgoing["images"] = []
+                if event_type == "done":
+                    assistant_artifacts = _merge_chat_image_artifacts(
+                        assistant_artifacts,
+                        _normalize_chat_image_artifacts(outgoing.get("artifacts")),
+                    )
+                    outgoing["artifacts"] = assistant_artifacts
+                    outgoing["images"] = _collect_chat_image_urls(assistant_artifacts)
+                    final_answer = str(outgoing.get("content") or "")
+                if event_type == "error":
+                    stream_error = str(outgoing.get("message") or "未知错误")
+                yield _sse_payload("message", outgoing)
 
             if stream_error:
                 _append_chat_record(
@@ -3205,20 +3685,28 @@ async def stream_project_chat(
                     username=username,
                     role="assistant",
                     content=f"对话失败：{stream_error}",
+                    message_id=assistant_message_id,
                     chat_session_id=chat_session_id,
                 )
             else:
+                assistant_images = _collect_chat_image_urls(assistant_artifacts)
+                persisted_answer = (
+                    final_answer
+                    or ("已生成图片，请查看下方结果。" if assistant_images else "模型未返回有效内容。")
+                )
                 _append_chat_record(
                     project_id=project_id,
                     username=username,
                     role="assistant",
-                    content=final_answer or "模型未返回有效内容。",
+                    content=persisted_answer,
+                    message_id=assistant_message_id,
                     chat_session_id=chat_session_id,
+                    images=assistant_images,
                 )
                 _save_project_chat_memory_snapshot(
                     project_id=project_id,
                     user_message=effective_user_message,
-                    answer=final_answer,
+                    answer=final_answer or persisted_answer,
                     selected_employee_ids=selected_employee_ids,
                     source="project-chat-sse",
                 )
@@ -3228,6 +3716,7 @@ async def stream_project_chat(
                 username=username,
                 role="assistant",
                 content=f"对话失败：{str(exc)}",
+                message_id=assistant_message_id,
                 chat_session_id=chat_session_id,
             )
             yield _sse_payload("message", {"type": "error", "message": str(exc)})
@@ -3315,6 +3804,7 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
 - **项目 ID**：`{project.id}`
 - **项目名称**：{project.name}
 - **项目定位**：{project.description or "AI 开发团队"}
+- **项目类型**：{_PROJECT_TYPE_LABELS.get(_normalize_project_type(getattr(project, "type", "mixed")), _PROJECT_TYPE_LABELS["mixed"])}
 - **反馈升级**：{"已启用" if project.feedback_upgrade_enabled else "未启用"}
 - **成员概览**：
 {members_text}
