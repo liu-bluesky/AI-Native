@@ -20,8 +20,8 @@
         <div class="register-hero__panel">
           <div class="register-hero__panel-title">账号要求</div>
           <div class="register-hero__chips">
-            <span class="register-hero__chip">2-64 位账号</span>
-            <span class="register-hero__chip">支持字母数字</span>
+            <span class="register-hero__chip">使用邮箱注册</span>
+            <span class="register-hero__chip">校验邮箱格式</span>
             <span class="register-hero__chip">密码至少 6 位</span>
           </div>
           <div class="register-hero__summary">
@@ -31,7 +31,7 @@
             <div class="register-hero__item">
               <div class="register-hero__item-name">推荐做法</div>
               <div class="register-hero__item-text">
-                账号保持简洁稳定，密码避免与常用密码重复。
+                使用常用邮箱完成注册，密码避免与常用密码重复。
               </div>
             </div>
           </div>
@@ -52,11 +52,12 @@
           label-position="top"
           class="register-form"
         >
-          <el-form-item label="账号" prop="username">
+          <el-form-item label="邮箱" prop="email">
             <el-input
-              v-model="form.username"
-              placeholder="请输入账号"
-              autocomplete="username"
+              v-model="form.email"
+              type="email"
+              placeholder="请输入邮箱地址"
+              autocomplete="email"
             />
           </el-form-item>
 
@@ -117,8 +118,9 @@ import api from "@/utils/api.js";
 const router = useRouter();
 const loading = ref(false);
 const formRef = ref(null);
+const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 const form = reactive({
-  username: "",
+  email: "",
   password: "",
   confirmPassword: "",
 });
@@ -136,11 +138,11 @@ const validateConfirmPassword = (_rule, value, callback) => {
 };
 
 const rules = {
-  username: [
-    { required: true, message: "请输入账号", trigger: "blur" },
+  email: [
+    { required: true, message: "请输入邮箱地址", trigger: "blur" },
     {
-      pattern: /^[A-Za-z0-9][A-Za-z0-9_.-]{1,63}$/,
-      message: "账号仅支持字母数字_.-，长度 2-64",
+      pattern: EMAIL_PATTERN,
+      message: "请输入正确的邮箱地址",
       trigger: "blur",
     },
   ],
@@ -155,8 +157,9 @@ async function handleRegister() {
   await formRef.value.validate();
   loading.value = true;
   try {
+    const email = form.email.trim();
     await api.post("/auth/register", {
-      username: form.username,
+      email,
       password: form.password,
     });
     ElMessage.success("注册成功，请登录");
@@ -171,37 +174,70 @@ async function handleRegister() {
 
 <style scoped>
 .register-page {
+  position: relative;
   min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: clamp(12px, 2vw, 24px);
   box-sizing: border-box;
   overflow: clip;
+  isolation: isolate;
   container-type: inline-size;
   background:
-    radial-gradient(circle at top left, rgba(255, 244, 214, 0.5), transparent 24%),
-    linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
+    radial-gradient(circle at 16% 0%, rgba(125, 211, 252, 0.22), transparent 28%),
+    radial-gradient(circle at 84% 16%, rgba(103, 232, 249, 0.16), transparent 24%),
+    linear-gradient(180deg, #f6f4ef 0%, #f7f8fa 34%, #eef2f7 100%);
+}
+
+.register-page::before,
+.register-page::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(72px);
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.register-page::before {
+  top: -9rem;
+  left: -10rem;
+  width: 28rem;
+  height: 28rem;
+  background: rgba(125, 211, 252, 0.42);
+}
+
+.register-page::after {
+  right: -8rem;
+  top: 8rem;
+  width: 24rem;
+  height: 24rem;
+  background: rgba(103, 232, 249, 0.28);
 }
 
 .register-shell {
+  position: relative;
+  z-index: 1;
   width: min(1120px, 100%);
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(320px, clamp(360px, 37vw, 430px));
   gap: clamp(12px, 1.8vw, 18px);
   align-items: stretch;
+  animation: registerFadeUp 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
 :where(.register-hero, .register-panel) {
   min-width: 0;
-  border: 1px solid rgba(255, 255, 255, 0.96);
-  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.76);
   box-shadow:
-    0 26px 64px rgba(15, 23, 42, 0.08),
-    0 4px 14px rgba(15, 23, 42, 0.04);
-  backdrop-filter: blur(14px);
+    0 28px 74px rgba(15, 23, 42, 0.08),
+    0 6px 18px rgba(15, 23, 42, 0.04);
+  backdrop-filter: blur(18px);
 }
 
 .register-hero {
+  position: relative;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -210,7 +246,21 @@ async function handleRegister() {
   border-radius: 34px;
   background:
     radial-gradient(circle at top left, rgba(255, 255, 255, 0.98), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(245, 247, 250, 0.8));
+    radial-gradient(circle at 78% 18%, rgba(125, 211, 252, 0.14), transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(241, 246, 251, 0.84));
+  overflow: hidden;
+}
+
+.register-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(rgba(15, 23, 42, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.66), transparent 80%);
+  pointer-events: none;
 }
 
 .register-brand {
@@ -273,11 +323,14 @@ async function handleRegister() {
 }
 
 .register-hero__panel {
+  position: relative;
   width: min(100%, 520px);
   padding: 18px 18px 8px;
   border-radius: 24px;
-  border: 1px solid rgba(17, 24, 39, 0.06);
-  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(16px);
 }
 
 .register-hero__panel-title {
@@ -345,6 +398,9 @@ async function handleRegister() {
   min-height: clamp(580px, 74vh, 660px);
   padding: clamp(22px, 2.4vw, 34px) clamp(18px, 2.2vw, 30px);
   border-radius: 30px;
+  background:
+    radial-gradient(circle at top right, rgba(125, 211, 252, 0.12), transparent 28%),
+    rgba(255, 255, 255, 0.78);
 }
 
 .register-panel__header {
@@ -419,6 +475,8 @@ async function handleRegister() {
 }
 
 .register-submit {
+  position: relative;
+  overflow: hidden;
   width: 100%;
   min-height: 46px;
   border: 0 !important;
@@ -431,6 +489,15 @@ async function handleRegister() {
 
 .register-submit:hover {
   background: #0f172a !important;
+}
+
+.register-submit::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 16%, rgba(255, 255, 255, 0.3) 50%, transparent 84%);
+  transform: translateX(-130%);
+  animation: registerButtonSweep 5s ease-in-out infinite;
 }
 
 :is(.register-submit, .register-panel__link):focus-visible {
@@ -501,6 +568,28 @@ async function handleRegister() {
 
   .register-hero__text {
     font-size: 15px;
+  }
+}
+
+@keyframes registerFadeUp {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 20px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes registerButtonSweep {
+  0%,
+  72%,
+  100% {
+    transform: translateX(-130%);
+  }
+  88% {
+    transform: translateX(130%);
   }
 }
 </style>

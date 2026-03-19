@@ -6,12 +6,13 @@ const SettingsCenterChatStub = { render: () => null }
 
 const routes = [
   { path: '/init', component: () => import('../views/auth/InitPage.vue') },
+  { path: '/intro', component: () => import('../views/public/IntroPage.vue') },
   { path: '/login', component: () => import('../views/auth/LoginPage.vue') },
   { path: '/register', component: () => import('../views/auth/RegisterPage.vue') },
   {
     path: '/',
     component: () => import('../views/Layout.vue'),
-    redirect: '/ai/chat',
+    redirect: '/intro',
     children: [
       { path: 'ai/chat', component: () => import('../views/projects/ProjectChat.vue') },
       {
@@ -95,7 +96,7 @@ const router = createRouter({
   routes,
 })
 
-const PUBLIC_PATHS = new Set(['/init', '/login', '/register'])
+const PUBLIC_PATHS = new Set(['/init', '/intro', '/login', '/register'])
 router.beforeEach((to, from) => {
   const token = localStorage.getItem('token')
   const isPublic = PUBLIC_PATHS.has(to.path)

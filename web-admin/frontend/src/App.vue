@@ -11,15 +11,18 @@ import { clearPermissionArray, setPermissionArray } from './utils/permissions.js
 const router = useRouter()
 
 onMounted(async () => {
+  const currentPath = router.currentRoute.value.path
+  const publicPaths = new Set(['/intro', '/login', '/register'])
+  const initBypassPaths = new Set(['/intro'])
+
   try {
     const { initialized } = await api.get('/init/status')
-    if (!initialized) {
+    if (!initialized && !initBypassPaths.has(currentPath)) {
       router.replace('/init')
       return
     }
+
     const token = localStorage.getItem('token')
-    const currentPath = router.currentRoute.value.path
-    const publicPaths = new Set(['/login', '/register'])
     if (!token && !publicPaths.has(currentPath)) {
       router.replace('/login')
       return
@@ -35,12 +38,16 @@ onMounted(async () => {
         localStorage.removeItem('username')
         localStorage.removeItem('role')
         clearPermissionArray()
-        router.replace('/login')
+        if (!publicPaths.has(currentPath)) {
+          router.replace('/login')
+        }
         return
       }
     }
   } catch {
-    router.replace('/login')
+    if (!initBypassPaths.has(currentPath)) {
+      router.replace('/login')
+    }
   }
 })
 </script>
