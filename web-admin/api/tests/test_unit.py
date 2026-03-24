@@ -2256,6 +2256,22 @@ def test_dictionary_catalog_includes_llm_model_types():
     assert any(item["id"] == "image_generation" for item in definition["options"])
 
 
+def test_dictionary_catalog_includes_llm_chat_parameter_dictionaries():
+    from services.dictionary_catalog import get_dictionary_definition
+
+    image_resolution = get_dictionary_definition("llm_image_resolutions")
+    video_duration = get_dictionary_definition("llm_video_duration_seconds")
+
+    assert image_resolution is not None
+    assert image_resolution["default_value"] == "1024x1024"
+    assert any(item["id"] == "1536x1024" for item in image_resolution["options"])
+    assert any(item["route"] == "/projects/chat" for item in image_resolution["usage_refs"])
+
+    assert video_duration is not None
+    assert video_duration["default_value"] == "5"
+    assert any(item["id"] == "10" for item in video_duration["options"])
+
+
 def test_permission_catalog_includes_dictionary_management():
     from core.role_permissions import permission_catalog
 
@@ -2347,6 +2363,42 @@ def test_dictionary_catalog_lists_custom_dictionary(monkeypatch):
     assert definition["default_value"] == "photorealistic"
 
 
+def test_llm_chat_parameter_catalog_applies_dictionary_overrides(monkeypatch):
+    import services.llm_chat_parameter_catalog as catalog
+
+    dictionary_defaults = {
+        "llm_image_resolutions": "2048x2048",
+        "llm_video_duration_seconds": "12",
+    }
+    dictionary_options = {
+        "llm_image_resolutions": [
+            {"id": "1024x1024", "label": "标准"},
+            {"id": "2048x2048", "label": "超清"},
+        ],
+        "llm_video_duration_seconds": [
+            {"id": "5", "label": "5 秒"},
+            {"id": "12", "label": "12 秒"},
+        ],
+    }
+
+    monkeypatch.setattr(
+        catalog,
+        "get_dictionary_default_value",
+        lambda dictionary_key, fallback="": dictionary_defaults.get(dictionary_key, fallback),
+    )
+    monkeypatch.setattr(
+        catalog,
+        "list_dictionary_options",
+        lambda dictionary_key: dictionary_options.get(dictionary_key, []),
+    )
+
+    assert catalog.get_chat_parameter_default_value("image_resolution") == "2048x2048"
+    assert catalog.normalize_chat_parameter_value("image_resolution", "bad-value") == "2048x2048"
+    assert catalog.get_chat_parameter_default_value("video_duration_seconds") == 12
+    assert catalog.normalize_chat_parameter_value("video_duration_seconds", "12") == 12
+    assert catalog.normalize_chat_parameter_value("video_duration_seconds", "999") == 12
+
+
 def test_dictionary_routes_support_custom_dictionary_crud(tmp_path, monkeypatch):
     from core import config as core_config
     from core.deps import require_auth
@@ -2436,6 +2488,65 @@ def test_dictionary_routes_support_custom_dictionary_crud(tmp_path, monkeypatch)
 
     missing_response = client.get("/api/dictionaries/image_styles")
     assert missing_response.status_code == 404
+
+
+def test_system_config_patch_supports_dictionaries(tmp_path, monkeypatch):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in (
+        "role_store",
+        "system_config_store",
+        "project_store",
+        "project_material_store",
+        "project_studio_export_store",
+    ):
+        getattr(store_factory, proxy_name)._instance = None
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: {"sub": "tester", "role": "admin"}
+    client = TestClient(app)
+
+    response = client.patch(
+        "/api/system-config",
+        json={
+            "dictionaries": {
+                "llm_image_styles": {
+                    "key": "llm_image_styles",
+                    "label": "图片风格",
+                    "description": "图片生成风格字典",
+                    "default_value": "anime",
+                    "options": [
+                        {
+                            "id": "anime",
+                            "label": "动漫",
+                            "description": "二次元插画风格",
+                        },
+                        {
+                            "id": "realistic",
+                            "label": "写实",
+                            "description": "真实摄影风格",
+                        },
+                    ],
+                }
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["config"]["dictionaries"]
+    assert payload["llm_image_styles"]["default_value"] == "anime"
+    assert len(payload["llm_image_styles"]["options"]) == 2
+
+    detail_response = client.get("/api/dictionaries/llm_image_styles")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["default_value"] == "anime"
 
 
 def test_filter_project_tools_by_names_keeps_tools_when_empty_selection():

@@ -809,12 +809,77 @@
                   @toggle="toggleComposerAssist"
                 />
 
+                <div
+                  v-if="currentModelParameterSections.length"
+                  class="chat-parameter-ribbon"
+                >
+                  <div class="chat-parameter-ribbon__title">
+                    {{
+                      currentModelParameterMode === "image"
+                        ? "图片生成预设"
+                        : "视频生成预设"
+                    }}
+                  </div>
+                  <div class="chat-parameter-ribbon__items">
+                    <div
+                      v-for="section in currentModelParameterSections"
+                      :key="`composer-${section.key}`"
+                      class="chat-parameter-ribbon__item"
+                    >
+                      <div class="chat-parameter-ribbon__label">
+                        {{ section.label }}
+                      </div>
+                      <div
+                        v-if="section.helper"
+                        class="chat-parameter-ribbon__helper"
+                      >
+                        {{ section.helper }}
+                      </div>
+                      <el-segmented
+                        v-if="
+                          currentModelParameterMode !== 'image' &&
+                          section.useSegmented
+                        "
+                        :model-value="section.modelValue"
+                        :options="
+                          section.options.map((item) => ({
+                            label: item.label,
+                            value: item.value,
+                          }))
+                        "
+                        class="chat-parameter-ribbon__control"
+                        @change="
+                          (value) =>
+                            setCurrentModelParameterValue(section.key, value)
+                        "
+                      />
+                      <el-select
+                        v-else
+                        :model-value="section.modelValue"
+                        class="chat-parameter-ribbon__control"
+                        @change="
+                          (value) =>
+                            setCurrentModelParameterValue(section.key, value)
+                        "
+                      >
+                        <el-option
+                          v-for="option in section.options"
+                          :key="`${section.key}-${option.id}`"
+                          :label="option.label"
+                          :value="option.value"
+                        />
+                      </el-select>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="input-footer">
                   <div class="footer-left">
                     <el-select
                       v-if="!isExternalAgentMode"
                       v-model="selectedModelOptionValue"
                       class="chat-model-select"
+                      popper-class="chat-model-select-dropdown"
                       size="small"
                       filterable
                       placeholder="选择模型"
@@ -1670,8 +1735,14 @@
                             class="full-width"
                           >
                             <el-option label="简洁 (Concise)" value="concise" />
-                            <el-option label="平衡 (Balanced)" value="balanced" />
-                            <el-option label="详细 (Detailed)" value="detailed" />
+                            <el-option
+                              label="平衡 (Balanced)"
+                              value="balanced"
+                            />
+                            <el-option
+                              label="详细 (Detailed)"
+                              value="detailed"
+                            />
                           </el-select>
                         </el-form-item>
 
@@ -1690,93 +1761,74 @@
                             </span>
                           </template>
                           <el-switch
-                            v-model="projectChatSettings.prefer_conclusion_first"
+                            v-model="
+                              projectChatSettings.prefer_conclusion_first
+                            "
                           />
                         </el-form-item>
                       </template>
 
-                      <template v-else-if="currentModelParameterMode === 'image'">
-                        <el-form-item label="图片比例">
-                          <el-select
-                            v-model="projectChatSettings.image_aspect_ratio"
-                            class="full-width"
-                          >
-                            <el-option label="1:1 方图" value="1:1" />
-                            <el-option label="3:4 竖构图" value="3:4" />
-                            <el-option label="4:3 横构图" value="4:3" />
-                            <el-option label="9:16 竖屏" value="9:16" />
-                            <el-option label="16:9 横屏" value="16:9" />
-                          </el-select>
-                        </el-form-item>
-
-                        <el-form-item label="图片风格">
-                          <el-select
-                            v-model="projectChatSettings.image_style"
-                            class="full-width"
-                          >
-                            <el-option label="自动" value="auto" />
-                            <el-option label="写实" value="realistic" />
-                            <el-option label="插画" value="illustration" />
-                          </el-select>
-                        </el-form-item>
-
-                        <el-form-item label="图片质量">
+                      <template
+                        v-else-if="
+                          currentModelParameterMode === 'image' ||
+                          currentModelParameterMode === 'video'
+                        "
+                      >
+                        <el-form-item
+                          v-for="section in currentModelParameterSections"
+                          :key="`settings-${section.key}`"
+                        >
+                          <template #label>
+                            <span class="label-with-tooltip">
+                              {{ section.label }}
+                              <el-tooltip
+                                v-if="section.helper"
+                                :content="section.helper"
+                                placement="top"
+                              >
+                                <el-icon class="label-icon"
+                                  ><InfoFilled
+                                /></el-icon>
+                              </el-tooltip>
+                            </span>
+                          </template>
                           <el-segmented
-                            v-model="projectChatSettings.image_quality"
-                            :options="[
-                              { label: '标准', value: 'standard' },
-                              { label: '高质量', value: 'high' },
-                            ]"
+                            v-if="section.useSegmented"
+                            :model-value="section.modelValue"
+                            :options="
+                              section.options.map((item) => ({
+                                label: item.label,
+                                value: item.value,
+                              }))
+                            "
                             class="full-width"
+                            @change="
+                              (value) =>
+                                setCurrentModelParameterValue(
+                                  section.key,
+                                  value,
+                                )
+                            "
                           />
-                        </el-form-item>
-                      </template>
-
-                      <template v-else-if="currentModelParameterMode === 'video'">
-                        <el-form-item label="视频比例">
                           <el-select
-                            v-model="projectChatSettings.video_aspect_ratio"
+                            v-else
+                            :model-value="section.modelValue"
                             class="full-width"
+                            @change="
+                              (value) =>
+                                setCurrentModelParameterValue(
+                                  section.key,
+                                  value,
+                                )
+                            "
                           >
-                            <el-option label="1:1 方图" value="1:1" />
-                            <el-option label="9:16 竖屏" value="9:16" />
-                            <el-option label="16:9 横屏" value="16:9" />
+                            <el-option
+                              v-for="option in section.options"
+                              :key="`${section.key}-${option.id}`"
+                              :label="option.label"
+                              :value="option.value"
+                            />
                           </el-select>
-                        </el-form-item>
-
-                        <el-form-item label="视频风格">
-                          <el-select
-                            v-model="projectChatSettings.video_style"
-                            class="full-width"
-                          >
-                            <el-option label="电影感" value="cinematic" />
-                            <el-option label="写实" value="realistic" />
-                            <el-option label="动画" value="animation" />
-                          </el-select>
-                        </el-form-item>
-
-                        <el-form-item label="视频时长">
-                          <el-segmented
-                            v-model="projectChatSettings.video_duration_seconds"
-                            :options="[
-                              { label: '5 秒', value: 5 },
-                              { label: '10 秒', value: 10 },
-                              { label: '15 秒', value: 15 },
-                            ]"
-                            class="full-width"
-                          />
-                        </el-form-item>
-
-                        <el-form-item label="动作强度">
-                          <el-segmented
-                            v-model="projectChatSettings.video_motion_strength"
-                            :options="[
-                              { label: '低', value: 'low' },
-                              { label: '中', value: 'medium' },
-                              { label: '高', value: 'high' },
-                            ]"
-                            class="full-width"
-                          />
                         </el-form-item>
                       </template>
                     </el-form>
@@ -2157,9 +2209,15 @@ import {
   buildModelTypeMetaMap,
   DEFAULT_MODEL_TYPE,
   FALLBACK_MODEL_TYPE_OPTIONS,
+  formatChatParameterValueLabel,
   findProviderModelConfig,
+  getChatParameterDictionaryKey,
+  getChatParameterDefaultValue,
+  listChatParameterKeys,
+  normalizeChatParameterValue,
   normalizeProviderModelConfigs,
   normalizeProviderModelNames,
+  resolveChatParameterOptions,
 } from "@/utils/llm-models.js";
 import {
   buildMaterialDialogPayload,
@@ -2318,6 +2376,7 @@ const CHAT_SETTINGS_DEFAULTS = {
   tool_retry_count: 0,
   answer_style: "concise",
   prefer_conclusion_first: true,
+  image_resolution: "1024x1024",
   image_aspect_ratio: "1:1",
   image_style: "auto",
   image_quality: "high",
@@ -2334,6 +2393,68 @@ const EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS = {
 // 开放未选择项目时的通用对话模式，复用现有 sendGlobalChatWithoutProject 逻辑。
 const ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT = true;
 const LOCAL_CONNECTOR_STORAGE_PREFIX = "project_chat.local_connector";
+const CHAT_PARAMETER_SECTION_CONFIG = {
+  image: [
+    {
+      key: "image_resolution",
+      label: "图片分辨率",
+      helper: "决定输出尺寸和横竖版倾向。",
+      control: "segmented",
+      maxSegmentedOptions: 4,
+    },
+    {
+      key: "image_aspect_ratio",
+      label: "图片比例",
+      helper: "控制画面构图比例。",
+      control: "segmented",
+      maxSegmentedOptions: 5,
+    },
+    {
+      key: "image_style",
+      label: "图片风格",
+      helper: "控制图片整体视觉风格。",
+      control: "segmented",
+      maxSegmentedOptions: 4,
+    },
+    {
+      key: "image_quality",
+      label: "图片质量",
+      helper: "平衡生成速度和细节质量。",
+      control: "segmented",
+      maxSegmentedOptions: 3,
+    },
+  ],
+  video: [
+    {
+      key: "video_aspect_ratio",
+      label: "视频比例",
+      helper: "控制视频画幅比例。",
+      control: "segmented",
+      maxSegmentedOptions: 4,
+    },
+    {
+      key: "video_style",
+      label: "视频风格",
+      helper: "控制镜头和整体表现风格。",
+      control: "segmented",
+      maxSegmentedOptions: 4,
+    },
+    {
+      key: "video_duration_seconds",
+      label: "视频时长",
+      helper: "控制单次生成片段长度。",
+      control: "segmented",
+      maxSegmentedOptions: 4,
+    },
+    {
+      key: "video_motion_strength",
+      label: "动作强度",
+      helper: "控制镜头和主体的动态程度。",
+      control: "segmented",
+      maxSegmentedOptions: 4,
+    },
+  ],
+};
 
 function resolveCurrentUsername() {
   return (
@@ -2437,8 +2558,10 @@ function buildProjectProvidersRequestUrl(projectId) {
 }
 
 function applyLocalConnectorRuntimeSettings(baseSettings) {
-  return normalizeProjectChatSettings(
-    baseSettings && typeof baseSettings === "object" ? baseSettings : {},
+  return normalizeDictionaryBackedChatSettings(
+    normalizeProjectChatSettings(
+      baseSettings && typeof baseSettings === "object" ? baseSettings : {},
+    ),
   );
 }
 
@@ -2541,6 +2664,7 @@ const defaultModelName = ref("");
 const globalDefaultProviderId = ref("");
 const globalDefaultModelName = ref("");
 const modelTypeOptions = ref(FALLBACK_MODEL_TYPE_OPTIONS);
+const chatParameterOptions = ref({});
 const temperature = ref(0.1);
 const systemPrompt = ref("");
 const activeMcpSource = ref("system");
@@ -2653,7 +2777,9 @@ const activeLocalConnectorProviderId = computed(() => {
     )?.id || "",
   ).trim();
 });
-const modelTypeMetaMap = computed(() => buildModelTypeMetaMap(modelTypeOptions.value));
+const modelTypeMetaMap = computed(() =>
+  buildModelTypeMetaMap(modelTypeOptions.value),
+);
 const providerDisplayNameMap = computed(() => {
   const map = new Map();
   for (const item of providers.value || []) {
@@ -2977,7 +3103,9 @@ const currentSelectedProvider = computed(
     (providers.value || []).find(
       (item) =>
         String(item?.id || "").trim() ===
-        String(selectedProviderId.value || defaultProviderId.value || "").trim(),
+        String(
+          selectedProviderId.value || defaultProviderId.value || "",
+        ).trim(),
     ) || null,
 );
 const currentSelectedModelConfig = computed(() =>
@@ -2988,7 +3116,10 @@ const currentSelectedModelConfig = computed(() =>
   ),
 );
 const currentModelType = computed(
-  () => String(currentSelectedModelConfig.value?.model_type || DEFAULT_MODEL_TYPE).trim() || DEFAULT_MODEL_TYPE,
+  () =>
+    String(
+      currentSelectedModelConfig.value?.model_type || DEFAULT_MODEL_TYPE,
+    ).trim() || DEFAULT_MODEL_TYPE,
 );
 const currentModelTypeMeta = computed(
   () =>
@@ -2996,23 +3127,92 @@ const currentModelTypeMeta = computed(
     modelTypeMetaMap.value.get(DEFAULT_MODEL_TYPE),
 );
 const currentModelTypeLabel = computed(
-  () => String(currentModelTypeMeta.value?.label || "文本生成").trim() || "文本生成",
+  () =>
+    String(currentModelTypeMeta.value?.label || "文本生成").trim() ||
+    "文本生成",
 );
-const currentModelTypeDescription = computed(
-  () => String(currentModelTypeMeta.value?.description || "").trim(),
+const currentModelTypeDescription = computed(() =>
+  String(currentModelTypeMeta.value?.description || "").trim(),
 );
 const currentModelParameterMode = computed(
-  () => String(currentModelTypeMeta.value?.chat_parameter_mode || "text").trim() || "text",
+  () =>
+    String(currentModelTypeMeta.value?.chat_parameter_mode || "text").trim() ||
+    "text",
 );
+
+function getChatParameterDictionaryEntry(parameterKey) {
+  return chatParameterOptions.value?.[parameterKey] || {};
+}
+
+function getRuntimeChatParameterDefaultValue(parameterKey) {
+  return normalizeChatParameterValue(
+    parameterKey,
+    getChatParameterDictionaryEntry(parameterKey).defaultValue ??
+      getChatParameterDefaultValue(parameterKey),
+    getChatParameterDictionaryEntry(parameterKey).options || [],
+  );
+}
+
+const resolvedChatParameterOptions = computed(() => {
+  const next = {};
+  for (const parameterKey of listChatParameterKeys()) {
+    next[parameterKey] = resolveChatParameterOptions(
+      parameterKey,
+      getChatParameterDictionaryEntry(parameterKey).options || [],
+    );
+  }
+  return next;
+});
+const currentModelParameterSections = computed(() =>
+  (CHAT_PARAMETER_SECTION_CONFIG[currentModelParameterMode.value] || [])
+    .map((section) => {
+      const options = resolvedChatParameterOptions.value[section.key] || [];
+      if (!options.length) return null;
+      const normalizedValue = normalizeChatParameterValue(
+        section.key,
+        projectChatSettings.value?.[section.key],
+        getChatParameterDictionaryEntry(section.key).options || [],
+      );
+      return {
+        ...section,
+        options,
+        modelValue: normalizedValue,
+        useSegmented:
+          section.control === "segmented" &&
+          options.length <= Number(section.maxSegmentedOptions || 4),
+      };
+    })
+    .filter(Boolean),
+);
+
+function setCurrentModelParameterValue(parameterKey, value) {
+  projectChatSettings.value = {
+    ...projectChatSettings.value,
+    [parameterKey]: normalizeChatParameterValue(
+      parameterKey,
+      value,
+      getChatParameterDictionaryEntry(parameterKey).options || [],
+    ),
+  };
+}
+
+function describeChatParameterValue(parameterKey, value) {
+  return formatChatParameterValueLabel(
+    parameterKey,
+    value,
+    getChatParameterDictionaryEntry(parameterKey).options || [],
+  );
+}
 
 function buildModelGenerationInstruction() {
   if (currentModelParameterMode.value === "image") {
     return [
       "当前模型类型：图片生成。",
       "请按以下预设执行本轮生成：",
-      `- 图片比例：${String(projectChatSettings.value.image_aspect_ratio || "1:1").trim() || "1:1"}`,
-      `- 图片风格：${String(projectChatSettings.value.image_style || "auto").trim() || "auto"}`,
-      `- 图片质量：${String(projectChatSettings.value.image_quality || "high").trim() || "high"}`,
+      `- 图片分辨率：${describeChatParameterValue("image_resolution", projectChatSettings.value.image_resolution)}`,
+      `- 图片比例：${describeChatParameterValue("image_aspect_ratio", projectChatSettings.value.image_aspect_ratio)}`,
+      `- 图片风格：${describeChatParameterValue("image_style", projectChatSettings.value.image_style)}`,
+      `- 图片质量：${describeChatParameterValue("image_quality", projectChatSettings.value.image_quality)}`,
       "- 如果模型支持直接生成图片，请直接返回图片结果；如果当前模型只支持文本，请输出可直接用于图片生成的高质量提示词。",
     ].join("\n");
   }
@@ -3020,10 +3220,10 @@ function buildModelGenerationInstruction() {
     return [
       "当前模型类型：视频生成。",
       "请按以下预设执行本轮生成：",
-      `- 视频比例：${String(projectChatSettings.value.video_aspect_ratio || "16:9").trim() || "16:9"}`,
-      `- 视频风格：${String(projectChatSettings.value.video_style || "cinematic").trim() || "cinematic"}`,
-      `- 视频时长：${Number(projectChatSettings.value.video_duration_seconds || 5)} 秒`,
-      `- 动作强度：${String(projectChatSettings.value.video_motion_strength || "medium").trim() || "medium"}`,
+      `- 视频比例：${describeChatParameterValue("video_aspect_ratio", projectChatSettings.value.video_aspect_ratio)}`,
+      `- 视频风格：${describeChatParameterValue("video_style", projectChatSettings.value.video_style)}`,
+      `- 视频时长：${describeChatParameterValue("video_duration_seconds", projectChatSettings.value.video_duration_seconds)}`,
+      `- 动作强度：${describeChatParameterValue("video_motion_strength", projectChatSettings.value.video_motion_strength)}`,
       "- 如果模型支持直接生成视频，请直接返回视频结果；如果当前模型只支持文本，请输出可直接用于视频生成的分镜式提示词。",
     ].join("\n");
   }
@@ -3033,7 +3233,9 @@ function buildModelGenerationInstruction() {
 function appendModelGenerationInstruction(prompt) {
   const instruction = buildModelGenerationInstruction();
   if (!instruction) return prompt;
-  return [String(prompt || "").trim(), "", instruction].filter(Boolean).join("\n");
+  return [String(prompt || "").trim(), "", instruction]
+    .filter(Boolean)
+    .join("\n");
 }
 const activeChatSessionTitle = computed(() => {
   const sessionId = String(currentChatSessionId.value || "").trim();
@@ -4104,6 +4306,19 @@ function normalizeProjectChatSettings(raw) {
       40,
     ),
   };
+}
+
+function normalizeDictionaryBackedChatSettings(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const next = { ...source };
+  for (const parameterKey of listChatParameterKeys()) {
+    next[parameterKey] = normalizeChatParameterValue(
+      parameterKey,
+      next[parameterKey] ?? getRuntimeChatParameterDefaultValue(parameterKey),
+      getChatParameterDictionaryEntry(parameterKey).options || [],
+    );
+  }
+  return next;
 }
 
 const effectiveUploadLimit = computed(() => {
@@ -5397,7 +5612,12 @@ function inferArtifactAssetType(item) {
     .toLowerCase();
   if (mimeType.startsWith("video/")) return "video";
   const contentUrl = String(
-    item?.content_url || item?.contentUrl || item?.video_url || item?.videoUrl || item?.url || "",
+    item?.content_url ||
+      item?.contentUrl ||
+      item?.video_url ||
+      item?.videoUrl ||
+      item?.url ||
+      "",
   ).trim();
   if (/\.(mp4|mov|m4v|webm|avi|mkv)(?:[?#].*)?$/i.test(contentUrl)) {
     return "video";
@@ -5431,7 +5651,13 @@ function collectArtifactVideoUrls(payload) {
     directVideos,
     artifacts.flatMap((item) =>
       inferArtifactAssetType(item) === "video"
-        ? [item?.content_url, item?.contentUrl, item?.video_url, item?.videoUrl, item?.url]
+        ? [
+            item?.content_url,
+            item?.contentUrl,
+            item?.video_url,
+            item?.videoUrl,
+            item?.url,
+          ]
         : [],
     ),
   );
@@ -6804,6 +7030,32 @@ async function fetchModelTypeOptions() {
   }
 }
 
+async function fetchChatParameterOptions() {
+  const next = {};
+  await Promise.all(
+    listChatParameterKeys().map(async (parameterKey) => {
+      const dictionaryKey = getChatParameterDictionaryKey(parameterKey);
+      try {
+        const data = await fetchDictionary(dictionaryKey);
+        next[parameterKey] = {
+          options: Array.isArray(data?.options) ? data.options : [],
+          defaultValue: data?.default_value,
+        };
+      } catch (err) {
+        next[parameterKey] = {
+          options: [],
+          defaultValue: undefined,
+        };
+        console.warn(`加载参数字典失败: ${dictionaryKey}`, err);
+      }
+    }),
+  );
+  chatParameterOptions.value = next;
+  projectChatSettings.value = applyLocalConnectorRuntimeSettings(
+    projectChatSettings.value,
+  );
+}
+
 async function fetchProjects() {
   const data = await api.get("/projects");
   projects.value = data.projects || [];
@@ -7168,7 +7420,7 @@ async function handleQuickCreateEmployee(payload) {
 
 function buildProjectChatSettingsPayload() {
   const employeeIds = normalizeStringList(selectedEmployeeIds.value || []);
-  return normalizeProjectChatSettings({
+  return applyLocalConnectorRuntimeSettings({
     ...projectChatSettings.value,
     chat_mode: "system",
     selected_employee_id: employeeIds.length === 1 ? employeeIds[0] : "",
@@ -8815,9 +9067,7 @@ async function doSend() {
         .filter(Boolean)
         .join("\n")
     : userPrompt;
-  const finalUserPrompt = appendModelGenerationInstruction(
-    effectiveUserPrompt,
-  );
+  const finalUserPrompt = appendModelGenerationInstruction(effectiveUserPrompt);
   const effectiveToolPriority = mergeToolPriority(
     projectChatSettings.value.tool_priority || [],
     assistToolNames,
@@ -9166,6 +9416,7 @@ onMounted(async () => {
       fetchSystemConfig(),
       fetchProjects(),
       fetchModelTypeOptions(),
+      fetchChatParameterOptions(),
       fetchGlobalProviders(),
     ]);
     syncProjectFromRoute();
@@ -9195,6 +9446,83 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.chat-parameter-ribbon {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.92),
+      rgba(248, 250, 252, 0.9)
+    ),
+    rgba(255, 255, 255, 0.88);
+}
+
+.chat-parameter-ribbon__title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #526071;
+}
+
+.chat-parameter-ribbon__items {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 6px;
+}
+
+.chat-parameter-ribbon__item {
+  display: grid;
+  gap: 4px;
+  padding: 7px 8px;
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.chat-parameter-ribbon__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.chat-parameter-ribbon__helper {
+  min-height: 0;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #64748b;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.chat-parameter-ribbon__control {
+  width: 100%;
+}
+
+.chat-parameter-ribbon__control :deep(.el-select__wrapper) {
+  min-height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-radius: 10px;
+}
+
+.chat-parameter-ribbon__control :deep(.el-segmented) {
+  min-height: 30px;
+}
+
+.chat-parameter-ribbon__control :deep(.el-segmented__item) {
+  min-height: 26px;
+  font-size: 11px;
+}
+
 .chat-header {
   display: flex;
   justify-content: space-between;
@@ -11784,8 +12112,9 @@ onUnmounted(() => {
 }
 
 .chat-model-select {
-  width: 214px;
-  max-width: 42vw;
+  width: 236px;
+  max-width: min(46vw, 320px);
+  min-width: 0;
 }
 
 .chat-model-select :deep(.el-select__wrapper) {
@@ -11795,30 +12124,58 @@ onUnmounted(() => {
   background: rgba(248, 250, 252, 0.92);
 }
 
+:deep(.chat-model-select-dropdown .el-select-dropdown__item) {
+  height: auto;
+  min-height: 46px;
+  line-height: 1.4;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+:deep(.chat-model-select-dropdown .el-select-dropdown__item.is-hovering) {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+:deep(.chat-model-select-dropdown .el-select-group__wrap:not(:last-of-type)) {
+  margin-bottom: 4px;
+}
+
 .chat-model-option {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  min-width: 0;
 }
 
 .chat-model-option__main {
-  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
   gap: 2px;
 }
 
 .chat-model-option__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 600;
   color: #0f172a;
 }
 
 .chat-model-option__provider {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
   color: #64748b;
 }
 
 .chat-model-option__type {
   flex-shrink: 0;
+  white-space: nowrap;
   padding: 4px 8px;
   border-radius: 999px;
   background: rgba(226, 232, 240, 0.88);
@@ -12465,8 +12822,7 @@ onUnmounted(() => {
   --settings-chat-sidebar-width: 360px;
   --settings-surface-radius: 30px;
   --settings-surface-shadow:
-    0 24px 64px rgba(15, 23, 42, 0.08),
-    0 14px 34px rgba(15, 23, 42, 0.06);
+    0 24px 64px rgba(15, 23, 42, 0.08), 0 14px 34px rgba(15, 23, 42, 0.06);
   --settings-surface-border: rgba(255, 255, 255, 0.82);
   min-height: 100vh;
   height: 100vh;
@@ -12835,10 +13191,14 @@ onUnmounted(() => {
   background: transparent;
 }
 
-.settings-tabs :deep(.el-tabs--top > .el-tabs__header .el-tabs__item:nth-child(2)),
-.settings-tabs :deep(.el-tabs--top > .el-tabs__header .el-tabs__item:last-child),
-.settings-tabs :deep(.el-tabs--bottom > .el-tabs__header .el-tabs__item:nth-child(2)),
-.settings-tabs :deep(.el-tabs--bottom > .el-tabs__header .el-tabs__item:last-child) {
+.settings-tabs
+  :deep(.el-tabs--top > .el-tabs__header .el-tabs__item:nth-child(2)),
+.settings-tabs
+  :deep(.el-tabs--top > .el-tabs__header .el-tabs__item:last-child),
+.settings-tabs
+  :deep(.el-tabs--bottom > .el-tabs__header .el-tabs__item:nth-child(2)),
+.settings-tabs
+  :deep(.el-tabs--bottom > .el-tabs__header .el-tabs__item:last-child) {
   padding-left: 16px;
   padding-right: 16px;
 }
@@ -13233,7 +13593,9 @@ onUnmounted(() => {
 }
 
 .chat-model-select {
-  width: 172px;
+  width: clamp(196px, 24vw, 248px);
+  flex: 0 1 248px;
+  min-width: 0;
 }
 
 .chat-model-select :deep(.el-select__wrapper),
@@ -13306,7 +13668,11 @@ onUnmounted(() => {
   border: 1px solid rgba(255, 255, 255, 0.88);
   border-radius: 24px;
   background:
-    radial-gradient(circle at top left, rgba(125, 211, 252, 0.14), transparent 54%),
+    radial-gradient(
+      circle at top left,
+      rgba(125, 211, 252, 0.14),
+      transparent 54%
+    ),
     linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 250, 252, 0.8));
   box-shadow: none;
   width: fit-content;
@@ -13321,7 +13687,11 @@ onUnmounted(() => {
   padding: 14px;
   border-color: rgba(255, 255, 255, 0.9);
   background:
-    radial-gradient(circle at top left, rgba(125, 211, 252, 0.12), transparent 56%),
+    radial-gradient(
+      circle at top left,
+      rgba(125, 211, 252, 0.12),
+      transparent 56%
+    ),
     rgba(255, 255, 255, 0.78);
 }
 
@@ -13340,7 +13710,11 @@ onUnmounted(() => {
   border: 1px solid rgba(255, 255, 255, 0.84);
   border-radius: 26px;
   background:
-    radial-gradient(circle at top right, rgba(103, 232, 249, 0.08), transparent 42%),
+    radial-gradient(
+      circle at top right,
+      rgba(103, 232, 249, 0.08),
+      transparent 42%
+    ),
     rgba(255, 255, 255, 0.56);
   box-shadow: none;
   display: flex;

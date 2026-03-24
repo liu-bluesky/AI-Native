@@ -80,6 +80,37 @@
               </el-tag>
             </div>
 
+            <div class="dictionary-usage">
+              <div class="dictionary-usage__head">
+                <div class="dictionary-panel__title">调用页面</div>
+                <el-tag size="small" effect="plain">
+                  {{ selectedDictionaryUsageRefs.length }} 处
+                </el-tag>
+              </div>
+              <div v-if="selectedDictionaryUsageRefs.length" class="dictionary-usage__list">
+                <button
+                  v-for="usage in selectedDictionaryUsageRefs"
+                  :key="usage.id || usage.route || usage.label"
+                  type="button"
+                  class="dictionary-usage__item"
+                  @click="openUsageRef(usage)"
+                >
+                  <div class="dictionary-usage__title">
+                    {{ usage.label || usage.route || '未命名页面' }}
+                  </div>
+                  <div class="dictionary-usage__route">{{ usage.route || '未登记路由' }}</div>
+                  <div v-if="usage.description" class="dictionary-usage__desc">
+                    {{ usage.description }}
+                  </div>
+                </button>
+              </div>
+              <el-empty
+                v-else
+                description="当前字典还没有登记页面调用关系"
+                :image-size="48"
+              />
+            </div>
+
             <el-form label-position="top" class="dictionary-form">
               <div class="dictionary-form__grid">
                 <el-form-item label="字典名称">
@@ -213,10 +244,12 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
 import { fetchDictionary } from '@/utils/dictionaries.js'
 
+const router = useRouter()
 const loading = ref(false)
 const saving = ref(false)
 const resetting = ref(false)
@@ -233,6 +266,7 @@ const form = reactive({
 })
 const dictionaryMeta = reactive({
   builtin: true,
+  usage_refs: [],
 })
 const createForm = reactive({
   key: '',
@@ -279,6 +313,14 @@ const selectedDictionary = computed(
 const selectedDictionaryBuiltin = computed(
   () => selectedDictionary.value?.builtin ?? dictionaryMeta.builtin,
 )
+const selectedDictionaryUsageRefs = computed(() => {
+  if (Array.isArray(dictionaryMeta.usage_refs) && dictionaryMeta.usage_refs.length) {
+    return dictionaryMeta.usage_refs
+  }
+  return Array.isArray(selectedDictionary.value?.usage_refs)
+    ? selectedDictionary.value.usage_refs
+    : []
+})
 const resetActionLabel = computed(() => (
   selectedDictionaryBuiltin.value ? '恢复默认' : '删除字典'
 ))
@@ -289,6 +331,7 @@ function resetForm() {
   form.default_value = ''
   form.options = [createOption()]
   dictionaryMeta.builtin = true
+  dictionaryMeta.usage_refs = []
 }
 
 function applyDictionary(definition) {
@@ -302,6 +345,14 @@ function applyDictionary(definition) {
     ? preferredDefault
     : normalizedFormOptions.value[0]?.id || ''
   dictionaryMeta.builtin = definition?.builtin !== false
+  dictionaryMeta.usage_refs = Array.isArray(definition?.usage_refs)
+    ? definition.usage_refs.map((item) => ({
+      id: String(item?.id || '').trim(),
+      label: String(item?.label || '').trim(),
+      route: String(item?.route || '').trim(),
+      description: String(item?.description || '').trim(),
+    }))
+    : []
 }
 
 function resetCreateForm() {
@@ -363,6 +414,12 @@ async function selectDictionary(dictionaryKey) {
   } finally {
     loading.value = false
   }
+}
+
+function openUsageRef(usage) {
+  const route = String(usage?.route || '').trim()
+  if (!route) return
+  router.push(route)
 }
 
 function addOption() {
@@ -640,6 +697,63 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+
+.dictionary-usage {
+  margin-bottom: 20px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.dictionary-usage__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.dictionary-usage__list {
+  display: grid;
+  gap: 12px;
+}
+
+.dictionary-usage__item {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 16px;
+  background: #fff;
+  padding: 14px 16px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.dictionary-usage__item:hover {
+  border-color: rgba(37, 99, 235, 0.35);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+}
+
+.dictionary-usage__title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.dictionary-usage__route {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #2563eb;
+}
+
+.dictionary-usage__desc {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #526071;
 }
 
 .dictionary-options__head {

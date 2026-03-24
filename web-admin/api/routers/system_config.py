@@ -11,6 +11,7 @@ from models.requests import SystemConfigUpdateReq
 from services.system_mcp_discovery import list_system_mcp_skills
 from stores.json.system_config_store import (
     normalize_employee_external_skill_sites,
+    normalize_dictionaries,
     normalize_skill_registry_sources,
     normalize_system_mcp_config,
 )
@@ -69,6 +70,7 @@ async def patch_system_config(
         "employee_auto_rule_generation_prompt",
         "employee_external_skill_sites",
         "skill_registry_sources",
+        "dictionaries",
         "mcp_config",
     }
     invalid = [key for key in updates.keys() if key not in allowed]
@@ -142,6 +144,11 @@ async def patch_system_config(
         updates["skill_registry_sources"] = normalize_skill_registry_sources(
             updates["skill_registry_sources"]
         )
+
+    if "dictionaries" in updates:
+        if not isinstance(updates["dictionaries"], dict):
+            raise HTTPException(400, "dictionaries must be a JSON object")
+        updates["dictionaries"] = normalize_dictionaries(updates["dictionaries"])
 
     if "mcp_config" in updates:
         if not isinstance(updates["mcp_config"], dict):

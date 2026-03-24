@@ -1,5 +1,48 @@
 export const DEFAULT_MODEL_TYPE = 'text_generation'
 
+const CHAT_PARAMETER_FALLBACKS = {
+  image_resolution: {
+    dictionaryKey: 'llm_image_resolutions',
+    defaultValue: '1024x1024',
+    valueType: 'string',
+  },
+  image_aspect_ratio: {
+    dictionaryKey: 'llm_image_aspect_ratios',
+    defaultValue: '1:1',
+    valueType: 'string',
+  },
+  image_style: {
+    dictionaryKey: 'llm_image_styles',
+    defaultValue: 'auto',
+    valueType: 'string',
+  },
+  image_quality: {
+    dictionaryKey: 'llm_image_qualities',
+    defaultValue: 'high',
+    valueType: 'string',
+  },
+  video_aspect_ratio: {
+    dictionaryKey: 'llm_video_aspect_ratios',
+    defaultValue: '16:9',
+    valueType: 'string',
+  },
+  video_style: {
+    dictionaryKey: 'llm_video_styles',
+    defaultValue: 'cinematic',
+    valueType: 'string',
+  },
+  video_duration_seconds: {
+    dictionaryKey: 'llm_video_duration_seconds',
+    defaultValue: 5,
+    valueType: 'number',
+  },
+  video_motion_strength: {
+    dictionaryKey: 'llm_video_motion_strengths',
+    defaultValue: 'medium',
+    valueType: 'string',
+  },
+}
+
 export const FALLBACK_MODEL_TYPE_OPTIONS = [
   {
     id: 'text_generation',
@@ -32,6 +75,79 @@ export const FALLBACK_MODEL_TYPE_OPTIONS = [
     chat_parameter_mode: 'text',
   },
 ]
+
+function getChatParameterConfig(parameterKey) {
+  const config = CHAT_PARAMETER_FALLBACKS[String(parameterKey || '').trim()]
+  if (!config) {
+    throw new Error(`Unsupported chat parameter key: ${parameterKey}`)
+  }
+  return config
+}
+
+function coerceChatParameterValue(parameterKey, value) {
+  const config = getChatParameterConfig(parameterKey)
+  if (config.valueType === 'number') {
+    const normalized = Number(value)
+    return Number.isFinite(normalized) ? normalized : Number(config.defaultValue)
+  }
+  return String(value || '').trim()
+}
+
+export function listChatParameterKeys() {
+  return Object.keys(CHAT_PARAMETER_FALLBACKS)
+}
+
+export function getChatParameterDictionaryKey(parameterKey) {
+  return String(getChatParameterConfig(parameterKey).dictionaryKey || '').trim()
+}
+
+export function getChatParameterFallbackOptions(parameterKey) {
+  const defaultValue = getChatParameterDefaultValue(parameterKey)
+  return [
+    {
+      id: String(defaultValue),
+      label: String(defaultValue),
+      description: '',
+    },
+  ]
+}
+
+export function getChatParameterDefaultValue(parameterKey) {
+  return coerceChatParameterValue(parameterKey, getChatParameterConfig(parameterKey).defaultValue)
+}
+
+export function resolveChatParameterOptions(parameterKey, options = []) {
+  const source = Array.isArray(options) && options.length
+    ? options
+    : getChatParameterFallbackOptions(parameterKey)
+  return source
+    .map((item) => {
+      const id = String(item?.id || '').trim()
+      if (!id) return null
+      return {
+        id,
+        label: String(item?.label || id).trim() || id,
+        description: String(item?.description || '').trim(),
+        value: coerceChatParameterValue(parameterKey, id),
+      }
+    })
+    .filter(Boolean)
+}
+
+export function normalizeChatParameterValue(parameterKey, value, options = []) {
+  const normalized = coerceChatParameterValue(parameterKey, value)
+  const resolvedOptions = resolveChatParameterOptions(parameterKey, options)
+  if (resolvedOptions.some((item) => item.value === normalized)) {
+    return normalized
+  }
+  return getChatParameterDefaultValue(parameterKey)
+}
+
+export function formatChatParameterValueLabel(parameterKey, value, options = []) {
+  const normalized = normalizeChatParameterValue(parameterKey, value, options)
+  const matched = resolveChatParameterOptions(parameterKey, options).find((item) => item.value === normalized)
+  return matched?.label || String(normalized)
+}
 
 export function normalizeModelType(value, options = FALLBACK_MODEL_TYPE_OPTIONS) {
   const normalized = String(value || '').trim().toLowerCase()

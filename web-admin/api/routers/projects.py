@@ -37,6 +37,10 @@ from services.local_connector_service import (
     list_connector_llm_models,
     parse_local_connector_provider_id,
 )
+from services.llm_chat_parameter_catalog import (
+    get_chat_parameter_default_value,
+    normalize_chat_parameter_value,
+)
 from services.llm_model_type_catalog import DEFAULT_MODEL_TYPE
 from models.requests import (
     ProjectAiEntryFileUpdateReq,
@@ -117,6 +121,7 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "tool_retry_count": 0,
     "answer_style": "concise",
     "prefer_conclusion_first": True,
+    "image_resolution": "1024x1024",
     "image_aspect_ratio": "1:1",
     "image_style": "auto",
     "image_quality": "high",
@@ -1700,6 +1705,14 @@ def _coerce_float(value: Any, default: float, *, min_value: float, max_value: fl
 def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
     source = raw if isinstance(raw, dict) else {}
     settings = dict(_PROJECT_CHAT_SETTINGS_DEFAULTS)
+    settings["image_resolution"] = get_chat_parameter_default_value("image_resolution")
+    settings["image_aspect_ratio"] = get_chat_parameter_default_value("image_aspect_ratio")
+    settings["image_style"] = get_chat_parameter_default_value("image_style")
+    settings["image_quality"] = get_chat_parameter_default_value("image_quality")
+    settings["video_aspect_ratio"] = get_chat_parameter_default_value("video_aspect_ratio")
+    settings["video_style"] = get_chat_parameter_default_value("video_style")
+    settings["video_duration_seconds"] = get_chat_parameter_default_value("video_duration_seconds")
+    settings["video_motion_strength"] = get_chat_parameter_default_value("video_motion_strength")
     settings["chat_mode"] = "system"
     sandbox_mode_explicit = _coerce_bool(
         source.get(
@@ -1759,20 +1772,37 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     style = str(source.get("answer_style", settings["answer_style"]) or "").strip().lower()
     settings["answer_style"] = style if style in {"concise", "balanced", "detailed"} else settings["answer_style"]
     settings["prefer_conclusion_first"] = _coerce_bool(source.get("prefer_conclusion_first"), settings["prefer_conclusion_first"])
-    image_aspect_ratio = str(source.get("image_aspect_ratio", settings["image_aspect_ratio"]) or "").strip()
-    settings["image_aspect_ratio"] = image_aspect_ratio if image_aspect_ratio in {"1:1", "3:4", "4:3", "9:16", "16:9"} else settings["image_aspect_ratio"]
-    image_style = str(source.get("image_style", settings["image_style"]) or "").strip().lower()
-    settings["image_style"] = image_style if image_style in {"auto", "realistic", "illustration"} else settings["image_style"]
-    image_quality = str(source.get("image_quality", settings["image_quality"]) or "").strip().lower()
-    settings["image_quality"] = image_quality if image_quality in {"standard", "high"} else settings["image_quality"]
-    video_aspect_ratio = str(source.get("video_aspect_ratio", settings["video_aspect_ratio"]) or "").strip()
-    settings["video_aspect_ratio"] = video_aspect_ratio if video_aspect_ratio in {"1:1", "9:16", "16:9"} else settings["video_aspect_ratio"]
-    video_style = str(source.get("video_style", settings["video_style"]) or "").strip().lower()
-    settings["video_style"] = video_style if video_style in {"cinematic", "realistic", "animation"} else settings["video_style"]
-    settings["video_duration_seconds"] = _coerce_int(source.get("video_duration_seconds"), settings["video_duration_seconds"], min_value=3, max_value=30)
-    video_motion_strength = str(source.get("video_motion_strength", settings["video_motion_strength"]) or "").strip().lower()
-    settings["video_motion_strength"] = (
-        video_motion_strength if video_motion_strength in {"low", "medium", "high"} else settings["video_motion_strength"]
+    settings["image_resolution"] = normalize_chat_parameter_value(
+        "image_resolution",
+        source.get("image_resolution", settings["image_resolution"]),
+    )
+    settings["image_aspect_ratio"] = normalize_chat_parameter_value(
+        "image_aspect_ratio",
+        source.get("image_aspect_ratio", settings["image_aspect_ratio"]),
+    )
+    settings["image_style"] = normalize_chat_parameter_value(
+        "image_style",
+        source.get("image_style", settings["image_style"]),
+    )
+    settings["image_quality"] = normalize_chat_parameter_value(
+        "image_quality",
+        source.get("image_quality", settings["image_quality"]),
+    )
+    settings["video_aspect_ratio"] = normalize_chat_parameter_value(
+        "video_aspect_ratio",
+        source.get("video_aspect_ratio", settings["video_aspect_ratio"]),
+    )
+    settings["video_style"] = normalize_chat_parameter_value(
+        "video_style",
+        source.get("video_style", settings["video_style"]),
+    )
+    settings["video_duration_seconds"] = normalize_chat_parameter_value(
+        "video_duration_seconds",
+        source.get("video_duration_seconds", settings["video_duration_seconds"]),
+    )
+    settings["video_motion_strength"] = normalize_chat_parameter_value(
+        "video_motion_strength",
+        source.get("video_motion_strength", settings["video_motion_strength"]),
     )
     return settings
 
