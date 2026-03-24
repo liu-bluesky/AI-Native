@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 def _now_iso() -> str:
@@ -191,6 +192,48 @@ def normalize_skill_registry_sources(value: object) -> dict[str, object]:
     return normalized
 
 
+def normalize_dictionaries(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+
+    normalized: dict[str, object] = {}
+    for raw_key, raw_definition in value.items():
+        dictionary_key = str(raw_key or "").strip()[:80]
+        if not dictionary_key or not isinstance(raw_definition, dict):
+            continue
+
+        options: list[dict[str, str]] = []
+        seen_option_ids: set[str] = set()
+        for raw_option in raw_definition.get("options") if isinstance(raw_definition.get("options"), list) else []:
+            if not isinstance(raw_option, dict):
+                continue
+            option_id = str(raw_option.get("id") or "").strip()[:80]
+            if not option_id or option_id in seen_option_ids:
+                continue
+            seen_option_ids.add(option_id)
+            options.append(
+                {
+                    "id": option_id,
+                    "label": str(raw_option.get("label") or option_id).strip()[:120] or option_id,
+                    "description": str(raw_option.get("description") or "").strip()[:500],
+                    "chat_parameter_mode": str(raw_option.get("chat_parameter_mode") or "").strip()[:40],
+                }
+            )
+            if len(options) >= 100:
+                break
+
+        definition: dict[str, Any] = {
+            "key": dictionary_key,
+            "label": str(raw_definition.get("label") or "").strip()[:120],
+            "description": str(raw_definition.get("description") or "").strip()[:500],
+            "default_value": str(raw_definition.get("default_value") or "").strip()[:80],
+            "options": options,
+        }
+        normalized[dictionary_key] = definition
+
+    return normalized
+
+
 @dataclass
 class SystemConfig:
     id: str = "global"
@@ -212,6 +255,7 @@ class SystemConfig:
     skill_registry_sources: dict[str, object] = field(
         default_factory=default_skill_registry_sources
     )
+    dictionaries: dict[str, object] = field(default_factory=dict)
     mcp_config: dict[str, object] = field(default_factory=default_system_mcp_config)
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
@@ -241,6 +285,7 @@ class SystemConfig:
         self.skill_registry_sources = normalize_skill_registry_sources(
             self.skill_registry_sources
         )
+        self.dictionaries = normalize_dictionaries(self.dictionaries)
         self.mcp_config = normalize_system_mcp_config(self.mcp_config)
 
 

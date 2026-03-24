@@ -14,6 +14,7 @@ MENU_PERMISSION_ITEMS = [
     {"key": "menu.skills", "label": "技能目录", "path": "/skills"},
     {"key": "menu.rules", "label": "规则管理", "path": "/rules"},
     {"key": "menu.system.config", "label": "系统配置", "path": "/system/config"},
+    {"key": "menu.system.dictionaries", "label": "字典管理", "path": "/dictionaries"},
     {"key": "menu.llm.providers", "label": "模型供应商", "path": "/llm/providers"},
     {"key": "menu.usage.keys", "label": "API Key", "path": "/usage/keys"},
 ]

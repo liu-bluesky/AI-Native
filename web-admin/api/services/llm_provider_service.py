@@ -11,6 +11,7 @@ import requests
 from starlette.concurrency import run_in_threadpool
 
 from core.config import get_settings
+from services.llm_model_type_catalog import DEFAULT_MODEL_TYPE, get_model_type_meta, normalize_model_type
 from stores.postgres.llm_provider_store import LlmProviderStorePostgres
 
 
@@ -59,6 +60,62 @@ class LlmProviderService:
             seen.add(model)
             models.append(model)
         return models
+
+    @classmethod
+    def _normalize_model_configs(
+        cls,
+        value: Any,
+        fallback_models: Any = None,
+    ) -> list[dict[str, str]]:
+        raw_items: list[Any] = []
+        if isinstance(value, list):
+            raw_items.extend(value)
+        if fallback_models is not None:
+            raw_items.extend(cls._normalize_models(fallback_models))
+
+        configs: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            if isinstance(item, dict):
+                name = str(item.get("name") or item.get("model_name") or "").strip()
+                model_type = normalize_model_type(item.get("model_type"))
+            else:
+                name = str(item or "").strip()
+                model_type = DEFAULT_MODEL_TYPE
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            configs.append(
+                {
+                    "name": name,
+                    "model_type": model_type,
+                }
+            )
+        return configs
+
+    @staticmethod
+    def _model_names_from_configs(configs: list[dict[str, str]]) -> list[str]:
+        return [str(item.get("name") or "").strip() for item in configs if str(item.get("name") or "").strip()]
+
+    @classmethod
+    def _ensure_default_model_config(
+        cls,
+        model_configs: list[dict[str, str]],
+        default_model: str,
+    ) -> list[dict[str, str]]:
+        normalized_default = str(default_model or "").strip()
+        if not normalized_default:
+            return model_configs
+        names = {str(item.get("name") or "").strip() for item in model_configs}
+        if normalized_default in names:
+            return model_configs
+        return [
+            {
+                "name": normalized_default,
+                "model_type": DEFAULT_MODEL_TYPE,
+            },
+            *model_configs,
+        ]
 
     @staticmethod
     def _normalize_headers(value: Any) -> dict[str, str]:
@@ -116,8 +173,15 @@ class LlmProviderService:
         if not base_url:
             raise ValueError("base_url is required")
 
-        models = self._normalize_models(payload.get("models") or [])
+        model_configs = self._normalize_model_configs(
+            payload.get("model_configs"),
+            payload.get("models"),
+        )
         default_model = str(payload.get("default_model") or "").strip()
+        if not default_model and model_configs:
+            default_model = str(model_configs[0].get("name") or "").strip()
+        model_configs = self._ensure_default_model_config(model_configs, default_model)
+        models = self._model_names_from_configs(model_configs)
         if not default_model and models:
             default_model = models[0]
 
@@ -127,36 +191,26 @@ class LlmProviderService:
             "base_url": base_url,
             "api_key": str(payload.get("api_key") or "").strip(),
             "models": models,
+            "model_configs": model_configs,
             "default_model": default_model,
             "enabled": bool(payload.get("enabled", True)),
             "extra_headers": self._normalize_headers(payload.get("extra_headers") or {}),
         }
 
-    def _validate_update_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        updates: dict[str, Any] = {}
-        if "name" in payload and payload.get("name") is not None:
-            name = str(payload.get("name") or "").strip()
-            if not name:
-                raise ValueError("name cannot be empty")
-            updates["name"] = name
-        if "provider_type" in payload and payload.get("provider_type") is not None:
-            updates["provider_type"] = self._normalize_provider_type(payload.get("provider_type"))
-        if "base_url" in payload and payload.get("base_url") is not None:
-            base_url = self._normalize_base_url(str(payload.get("base_url") or ""))
-            if not base_url:
-                raise ValueError("base_url cannot be empty")
-            updates["base_url"] = base_url
-        if "api_key" in payload and payload.get("api_key") is not None:
-            updates["api_key"] = str(payload.get("api_key") or "").strip()
-        if "models" in payload and payload.get("models") is not None:
-            updates["models"] = self._normalize_models(payload.get("models"))
-        if "default_model" in payload and payload.get("default_model") is not None:
-            updates["default_model"] = str(payload.get("default_model") or "").strip()
-        if "enabled" in payload and payload.get("enabled") is not None:
-            updates["enabled"] = bool(payload.get("enabled"))
-        if "extra_headers" in payload and payload.get("extra_headers") is not None:
-            updates["extra_headers"] = self._normalize_headers(payload.get("extra_headers"))
-        return updates
+    @classmethod
+    def _hydrate_provider_models(cls, provider: dict[str, Any]) -> dict[str, Any]:
+        hydrated = dict(provider)
+        default_model = str(hydrated.get("default_model") or "").strip()
+        model_configs = cls._normalize_model_configs(
+            hydrated.get("model_configs"),
+            hydrated.get("models"),
+        )
+        model_configs = cls._ensure_default_model_config(model_configs, default_model)
+        hydrated["model_configs"] = model_configs
+        hydrated["models"] = cls._model_names_from_configs(model_configs)
+        if not default_model and hydrated["models"]:
+            hydrated["default_model"] = hydrated["models"][0]
+        return hydrated
 
     @staticmethod
     def _pick_default_model(provider: dict[str, Any]) -> str:
@@ -165,6 +219,25 @@ class LlmProviderService:
             return default_model
         models = provider.get("models") or []
         return str(models[0]).strip() if models else ""
+
+    @classmethod
+    def get_model_config(cls, provider: dict[str, Any], model_name: str) -> dict[str, Any] | None:
+        normalized_name = str(model_name or "").strip()
+        if not normalized_name:
+            normalized_name = cls._pick_default_model(provider)
+        if not normalized_name:
+            return None
+        for item in cls._normalize_model_configs(provider.get("model_configs"), provider.get("models")):
+            if str(item.get("name") or "").strip() == normalized_name:
+                return {
+                    **item,
+                    **get_model_type_meta(item.get("model_type")),
+                }
+        return {
+            "name": normalized_name,
+            "model_type": DEFAULT_MODEL_TYPE,
+            **get_model_type_meta(DEFAULT_MODEL_TYPE),
+        }
 
     @staticmethod
     def _normalize_owner_username(value: Any) -> str:
@@ -242,7 +315,10 @@ class LlmProviderService:
         include_all: bool = False,
         include_shared: bool = False,
     ) -> list[dict[str, Any]]:
-        providers = self._store.list_providers(include_secret=False, enabled_only=enabled_only)
+        providers = [
+            self._hydrate_provider_models(item)
+            for item in self._store.list_providers(include_secret=False, enabled_only=enabled_only)
+        ]
         visible_providers = self._filter_providers_for_actor(
             providers,
             owner_username=owner_username,
@@ -266,7 +342,10 @@ class LlmProviderService:
         include_all: bool = False,
         include_shared: bool = True,
     ) -> dict[str, Any] | None:
-        providers = self._store.list_providers(include_secret=include_secret, enabled_only=True)
+        providers = [
+            self._hydrate_provider_models(item)
+            for item in self._store.list_providers(include_secret=include_secret, enabled_only=True)
+        ]
         visible_providers = self._filter_providers_for_actor(
             providers,
             owner_username=owner_username,
@@ -289,7 +368,7 @@ class LlmProviderService:
         validated["owner_username"] = self._normalize_owner_username(owner_username)
         validated["shared_usernames"] = self._normalize_shared_usernames(payload.get("shared_usernames"))
         provider = self._store.create_provider(validated)
-        return self._store.get_provider(provider["id"], include_secret=False) or provider
+        return self._hydrate_provider_models(self._store.get_provider(provider["id"], include_secret=False) or provider)
 
     def get_provider_raw(
         self,
@@ -303,6 +382,7 @@ class LlmProviderService:
         provider = self._store.get_provider(provider_id, include_secret=True)
         if provider is None:
             return None
+        provider = self._hydrate_provider_models(provider)
         visible = self._filter_providers_for_actor(
             [provider],
             owner_username=owner_username,
@@ -320,7 +400,6 @@ class LlmProviderService:
         owner_username: str,
         include_all: bool = False,
     ) -> dict[str, Any]:
-        updates = self._validate_update_payload(payload)
         current = self.get_provider_raw(
             provider_id,
             owner_username=owner_username,
@@ -330,13 +409,21 @@ class LlmProviderService:
         )
         if current is None:
             raise LookupError(f"LLM provider {provider_id} not found")
+        merged_payload = {
+            **current,
+            **payload,
+        }
+        if "model_configs" in payload and payload.get("model_configs") is not None and "models" not in payload:
+            merged_payload["models"] = []
+        updates = self._validate_create_payload(merged_payload)
         updates["owner_username"] = self._provider_owner_username(current)
-        if "shared_usernames" in payload:
-            updates["shared_usernames"] = self._normalize_shared_usernames(payload.get("shared_usernames"))
+        updates["shared_usernames"] = self._normalize_shared_usernames(
+            payload.get("shared_usernames", current.get("shared_usernames")),
+        )
         updated = self._store.patch_provider(provider_id, updates)
         if updated is None:
             raise LookupError(f"LLM provider {provider_id} not found")
-        return self._store.get_provider(provider_id, include_secret=False) or updated
+        return self._hydrate_provider_models(self._store.get_provider(provider_id, include_secret=False) or updated)
 
     def delete_provider(self, provider_id: str, *, owner_username: str, include_all: bool = False) -> bool:
         current = self.get_provider_raw(
@@ -407,12 +494,14 @@ class LlmProviderService:
             if default_model and default_model not in models:
                 models = [default_model, *models]
             for model in models:
+                model_config = self.get_model_config(provider, model) or {}
                 options.append(
                     {
                         "provider_id": provider_id,
                         "provider_name": provider_name,
                         "provider_type": str(provider.get("provider_type") or ""),
                         "model_name": model,
+                        "model_type": str(model_config.get("model_type") or DEFAULT_MODEL_TYPE),
                         "is_default": model == default_model,
                     }
                 )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class InitSetupReq(BaseModel):
@@ -234,7 +234,7 @@ class ProjectUpdateReq(BaseModel):
 
 
 class ProjectMaterialAssetCreateReq(BaseModel):
-    asset_type: Literal["image", "storyboard", "video"]
+    asset_type: Literal["image", "storyboard", "video", "audio"]
     title: str
     summary: str = ""
     source_message_id: str = ""
@@ -257,6 +257,114 @@ class ProjectMaterialAssetUpdateReq(BaseModel):
     status: str | None = None
     structured_content: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
+
+
+class StudioClipTransformReq(BaseModel):
+    fit: Literal["cover", "contain", "stretch"] = "cover"
+    align: Literal["center", "top", "bottom", "left", "right"] = "center"
+    background: str = "#000000"
+
+
+class StudioClipReq(BaseModel):
+    id: str
+    type: Literal["image", "video"] = "video"
+    title: str = ""
+    durationSeconds: float = Field(default=1, gt=0)
+    startSeconds: float = Field(default=0, ge=0)
+    asset_id: str = ""
+    storage_path: str = ""
+    content_url: str = ""
+    preview_url: str = ""
+    mime_type: str = ""
+    original_filename: str = ""
+    source_type: Literal["project_material", "studio_draft", "external_url", "ai_generated"] = "project_material"
+    transform: StudioClipTransformReq = Field(default_factory=StudioClipTransformReq)
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioTimelineSummaryReq(BaseModel):
+    title: str = ""
+    timelineDurationSeconds: float = Field(default=0, ge=0)
+    clipCount: int = Field(default=0, ge=0)
+
+
+class StudioTimelinePayloadReq(BaseModel):
+    version: Literal["studio-export-v2"] = "studio-export-v2"
+    summary: StudioTimelineSummaryReq = Field(default_factory=StudioTimelineSummaryReq)
+    clips: list[StudioClipReq] = Field(default_factory=list)
+
+
+class StudioAudioTrackReq(BaseModel):
+    id: str
+    kind: Literal["voice", "bgm", "sfx"]
+    title: str = ""
+    startSeconds: float = Field(default=0, ge=0)
+    durationSeconds: float = Field(default=0, ge=0)
+    volume: float = Field(default=1, ge=0, le=1.5)
+    asset_id: str = ""
+    storage_path: str = ""
+    content_url: str = ""
+    mime_type: str = ""
+    original_filename: str = ""
+    required: bool = False
+    bind_clip_id: str = ""
+
+
+class StudioAudioPayloadReq(BaseModel):
+    version: Literal["studio-audio-v2"] = "studio-audio-v2"
+    tracks: list[StudioAudioTrackReq] = Field(default_factory=list)
+
+
+class ProjectStudioExportCreateReq(BaseModel):
+    title: str = ""
+    export_format: Literal["mp4-h264", "mp4-h265"] = "mp4-h264"
+    export_resolution: Literal["720p", "1080p", "4K"] = "1080p"
+    aspect_ratio: str = "16:9"
+    timeline_payload: dict[str, Any] | StudioTimelinePayloadReq = Field(default_factory=dict)
+    audio_payload: dict[str, Any] | StudioAudioPayloadReq = Field(default_factory=dict)
+
+
+class ProjectStudioExportUpdateReq(BaseModel):
+    status: str | None = None
+    progress: int | None = None
+    result_asset_id: str | None = None
+    result_work_id: str | None = None
+    cover_asset_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    error_details: dict[str, Any] | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
+class ProjectStudioDraftSaveReq(BaseModel):
+    job_id: str = ""
+    title: str = ""
+    snapshot: dict[str, Any] = {}
+
+
+class ProjectStudioExtractionRunReq(BaseModel):
+    provider_id: str = ""
+    model_name: str = ""
+    focus_kind: Literal["role", "scene", "prop"] = "role"
+    duration: str = ""
+    quality: str = ""
+    script_content: str = ""
+    styles: list[str] = Field(default_factory=list)
+    chapters: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ProjectStudioStoryboardGenerateReq(BaseModel):
+    provider_id: str = ""
+    model_name: str = ""
+    chapter_id: str = ""
+    chapter_title: str = ""
+    chapter_content: str = ""
+    duration: str = ""
+    quality: str = ""
+    sfx: bool = False
+    styles: list[str] = Field(default_factory=list)
+    elements: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProjectMemberAddReq(BaseModel):
@@ -316,6 +424,24 @@ class ProjectChatHistoryTruncateReq(BaseModel):
 
 class ProjectChatSettingsUpdateReq(BaseModel):
     settings: dict[str, Any]
+
+
+class DictionaryOptionReq(BaseModel):
+    id: str
+    label: str = ""
+    description: str = ""
+    chat_parameter_mode: str = ""
+
+
+class DictionaryUpdateReq(BaseModel):
+    label: str = ""
+    description: str = ""
+    default_value: str = ""
+    options: list[DictionaryOptionReq] = []
+
+
+class DictionaryCreateReq(DictionaryUpdateReq):
+    key: str
 
 
 class ExternalMcpModuleCreateReq(BaseModel):
@@ -570,12 +696,18 @@ class CreateApiKeyReq(BaseModel):
 
 # ── LLM Provider ──
 
+class LlmProviderModelConfigReq(BaseModel):
+    name: str
+    model_type: str = "text_generation"
+
+
 class LlmProviderCreateReq(BaseModel):
     name: str
     provider_type: str = "openai-compatible"
     base_url: str
     api_key: str = ""
     models: list[str] = []
+    model_configs: list[LlmProviderModelConfigReq] = []
     default_model: str = ""
     enabled: bool = True
     extra_headers: dict = {}
@@ -588,6 +720,7 @@ class LlmProviderUpdateReq(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     models: list[str] | None = None
+    model_configs: list[LlmProviderModelConfigReq] | None = None
     default_model: str | None = None
     enabled: bool | None = None
     extra_headers: dict | None = None

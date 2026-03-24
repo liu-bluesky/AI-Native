@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 import shutil
 import subprocess
@@ -12,9 +13,11 @@ from pathlib import Path
 from dataclasses import asdict, replace
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 import asyncio
 from services.agent_orchestrator import AgentOrchestrator
@@ -23,7 +26,8 @@ from core.redis_client import get_redis_client
 
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
 from core.auth import decode_token
-from core.deps import employee_store, external_mcp_store, is_admin_like, local_connector_store, project_chat_store, project_material_store, project_store, require_auth, role_store, system_config_store, user_store
+from core.config import get_api_data_dir, get_project_root
+from core.deps import employee_store, external_mcp_store, is_admin_like, local_connector_store, project_chat_store, project_material_store, project_studio_export_store, project_store, require_auth, role_store, system_config_store, user_store
 from services.feedback_service import get_feedback_service
 from services.local_connector_service import (
     LocalConnectorLlmAdapter,
@@ -33,6 +37,7 @@ from services.local_connector_service import (
     list_connector_llm_models,
     parse_local_connector_provider_id,
 )
+from services.llm_model_type_catalog import DEFAULT_MODEL_TYPE
 from models.requests import (
     ProjectAiEntryFileUpdateReq,
     ProjectChatHistoryTruncateReq,
@@ -41,6 +46,16 @@ from models.requests import (
     ProjectCreateReq,
     ProjectMaterialAssetCreateReq,
     ProjectMaterialAssetUpdateReq,
+    StudioAudioPayloadReq,
+    StudioAudioTrackReq,
+    StudioClipReq,
+    StudioClipTransformReq,
+    StudioTimelinePayloadReq,
+    ProjectStudioDraftSaveReq,
+    ProjectStudioExtractionRunReq,
+    ProjectStudioExportCreateReq,
+    ProjectStudioExportUpdateReq,
+    ProjectStudioStoryboardGenerateReq,
     ProjectMemberAddReq,
     ProjectUserAddReq,
     ProjectUpdateReq,
@@ -49,12 +64,15 @@ from models.requests import (
 )
 from stores.json.project_chat_store import ProjectChatMessage
 from stores.json.project_material_store import ProjectMaterialAsset
+from stores.json.project_studio_export_store import ProjectStudioExportJob
 from stores.json.project_store import ProjectConfig, ProjectMember, ProjectUserMember, _now_iso
 from core.role_permissions import has_permission, resolve_role_permissions
 from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType, memory_store, rule_store, skill_store
 
 router = APIRouter(prefix="/api/projects", dependencies=[Depends(require_auth)])
 
+_PROJECT_USERNAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,63}")
+_PROJECT_EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "chat_mode": "system",
@@ -99,6 +117,13 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "tool_retry_count": 0,
     "answer_style": "concise",
     "prefer_conclusion_first": True,
+    "image_aspect_ratio": "1:1",
+    "image_style": "auto",
+    "image_quality": "high",
+    "video_aspect_ratio": "16:9",
+    "video_style": "cinematic",
+    "video_duration_seconds": 5,
+    "video_motion_strength": "medium",
 }
 
 _PROJECT_TYPE_VALUES = {"image", "storyboard_video", "mixed"}
@@ -107,15 +132,16 @@ _PROJECT_TYPE_LABELS = {
     "storyboard_video": "分镜视频项目",
     "mixed": "综合项目",
 }
-_PROJECT_MATERIAL_ASSET_TYPES = {"image", "storyboard", "video"}
+_PROJECT_MATERIAL_ASSET_TYPES = {"image", "storyboard", "video", "audio"}
 _PROJECT_MATERIAL_GROUP_LABELS = {
     "image": "图片",
-    "storyboard_video": "分镜 / 视频",
+    "storyboard_video": "分镜 / 视频 / 音频",
 }
 _PROJECT_MATERIAL_ASSET_LABELS = {
     "image": "图片",
     "storyboard": "分镜",
     "video": "视频",
+    "audio": "音频",
 }
 _PROJECT_MATERIAL_STATUS_VALUES = {"draft", "ready", "archived"}
 _PROJECT_MATERIAL_STATUS_LABELS = {
@@ -123,6 +149,34 @@ _PROJECT_MATERIAL_STATUS_LABELS = {
     "ready": "可用",
     "archived": "归档",
 }
+_PROJECT_MATERIAL_UPLOAD_ROOT = "project-material-files"
+_PROJECT_MATERIAL_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+_PROJECT_MATERIAL_UPLOAD_CHUNK_SIZE = 1024 * 1024
+_PROJECT_STUDIO_EXPORT_STATUS_VALUES = {
+    "draft",
+    "queued",
+    "processing",
+    "succeeded",
+    "failed",
+    "canceled",
+}
+_PROJECT_STUDIO_EXPORT_STATUS_LABELS = {
+    "draft": "草稿",
+    "queued": "排队中",
+    "processing": "处理中",
+    "succeeded": "已完成",
+    "failed": "失败",
+    "canceled": "已取消",
+}
+_PROJECT_STUDIO_EXPORT_SOURCE_TYPE_LABELS = {
+    "studio_export": "正式导出",
+    "studio_draft": "制作草稿",
+}
+_PROJECT_STUDIO_EXPORT_FORMAT_LABELS = {
+    "mp4-h264": "MP4 (H.264)",
+    "mp4-h265": "MP4 (H.265)",
+}
+_PROJECT_STUDIO_EXPORT_RESOLUTION_VALUES = {"720p", "1080p", "4K"}
 
 
 def _serialize_project(project: ProjectConfig) -> dict:
@@ -158,8 +212,827 @@ def _normalize_material_text(value: Any, *, limit: int = 500) -> str:
     return str(value or "").strip()[:limit]
 
 
+def _normalize_studio_export_status(value: Any) -> str:
+    normalized = str(value or "").strip().lower() or "queued"
+    if normalized in _PROJECT_STUDIO_EXPORT_STATUS_VALUES:
+        return normalized
+    raise HTTPException(
+        400,
+        f"studio export status must be one of {sorted(_PROJECT_STUDIO_EXPORT_STATUS_VALUES)}",
+    )
+
+
+def _normalize_studio_export_format(value: Any) -> str:
+    normalized = str(value or "").strip().lower() or "mp4-h264"
+    if normalized in _PROJECT_STUDIO_EXPORT_FORMAT_LABELS:
+        return normalized
+    raise HTTPException(
+        400,
+        f"export_format must be one of {sorted(_PROJECT_STUDIO_EXPORT_FORMAT_LABELS)}",
+    )
+
+
+def _normalize_studio_export_resolution(value: Any) -> str:
+    normalized = str(value or "").strip() or "1080p"
+    if normalized in _PROJECT_STUDIO_EXPORT_RESOLUTION_VALUES:
+        return normalized
+    raise HTTPException(
+        400,
+        f"export_resolution must be one of {sorted(_PROJECT_STUDIO_EXPORT_RESOLUTION_VALUES)}",
+    )
+
+
+def _normalize_studio_export_payload(value: Any, field_name: str) -> dict[str, Any]:
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    if isinstance(value, dict):
+        return value
+    if value in (None, ""):
+        return {}
+    raise HTTPException(400, f"{field_name} must be object")
+
+
+def _normalize_studio_export_duration_seconds(value: Any, field_name: str) -> float:
+    try:
+        duration_seconds = float(value or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"{field_name} must be number") from exc
+    if duration_seconds <= 0:
+        raise HTTPException(400, f"{field_name} must be > 0")
+    return duration_seconds
+
+
+def _normalize_studio_export_nonnegative_seconds(value: Any, field_name: str) -> float:
+    try:
+        seconds = float(value or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"{field_name} must be number") from exc
+    if seconds < 0:
+        raise HTTPException(400, f"{field_name} must be >= 0")
+    return seconds
+
+
+def _normalize_studio_audio_volume(value: Any, field_name: str, *, default: float = 1.0) -> float:
+    if value in (None, ""):
+        return default
+    try:
+        normalized_volume = float(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"{field_name} must be number") from exc
+    return max(0.0, min(1.5, normalized_volume))
+
+
+def _pick_studio_audio_mixer_value(payload: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload and payload.get(key) not in (None, ""):
+            return payload.get(key)
+    return None
+
+
+def _list_studio_model_providers(auth_payload: dict) -> list[dict[str, Any]]:
+    from services.llm_provider_service import get_llm_provider_service
+
+    llm_service = get_llm_provider_service()
+    providers = llm_service.list_providers(
+        enabled_only=True,
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+        include_shared=True,
+    )
+    return list(providers or [])
+
+
+def _serialize_studio_model_provider(provider: dict[str, Any]) -> dict[str, Any]:
+    provider_id = _normalize_material_text(provider.get("id"), limit=120)
+    provider_name = _normalize_material_text(provider.get("name"), limit=120) or provider_id
+    raw_models = provider.get("models")
+    models = []
+    if isinstance(raw_models, list):
+        models = [
+            _normalize_material_text(item, limit=160)
+            for item in raw_models
+            if _normalize_material_text(item, limit=160)
+        ]
+    default_model = _normalize_material_text(provider.get("default_model"), limit=160)
+    if default_model and default_model not in models:
+        models = [default_model, *models]
+    return {
+        "id": provider_id,
+        "name": provider_name,
+        "models": models,
+        "default_model": default_model or (models[0] if models else ""),
+        "is_default": bool(provider.get("is_default")),
+    }
+
+
+def _resolve_studio_model_target(
+    auth_payload: dict,
+    *,
+    preferred_provider_id: str = "",
+    preferred_model_name: str = "",
+) -> tuple[dict[str, Any], str]:
+    from services.llm_provider_service import get_llm_provider_service
+
+    providers = _list_studio_model_providers(auth_payload)
+    if not providers:
+        raise HTTPException(400, "当前没有可用模型，请先配置启用中的模型供应商")
+    llm_service = get_llm_provider_service()
+    normalized_provider_id = _normalize_material_text(preferred_provider_id, limit=120)
+    provider = None
+    if normalized_provider_id:
+        provider = next(
+            (item for item in providers if _normalize_material_text(item.get("id"), limit=120) == normalized_provider_id),
+            None,
+        )
+        if provider is None:
+            raise HTTPException(400, f"provider_id is invalid: {normalized_provider_id}")
+    else:
+        provider = next((item for item in providers if bool(item.get("is_default"))), None) or providers[0]
+    if provider is None:
+        raise HTTPException(400, "没有匹配的模型供应商")
+    model_name = _normalize_material_text(preferred_model_name, limit=160) or _normalize_material_text(
+        provider.get("default_model"),
+        limit=160,
+    )
+    if not model_name:
+        raw_models = provider.get("models")
+        if isinstance(raw_models, list):
+            model_name = next(
+                (
+                    _normalize_material_text(item, limit=160)
+                    for item in raw_models
+                    if _normalize_material_text(item, limit=160)
+                ),
+                "",
+            )
+    if not model_name:
+        raise HTTPException(400, "model_name is required")
+    try:
+        provider_raw = llm_service.get_provider_raw(
+            _normalize_material_text(provider.get("id"), limit=120),
+            owner_username=str(auth_payload.get("sub") or "").strip(),
+            include_all=is_admin_like(auth_payload),
+            include_shared=True,
+        )
+    except TypeError:
+        provider_raw = llm_service.get_provider_raw(_normalize_material_text(provider.get("id"), limit=120))
+    if provider_raw is None:
+        raise HTTPException(404, f"LLM provider {_normalize_material_text(provider.get('id'), limit=120)} not found")
+    return provider_raw, model_name
+
+
+def _parse_studio_llm_json(content: Any) -> dict[str, Any] | list[Any]:
+    raw_text = str(content or "").strip()
+    if not raw_text:
+        raise HTTPException(502, "模型返回为空")
+    candidates = [raw_text]
+    if "```" in raw_text:
+        fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", raw_text, flags=re.IGNORECASE | re.DOTALL)
+        candidates = [*fenced_blocks, raw_text]
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(parsed, (dict, list)):
+                return parsed
+        if "{" in text and "}" in text:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start >= 0 and end > start:
+                try:
+                    parsed = json.loads(text[start : end + 1])
+                except json.JSONDecodeError:
+                    pass
+                else:
+                    if isinstance(parsed, dict):
+                        return parsed
+        if "[" in text and "]" in text:
+            start = text.find("[")
+            end = text.rfind("]")
+            if start >= 0 and end > start:
+                try:
+                    parsed = json.loads(text[start : end + 1])
+                except json.JSONDecodeError:
+                    pass
+                else:
+                    if isinstance(parsed, list):
+                        return parsed
+    raise HTTPException(502, f"模型返回不是合法 JSON：{raw_text[:300]}")
+
+
+def _build_studio_extraction_prompt(req: ProjectStudioExtractionRunReq) -> list[dict[str, str]]:
+    chapters = []
+    for index, chapter in enumerate(req.chapters or [], start=1):
+        if not isinstance(chapter, dict):
+            continue
+        title = _normalize_material_text(chapter.get("title"), limit=120) or f"章节 {index}"
+        content = _normalize_material_text(chapter.get("content"), limit=2000)
+        chapters.append({"title": title, "content": content})
+    payload = {
+        "focus_kind": req.focus_kind,
+        "duration": _normalize_material_text(req.duration, limit=40),
+        "quality": _normalize_material_text(req.quality, limit=40),
+        "styles": [_normalize_material_text(item, limit=80) for item in req.styles if _normalize_material_text(item, limit=80)],
+        "script_content": _normalize_material_text(req.script_content, limit=6000),
+        "chapters": chapters,
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是短片制作中的美术设定助手。"
+                "你必须只输出 JSON，不要输出 markdown。"
+                "返回结构必须是对象，且仅包含 roles、scenes、props 三个数组字段。"
+                "每个数组项字段仅允许: name, status, summary。"
+                "status 只允许 detected 或 pending。"
+                "结合剧本与风格提取角色、场景、道具，避免重复和空泛描述。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "请为短片工作台生成基础元素提取结果。\n"
+                f"输入数据: {json.dumps(payload, ensure_ascii=False)}\n"
+                "要求：每类返回 2~6 条；name 简洁可落地；summary 一句话描述；只返回 JSON 对象。"
+            ),
+        },
+    ]
+
+
+def _normalize_studio_extraction_items(
+    payload: dict[str, Any] | list[Any],
+    *,
+    provider_id: str,
+    model_name: str,
+) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        payload = {"roles": payload, "scenes": [], "props": []}
+    if not isinstance(payload, dict):
+        raise HTTPException(502, "提取结果格式错误")
+    key_mapping = {
+        "role": ("roles", "role"),
+        "scene": ("scenes", "scene"),
+        "prop": ("props", "prop"),
+    }
+    normalized_items: list[dict[str, Any]] = []
+    timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
+    for kind, keys in key_mapping.items():
+        raw_items = []
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                raw_items = value
+                break
+        for index, item in enumerate(raw_items, start=1):
+            if isinstance(item, str):
+                item = {"name": item}
+            if not isinstance(item, dict):
+                continue
+            name = _normalize_material_text(item.get("name"), limit=120)
+            if not name:
+                continue
+            status = _normalize_material_text(item.get("status"), limit=20).lower()
+            normalized_items.append(
+                {
+                    "id": f"{kind}-{timestamp}-{index}",
+                    "kind": kind,
+                    "name": name,
+                    "status": status if status in {"detected", "pending"} else "detected",
+                    "metadata": {
+                        "summary": _normalize_material_text(item.get("summary"), limit=240),
+                        "provider_id": provider_id,
+                        "model_name": model_name,
+                    },
+                }
+            )
+    if not normalized_items:
+        raise HTTPException(502, "模型没有返回可用的提取结果")
+    return normalized_items
+
+
+def _build_studio_storyboard_prompt(req: ProjectStudioStoryboardGenerateReq) -> list[dict[str, str]]:
+    normalized_elements = []
+    for item in req.elements or []:
+        if not isinstance(item, dict):
+            continue
+        kind = _normalize_material_text(item.get("kind"), limit=40)
+        name = _normalize_material_text(item.get("name"), limit=120)
+        if not kind or not name:
+            continue
+        normalized_elements.append({"kind": kind, "name": name})
+    payload = {
+        "chapter_id": _normalize_material_text(req.chapter_id, limit=120),
+        "chapter_title": _normalize_material_text(req.chapter_title, limit=120),
+        "chapter_content": _normalize_material_text(req.chapter_content, limit=4000),
+        "duration": _normalize_material_text(req.duration, limit=40),
+        "quality": _normalize_material_text(req.quality, limit=40),
+        "sfx": bool(req.sfx),
+        "styles": [_normalize_material_text(item, limit=80) for item in req.styles if _normalize_material_text(item, limit=80)],
+        "elements": normalized_elements[:24],
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是短片分镜设计助手。"
+                "你必须只输出 JSON，不要输出 markdown。"
+                "返回结构必须是对象，且仅包含 storyboards 数组字段。"
+                "每个数组项字段仅允许: title, duration_seconds, summary。"
+                "title 要像镜头标题；duration_seconds 为数字；summary 一句话说明镜头内容。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "请根据章节内容生成可直接用于短片工作台的分镜草案。\n"
+                f"输入数据: {json.dumps(payload, ensure_ascii=False)}\n"
+                "要求：返回 3~6 条 storyboards；时长通常围绕给定时长上下浮动 1~2 秒；只返回 JSON 对象。"
+            ),
+        },
+    ]
+
+
+def _parse_duration_label_seconds(value: Any, default: int = 8) -> int:
+    text = _normalize_material_text(value, limit=40)
+    match = re.search(r"(\d+)", text)
+    if not match:
+        return default
+    try:
+        return max(3, min(30, int(match.group(1))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_studio_storyboards(
+    payload: dict[str, Any] | list[Any],
+    *,
+    chapter_id: str,
+    provider_id: str,
+    model_name: str,
+    preferred_duration_seconds: int,
+) -> list[dict[str, Any]]:
+    raw_items = payload
+    if isinstance(payload, dict):
+        raw_items = payload.get("storyboards")
+    if not isinstance(raw_items, list):
+        raise HTTPException(502, "分镜结果格式错误")
+    normalized_items: list[dict[str, Any]] = []
+    now = datetime.now(timezone.utc)
+    timestamp = int(now.timestamp() * 1000)
+    for index, item in enumerate(raw_items, start=1):
+        if isinstance(item, str):
+            item = {"title": item}
+        if not isinstance(item, dict):
+            continue
+        title = _normalize_material_text(item.get("title"), limit=160)
+        if not title:
+            continue
+        try:
+            duration_seconds = int(round(float(item.get("duration_seconds", preferred_duration_seconds))))
+        except (TypeError, ValueError):
+            duration_seconds = preferred_duration_seconds
+        duration_seconds = max(3, min(30, duration_seconds))
+        normalized_items.append(
+            {
+                "id": f"storyboard-{chapter_id or 'chapter'}-{timestamp}-{index}",
+                "chapterId": chapter_id,
+                "title": title,
+                "summary": _normalize_material_text(item.get("summary"), limit=240),
+                "durationSeconds": duration_seconds,
+                "generatedDurationSeconds": duration_seconds,
+                "durationLocked": True,
+                "hasVoice": False,
+                "selected": False,
+                "status": "draft",
+                "updatedAt": now.isoformat(),
+                "metadata": {
+                    "provider_id": provider_id,
+                    "model_name": model_name,
+                },
+            }
+        )
+    if not normalized_items:
+        raise HTTPException(502, "模型没有返回可用分镜")
+    return normalized_items
+
+
+def _infer_studio_clip_type(source: dict[str, Any]) -> str:
+    mime_type = _normalize_material_text(
+        source.get("mime_type") or source.get("mimeType"),
+        limit=120,
+    ).lower()
+    if mime_type.startswith("image/"):
+        return "image"
+    if mime_type.startswith("video/"):
+        return "video"
+    locator = " ".join(
+        [
+            _normalize_material_text(source.get("content_url") or source.get("contentUrl"), limit=500).lower(),
+            _normalize_material_text(source.get("preview_url") or source.get("previewUrl"), limit=500).lower(),
+            _normalize_material_text(source.get("storage_path") or source.get("storagePath"), limit=500).lower(),
+            _normalize_material_text(source.get("original_filename") or source.get("originalFilename"), limit=240).lower(),
+        ]
+    )
+    if any(ext in locator for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
+        return "image"
+    return "video"
+
+
+def _normalize_studio_clip_transform(value: Any) -> dict[str, Any]:
+    if isinstance(value, BaseModel):
+        value = value.model_dump()
+    raw = value if isinstance(value, dict) else {}
+    normalized = StudioClipTransformReq(
+        fit=_normalize_material_text(raw.get("fit"), limit=20) or "cover",
+        align=_normalize_material_text(raw.get("align"), limit=20) or "center",
+        background=_normalize_material_text(raw.get("background"), limit=20) or "#000000",
+    )
+    return normalized.model_dump()
+
+
+def _normalize_studio_timeline_payload(value: Any) -> dict[str, Any]:
+    payload = _normalize_studio_export_payload(value, "timeline_payload")
+    version = _normalize_material_text(payload.get("version"), limit=40) or "studio-export-legacy"
+    raw_summary = payload.get("summary")
+    if isinstance(raw_summary, BaseModel):
+        raw_summary = raw_summary.model_dump()
+    summary = raw_summary if isinstance(raw_summary, dict) else {}
+    raw_clips = payload.get("clips")
+    if not isinstance(raw_clips, list) or not raw_clips:
+        raise HTTPException(400, "timeline_payload.clips is required")
+
+    normalized_clips: list[dict[str, Any]] = []
+    seen_clip_ids: set[str] = set()
+    total_duration_seconds = 0.0
+    for index, raw_clip in enumerate(raw_clips, start=1):
+        if isinstance(raw_clip, BaseModel):
+            raw_clip = raw_clip.model_dump()
+        if not isinstance(raw_clip, dict):
+            raise HTTPException(400, f"timeline_payload.clips[{index - 1}] must be object")
+        normalized_clip_id = _normalize_material_text(raw_clip.get("id"), limit=120) or f"clip-{index}"
+        if normalized_clip_id in seen_clip_ids:
+            raise HTTPException(400, f"timeline_payload.clips contains duplicated id: {normalized_clip_id}")
+        seen_clip_ids.add(normalized_clip_id)
+        duration_seconds = _normalize_studio_export_duration_seconds(
+            raw_clip.get("durationSeconds", raw_clip.get("duration_seconds")),
+            f"timeline_payload.clips[{index - 1}].durationSeconds",
+        )
+        start_seconds = _normalize_studio_export_nonnegative_seconds(
+            raw_clip.get("startSeconds", raw_clip.get("start_seconds")),
+            f"timeline_payload.clips[{index - 1}].startSeconds",
+        )
+        source_id = _normalize_material_text(
+            raw_clip.get("asset_id") or raw_clip.get("assetId") or raw_clip.get("sourceId") or raw_clip.get("source_id"),
+            limit=120,
+        )
+        source_type = _normalize_material_text(
+            raw_clip.get("source_type") or raw_clip.get("sourceType"),
+            limit=40,
+        ) or ("material" if source_id else "storyboard")
+        content_url = _normalize_material_url(raw_clip.get("content_url") or raw_clip.get("contentUrl"))
+        preview_url = _normalize_material_url(raw_clip.get("preview_url") or raw_clip.get("previewUrl"))
+        storage_path = _normalize_material_text(
+            raw_clip.get("storage_path") or raw_clip.get("storagePath"),
+            limit=500,
+        )
+        mime_type = _normalize_material_text(
+            raw_clip.get("mime_type") or raw_clip.get("mimeType"),
+            limit=120,
+        )
+        original_filename = _normalize_material_text(
+            raw_clip.get("original_filename") or raw_clip.get("originalFilename"),
+            limit=240,
+        )
+        normalized_type = _normalize_material_text(raw_clip.get("type"), limit=20).lower() or _infer_studio_clip_type(raw_clip)
+        clip_model = StudioClipReq(
+            id=normalized_clip_id,
+            type="image" if normalized_type == "image" else "video",
+            title=_normalize_material_text(raw_clip.get("title"), limit=120) or f"片段 {index}",
+            durationSeconds=duration_seconds,
+            startSeconds=start_seconds,
+            asset_id=source_id,
+            storage_path=storage_path,
+            content_url=content_url,
+            preview_url=preview_url,
+            mime_type=mime_type,
+            original_filename=original_filename,
+            source_type=(
+                source_type
+                if source_type in {"project_material", "studio_draft", "external_url", "ai_generated"}
+                else ("project_material" if source_id else "external_url" if content_url.startswith(("http://", "https://", "data:")) else "studio_draft")
+            ),
+            transform=StudioClipTransformReq(**_normalize_studio_clip_transform(raw_clip.get("transform"))),
+            meta=_normalize_material_mapping(raw_clip.get("meta")),
+        )
+        normalized_clip = clip_model.model_dump()
+        normalized_clip["source_id"] = source_id
+        normalized_clip["source_type"] = clip_model.source_type
+        normalized_clip["duration_seconds"] = duration_seconds
+        normalized_clip["start_seconds"] = start_seconds
+        normalized_clips.append(normalized_clip)
+        total_duration_seconds += duration_seconds
+
+    summary_duration_seconds = (
+        _normalize_studio_export_nonnegative_seconds(
+            summary.get("timelineDurationSeconds", summary.get("timeline_duration_seconds")),
+            "timeline_payload.summary.timelineDurationSeconds",
+        )
+        if summary.get("timelineDurationSeconds", summary.get("timeline_duration_seconds")) not in (None, "")
+        else total_duration_seconds
+    )
+    return {
+        "version": "studio-export-v2",
+        "summary": {
+            "title": _normalize_material_text(summary.get("title") or payload.get("title"), limit=120),
+            "timelineDurationSeconds": max(total_duration_seconds, summary_duration_seconds),
+            "clipCount": len(normalized_clips),
+        },
+        "clips": normalized_clips,
+    }
+
+
+def _normalize_studio_audio_payload(value: Any, timeline_payload: dict[str, Any]) -> dict[str, Any]:
+    payload = _normalize_studio_export_payload(value, "audio_payload")
+    raw_mixer = payload.get("mixer")
+    mixer_payload = raw_mixer if isinstance(raw_mixer, dict) else {}
+    normalized_mixer: dict[str, float] = {}
+    mixer_volume_specs = (
+        ("video_volume", "videoVolume", 1.0),
+        ("voice_volume", "voiceVolume", 1.0),
+        ("bgm_volume", "bgmVolume", 0.56),
+    )
+    for snake_key, camel_key, default_volume in mixer_volume_specs:
+        mixer_value = _pick_studio_audio_mixer_value(mixer_payload, snake_key, camel_key)
+        if mixer_value in (None, ""):
+            continue
+        normalized_mixer[snake_key] = _normalize_studio_audio_volume(
+            mixer_value,
+            f"audio_payload.mixer.{snake_key}",
+            default=default_volume,
+        )
+    raw_tracks = payload.get("tracks")
+    if raw_tracks in (None, ""):
+        raw_tracks = []
+    if not isinstance(raw_tracks, list):
+        raise HTTPException(400, "audio_payload.tracks must be array")
+    known_clip_ids = {
+        _normalize_material_text(item.get("id"), limit=120)
+        for item in timeline_payload.get("clips") or []
+        if isinstance(item, dict)
+    }
+    normalized_tracks: list[dict[str, Any]] = []
+    for track_index, raw_track in enumerate(raw_tracks, start=1):
+        if isinstance(raw_track, BaseModel):
+            raw_track = raw_track.model_dump()
+        if not isinstance(raw_track, dict):
+            raise HTTPException(400, f"audio_payload.tracks[{track_index - 1}] must be object")
+        kind = _normalize_material_text(raw_track.get("kind"), limit=20).lower() or "bgm"
+        if kind not in {"voice", "bgm", "sfx"}:
+            raise HTTPException(400, f"audio_payload.tracks[{track_index - 1}].kind is invalid")
+        track_id = _normalize_material_text(raw_track.get("id"), limit=120) or f"audio-track-{track_index}"
+        title = _normalize_material_text(raw_track.get("title") or raw_track.get("label"), limit=120) or f"音轨 {track_index}"
+        storage_path = _normalize_material_text(
+            raw_track.get("storage_path") or raw_track.get("storagePath"),
+            limit=500,
+        )
+        source_url = _normalize_material_url(
+            raw_track.get("content_url") or raw_track.get("contentUrl") or raw_track.get("source_url") or raw_track.get("sourceUrl")
+        )
+        mime_type = _normalize_material_text(
+            raw_track.get("mime_type") or raw_track.get("mimeType"),
+            limit=120,
+        )
+        original_filename = _normalize_material_text(
+            raw_track.get("original_filename") or raw_track.get("originalFilename"),
+            limit=240,
+        )
+        bind_clip_id = _normalize_material_text(
+            raw_track.get("bind_clip_id") or raw_track.get("bindClipId"),
+            limit=120,
+        )
+        if bind_clip_id and bind_clip_id not in known_clip_ids:
+            raise HTTPException(400, f"audio_payload.tracks[{track_index - 1}].bind_clip_id not found: {bind_clip_id}")
+        required = bool(raw_track.get("required"))
+        base_volume = raw_track.get("volume")
+        default_volume = normalized_mixer.get(f"{kind}_volume", 1.0)
+        normalized_volume = _normalize_studio_audio_volume(
+            base_volume,
+            f"audio_payload.tracks[{track_index - 1}].volume",
+            default=default_volume,
+        )
+        raw_segments = raw_track.get("segments")
+        segments: list[dict[str, Any]] = []
+        if isinstance(raw_segments, list):
+            for segment_index, raw_segment in enumerate(raw_segments, start=1):
+                if not isinstance(raw_segment, dict):
+                    raise HTTPException(
+                        400,
+                        f"audio_payload.tracks[{track_index - 1}].segments[{segment_index - 1}] must be object",
+                    )
+                duration_seconds = _normalize_studio_export_duration_seconds(
+                    raw_segment.get("durationSeconds", raw_segment.get("duration_seconds")),
+                    f"audio_payload.tracks[{track_index - 1}].segments[{segment_index - 1}].durationSeconds",
+                )
+                start_seconds = _normalize_studio_export_nonnegative_seconds(
+                    raw_segment.get("startSeconds", raw_segment.get("start_seconds")),
+                    f"audio_payload.tracks[{track_index - 1}].segments[{segment_index - 1}].startSeconds",
+                )
+                segment_volume = _normalize_studio_audio_volume(
+                    raw_segment.get("volume"),
+                    f"audio_payload.tracks[{track_index - 1}].segments[{segment_index - 1}].volume",
+                    default=normalized_volume,
+                )
+                segments.append(
+                    {
+                        "id": _normalize_material_text(raw_segment.get("id"), limit=120) or f"{track_id}-segment-{segment_index}",
+                        "label": _normalize_material_text(raw_segment.get("label"), limit=120) or f"{title} 片段 {segment_index}",
+                        "start_seconds": start_seconds,
+                        "duration_seconds": duration_seconds,
+                        "source_url": _normalize_material_url(
+                            raw_segment.get("source_url") or raw_segment.get("sourceUrl")
+                        ),
+                        "storage_path": _normalize_material_text(
+                            raw_segment.get("storage_path") or raw_segment.get("storagePath"),
+                            limit=500,
+                        ),
+                        "mime_type": _normalize_material_text(
+                            raw_segment.get("mime_type") or raw_segment.get("mimeType"),
+                            limit=120,
+                        ),
+                        "original_filename": _normalize_material_text(
+                            raw_segment.get("original_filename") or raw_segment.get("originalFilename"),
+                            limit=240,
+                        ),
+                        "volume": segment_volume,
+                        "required": required,
+                        "bind_clip_id": bind_clip_id,
+                    }
+                )
+        else:
+            duration_seconds = raw_track.get("durationSeconds", raw_track.get("duration_seconds"))
+            if duration_seconds not in (None, ""):
+                track_model = StudioAudioTrackReq(
+                    id=track_id,
+                    kind=kind,
+                    title=title,
+                    startSeconds=_normalize_studio_export_nonnegative_seconds(
+                        raw_track.get("startSeconds", raw_track.get("start_seconds")),
+                        f"audio_payload.tracks[{track_index - 1}].startSeconds",
+                    ),
+                    durationSeconds=_normalize_studio_export_duration_seconds(
+                        duration_seconds,
+                        f"audio_payload.tracks[{track_index - 1}].durationSeconds",
+                    ),
+                    volume=normalized_volume,
+                    asset_id=_normalize_material_text(
+                        raw_track.get("asset_id") or raw_track.get("assetId"),
+                        limit=120,
+                    ),
+                    storage_path=storage_path,
+                    content_url=source_url,
+                    mime_type=mime_type,
+                    original_filename=original_filename,
+                    required=required,
+                    bind_clip_id=bind_clip_id,
+                )
+                track_payload = track_model.model_dump()
+                segments = [
+                    {
+                        "id": track_payload["id"],
+                        "label": track_payload["title"] or title,
+                        "start_seconds": track_payload["startSeconds"],
+                        "duration_seconds": track_payload["durationSeconds"],
+                        "source_url": track_payload["content_url"],
+                        "storage_path": track_payload["storage_path"],
+                        "mime_type": track_payload["mime_type"],
+                        "original_filename": track_payload["original_filename"],
+                        "volume": track_payload["volume"],
+                        "required": track_payload["required"],
+                        "bind_clip_id": track_payload["bind_clip_id"],
+                    }
+                ]
+        if not segments:
+            continue
+        normalized_tracks.append(
+            {
+                "id": track_id,
+                "kind": kind,
+                "label": title,
+                "source_url": source_url,
+                "storage_path": storage_path,
+                "mime_type": mime_type,
+                "original_filename": original_filename,
+                "volume": normalized_volume,
+                "required": required,
+                "bind_clip_id": bind_clip_id,
+                "segments": segments,
+            }
+        )
+    normalized_payload = StudioAudioPayloadReq(
+        version="studio-audio-v2",
+        tracks=[
+            StudioAudioTrackReq(
+                id=item["id"],
+                kind=item["kind"],
+                title=item["label"],
+                startSeconds=float(item["segments"][0]["start_seconds"]),
+                durationSeconds=float(item["segments"][0]["duration_seconds"]),
+                volume=float(item["volume"]),
+                storage_path=item["storage_path"],
+                content_url=item["source_url"],
+                mime_type=item["mime_type"],
+                original_filename=item["original_filename"],
+                required=bool(item["required"]),
+                bind_clip_id=item["bind_clip_id"],
+            )
+            for item in normalized_tracks
+        ],
+    )
+    payload_data = normalized_payload.model_dump()
+    if normalized_mixer:
+        payload_data["mixer"] = normalized_mixer
+    payload_data["tracks"] = normalized_tracks
+    return payload_data
+
+
+def _normalize_studio_export_progress(value: Any) -> int:
+    try:
+        progress = int(round(float(value or 0)))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "progress must be number") from exc
+    return max(0, min(100, progress))
+
+
+def _extract_studio_export_clip_count(timeline_payload: dict[str, Any]) -> int:
+    clips = timeline_payload.get("clips")
+    if isinstance(clips, list):
+        return len(clips)
+    return 0
+
+
+def _extract_studio_export_timeline_duration_seconds(timeline_payload: dict[str, Any]) -> int:
+    summary = timeline_payload.get("summary")
+    if isinstance(summary, dict):
+        for key in ("timelineDurationSeconds", "timeline_duration_seconds"):
+            try:
+                duration = int(round(float(summary.get(key) or 0)))
+            except (TypeError, ValueError):
+                duration = 0
+            if duration > 0:
+                return duration
+    duration_seconds = 0
+    clips = timeline_payload.get("clips")
+    if isinstance(clips, list):
+        for item in clips:
+            if not isinstance(item, dict):
+                continue
+            try:
+                duration_seconds += max(
+                    0,
+                    int(round(float(item.get("durationSeconds") or item.get("duration_seconds") or 0))),
+                )
+            except (TypeError, ValueError):
+                continue
+    return duration_seconds
+
+
+def _derive_studio_export_title(
+    requested_title: Any,
+    export_format: str,
+    export_resolution: str,
+    timeline_payload: dict[str, Any],
+) -> str:
+    normalized_title = _normalize_material_text(requested_title, limit=120)
+    if normalized_title:
+        return normalized_title
+    summary = timeline_payload.get("summary")
+    if isinstance(summary, dict):
+        draft_title = _normalize_material_text(
+            summary.get("title") or summary.get("draftTitle"),
+            limit=120,
+        )
+        if draft_title:
+            return draft_title
+    return f"正式导出 {export_resolution} / {_PROJECT_STUDIO_EXPORT_FORMAT_LABELS.get(export_format, export_format)}"
+
+
 def _normalize_material_url(value: Any, *, limit: int = 20000) -> str:
-    return str(value or "").strip()[:limit]
+    normalized = str(value or "").strip()[:limit]
+    if not normalized:
+        return ""
+    lowered = normalized.lower()
+    if lowered.startswith("file://"):
+        raise HTTPException(400, "素材地址不支持 file:// 本地路径，请改用 http(s) 地址或先上传到服务器")
+    if lowered.startswith(("http://", "https://", "data:")) or normalized.startswith("/"):
+        return normalized
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", normalized):
+        raise HTTPException(400, "素材地址仅支持 http(s)、data URL 或站内相对路径")
+    return normalized
 
 
 def _normalize_material_mapping(value: Any) -> dict[str, Any]:
@@ -168,11 +1041,232 @@ def _normalize_material_mapping(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _parse_material_json_text(value: Any, field_name: str) -> dict[str, Any]:
+    source = str(value or "").strip()
+    if not source:
+        return {}
+    try:
+        parsed = json.loads(source)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, f"{field_name} must be valid JSON object text") from exc
+    if isinstance(parsed, dict):
+        return parsed
+    raise HTTPException(400, f"{field_name} must be valid JSON object text")
+
+
+def _normalize_material_video_duration_seconds(value: Any) -> int:
+    try:
+        duration = round(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+    if duration <= 0:
+        return 0
+    return max(1, int(duration))
+
+
+def _extract_material_video_duration_seconds(metadata: dict[str, Any] | None) -> int:
+    if not isinstance(metadata, dict):
+        return 0
+    for key in (
+        "duration_seconds",
+        "durationSeconds",
+        "video_duration_seconds",
+        "videoDurationSeconds",
+    ):
+        normalized_duration = _normalize_material_video_duration_seconds(metadata.get(key))
+        if normalized_duration > 0:
+            return normalized_duration
+    return 0
+
+
+def _require_material_video_duration_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    normalized_metadata = dict(metadata or {})
+    duration_seconds = _extract_material_video_duration_seconds(normalized_metadata)
+    if duration_seconds <= 0:
+        raise HTTPException(400, "视频素材缺少有效时长，无法上传")
+    normalized_metadata["duration_seconds"] = duration_seconds
+    normalized_metadata["durationSeconds"] = duration_seconds
+    normalized_metadata["video_duration_seconds"] = duration_seconds
+    normalized_metadata["videoDurationSeconds"] = duration_seconds
+    return normalized_metadata
+
+
+def _project_material_file_root() -> Path:
+    root = get_api_data_dir() / _PROJECT_MATERIAL_UPLOAD_ROOT
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _sanitize_material_filename(filename: str, fallback_name: str) -> str:
+    raw_name = Path(str(filename or "").strip()).name or fallback_name
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_name).strip(".-")
+    if not sanitized:
+        sanitized = fallback_name
+    return sanitized[:180]
+
+
+def _build_inline_content_disposition(filename: str, fallback_name: str) -> str:
+    raw_name = Path(str(filename or "").strip()).name or fallback_name
+    normalized_name = raw_name.replace("\r", "").replace("\n", "").replace('"', "")
+    safe_fallback = _sanitize_material_filename(normalized_name, fallback_name)
+    encoded_name = quote(normalized_name, safe="")
+    return f"inline; filename={safe_fallback}; filename*=UTF-8''{encoded_name}"
+
+
+def _infer_material_upload_mime_type(upload: UploadFile, fallback: str = "") -> str:
+    explicit = str(fallback or "").strip()
+    if explicit:
+        return explicit
+    content_type = str(getattr(upload, "content_type", "") or "").strip()
+    if content_type:
+        return content_type[:120]
+    guessed, _ = mimetypes.guess_type(str(getattr(upload, "filename", "") or ""))
+    return str(guessed or "").strip()[:120]
+
+
+def _validate_material_upload_type(asset_type: str, mime_type: str) -> None:
+    normalized_mime = str(mime_type or "").strip().lower()
+    if asset_type == "image" and not normalized_mime.startswith("image/"):
+        raise HTTPException(400, "图片素材请上传图片文件")
+    if asset_type == "video" and not normalized_mime.startswith("video/"):
+        raise HTTPException(400, "视频素材请上传视频文件")
+    if asset_type == "audio" and not normalized_mime.startswith("audio/"):
+        raise HTTPException(400, "音频素材请上传音频文件")
+
+
+def _validate_material_cover_upload_type(mime_type: str) -> None:
+    normalized_mime = str(mime_type or "").strip().lower()
+    if not normalized_mime.startswith("image/"):
+        raise HTTPException(400, "视频封面请上传图片文件")
+
+
+def _validate_studio_audio_upload_type(mime_type: str) -> None:
+    normalized_mime = str(mime_type or "").strip().lower()
+    if not normalized_mime.startswith("audio/"):
+        raise HTTPException(400, "背景音乐请上传音频文件")
+
+
+async def _write_material_upload_file(upload: UploadFile, destination: Path) -> int:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    total_size = 0
+    try:
+        with destination.open("wb") as handle:
+            while True:
+                chunk = await upload.read(_PROJECT_MATERIAL_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > _PROJECT_MATERIAL_UPLOAD_MAX_BYTES:
+                    raise HTTPException(400, "上传文件过大，当前上限为 200MB")
+                handle.write(chunk)
+    except Exception:
+        if destination.exists():
+            destination.unlink(missing_ok=True)
+        raise
+    if total_size <= 0:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(400, "Uploaded file is empty")
+    return total_size
+
+
+def _build_material_file_url(project_id: str, asset_id: str) -> str:
+    normalized_project_id = str(project_id or "").strip()
+    normalized_asset_id = str(asset_id or "").strip()
+    return f"/api/projects/{normalized_project_id}/materials/{normalized_asset_id}/file"
+
+
+def _build_material_cover_url(project_id: str, asset_id: str) -> str:
+    normalized_project_id = str(project_id or "").strip()
+    normalized_asset_id = str(asset_id or "").strip()
+    return f"/api/projects/{normalized_project_id}/materials/{normalized_asset_id}/cover"
+
+
+def _build_studio_audio_file_url(project_id: str, audio_id: str) -> str:
+    normalized_project_id = str(project_id or "").strip()
+    normalized_audio_id = str(audio_id or "").strip()
+    return f"/api/projects/{normalized_project_id}/studio/audio/{normalized_audio_id}/file"
+
+
+def _resolve_studio_audio_storage_path(project_id: str, audio_id: str, file_name: str) -> Path | None:
+    normalized_project_id = str(project_id or "").strip()
+    normalized_audio_id = str(audio_id or "").strip()
+    safe_file_name = _sanitize_material_filename(file_name, f"{normalized_audio_id}.bin")
+    if not normalized_project_id or not normalized_audio_id or not safe_file_name:
+        return None
+    relative_path = Path(normalized_project_id) / "studio-audio" / normalized_audio_id / safe_file_name
+    return (_project_material_file_root() / relative_path).resolve()
+
+
+def _resolve_material_storage_path(storage_path: str) -> Path | None:
+    if not storage_path:
+        return None
+    relative_path = Path(storage_path)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        return None
+    return (_project_material_file_root() / relative_path).resolve()
+
+
+def _resolve_material_file_path(asset: ProjectMaterialAsset) -> Path | None:
+    storage_path = str((asset.metadata or {}).get("storage_path") or "").strip()
+    return _resolve_material_storage_path(storage_path)
+
+
+def _resolve_material_cover_path(asset: ProjectMaterialAsset) -> Path | None:
+    storage_path = str((asset.metadata or {}).get("cover_storage_path") or "").strip()
+    return _resolve_material_storage_path(storage_path)
+
+
+def _delete_material_storage_path(storage_path: str) -> None:
+    target_path = _resolve_material_storage_path(storage_path)
+    if target_path is None or not target_path.exists():
+        return
+    root = _project_material_file_root().resolve()
+    if root not in target_path.parents:
+        return
+    if target_path.is_file():
+        target_path.unlink(missing_ok=True)
+    parent = target_path.parent
+    while parent != root and parent.exists():
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+        parent = parent.parent
+
+
+def _delete_material_file(asset: ProjectMaterialAsset) -> None:
+    paths = {
+        str((asset.metadata or {}).get("storage_path") or "").strip(),
+        str((asset.metadata or {}).get("cover_storage_path") or "").strip(),
+    }
+    for storage_path in paths:
+        if storage_path:
+            _delete_material_storage_path(storage_path)
+
+
 def _serialize_project_material_asset(asset: ProjectMaterialAsset) -> dict[str, Any]:
     payload = asdict(asset)
     payload["asset_type_label"] = _PROJECT_MATERIAL_ASSET_LABELS.get(asset.asset_type, asset.asset_type)
     payload["group_type_label"] = _PROJECT_MATERIAL_GROUP_LABELS.get(asset.group_type, asset.group_type)
     payload["status_label"] = _PROJECT_MATERIAL_STATUS_LABELS.get(asset.status, asset.status)
+    return payload
+
+
+def _serialize_project_studio_export_job(job: ProjectStudioExportJob) -> dict[str, Any]:
+    payload = asdict(job)
+    payload["status_label"] = _PROJECT_STUDIO_EXPORT_STATUS_LABELS.get(job.status, job.status)
+    payload["export_format_label"] = _PROJECT_STUDIO_EXPORT_FORMAT_LABELS.get(
+        job.export_format,
+        job.export_format,
+    )
+    payload["source_type_label"] = _PROJECT_STUDIO_EXPORT_SOURCE_TYPE_LABELS.get(
+        job.source_type,
+        job.source_type or "作品记录",
+    )
+    payload["can_retry"] = job.status == "failed"
+    payload["can_cancel"] = job.status in {"queued", "processing"}
+    payload["can_resume"] = job.status == "draft" and job.source_type == "studio_draft"
+    payload["can_delete"] = job.status not in {"queued", "processing"}
     return payload
 
 
@@ -205,6 +1299,48 @@ def _filter_project_material_assets(
                 continue
         result.append(item)
     return result
+
+
+def _normalize_studio_draft_snapshot(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if value in (None, ""):
+        return {}
+    raise HTTPException(400, "snapshot must be object")
+
+
+def _extract_studio_draft_timeline_clips(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    clips = snapshot.get("timelineClips")
+    if not isinstance(clips, list):
+        return []
+    return [item for item in clips if isinstance(item, dict)]
+
+
+def _extract_studio_draft_timeline_duration_seconds(snapshot: dict[str, Any]) -> int:
+    total = 0
+    for clip in _extract_studio_draft_timeline_clips(snapshot):
+        if clip.get("visible") is False:
+            continue
+        try:
+            duration = int(round(float(clip.get("durationSeconds") or 0)))
+        except (TypeError, ValueError):
+            duration = 0
+        if duration > 0:
+            total += duration
+    return max(0, total)
+
+
+def _derive_studio_draft_title(value: Any, snapshot: dict[str, Any]) -> str:
+    explicit = _normalize_material_text(value, limit=120)
+    if explicit:
+        return explicit
+    script_draft = snapshot.get("scriptDraft")
+    script_content = ""
+    if isinstance(script_draft, dict):
+        script_content = _normalize_material_text(script_draft.get("content"), limit=40)
+    if script_content:
+        return f"制作草稿 · {script_content[:24]}"
+    return "短片制作草稿"
 
 
 def _to_unique_string_list(values: Any, *, max_items: int = 100, max_item_len: int = 120) -> list[str]:
@@ -250,7 +1386,95 @@ def _guess_material_image_mime_type(url: str, fallback: Any = "") -> str:
     return "image/png"
 
 
-def _normalize_chat_image_artifacts(values: Any) -> list[dict[str, Any]]:
+def _guess_material_video_mime_type(url: str, fallback: Any = "") -> str:
+    preferred = str(fallback or "").strip().lower()
+    if preferred.startswith("video/"):
+        return preferred[:120]
+    lower = str(url or "").lower()
+    if lower.startswith("data:video/"):
+        return lower.split(";", 1)[0].replace("data:", "", 1)[:120]
+    if ".mp4" in lower:
+        return "video/mp4"
+    if ".mov" in lower:
+        return "video/quicktime"
+    if ".m4v" in lower:
+        return "video/x-m4v"
+    if ".webm" in lower:
+        return "video/webm"
+    if ".avi" in lower:
+        return "video/x-msvideo"
+    if ".mkv" in lower:
+        return "video/x-matroska"
+    return "video/mp4"
+
+
+def _guess_material_audio_mime_type(url: str, fallback: Any = "") -> str:
+    preferred = str(fallback or "").strip().lower()
+    if preferred.startswith("audio/"):
+        return preferred[:120]
+    lower = str(url or "").lower()
+    if lower.startswith("data:audio/"):
+        return lower.split(";", 1)[0].replace("data:", "", 1)[:120]
+    if ".mp3" in lower:
+        return "audio/mpeg"
+    if ".wav" in lower:
+        return "audio/wav"
+    if ".m4a" in lower:
+        return "audio/mp4"
+    if ".aac" in lower:
+        return "audio/aac"
+    if ".ogg" in lower:
+        return "audio/ogg"
+    if ".flac" in lower:
+        return "audio/flac"
+    return "audio/mpeg"
+
+
+def _guess_material_artifact_mime_type(url: str, fallback: Any = "", asset_type: str = "") -> str:
+    hinted_asset_type = str(asset_type or "").strip().lower()
+    preferred = str(fallback or "").strip().lower()
+    if preferred.startswith(("image/", "video/", "audio/")):
+        return preferred[:120]
+    if hinted_asset_type == "video":
+        return _guess_material_video_mime_type(url, fallback)
+    if hinted_asset_type == "audio":
+        return _guess_material_audio_mime_type(url, fallback)
+    if hinted_asset_type == "image":
+        return _guess_material_image_mime_type(url, fallback)
+    lower = str(url or "").lower()
+    if any(ext in lower for ext in (".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv")):
+        return _guess_material_video_mime_type(url, fallback)
+    if any(ext in lower for ext in (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")):
+        return _guess_material_audio_mime_type(url, fallback)
+    return _guess_material_image_mime_type(url, fallback)
+
+
+def _infer_material_artifact_asset_type(
+    *,
+    content_url: str,
+    preview_url: str,
+    mime_type: str = "",
+    hinted_asset_type: str = "",
+) -> str:
+    hinted = str(hinted_asset_type or "").strip().lower()
+    if hinted in _PROJECT_MATERIAL_ASSET_TYPES:
+        return hinted
+    normalized_mime = str(mime_type or "").strip().lower()
+    if normalized_mime.startswith("video/"):
+        return "video"
+    if normalized_mime.startswith("audio/"):
+        return "audio"
+    if normalized_mime.startswith("image/"):
+        return "image"
+    combined = " ".join([str(content_url or "").lower(), str(preview_url or "").lower()])
+    if any(ext in combined for ext in (".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv")):
+        return "video"
+    if any(ext in combined for ext in (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")):
+        return "audio"
+    return "image"
+
+
+def _normalize_chat_media_artifacts(values: Any) -> list[dict[str, Any]]:
     if not isinstance(values, list):
         return []
     seen: set[str] = set()
@@ -258,40 +1482,80 @@ def _normalize_chat_image_artifacts(values: Any) -> list[dict[str, Any]]:
     for index, item in enumerate(values, start=1):
         if not isinstance(item, dict):
             continue
+        hinted_asset_type = _normalize_material_text(
+            item.get("asset_type") or item.get("assetType") or item.get("type") or item.get("kind"),
+            limit=20,
+        ).lower()
+        mime_type = _normalize_material_text(
+            item.get("mime_type")
+            or item.get("mimeType")
+            or item.get("content_type")
+            or item.get("contentType")
+            or item.get("media_type")
+            or item.get("mediaType"),
+            limit=120,
+        )
         preview_url = _normalize_material_url(
-            item.get("preview_url") or item.get("previewUrl") or item.get("thumbnail_url") or item.get("thumbnailUrl"),
+            item.get("preview_url")
+            or item.get("previewUrl")
+            or item.get("thumbnail_url")
+            or item.get("thumbnailUrl")
+            or item.get("poster_url")
+            or item.get("posterUrl")
+            or item.get("cover_url")
+            or item.get("coverUrl"),
         )
         content_url = _normalize_material_url(
             item.get("content_url")
             or item.get("contentUrl")
             or item.get("image_url")
             or item.get("imageUrl")
+            or item.get("video_url")
+            or item.get("videoUrl")
             or item.get("url"),
         )
+        asset_type = _infer_material_artifact_asset_type(
+            content_url=content_url,
+            preview_url=preview_url,
+            mime_type=mime_type,
+            hinted_asset_type=hinted_asset_type,
+        )
+        if asset_type == "video":
+            if not content_url:
+                content_url = preview_url
+            if not preview_url:
+                preview_url = content_url
+        else:
+            if not preview_url:
+                preview_url = content_url
+            if not content_url:
+                content_url = preview_url
         if not preview_url:
             preview_url = content_url
         if not content_url:
             content_url = preview_url
         if not preview_url and not content_url:
             continue
-        artifact_key = f"{preview_url}||{content_url}"
+        artifact_key = f"{asset_type}||{preview_url}||{content_url}"
         if artifact_key in seen:
             continue
         seen.add(artifact_key)
         metadata = _normalize_material_mapping(item.get("metadata"))
+        title_fallback = "AI 生成视频" if asset_type == "video" else f"AI 生成图片 #{index}"
         result.append(
             {
-                "asset_type": "image",
+                "asset_type": asset_type,
                 "title": _normalize_material_text(
-                    item.get("title") or f"AI 生成图片 #{index}",
+                    item.get("title") or title_fallback,
                     limit=120,
-                ) or f"AI 生成图片 #{index}",
+                ) or title_fallback,
                 "summary": _normalize_material_text(item.get("summary"), limit=1000),
                 "preview_url": preview_url,
                 "content_url": content_url,
-                "mime_type": _guess_material_image_mime_type(
+                "mime_type": _guess_material_artifact_mime_type(
                     content_url or preview_url,
-                    item.get("mime_type") or item.get("mimeType"),
+                    mime_type,
+                    asset_type,
                 ),
                 "metadata": metadata,
             }
@@ -299,21 +1563,32 @@ def _normalize_chat_image_artifacts(values: Any) -> list[dict[str, Any]]:
     return result
 
 
-def _merge_chat_image_artifacts(
+def _merge_chat_media_artifacts(
     current: list[dict[str, Any]] | None,
     incoming: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
-    return _normalize_chat_image_artifacts([*(current or []), *(incoming or [])])
+    return _normalize_chat_media_artifacts([*(current or []), *(incoming or [])])
 
 
-def _collect_chat_image_urls(values: list[dict[str, Any]] | None) -> list[str]:
+def _collect_chat_artifact_urls(
+    values: list[dict[str, Any]] | None,
+    *,
+    asset_type: str,
+) -> list[str]:
     urls: list[str] = []
     seen: set[str] = set()
     for item in values or []:
-        for candidate in (
-            str((item or {}).get("preview_url") or "").strip(),
-            str((item or {}).get("content_url") or "").strip(),
-        ):
+        if str((item or {}).get("asset_type") or "").strip().lower() != asset_type:
+            continue
+        candidates = (
+            [str((item or {}).get("content_url") or "").strip()]
+            if asset_type == "video"
+            else [
+                str((item or {}).get("preview_url") or "").strip(),
+                str((item or {}).get("content_url") or "").strip(),
+            ]
+        )
+        for candidate in candidates:
             if not candidate or candidate in seen:
                 continue
             seen.add(candidate)
@@ -321,7 +1596,7 @@ def _collect_chat_image_urls(values: list[dict[str, Any]] | None) -> list[str]:
     return urls
 
 
-def _save_chat_image_artifacts_to_materials(
+def _save_chat_media_artifacts_to_materials(
     *,
     project_id: str,
     username: str,
@@ -330,24 +1605,24 @@ def _save_chat_image_artifacts_to_materials(
     artifacts: list[dict[str, Any]] | None,
     tool_name: str = "",
 ) -> list[ProjectMaterialAsset]:
-    normalized_artifacts = _normalize_chat_image_artifacts(artifacts)
+    normalized_artifacts = _normalize_chat_media_artifacts(artifacts)
     if not normalized_artifacts:
         return []
     existing_items = project_material_store.list_by_project(project_id)
     existing_keys: set[str] = set()
     for item in existing_items:
-        if getattr(item, "asset_type", "") != "image":
-            continue
         metadata = item.metadata if isinstance(item.metadata, dict) else {}
         artifact_key = str(metadata.get("artifact_key") or "").strip()
         if artifact_key:
             existing_keys.add(artifact_key)
     saved: list[ProjectMaterialAsset] = []
     for artifact in normalized_artifacts:
+        asset_type = _normalize_material_asset_type(artifact.get("asset_type") or "image")
         preview_url = str(artifact.get("preview_url") or "").strip()
         content_url = str(artifact.get("content_url") or "").strip()
         artifact_key = "||".join(
             [
+                asset_type,
                 str(source_message_id or "").strip(),
                 str(chat_session_id or "").strip(),
                 preview_url,
@@ -365,13 +1640,14 @@ def _save_chat_image_artifacts_to_materials(
         asset = ProjectMaterialAsset(
             id=project_material_store.new_id(),
             project_id=project_id,
-            asset_type="image",
-            group_type="image",
+            asset_type=asset_type,
+            group_type=_infer_material_group_type(asset_type),
             title=_normalize_material_text(
-                artifact.get("title") or "AI 生成图片",
+                artifact.get("title") or ("AI 生成视频" if asset_type == "video" else "AI 生成图片"),
                 limit=120,
-            ) or "AI 生成图片",
+            ) or ("AI 生成视频" if asset_type == "video" else "AI 生成图片"),
             summary=_normalize_material_text(artifact.get("summary"), limit=1000),
+            source_type="ai_generated",
             source_message_id=_normalize_material_text(source_message_id, limit=120),
             source_chat_session_id=_normalize_material_text(chat_session_id, limit=120),
             source_username=_normalize_material_text(username, limit=120),
@@ -380,7 +1656,7 @@ def _save_chat_image_artifacts_to_materials(
             content_url=_normalize_material_url(content_url),
             mime_type=_normalize_material_text(
                 artifact.get("mime_type")
-                or _guess_material_image_mime_type(content_url or preview_url),
+                or _guess_material_artifact_mime_type(content_url or preview_url, asset_type=asset_type),
                 limit=120,
             ),
             status="ready",
@@ -483,6 +1759,21 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     style = str(source.get("answer_style", settings["answer_style"]) or "").strip().lower()
     settings["answer_style"] = style if style in {"concise", "balanced", "detailed"} else settings["answer_style"]
     settings["prefer_conclusion_first"] = _coerce_bool(source.get("prefer_conclusion_first"), settings["prefer_conclusion_first"])
+    image_aspect_ratio = str(source.get("image_aspect_ratio", settings["image_aspect_ratio"]) or "").strip()
+    settings["image_aspect_ratio"] = image_aspect_ratio if image_aspect_ratio in {"1:1", "3:4", "4:3", "9:16", "16:9"} else settings["image_aspect_ratio"]
+    image_style = str(source.get("image_style", settings["image_style"]) or "").strip().lower()
+    settings["image_style"] = image_style if image_style in {"auto", "realistic", "illustration"} else settings["image_style"]
+    image_quality = str(source.get("image_quality", settings["image_quality"]) or "").strip().lower()
+    settings["image_quality"] = image_quality if image_quality in {"standard", "high"} else settings["image_quality"]
+    video_aspect_ratio = str(source.get("video_aspect_ratio", settings["video_aspect_ratio"]) or "").strip()
+    settings["video_aspect_ratio"] = video_aspect_ratio if video_aspect_ratio in {"1:1", "9:16", "16:9"} else settings["video_aspect_ratio"]
+    video_style = str(source.get("video_style", settings["video_style"]) or "").strip().lower()
+    settings["video_style"] = video_style if video_style in {"cinematic", "realistic", "animation"} else settings["video_style"]
+    settings["video_duration_seconds"] = _coerce_int(source.get("video_duration_seconds"), settings["video_duration_seconds"], min_value=3, max_value=30)
+    video_motion_strength = str(source.get("video_motion_strength", settings["video_motion_strength"]) or "").strip().lower()
+    settings["video_motion_strength"] = (
+        video_motion_strength if video_motion_strength in {"low", "medium", "high"} else settings["video_motion_strength"]
+    )
     return settings
 
 
@@ -612,7 +1903,7 @@ def _scan_skill_entries(skill) -> tuple[int, list[str]]:
         return 0, []
     package_path = Path(package_dir)
     if not package_path.is_absolute():
-        package_path = Path(__file__).resolve().parents[3] / package_path
+        package_path = get_project_root() / package_path
     package_path = package_path.resolve()
     if not package_path.exists() or not package_path.is_dir():
         return 0, []
@@ -907,6 +2198,13 @@ async def _build_connector_chat_provider(connector: Any) -> dict[str, Any] | Non
         "provider_type": "local-connector",
         "base_url": connector_base_url(connector),
         "models": models,
+        "model_configs": [
+            {
+                "name": model_name,
+                "model_type": DEFAULT_MODEL_TYPE,
+            }
+            for model_name in models
+        ],
         "default_model": default_model or models[0],
         "enabled": True,
         "is_default": False,
@@ -1483,7 +2781,10 @@ def _normalize_project_username(value: Any) -> str:
     username = str(value or "").strip()
     if not username:
         raise HTTPException(400, "username is required")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,63}", username):
+    if not (
+        _PROJECT_USERNAME_PATTERN.fullmatch(username)
+        or _PROJECT_EMAIL_PATTERN.fullmatch(username)
+    ):
         raise HTTPException(400, "Invalid username format")
     return username
 
@@ -1689,6 +2990,7 @@ def _append_chat_record(
     display_mode: str = "",
     attachments: list[str] | None = None,
     images: list[str] | None = None,
+    videos: list[str] | None = None,
 ) -> None:
     text = str(content or "").strip()
     if not text:
@@ -1705,6 +3007,7 @@ def _append_chat_record(
                 display_mode=str(display_mode or "").strip(),
                 attachments=attachments or [],
                 images=images or [],
+                videos=videos or [],
             )
         )
     except Exception:
@@ -2310,6 +3613,7 @@ async def list_project_materials(
             "image_count": sum(1 for item in items if item.asset_type == "image"),
             "storyboard_count": sum(1 for item in items if item.asset_type == "storyboard"),
             "video_count": sum(1 for item in items if item.asset_type == "video"),
+            "audio_count": sum(1 for item in items if item.asset_type == "audio"),
         },
     }
 
@@ -2330,6 +3634,7 @@ async def create_project_material(
         group_type=_infer_material_group_type(asset_type),
         title=_normalize_material_text(req.title, limit=120),
         summary=_normalize_material_text(req.summary, limit=1000),
+        source_type="manual_collect",
         source_message_id=_normalize_material_text(req.source_message_id, limit=120),
         source_chat_session_id=_normalize_material_text(req.source_chat_session_id, limit=120),
         source_username=_normalize_material_text(req.source_username, limit=120),
@@ -2345,6 +3650,424 @@ async def create_project_material(
         raise HTTPException(400, "title is required")
     project_material_store.save(asset)
     return {"status": "created", "item": _serialize_project_material_asset(asset)}
+
+
+@router.post("/{project_id}/materials/upload")
+async def upload_project_material(
+    project_id: str,
+    file: UploadFile = File(...),
+    cover_file: UploadFile | None = File(None),
+    asset_type: str = Form("image"),
+    title: str = Form(""),
+    summary: str = Form(""),
+    mime_type: str = Form(""),
+    cover_mime_type: str = Form(""),
+    cover_source: str = Form(""),
+    structured_content: str = Form(""),
+    metadata: str = Form(""),
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    normalized_asset_type = _normalize_material_asset_type(asset_type)
+    structured_content_payload = _parse_material_json_text(structured_content, "structured_content")
+    uploaded_metadata = _parse_material_json_text(metadata, "metadata")
+    normalized_title = _normalize_material_text(
+        title or Path(str(file.filename or "").strip()).stem,
+        limit=120,
+    )
+    if not normalized_title:
+        raise HTTPException(400, "title is required")
+    normalized_mime_type = _normalize_material_text(
+        _infer_material_upload_mime_type(file, mime_type),
+        limit=120,
+    )
+    if not normalized_mime_type:
+        raise HTTPException(400, "mime_type is required")
+    _validate_material_upload_type(normalized_asset_type, normalized_mime_type)
+    if normalized_asset_type == "video":
+        uploaded_metadata = _require_material_video_duration_metadata(uploaded_metadata)
+    if normalized_asset_type != "video" and cover_file is not None:
+        await cover_file.close()
+        raise HTTPException(400, "只有视频素材支持单独上传封面")
+    asset_id = project_material_store.new_id()
+    original_filename = Path(str(file.filename or "").strip()).name
+    safe_filename = _sanitize_material_filename(original_filename, f"{asset_id}.bin")
+    relative_path = Path(project_id) / asset_id / safe_filename
+    absolute_path = _project_material_file_root() / relative_path
+    cover_relative_path = Path()
+    cover_file_size_bytes = 0
+    cover_original_filename = ""
+    cover_file_url = ""
+    cover_mime_type_value = ""
+    try:
+        file_size_bytes = await _write_material_upload_file(file, absolute_path)
+        if normalized_asset_type == "video" and cover_file is not None:
+            cover_original_filename = Path(str(cover_file.filename or "").strip()).name
+            safe_cover_filename = _sanitize_material_filename(
+                cover_original_filename,
+                f"{asset_id}-cover.bin",
+            )
+            cover_relative_path = Path(project_id) / asset_id / f"cover-{safe_cover_filename}"
+            cover_absolute_path = _project_material_file_root() / cover_relative_path
+            cover_mime_type_value = _normalize_material_text(
+                _infer_material_upload_mime_type(cover_file, cover_mime_type),
+                limit=120,
+            )
+            _validate_material_cover_upload_type(cover_mime_type_value)
+            cover_file_size_bytes = await _write_material_upload_file(cover_file, cover_absolute_path)
+            cover_file_url = _build_material_cover_url(project_id, asset_id)
+    finally:
+        await file.close()
+        if cover_file is not None:
+            await cover_file.close()
+    uploaded_metadata = {
+        **uploaded_metadata,
+        "storage_kind": "local_file",
+        "storage_path": relative_path.as_posix(),
+    }
+    if cover_file_url and cover_relative_path.as_posix():
+        uploaded_metadata = {
+            **uploaded_metadata,
+            "cover_storage_path": cover_relative_path.as_posix(),
+            "cover_original_filename": _normalize_material_text(cover_original_filename, limit=240),
+            "cover_mime_type": cover_mime_type_value,
+            "cover_file_size_bytes": cover_file_size_bytes,
+            "cover_source": _normalize_material_text(cover_source, limit=120) or "manual_upload",
+        }
+    file_url = _build_material_file_url(project_id, asset_id)
+    preview_url = ""
+    if normalized_asset_type == "image":
+        preview_url = file_url
+    elif normalized_asset_type == "video":
+        preview_url = cover_file_url or file_url
+    asset = ProjectMaterialAsset(
+        id=asset_id,
+        project_id=project_id,
+        asset_type=normalized_asset_type,
+        group_type=_infer_material_group_type(normalized_asset_type),
+        title=normalized_title,
+        summary=_normalize_material_text(summary, limit=1000),
+        source_type="manual_upload",
+        created_by=_normalize_material_text(auth_payload.get("sub"), limit=120),
+        original_filename=_normalize_material_text(original_filename, limit=240),
+        file_size_bytes=file_size_bytes,
+        preview_url=preview_url,
+        content_url=file_url,
+        mime_type=normalized_mime_type,
+        status="ready",
+        structured_content=structured_content_payload,
+        metadata=uploaded_metadata,
+    )
+    project_material_store.save(asset)
+    return {"status": "created", "item": _serialize_project_material_asset(asset)}
+
+
+@router.post("/{project_id}/studio/audio/upload")
+async def upload_project_studio_audio(
+    project_id: str,
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    mime_type: str = Form(""),
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    audio_id = project_studio_export_store.new_id().replace("studio-export-", "studio-audio-", 1)
+    original_filename = Path(str(file.filename or "").strip()).name
+    safe_filename = _sanitize_material_filename(original_filename, f"{audio_id}.bin")
+    normalized_mime_type = _normalize_material_text(
+        _infer_material_upload_mime_type(file, mime_type),
+        limit=120,
+    )
+    _validate_studio_audio_upload_type(normalized_mime_type)
+    relative_path = Path(project_id) / "studio-audio" / audio_id / safe_filename
+    absolute_path = _project_material_file_root() / relative_path
+    try:
+        file_size_bytes = await _write_material_upload_file(file, absolute_path)
+    finally:
+        await file.close()
+    normalized_title = _normalize_material_text(
+        title or Path(original_filename).stem or "背景音乐",
+        limit=120,
+    ) or "背景音乐"
+    return {
+        "status": "created",
+        "item": {
+            "id": audio_id,
+            "title": normalized_title,
+            "content_url": _build_studio_audio_file_url(project_id, audio_id),
+            "mime_type": normalized_mime_type,
+            "original_filename": _normalize_material_text(original_filename, limit=240),
+            "file_size_bytes": file_size_bytes,
+            "storage_path": relative_path.as_posix(),
+            "source_type": "manual_upload",
+        },
+    }
+
+
+@router.get("/{project_id}/studio/audio/{audio_id}/file")
+async def get_project_studio_audio_file(
+    project_id: str,
+    audio_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    normalized_project_id = _normalize_material_text(project_id, limit=120)
+    normalized_audio_id = _normalize_material_text(audio_id, limit=120)
+    if (
+        not normalized_project_id
+        or not normalized_audio_id
+        or "/" in normalized_audio_id
+        or "\\" in normalized_audio_id
+        or ".." in normalized_audio_id
+    ):
+        raise HTTPException(404, "Studio audio not found")
+    audio_root = _project_material_file_root() / normalized_project_id / "studio-audio" / normalized_audio_id
+    if not audio_root.exists() or not audio_root.is_dir():
+        raise HTTPException(404, "Studio audio not found")
+    candidates = sorted(path for path in audio_root.iterdir() if path.is_file())
+    if not candidates:
+        raise HTTPException(404, "Studio audio not found")
+    file_path = candidates[0]
+    mime_type, _ = mimetypes.guess_type(file_path.name)
+    return FileResponse(
+        path=file_path,
+        media_type=_normalize_material_text(mime_type, limit=120) or None,
+        headers={
+            "Content-Disposition": _build_inline_content_disposition(file_path.name, file_path.name)
+        },
+    )
+
+
+@router.get("/{project_id}/studio/model-sources")
+async def list_project_studio_model_sources(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    providers = [
+        _serialize_studio_model_provider(item)
+        for item in _list_studio_model_providers(auth_payload)
+    ]
+    default_provider = next((item for item in providers if bool(item.get("is_default"))), None) or (
+        providers[0] if providers else None
+    )
+    return {
+        "project_id": project_id,
+        "providers": providers,
+        "default_provider_id": _normalize_material_text((default_provider or {}).get("id"), limit=120),
+        "default_model_name": _normalize_material_text((default_provider or {}).get("default_model"), limit=160),
+    }
+
+
+@router.post("/{project_id}/studio/extractions")
+async def run_project_studio_extraction(
+    project_id: str,
+    req: ProjectStudioExtractionRunReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    provider, model_name = _resolve_studio_model_target(
+        auth_payload,
+        preferred_provider_id=req.provider_id,
+        preferred_model_name=req.model_name,
+    )
+    from services.llm_provider_service import get_llm_provider_service
+
+    llm_service = get_llm_provider_service()
+    try:
+        completion = await llm_service.chat_completion(
+            provider_id=_normalize_material_text(provider.get("id"), limit=120),
+            model_name=model_name,
+            messages=_build_studio_extraction_prompt(req),
+            temperature=0.3,
+            max_tokens=1800,
+            timeout=120,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"调用模型失败: {exc}") from exc
+    parsed = _parse_studio_llm_json(completion.get("content"))
+    provider_id = _normalize_material_text(provider.get("id"), limit=120)
+    items = _normalize_studio_extraction_items(
+        parsed,
+        provider_id=provider_id,
+        model_name=model_name,
+    )
+    return {
+        "project_id": project_id,
+        "provider_id": provider_id,
+        "model_name": model_name,
+        "items": items,
+    }
+
+
+@router.post("/{project_id}/studio/storyboards/generate")
+async def generate_project_studio_storyboards(
+    project_id: str,
+    req: ProjectStudioStoryboardGenerateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    provider, model_name = _resolve_studio_model_target(
+        auth_payload,
+        preferred_provider_id=req.provider_id,
+        preferred_model_name=req.model_name,
+    )
+    from services.llm_provider_service import get_llm_provider_service
+
+    llm_service = get_llm_provider_service()
+    try:
+        completion = await llm_service.chat_completion(
+            provider_id=_normalize_material_text(provider.get("id"), limit=120),
+            model_name=model_name,
+            messages=_build_studio_storyboard_prompt(req),
+            temperature=0.35,
+            max_tokens=2200,
+            timeout=120,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"调用模型失败: {exc}") from exc
+    parsed = _parse_studio_llm_json(completion.get("content"))
+    provider_id = _normalize_material_text(provider.get("id"), limit=120)
+    items = _normalize_studio_storyboards(
+        parsed,
+        chapter_id=_normalize_material_text(req.chapter_id, limit=120),
+        provider_id=provider_id,
+        model_name=model_name,
+        preferred_duration_seconds=_parse_duration_label_seconds(req.duration, default=8),
+    )
+    return {
+        "project_id": project_id,
+        "provider_id": provider_id,
+        "model_name": model_name,
+        "items": items,
+    }
+
+
+@router.get("/{project_id}/materials/{asset_id}/file")
+async def get_project_material_file(
+    project_id: str,
+    asset_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    asset = project_material_store.get(project_id, asset_id)
+    if asset is None:
+        raise HTTPException(404, f"Material asset {asset_id} not found")
+    file_path = _resolve_material_file_path(asset)
+    if file_path is None or not file_path.is_file():
+        raise HTTPException(404, "Material file not found")
+    return FileResponse(
+        path=file_path,
+        media_type=str(asset.mime_type or "").strip() or None,
+        headers={
+            "Content-Disposition": _build_inline_content_disposition(
+                str(asset.original_filename or file_path.name),
+                file_path.name,
+            )
+        },
+    )
+
+
+@router.get("/{project_id}/materials/{asset_id}/cover")
+async def get_project_material_cover(
+    project_id: str,
+    asset_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    asset = project_material_store.get(project_id, asset_id)
+    if asset is None:
+        raise HTTPException(404, f"Material asset {asset_id} not found")
+    file_path = _resolve_material_cover_path(asset)
+    if file_path is None or not file_path.is_file():
+        raise HTTPException(404, "Material cover not found")
+    cover_mime_type = _normalize_material_text(
+        (asset.metadata or {}).get("cover_mime_type"),
+        limit=120,
+    )
+    cover_filename = _normalize_material_text(
+        (asset.metadata or {}).get("cover_original_filename"),
+        limit=240,
+    )
+    return FileResponse(
+        path=file_path,
+        media_type=cover_mime_type or None,
+        headers={
+            "Content-Disposition": _build_inline_content_disposition(
+                str(cover_filename or file_path.name),
+                file_path.name,
+            )
+        },
+    )
+
+
+@router.post("/{project_id}/materials/{asset_id}/cover")
+async def replace_project_material_cover(
+    project_id: str,
+    asset_id: str,
+    cover_file: UploadFile = File(...),
+    cover_mime_type: str = Form(""),
+    cover_source: str = Form(""),
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    current = project_material_store.get(project_id, asset_id)
+    if current is None:
+        raise HTTPException(404, f"Material asset {asset_id} not found")
+    if current.asset_type != "video":
+        raise HTTPException(400, "只有视频素材支持替换封面")
+    cover_original_filename = Path(str(cover_file.filename or "").strip()).name
+    safe_cover_filename = _sanitize_material_filename(
+        cover_original_filename,
+        f"{asset_id}-cover.bin",
+    )
+    cover_relative_path = Path(project_id) / asset_id / f"cover-{safe_cover_filename}"
+    cover_absolute_path = _project_material_file_root() / cover_relative_path
+    old_cover_storage_path = str((current.metadata or {}).get("cover_storage_path") or "").strip()
+    try:
+        cover_mime_type_value = _normalize_material_text(
+            _infer_material_upload_mime_type(cover_file, cover_mime_type),
+            limit=120,
+        )
+        _validate_material_cover_upload_type(cover_mime_type_value)
+        cover_file_size_bytes = await _write_material_upload_file(cover_file, cover_absolute_path)
+    finally:
+        await cover_file.close()
+    metadata = {
+        **_normalize_material_mapping(current.metadata),
+        "cover_storage_path": cover_relative_path.as_posix(),
+        "cover_original_filename": _normalize_material_text(cover_original_filename, limit=240),
+        "cover_mime_type": cover_mime_type_value,
+        "cover_file_size_bytes": cover_file_size_bytes,
+        "cover_source": _normalize_material_text(cover_source, limit=120) or "manual_upload",
+    }
+    updated = replace(
+        current,
+        preview_url=_build_material_cover_url(project_id, asset_id),
+        metadata=metadata,
+        updated_at=_now_iso(),
+    )
+    project_material_store.save(updated)
+    if old_cover_storage_path and old_cover_storage_path != cover_relative_path.as_posix():
+        _delete_material_storage_path(old_cover_storage_path)
+    return {"status": "updated", "item": _serialize_project_material_asset(updated)}
 
 
 @router.patch("/{project_id}/materials/{asset_id}")
@@ -2394,9 +4117,310 @@ async def delete_project_material(
 ):
     _ensure_permission(auth_payload, "menu.projects")
     _ensure_project_manage_access(project_id, auth_payload)
+    asset = project_material_store.get(project_id, asset_id)
+    if asset is None:
+        raise HTTPException(404, f"Material asset {asset_id} not found")
     if not project_material_store.delete(project_id, asset_id):
         raise HTTPException(404, f"Material asset {asset_id} not found")
+    _delete_material_file(asset)
     return {"status": "deleted", "asset_id": asset_id}
+
+
+@router.get("/{project_id}/studio/exports")
+async def list_project_studio_exports(
+    project_id: str,
+    status: str = Query(""),
+    source_type: str = Query(""),
+    limit: int = Query(20, ge=1, le=100),
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    normalized_status = ""
+    if str(status or "").strip():
+        normalized_status = _normalize_studio_export_status(status)
+    normalized_source_type = _normalize_material_text(source_type, limit=40)
+    if normalized_source_type and normalized_source_type not in {"studio_export", "studio_draft"}:
+        raise HTTPException(400, "source_type 仅支持 studio_export 或 studio_draft")
+    items = project_studio_export_store.list_by_project(
+        project_id,
+        status=normalized_status,
+        source_type=normalized_source_type,
+        limit=limit,
+    )
+    return {
+        "items": [_serialize_project_studio_export_job(item) for item in items],
+        "summary": {
+            "total": len(items),
+            "draft_count": sum(1 for item in items if item.status == "draft"),
+            "queued_count": sum(1 for item in items if item.status == "queued"),
+            "processing_count": sum(1 for item in items if item.status == "processing"),
+            "succeeded_count": sum(1 for item in items if item.status == "succeeded"),
+            "failed_count": sum(1 for item in items if item.status == "failed"),
+            "canceled_count": sum(1 for item in items if item.status == "canceled"),
+        },
+    }
+
+
+@router.post("/{project_id}/studio/exports")
+async def create_project_studio_export(
+    project_id: str,
+    req: ProjectStudioExportCreateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    timeline_payload = _normalize_studio_timeline_payload(req.timeline_payload)
+    clips = timeline_payload.get("clips") or []
+    audio_payload = _normalize_studio_audio_payload(req.audio_payload, timeline_payload)
+    export_format = _normalize_studio_export_format(req.export_format)
+    export_resolution = _normalize_studio_export_resolution(req.export_resolution)
+    aspect_ratio = _normalize_material_text(req.aspect_ratio, limit=20) or "16:9"
+    clip_count = _extract_studio_export_clip_count(timeline_payload)
+    timeline_duration_seconds = _extract_studio_export_timeline_duration_seconds(timeline_payload)
+    title = _derive_studio_export_title(
+        req.title,
+        export_format,
+        export_resolution,
+        timeline_payload,
+    )
+    now = _now_iso()
+    job = ProjectStudioExportJob(
+        id=project_studio_export_store.new_id(),
+        project_id=project_id,
+        title=title,
+        status="queued",
+        progress=0,
+        export_format=export_format,
+        export_resolution=export_resolution,
+        aspect_ratio=aspect_ratio,
+        timeline_duration_seconds=timeline_duration_seconds,
+        clip_count=clip_count,
+        timeline_payload=timeline_payload,
+        audio_payload=audio_payload,
+        source_type="studio_export",
+        attempt_count=0,
+        error_details={},
+        created_by=_normalize_material_text(auth_payload.get("sub"), limit=120),
+        created_at=now,
+        updated_at=now,
+    )
+    project_studio_export_store.save(job)
+    return {"status": "created", "job": _serialize_project_studio_export_job(job)}
+
+
+@router.post("/{project_id}/studio/drafts")
+async def save_project_studio_draft(
+    project_id: str,
+    req: ProjectStudioDraftSaveReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    snapshot = _normalize_studio_draft_snapshot(req.snapshot)
+    clip_items = _extract_studio_draft_timeline_clips(snapshot)
+    timeline_duration_seconds = _extract_studio_draft_timeline_duration_seconds(snapshot)
+    export_config = snapshot.get("exportConfig") if isinstance(snapshot.get("exportConfig"), dict) else {}
+    script_draft = snapshot.get("scriptDraft") if isinstance(snapshot.get("scriptDraft"), dict) else {}
+    export_format = _normalize_studio_export_format(export_config.get("format"))
+    export_resolution = _normalize_studio_export_resolution(export_config.get("resolution"))
+    aspect_ratio = _normalize_material_text(script_draft.get("aspectRatio"), limit=20) or "16:9"
+    requested_job_id = _normalize_material_text(req.job_id, limit=120)
+    current = project_studio_export_store.get(project_id, requested_job_id) if requested_job_id else None
+    if current is not None and current.source_type != "studio_draft":
+        raise HTTPException(400, "只能覆盖制作草稿记录")
+    now = _now_iso()
+    job = ProjectStudioExportJob(
+        id=current.id if current is not None else project_studio_export_store.new_id(),
+        project_id=project_id,
+        title=_derive_studio_draft_title(req.title, snapshot),
+        status="draft",
+        progress=0,
+        export_format=export_format,
+        export_resolution=export_resolution,
+        aspect_ratio=aspect_ratio,
+        timeline_duration_seconds=timeline_duration_seconds,
+        clip_count=len(clip_items),
+        timeline_payload={
+            "clips": clip_items,
+            "summary": {
+                "timelineDurationSeconds": timeline_duration_seconds,
+                "timeline_duration_seconds": timeline_duration_seconds,
+                "clipCount": len(clip_items),
+                "clip_count": len(clip_items),
+                "activeStep": _normalize_material_text(snapshot.get("activeStep"), limit=40) or "script",
+            },
+            "draft_snapshot": snapshot,
+        },
+        audio_payload={
+            "active_step": _normalize_material_text(snapshot.get("activeStep"), limit=40) or "script",
+        },
+        source_type="studio_draft",
+        result_asset_id="",
+        result_work_id=current.result_work_id if current is not None else "",
+        cover_asset_id="",
+        attempt_count=0,
+        retry_of_job_id="",
+        error_code="",
+        error_message="",
+        error_details={},
+        created_by=_normalize_material_text(auth_payload.get("sub"), limit=120),
+        created_at=current.created_at if current is not None else now,
+        updated_at=now,
+        started_at="",
+        finished_at="",
+    )
+    project_studio_export_store.save(job)
+    return {
+        "status": "updated" if current is not None else "created",
+        "job": _serialize_project_studio_export_job(job),
+    }
+
+
+@router.get("/{project_id}/studio/exports/{job_id}")
+async def get_project_studio_export(
+    project_id: str,
+    job_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    job = project_studio_export_store.get(project_id, job_id)
+    if job is None:
+        raise HTTPException(404, f"Studio export job {job_id} not found")
+    return {"job": _serialize_project_studio_export_job(job)}
+
+
+@router.patch("/{project_id}/studio/exports/{job_id}")
+async def update_project_studio_export(
+    project_id: str,
+    job_id: str,
+    req: ProjectStudioExportUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    current = project_studio_export_store.get(project_id, job_id)
+    if current is None:
+        raise HTTPException(404, f"Studio export job {job_id} not found")
+    updates = req.model_dump(exclude_none=True)
+    if not updates:
+        return {"status": "no_change", "job": _serialize_project_studio_export_job(current)}
+    if "status" in updates:
+        updates["status"] = _normalize_studio_export_status(updates["status"])
+    if "progress" in updates:
+        updates["progress"] = _normalize_studio_export_progress(updates["progress"])
+    for key in (
+        "result_asset_id",
+        "result_work_id",
+        "cover_asset_id",
+        "error_code",
+        "started_at",
+        "finished_at",
+    ):
+        if key in updates:
+            updates[key] = _normalize_material_text(updates[key], limit=120)
+    if "error_message" in updates:
+        updates["error_message"] = _normalize_material_text(
+            updates["error_message"],
+            limit=1000,
+        )
+    if "error_details" in updates:
+        updates["error_details"] = _normalize_material_mapping(updates["error_details"])
+    if updates.get("status") == "processing" and "started_at" not in updates:
+        updates["started_at"] = current.started_at or _now_iso()
+    if updates.get("status") in {"succeeded", "failed", "canceled"} and "finished_at" not in updates:
+        updates["finished_at"] = _now_iso()
+    updates["updated_at"] = _now_iso()
+    updated = replace(current, **updates)
+    project_studio_export_store.save(updated)
+    return {"status": "updated", "job": _serialize_project_studio_export_job(updated)}
+
+
+@router.post("/{project_id}/studio/exports/{job_id}/cancel")
+async def cancel_project_studio_export(
+    project_id: str,
+    job_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    current = project_studio_export_store.get(project_id, job_id)
+    if current is None:
+        raise HTTPException(404, f"Studio export job {job_id} not found")
+    if current.status == "canceled":
+        return {"status": "no_change", "job": _serialize_project_studio_export_job(current)}
+    if current.status not in {"queued", "processing"}:
+        raise HTTPException(400, "只有排队中或处理中任务可以取消")
+    updated = replace(
+        current,
+        status="canceled",
+        updated_at=_now_iso(),
+        finished_at=_now_iso(),
+    )
+    project_studio_export_store.save(updated)
+    return {"status": "updated", "job": _serialize_project_studio_export_job(updated)}
+
+
+@router.delete("/{project_id}/studio/exports/{job_id}")
+async def delete_project_studio_export(
+    project_id: str,
+    job_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    current = project_studio_export_store.get(project_id, job_id)
+    if current is None:
+        raise HTTPException(404, f"Studio export job {job_id} not found")
+    if current.status in {"queued", "processing"}:
+        raise HTTPException(400, "排队中或处理中任务不能直接删除，请先取消任务")
+    if not project_studio_export_store.delete(project_id, job_id):
+        raise HTTPException(404, f"Studio export job {job_id} not found")
+    return {
+        "status": "deleted",
+        "job_id": job_id,
+        "result_asset_id": current.result_asset_id,
+    }
+
+
+@router.post("/{project_id}/studio/exports/{job_id}/retry")
+async def retry_project_studio_export(
+    project_id: str,
+    job_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    current = project_studio_export_store.get(project_id, job_id)
+    if current is None:
+        raise HTTPException(404, f"Studio export job {job_id} not found")
+    if current.status != "failed":
+        raise HTTPException(400, "只有失败任务支持重试")
+    now = _now_iso()
+    retried = ProjectStudioExportJob(
+        id=project_studio_export_store.new_id(),
+        project_id=current.project_id,
+        title=current.title,
+        status="queued",
+        progress=0,
+        export_format=current.export_format,
+        export_resolution=current.export_resolution,
+        aspect_ratio=current.aspect_ratio,
+        timeline_duration_seconds=current.timeline_duration_seconds,
+        clip_count=current.clip_count,
+        timeline_payload=dict(current.timeline_payload or {}),
+        audio_payload=dict(current.audio_payload or {}),
+        source_type=current.source_type,
+        attempt_count=current.attempt_count + 1,
+        retry_of_job_id=current.id,
+        error_details={},
+        created_by=_normalize_material_text(auth_payload.get("sub"), limit=120),
+        created_at=now,
+        updated_at=now,
+    )
+    project_studio_export_store.save(retried)
+    return {"status": "created", "job": _serialize_project_studio_export_job(retried)}
 
 
 @router.post("/{project_id}/smart-query")
@@ -3215,9 +5239,9 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 outgoing = dict(chunk_data)
                 event_type = str(outgoing.get("type") or "").strip().lower()
                 if event_type == "artifact":
-                    artifact_batch = _normalize_chat_image_artifacts(outgoing.get("artifacts"))
+                    artifact_batch = _normalize_chat_media_artifacts(outgoing.get("artifacts"))
                     if artifact_batch:
-                        _save_chat_image_artifacts_to_materials(
+                        _save_chat_media_artifacts_to_materials(
                             project_id=project_id,
                             username=username,
                             chat_session_id=chat_session_id,
@@ -3225,22 +5249,25 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                             artifacts=artifact_batch,
                             tool_name=str(outgoing.get("tool_name") or "").strip(),
                         )
-                        assistant_artifacts = _merge_chat_image_artifacts(
+                        assistant_artifacts = _merge_chat_media_artifacts(
                             assistant_artifacts,
                             artifact_batch,
                         )
                         outgoing["artifacts"] = artifact_batch
-                        outgoing["images"] = _collect_chat_image_urls(artifact_batch)
+                        outgoing["images"] = _collect_chat_artifact_urls(artifact_batch, asset_type="image")
+                        outgoing["videos"] = _collect_chat_artifact_urls(artifact_batch, asset_type="video")
                     else:
                         outgoing["artifacts"] = []
                         outgoing["images"] = []
+                        outgoing["videos"] = []
                 if event_type == "done":
-                    assistant_artifacts = _merge_chat_image_artifacts(
+                    assistant_artifacts = _merge_chat_media_artifacts(
                         assistant_artifacts,
-                        _normalize_chat_image_artifacts(outgoing.get("artifacts")),
+                        _normalize_chat_media_artifacts(outgoing.get("artifacts")),
                     )
                     outgoing["artifacts"] = assistant_artifacts
-                    outgoing["images"] = _collect_chat_image_urls(assistant_artifacts)
+                    outgoing["images"] = _collect_chat_artifact_urls(assistant_artifacts, asset_type="image")
+                    outgoing["videos"] = _collect_chat_artifact_urls(assistant_artifacts, asset_type="video")
                     final_answer = str(outgoing.get("content") or "")
                 if event_type == "error":
                     stream_error = str(outgoing.get("message") or "未知错误")
@@ -3254,10 +5281,19 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     chat_session_id=chat_session_id,
                 )
             else:
-                assistant_images = _collect_chat_image_urls(assistant_artifacts)
+                assistant_images = _collect_chat_artifact_urls(assistant_artifacts, asset_type="image")
+                assistant_videos = _collect_chat_artifact_urls(assistant_artifacts, asset_type="video")
                 persisted_answer = (
                     final_answer
-                    or ("已生成图片，请查看下方结果。" if assistant_images else "模型未返回有效内容。")
+                    or (
+                        "已生成图片和视频，请查看下方结果。"
+                        if assistant_images and assistant_videos
+                        else "已生成图片，请查看下方结果。"
+                        if assistant_images
+                        else "已生成视频，请查看下方结果。"
+                        if assistant_videos
+                        else "模型未返回有效内容。"
+                    )
                 )
                 _append_chat_record(
                     project_id=project_id,
@@ -3267,6 +5303,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     message_id=assistant_message_id,
                     chat_session_id=chat_session_id,
                     images=assistant_images,
+                    videos=assistant_videos,
                 )
                 _save_project_chat_memory_snapshot(
                     project_id=project_id,
@@ -3648,9 +5685,9 @@ async def stream_project_chat(
                 outgoing = dict(chunk_data)
                 event_type = str(outgoing.get("type") or "").strip().lower()
                 if event_type == "artifact":
-                    artifact_batch = _normalize_chat_image_artifacts(outgoing.get("artifacts"))
+                    artifact_batch = _normalize_chat_media_artifacts(outgoing.get("artifacts"))
                     if artifact_batch:
-                        _save_chat_image_artifacts_to_materials(
+                        _save_chat_media_artifacts_to_materials(
                             project_id=project_id,
                             username=username,
                             chat_session_id=chat_session_id,
@@ -3658,22 +5695,25 @@ async def stream_project_chat(
                             artifacts=artifact_batch,
                             tool_name=str(outgoing.get("tool_name") or "").strip(),
                         )
-                        assistant_artifacts = _merge_chat_image_artifacts(
+                        assistant_artifacts = _merge_chat_media_artifacts(
                             assistant_artifacts,
                             artifact_batch,
                         )
                         outgoing["artifacts"] = artifact_batch
-                        outgoing["images"] = _collect_chat_image_urls(artifact_batch)
+                        outgoing["images"] = _collect_chat_artifact_urls(artifact_batch, asset_type="image")
+                        outgoing["videos"] = _collect_chat_artifact_urls(artifact_batch, asset_type="video")
                     else:
                         outgoing["artifacts"] = []
                         outgoing["images"] = []
+                        outgoing["videos"] = []
                 if event_type == "done":
-                    assistant_artifacts = _merge_chat_image_artifacts(
+                    assistant_artifacts = _merge_chat_media_artifacts(
                         assistant_artifacts,
-                        _normalize_chat_image_artifacts(outgoing.get("artifacts")),
+                        _normalize_chat_media_artifacts(outgoing.get("artifacts")),
                     )
                     outgoing["artifacts"] = assistant_artifacts
-                    outgoing["images"] = _collect_chat_image_urls(assistant_artifacts)
+                    outgoing["images"] = _collect_chat_artifact_urls(assistant_artifacts, asset_type="image")
+                    outgoing["videos"] = _collect_chat_artifact_urls(assistant_artifacts, asset_type="video")
                     final_answer = str(outgoing.get("content") or "")
                 if event_type == "error":
                     stream_error = str(outgoing.get("message") or "未知错误")
@@ -3689,10 +5729,19 @@ async def stream_project_chat(
                     chat_session_id=chat_session_id,
                 )
             else:
-                assistant_images = _collect_chat_image_urls(assistant_artifacts)
+                assistant_images = _collect_chat_artifact_urls(assistant_artifacts, asset_type="image")
+                assistant_videos = _collect_chat_artifact_urls(assistant_artifacts, asset_type="video")
                 persisted_answer = (
                     final_answer
-                    or ("已生成图片，请查看下方结果。" if assistant_images else "模型未返回有效内容。")
+                    or (
+                        "已生成图片和视频，请查看下方结果。"
+                        if assistant_images and assistant_videos
+                        else "已生成图片，请查看下方结果。"
+                        if assistant_images
+                        else "已生成视频，请查看下方结果。"
+                        if assistant_videos
+                        else "模型未返回有效内容。"
+                    )
                 )
                 _append_chat_record(
                     project_id=project_id,
@@ -3702,6 +5751,7 @@ async def stream_project_chat(
                     message_id=assistant_message_id,
                     chat_session_id=chat_session_id,
                     images=assistant_images,
+                    videos=assistant_videos,
                 )
                 _save_project_chat_memory_snapshot(
                     project_id=project_id,

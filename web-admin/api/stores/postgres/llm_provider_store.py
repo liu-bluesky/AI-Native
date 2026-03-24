@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from psycopg import connect
+from stores.postgres._connection import connect
 from psycopg.rows import dict_row
 
 
@@ -113,6 +113,7 @@ class LlmProviderStorePostgres:
             "base_url": str(payload.get("base_url") or "").strip().rstrip("/"),
             "api_key": str(payload.get("api_key") or "").strip(),
             "models": payload.get("models") or [],
+            "model_configs": payload.get("model_configs") or [],
             "default_model": str(payload.get("default_model") or "").strip(),
             "enabled": bool(payload.get("enabled", True)),
             "extra_headers": payload.get("extra_headers") or {},

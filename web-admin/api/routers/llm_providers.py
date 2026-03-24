@@ -7,6 +7,8 @@ import time
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.deps import ensure_any_permission, ensure_permission, is_admin_like, require_auth, user_store
+from services.dictionary_catalog import get_dictionary_definition
+from services.llm_model_type_catalog import DEFAULT_MODEL_TYPE, MODEL_TYPE_DICTIONARY_KEY
 from services.llm_provider_service import get_llm_provider_service
 from models.requests import LlmProviderCreateReq, LlmProviderTestReq, LlmProviderUpdateReq
 
@@ -55,6 +57,17 @@ async def list_llm_provider_share_options(
         if str(item.username or "").strip() and str(item.username or "").strip() != current_username
     ]
     return {"users": users}
+
+
+@router.get("/model-types")
+async def list_llm_model_types(auth_payload: dict = Depends(require_auth)):
+    _require_llm_provider_read_permission(auth_payload)
+    definition = get_dictionary_definition(MODEL_TYPE_DICTIONARY_KEY) or {}
+    return {
+        "dictionary_key": MODEL_TYPE_DICTIONARY_KEY,
+        "default_model_type": str(definition.get("default_value") or DEFAULT_MODEL_TYPE).strip() or DEFAULT_MODEL_TYPE,
+        "options": definition.get("options") or [],
+    }
 
 
 @router.get("/providers/options")

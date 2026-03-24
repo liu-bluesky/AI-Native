@@ -1,5 +1,15 @@
 <template>
   <div v-if="!isSettingsCenterRoute" class="chat-layout" v-loading="loading">
+    <div
+      class="chat-layout__ambient chat-layout__ambient--left"
+      aria-hidden="true"
+    />
+    <div
+      class="chat-layout__ambient chat-layout__ambient--right"
+      aria-hidden="true"
+    />
+    <div class="chat-layout__mesh" aria-hidden="true" />
+
     <div class="chat-main">
       <div class="chat-shell">
         <aside class="chat-conversation-sidebar">
@@ -154,40 +164,55 @@
 
         <div class="chat-stage">
           <div class="chat-context-bar">
-            <div class="chat-context-bar__meta">
-              <span>{{
-                hasSelectedProject ? currentProjectLabel : "通用对话"
-              }}</span>
-              <span>{{ chatModeLabel }}</span>
-              <span>{{ currentModelSummary }}</span>
-              <span>{{ chatHeaderStatusText }}</span>
-            </div>
-            <div class="chat-context-bar__actions">
-              <el-button
-                v-if="hasSelectedProject"
-                size="small"
-                plain
-                class="chat-context-bar__action-button"
-                @click="openCurrentMaterialLibrary"
-              >
-                素材库
-              </el-button>
-              <el-button
-                size="small"
-                plain
-                class="chat-context-bar__action-button"
-                @click="openUnifiedMcpDialog"
-              >
-                MCP 接入
-              </el-button>
-              <el-button
-                size="small"
-                plain
-                class="chat-context-bar__action-button"
-                @click="openSkillResourceCenter"
-              >
-                技能资源
-              </el-button>
+            <div class="chat-context-bar__surface">
+              <div class="chat-context-bar__copy">
+                <div class="chat-context-bar__eyebrow">AI Operating System</div>
+                <div class="chat-context-bar__title">
+                  {{ hasSelectedProject ? currentProjectLabel : "AI 对话" }}
+                </div>
+                <p class="chat-context-bar__summary">
+                  {{
+                    hasSelectedProject
+                      ? "在同一项目里继续推进对话、规则与资产。"
+                      : "先建立判断，再展开步骤与执行。"
+                  }}
+                </p>
+                <div class="chat-context-bar__meta">
+                  <span>{{
+                    hasSelectedProject ? currentProjectLabel : "通用对话"
+                  }}</span>
+                  <span>{{ chatModeLabel }}</span>
+                  <span>{{ currentModelSummary }}</span>
+                  <span>{{ chatHeaderStatusText }}</span>
+                </div>
+              </div>
+              <div class="chat-context-bar__actions">
+                <el-button
+                  v-if="hasSelectedProject"
+                  size="small"
+                  plain
+                  class="chat-context-bar__action-button"
+                  @click="openCurrentMaterialLibrary"
+                >
+                  素材库
+                </el-button>
+                <el-button
+                  size="small"
+                  plain
+                  class="chat-context-bar__action-button"
+                  @click="openUnifiedMcpDialog"
+                >
+                  MCP 接入
+                </el-button>
+                <el-button
+                  size="small"
+                  plain
+                  class="chat-context-bar__action-button"
+                  @click="openSkillResourceCenter"
+                >
+                  技能资源
+                </el-button>
+              </div>
             </div>
           </div>
           <div class="chat-messages-shell">
@@ -199,7 +224,17 @@
               <div class="message-list-inner">
                 <div v-if="!messages.length" class="chat-empty-state">
                   <div class="chat-empty-state__hero">
+                    <div class="chat-empty-badge">
+                      {{
+                        hasSelectedProject
+                          ? "Project Context Ready"
+                          : hasAccessibleProjects
+                            ? "General Chat"
+                            : "Access Pending"
+                      }}
+                    </div>
                     <div class="chat-empty-title">{{ emptyStateTitle }}</div>
+                    <div class="chat-empty-text">{{ emptyStateText }}</div>
                   </div>
                   <div v-if="starterPrompts.length" class="chat-empty-actions">
                     <button
@@ -241,7 +276,9 @@
                         : '',
                       item.role === 'user' ? 'is-user' : 'is-ai',
                     ]"
-                    :data-message-id="String(item?.id || '').trim() || undefined"
+                    :data-message-id="
+                      String(item?.id || '').trim() || undefined
+                    "
                   >
                     <div class="message-avatar">
                       <el-avatar
@@ -396,6 +433,20 @@
                             :preview-src-list="extractImages(item)"
                             :initial-index="imageIndex"
                             preview-teleported
+                          />
+                        </div>
+                        <div
+                          v-if="extractVideos(item).length"
+                          class="message-videos"
+                        >
+                          <video
+                            v-for="(video, videoIndex) in extractVideos(item)"
+                            :key="`video-${idx}-${videoIndex}`"
+                            :src="video"
+                            class="preview-video"
+                            controls
+                            preload="metadata"
+                            playsinline
                           />
                         </div>
                         <div
@@ -781,11 +832,16 @@
                           :value="option.value"
                         >
                           <div class="chat-model-option">
-                            <span class="chat-model-option__name">{{
-                              option.modelName
-                            }}</span>
-                            <span class="chat-model-option__provider">
-                              {{ option.providerLabel }}
+                            <div class="chat-model-option__main">
+                              <span class="chat-model-option__name">{{
+                                option.modelName
+                              }}</span>
+                              <span class="chat-model-option__provider">
+                                {{ option.providerLabel }}
+                              </span>
+                            </div>
+                            <span class="chat-model-option__type">
+                              {{ option.modelTypeLabel }}
                             </span>
                           </div>
                         </el-option>
@@ -915,10 +971,14 @@
     :loading="materialDialogSaving"
     :project-label="currentProjectLabel"
     :message-role-label="
-      materialDialogPayload ? messageRoleName(materialDialogPayload.message) : ''
+      materialDialogPayload
+        ? messageRoleName(materialDialogPayload.message)
+        : ''
     "
     :image-count="
-      materialDialogPayload ? extractImages(materialDialogPayload.message).length : 0
+      materialDialogPayload
+        ? extractImages(materialDialogPayload.message).length
+        : 0
     "
     :source-chat-session-id="
       materialDialogPayload?.source_chat_session_id || ''
@@ -1143,10 +1203,6 @@
             >
           </div>
 
-          <div class="settings-center-sidebar-copy">
-            当前对话设置和平台管理页统一放到这个真实路由里，左侧切换，右侧直接查看和编辑。
-          </div>
-
           <div class="settings-center-nav-group">
             <div class="settings-center-nav-group__title">当前对话</div>
             <div class="settings-center-sidebar__nav">
@@ -1162,11 +1218,10 @@
                   <span class="settings-center-nav-item__label">{{
                     item.label
                   }}</span>
-                  <span class="settings-center-nav-item__badge">本页</span>
                 </span>
-                <span v-if="item.desc" class="settings-center-nav-item__desc">{{
-                  item.desc
-                }}</span>
+                <span v-if="item.desc" class="settings-center-nav-item__desc">
+                  {{ item.desc }}
+                </span>
               </button>
             </div>
           </div>
@@ -1186,11 +1241,10 @@
                   <span class="settings-center-nav-item__label">{{
                     item.label
                   }}</span>
-                  <span class="settings-center-nav-item__badge">当前页</span>
                 </span>
-                <span v-if="item.desc" class="settings-center-nav-item__desc">{{
-                  item.desc
-                }}</span>
+                <span v-if="item.desc" class="settings-center-nav-item__desc">
+                  {{ item.desc }}
+                </span>
               </button>
             </div>
           </div>
@@ -1243,583 +1297,818 @@
           v-if="activeSettingsPanel === 'chat'"
           class="settings-center-stage__body settings-center-stage__body--chat"
         >
-          <div class="settings-summary-card">
-            <div class="settings-summary-title">影响当前回答</div>
-            <div class="settings-summary-text">
-              这里集中管理执行员工、系统提示词、输出风格，以及 MCP
-              与工具调用上限等高级参数。
-              <template v-if="!hasSelectedProject">
-                当前还没有选中项目，所以项目员工、项目级 MCP
-                和项目工作区配置暂不可用。
-              </template>
-              <template v-else>
-                当前通过系统对话统一调度模型、项目工具与项目级 MCP 能力。
-              </template>
-            </div>
-            <div class="settings-summary-actions">
-              <div class="settings-summary-status">
-                {{ autoSaveStatusText }}
-              </div>
-              <el-button
-                plain
-                size="small"
-                class="settings-summary-sync-button"
-                :loading="settingsSaving"
-                @click="saveProjectChatSettings(false)"
+          <div class="settings-chat-layout">
+            <aside class="settings-chat-sidebar">
+              <div
+                class="settings-chat-sidebar-card settings-chat-sidebar-card--hero"
               >
-                立即同步
-              </el-button>
-            </div>
-          </div>
-          <el-tabs class="settings-tabs">
-            <el-tab-pane label="基础设置">
-              <el-form
-                label-position="left"
-                label-width="160px"
-                class="settings-form"
-                size="default"
-              >
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">执行员工</span>
-                  </template>
-                  <el-select
-                    v-model="selectedEmployeeIds"
-                    multiple
-                    collapse-tags
-                    collapse-tags-tooltip
-                    filterable
-                    clearable
-                    placeholder="默认全选（项目内全部员工）"
-                    class="full-width"
-                    :disabled="!selectedProjectId"
+                <div class="settings-chat-sidebar-card__eyebrow">
+                  Conversation Control
+                </div>
+                <div class="settings-chat-sidebar-card__title">
+                  把当前回答路径收束在同一套上下文里。
+                </div>
+                <p class="settings-chat-sidebar-card__text">
+                  这里统一管理执行员工、系统提示词、模型输出风格，以及 MCP
+                  与工具预算。改动会直接影响当前对话的调度判断。
+                </p>
+                <div class="settings-chat-sidebar-card__meta">
+                  <span>{{
+                    hasSelectedProject ? currentProjectLabel : "未选择项目"
+                  }}</span>
+                  <span>{{ chatModeLabel }}</span>
+                  <span>{{ activeChatSessionTitle }}</span>
+                </div>
+                <div class="settings-chat-sidebar-card__actions">
+                  <div class="settings-chat-sidebar-card__status">
+                    {{ autoSaveStatusText }}
+                  </div>
+                  <el-button
+                    plain
+                    size="small"
+                    class="settings-summary-sync-button settings-summary-sync-button--hero"
+                    :loading="settingsSaving"
+                    @click="saveProjectChatSettings(false)"
                   >
-                    <el-option
-                      v-for="item in projectEmployees"
-                      :key="item.id"
-                      :label="`${item.name || item.id}`"
-                      :value="item.id"
+                    立即同步
+                  </el-button>
+                </div>
+              </div>
+
+              <div class="settings-chat-sidebar-card">
+                <div class="settings-chat-section-label">当前上下文</div>
+                <div class="settings-chat-fact-list">
+                  <div class="settings-chat-fact">
+                    <span class="settings-chat-fact__label">执行员工</span>
+                    <span class="settings-chat-fact__value">{{
+                      selectedEmployeeSummary
+                    }}</span>
+                  </div>
+                  <div class="settings-chat-fact">
+                    <span class="settings-chat-fact__label">默认模型</span>
+                    <span class="settings-chat-fact__value">{{
+                      currentModelSummary
+                    }}</span>
+                  </div>
+                  <div class="settings-chat-fact">
+                    <span class="settings-chat-fact__label">模型类型</span>
+                    <span class="settings-chat-fact__value">{{
+                      currentModelTypeLabel
+                    }}</span>
+                  </div>
+                  <div class="settings-chat-fact">
+                    <span class="settings-chat-fact__label">本地连接器</span>
+                    <span class="settings-chat-fact__value">{{
+                      localConnectorSummary
+                    }}</span>
+                  </div>
+                  <div class="settings-chat-fact">
+                    <span class="settings-chat-fact__label">当前面板</span>
+                    <span class="settings-chat-fact__value">对话配置</span>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                class="settings-chat-sidebar-card settings-chat-sidebar-card--note"
+              >
+                <div class="settings-chat-section-label">生效边界</div>
+                <p class="settings-chat-sidebar-card__note">
+                  <template v-if="hasSelectedProject">
+                    当前配置会跟随项目上下文一起参与系统对话调度，不会改动平台其他页面的默认值。
+                  </template>
+                  <template v-else>
+                    还没有选中项目，所以这里只能维护通用对话行为；项目员工和项目级
+                    MCP 会在选择项目后开放。
+                  </template>
+                </p>
+              </div>
+            </aside>
+
+            <div class="settings-chat-main">
+              <div class="settings-chat-main-card">
+                <div class="settings-summary-card">
+                  <div class="settings-summary-title">影响当前回答</div>
+                  <div class="settings-summary-text">
+                    这些设置会决定系统对话如何拼装上下文、选择模型与员工，并约束工具调用的上限与回退策略。
+                  </div>
+                  <div class="settings-summary-pills">
+                    <span class="settings-summary-pill">
+                      项目上下文 ·
+                      {{ hasSelectedProject ? currentProjectLabel : "未选择" }}
+                    </span>
+                    <span class="settings-summary-pill">
+                      执行员工 · {{ selectedEmployeeSummary }}
+                    </span>
+                    <span class="settings-summary-pill">
+                      默认模型 · {{ currentModelSummary }}
+                    </span>
+                    <span class="settings-summary-pill">
+                      模型类型 · {{ currentModelTypeLabel }}
+                    </span>
+                  </div>
+                </div>
+
+                <el-tabs class="settings-tabs">
+                  <el-tab-pane label="基础设置">
+                    <el-form
+                      label-position="left"
+                      label-width="160px"
+                      class="settings-form"
+                      size="default"
                     >
-                      <div class="settings-employee-option">
-                        <div class="settings-employee-option__head">
-                          <span class="settings-employee-option__name">
-                            {{ item.name || item.id }}
-                          </span>
-                          <el-tag
-                            size="small"
-                            :type="item.role === 'admin' ? 'danger' : 'info'"
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">执行员工</span>
+                        </template>
+                        <el-select
+                          v-model="selectedEmployeeIds"
+                          multiple
+                          collapse-tags
+                          collapse-tags-tooltip
+                          filterable
+                          clearable
+                          placeholder="默认全选（项目内全部员工）"
+                          class="full-width"
+                          :disabled="!selectedProjectId"
+                        >
+                          <el-option
+                            v-for="item in projectEmployees"
+                            :key="item.id"
+                            :label="`${item.name || item.id}`"
+                            :value="item.id"
                           >
-                            {{ item.role || "member" }}
-                          </el-tag>
+                            <div class="settings-employee-option">
+                              <div class="settings-employee-option__head">
+                                <span class="settings-employee-option__name">
+                                  {{ item.name || item.id }}
+                                </span>
+                                <el-tag
+                                  size="small"
+                                  :type="
+                                    item.role === 'admin' ? 'danger' : 'info'
+                                  "
+                                >
+                                  {{ item.role || "member" }}
+                                </el-tag>
+                              </div>
+                              <div
+                                v-if="
+                                  item.skill_names && item.skill_names.length
+                                "
+                                class="settings-employee-option__meta"
+                              >
+                                技能: {{ item.skill_names.join(", ") }}
+                              </div>
+                              <div
+                                v-if="
+                                  item.rule_bindings &&
+                                  item.rule_bindings.length
+                                "
+                                class="settings-employee-option__meta"
+                              >
+                                规则:
+                                {{
+                                  item.rule_bindings
+                                    .map((rule) => rule.title || rule.id)
+                                    .join(" / ")
+                                }}
+                              </div>
+                            </div>
+                          </el-option>
+                        </el-select>
+                      </el-form-item>
+
+                      <el-form-item v-if="hasSelectedProject">
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            AI 入口文件
+                            <el-tooltip
+                              content="项目级规则入口。系统对话会优先读取它来理解规则、目录约定和实现约束。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <div class="workspace-path-editor">
+                          <el-input
+                            v-model="aiEntryFileDraft"
+                            class="full-width"
+                            placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
+                          />
+                          <div class="workspace-path-actions">
+                            <el-button
+                              @click="promptProjectAiEntryFile"
+                              :loading="aiEntryFilePicking"
+                            >
+                              选择文件
+                            </el-button>
+                            <el-button
+                              type="primary"
+                              :loading="aiEntryFileSaving"
+                              @click="saveProjectAiEntryFile()"
+                            >
+                              保存入口
+                            </el-button>
+                          </div>
+                          <div class="workspace-path-hint">
+                            <template v-if="projectWorkspacePath">
+                              当前项目工作区：{{
+                                projectWorkspacePath
+                              }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话统一复用。
+                            </template>
+                            <template v-else>
+                              当前项目还没有平台工作区路径时，建议直接填写相对路径或绝对路径。
+                            </template>
+                            <template v-if="aiEntryFileResolved">
+                              当前已保存：{{ aiEntryFileResolved }}
+                            </template>
+                            <template v-if="aiEntryFileDirty">
+                              当前输入尚未保存。
+                            </template>
+                          </div>
                         </div>
-                        <div
-                          v-if="item.skill_names && item.skill_names.length"
-                          class="settings-employee-option__meta"
-                        >
-                          技能: {{ item.skill_names.join(", ") }}
+                      </el-form-item>
+
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            系统提示词
+                            <el-tooltip
+                              content="(System Prompt) 设定 AI 的角色背景和最高优先级的行为准则。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <el-input
+                          type="textarea"
+                          v-model="systemPrompt"
+                          :rows="3"
+                          :placeholder="
+                            isExternalAgentMode
+                              ? `补充给 ${externalAgentDisplayLabel} 的启动上下文...`
+                              : '你是项目开发助手...'
+                          "
+                          class="full-width"
+                        />
+                      </el-form-item>
+
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            历史消息条数
+                            <el-tooltip
+                              content="每次向模型发送请求时，携带最近几次的对话历史。较小的值可节省 Token，较大的值有助于维持长上下文记忆。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <el-input-number
+                          v-model="projectChatSettings.history_limit"
+                          :min="1"
+                          :max="50"
+                          class="full-width"
+                        />
+                      </el-form-item>
+                    </el-form>
+                  </el-tab-pane>
+
+                  <el-tab-pane label="生成回答">
+                    <el-form
+                      label-position="left"
+                      label-width="160px"
+                      class="settings-form"
+                      size="default"
+                    >
+                      <div class="model-parameter-note">
+                        <div class="model-parameter-note__title">
+                          当前模型类型：{{ currentModelTypeLabel }}
                         </div>
-                        <div
-                          v-if="item.rule_bindings && item.rule_bindings.length"
-                          class="settings-employee-option__meta"
-                        >
-                          规则:
+                        <div class="model-parameter-note__text">
                           {{
-                            item.rule_bindings
-                              .map((rule) => rule.title || rule.id)
-                              .join(" / ")
+                            currentModelTypeDescription ||
+                            "参数面板会跟随当前模型类型切换。"
                           }}
                         </div>
                       </div>
-                    </el-option>
-                  </el-select>
-                </el-form-item>
 
-                <el-form-item v-if="hasSelectedProject">
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      AI 入口文件
-                      <el-tooltip
-                        content="项目级规则入口。系统对话会优先读取它来理解规则、目录约定和实现约束。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <div class="workspace-path-editor">
-                    <el-input
-                      v-model="aiEntryFileDraft"
-                      class="full-width"
-                      placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
-                    />
-                    <div class="workspace-path-actions">
-                      <el-button
-                        @click="promptProjectAiEntryFile"
-                        :loading="aiEntryFilePicking"
-                      >
-                        选择文件
-                      </el-button>
-                      <el-button
-                        type="primary"
-                        :loading="aiEntryFileSaving"
-                        @click="saveProjectAiEntryFile()"
-                      >
-                        保存入口
-                      </el-button>
-                    </div>
-                    <div class="workspace-path-hint">
-                      <template v-if="projectWorkspacePath">
-                        当前项目工作区：{{
-                          projectWorkspacePath
-                        }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话统一复用。
-                      </template>
-                      <template v-else>
-                        当前项目还没有平台工作区路径时，建议直接填写相对路径或绝对路径。
-                      </template>
-                      <template v-if="aiEntryFileResolved">
-                        当前已保存：{{ aiEntryFileResolved }}
-                      </template>
-                      <template v-if="aiEntryFileDirty">
-                        当前输入尚未保存。
-                      </template>
-                    </div>
-                  </div>
-                </el-form-item>
-
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      系统提示词
-                      <el-tooltip
-                        content="(System Prompt) 设定 AI 的角色背景和最高优先级的行为准则。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-input
-                    type="textarea"
-                    v-model="systemPrompt"
-                    :rows="3"
-                    :placeholder="
-                      isExternalAgentMode
-                        ? `补充给 ${externalAgentDisplayLabel} 的启动上下文...`
-                        : '你是项目开发助手...'
-                    "
-                    class="full-width"
-                  />
-                </el-form-item>
-
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      历史消息条数
-                      <el-tooltip
-                        content="每次向模型发送请求时，携带最近几次的对话历史。较小的值可节省 Token，较大的值有助于维持长上下文记忆。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-input-number
-                    v-model="projectChatSettings.history_limit"
-                    :min="1"
-                    :max="50"
-                    class="full-width"
-                  />
-                </el-form-item>
-              </el-form>
-            </el-tab-pane>
-
-            <el-tab-pane label="生成回答">
-              <el-form
-                label-position="left"
-                label-width="160px"
-                class="settings-form"
-                size="default"
-              >
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      温度 (Temperature)
-                      <el-tooltip
-                        content="控制 AI 生成文本的随机性。值越小（如 0.1）回答越严谨保守，适合代码生成；值越大（如 0.8）回答越发散具有创造力。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-slider
-                    v-model="temperature"
-                    :min="0"
-                    :max="2"
-                    :step="0.1"
-                    show-input
-                    :show-input-controls="false"
-                  />
-                </el-form-item>
-
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      最大输出 Token
-                      <el-tooltip
-                        content="限制 AI 单次回答的最大长度，1 个 Token 大约对应 0.5 个汉字或 1 个英文单词。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-input-number
-                    v-model="chatMaxTokens"
-                    :min="128"
-                    :max="8192"
-                    :step="64"
-                    class="full-width"
-                  />
-                </el-form-item>
-
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      回答风格
-                      <el-tooltip
-                        content="偏好 AI 返回内容的详细程度。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-select
-                    v-model="projectChatSettings.answer_style"
-                    class="full-width"
-                  >
-                    <el-option label="简洁 (Concise)" value="concise" />
-                    <el-option label="平衡 (Balanced)" value="balanced" />
-                    <el-option label="详细 (Detailed)" value="detailed" />
-                  </el-select>
-                </el-form-item>
-
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      先结论后步骤
-                      <el-tooltip
-                        content="让 AI 在长篇大论前，先给出简明扼要的核心结论。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-switch
-                    v-model="projectChatSettings.prefer_conclusion_first"
-                  />
-                </el-form-item>
-              </el-form>
-            </el-tab-pane>
-
-            <el-tab-pane label="工具与约束">
-              <el-form
-                label-position="left"
-                label-width="160px"
-                class="settings-form"
-                size="default"
-              >
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      自动使用工具
-                      <el-tooltip
-                        content="是否允许 AI 在必要时自主调用系统内置工具（如查数据库、读写文件）。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-switch v-model="projectChatSettings.auto_use_tools" />
-                </el-form-item>
-
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      单轮仅回答
-                      <el-tooltip
-                        content="仅对下一次对话生效：强制 AI 直接用自然语言回答，禁止在此轮对话中调用任何工具。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-switch v-model="singleRoundAnswerOnly" />
-                </el-form-item>
-
-                <el-form-item label="MCP 模块">
-                  <el-tabs
-                    v-model="activeMcpSource"
-                    class="mcp-source-tabs"
-                    style="width: 100%"
-                  >
-                    <el-tab-pane
-                      :label="`系统提供 (${systemMcpTotal})`"
-                      name="system"
-                    >
-                      <el-select
-                        v-model="activeSystemScope"
-                        size="small"
-                        class="full-width mcp-scope-select"
-                      >
-                        <el-option
-                          :label="`项目关联的所有 (${systemProjectRelatedModules.length})`"
-                          value="project_related"
-                        />
-                        <el-option
-                          :label="`系统本身提供的所有 (${systemGlobalModules.length})`"
-                          value="system_global"
-                        />
-                      </el-select>
-                      <div class="mcp-section-tip">
-                        系统提供的 MCP
-                        仅展示；此处勾选只控制当前项目对话可用工具，不修改模块定义。
-                      </div>
-                      <div
-                        v-if="
-                          activeSystemScope === 'project_related' &&
-                          projectToolModules.length
-                        "
-                        class="mcp-tool-actions"
-                      >
-                        <span class="mcp-tool-count"
-                          >本轮启用 {{ selectedProjectToolNames.length }}/{{
-                            projectToolModules.length
-                          }}</span
-                        >
-                        <div class="mcp-tool-buttons">
-                          <el-button
-                            text
-                            size="small"
-                            @click="selectAllProjectTools"
-                            >全选</el-button
-                          >
-                          <el-button
-                            text
-                            size="small"
-                            @click="clearProjectTools"
-                            >清空</el-button
-                          >
-                        </div>
-                      </div>
-                      <div class="mcp-module-list">
-                        <el-empty
-                          v-if="!activeSystemModules.length"
-                          description="暂无系统模块"
-                          :image-size="48"
-                        />
-                        <template v-else>
-                          <div
-                            v-for="item in activeSystemModules.slice(0, 12)"
-                            :key="item.id || item.tool_name"
-                            class="mcp-module-item"
-                          >
-                            <div class="mcp-module-row">
-                              <div class="mcp-module-head">
-                                <el-checkbox
-                                  v-if="
-                                    item.scope === 'project_related' &&
-                                    item.tool_name
-                                  "
-                                  :model-value="
-                                    isProjectToolSelected(item.tool_name)
-                                  "
-                                  @change="
-                                    (val) =>
-                                      toggleProjectTool(item.tool_name, val)
-                                  "
-                                />
-                                <span class="mcp-module-name">{{
-                                  item.name || item.id || "-"
-                                }}</span>
-                              </div>
-                              <el-tag
-                                size="small"
-                                :type="moduleTagType(item.module_type)"
-                                >{{ moduleTypeLabel(item.module_type) }}</el-tag
+                      <template v-if="currentModelParameterMode === 'text'">
+                        <el-form-item>
+                          <template #label>
+                            <span class="label-with-tooltip">
+                              温度 (Temperature)
+                              <el-tooltip
+                                content="控制 AI 生成文本的随机性。值越小（如 0.1）回答越严谨保守，适合代码生成；值越大（如 0.8）回答越发散具有创造力。"
+                                placement="top"
                               >
-                            </div>
-                            <div
-                              v-if="item.description"
-                              class="mcp-module-desc"
-                            >
-                              {{ item.description }}
-                            </div>
-                            <div
-                              v-if="moduleMetaText(item)"
-                              class="mcp-module-meta"
-                            >
-                              {{ moduleMetaText(item) }}
-                            </div>
-                          </div>
-                          <div
-                            v-if="activeSystemModules.length > 12"
-                            class="mcp-module-more"
+                                <el-icon class="label-icon"
+                                  ><InfoFilled
+                                /></el-icon>
+                              </el-tooltip>
+                            </span>
+                          </template>
+                          <el-slider
+                            v-model="temperature"
+                            :min="0"
+                            :max="2"
+                            :step="0.1"
+                            show-input
+                            :show-input-controls="false"
+                          />
+                        </el-form-item>
+
+                        <el-form-item>
+                          <template #label>
+                            <span class="label-with-tooltip">
+                              最大输出 Token
+                              <el-tooltip
+                                content="限制 AI 单次回答的最大长度，1 个 Token 大约对应 0.5 个汉字或 1 个英文单词。"
+                                placement="top"
+                              >
+                                <el-icon class="label-icon"
+                                  ><InfoFilled
+                                /></el-icon>
+                              </el-tooltip>
+                            </span>
+                          </template>
+                          <el-input-number
+                            v-model="chatMaxTokens"
+                            :min="128"
+                            :max="8192"
+                            :step="64"
+                            class="full-width"
+                          />
+                        </el-form-item>
+
+                        <el-form-item>
+                          <template #label>
+                            <span class="label-with-tooltip">
+                              回答风格
+                              <el-tooltip
+                                content="偏好 AI 返回内容的详细程度。"
+                                placement="top"
+                              >
+                                <el-icon class="label-icon"
+                                  ><InfoFilled
+                                /></el-icon>
+                              </el-tooltip>
+                            </span>
+                          </template>
+                          <el-select
+                            v-model="projectChatSettings.answer_style"
+                            class="full-width"
                           >
-                            其余
-                            {{ activeSystemModules.length - 12 }} 个模块未展示
-                          </div>
-                        </template>
-                      </div>
-                    </el-tab-pane>
-                    <el-tab-pane
-                      v-if="hasSelectedProject"
-                      :label="`外部 (${externalMcpTotal})`"
-                      name="external"
+                            <el-option label="简洁 (Concise)" value="concise" />
+                            <el-option label="平衡 (Balanced)" value="balanced" />
+                            <el-option label="详细 (Detailed)" value="detailed" />
+                          </el-select>
+                        </el-form-item>
+
+                        <el-form-item>
+                          <template #label>
+                            <span class="label-with-tooltip">
+                              先结论后步骤
+                              <el-tooltip
+                                content="让 AI 在长篇大论前，先给出简明扼要的核心结论。"
+                                placement="top"
+                              >
+                                <el-icon class="label-icon"
+                                  ><InfoFilled
+                                /></el-icon>
+                              </el-tooltip>
+                            </span>
+                          </template>
+                          <el-switch
+                            v-model="projectChatSettings.prefer_conclusion_first"
+                          />
+                        </el-form-item>
+                      </template>
+
+                      <template v-else-if="currentModelParameterMode === 'image'">
+                        <el-form-item label="图片比例">
+                          <el-select
+                            v-model="projectChatSettings.image_aspect_ratio"
+                            class="full-width"
+                          >
+                            <el-option label="1:1 方图" value="1:1" />
+                            <el-option label="3:4 竖构图" value="3:4" />
+                            <el-option label="4:3 横构图" value="4:3" />
+                            <el-option label="9:16 竖屏" value="9:16" />
+                            <el-option label="16:9 横屏" value="16:9" />
+                          </el-select>
+                        </el-form-item>
+
+                        <el-form-item label="图片风格">
+                          <el-select
+                            v-model="projectChatSettings.image_style"
+                            class="full-width"
+                          >
+                            <el-option label="自动" value="auto" />
+                            <el-option label="写实" value="realistic" />
+                            <el-option label="插画" value="illustration" />
+                          </el-select>
+                        </el-form-item>
+
+                        <el-form-item label="图片质量">
+                          <el-segmented
+                            v-model="projectChatSettings.image_quality"
+                            :options="[
+                              { label: '标准', value: 'standard' },
+                              { label: '高质量', value: 'high' },
+                            ]"
+                            class="full-width"
+                          />
+                        </el-form-item>
+                      </template>
+
+                      <template v-else-if="currentModelParameterMode === 'video'">
+                        <el-form-item label="视频比例">
+                          <el-select
+                            v-model="projectChatSettings.video_aspect_ratio"
+                            class="full-width"
+                          >
+                            <el-option label="1:1 方图" value="1:1" />
+                            <el-option label="9:16 竖屏" value="9:16" />
+                            <el-option label="16:9 横屏" value="16:9" />
+                          </el-select>
+                        </el-form-item>
+
+                        <el-form-item label="视频风格">
+                          <el-select
+                            v-model="projectChatSettings.video_style"
+                            class="full-width"
+                          >
+                            <el-option label="电影感" value="cinematic" />
+                            <el-option label="写实" value="realistic" />
+                            <el-option label="动画" value="animation" />
+                          </el-select>
+                        </el-form-item>
+
+                        <el-form-item label="视频时长">
+                          <el-segmented
+                            v-model="projectChatSettings.video_duration_seconds"
+                            :options="[
+                              { label: '5 秒', value: 5 },
+                              { label: '10 秒', value: 10 },
+                              { label: '15 秒', value: 15 },
+                            ]"
+                            class="full-width"
+                          />
+                        </el-form-item>
+
+                        <el-form-item label="动作强度">
+                          <el-segmented
+                            v-model="projectChatSettings.video_motion_strength"
+                            :options="[
+                              { label: '低', value: 'low' },
+                              { label: '中', value: 'medium' },
+                              { label: '高', value: 'high' },
+                            ]"
+                            class="full-width"
+                          />
+                        </el-form-item>
+                      </template>
+                    </el-form>
+                  </el-tab-pane>
+
+                  <el-tab-pane label="工具与约束">
+                    <el-form
+                      label-position="left"
+                      label-width="160px"
+                      class="settings-form"
+                      size="default"
                     >
-                      <ExternalMcpManager
-                        :project-id="selectedProjectId"
-                        @changed="handleExternalModulesChanged"
-                        @count-change="handleExternalModuleCountChange"
-                      />
-                    </el-tab-pane>
-                  </el-tabs>
-                </el-form-item>
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            自动使用工具
+                            <el-tooltip
+                              content="是否允许 AI 在必要时自主调用系统内置工具（如查数据库、读写文件）。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <el-switch
+                          v-model="projectChatSettings.auto_use_tools"
+                        />
+                      </el-form-item>
 
-                <div class="settings-section-title">执行限制</div>
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            单轮仅回答
+                            <el-tooltip
+                              content="仅对下一次对话生效：强制 AI 直接用自然语言回答，禁止在此轮对话中调用任何工具。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <el-switch v-model="singleRoundAnswerOnly" />
+                      </el-form-item>
 
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      工具执行超时
-                      <el-tooltip
-                        content="单个工具允许执行的最长时间（秒），避免某个耗时任务卡死整个对话。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-input-number
-                    v-model="projectChatSettings.tool_timeout_sec"
-                    :min="1"
-                    :max="600"
-                    class="full-width"
-                  />
-                </el-form-item>
+                      <el-form-item label="MCP 模块">
+                        <el-tabs
+                          v-model="activeMcpSource"
+                          class="mcp-source-tabs"
+                          style="width: 100%"
+                        >
+                          <el-tab-pane
+                            :label="`系统提供 (${systemMcpTotal})`"
+                            name="system"
+                          >
+                            <el-select
+                              v-model="activeSystemScope"
+                              size="small"
+                              class="full-width mcp-scope-select"
+                            >
+                              <el-option
+                                :label="`项目关联的所有 (${systemProjectRelatedModules.length})`"
+                                value="project_related"
+                              />
+                              <el-option
+                                :label="`系统本身提供的所有 (${systemGlobalModules.length})`"
+                                value="system_global"
+                              />
+                            </el-select>
+                            <div class="mcp-section-tip">
+                              系统提供的 MCP
+                              仅展示；此处勾选只控制当前项目对话可用工具，不修改模块定义。
+                            </div>
+                            <div
+                              v-if="
+                                activeSystemScope === 'project_related' &&
+                                projectToolModules.length
+                              "
+                              class="mcp-tool-actions"
+                            >
+                              <span class="mcp-tool-count"
+                                >本轮启用
+                                {{ selectedProjectToolNames.length }}/{{
+                                  projectToolModules.length
+                                }}</span
+                              >
+                              <div class="mcp-tool-buttons">
+                                <el-button
+                                  text
+                                  size="small"
+                                  @click="selectAllProjectTools"
+                                  >全选</el-button
+                                >
+                                <el-button
+                                  text
+                                  size="small"
+                                  @click="clearProjectTools"
+                                  >清空</el-button
+                                >
+                              </div>
+                            </div>
+                            <div class="mcp-module-list">
+                              <el-empty
+                                v-if="!activeSystemModules.length"
+                                description="暂无系统模块"
+                                :image-size="48"
+                              />
+                              <template v-else>
+                                <div
+                                  v-for="item in activeSystemModules.slice(
+                                    0,
+                                    12,
+                                  )"
+                                  :key="item.id || item.tool_name"
+                                  class="mcp-module-item"
+                                >
+                                  <div class="mcp-module-row">
+                                    <div class="mcp-module-head">
+                                      <el-checkbox
+                                        v-if="
+                                          item.scope === 'project_related' &&
+                                          item.tool_name
+                                        "
+                                        :model-value="
+                                          isProjectToolSelected(item.tool_name)
+                                        "
+                                        @change="
+                                          (val) =>
+                                            toggleProjectTool(
+                                              item.tool_name,
+                                              val,
+                                            )
+                                        "
+                                      />
+                                      <span class="mcp-module-name">{{
+                                        item.name || item.id || "-"
+                                      }}</span>
+                                    </div>
+                                    <el-tag
+                                      size="small"
+                                      :type="moduleTagType(item.module_type)"
+                                      >{{
+                                        moduleTypeLabel(item.module_type)
+                                      }}</el-tag
+                                    >
+                                  </div>
+                                  <div
+                                    v-if="item.description"
+                                    class="mcp-module-desc"
+                                  >
+                                    {{ item.description }}
+                                  </div>
+                                  <div
+                                    v-if="moduleMetaText(item)"
+                                    class="mcp-module-meta"
+                                  >
+                                    {{ moduleMetaText(item) }}
+                                  </div>
+                                </div>
+                                <div
+                                  v-if="activeSystemModules.length > 12"
+                                  class="mcp-module-more"
+                                >
+                                  其余
+                                  {{ activeSystemModules.length - 12 }}
+                                  个模块未展示
+                                </div>
+                              </template>
+                            </div>
+                          </el-tab-pane>
+                          <el-tab-pane
+                            v-if="hasSelectedProject"
+                            :label="`外部 (${externalMcpTotal})`"
+                            name="external"
+                          >
+                            <ExternalMcpManager
+                              :project-id="selectedProjectId"
+                              @changed="handleExternalModulesChanged"
+                              @count-change="handleExternalModuleCountChange"
+                            />
+                          </el-tab-pane>
+                        </el-tabs>
+                      </el-form-item>
 
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      失败重试次数
-                      <el-tooltip
-                        content="工具执行失败时的自动重试次数。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-input-number
-                    v-model="projectChatSettings.tool_retry_count"
-                    :min="0"
-                    :max="5"
-                    class="full-width"
-                  />
-                </el-form-item>
+                      <div class="settings-section-title">执行限制</div>
 
-                <div class="settings-section-title">调度上限</div>
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            工具执行超时
+                            <el-tooltip
+                              content="单个工具允许执行的最长时间（秒），避免某个耗时任务卡死整个对话。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <el-input-number
+                          v-model="projectChatSettings.tool_timeout_sec"
+                          :min="1"
+                          :max="600"
+                          class="full-width"
+                        />
+                      </el-form-item>
 
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      最大循环轮次
-                      <el-tooltip
-                        content="AI 与工具之间交互迭代的最大次数，防止陷入无限死循环。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-input-number
-                    v-model="projectChatSettings.max_loop_rounds"
-                    :min="1"
-                    :max="60"
-                    class="full-width"
-                  />
-                </el-form-item>
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            失败重试次数
+                            <el-tooltip
+                              content="工具执行失败时的自动重试次数。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <el-input-number
+                          v-model="projectChatSettings.tool_retry_count"
+                          :min="0"
+                          :max="5"
+                          class="full-width"
+                        />
+                      </el-form-item>
 
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      最大工具轮次
-                      <el-tooltip
-                        content="一轮对话中，允许连续调用工具的最高批次数。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-input-number
-                    v-model="projectChatSettings.max_tool_rounds"
-                    :min="1"
-                    :max="30"
-                    class="full-width"
-                  />
-                </el-form-item>
+                      <div class="settings-section-title">调度上限</div>
 
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      单批工具调用数
-                      <el-tooltip
-                        content="每次向模型请求时，AI 并行发起工具调用的最大数量。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-input-number
-                    v-model="projectChatSettings.max_tool_calls_per_round"
-                    :min="1"
-                    :max="30"
-                    class="full-width"
-                  />
-                </el-form-item>
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            最大循环轮次
+                            <el-tooltip
+                              content="AI 与工具之间交互迭代的最大次数，防止陷入无限死循环。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <el-input-number
+                          v-model="projectChatSettings.max_loop_rounds"
+                          :min="1"
+                          :max="60"
+                          class="full-width"
+                        />
+                      </el-form-item>
 
-                <el-form-item>
-                  <template #label>
-                    <span class="label-with-tooltip">
-                      熔断后策略
-                      <el-tooltip
-                        content="当超过上述最大轮次限制（熔断）后，系统采取的动作：直接中断(Stop)或要求强制总结(Finalize)。"
-                        placement="top"
-                      >
-                        <el-icon class="label-icon"><InfoFilled /></el-icon>
-                      </el-tooltip>
-                    </span>
-                  </template>
-                  <el-select
-                    v-model="projectChatSettings.tool_budget_strategy"
-                    class="full-width"
-                  >
-                    <el-option
-                      label="强制收敛回答 (Finalize)"
-                      value="finalize"
-                    />
-                    <el-option label="直接停止 (Stop)" value="stop" />
-                  </el-select>
-                </el-form-item>
-              </el-form>
-            </el-tab-pane>
-          </el-tabs>
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            最大工具轮次
+                            <el-tooltip
+                              content="一轮对话中，允许连续调用工具的最高批次数。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <el-input-number
+                          v-model="projectChatSettings.max_tool_rounds"
+                          :min="1"
+                          :max="30"
+                          class="full-width"
+                        />
+                      </el-form-item>
+
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            单批工具调用数
+                            <el-tooltip
+                              content="每次向模型请求时，AI 并行发起工具调用的最大数量。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <el-input-number
+                          v-model="projectChatSettings.max_tool_calls_per_round"
+                          :min="1"
+                          :max="30"
+                          class="full-width"
+                        />
+                      </el-form-item>
+
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            熔断后策略
+                            <el-tooltip
+                              content="当超过上述最大轮次限制（熔断）后，系统采取的动作：直接中断(Stop)或要求强制总结(Finalize)。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <el-select
+                          v-model="projectChatSettings.tool_budget_strategy"
+                          class="full-width"
+                        >
+                          <el-option
+                            label="强制收敛回答 (Finalize)"
+                            value="finalize"
+                          />
+                          <el-option label="直接停止 (Stop)" value="stop" />
+                        </el-select>
+                      </el-form-item>
+                    </el-form>
+                  </el-tab-pane>
+                </el-tabs>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div
@@ -1844,6 +2133,7 @@ import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
 import api from "@/utils/api.js";
 import { createProjectChatWsClient } from "@/utils/ws-chat.js";
 import { clearPermissionArray, hasPermission } from "@/utils/permissions.js";
+import { fetchDictionary } from "@/utils/dictionaries.js";
 import {
   Delete,
   Picture,
@@ -1862,10 +2152,15 @@ import { marked } from "marked";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
 import ComposerAssistBar from "@/components/ComposerAssistBar.vue";
 import { buildRuntimeUrl } from "@/utils/runtime-url.js";
+import { formatDateGroupLabel, formatRelativeDateTime } from "@/utils/date.js";
 import {
-  formatDateGroupLabel,
-  formatRelativeDateTime,
-} from "@/utils/date.js";
+  buildModelTypeMetaMap,
+  DEFAULT_MODEL_TYPE,
+  FALLBACK_MODEL_TYPE_OPTIONS,
+  findProviderModelConfig,
+  normalizeProviderModelConfigs,
+  normalizeProviderModelNames,
+} from "@/utils/llm-models.js";
 import {
   buildMaterialDialogPayload,
   canSaveMessageAsMaterial as canSaveMessageAsMaterialEntry,
@@ -2023,6 +2318,13 @@ const CHAT_SETTINGS_DEFAULTS = {
   tool_retry_count: 0,
   answer_style: "concise",
   prefer_conclusion_first: true,
+  image_aspect_ratio: "1:1",
+  image_style: "auto",
+  image_quality: "high",
+  video_aspect_ratio: "16:9",
+  video_style: "cinematic",
+  video_duration_seconds: 5,
+  video_motion_strength: "medium",
 };
 
 const EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS = {
@@ -2238,6 +2540,7 @@ const defaultProviderId = ref("");
 const defaultModelName = ref("");
 const globalDefaultProviderId = ref("");
 const globalDefaultModelName = ref("");
+const modelTypeOptions = ref(FALLBACK_MODEL_TYPE_OPTIONS);
 const temperature = ref(0.1);
 const systemPrompt = ref("");
 const activeMcpSource = ref("system");
@@ -2350,6 +2653,7 @@ const activeLocalConnectorProviderId = computed(() => {
     )?.id || "",
   ).trim();
 });
+const modelTypeMetaMap = computed(() => buildModelTypeMetaMap(modelTypeOptions.value));
 const providerDisplayNameMap = computed(() => {
   const map = new Map();
   for (const item of providers.value || []) {
@@ -2539,6 +2843,14 @@ const settingsCenterItems = computed(() =>
       permission: "menu.system.config",
     },
     {
+      id: "dictionaries",
+      label: "字典管理",
+      desc: "维护模型类型等全局字典",
+      kind: "route",
+      path: "/dictionaries",
+      permission: ["menu.system.dictionaries", "menu.system.config"],
+    },
+    {
       id: "providers",
       label: "模型供应商",
       desc: "管理平台模型源",
@@ -2660,6 +2972,69 @@ const currentModelSummary = computed(() => {
   if (providerLabel) return providerLabel;
   return "系统默认";
 });
+const currentSelectedProvider = computed(
+  () =>
+    (providers.value || []).find(
+      (item) =>
+        String(item?.id || "").trim() ===
+        String(selectedProviderId.value || defaultProviderId.value || "").trim(),
+    ) || null,
+);
+const currentSelectedModelConfig = computed(() =>
+  findProviderModelConfig(
+    currentSelectedProvider.value,
+    String(selectedModelName.value || defaultModelName.value || "").trim(),
+    modelTypeOptions.value,
+  ),
+);
+const currentModelType = computed(
+  () => String(currentSelectedModelConfig.value?.model_type || DEFAULT_MODEL_TYPE).trim() || DEFAULT_MODEL_TYPE,
+);
+const currentModelTypeMeta = computed(
+  () =>
+    modelTypeMetaMap.value.get(currentModelType.value) ||
+    modelTypeMetaMap.value.get(DEFAULT_MODEL_TYPE),
+);
+const currentModelTypeLabel = computed(
+  () => String(currentModelTypeMeta.value?.label || "文本生成").trim() || "文本生成",
+);
+const currentModelTypeDescription = computed(
+  () => String(currentModelTypeMeta.value?.description || "").trim(),
+);
+const currentModelParameterMode = computed(
+  () => String(currentModelTypeMeta.value?.chat_parameter_mode || "text").trim() || "text",
+);
+
+function buildModelGenerationInstruction() {
+  if (currentModelParameterMode.value === "image") {
+    return [
+      "当前模型类型：图片生成。",
+      "请按以下预设执行本轮生成：",
+      `- 图片比例：${String(projectChatSettings.value.image_aspect_ratio || "1:1").trim() || "1:1"}`,
+      `- 图片风格：${String(projectChatSettings.value.image_style || "auto").trim() || "auto"}`,
+      `- 图片质量：${String(projectChatSettings.value.image_quality || "high").trim() || "high"}`,
+      "- 如果模型支持直接生成图片，请直接返回图片结果；如果当前模型只支持文本，请输出可直接用于图片生成的高质量提示词。",
+    ].join("\n");
+  }
+  if (currentModelParameterMode.value === "video") {
+    return [
+      "当前模型类型：视频生成。",
+      "请按以下预设执行本轮生成：",
+      `- 视频比例：${String(projectChatSettings.value.video_aspect_ratio || "16:9").trim() || "16:9"}`,
+      `- 视频风格：${String(projectChatSettings.value.video_style || "cinematic").trim() || "cinematic"}`,
+      `- 视频时长：${Number(projectChatSettings.value.video_duration_seconds || 5)} 秒`,
+      `- 动作强度：${String(projectChatSettings.value.video_motion_strength || "medium").trim() || "medium"}`,
+      "- 如果模型支持直接生成视频，请直接返回视频结果；如果当前模型只支持文本，请输出可直接用于视频生成的分镜式提示词。",
+    ].join("\n");
+  }
+  return "";
+}
+
+function appendModelGenerationInstruction(prompt) {
+  const instruction = buildModelGenerationInstruction();
+  if (!instruction) return prompt;
+  return [String(prompt || "").trim(), "", instruction].filter(Boolean).join("\n");
+}
 const activeChatSessionTitle = computed(() => {
   const sessionId = String(currentChatSessionId.value || "").trim();
   if (!sessionId) return "新对话";
@@ -2919,7 +3294,7 @@ const availableModels = computed(() => {
   const selected = (providers.value || []).find(
     (item) => item.id === selectedProviderId.value,
   );
-  return Array.isArray(selected?.models) ? selected.models : [];
+  return normalizeProviderModelNames(selected, modelTypeOptions.value);
 });
 const providerModelGroups = computed(() =>
   (providers.value || [])
@@ -2928,20 +3303,22 @@ const providerModelGroups = computed(() =>
       const providerLabel = String(
         provider?.name || providerId || "未命名供应商",
       ).trim();
-      const models = Array.isArray(provider?.models)
-        ? provider.models
-            .map((item) => String(item || "").trim())
-            .filter(Boolean)
-        : [];
+      const models = normalizeProviderModelConfigs(
+        provider,
+        modelTypeOptions.value,
+      );
       return {
         providerId,
         label: providerLabel,
-        options: models.map((modelName) => ({
-          value: `${providerId}::${modelName}`,
-          modelName,
+        options: models.map((item) => ({
+          value: `${providerId}::${item.name}`,
+          modelName: item.name,
+          modelType: item.model_type,
+          modelTypeLabel:
+            modelTypeMetaMap.value.get(item.model_type)?.label || "文本生成",
           providerId,
           providerLabel,
-          label: `${modelName} · ${providerLabel}`,
+          label: `${item.name} · ${providerLabel}`,
         })),
       };
     })
@@ -4210,9 +4587,7 @@ function applyDeleteTargetLocally(target) {
   const sliceIndex =
     role === "user"
       ? Number(target?.index)
-      : Number(
-          target?.sourceIndex ?? target?.index,
-        );
+      : Number(target?.sourceIndex ?? target?.index);
   if (!Number.isInteger(sliceIndex) || sliceIndex < 0) return;
   messages.value = messages.value.slice(0, sliceIndex);
   chatHistoryLoadedCount.value = messages.value.length;
@@ -4348,9 +4723,7 @@ async function deleteMessageAt(messageIndex) {
     applyDeleteTargetLocally(target);
     ElMessage.success(buildDeleteSuccessText(item));
   } catch (err) {
-    ElMessage.error(
-      err?.detail || err?.message || buildDeleteErrorText(item),
-    );
+    ElMessage.error(err?.detail || err?.message || buildDeleteErrorText(item));
   }
 }
 
@@ -4779,11 +5152,11 @@ function buildVuePreviewSrcdoc(content) {
     ".preview-form-item{display:flex;flex-direction:column;gap:8px;margin-bottom:18px;}",
     ".preview-input,.preview-textarea,.preview-select{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #dcdfe6;border-radius:8px;background:#fff;color:#1f2937;font-size:14px;line-height:1.5;}",
     ".preview-textarea{min-height:96px;resize:vertical;}",
-    ".preview-button{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 18px;border-radius:10px;border:1px solid #1677ff;background:#1677ff;color:#fff;font-size:14px;font-weight:600;cursor:default;}",
+    ".preview-button{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 18px;border-radius:10px;border:1px solid #0f172a;background:#0f172a;color:#fff;font-size:14px;font-weight:600;cursor:default;}",
     ".preview-checkbox,.preview-radio{display:inline-flex;align-items:center;gap:8px;color:#4b5563;font-size:14px;}",
-    ".preview-switch{display:inline-flex;align-items:center;width:42px;height:24px;padding:2px;border-radius:999px;background:#dbeafe;box-sizing:border-box;}",
-    ".preview-switch__track{display:block;width:20px;height:20px;border-radius:50%;background:#1677ff;margin-left:auto;}",
-    ".preview-alert{margin-bottom:16px;padding:10px 12px;border-radius:10px;border:1px solid rgba(59,130,246,.18);background:#eff6ff;color:#1d4ed8;font-size:13px;line-height:1.6;}",
+    ".preview-switch{display:inline-flex;align-items:center;width:42px;height:24px;padding:2px;border-radius:999px;background:rgba(226,232,240,.92);box-sizing:border-box;}",
+    ".preview-switch__track{display:block;width:20px;height:20px;border-radius:50%;background:#0f172a;margin-left:auto;}",
+    ".preview-alert{margin-bottom:16px;padding:10px 12px;border-radius:10px;border:1px solid rgba(56,189,248,.18);background:rgba(239,249,255,.88);color:#0f172a;font-size:13px;line-height:1.6;}",
     ".preview-block{display:block;}",
     ".preview-error{padding:16px;border-radius:16px;background:#fff1f2;border:1px solid rgba(244,63,94,.18);color:#9f1239;font-size:14px;line-height:1.7;white-space:pre-wrap;}",
     styles,
@@ -4921,7 +5294,8 @@ async function focusMessageById(messageId, options = {}) {
     container?.querySelectorAll?.(".message-row[data-message-id]") || [],
   );
   const target = candidates.find(
-    (node) => String(node?.dataset?.messageId || "").trim() === normalizedMessageId,
+    (node) =>
+      String(node?.dataset?.messageId || "").trim() === normalizedMessageId,
   );
   if (!target) {
     return false;
@@ -4982,7 +5356,14 @@ function extractImages(message) {
     .filter(Boolean);
 }
 
-function mergeImageUrls(...groups) {
+function extractVideos(message) {
+  if (!message || !Array.isArray(message.videos)) return [];
+  return message.videos
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
+function mergeMediaUrls(...groups) {
   const urls = [];
   const seen = new Set();
   for (const group of groups) {
@@ -4996,19 +5377,63 @@ function mergeImageUrls(...groups) {
   return urls;
 }
 
+function mergeImageUrls(...groups) {
+  return mergeMediaUrls(...groups);
+}
+
+function mergeVideoUrls(...groups) {
+  return mergeMediaUrls(...groups);
+}
+
+function inferArtifactAssetType(item) {
+  const explicit = String(item?.asset_type || item?.assetType || "")
+    .trim()
+    .toLowerCase();
+  if (["image", "video"].includes(explicit)) return explicit;
+  const mimeType = String(
+    item?.mime_type || item?.mimeType || item?.content_type || "",
+  )
+    .trim()
+    .toLowerCase();
+  if (mimeType.startsWith("video/")) return "video";
+  const contentUrl = String(
+    item?.content_url || item?.contentUrl || item?.video_url || item?.videoUrl || item?.url || "",
+  ).trim();
+  if (/\.(mp4|mov|m4v|webm|avi|mkv)(?:[?#].*)?$/i.test(contentUrl)) {
+    return "video";
+  }
+  return "image";
+}
+
 function collectArtifactImageUrls(payload) {
-  const urls = [];
   const directImages = Array.isArray(payload?.images) ? payload.images : [];
   const artifacts = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
   return mergeImageUrls(
     directImages,
-    artifacts.flatMap((item) => [
-      item?.preview_url,
-      item?.content_url,
-      item?.previewUrl,
-      item?.contentUrl,
-      item?.url,
-    ]),
+    artifacts.flatMap((item) =>
+      inferArtifactAssetType(item) === "video"
+        ? []
+        : [
+            item?.preview_url,
+            item?.content_url,
+            item?.previewUrl,
+            item?.contentUrl,
+            item?.url,
+          ],
+    ),
+  );
+}
+
+function collectArtifactVideoUrls(payload) {
+  const directVideos = Array.isArray(payload?.videos) ? payload.videos : [];
+  const artifacts = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
+  return mergeVideoUrls(
+    directVideos,
+    artifacts.flatMap((item) =>
+      inferArtifactAssetType(item) === "video"
+        ? [item?.content_url, item?.contentUrl, item?.video_url, item?.videoUrl, item?.url]
+        : [],
+    ),
   );
 }
 
@@ -6366,6 +6791,19 @@ async function fetchSystemConfig() {
   }
 }
 
+async function fetchModelTypeOptions() {
+  try {
+    const data = await fetchDictionary("llm_model_types");
+    const options = Array.isArray(data?.options) ? data.options : [];
+    if (options.length) {
+      modelTypeOptions.value = options;
+    }
+  } catch (err) {
+    modelTypeOptions.value = FALLBACK_MODEL_TYPE_OPTIONS;
+    console.warn("加载模型类型失败", err);
+  }
+}
+
 async function fetchProjects() {
   const data = await api.get("/projects");
   projects.value = data.projects || [];
@@ -6401,9 +6839,7 @@ async function fetchGlobalProviders() {
     list.find((item) => item.id === globalDefaultProviderId.value) ||
     list[0] ||
     {};
-  const models = Array.isArray(provider?.models)
-    ? provider.models.map((item) => String(item || "").trim()).filter(Boolean)
-    : [];
+  const models = normalizeProviderModelNames(provider, modelTypeOptions.value);
   globalDefaultModelName.value = String(
     provider?.default_model || models[0] || "",
   ).trim();
@@ -6420,11 +6856,10 @@ async function fetchGlobalProviders() {
   }
   const selectedProvider =
     list.find((item) => item.id === selectedProviderId.value) || provider;
-  const selectedModels = Array.isArray(selectedProvider?.models)
-    ? selectedProvider.models
-        .map((item) => String(item || "").trim())
-        .filter(Boolean)
-    : [];
+  const selectedModels = normalizeProviderModelNames(
+    selectedProvider,
+    modelTypeOptions.value,
+  );
   if (
     !selectedModelName.value ||
     !selectedModels.includes(String(selectedModelName.value || "").trim())
@@ -6605,12 +7040,10 @@ async function fetchProvidersByProject(projectId) {
       ? preferredProviderId
       : defaultProviderId.value;
 
-    const providerModels = (
-      providers.value.find((item) => item.id === selectedProviderId.value)
-        ?.models || []
-    )
-      .map((item) => String(item || "").trim())
-      .filter(Boolean);
+    const providerModels = normalizeProviderModelNames(
+      providers.value.find((item) => item.id === selectedProviderId.value),
+      modelTypeOptions.value,
+    );
     const preferredModelName = String(settings.model_name || "").trim();
     if (preferredModelName && providerModels.includes(preferredModelName)) {
       selectedModelName.value = preferredModelName;
@@ -6830,6 +7263,7 @@ async function saveProjectChatSettings(silent = false) {
 function mapHistoryMessage(item) {
   const attachments = Array.isArray(item?.attachments) ? item.attachments : [];
   const images = Array.isArray(item?.images) ? item.images : [];
+  const videos = Array.isArray(item?.videos) ? item.videos : [];
   return {
     id: String(item?.id || ""),
     role: String(item?.role || "assistant"),
@@ -6839,6 +7273,7 @@ function mapHistoryMessage(item) {
     processExpanded: false,
     audit: null,
     images: images,
+    videos: videos,
     attachments,
     time: String(item?.created_at || ""),
   };
@@ -6967,7 +7402,10 @@ function handleProviderChange() {
   const selected = (providers.value || []).find(
     (item) => item.id === selectedProviderId.value,
   );
-  const modelList = Array.isArray(selected?.models) ? selected.models : [];
+  const modelList = normalizeProviderModelNames(
+    selected,
+    modelTypeOptions.value,
+  );
   if (
     !selectedModelName.value ||
     !modelList.includes(selectedModelName.value)
@@ -7611,6 +8049,10 @@ async function handleSocketMessage(eventData) {
       extractImages(row),
       collectArtifactImageUrls(eventData),
     );
+    row.videos = mergeVideoUrls(
+      extractVideos(row),
+      collectArtifactVideoUrls(eventData),
+    );
     scrollToBottom();
     return;
   }
@@ -7656,6 +8098,10 @@ async function handleSocketMessage(eventData) {
     row.images = mergeImageUrls(
       extractImages(row),
       collectArtifactImageUrls(eventData),
+    );
+    row.videos = mergeVideoUrls(
+      extractVideos(row),
+      collectArtifactVideoUrls(eventData),
     );
     const doneContent = String(eventData?.content || "").trim();
     const currentContent = String(row.content || "").trim();
@@ -8096,6 +8542,7 @@ async function generateEmployeeDraftWithoutProject() {
     role: "user",
     content: text,
     images: [],
+    videos: [],
     attachments: [],
     time: nowText(),
   };
@@ -8103,6 +8550,9 @@ async function generateEmployeeDraftWithoutProject() {
     id: createLocalMessageId(),
     role: "assistant",
     content: "",
+    images: [],
+    videos: [],
+    attachments: [],
     displayMode: "",
     terminalLog: [],
     processExpanded: false,
@@ -8177,6 +8627,7 @@ async function sendGlobalChatWithoutProject() {
     role: "user",
     content: text,
     images: [],
+    videos: [],
     attachments: [],
     time: nowText(),
   };
@@ -8184,6 +8635,9 @@ async function sendGlobalChatWithoutProject() {
     id: createLocalMessageId(),
     role: "assistant",
     content: "",
+    images: [],
+    videos: [],
+    attachments: [],
     displayMode: "",
     terminalLog: [],
     processExpanded: false,
@@ -8212,7 +8666,7 @@ async function sendGlobalChatWithoutProject() {
 
   try {
     const response = await api.post("/projects/chat/global", {
-      message: text,
+      message: appendModelGenerationInstruction(text),
       history,
       provider_id: String(
         selectedProviderId.value || defaultProviderId.value || "",
@@ -8361,6 +8815,9 @@ async function doSend() {
         .filter(Boolean)
         .join("\n")
     : userPrompt;
+  const finalUserPrompt = appendModelGenerationInstruction(
+    effectiveUserPrompt,
+  );
   const effectiveToolPriority = mergeToolPriority(
     projectChatSettings.value.tool_priority || [],
     assistToolNames,
@@ -8379,6 +8836,7 @@ async function doSend() {
     role: "user",
     content: text || "（发送了附件）",
     images: imageUrls,
+    videos: [],
     attachments: attachmentNames,
     time: nowText(),
   };
@@ -8387,6 +8845,7 @@ async function doSend() {
     role: "assistant",
     content: "",
     images: [],
+    videos: [],
     attachments: [],
     displayMode: "",
     effectiveTools: [],
@@ -8415,7 +8874,7 @@ async function doSend() {
         reject,
         requestId,
         assistantIndex,
-        userPrompt: effectiveUserPrompt,
+        userPrompt: finalUserPrompt,
         mcpApprovalCancelled: false,
         awaitingTerminalApproval: false,
         handoffTriggered: false,
@@ -8432,7 +8891,7 @@ async function doSend() {
       skill_resource_directory: String(
         skillResourceDirectoryResolved.value || "",
       ).trim(),
-      message: effectiveUserPrompt,
+      message: finalUserPrompt,
       employee_ids: employeeIds,
       employee_id: employeeIds.length === 1 ? employeeIds[0] : undefined,
       history: historyRows,
@@ -8678,9 +9137,11 @@ watch(
   ],
   async ([routeProjectId, routeChatSessionId, routeMessageId], previous) => {
     const previousKey = Array.isArray(previous) ? previous.join("|") : "";
-    const currentKey = [routeProjectId, routeChatSessionId, routeMessageId].join(
-      "|",
-    );
+    const currentKey = [
+      routeProjectId,
+      routeChatSessionId,
+      routeMessageId,
+    ].join("|");
     if (currentKey === previousKey) return;
     const activeProjectId = String(selectedProjectId.value || "").trim();
     if (routeProjectId && routeProjectId !== activeProjectId) {
@@ -8704,6 +9165,7 @@ onMounted(async () => {
     await Promise.all([
       fetchSystemConfig(),
       fetchProjects(),
+      fetchModelTypeOptions(),
       fetchGlobalProviders(),
     ]);
     syncProjectFromRoute();
@@ -9314,50 +9776,105 @@ onUnmounted(() => {
 }
 
 .settings-summary-card {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px 14px;
-  width: min(100%, 940px);
-  margin: 0 0 8px;
-  padding: 0 0 14px;
-  border-bottom: 1px solid rgba(17, 24, 39, 0.06);
-  background: transparent;
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  margin: 0 0 18px;
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 28px;
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(103, 232, 249, 0.12),
+      transparent 36%
+    ),
+    radial-gradient(
+      circle at top left,
+      rgba(125, 211, 252, 0.12),
+      transparent 28%
+    ),
+    rgba(255, 255, 255, 0.66);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
 .settings-summary-title {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: #171717;
-  white-space: nowrap;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .settings-summary-text {
-  flex: 1;
-  min-width: min(320px, 100%);
+  max-width: 780px;
   margin-top: 0;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.7;
-  color: #6b7280;
+  color: #475569;
+}
+
+.settings-summary-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-summary-pill {
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  background: rgba(255, 255, 255, 0.76);
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.model-parameter-note {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.model-parameter-note__title {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.model-parameter-note__text {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .settings-form {
   flex: 1;
-  width: min(100%, 940px);
-  max-width: 940px;
-  padding-bottom: 20px;
+  width: 100%;
+  max-width: none;
+  padding-bottom: 6px;
 }
 
 .settings-form .el-form-item {
-  margin-bottom: 0;
-  padding: 16px 0;
-  border-top: 1px solid rgba(17, 24, 39, 0.06);
+  margin-bottom: 16px;
+  padding: 18px 18px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 14px 30px rgba(15, 23, 42, 0.04);
 }
 
 .settings-form .el-form-item:first-child {
-  padding-top: 0;
-  border-top: 0;
+  padding-top: 18px;
 }
 
 .settings-mode-group {
@@ -9457,10 +9974,10 @@ onUnmounted(() => {
 }
 
 .settings-form :deep(.el-form-item__label) {
-  padding-bottom: 10px;
+  padding-bottom: 12px;
   font-weight: 600;
   font-size: 13px;
-  color: #171717;
+  color: #0f172a;
   display: flex;
   align-items: center;
 }
@@ -9471,8 +9988,8 @@ onUnmounted(() => {
 .settings-form :deep(.el-cascader .el-input__wrapper),
 .settings-form :deep(.el-mentions),
 .settings-form :deep(.el-textarea__inner) {
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.92);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.86);
 }
 
 .settings-form :deep(.el-input__wrapper),
@@ -9480,11 +9997,11 @@ onUnmounted(() => {
 .settings-form :deep(.el-input-number .el-input__wrapper),
 .settings-form :deep(.el-cascader .el-input__wrapper),
 .settings-form :deep(.el-mentions) {
-  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
 }
 
 .settings-form :deep(.el-textarea__inner) {
-  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
   min-height: 104px;
 }
 
@@ -9495,8 +10012,8 @@ onUnmounted(() => {
 .settings-form :deep(.el-mentions.is-focus),
 .settings-form :deep(.el-textarea__inner:focus) {
   box-shadow:
-    inset 0 0 0 1px rgba(17, 24, 39, 0.14),
-    0 8px 18px rgba(15, 23, 42, 0.04);
+    inset 0 0 0 1px rgba(56, 189, 248, 0.24),
+    0 0 0 4px rgba(103, 232, 249, 0.12);
 }
 
 .label-with-tooltip {
@@ -9523,33 +10040,207 @@ onUnmounted(() => {
 .settings-summary-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 8px 10px;
-  margin-left: auto;
 }
 
 .settings-summary-status {
   font-size: 12px;
   line-height: 1.5;
-  color: #737373;
+  color: #64748b;
 }
 
 .settings-summary-sync-button {
-  min-height: 32px !important;
+  min-height: 36px !important;
   padding: 0 14px !important;
   border-radius: 999px !important;
-  border-color: rgba(17, 24, 39, 0.08) !important;
-  background: rgba(255, 255, 255, 0.78) !important;
+  border-color: rgba(15, 23, 42, 0.08) !important;
+  background: rgba(255, 255, 255, 0.72) !important;
   color: #374151 !important;
   font-weight: 600;
   box-shadow: none !important;
 }
 
 .settings-summary-sync-button:hover {
-  border-color: rgba(17, 24, 39, 0.14) !important;
+  border-color: rgba(56, 189, 248, 0.24) !important;
   background: rgba(255, 255, 255, 0.92) !important;
-  color: #111827 !important;
+  color: #0f172a !important;
+}
+
+.settings-summary-sync-button--hero {
+  border-color: transparent !important;
+  background: linear-gradient(180deg, #0f172a, #1e293b) !important;
+  color: #fff !important;
+  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.14) !important;
+}
+
+.settings-summary-sync-button--hero:hover {
+  border-color: transparent !important;
+  color: #fff !important;
+}
+
+.settings-chat-layout,
+.settings-center-context-bar,
+.settings-center-inline-page {
+  width: min(100%, var(--settings-center-max-width));
+  margin: 0 auto;
+}
+
+.settings-chat-layout {
+  display: grid;
+  grid-template-columns: var(--settings-chat-sidebar-width) minmax(0, 1fr);
+  gap: var(--settings-center-shell-gap);
+}
+
+.settings-chat-sidebar,
+.settings-chat-main {
+  min-width: 0;
+}
+
+.settings-chat-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-chat-sidebar-card,
+.settings-chat-main-card {
+  border: 1px solid var(--settings-surface-border);
+  box-shadow: var(--settings-surface-shadow);
+  backdrop-filter: blur(20px);
+}
+
+.settings-chat-sidebar-card {
+  padding: 22px 20px;
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.settings-chat-sidebar-card--hero {
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(103, 232, 249, 0.14),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at top left,
+      rgba(125, 211, 252, 0.14),
+      transparent 26%
+    ),
+    rgba(255, 255, 255, 0.58);
+}
+
+.settings-chat-sidebar-card--note {
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(148, 163, 184, 0.12),
+      transparent 34%
+    ),
+    rgba(255, 255, 255, 0.64);
+}
+
+.settings-chat-sidebar-card__eyebrow,
+.settings-chat-section-label {
+  color: #7c8aa0;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.settings-chat-sidebar-card__title {
+  margin-top: 10px;
+  color: #0f172a;
+  font-size: clamp(26px, 3vw, 34px);
+  line-height: 1.06;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-family:
+    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.settings-chat-sidebar-card__text,
+.settings-chat-sidebar-card__note {
+  margin: 10px 0 0;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.settings-chat-sidebar-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.settings-chat-sidebar-card__meta span {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.72);
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.settings-chat-sidebar-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 18px;
+}
+
+.settings-chat-sidebar-card__status {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settings-chat-fact-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.settings-chat-fact {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.settings-chat-fact__label {
+  color: #7c8aa0;
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-chat-fact__value {
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.6;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.settings-chat-main-card {
+  padding: 22px;
+  border-radius: var(--settings-surface-radius);
+  background: rgba(255, 255, 255, 0.6);
 }
 
 .mcp-source-tabs :deep(.el-tabs__header) {
@@ -9872,6 +10563,7 @@ onUnmounted(() => {
 .message-row.is-ai .message-bubble > .message-audit,
 .message-row.is-ai .message-bubble > .message-employee-draft,
 .message-row.is-ai .message-bubble > .message-images,
+.message-row.is-ai .message-bubble > .message-videos,
 .message-row.is-ai .message-bubble > .message-attachments {
   max-width: 680px;
 }
@@ -10871,6 +11563,13 @@ onUnmounted(() => {
   margin-top: 8px;
 }
 
+.message-videos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
 .message-attachments {
   display: flex;
   flex-direction: column;
@@ -10899,6 +11598,14 @@ onUnmounted(() => {
   border-radius: 8px;
   cursor: pointer;
   border: 1px solid var(--el-border-color-lighter);
+}
+
+.preview-video {
+  width: min(100%, 320px);
+  max-height: 240px;
+  border-radius: 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: #020617;
 }
 
 .chat-composer {
@@ -11095,6 +11802,11 @@ onUnmounted(() => {
   gap: 16px;
 }
 
+.chat-model-option__main {
+  display: grid;
+  gap: 2px;
+}
+
 .chat-model-option__name {
   font-weight: 600;
   color: #0f172a;
@@ -11103,6 +11815,17 @@ onUnmounted(() => {
 .chat-model-option__provider {
   font-size: 12px;
   color: #64748b;
+}
+
+.chat-model-option__type {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.88);
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 700;
 }
 
 .chat-model-pill {
@@ -11735,24 +12458,39 @@ onUnmounted(() => {
 }
 
 .settings-center-page {
+  --settings-center-max-width: 1440px;
+  --settings-center-shell-gap: 24px;
+  --settings-center-shell-padding-inline: 24px;
+  --settings-center-sidebar-width: 332px;
+  --settings-chat-sidebar-width: 360px;
+  --settings-surface-radius: 30px;
+  --settings-surface-shadow:
+    0 24px 64px rgba(15, 23, 42, 0.08),
+    0 14px 34px rgba(15, 23, 42, 0.06);
+  --settings-surface-border: rgba(255, 255, 255, 0.82);
   min-height: 100vh;
   height: 100vh;
   overflow: hidden;
   background:
     radial-gradient(
-      circle at top left,
-      rgba(255, 244, 214, 0.5),
-      transparent 24%
+      circle at 18% 0%,
+      rgba(125, 211, 252, 0.16),
+      transparent 26%
     ),
-    linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
+    radial-gradient(
+      circle at 82% 14%,
+      rgba(103, 232, 249, 0.12),
+      transparent 22%
+    ),
+    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%);
 }
 
 .settings-center-shell {
   display: grid;
-  grid-template-columns: 272px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: var(--settings-center-sidebar-width) minmax(0, 1fr);
+  gap: var(--settings-center-shell-gap);
   height: 100%;
-  padding: 14px 16px 16px;
+  padding: 18px var(--settings-center-shell-padding-inline) 22px;
   background: transparent;
 }
 
@@ -11767,17 +12505,13 @@ onUnmounted(() => {
   flex-direction: column;
   width: 100%;
   min-height: 0;
-  padding: 14px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  border-radius: 28px;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.96),
-    rgba(245, 247, 250, 0.92)
-  );
-  box-shadow:
-    0 20px 40px rgba(15, 23, 42, 0.06),
-    0 2px 10px rgba(15, 23, 42, 0.03);
+  margin-bottom: 40px;
+  padding: 18px 16px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: var(--settings-surface-radius);
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: var(--settings-surface-shadow);
+  backdrop-filter: blur(20px);
   overflow-y: auto;
 }
 
@@ -11786,7 +12520,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 6px 8px 10px;
+  padding: 2px 4px 16px;
 }
 
 .settings-center-brand {
@@ -11800,88 +12534,93 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  background: #111827;
+  width: 36px;
+  height: 36px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #0f172a, #1e293b);
   color: #fff;
-  font-size: 10px;
+  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.16);
+  font-size: 12px;
   font-weight: 700;
 }
 
 .settings-center-brand__name {
-  color: #111827;
-  font-size: 15px;
+  color: #0f172a;
+  font-size: 17px;
   line-height: 1.2;
   font-weight: 600;
-  font-family: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+  letter-spacing: -0.02em;
+  font-family:
+    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 .settings-center-brand__meta {
-  margin-top: 2px;
-  color: #8b8d93;
-  font-size: 11px;
+  margin-top: 4px;
+  color: #7c8aa0;
+  font-size: 12px;
   line-height: 1.3;
 }
 
-.settings-center-sidebar-copy {
-  margin: 0 8px 14px;
-  color: #6b7280;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
 .settings-center-nav-group + .settings-center-nav-group {
-  margin-top: 12px;
+  margin-top: 18px;
 }
 
 .settings-center-nav-group__title {
-  padding: 0 10px 8px;
-  color: #94a3b8;
+  padding: 0 8px 10px;
+  color: #7c8aa0;
   font-size: 11px;
   line-height: 1;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .settings-center-sidebar__nav {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .settings-center-nav-item {
   width: 100%;
-  padding: 11px 12px;
-  border: 0;
-  border-radius: 16px;
-  background: transparent;
+  padding: 13px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.34);
   text-align: left;
   cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76);
   transition:
+    transform 0.18s ease,
     background-color 0.18s ease,
-    box-shadow 0.18s ease;
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    color 0.18s ease;
 }
 
 .settings-center-nav-item:hover {
-  background: rgba(255, 255, 255, 0.72);
+  transform: translateY(-1px);
+  border-color: rgba(56, 189, 248, 0.16);
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.06);
 }
 
 .settings-center-nav-item.is-active {
+  border-color: rgba(255, 255, 255, 0.84);
   background:
     radial-gradient(
       circle at top right,
-      rgba(59, 130, 246, 0.12),
-      transparent 40%
+      rgba(103, 232, 249, 0.12),
+      transparent 46%
     ),
-    rgba(219, 234, 254, 0.88);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    rgba(255, 255, 255, 0.84);
+  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.08);
 }
 
 .settings-center-nav-item__row {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 6px;
   width: 100%;
 }
 
@@ -11892,26 +12631,15 @@ onUnmounted(() => {
   font-size: 14px;
   line-height: 1.35;
   font-weight: 600;
-  color: #111827;
-}
-
-.settings-center-nav-item__badge {
-  flex-shrink: 0;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.8);
-  color: #8b8d93;
-  font-size: 10px;
-  line-height: 1.5;
-  font-weight: 600;
+  color: #0f172a;
 }
 
 .settings-center-nav-item__desc {
   display: block;
-  margin-top: 5px;
-  color: #8a94a6;
-  font-size: 11px;
-  line-height: 1.55;
+  margin-top: 6px;
+  color: #7c8aa0;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .settings-center-account {
@@ -11919,21 +12647,22 @@ onUnmounted(() => {
   align-items: center;
   gap: 10px;
   margin-top: auto;
-  padding: 14px 10px 4px;
-  border-top: 1px solid rgba(17, 24, 39, 0.06);
+  padding: 18px 8px 2px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .settings-center-account__avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 999px;
-  background: #e4e4e7;
-  color: #52525b;
-  font-size: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #0f172a, #1e293b);
+  color: #fff;
+  font-size: 14px;
   font-weight: 700;
+  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.16);
 }
 
 .settings-center-account__meta {
@@ -11942,20 +12671,20 @@ onUnmounted(() => {
 }
 
 .settings-center-account__name {
-  color: #27272a;
-  font-size: 13px;
-  font-weight: 500;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .settings-center-account__role {
-  margin-top: 2px;
-  color: #9ca3af;
-  font-size: 11px;
+  margin-top: 4px;
+  color: #7c8aa0;
+  font-size: 12px;
 }
 
 .settings-center-account__logout {
   flex-shrink: 0;
-  color: #8b8d93 !important;
+  color: #7c8aa0 !important;
 }
 
 .settings-center-stage {
@@ -11963,10 +12692,9 @@ onUnmounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  padding: 12px 0 0;
-  border-radius: 0;
-  border: 0;
+  height: 100%;
+  padding: 4px 0 8px;
+  border-radius: 34px;
   background: transparent;
   box-shadow: none;
 }
@@ -11974,56 +12702,62 @@ onUnmounted(() => {
 .settings-center-context-bar {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 24px 4px;
-  text-align: center;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 2px 0;
+  text-align: left;
 }
 
 .settings-center-close-button {
   flex-shrink: 0;
-  min-height: 32px;
-  padding: 0 8px !important;
-  border-radius: 10px !important;
-  color: #6b7280 !important;
-  background: transparent !important;
+  min-height: 34px;
+  padding: 0 12px !important;
+  border-radius: 999px !important;
+  color: #64748b !important;
+  border: 1px solid rgba(255, 255, 255, 0.76) !important;
+  background: rgba(255, 255, 255, 0.68) !important;
 }
 
 .settings-center-close-button:hover {
-  background: rgba(255, 255, 255, 0.7) !important;
-  color: #111827 !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  color: #0f172a !important;
 }
 
 .settings-center-context-bar__title {
-  color: #1f2937;
-  font-size: 16px;
+  color: #0f172a;
+  font-size: 19px;
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
 }
 
 .settings-center-context-bar__desc {
-  max-width: 760px;
-  color: #6b7280;
-  font-size: 13px;
+  max-width: 720px;
+  color: #475569;
+  font-size: 14px;
   line-height: 1.6;
 }
 
 .settings-center-context-bar__meta {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  justify-content: center;
   flex-wrap: wrap;
   gap: 6px 8px;
-  margin-top: 8px;
-  color: #9ca3af;
+  margin-top: 4px;
+  color: #64748b;
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.5;
+}
+
+.settings-center-context-bar__meta span {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.68);
 }
 
 .settings-center-context-bar__meta span:not(:last-child)::after {
-  content: "·";
-  margin-left: 8px;
-  color: #c8cdd5;
+  display: none;
 }
 
 .settings-center-stage__body {
@@ -12036,15 +12770,15 @@ onUnmounted(() => {
 .settings-center-stage__body--chat {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   overflow-y: auto;
-  padding: 14px 14px 28px;
+  padding: 18px 0 28px;
 }
 
 .settings-center-stage__body--inline {
   min-width: 0;
   overflow: auto;
-  padding: 14px 14px 28px;
+  padding: 14px 0 28px;
 }
 
 .settings-center-inline-page {
@@ -12054,12 +12788,12 @@ onUnmounted(() => {
 .settings-tabs {
   flex: 1;
   min-height: 0;
-  width: min(100%, 940px);
+  width: 100%;
 }
 
 .settings-tabs :deep(.el-tabs__header) {
-  margin: 0 0 12px;
-  padding-bottom: 8px;
+  margin: 0 0 20px;
+  padding-bottom: 0;
   background: transparent;
 }
 
@@ -12067,27 +12801,53 @@ onUnmounted(() => {
   display: none;
 }
 
+.settings-tabs :deep(.el-tabs__nav-wrap),
+.settings-tabs :deep(.el-tabs__nav-scroll) {
+  display: flex;
+  align-items: center;
+}
+
 .settings-tabs :deep(.el-tabs__nav) {
-  gap: 18px;
-  border: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
 }
 
 .settings-tabs :deep(.el-tabs__item) {
-  height: 36px;
-  padding: 0 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  line-height: 1.2;
+  padding: 0 16px;
   border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  color: #6b7280;
+  border-bottom: 0;
+  border-radius: 999px;
+  color: #64748b;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
+  text-align: center;
   background: transparent;
 }
 
+.settings-tabs :deep(.el-tabs--top > .el-tabs__header .el-tabs__item:nth-child(2)),
+.settings-tabs :deep(.el-tabs--top > .el-tabs__header .el-tabs__item:last-child),
+.settings-tabs :deep(.el-tabs--bottom > .el-tabs__header .el-tabs__item:nth-child(2)),
+.settings-tabs :deep(.el-tabs--bottom > .el-tabs__header .el-tabs__item:last-child) {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
 .settings-tabs :deep(.el-tabs__item.is-active) {
-  color: #171717;
-  border-bottom-color: rgba(17, 24, 39, 0.22);
-  background: transparent;
+  color: #fff;
+  border-bottom-color: transparent;
+  background: linear-gradient(180deg, #0f172a, #1e293b);
+  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.14);
 }
 
 .settings-tabs :deep(.el-tabs__active-bar) {
@@ -12116,36 +12876,84 @@ onUnmounted(() => {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  padding: 10px 0 0;
+  height: 100%;
+  padding: 10px 0 0 20px;
   border: 0;
-  background: inherit;
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
+  backdrop-filter: none;
+  overflow: hidden;
 }
 
 .chat-context-bar {
-  padding: 8px 24px 6px;
-  text-align: center;
+  padding: 0 0 8px;
+}
+
+.chat-context-bar__surface {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 26px;
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(103, 232, 249, 0.12),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at top left,
+      rgba(125, 211, 252, 0.12),
+      transparent 26%
+    ),
+    rgba(255, 255, 255, 0.54);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.chat-context-bar__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.chat-context-bar__eyebrow {
+  color: var(--page-text-soft, #7c8aa0);
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .chat-context-bar__title {
-  color: #1f2937;
-  font-size: 15px;
-  font-weight: 500;
-  line-height: 1.4;
+  margin-top: 10px;
+  color: #0f172a;
+  font-size: clamp(26px, 3vw, 36px);
+  font-weight: 600;
+  line-height: 1.04;
+  letter-spacing: -0.03em;
+  font-family:
+    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.chat-context-bar__summary {
+  max-width: 520px;
+  margin: 8px 0 0;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .chat-context-bar__meta {
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 6px 8px;
-  margin-top: 4px;
-  color: #9ca3af;
+  margin-top: 10px;
+  color: var(--page-text-soft, #7c8aa0);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -12159,10 +12967,12 @@ onUnmounted(() => {
 .chat-context-bar__actions {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
-  width: 100%;
+  width: auto;
+  flex-shrink: 0;
+  align-self: center;
 }
 
 .chat-context-bar__action-button {
@@ -12175,8 +12985,8 @@ onUnmounted(() => {
 }
 
 .chat-context-bar__action-button:hover {
-  border-color: rgba(37, 99, 235, 0.22) !important;
-  color: #1d4ed8 !important;
+  border-color: rgba(56, 189, 248, 0.24) !important;
+  color: #0f172a !important;
   background: #ffffff !important;
 }
 
@@ -12189,24 +12999,30 @@ onUnmounted(() => {
 .chat-messages-shell {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .chat-messages {
-  height: 84%;
-  padding: 14px 24px 24px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 14px 20px 22px;
   overflow-y: auto;
-  scroll-padding-bottom: 24px;
+  overflow-x: hidden;
+  scroll-padding-bottom: 28px;
+  scroll-behavior: smooth;
   background: transparent;
 }
 
 .message-list-inner {
-  max-width: 920px;
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 26px;
+  gap: 24px;
   width: 100%;
-  min-height: 100%;
+  min-height: min-content;
 }
 
 .chat-empty-state {
@@ -12215,67 +13031,97 @@ onUnmounted(() => {
   flex: 1 1 auto;
   align-items: center;
   justify-content: center;
-  min-height: 420px;
-  padding: 20px 12px;
+  min-height: 100%;
+  padding: 32px 0 18px;
   text-align: center;
   background: transparent;
   border: 0;
 }
 
 .chat-empty-state__hero {
-  max-width: 680px;
+  width: min(720px, 100%);
+  max-width: 100%;
+  padding: 40px 42px 36px;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 34px;
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(103, 232, 249, 0.12),
+      transparent 34%
+    ),
+    rgba(255, 255, 255, 0.58);
+  box-shadow:
+    0 24px 64px rgba(15, 23, 42, 0.08),
+    0 14px 34px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(20px);
 }
 
 .chat-empty-badge {
   display: inline-flex;
   align-items: center;
   min-height: 28px;
-  padding: 0 12px;
+  padding: 0 14px;
   border-radius: 999px;
-  background: #eceff3;
-  color: #6b7280;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--page-text-soft, #7c8aa0);
   font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .chat-empty-title {
   margin-top: 18px;
-  color: #171717;
-  font-size: 30px;
-  font-weight: 500;
-  line-height: 1.2;
+  color: #0f172a;
+  font-size: clamp(34px, 5vw, 48px);
+  font-weight: 600;
+  line-height: 1.06;
+  letter-spacing: -0.03em;
+  font-family:
+    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 .chat-empty-text {
-  max-width: 620px;
+  display: block;
+  max-width: 560px;
   margin-top: 12px;
-  color: #737373;
+  color: #475569;
   font-size: 14px;
   line-height: 1.8;
 }
 
 .chat-empty-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 20px;
+  display: grid;
+  width: min(720px, 100%);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
 }
 
 .chat-empty-action {
-  min-width: 180px;
-  padding: 12px 16px;
-  border-radius: 14px;
-  border: 1px solid #e3e4e8;
-  background: #ffffff;
-  color: #262626;
-  box-shadow: none;
+  min-width: 0;
+  padding: 16px 18px;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.82);
+  color: #0f172a;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.06);
+  font-weight: 600;
+  line-height: 1.5;
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
 }
 
 .chat-empty-action:hover {
-  transform: none;
-  border-color: #d3d6dc;
-  background: #fafafa;
-  box-shadow: none;
+  transform: translateY(-2px);
+  border-color: rgba(56, 189, 248, 0.22);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 22px 34px rgba(15, 23, 42, 0.08);
 }
 
 .message-row.is-user .message-meta,
@@ -12298,7 +13144,7 @@ onUnmounted(() => {
   flex-shrink: 0;
   display: flex;
   justify-content: center;
-  padding: 0 24px 24px;
+  padding: 0 20px 20px;
   position: static;
   bottom: auto;
   z-index: auto;
@@ -12307,32 +13153,33 @@ onUnmounted(() => {
 }
 
 .chat-composer-panel {
-  width: clamp(500px, 72vw, 800px);
-  max-width: 100%;
-  min-width: 500px;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
   margin: 0;
-  border-radius: 28px;
+  border-radius: 30px;
   background: transparent;
 }
 
 .chat-input-wrapper {
   width: 100%;
   max-width: none;
-  border: 1px solid rgba(17, 24, 39, 0.08);
-  border-radius: 28px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: none;
+  backdrop-filter: blur(20px);
 }
 
 .chat-input-wrapper.is-focused {
-  border-color: rgba(17, 24, 39, 0.12);
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.05);
+  border-color: rgba(56, 189, 248, 0.26);
+  box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.16);
 }
 
 .chat-textarea :deep(.el-textarea__inner) {
-  min-height: 88px !important;
-  padding: 18px 20px 8px;
-  color: #171717;
+  min-height: 92px !important;
+  padding: 20px 22px 10px;
+  color: #0f172a;
   border: 0 !important;
   box-shadow: none !important;
   background: transparent !important;
@@ -12352,16 +13199,16 @@ onUnmounted(() => {
 
 .chat-input-wrapper :deep(.composer-assist-chip) {
   border-radius: 999px;
-  border: 1px solid rgba(17, 24, 39, 0.06);
-  background: #f4f4f5;
-  color: #52525b;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: rgba(255, 255, 255, 0.66);
+  color: #475569;
   min-height: 32px;
 }
 
 .chat-input-wrapper :deep(.composer-assist-chip.is-active) {
-  border-color: rgba(17, 24, 39, 0.1);
-  background: #eceff3;
-  color: #111827;
+  border-color: rgba(56, 189, 248, 0.2);
+  background: rgba(240, 249, 255, 0.92);
+  color: #0f172a;
 }
 
 .input-footer {
@@ -12393,7 +13240,7 @@ onUnmounted(() => {
 .chat-model-pill {
   min-height: 32px;
   border-radius: 999px;
-  background: #f4f4f5;
+  background: rgba(255, 255, 255, 0.66);
   box-shadow: none;
 }
 
@@ -12413,9 +13260,9 @@ onUnmounted(() => {
 .send-message-button {
   width: 36px;
   height: 36px;
-  background: #111827 !important;
+  background: linear-gradient(180deg, #0f172a, #1e293b) !important;
   border: 0 !important;
-  box-shadow: none !important;
+  box-shadow: 0 14px 24px rgba(15, 23, 42, 0.18) !important;
 }
 
 .send-message-button:disabled {
@@ -12429,8 +13276,8 @@ onUnmounted(() => {
 }
 
 .message-row.is-ai .message-content-wrapper {
-  width: auto;
-  max-width: min(860px, 100%);
+  width: 100%;
+  max-width: min(920px, 100%);
   align-items: flex-start;
 }
 
@@ -12439,8 +13286,9 @@ onUnmounted(() => {
 .message-row.is-ai .message-bubble > .message-audit,
 .message-row.is-ai .message-bubble > .message-employee-draft,
 .message-row.is-ai .message-bubble > .message-images,
+.message-row.is-ai .message-bubble > .message-videos,
 .message-row.is-ai .message-bubble > .message-attachments {
-  max-width: 860px;
+  max-width: min(920px, 100%);
 }
 
 .message-row.is-user {
@@ -12449,27 +13297,32 @@ onUnmounted(() => {
 
 .message-row.is-user .message-content-wrapper {
   width: auto;
-  max-width: min(760px, 78%);
+  max-width: min(880px, 84%);
   align-items: flex-end;
 }
 
 .message-row.is-user .message-bubble {
-  padding: 12px 16px;
-  border: 1px solid rgba(17, 24, 39, 0.08);
-  border-radius: 22px;
-  background: #e9edf2;
+  padding: 14px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(125, 211, 252, 0.14), transparent 54%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 250, 252, 0.8));
   box-shadow: none;
   width: fit-content;
   min-width: 0;
   max-width: 100%;
+  backdrop-filter: blur(16px);
 }
 
 .message-row.is-user .message-bubble.message-bubble--editing {
   width: min(100%, 680px);
   min-width: min(320px, 100%);
   padding: 14px;
-  border-color: rgba(148, 163, 184, 0.18);
-  background: rgba(233, 237, 242, 0.72);
+  border-color: rgba(255, 255, 255, 0.9);
+  background:
+    radial-gradient(circle at top left, rgba(125, 211, 252, 0.12), transparent 56%),
+    rgba(255, 255, 255, 0.78);
 }
 
 .message-row.is-user .message-inline-editor {
@@ -12477,26 +13330,30 @@ onUnmounted(() => {
 }
 
 .message-row.is-user .message-text {
-  color: #1f2937;
+  color: #0f172a;
   font-size: 15px;
   line-height: 1.8;
 }
 
 .message-row.is-ai .message-bubble {
-  padding: 0;
-  border: 0;
-  background: transparent;
+  padding: 16px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at top right, rgba(103, 232, 249, 0.08), transparent 42%),
+    rgba(255, 255, 255, 0.56);
   box-shadow: none;
-  display: inline-flex;
+  display: flex;
   flex-direction: column;
-  width: fit-content;
+  width: min(100%, 920px);
   max-width: 100%;
+  backdrop-filter: blur(18px);
 }
 
 .message-row.is-ai .message-text {
-  color: #2b2f36;
+  color: #24303d;
   font-size: 15px;
-  line-height: 1.9;
+  line-height: 1.85;
 }
 
 .message-text :deep(p) {
@@ -12577,9 +13434,20 @@ onUnmounted(() => {
   gap: 10px;
 }
 
+.message-videos {
+  margin-top: 10px;
+  gap: 12px;
+}
+
 .preview-image {
   border-radius: 14px;
   border: 1px solid #eceef2;
+}
+
+.preview-video {
+  border-radius: 16px;
+  border: 1px solid #eceef2;
+  background: #020617;
 }
 
 .message-attachments {
@@ -12618,36 +13486,91 @@ onUnmounted(() => {
 .chat-layout {
   position: relative;
   min-height: 100%;
+  overflow: hidden;
+  color: var(--page-text, #0f172a);
+  background: var(
+    --page-bg,
+    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%)
+  );
+}
+
+.chat-layout__ambient,
+.chat-layout__mesh {
+  position: absolute;
+  pointer-events: none;
+}
+
+.chat-layout__ambient {
+  width: 32rem;
+  height: 32rem;
+  border-radius: 50%;
+  filter: blur(72px);
+  opacity: 0.72;
+  animation: glowPulse 18s ease-in-out infinite;
+}
+
+.chat-layout__ambient--left {
+  top: -11rem;
+  left: -14rem;
+  background: rgba(125, 211, 252, 0.34);
+}
+
+.chat-layout__ambient--right {
+  top: 2rem;
+  right: -11rem;
+  background: rgba(103, 232, 249, 0.22);
+  animation-delay: -5s;
+}
+
+.chat-layout__mesh {
+  inset: 0;
+  opacity: 0.28;
   background:
-    radial-gradient(
-      circle at top left,
-      rgba(255, 244, 214, 0.5),
-      transparent 24%
-    ),
-    linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
+    linear-gradient(rgba(15, 23, 42, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
+  background-size: 88px 88px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.68), transparent 78%);
 }
 
 .chat-main {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
   min-height: 100%;
-  overflow: hidden;
+  padding: 0 20px 20px;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .chat-shell {
   display: grid;
-  grid-template-columns: 272px minmax(0, 1fr);
-  gap: 18px;
-  min-height: 100%;
-  padding: 14px 16px 16px;
+  width: 100%;
+  max-width: none;
+  margin: 0 auto;
+  grid-template-columns: 332px minmax(0, 1fr);
+  gap: 24px;
+  height: 100%;
+  min-height: 0;
+  padding: 18px 0 22px;
   box-sizing: border-box;
+  align-items: stretch;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .chat-conversation-sidebar {
   display: flex;
   flex-direction: column;
+  height: 100%;
   min-height: 0;
-  padding: 10px 8px 12px;
+  padding: 0;
   border: 0;
-  border-radius: 24px;
+  border-radius: 0;
   background: transparent;
   box-shadow: none;
   backdrop-filter: none;
@@ -12657,8 +13580,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 6px 8px 10px;
+  gap: 12px;
+  padding: 4px 2px 16px;
 }
 
 .chat-sidebar-brand {
@@ -12672,48 +13595,64 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  background: #111827;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: #0f172a;
   color: #fff;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.08em;
 }
 
 .chat-sidebar-brand__name {
-  color: #111827;
-  font-size: 15px;
+  color: #0f172a;
+  font-size: 16px;
   line-height: 1.2;
   font-weight: 600;
-  font-family: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family:
+    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 .chat-sidebar-brand__meta {
   margin-top: 2px;
-  color: #8b8d93;
+  color: var(--page-text-soft, #7c8aa0);
   font-size: 11px;
   line-height: 1.3;
 }
 
 .chat-page-settings-button {
   flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border: 0 !important;
-  background: transparent !important;
-  color: #6b7280 !important;
-  box-shadow: none !important;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.72) !important;
+  background: rgba(255, 255, 255, 0.66) !important;
+  color: #475569 !important;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.05) !important;
 }
 
 .chat-page-settings-button:hover {
-  background: rgba(255, 255, 255, 0.7) !important;
-  color: #111827 !important;
+  border-color: rgba(56, 189, 248, 0.28) !important;
+  background: rgba(255, 255, 255, 0.86) !important;
+  color: #0f172a !important;
 }
 
 .chat-sidebar-project-card {
   margin-top: 2px;
-  padding: 0 8px 8px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 24px;
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(103, 232, 249, 0.14),
+      transparent 38%
+    ),
+    rgba(255, 255, 255, 0.68);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 14px 28px rgba(15, 23, 42, 0.05);
+  backdrop-filter: blur(18px);
 }
 
 .chat-sidebar-project-card :deep(.chat-project-dropdown) {
@@ -12722,11 +13661,12 @@ onUnmounted(() => {
 }
 
 .chat-sidebar-card__label {
-  margin: 0 10px 8px;
-  color: #8b8d93;
+  margin: 0 0 10px;
+  color: var(--page-text-soft, #7c8aa0);
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .chat-project-switcher {
@@ -12737,12 +13677,12 @@ onUnmounted(() => {
   box-sizing: border-box;
   position: relative;
   min-width: 0;
-  height: 44px;
+  height: 48px;
   padding: 0 40px 0 14px;
-  border: 1px solid rgba(17, 24, 39, 0.08);
+  border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.76);
-  box-shadow: none;
+  box-shadow: 0 14px 24px rgba(15, 23, 42, 0.04);
 }
 
 .chat-project-switcher::after {
@@ -12750,8 +13690,8 @@ onUnmounted(() => {
 }
 
 .chat-project-switcher:hover {
-  border-color: rgba(17, 24, 39, 0.12);
-  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(56, 189, 248, 0.22);
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .chat-project-switcher__name {
@@ -12762,7 +13702,7 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: 1.2;
-  color: #111827;
+  color: #0f172a;
   font-size: 14px;
   font-weight: 600;
 }
@@ -12806,36 +13746,43 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 6px;
-  margin-top: 2px;
-  padding: 0 8px;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 0;
 }
 
 .chat-new-conversation-button {
   width: 100%;
-  height: 38px !important;
-  border-radius: 18px !important;
+  height: 42px !important;
+  border-radius: 999px !important;
   border: 0 !important;
-  background: #111827 !important;
+  background: linear-gradient(180deg, #0f172a, #1e293b) !important;
   color: #fff !important;
   font-weight: 600;
-  box-shadow: none !important;
+  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.14) !important;
 }
 
 .chat-clear-current-button {
   justify-content: flex-start;
-  min-height: 30px !important;
-  padding: 0 4px !important;
-  color: #8b8d93 !important;
+  min-height: 32px !important;
+  padding: 0 6px !important;
+  color: var(--page-text-soft, #7c8aa0) !important;
 }
 
 .chat-session-panel {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  margin-top: 8px;
-  padding: 6px 4px 0;
+  margin-top: 14px;
+  padding: 14px 12px 10px;
   flex: 1;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 18px 32px rgba(15, 23, 42, 0.05);
+  backdrop-filter: blur(18px);
 }
 
 .chat-session-panel__head {
@@ -12843,14 +13790,15 @@ onUnmounted(() => {
   align-items: center;
   justify-content: flex-start;
   gap: 10px;
-  padding: 0 10px 8px;
+  padding: 0 6px 10px;
 }
 
 .chat-session-panel__title {
-  color: #6b7280;
+  color: #475569;
   font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .chat-session-strip {
@@ -12868,37 +13816,43 @@ onUnmounted(() => {
 }
 
 .chat-session-group__title {
-  padding: 0 10px 2px;
-  color: #9ca3af;
+  padding: 0 6px 4px;
+  color: var(--page-text-soft, #7c8aa0);
   font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .chat-session-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
 }
 
 .chat-session-chip {
-  padding: 10px 12px;
-  border: 1px solid transparent;
-  border-radius: 16px;
-  background: transparent;
+  padding: 12px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.04);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.68);
   text-align: left;
   transition:
+    transform 0.18s ease,
     border-color 0.18s ease,
-    background-color 0.18s ease;
+    background-color 0.18s ease,
+    box-shadow 0.18s ease;
 }
 
 .chat-session-chip:hover {
-  background: rgba(255, 255, 255, 0.72);
+  transform: translateY(-1px);
+  border-color: rgba(56, 189, 248, 0.18);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
 }
 
 .chat-session-chip.is-active {
-  border-color: rgba(17, 24, 39, 0.05);
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  border-color: rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
 }
 
 .chat-session-chip__title {
@@ -12941,21 +13895,25 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   min-height: 160px;
-  color: #a1a1aa;
+  color: var(--page-text-soft, #7c8aa0);
   font-size: 12px;
 }
 
 .chat-sidebar-footer {
-  margin-top: 12px;
-  padding: 0 8px;
+  margin-top: 14px;
+  padding: 0;
 }
 
 .chat-sidebar-user {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  border-top: 1px solid rgba(17, 24, 39, 0.06);
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.05);
+  backdrop-filter: blur(18px);
 }
 
 .chat-sidebar-user__avatar {
@@ -12993,44 +13951,75 @@ onUnmounted(() => {
   color: #8b8d93 !important;
 }
 
+@keyframes glowPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.64;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.88;
+  }
+}
+
 @media (max-width: 1120px) {
-  .chat-main {
-    overflow-y: auto;
-    overflow-x: hidden;
+  .settings-center-page {
+    --settings-center-max-width: 100%;
+    --settings-chat-sidebar-width: minmax(0, 1fr);
   }
 
   .chat-shell {
+    width: 100%;
     grid-template-columns: 1fr;
     min-height: auto;
-    gap: 12px;
-    padding: 12px;
+    height: auto;
+    gap: 20px;
+    padding: 14px 0 0;
   }
 
   .chat-conversation-sidebar {
-    border-right: 0;
-    border-bottom: 1px solid rgba(17, 24, 39, 0.06);
+    order: 2;
+    padding: 0;
+    border: 0;
   }
 
   .chat-stage {
+    order: 1;
     min-height: auto;
-    padding-top: 0;
+    padding: 0;
+  }
+
+  .chat-main {
+    padding: 0 14px 18px;
   }
 
   .chat-messages {
-    padding: 8px 18px 22px;
+    padding: 10px 14px 18px;
     scroll-padding-bottom: 22px;
   }
 
-  .chat-context-bar {
-    padding-top: 2px;
+  .chat-context-bar__surface {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 16px 16px;
+  }
+
+  .chat-context-bar__actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .chat-empty-title {
-    font-size: 28px;
+    font-size: 36px;
   }
 
   .chat-empty-state {
     min-height: 360px;
+  }
+
+  .chat-empty-actions {
+    grid-template-columns: 1fr;
   }
 
   .workspace-guide-banner {
@@ -13040,8 +14029,8 @@ onUnmounted(() => {
   .settings-center-shell {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
-    gap: 12px;
-    padding: 12px 14px 14px;
+    gap: 14px;
+    padding: 14px;
   }
 
   .settings-center-sidebar {
@@ -13049,8 +14038,8 @@ onUnmounted(() => {
   }
 
   .settings-center-sidebar-card {
-    padding: 12px;
-    border-radius: 24px;
+    padding: 16px;
+    border-radius: 26px;
   }
 
   .settings-center-sidebar__nav {
@@ -13062,12 +14051,16 @@ onUnmounted(() => {
   .settings-center-stage {
     height: auto;
     min-height: 0;
-    padding-top: 10px;
-    border-radius: 0;
+    padding-top: 4px;
+    border-radius: 28px;
   }
 
   .settings-center-context-bar__title {
-    font-size: 22px;
+    font-size: 18px;
+  }
+
+  .settings-chat-main-card {
+    padding: 18px;
   }
 
   .message-employee-draft__meta {
@@ -13090,13 +14083,23 @@ onUnmounted(() => {
 }
 
 @media (max-width: 640px) {
+  .chat-main {
+    padding: 0 10px 14px;
+  }
+
   .chat-messages {
-    padding: 8px 14px 20px;
+    padding: 8px 10px 16px;
     scroll-padding-bottom: 20px;
   }
 
   .chat-composer {
     padding: 0 14px 16px;
+  }
+
+  .chat-shell {
+    width: 100%;
+    gap: 16px;
+    padding: 8px 0 0;
   }
 
   .chat-composer-panel {
@@ -13183,7 +14186,24 @@ onUnmounted(() => {
   }
 
   .chat-empty-title {
+    font-size: 32px;
+  }
+
+  .chat-empty-state__hero {
+    padding: 30px 22px 28px;
+  }
+
+  .chat-context-bar__surface {
+    padding: 14px;
+    border-radius: 22px;
+  }
+
+  .chat-context-bar__title {
     font-size: 30px;
+  }
+
+  .chat-empty-actions {
+    width: 100%;
   }
 
   .input-footer {
@@ -13221,38 +14241,65 @@ onUnmounted(() => {
   }
 
   .settings-center-nav-item {
-    padding: 10px 12px;
-    border-radius: 14px;
+    padding: 12px;
+    border-radius: 18px;
+  }
+
+  .settings-chat-sidebar-card,
+  .settings-chat-main-card {
+    padding: 16px;
+    border-radius: 24px;
+  }
+
+  .settings-chat-sidebar-card__title {
+    font-size: 28px;
+  }
+
+  .settings-chat-sidebar-card__actions,
+  .settings-summary-pills {
+    width: 100%;
+  }
+
+  .settings-chat-sidebar-card__actions > * {
+    width: 100%;
+  }
+
+  .settings-summary-sync-button,
+  .settings-summary-sync-button--hero {
+    width: 100%;
   }
 
   .settings-center-context-bar__meta {
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .settings-center-context-bar__meta span:not(:last-child)::after {
-    display: none;
+    gap: 6px;
   }
 
   .settings-summary-card {
-    align-items: flex-start;
+    padding: 18px;
+  }
+
+  .settings-form .el-form-item {
+    padding: 16px;
+    border-radius: 20px;
   }
 
   .settings-tabs :deep(.el-tabs__header) {
-    padding-bottom: 6px;
+    margin-bottom: 16px;
   }
 
   .settings-tabs :deep(.el-tabs__nav) {
-    gap: 14px;
+    width: 100%;
+    gap: 6px;
+    flex-wrap: wrap;
+    border-radius: 22px;
   }
 
-  .settings-summary-actions {
-    width: 100%;
+  .settings-tabs :deep(.el-tabs__item) {
+    flex: 1 1 auto;
+    min-width: max-content;
+  }
+
+  .settings-chat-sidebar-card__actions {
     justify-content: flex-start;
-  }
-
-  .settings-summary-status {
-    width: 100%;
   }
 }
 </style>

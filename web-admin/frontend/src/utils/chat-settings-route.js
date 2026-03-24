@@ -4,6 +4,7 @@ const SETTINGS_PANEL_TARGETS = [
   { panel: "chat", prefixes: ["/chat"] },
   { panel: "user-settings", prefixes: ["/user/settings"] },
   { panel: "system-config", prefixes: ["/system/config"] },
+  { panel: "dictionaries", prefixes: ["/dictionaries"] },
   { panel: "providers", prefixes: ["/llm/providers"] },
   { panel: "projects", prefixes: ["/projects"] },
   { panel: "agent-templates", prefixes: ["/agent-templates"] },

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import get_settings
+from core.db_migrations import run_postgres_migrations
+from core.deps import project_material_store, project_store, project_studio_export_store
 from routers import (
     agent_templates,
     init_auth,
@@ -26,6 +30,7 @@ from routers import (
     users,
     roles,
     mcp_modules,
+    dictionaries,
 )
 from services.dynamic_mcp_runtime import (
     employee_mcp_proxy_app,
@@ -34,11 +39,32 @@ from services.dynamic_mcp_runtime import (
     rule_mcp_proxy_app,
     skill_mcp_proxy_app,
 )
+from services.studio_export_service import StudioExportBackgroundService
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="AI Employee Factory", version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if settings.core_store_backend == "postgres" or settings.usage_store_backend == "postgres":
+            run_postgres_migrations(settings.database_url)
+        worker = StudioExportBackgroundService(
+            project_store=project_store,
+            project_studio_export_store=project_studio_export_store,
+            project_material_store=project_material_store,
+            api_data_dir=settings.api_data_dir,
+            poll_interval_seconds=settings.studio_export_worker_poll_seconds,
+        )
+        app.state.studio_export_worker = worker
+        if settings.studio_export_worker_enabled:
+            worker.start()
+        try:
+            yield
+        finally:
+            await worker.stop()
+
+    app = FastAPI(title="AI Employee Factory", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.api_cors_allow_origins,
@@ -66,6 +92,7 @@ def create_app() -> FastAPI:
         users,
         roles,
         mcp_modules,
+        dictionaries,
     ):
         app.include_router(r.router)
 

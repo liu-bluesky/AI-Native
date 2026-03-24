@@ -18,6 +18,7 @@ const PATH_PERMISSION_MAP = [
   { prefix: '/skills', permission: 'menu.skills' },
   { prefix: '/rules', permission: 'menu.rules' },
   { prefix: '/system/config', permission: 'menu.system.config' },
+  { prefix: '/dictionaries', permission: ['menu.system.dictionaries', 'menu.system.config'] },
   { prefix: '/llm/providers', permission: 'menu.llm.providers' },
   { prefix: '/usage/keys', permission: 'menu.usage.keys' },
 ]
@@ -43,6 +44,7 @@ const FALLBACK_PATHS = [
   '/skills',
   '/rules',
   '/system/config',
+  '/dictionaries',
   '/usage/keys',
 ]
 
@@ -83,8 +85,7 @@ export function clearPermissionArray() {
   permissionStateVersion.value += 1
 }
 
-export function hasPermission(permissionKey) {
-  permissionStateVersion.value
+function hasSinglePermission(permissionKey) {
   const target = String(permissionKey || '').trim()
   if (!target) return true
   if (localStorage.getItem(PERMISSION_STORAGE_KEY) === null) {
@@ -93,6 +94,22 @@ export function hasPermission(permissionKey) {
   const permissions = getPermissionArray()
   if (permissions.includes('*')) return true
   return permissions.includes(target)
+}
+
+export function hasAnyPermission(permissionKeys) {
+  const targets = (Array.isArray(permissionKeys) ? permissionKeys : [permissionKeys])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+  if (!targets.length) return true
+  return targets.some((item) => hasSinglePermission(item))
+}
+
+export function hasPermission(permissionKey) {
+  permissionStateVersion.value
+  if (Array.isArray(permissionKey)) {
+    return hasAnyPermission(permissionKey)
+  }
+  return hasSinglePermission(permissionKey)
 }
 
 export function pathPermission(path) {

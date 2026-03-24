@@ -20,19 +20,20 @@
             </el-descriptions-item>
           </el-descriptions>
           <div class="expand-actions">
-            <el-input
-              v-model="testModelByProvider[row.id]"
-              placeholder="可选：指定测试模型，不填用默认模型"
-              style="width: 300px"
-            />
-            <el-button
-              type="primary"
-              plain
-              :loading="testingProviderId === row.id"
-              @click="testConnection(row)"
-            >
-              测试模型接口连接
-            </el-button>
+            <span class="expand-actions__label">测试模型</span>
+            <div class="expand-actions__buttons">
+              <el-button
+                v-for="action in getProviderTestActions(row)"
+                :key="`${row.id}-${action.modelName || 'auto'}`"
+                :type="action.primary ? 'primary' : ''"
+                plain
+                size="small"
+                :loading="isTestingAction(row.id, action.modelName)"
+                @click="testConnection(row, action.modelName)"
+              >
+                {{ action.label }}
+              </el-button>
+            </div>
           </div>
         </template>
       </el-table-column>
@@ -47,8 +48,8 @@
           {{ formatSharedUsers(row.shared_usernames) }}
         </template>
       </el-table-column>
-      <el-table-column label="模型列表" min-width="220" show-overflow-tooltip>
-        <template #default="{ row }">{{ (row.models || []).join(', ') || '-' }}</template>
+      <el-table-column label="模型列表" min-width="260" show-overflow-tooltip>
+        <template #default="{ row }">{{ formatProviderModels(row) }}</template>
       </el-table-column>
       <el-table-column prop="default_model" label="默认模型" width="170" show-overflow-tooltip />
       <el-table-column label="API Key" width="150">
@@ -64,7 +65,14 @@
       </el-table-column>
       <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
-          <el-button text type="success" :loading="testingProviderId === row.id" @click="testConnection(row)">测试连接</el-button>
+          <el-button
+            text
+            type="success"
+            :loading="testingProviderId === row.id"
+            @click="testConnection(row, getPrimaryTestModel(row))"
+          >
+            测试连接
+          </el-button>
           <el-button text type="warning" @click="openDuplicate(row)">复制</el-button>
           <el-button text type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button text type="danger" @click="removeProvider(row)">删除</el-button>
@@ -73,7 +81,7 @@
     </el-table>
     <el-empty v-if="!loading && !providers.length" description="暂无模型供应商" :image-size="60" />
 
-    <el-dialog v-model="showDialog" :title="dialogTitle()" width="720px">
+    <el-dialog v-model="showDialog" :title="dialogTitle()" width="860px">
       <el-form :model="form" label-width="120px">
         <el-form-item label="供应商名称" required>
           <el-input v-model="form.name" placeholder="例如：OpenAI 主账号" />
@@ -96,16 +104,73 @@
             :placeholder="apiKeyPlaceholder()"
           />
         </el-form-item>
-        <el-form-item label="模型列表">
-          <el-input
-            v-model="form.models_text"
-            type="textarea"
-            :rows="3"
-            placeholder="多个模型用逗号或换行分隔"
-          />
+        <el-form-item label="模型配置">
+          <div class="model-config-editor">
+            <div
+              v-for="(item, index) in form.model_configs"
+              :key="item.key"
+              class="model-config-row"
+            >
+              <el-input
+                v-model="item.name"
+                class="model-config-row__name"
+                placeholder="模型名，例如：gpt-4.1"
+              />
+              <el-select
+                v-model="item.model_type"
+                class="model-config-row__type"
+                placeholder="选择模型类型"
+              >
+                <el-option
+                  v-for="option in modelTypeOptions"
+                  :key="option.id"
+                  :label="option.label"
+                  :value="option.id"
+                />
+              </el-select>
+              <el-button
+                :type="form.default_model === String(item.name || '').trim() ? 'primary' : ''"
+                plain
+                @click="markDefaultModel(item)"
+              >
+                {{ form.default_model === String(item.name || '').trim() ? '默认模型' : '设为默认' }}
+              </el-button>
+              <el-button
+                text
+                type="danger"
+                :disabled="form.model_configs.length <= 1"
+                @click="removeModelConfig(index)"
+              >
+                删除
+              </el-button>
+            </div>
+            <div class="model-config-editor__actions">
+              <el-button @click="addModelConfig">添加模型</el-button>
+              <span class="model-config-editor__hint">
+                模型类型来自字典模块，后续可以继续扩展新的能力分类。
+              </span>
+            </div>
+          </div>
         </el-form-item>
         <el-form-item label="默认模型">
-          <el-input v-model="form.default_model" placeholder="例如：gpt-4.1" />
+          <el-select
+            v-model="form.default_model"
+            :disabled="!normalizedFormModelConfigs.length"
+            placeholder="请选择默认模型"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in normalizedFormModelConfigs"
+              :key="item.name"
+              :label="item.name"
+              :value="item.name"
+            >
+              <div class="model-option-line">
+                <span>{{ item.name }}</span>
+                <span class="model-option-line__meta">{{ formatModelTypeLabel(item.model_type) }}</span>
+              </div>
+            </el-option>
+          </el-select>
         </el-form-item>
         <el-form-item label="额外请求头(JSON)">
           <el-input
@@ -147,39 +212,54 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
 import { formatDateTime } from '@/utils/date.js'
+import { fetchDictionary } from '@/utils/dictionaries.js'
+import {
+  buildModelTypeMetaMap,
+  FALLBACK_MODEL_TYPE_OPTIONS,
+  normalizeProviderModelConfigs,
+  normalizeProviderModelNames,
+} from '@/utils/llm-models.js'
 
 const loading = ref(false)
 const saving = ref(false)
 const providers = ref([])
 const shareUserOptions = ref([])
+const modelTypeOptions = ref(FALLBACK_MODEL_TYPE_OPTIONS)
 const showDialog = ref(false)
 const editingId = ref('')
 const dialogMode = ref('create')
 const testingProviderId = ref('')
+const testingModelName = ref('')
 const connectionResultByProvider = reactive({})
-const testModelByProvider = reactive({})
 const form = reactive({
   name: '',
   provider_type: 'openai-compatible',
   base_url: '',
   api_key: '',
-  models_text: '',
+  model_configs: [],
   default_model: '',
   enabled: true,
   extra_headers_text: '',
   shared_usernames: [],
 })
 
-function splitModels(text) {
-  return String(text || '')
-    .replace(/\n/g, ',')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean)
+const modelTypeMetaMap = computed(() => buildModelTypeMetaMap(modelTypeOptions.value))
+const normalizedFormModelConfigs = computed(() => normalizeProviderModelConfigs({ model_configs: form.model_configs }, modelTypeOptions.value))
+
+let modelConfigSeed = 0
+
+function createModelConfig(name = '', modelType = '') {
+  modelConfigSeed += 1
+  const fallbackType = modelTypeOptions.value[0]?.id || 'text_generation'
+  return {
+    key: `model-config-${modelConfigSeed}`,
+    name: String(name || '').trim(),
+    model_type: String(modelType || fallbackType).trim() || fallbackType,
+  }
 }
 
 function resetForm() {
@@ -187,7 +267,7 @@ function resetForm() {
   form.provider_type = 'openai-compatible'
   form.base_url = ''
   form.api_key = ''
-  form.models_text = ''
+  form.model_configs = [createModelConfig()]
   form.default_model = ''
   form.enabled = true
   form.extra_headers_text = ''
@@ -204,12 +284,16 @@ function populateForm(row, { duplicate = false } = {}) {
   form.provider_type = String(row?.provider_type || 'openai-compatible')
   form.base_url = String(row?.base_url || '')
   form.api_key = ''
-  form.models_text = Array.isArray(row?.models) ? row.models.join(', ') : ''
+  const modelConfigs = normalizeProviderModelConfigs(row, modelTypeOptions.value)
+  form.model_configs = modelConfigs.length
+    ? modelConfigs.map((item) => createModelConfig(item.name, item.model_type))
+    : [createModelConfig()]
   form.default_model = String(row?.default_model || '')
   form.enabled = row?.enabled !== false
   const headers = row?.extra_headers && typeof row.extra_headers === 'object' ? row.extra_headers : {}
   form.extra_headers_text = Object.keys(headers).length ? JSON.stringify(headers, null, 2) : ''
   form.shared_usernames = Array.isArray(row?.shared_usernames) ? row.shared_usernames.map((item) => String(item || '').trim()).filter(Boolean) : []
+  syncDefaultModelSelection()
 }
 
 function openCreate() {
@@ -245,6 +329,46 @@ function apiKeyPlaceholder() {
   return '例如：sk-...'
 }
 
+function addModelConfig() {
+  form.model_configs.push(createModelConfig())
+}
+
+function removeModelConfig(index) {
+  form.model_configs.splice(index, 1)
+  if (!form.model_configs.length) {
+    form.model_configs.push(createModelConfig())
+  }
+  syncDefaultModelSelection()
+}
+
+function markDefaultModel(item) {
+  const modelName = String(item?.name || '').trim()
+  if (!modelName) {
+    ElMessage.warning('请先填写模型名称')
+    return
+  }
+  form.default_model = modelName
+}
+
+function syncDefaultModelSelection() {
+  const values = normalizedFormModelConfigs.value
+  if (values.some((item) => item.name === form.default_model)) return
+  form.default_model = values[0]?.name || ''
+}
+
+function formatModelTypeLabel(modelType) {
+  const meta = modelTypeMetaMap.value.get(String(modelType || '').trim())
+  return meta?.label || '文本生成'
+}
+
+function formatProviderModels(row) {
+  const values = normalizeProviderModelConfigs(row, modelTypeOptions.value)
+  if (!values.length) return '-'
+  return values
+    .map((item) => `${item.name} [${formatModelTypeLabel(item.model_type)}]`)
+    .join(', ')
+}
+
 function parseHeaders() {
   const raw = String(form.extra_headers_text || '').trim()
   if (!raw) return {}
@@ -264,13 +388,6 @@ async function fetchProviders() {
   try {
     const data = await api.get('/llm/providers')
     providers.value = data.providers || []
-    for (const item of providers.value) {
-      const id = String(item.id || '')
-      if (!id) continue
-      if (!(id in testModelByProvider)) {
-        testModelByProvider[id] = String(item.default_model || '')
-      }
-    }
   } catch (e) {
     ElMessage.error(e.detail || '加载模型供应商失败')
   } finally {
@@ -299,6 +416,19 @@ async function fetchShareUserOptions() {
   }
 }
 
+async function fetchModelTypeOptions() {
+  try {
+    const data = await fetchDictionary('llm_model_types')
+    const options = Array.isArray(data?.options) ? data.options : []
+    if (options.length) {
+      modelTypeOptions.value = options
+    }
+  } catch (e) {
+    modelTypeOptions.value = FALLBACK_MODEL_TYPE_OPTIONS
+    ElMessage.error(e.detail || '加载模型类型失败')
+  }
+}
+
 async function submitForm() {
   if (!form.name.trim() || !form.base_url.trim()) {
     ElMessage.warning('请填写供应商名称和 Base URL')
@@ -313,12 +443,26 @@ async function submitForm() {
     return
   }
 
+  const modelConfigs = normalizedFormModelConfigs.value
+  if (!modelConfigs.length) {
+    ElMessage.warning('请至少添加一个模型')
+    return
+  }
+  const preferredDefaultModel = String(form.default_model || '').trim()
+  const defaultModel = modelConfigs.some((item) => item.name === preferredDefaultModel)
+    ? preferredDefaultModel
+    : modelConfigs[0].name
+  form.default_model = defaultModel
+
   const payload = {
     name: form.name.trim(),
     provider_type: form.provider_type,
     base_url: form.base_url.trim(),
-    models: splitModels(form.models_text),
-    default_model: form.default_model.trim(),
+    model_configs: modelConfigs.map((item) => ({
+      name: item.name,
+      model_type: item.model_type,
+    })),
+    default_model: defaultModel,
     enabled: Boolean(form.enabled),
     extra_headers: extraHeaders,
     shared_usernames: Array.isArray(form.shared_usernames)
@@ -386,13 +530,40 @@ function connectionTagText(providerId) {
   return state.reachable ? '已连通' : '连接失败'
 }
 
-async function testConnection(row) {
+function normalizeProviderModels(row) {
+  return normalizeProviderModelNames(row, modelTypeOptions.value)
+}
+
+function getPrimaryTestModel(row) {
+  return normalizeProviderModels(row)[0] || ''
+}
+
+function getProviderTestActions(row) {
+  const models = normalizeProviderModels(row)
+  if (!models.length) {
+    return [{ modelName: '', label: '按默认配置测试', primary: true }]
+  }
+  const defaultModel = String(row?.default_model || '').trim()
+  return models.map((modelName, index) => ({
+    modelName,
+    label: index === 0 && defaultModel === modelName ? `默认模型 · ${modelName}` : modelName,
+    primary: index === 0,
+  }))
+}
+
+function isTestingAction(providerId, modelName = '') {
+  return testingProviderId.value === String(providerId || '') && testingModelName.value === String(modelName || '').trim()
+}
+
+async function testConnection(row, modelName = '') {
   const providerId = String(row?.id || '').trim()
   if (!providerId) return
+  const normalizedModelName = String(modelName || '').trim()
   testingProviderId.value = providerId
+  testingModelName.value = normalizedModelName
   try {
     const response = await api.post(`/llm/providers/${encodeURIComponent(providerId)}/test`, {
-      model_name: String(testModelByProvider[providerId] || '').trim(),
+      model_name: normalizedModelName,
     })
     const result = response.result || {}
     connectionResultByProvider[providerId] = result
@@ -410,11 +581,12 @@ async function testConnection(row) {
     ElMessage.error(e.detail || '模型接口连接测试失败')
   } finally {
     testingProviderId.value = ''
+    testingModelName.value = ''
   }
 }
 
 onMounted(async () => {
-  await Promise.all([fetchProviders(), fetchShareUserOptions()])
+  await Promise.all([fetchProviders(), fetchShareUserOptions(), fetchModelTypeOptions()])
 })
 </script>
 
@@ -436,7 +608,62 @@ onMounted(async () => {
 
 .expand-actions {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.expand-actions__label {
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  line-height: 32px;
+}
+
+.expand-actions__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.model-config-editor {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+.model-config-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(180px, 220px) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.model-config-row__name,
+.model-config-row__type {
+  width: 100%;
+}
+
+.model-config-editor__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.model-config-editor__hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.model-option-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-option-line__meta {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 </style>
