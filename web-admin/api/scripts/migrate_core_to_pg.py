@@ -48,11 +48,16 @@ def _iter_json_files(directory: Path) -> list[Path]:
 
 
 def main() -> None:
+    default_project_root = Path(__file__).resolve()
+    for candidate in default_project_root.parents:
+        if all((candidate / name).exists() for name in ("mcp-skills", "mcp-rules", "mcp-memory", "mcp-persona", "mcp-evolution", "mcp-sync")):
+            default_project_root = candidate
+            break
     parser = argparse.ArgumentParser(description="迁移 core 数据到 PostgreSQL")
     parser.add_argument("--database-url", required=True, help="PostgreSQL 连接串")
     parser.add_argument(
         "--project-root",
-        default=str(Path(__file__).resolve().parents[3]),
+        default=str(default_project_root),
         help="项目根目录（默认自动推断）",
     )
     parser.add_argument(

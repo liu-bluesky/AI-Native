@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from psycopg import connect
+from stores.postgres._connection import connect
 from psycopg.rows import dict_row
 
 

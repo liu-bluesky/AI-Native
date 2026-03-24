@@ -12,6 +12,8 @@ from stores.factory import (
     external_mcp_store,
     local_connector_store,
     project_chat_store,
+    project_material_store,
+    project_studio_export_store,
     project_store,
     role_store,
     system_config_store,

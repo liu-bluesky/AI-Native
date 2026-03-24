@@ -20,6 +20,17 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: ai-employee-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   api:
     build:
       context: ..
@@ -29,13 +40,20 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       CORE_STORE_BACKEND: ${CORE_STORE_BACKEND:-postgres}
       USAGE_STORE_BACKEND: ${USAGE_STORE_BACKEND:-postgres}
       DATABASE_URL: postgresql://${DB_USER:-admin}:${DB_PASSWORD:-changeme}@postgres:5432/${DB_NAME:-ai_employee}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: ${REDIS_DB:-0}
       API_HOST: 0.0.0.0
       API_PORT: 8000
       API_RELOAD: "false"
+    volumes:
+      - ${HOME}/.ai-native/web-admin-api:/root/.ai-native/web-admin-api
     ports:
       - "8000:8000"
 
@@ -45,8 +63,6 @@ services:
       dockerfile: docker/Dockerfile.frontend
     container_name: ai-employee-frontend
     restart: unless-stopped
-    depends_on:
-      - api
     ports:
       - "3000:80"
 

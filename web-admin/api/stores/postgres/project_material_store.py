@@ -7,7 +7,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from psycopg import connect
+from stores.postgres._connection import connect
 from psycopg.rows import dict_row
 
 from stores.json.project_material_store import ProjectMaterialAsset

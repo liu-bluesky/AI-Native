@@ -78,7 +78,7 @@
         </div>
       </el-form-item>
 
-      <el-form-item>
+      <el-form-item v-if="showLinkFields">
         <template #label>
           <div class="project-material-form__label">
             <span>预览链接</span>
@@ -95,7 +95,7 @@
         </div>
       </el-form-item>
 
-      <el-form-item>
+      <el-form-item v-if="showLinkFields">
         <template #label>
           <div class="project-material-form__label">
             <span>内容链接</span>
@@ -263,6 +263,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  showLinkFields: {
+    type: Boolean,
+    default: true,
+  },
   contextNote: {
     type: String,
     default: "",
@@ -282,6 +286,8 @@ const assetType = computed(
 const previewPlaceholder = computed(() =>
   assetType.value === "video"
     ? "https://.../cover.jpg"
+    : assetType.value === "audio"
+      ? "https://.../audio-cover.jpg"
     : assetType.value === "storyboard"
       ? "https://.../storyboard-cover.jpg"
       : "https://.../preview.png",
@@ -290,6 +296,8 @@ const previewPlaceholder = computed(() =>
 const contentPlaceholder = computed(() =>
   assetType.value === "video"
     ? "https://.../video.mp4"
+    : assetType.value === "audio"
+      ? "https://.../audio.mp3"
     : assetType.value === "storyboard"
       ? "https://.../storyboard.json"
       : "https://.../original.png",
@@ -298,6 +306,8 @@ const contentPlaceholder = computed(() =>
 const previewTooltip = computed(() =>
   assetType.value === "video"
     ? "视频素材通常放封面图地址，方便在列表中快速识别。"
+    : assetType.value === "audio"
+      ? "音频素材可放封面图或节目图，方便在列表中快速识别。"
     : assetType.value === "storyboard"
       ? "分镜素材可放封面、关键帧草图或总览图。"
       : "图片素材会优先用这个地址做卡片预览。",
@@ -306,6 +316,8 @@ const previewTooltip = computed(() =>
 const contentTooltip = computed(() =>
   assetType.value === "video"
     ? "填写可播放的视频地址或主交付文件地址。"
+    : assetType.value === "audio"
+      ? "填写可播放的音频地址或主音频文件地址。"
     : assetType.value === "storyboard"
       ? "填写分镜 JSON、文档或详情页地址。"
       : "填写原图、高清图或主文件地址。",
@@ -316,12 +328,16 @@ const mimeTooltip = computed(() =>
     ? "分镜常用 application/json 或 text/plain。"
     : assetType.value === "video"
       ? "视频常用 video/mp4、video/quicktime。"
+      : assetType.value === "audio"
+        ? "音频常用 audio/mpeg、audio/wav、audio/mp4。"
       : "图片常用 image/png、image/jpeg、image/webp。",
 );
 
 const previewHint = computed(() =>
   assetType.value === "video"
     ? "可选。建议填封面图，素材墙浏览会更直观。"
+    : assetType.value === "audio"
+      ? "可选。建议填一张封面图，方便快速识别音频素材。"
     : assetType.value === "storyboard"
       ? "可选。建议填一张分镜概览图，方便快速识别。"
       : "可选。用于素材卡片展示，建议填可直接访问的图片地址。",
@@ -330,6 +346,8 @@ const previewHint = computed(() =>
 const contentHint = computed(() =>
   assetType.value === "video"
     ? "建议填写视频主文件或播放地址，后续可直接打开复看。"
+    : assetType.value === "audio"
+      ? "建议填写音频主文件或播放地址，后续可直接试听和复用。"
     : assetType.value === "storyboard"
       ? "建议填写分镜 JSON、文档或外部说明页地址。"
       : "建议填写原图或主素材地址，便于下载和复用。",

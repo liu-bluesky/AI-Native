@@ -12,7 +12,9 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+from core.config import get_project_root
+
+PROJECT_ROOT = get_project_root()
 _MARKDOWN_SUFFIXES = {".md", ".markdown"}
 _DEFAULT_LIMIT = 40
 _MAX_LIMIT = 80

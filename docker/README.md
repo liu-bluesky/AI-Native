@@ -1,8 +1,14 @@
 # Docker 使用说明
 
+补充学习材料：
+
+- `README.quick.md`：最短命令速查，适合日常直接照着执行。
+- `README.learn.md`：面向日常使用的通俗解读，适合复习 `docker/` 目录里每个文件的作用和常见命令。
+- `../web-admin/api/core/sql_migrations/`：PostgreSQL 正式 schema migration 目录；`docker/init/` 只负责首次建库 bootstrap。
+
 ## 目录说明
 
-- `docker-compose.yml`：本地一键启动编排（`postgres` + `api` + `frontend`）
+- `docker-compose.yml`：本地一键启动编排（`postgres` + `redis` + `api` + `frontend`）
 - `.env`：本地 Docker 配置
 - `.env.example`：Docker 配置模板
 - `Dockerfile.api`：后端 API 镜像构建
@@ -44,13 +50,14 @@ docker compose logs -f
 - 前端：`http://localhost:3000`
 - API：`http://localhost:8000`
 - PostgreSQL：`localhost:5432`
+- Redis：仅在 Compose 内网暴露，默认不映射宿主机端口，避免与已有本地 Redis 冲突
 
 ## 常用命令
 
-只启动数据库：
+只启动基础依赖：
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres redis
 ```
 
 重启单个服务：
@@ -81,6 +88,17 @@ docker compose down -v
 
 注意：仅在 PostgreSQL 数据卷首次初始化时执行。已初始化后新增 SQL 不会自动回放。
 
+正式 schema 变更请改：
+
+- `web-admin/api/core/sql_migrations/*.sql`
+
+并执行：
+
+```bash
+cd /Users/liulantian/self/ai设计规范/web-admin/api
+python scripts/migrate_db.py
+```
+
 ## 环境变量
 
 先复制模板：
@@ -95,6 +113,7 @@ cp docker/.env.example docker/.env
 - `DB_PASSWORD`
 - `DB_NAME`
 - `DB_PORT`
+- `REDIS_DB`
 - `CORE_STORE_BACKEND`（`postgres` 或 `json`）
 - `USAGE_STORE_BACKEND`（`postgres` 或 `sqlite`）
 
@@ -111,6 +130,10 @@ docker compose up -d --build
 - `CORE_STORE_BACKEND=postgres|json`
 - `USAGE_STORE_BACKEND=postgres|sqlite`
 - `api` 服务容器内部统一使用 `DATABASE_URL` 连接 PostgreSQL；`DB_*` 变量只用于 Compose 拼接数据库连接和初始化 Postgres 容器。
+- `api` 服务容器内部统一连接 `redis:6379`；默认不暴露宿主机 Redis 端口，因此不会和现有 `ai-redis` 或本机 Redis 抢占 `6379`。
+- 正式导出依赖 `FFmpeg`；`docker/Dockerfile.api` 已内置安装，修改镜像后需执行 `docker compose up -d --build` 让 API 容器生效。
+- `api` 服务默认会把宿主机 `~/.ai-native/web-admin-api` 挂载到容器内 `/root/.ai-native/web-admin-api`。这样素材库上传文件、旁白/BGM、正式导出产物会和本地开发使用同一份数据目录，避免容器里找不到宿主机已有素材文件。
+- PostgreSQL migration 会在 API 启动和 Postgres store 建连时自动补跑；需要手动补跑时使用 `python scripts/migrate_db.py`。
 - `web-admin/api` 本地开发默认值已调整为 PostgreSQL：
 - 默认后端：`CORE_STORE_BACKEND=postgres`、`USAGE_STORE_BACKEND=postgres`
 - 默认连接：`postgresql://admin:changeme@127.0.0.1:5432/ai_employee`

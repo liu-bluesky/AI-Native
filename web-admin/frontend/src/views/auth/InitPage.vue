@@ -155,8 +155,9 @@ async function handleSubmit() {
   padding: 24px;
   box-sizing: border-box;
   background:
-    radial-gradient(circle at top left, rgba(255, 244, 214, 0.5), transparent 24%),
-    linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
+    radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.16), transparent 26%),
+    radial-gradient(circle at 82% 14%, rgba(103, 232, 249, 0.12), transparent 22%),
+    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%);
 }
 
 .init-shell {
@@ -186,7 +187,8 @@ async function handleSubmit() {
   border-radius: 34px;
   background:
     radial-gradient(circle at top left, rgba(255, 255, 255, 0.98), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(245, 247, 250, 0.8));
+    radial-gradient(circle at 78% 18%, rgba(125, 211, 252, 0.14), transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(241, 246, 251, 0.84));
 }
 
 .init-brand {

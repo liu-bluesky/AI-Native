@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from psycopg import connect
+from stores.postgres._connection import connect
 from psycopg.rows import dict_row
 
 from stores.json.user_store import User, _now_iso

@@ -12,11 +12,12 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from core.config import get_project_root
 from core.ownership import current_username
 from models.requests import SkillCreateReq
 from stores.mcp_bridge import ResourceDef, Skill, ToolDef, skill_store
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = get_project_root()
 TOOL_SUFFIXES = {".py", ".js"}
 SENSITIVE_SKILL_FILE_PATTERNS = (".db-config*.json",)
 

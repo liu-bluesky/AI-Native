@@ -23,7 +23,7 @@ import { useRoute } from "vue-router";
 
 const route = useRoute();
 const isChatRoute = computed(() => route.path.startsWith("/ai/chat"));
-const isMaterialRoute = computed(() => route.path === "/materials");
+const isMaterialRoute = computed(() => route.path.startsWith("/materials"));
 const isEmbeddedMode = computed(() => {
   if (typeof window === "undefined") return false;
   return new URLSearchParams(window.location.search).get("embedded") === "1";
@@ -45,18 +45,12 @@ const isEmbeddedMode = computed(() => {
 
 .chat-route-layout {
   overflow: hidden;
-  background:
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.98), transparent 32%),
-    linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+  background: var(--page-bg);
 }
 
 .material-route-layout {
-  overflow: auto;
-  background:
-    radial-gradient(circle at top left, rgba(255, 250, 240, 0.95), transparent 28%),
-    radial-gradient(circle at top right, rgba(219, 234, 254, 0.72), transparent 28%),
-    linear-gradient(180deg, #f5f7fb 0%, #edf2f7 100%);
-  padding: 18px;
+  overflow: hidden;
+  background: var(--page-bg);
   box-sizing: border-box;
 }
 

@@ -23,7 +23,8 @@
         :label-width="108"
         :asset-type-options="normalizedAssetTypeOptions"
         :mime-type-options="normalizedMimeTypeOptions"
-        context-note="来源会话、消息关联和项目归属会自动写入，这里只需要确认素材本身的信息。"
+        :show-link-fields="false"
+        context-note="来源会话、消息关联、项目归属和资源地址会自动写入，这里只需要确认素材本身的信息。"
       />
     </div>
 
@@ -169,10 +170,21 @@ function handleClose() {
   emit("close");
 }
 
+function hasUnsupportedLocalFileUrl(value) {
+  return String(value || "").trim().toLowerCase().startsWith("file://");
+}
+
 function handleSubmit() {
   const title = String(form.value.title || "").trim();
   if (!title) {
     ElMessage.warning("请输入素材标题");
+    return;
+  }
+  if (
+    hasUnsupportedLocalFileUrl(form.value.preview_url) ||
+    hasUnsupportedLocalFileUrl(form.value.content_url)
+  ) {
+    ElMessage.warning("素材地址不支持 file:// 本地路径，请改用 http(s) 地址或先上传到服务器");
     return;
   }
   let structuredContent;

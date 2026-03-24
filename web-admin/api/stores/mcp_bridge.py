@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from pathlib import Path
 from threading import Lock
 from types import ModuleType
 
-from core.config import get_settings
+from core.config import get_project_root, get_settings
 
-_BASE = Path(__file__).resolve().parents[3]
+
+_BASE = get_project_root()
 
 
 def _load_store(service_name: str) -> ModuleType:

@@ -6,7 +6,7 @@ import json
 import uuid
 from dataclasses import asdict
 
-from psycopg import connect
+from stores.postgres._connection import connect
 from psycopg.rows import dict_row
 
 from stores.json.external_mcp_store import ExternalMcpModule
@@ -63,4 +63,3 @@ class ExternalMcpStorePostgres:
 
     def new_id(self) -> str:
         return f"xmcp-{uuid.uuid4().hex[:8]}"
-

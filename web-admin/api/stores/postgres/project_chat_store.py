@@ -7,7 +7,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from psycopg import connect
+from stores.postgres._connection import connect
 from psycopg.rows import dict_row
 
 from stores.json.project_chat_store import (
@@ -255,6 +255,7 @@ class ProjectChatStorePostgres:
                     display_mode=str(payload.get("display_mode") or "").strip(),
                     attachments=_normalize_attachments(payload.get("attachments")),
                     images=_normalize_attachments(payload.get("images")),
+                    videos=_normalize_attachments(payload.get("videos")),
                     created_at=str(payload.get("created_at") or _now_iso()),
                 )
             )
@@ -277,6 +278,7 @@ class ProjectChatStorePostgres:
             display_mode=str(message.display_mode or "").strip(),
             attachments=_normalize_attachments(message.attachments),
             images=_normalize_attachments(message.images),
+            videos=_normalize_attachments(message.videos),
             created_at=str(message.created_at or _now_iso()),
         )
         payload = json.dumps(asdict(normalized), ensure_ascii=False)

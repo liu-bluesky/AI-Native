@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.config import get_project_root
 from core.deps import employee_store, project_store
 from stores.mcp_bridge import skill_store
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_PROJECT_ROOT = get_project_root()
 _EXECUTABLE_SUFFIXES = {".py", ".js"}
 
 

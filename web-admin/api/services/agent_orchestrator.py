@@ -13,6 +13,10 @@ _IMAGE_URL_PATTERN = re.compile(
     r"^https?://.+\.(?:png|jpe?g|gif|webp|bmp|svg)(?:[?#].*)?$",
     re.IGNORECASE,
 )
+_VIDEO_URL_PATTERN = re.compile(
+    r"^https?://.+\.(?:mp4|mov|m4v|webm|avi|mkv)(?:[?#].*)?$",
+    re.IGNORECASE,
+)
 
 
 def _is_image_url(value: Any) -> bool:
@@ -30,12 +34,34 @@ def _normalize_image_url(value: Any) -> str:
     return text if _is_image_url(text) else ""
 
 
+def _is_video_url(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if lower.startswith("data:video/"):
+        return True
+    return bool(_VIDEO_URL_PATTERN.match(text))
+
+
+def _normalize_video_url(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if _is_video_url(text) else ""
+
+
+def _normalize_media_url(value: Any) -> str:
+    return _normalize_image_url(value) or _normalize_video_url(value)
+
+
 def _guess_mime_type(url: str, fallback: str = "") -> str:
     preferred = str(fallback or "").strip().lower()
-    if preferred.startswith("image/"):
+    if preferred.startswith(("image/", "video/")):
         return preferred
     lower = str(url or "").lower()
     if lower.startswith("data:image/"):
+        prefix = lower.split(";", 1)[0]
+        return prefix.replace("data:", "", 1)
+    if lower.startswith("data:video/"):
         prefix = lower.split(";", 1)[0]
         return prefix.replace("data:", "", 1)
     if ".png" in lower:
@@ -50,6 +76,18 @@ def _guess_mime_type(url: str, fallback: str = "") -> str:
         return "image/bmp"
     if ".svg" in lower:
         return "image/svg+xml"
+    if ".mp4" in lower:
+        return "video/mp4"
+    if ".mov" in lower:
+        return "video/quicktime"
+    if ".m4v" in lower:
+        return "video/x-m4v"
+    if ".webm" in lower:
+        return "video/webm"
+    if ".avi" in lower:
+        return "video/x-msvideo"
+    if ".mkv" in lower:
+        return "video/x-matroska"
     return "image/png"
 
 
@@ -81,13 +119,54 @@ def _preview_tool_result(result: Any, *, limit: int = 600) -> str:
     return f"{text[:limit]}..."
 
 
-def _dedupe_image_artifacts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _artifact_asset_type(item: dict[str, Any]) -> str:
+    explicit = str(item.get("asset_type") or "").strip().lower()
+    if explicit in {"image", "video"}:
+        return explicit
+    mime_type = str(item.get("mime_type") or "").strip().lower()
+    if mime_type.startswith("video/"):
+        return "video"
+    content_url = str(item.get("content_url") or "").strip()
+    preview_url = str(item.get("preview_url") or "").strip()
+    if _is_video_url(content_url) or _is_video_url(preview_url):
+        return "video"
+    return "image"
+
+
+def _collect_artifact_urls(
+    items: list[dict[str, Any]],
+    *,
+    asset_type: str,
+) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if _artifact_asset_type(item) != asset_type:
+            continue
+        candidates = (
+            [str(item.get("content_url") or "").strip()]
+            if asset_type == "video"
+            else [
+                str(item.get("preview_url") or "").strip(),
+                str(item.get("content_url") or "").strip(),
+            ]
+        )
+        for candidate in candidates:
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            urls.append(candidate)
+    return urls
+
+
+def _dedupe_media_artifacts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
     for item in items:
+        asset_type = _artifact_asset_type(item)
         preview_url = str(item.get("preview_url") or "").strip()
         content_url = str(item.get("content_url") or "").strip()
-        key = f"{preview_url}||{content_url}"
+        key = f"{asset_type}||{preview_url}||{content_url}"
         if not preview_url and not content_url:
             continue
         if key in seen:
@@ -97,28 +176,36 @@ def _dedupe_image_artifacts(items: list[dict[str, Any]]) -> list[dict[str, Any]]
     return result
 
 
-def _normalize_single_image_artifact(
+def _normalize_single_media_artifact(
     item: Any,
     *,
     default_title: str,
     index: int,
 ) -> dict[str, Any] | None:
     if isinstance(item, str):
-        image_url = _normalize_image_url(item)
-        if not image_url:
+        media_url = _normalize_media_url(item)
+        if not media_url:
             return None
+        asset_type = "video" if _is_video_url(media_url) else "image"
         return {
-            "asset_type": "image",
+            "asset_type": asset_type,
             "title": f"{default_title} #{index}",
             "summary": "",
-            "preview_url": image_url,
-            "content_url": image_url,
-            "mime_type": _guess_mime_type(image_url),
+            "preview_url": media_url,
+            "content_url": media_url,
+            "mime_type": _guess_mime_type(media_url),
             "metadata": {},
         }
     if not isinstance(item, dict):
         return None
 
+    hinted_asset_type = str(
+        item.get("asset_type")
+        or item.get("assetType")
+        or item.get("type")
+        or item.get("kind")
+        or ""
+    ).strip().lower()
     mime_type = str(
         item.get("mime_type")
         or item.get("mimeType")
@@ -130,8 +217,17 @@ def _normalize_single_image_artifact(
     ).strip()
 
     preview_url = ""
-    for key in ("preview_url", "previewUrl", "thumbnail_url", "thumbnailUrl"):
-        preview_url = _normalize_image_url(item.get(key))
+    for key in (
+        "preview_url",
+        "previewUrl",
+        "thumbnail_url",
+        "thumbnailUrl",
+        "poster_url",
+        "posterUrl",
+        "cover_url",
+        "coverUrl",
+    ):
+        preview_url = _normalize_media_url(item.get(key))
         if preview_url:
             break
 
@@ -141,6 +237,8 @@ def _normalize_single_image_artifact(
         "contentUrl",
         "image_url",
         "imageUrl",
+        "video_url",
+        "videoUrl",
         "url",
         "source_url",
         "sourceUrl",
@@ -149,16 +247,33 @@ def _normalize_single_image_artifact(
         "href",
         "uri",
     ):
-        content_url = _normalize_image_url(item.get(key))
+        content_url = _normalize_media_url(item.get(key))
         if content_url:
             break
 
-    if not preview_url:
-        preview_url = content_url
-    if not content_url:
-        content_url = preview_url
+    asset_type = hinted_asset_type if hinted_asset_type in {"image", "video"} else ""
+    if not asset_type:
+        if mime_type.lower().startswith("video/"):
+            asset_type = "video"
+        elif mime_type.lower().startswith("image/"):
+            asset_type = "image"
+        elif _is_video_url(content_url) or _is_video_url(preview_url):
+            asset_type = "video"
+        else:
+            asset_type = "image"
 
-    if not preview_url and not content_url:
+    if asset_type == "video":
+        if not content_url and _is_video_url(preview_url):
+            content_url = preview_url
+        if not preview_url:
+            preview_url = content_url
+    else:
+        if not preview_url:
+            preview_url = content_url
+        if not content_url:
+            content_url = preview_url
+
+    if asset_type == "image" and not preview_url and not content_url:
         for key in ("b64_json", "base64", "image_base64", "imageBase64", "contentBase64"):
             data_url = _image_data_url_from_base64(item.get(key), mime_type)
             if data_url:
@@ -189,7 +304,7 @@ def _normalize_single_image_artifact(
         metadata = {}
 
     return {
-        "asset_type": "image",
+        "asset_type": asset_type,
         "title": title[:120] or f"{default_title} #{index}",
         "summary": summary[:1000],
         "preview_url": preview_url,
@@ -199,7 +314,7 @@ def _normalize_single_image_artifact(
     }
 
 
-def _extract_image_artifacts(
+def _extract_media_artifacts(
     payload: Any,
     *,
     default_title: str,
@@ -209,7 +324,7 @@ def _extract_image_artifacts(
         return []
 
     if isinstance(payload, str):
-        normalized = _normalize_single_image_artifact(
+        normalized = _normalize_single_media_artifact(
             payload,
             default_title=default_title,
             index=1,
@@ -220,27 +335,27 @@ def _extract_image_artifacts(
         result: list[dict[str, Any]] = []
         for idx, item in enumerate(payload, start=1):
             result.extend(
-                _extract_image_artifacts(
+                _extract_media_artifacts(
                     item,
                     default_title=default_title,
                     _depth=_depth + 1,
                 )
             )
             if isinstance(item, (str, dict)):
-                normalized = _normalize_single_image_artifact(
+                normalized = _normalize_single_media_artifact(
                     item,
                     default_title=default_title,
                     index=idx,
                 )
                 if normalized:
                     result.append(normalized)
-        return _dedupe_image_artifacts(result)
+        return _dedupe_media_artifacts(result)
 
     if not isinstance(payload, dict):
         return []
 
     result: list[dict[str, Any]] = []
-    normalized_self = _normalize_single_image_artifact(
+    normalized_self = _normalize_single_media_artifact(
         payload,
         default_title=default_title,
         index=1,
@@ -251,10 +366,15 @@ def _extract_image_artifacts(
     for key in (
         "artifacts",
         "images",
+        "videos",
         "image_urls",
         "imageUrls",
+        "video_urls",
+        "videoUrls",
         "generated_images",
         "generatedImages",
+        "generated_videos",
+        "generatedVideos",
         "results",
         "items",
         "data",
@@ -265,13 +385,13 @@ def _extract_image_artifacts(
         if key not in payload:
             continue
         result.extend(
-            _extract_image_artifacts(
+            _extract_media_artifacts(
                 payload.get(key),
                 default_title=default_title,
                 _depth=_depth + 1,
             )
         )
-    return _dedupe_image_artifacts(result)
+    return _dedupe_media_artifacts(result)
 
 class AgentOrchestrator:
     def __init__(
@@ -352,11 +472,8 @@ class AgentOrchestrator:
                         "type": "done",
                         "content": "[已停止]",
                         "artifacts": collected_artifacts,
-                        "images": [
-                            str(item.get("preview_url") or item.get("content_url") or "").strip()
-                            for item in collected_artifacts
-                            if str(item.get("preview_url") or item.get("content_url") or "").strip()
-                        ],
+                        "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
+                        "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
                     }
                     completed = True
                     break
@@ -438,11 +555,8 @@ class AgentOrchestrator:
                             "type": "done",
                             "content": fallback,
                             "artifacts": collected_artifacts,
-                            "images": [
-                                str(item.get("preview_url") or item.get("content_url") or "").strip()
-                                for item in collected_artifacts
-                                if str(item.get("preview_url") or item.get("content_url") or "").strip()
-                            ],
+                            "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
+                            "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
                         }
                         await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                         await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})
@@ -474,11 +588,8 @@ class AgentOrchestrator:
                             "type": "done",
                             "content": fallback,
                             "artifacts": collected_artifacts,
-                            "images": [
-                                str(item.get("preview_url") or item.get("content_url") or "").strip()
-                                for item in collected_artifacts
-                                if str(item.get("preview_url") or item.get("content_url") or "").strip()
-                            ],
+                            "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
+                            "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
                         }
                         await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                         await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})
@@ -525,23 +636,20 @@ class AgentOrchestrator:
                             "status": "success" if success else "error",
                             "output_preview": _preview_tool_result(result),
                         }
-                        artifacts = _extract_image_artifacts(
+                        artifacts = _extract_media_artifacts(
                             result,
                             default_title=str(tool_name or "AI 生成图片"),
                         )
                         if artifacts:
-                            collected_artifacts = _dedupe_image_artifacts(
+                            collected_artifacts = _dedupe_media_artifacts(
                                 [*collected_artifacts, *artifacts]
                             )
                             yield {
                                 "type": "artifact",
                                 "tool_name": tool_name,
                                 "artifacts": artifacts,
-                                "images": [
-                                    str(item.get("preview_url") or item.get("content_url") or "").strip()
-                                    for item in artifacts
-                                    if str(item.get("preview_url") or item.get("content_url") or "").strip()
-                                ],
+                                "images": _collect_artifact_urls(artifacts, asset_type="image"),
+                                "videos": _collect_artifact_urls(artifacts, asset_type="video"),
                             }
                         messages.append({"role": "tool", "tool_call_id": tc["id"], "content": json.dumps(result, ensure_ascii=False)})
                     if tool_only_loops >= self._tool_only_threshold:
@@ -557,11 +665,8 @@ class AgentOrchestrator:
                             "type": "done",
                             "content": fallback,
                             "artifacts": collected_artifacts,
-                            "images": [
-                                str(item.get("preview_url") or item.get("content_url") or "").strip()
-                                for item in collected_artifacts
-                                if str(item.get("preview_url") or item.get("content_url") or "").strip()
-                            ],
+                            "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
+                            "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
                         }
                         await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                         await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})
@@ -577,11 +682,8 @@ class AgentOrchestrator:
                     "type": "done",
                     "content": response_content,
                     "artifacts": collected_artifacts,
-                    "images": [
-                        str(item.get("preview_url") or item.get("content_url") or "").strip()
-                        for item in collected_artifacts
-                        if str(item.get("preview_url") or item.get("content_url") or "").strip()
-                    ],
+                    "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
+                    "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
                 }
                 await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                 await self._conv.append_message(session_id, {"role": "assistant", "content": response_content})
@@ -598,11 +700,8 @@ class AgentOrchestrator:
                     "type": "done",
                     "content": fallback,
                     "artifacts": collected_artifacts,
-                    "images": [
-                        str(item.get("preview_url") or item.get("content_url") or "").strip()
-                        for item in collected_artifacts
-                        if str(item.get("preview_url") or item.get("content_url") or "").strip()
-                    ],
+                    "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
+                    "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
                 }
                 await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                 await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})

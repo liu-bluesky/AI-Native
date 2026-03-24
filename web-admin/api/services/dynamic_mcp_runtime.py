@@ -55,6 +55,7 @@ from services.dynamic_mcp_transports import (
     replace_path_suffix as _replace_path_suffix,
 )
 
+from core.config import get_project_root
 from core.deps import employee_store, external_mcp_store, project_store, usage_store
 from services.feedback_service import get_feedback_service
 from services.dynamic_mcp_audit import (
@@ -101,7 +102,7 @@ _current_api_key: ContextVar[str] = ContextVar("_current_api_key", default="")
 _current_developer_name: ContextVar[str] = ContextVar("_current_developer_name", default="")
 _EMPLOYEE_MCP_APP_REV = "2026-03-04-sse-post-bridge"
 _PROJECT_MCP_APP_REV = "2026-03-05-project-mcp-v1"
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_PROJECT_ROOT = get_project_root()
 _EXECUTABLE_SUFFIXES = {".py", ".js"}
 _FASTMCP_HOST = os.environ.get("FASTMCP_HOST", "0.0.0.0")
 

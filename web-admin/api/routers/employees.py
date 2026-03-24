@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends
 
+from core.config import get_project_root
 from core.ownership import assert_can_manage_record, current_username, ownership_payload
 from core.deps import (
     employee_store,
@@ -331,7 +332,7 @@ def _scan_skill_entries(skill) -> tuple[int, list[str]]:
         return 0, []
     package_path = Path(package_dir)
     if not package_path.is_absolute():
-        package_path = Path(__file__).resolve().parents[3] / package_path
+        package_path = get_project_root() / package_path
     package_path = package_path.resolve()
     if not package_path.exists() or not package_path.is_dir():
         return 0, []
@@ -658,7 +659,7 @@ def _write_generated_skill_package(
         *([f"- {item}" for item in style_hints] or ["- 暂无额外风格提示"]),
     ]
     (package_path / "SKILL.md").write_text("\n".join(skill_doc).strip() + "\n", encoding="utf-8")
-    project_root = Path(__file__).resolve().parents[3]
+    project_root = get_project_root()
     try:
         return str(package_path.relative_to(project_root))
     except ValueError:
@@ -830,7 +831,7 @@ def _write_system_mcp_skill_package(*, skill_id: str, server: dict[str, Any]) ->
         sections.extend(["", f"## {heading}", *(entries or ["- none"])])
 
     (package_path / "SKILL.md").write_text("\n".join(sections).strip() + "\n", encoding="utf-8")
-    project_root = Path(__file__).resolve().parents[3]
+    project_root = get_project_root()
     try:
         return str(package_path.relative_to(project_root))
     except ValueError:

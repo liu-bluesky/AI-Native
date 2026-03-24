@@ -12,6 +12,14 @@ DEFAULT_DEV_DATABASE_URL = "postgresql://admin:changeme@127.0.0.1:5432/ai_employ
 _API_ROOT = Path(__file__).resolve().parents[1]
 _ENV_FILE_NAMES = (".env", ".env.local")
 _DEFAULT_API_DATA_DIR = Path.home() / ".ai-native" / "web-admin-api"
+_PROJECT_ROOT_MARKERS = (
+    "mcp-skills",
+    "mcp-rules",
+    "mcp-memory",
+    "mcp-persona",
+    "mcp-evolution",
+    "mcp-sync",
+)
 
 
 def _parse_env_line(raw_line: str) -> tuple[str, str] | None:
@@ -117,6 +125,8 @@ class Settings:
     # 工具
     tool_timeout: int
     max_tool_retries: int
+    studio_export_worker_enabled: bool
+    studio_export_worker_poll_seconds: int
 
 
 def get_api_data_dir(*, create: bool = True) -> Path:
@@ -124,6 +134,14 @@ def get_api_data_dir(*, create: bool = True) -> Path:
     if create:
         path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+@lru_cache(maxsize=1)
+def get_project_root() -> Path:
+    for candidate in (_API_ROOT, *_API_ROOT.parents):
+        if all((candidate / name).exists() for name in _PROJECT_ROOT_MARKERS):
+            return candidate
+    raise RuntimeError(f"Cannot resolve project root from {_API_ROOT}")
 
 
 @lru_cache(maxsize=1)
@@ -149,4 +167,6 @@ def get_settings() -> Settings:
         compression_threshold=int(_get_env("COMPRESSION_THRESHOLD", "15")),
         tool_timeout=int(_get_env("TOOL_TIMEOUT", "60")),
         max_tool_retries=int(_get_env("MAX_TOOL_RETRIES", "3")),
+        studio_export_worker_enabled=_env_bool("STUDIO_EXPORT_WORKER_ENABLED", True),
+        studio_export_worker_poll_seconds=int(_get_env("STUDIO_EXPORT_WORKER_POLL_SECONDS", "5")),
     )

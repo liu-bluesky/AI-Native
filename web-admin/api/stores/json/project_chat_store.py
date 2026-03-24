@@ -41,6 +41,7 @@ class ProjectChatMessage:
     display_mode: str = ""
     attachments: list[str] = field(default_factory=list)
     images: list[str] = field(default_factory=list)
+    videos: list[str] = field(default_factory=list)
     id: str = field(default_factory=lambda: f"chat-{uuid.uuid4().hex[:12]}")
     created_at: str = field(default_factory=_now_iso)
 
@@ -108,6 +109,7 @@ class ProjectChatStore:
                     display_mode=str(raw.get("display_mode") or "").strip(),
                     attachments=_normalize_attachments(raw.get("attachments")),
                     images=_normalize_attachments(raw.get("images")),
+                    videos=_normalize_attachments(raw.get("videos")),
                     created_at=str(raw.get("created_at") or _now_iso()),
                 )
             )
@@ -303,6 +305,7 @@ class ProjectChatStore:
             display_mode=str(message.display_mode or "").strip(),
             attachments=_normalize_attachments(message.attachments),
             images=_normalize_attachments(message.images),
+            videos=_normalize_attachments(message.videos),
             created_at=str(message.created_at or _now_iso()),
         )
         current = self._read_messages(project_id, username)

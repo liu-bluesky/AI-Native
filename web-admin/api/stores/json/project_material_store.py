@@ -19,12 +19,15 @@ class ProjectMaterialAsset:
     group_type: str
     title: str
     summary: str = ""
+    source_type: str = ""
     source_message_id: str = ""
     source_chat_session_id: str = ""
     source_username: str = ""
     created_by: str = ""
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
+    original_filename: str = ""
+    file_size_bytes: int = 0
     preview_url: str = ""
     content_url: str = ""
     mime_type: str = ""

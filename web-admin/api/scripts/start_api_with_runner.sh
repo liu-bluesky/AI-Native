@@ -36,6 +36,7 @@ load_env_defaults "${API_DIR}/.env.local"
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-8000}"
 API_PROBE_HOST="${API_PROBE_HOST:-127.0.0.1}"
+API_REUSE_HEALTHY="${API_REUSE_HEALTHY:-0}"
 API_URL="http://${API_PROBE_HOST}:${API_PORT}"
 
 cd "${API_DIR}"
@@ -101,11 +102,16 @@ prepare_api() {
     if [[ -n "${pid}" ]]; then
       local cmd=""
       cmd="$(api_command_for_pid "${pid}")"
-      echo "[api] already healthy at ${API_URL}"
-      echo "[api] reusing pid ${pid}: ${cmd}"
-      exit 0
+      if [[ "${API_REUSE_HEALTHY}" == "1" ]]; then
+        echo "[api] already healthy at ${API_URL}"
+        echo "[api] reusing pid ${pid}: ${cmd}"
+        exit 0
+      fi
+      echo "[api] healthy api detected at ${API_URL}, restarting pid ${pid}"
+      stop_stale_api "${pid}" || exit 1
+      return
     fi
-    echo "[api] already healthy at ${API_URL}"
+    echo "[api] already healthy at ${API_URL}, but no local pid was found; skipping restart"
     exit 0
   fi
 

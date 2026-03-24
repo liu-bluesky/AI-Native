@@ -1,6 +1,7 @@
 # AI 员工工厂
 
 基于 MCP（Model Context Protocol）的 AI-Native 开发平台。用户可自由组合 Skills、Rules、Memory、Persona 创建多个 AI 员工，并通过进化引擎持续优化能力。
+/Users/liulantian/.vett/skills/github/awesome-copilot/refactor
 
 ## 技术栈
 

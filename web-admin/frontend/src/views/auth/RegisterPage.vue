@@ -184,9 +184,9 @@ async function handleRegister() {
   isolation: isolate;
   container-type: inline-size;
   background:
-    radial-gradient(circle at 16% 0%, rgba(125, 211, 252, 0.22), transparent 28%),
-    radial-gradient(circle at 84% 16%, rgba(103, 232, 249, 0.16), transparent 24%),
-    linear-gradient(180deg, #f6f4ef 0%, #f7f8fa 34%, #eef2f7 100%);
+    radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.16), transparent 26%),
+    radial-gradient(circle at 82% 14%, rgba(103, 232, 249, 0.12), transparent 22%),
+    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%);
 }
 
 .register-page::before,
@@ -204,7 +204,7 @@ async function handleRegister() {
   left: -10rem;
   width: 28rem;
   height: 28rem;
-  background: rgba(125, 211, 252, 0.42);
+  background: rgba(125, 211, 252, 0.36);
 }
 
 .register-page::after {
@@ -212,7 +212,7 @@ async function handleRegister() {
   top: 8rem;
   width: 24rem;
   height: 24rem;
-  background: rgba(103, 232, 249, 0.28);
+  background: rgba(103, 232, 249, 0.24);
 }
 
 .register-shell {

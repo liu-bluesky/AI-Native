@@ -10,6 +10,13 @@
     <el-table :data="projects" stripe>
       <el-table-column prop="id" label="项目 ID" width="150" />
       <el-table-column prop="name" label="项目名称" width="180" show-overflow-tooltip />
+      <el-table-column label="项目类型" width="140" align="center">
+        <template #default="{ row }">
+          <el-tag :type="getProjectTypeTagType(row.type)">
+            {{ getProjectTypeLabel(row.type) }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column
         v-if="showProjectLocationFields"
         prop="workspace_path"
@@ -73,6 +80,22 @@
             placeholder="项目说明（可选）"
           />
         </el-form-item>
+        <el-form-item label="项目类型">
+          <el-select v-model="createForm.type" style="width: 100%">
+            <el-option
+              v-for="item in projectTypeOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            >
+              <div class="project-type-option">
+                <div class="project-type-option__label">{{ item.label }}</div>
+                <div class="project-type-option__desc">{{ item.description }}</div>
+              </div>
+            </el-option>
+          </el-select>
+          <div class="project-type-help">{{ getProjectTypeDescription(createForm.type) }}</div>
+        </el-form-item>
         <el-form-item label="MCP 使用说明">
           <el-input
             v-model="createForm.mcp_instruction"
@@ -115,6 +138,22 @@
         </el-form-item>
         <el-form-item label="项目描述">
           <el-input v-model="editForm.description" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="项目类型">
+          <el-select v-model="editForm.type" style="width: 100%">
+            <el-option
+              v-for="item in projectTypeOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            >
+              <div class="project-type-option">
+                <div class="project-type-option__label">{{ item.label }}</div>
+                <div class="project-type-option__desc">{{ item.description }}</div>
+              </div>
+            </el-option>
+          </el-select>
+          <div class="project-type-help">{{ getProjectTypeDescription(editForm.type) }}</div>
         </el-form-item>
         <el-form-item label="MCP 使用说明">
           <el-input
@@ -178,12 +217,30 @@ const updating = ref(false)
 const projects = ref([])
 const showProjectCreateEntry = computed(() => hasPermission('menu.projects'))
 const showProjectLocationFields = false
+const projectTypeOptions = [
+  {
+    value: 'image',
+    label: '图片项目',
+    description: '适合海报、KV、插画、商品图等以图片产出为主的项目。',
+  },
+  {
+    value: 'storyboard_video',
+    label: '分镜视频项目',
+    description: '适合镜头脚本、分镜规划、视频生成等以视频产出为主的项目。',
+  },
+  {
+    value: 'mixed',
+    label: '综合项目',
+    description: '适合图文混合或方向未定的项目，默认工作流更中性。',
+  },
+]
 
 const showCreateDialog = ref(false)
 const showEditDialog = ref(false)
 const createForm = ref({
   name: '',
   description: '',
+  type: 'mixed',
   mcp_instruction: '',
   workspace_path: '',
   ai_entry_file: '',
@@ -195,6 +252,7 @@ const editForm = ref({
   id: '',
   name: '',
   description: '',
+  type: 'mixed',
   mcp_instruction: '',
   workspace_path: '',
   ai_entry_file: '',
@@ -209,6 +267,7 @@ function openCreate() {
   createForm.value = {
     name: '',
     description: '',
+    type: 'mixed',
     mcp_instruction: '',
     workspace_path: '',
     ai_entry_file: '',
@@ -238,6 +297,7 @@ function openEdit(project) {
     id: project.id,
     name: project.name || '',
     description: project.description || '',
+    type: normalizeProjectType(project.type),
     mcp_instruction: project.mcp_instruction || '',
     workspace_path: project.workspace_path || '',
     ai_entry_file: project.ai_entry_file || '',
@@ -245,6 +305,28 @@ function openEdit(project) {
     feedback_upgrade_enabled: project.feedback_upgrade_enabled ?? true,
   }
   showEditDialog.value = true
+}
+
+function normalizeProjectType(value) {
+  const normalized = String(value || '').trim()
+  return projectTypeOptions.some((item) => item.value === normalized) ? normalized : 'mixed'
+}
+
+function getProjectTypeLabel(value) {
+  const matched = projectTypeOptions.find((item) => item.value === normalizeProjectType(value))
+  return matched?.label || '综合项目'
+}
+
+function getProjectTypeDescription(value) {
+  const matched = projectTypeOptions.find((item) => item.value === normalizeProjectType(value))
+  return matched?.description || '适合图文混合或方向未定的项目，默认工作流更中性。'
+}
+
+function getProjectTypeTagType(value) {
+  const normalized = normalizeProjectType(value)
+  if (normalized === 'image') return 'success'
+  if (normalized === 'storyboard_video') return 'warning'
+  return 'info'
 }
 
 async function selectEditWorkspaceDirectory() {
@@ -289,6 +371,7 @@ async function updateProject() {
     await api.put(`/projects/${editForm.value.id}`, {
       name: editForm.value.name,
       description: editForm.value.description,
+      type: normalizeProjectType(editForm.value.type),
       mcp_instruction: editForm.value.mcp_instruction,
       workspace_path: editForm.value.workspace_path,
       ai_entry_file: editForm.value.ai_entry_file,
@@ -314,7 +397,10 @@ async function fetchProjects() {
   loading.value = true
   try {
     const data = await api.get('/projects')
-    projects.value = data.projects || []
+    projects.value = (data.projects || []).map((item) => ({
+      ...item,
+      type: normalizeProjectType(item.type),
+    }))
   } catch {
     ElMessage.error('加载项目失败')
   } finally {
@@ -333,6 +419,7 @@ async function createProject() {
     await api.post('/projects', {
       name,
       description: createForm.value.description,
+      type: normalizeProjectType(createForm.value.type),
       mcp_instruction: createForm.value.mcp_instruction,
       workspace_path: createForm.value.workspace_path,
       ai_entry_file: createForm.value.ai_entry_file,
@@ -383,6 +470,30 @@ onMounted(fetchProjects)
 
 .toolbar h3 {
   margin: 0;
+}
+
+.project-type-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-type-option__label {
+  font-weight: 600;
+  color: #111827;
+}
+
+.project-type-option__desc {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #6b7280;
+}
+
+.project-type-help {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6b7280;
 }
 
 </style>

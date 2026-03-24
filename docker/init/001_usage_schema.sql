@@ -1,3 +1,6 @@
+-- Legacy bootstrap SQL for first-time PostgreSQL container initialization only.
+-- Canonical schema migrations now live under web-admin/api/core/sql_migrations/.
+
 CREATE TABLE IF NOT EXISTS api_keys (
     key TEXT PRIMARY KEY,
     developer_name TEXT NOT NULL,

@@ -6,6 +6,7 @@ from stores.json.external_mcp_store import ExternalMcpStore
 from stores.json.local_connector_store import LocalConnectorStore
 from stores.json.project_chat_store import ProjectChatStore
 from stores.json.project_material_store import ProjectMaterialStore
+from stores.json.project_studio_export_store import ProjectStudioExportStore
 from stores.json.project_store import ProjectStore
 from stores.json.role_store import RoleStore
 from stores.json.system_config_store import SystemConfigStore
@@ -19,6 +20,7 @@ __all__ = [
     "LocalConnectorStore",
     "ProjectChatStore",
     "ProjectMaterialStore",
+    "ProjectStudioExportStore",
     "ProjectStore",
     "RoleStore",
     "SystemConfigStore",

@@ -2,16 +2,28 @@
   <div class="user-settings-page" v-loading="loading">
     <header class="settings-context">
       <div class="settings-context__main">
+        <div class="settings-context__eyebrow">Account Preferences</div>
         <div class="settings-context__title">用户设置</div>
+        <p class="settings-context__summary">
+          统一当前账号的默认模型来源，让设置中心里的对话入口和个人偏好保持一致。
+        </p>
         <div class="settings-context__meta">
           <span>{{ form.username || "-" }}</span>
           <span>{{ roleLabel }}</span>
-          <span>{{ selectedProvider ? `默认 AI：${selectedProvider.name}` : "默认 AI：未指定" }}</span>
+          <span>{{
+            selectedProvider ? `默认 AI：${selectedProvider.name}` : "默认 AI：未指定"
+          }}</span>
         </div>
       </div>
       <div class="settings-context__actions">
-        <el-button @click="fetchSettings">刷新</el-button>
-        <el-button type="primary" :loading="saving" @click="saveSettings">
+        <el-button class="settings-context__button" @click="fetchSettings">
+          刷新
+        </el-button>
+        <el-button
+          class="settings-context__button settings-context__button--primary"
+          :loading="saving"
+          @click="saveSettings"
+        >
           保存设置
         </el-button>
       </div>
@@ -44,10 +56,9 @@
 
       <article class="settings-panel">
         <div class="settings-panel__head">
-          <div>
-            <h3>默认 AI</h3>
-            <p>这里决定当前账号优先使用哪一个模型供应商。</p>
-          </div>
+          <div class="settings-panel__eyebrow">Default AI</div>
+          <h3>默认模型供应商</h3>
+          <p>这里决定当前账号优先使用哪一个模型供应商。</p>
         </div>
 
         <div v-if="!providerOptions.length" class="settings-empty">
@@ -82,6 +93,10 @@
         </el-form>
 
         <div v-if="selectedProvider" class="provider-preview">
+          <div class="provider-preview__head">
+            <div class="provider-preview__title">当前已选择</div>
+            <div class="provider-preview__badge">已生效</div>
+          </div>
           <div class="provider-preview__row">
             <span class="provider-preview__label">当前选择</span>
             <span class="provider-preview__value">{{ selectedProvider.name }}</span>
@@ -205,75 +220,133 @@ onMounted(fetchSettings);
 <style scoped>
 .user-settings-page {
   min-height: 100%;
-  padding: 14px 16px 16px;
-  background:
-    radial-gradient(circle at top left, rgba(255, 244, 214, 0.5), transparent 24%),
-    linear-gradient(180deg, #f6f3ee 0%, #f7f7f8 32%, #f5f5f6 100%);
+  padding: 4px 0 0;
+  background: transparent;
 }
 
 .settings-context {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 12px;
+  gap: 20px;
   margin-bottom: 18px;
-  padding: 2px 4px 0;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at top right, rgba(103, 232, 249, 0.12), transparent 34%),
+    radial-gradient(circle at top left, rgba(125, 211, 252, 0.12), transparent 26%),
+    rgba(255, 255, 255, 0.54);
+  box-shadow:
+    0 24px 64px rgba(15, 23, 42, 0.08),
+    0 14px 34px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(20px);
 }
 
 .settings-context__main {
   min-width: 0;
+  flex: 1;
+}
+
+.settings-context__eyebrow {
+  color: #7c8aa0;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .settings-context__title {
   margin: 0;
-  font-size: 24px;
-  line-height: 1.2;
+  margin-top: 10px;
+  color: #0f172a;
+  font-size: clamp(28px, 3.6vw, 36px);
+  line-height: 1.04;
   font-weight: 600;
-  color: rgba(0, 0, 0, 0.88);
+  letter-spacing: -0.03em;
+  font-family: "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.settings-context__summary {
+  max-width: 560px;
+  margin: 10px 0 0;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 .settings-context__meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 12px;
 }
 
 .settings-context__meta span {
   padding: 6px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.68);
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.65);
+  color: #64748b;
 }
 
 .settings-context__actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.settings-context__button {
+  min-height: 36px;
+  padding: 0 14px !important;
+  border-radius: 999px !important;
+  border-color: rgba(15, 23, 42, 0.08) !important;
+  background: rgba(255, 255, 255, 0.72) !important;
+  color: #374151 !important;
+  font-weight: 600;
+  box-shadow: none !important;
+}
+
+.settings-context__button:hover {
+  border-color: rgba(56, 189, 248, 0.24) !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  color: #0f172a !important;
+}
+
+.settings-context__button--primary {
+  border-color: transparent !important;
+  background: linear-gradient(180deg, #0f172a, #1e293b) !important;
+  color: #fff !important;
+  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.14) !important;
 }
 
 .settings-layout {
   display: grid;
-  grid-template-columns: 272px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 20px;
   align-items: start;
 }
 
 .account-rail,
 .settings-panel {
-  border-radius: 24px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(10px);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  background: rgba(255, 255, 255, 0.58);
+  backdrop-filter: blur(20px);
+  box-shadow:
+    0 24px 64px rgba(15, 23, 42, 0.08),
+    0 14px 34px rgba(15, 23, 42, 0.06);
 }
 
 .account-rail {
-  padding: 18px;
+  padding: 22px 20px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 20px;
 }
 
 .account-rail__head {
@@ -285,14 +358,15 @@ onMounted(fetchSettings);
 .account-rail__avatar {
   width: 56px;
   height: 56px;
-  border-radius: 18px;
-  background: linear-gradient(135deg, #1f2937, #4b5563);
+  border-radius: 20px;
+  background: linear-gradient(180deg, #0f172a, #1e293b);
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 22px;
   font-weight: 700;
+  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.16);
 }
 
 .account-rail__summary {
@@ -302,79 +376,111 @@ onMounted(fetchSettings);
 .account-rail__name {
   font-size: 16px;
   font-weight: 600;
-  color: rgba(0, 0, 0, 0.88);
+  color: #0f172a;
 }
 
 .account-rail__hint {
   margin-top: 4px;
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: #7c8aa0;
 }
 
 .account-rail__facts {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
 }
 
 .account-fact {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.58);
-  border: 1px solid rgba(15, 23, 42, 0.06);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .account-fact__label {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: #7c8aa0;
 }
 
 .account-fact__value {
   font-size: 14px;
-  color: rgba(0, 0, 0, 0.78);
+  color: #0f172a;
+  text-align: right;
   word-break: break-word;
 }
 
 .settings-panel {
-  padding: 20px 22px;
+  padding: 24px 24px 22px;
 }
 
 .settings-panel__head {
-  margin-bottom: 14px;
+  margin-bottom: 18px;
+}
+
+.settings-panel__eyebrow {
+  color: #7c8aa0;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .settings-panel__head h3 {
-  margin: 0;
-  font-size: 18px;
+  margin: 10px 0 0;
+  font-size: 24px;
   font-weight: 600;
-  color: rgba(0, 0, 0, 0.88);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: #0f172a;
 }
 
 .settings-panel__head p {
-  margin: 6px 0 0;
-  font-size: 13px;
-  color: rgba(0, 0, 0, 0.45);
+  max-width: 560px;
+  margin: 8px 0 0;
+  font-size: 14px;
+  color: #475569;
+  line-height: 1.7;
 }
 
 .settings-form {
   max-width: 720px;
 }
 
+.settings-form :deep(.el-form-item__label) {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .settings-select {
   width: min(720px, 100%);
 }
 
-.settings-empty {
-  padding: 14px 16px;
+.settings-select :deep(.el-select__wrapper) {
+  min-height: 46px;
   border-radius: 18px;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  background: rgba(250, 204, 21, 0.1);
-  color: rgba(0, 0, 0, 0.65);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+}
+
+.settings-select :deep(.el-select__wrapper.is-focused) {
+  box-shadow:
+    inset 0 0 0 1px rgba(56, 189, 248, 0.22),
+    0 0 0 4px rgba(103, 232, 249, 0.12);
+}
+
+.settings-empty {
+  padding: 16px 18px;
+  border-radius: 20px;
+  border: 1px solid rgba(245, 158, 11, 0.16);
+  background: rgba(255, 251, 235, 0.82);
+  color: #475569;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.7;
 }
 
 .provider-option {
@@ -388,19 +494,46 @@ onMounted(fetchSettings);
 }
 
 .provider-option__meta {
-  color: rgba(0, 0, 0, 0.45);
+  color: #7c8aa0;
   font-size: 12px;
 }
 
 .provider-preview {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   max-width: 720px;
-  margin-top: 6px;
-  padding: 14px 16px;
-  border-radius: 18px;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  background: rgba(255, 255, 255, 0.5);
+  margin-top: 12px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  background:
+    radial-gradient(circle at top right, rgba(103, 232, 249, 0.1), transparent 42%),
+    rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
+}
+
+.provider-preview__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.provider-preview__title {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.provider-preview__badge {
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.78);
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .provider-preview__row {
@@ -411,24 +544,33 @@ onMounted(fetchSettings);
 
 .provider-preview__label {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: #7c8aa0;
 }
 
 .provider-preview__value {
   min-width: 0;
-  color: rgba(0, 0, 0, 0.78);
+  color: #0f172a;
   word-break: break-word;
 }
 
 .settings-note {
   max-width: 720px;
-  margin-top: 14px;
+  margin-top: 16px;
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
-  line-height: 1.6;
+  color: #7c8aa0;
+  line-height: 1.7;
 }
 
 @media (max-width: 1120px) {
+  .settings-context {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .settings-context__actions {
+    align-self: flex-start;
+  }
+
   .settings-layout {
     grid-template-columns: 1fr;
   }
@@ -436,7 +578,7 @@ onMounted(fetchSettings);
 
 @media (max-width: 640px) {
   .user-settings-page {
-    padding: 12px;
+    padding-top: 0;
   }
 
   .settings-context,
@@ -449,7 +591,26 @@ onMounted(fetchSettings);
   .settings-panel,
   .account-rail {
     padding: 16px;
-    border-radius: 20px;
+    border-radius: 24px;
+  }
+
+  .settings-context {
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+
+  .settings-context__title {
+    font-size: 30px;
+  }
+
+  .account-fact {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .account-fact__value {
+    text-align: left;
   }
 
   .provider-preview__row {

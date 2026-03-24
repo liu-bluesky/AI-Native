@@ -10,6 +10,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "fastmcp>=3.0",
     "psycopg[binary]>=3.2",
+    "requests>=2.31",
     "redis[hiredis]>=5.0.0",
     "structlog>=23.1.0",
 ]

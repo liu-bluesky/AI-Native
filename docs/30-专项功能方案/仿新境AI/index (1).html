@@ -1,0 +1,3912 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>简芯剧创 - AI智能短片创作平台</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+        .gradient-bg { background: linear-gradient(135deg, #06b6d4 0%, #22d3ee 50%, #3b82f6 100%); }
+        .gradient-btn { background: linear-gradient(135deg, #06b6d4 0%, #22d3ee 100%); }
+        .gradient-btn:hover { background: linear-gradient(135deg, #22d3ee 0%, #38bdf8 100%); }
+        .glass-card { background: rgba(19, 19, 26, 0.95); backdrop-filter: blur(10px); border: 1px solid #2a2a3a; }
+        .hover-lift { transition: all 0.3s ease; }
+        .hover-lift:hover { transform: translateY(-4px); box-shadow: 0 20px 40px rgba(6, 182, 212, 0.15); }
+        .tab-active { background: linear-gradient(135deg, #06b6d4 0%, #22d3ee 100%); color: white; }
+        .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+        .scrollbar-thin::-webkit-scrollbar-track { background: #1a1a24; border-radius: 3px; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background: #06b6d4; border-radius: 3px; }
+        .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #22d3ee; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fadeIn { animation: fadeIn 0.5s ease forwards; }
+        @keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 20px rgba(6, 182, 212, 0.3); } 50% { box-shadow: 0 0 40px rgba(34, 211, 238, 0.6); } }
+        .pulse-glow { animation: pulse-glow 2s infinite; }
+        .step-active { background: linear-gradient(135deg, #06b6d4 0%, #22d3ee 100%); color: white; }
+        .step-inactive { background: #1a1a24; color: #6b7280; }
+        .style-card.selected { border-color: #06b6d4; background: rgba(6, 182, 212, 0.1); }
+        .element-tab.active { border-bottom: 2px solid #06b6d4; color: #22d3ee; }
+        .toggle-checkbox:checked { right: 0; border-color: #06b6d4; }
+        .toggle-checkbox:checked + .toggle-label { background-color: #06b6d4; }
+        /* Timeline drag styles */
+        .timeline-track { position: relative; height: 60px; background: #1a1a24; border-radius: 8px; overflow: hidden; }
+        .timeline-clip {
+            position: absolute;
+            height: 50px;
+            top: 5px;
+            background: linear-gradient(135deg, #06b6d4 0%, #22d3ee 100%);
+            border-radius: 6px;
+            cursor: grab;
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            font-size: 12px;
+            color: white;
+            user-select: none;
+        }
+        .timeline-clip:active { cursor: grabbing; }
+        .timeline-clip .resize-handle {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 8px;
+            cursor: ew-resize;
+            background: rgba(255,255,255,0.3);
+        }
+        .timeline-clip .resize-handle.left { left: 0; border-radius: 6px 0 0 6px; }
+        .timeline-clip .resize-handle.right { right: 0; border-radius: 0 6px 6px 0; }
+        .timeline-ruler {
+            height: 20px;
+            background: #13131a;
+            border-radius: 4px;
+            position: relative;
+            margin-bottom: 10px;
+        }
+        .timeline-ruler .tick {
+            position: absolute;
+            bottom: 0;
+            width: 1px;
+            background: #3f3f46;
+        }
+        .timeline-ruler .tick.major { height: 10px; }
+        .timeline-ruler .tick.minor { height: 5px; }
+        .timeline-ruler .label {
+            position: absolute;
+            bottom: 12px;
+            font-size: 10px;
+            color: #71717a;
+            transform: translateX(-50%);
+        }
+    </style>
+</head>
+<body class="bg-[#0a0a0f] min-h-screen text-gray-100">
+    <!-- 顶部导航栏 -->
+    <header class="fixed top-0 left-0 right-0 h-16 bg-[#13131a] border-b border-[#2a2a3a] z-50 flex items-center justify-between px-6">
+        <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
+                <div class="w-10 h-10 gradient-bg rounded-xl flex items-center justify-center">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                </div>
+                <span class="text-xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">简芯剧创</span>
+            </div>
+        </div>
+        <div class="flex items-center gap-4">
+            <div class="relative">
+                <button onclick="toggleDropdown('funcDropdown')" class="flex items-center gap-2 px-4 py-2 text-gray-400 hover:text-white hover:bg-[#1a1a24] rounded-lg transition"><span>功能导航</span><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg></button>
+                <div id="funcDropdown" class="hidden absolute top-full right-0 mt-2 w-48 bg-[#13131a] rounded-xl shadow-xl border border-[#2a2a3a] py-2 animate-fadeIn">
+                    <a href="#" onclick="switchPage('workshop'); hideDropdown('funcDropdown');" class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:bg-[#1a1a24] hover:text-blue-400">
+                        <div class="w-8 h-8 bg-[#1a1a24] rounded-lg flex items-center justify-center"><svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg></div>
+                        <div><div class="font-medium">新建短片</div><div class="text-xs text-gray-500">AI智能创作</div></a>
+                    <a href="#" onclick="switchPage('works'); hideDropdown('funcDropdown');" class="flex items-center gap-3 px-4 py-3 text-gray-400 hover:bg-[#1a1a24] hover:text-blue-400">
+                        <div class="w-8 h-8 bg-[#1a1a24] rounded-lg flex items-center justify-center"><svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z"/></svg></div>
+                        <div><div class="font-medium">我的作品</div><div class="text-xs text-gray-500">项目作品管理</div></div>
+                    </a>
+                </div>
+            </div>
+            <button class="px-3 py-1.5 text-sm text-gray-400 hover:text-white border border-[#2a2a3a] rounded-lg hover:bg-[#1a1a24]">中文</button>
+            <button class="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500/20 to-indigo-500/20 border border-blue-500/30 rounded-lg hover:from-blue-500/30 hover:to-indigo-500/30 transition">
+                <svg class="w-4 h-4 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+                <span class="text-sm font-medium text-blue-400">2,580</span>
+            </button>
+            <span class="px-2 py-1 text-xs bg-[#1a1a24] text-blue-400 rounded">Pro v2.5</span>
+            <button class="w-9 h-9 rounded-full gradient-bg flex items-center justify-center text-white font-medium">张</button>
+        </div>
+    </header>
+
+    <!-- 侧边导航 -->
+    <aside class="fixed left-0 top-16 bottom-0 w-60 bg-[#13131a] border-r border-[#2a2a3a] p-4 flex flex-col">
+        <nav class="flex-1 space-y-1">
+            <a href="#" onclick="switchPage('home')" class="nav-item flex items-center gap-3 px-4 py-3 text-gray-400 rounded-xl hover:bg-[#1a1a24] hover:text-blue-400 transition" data-page="home"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg><span class="font-medium">首页</span></a>
+            <a href="#" onclick="switchPage('workshop')" class="nav-item flex items-center gap-3 px-4 py-3 text-gray-400 rounded-xl hover:bg-[#1a1a24] hover:text-blue-400 transition" data-page="workshop"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg><span class="font-medium">新建短片</span></a>
+            <a href="#" onclick="switchPage('works')" class="nav-item flex items-center gap-3 px-4 py-3 text-gray-400 rounded-xl hover:bg-[#1a1a24] hover:text-blue-400 transition" data-page="works"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z"/></svg><span class="font-medium">我的作品</span></a>
+        </nav>
+
+        <!-- 充值开通快捷入口 - 移到底部 -->
+        <div onclick="openVipModal()" class="flex items-center gap-3 p-3 mb-4 bg-gradient-to-r from-blue-500/20 to-indigo-500/20 border border-blue-500/30 rounded-xl cursor-pointer hover:from-blue-500/30 hover:to-indigo-500/30 transition group">
+            <div class="w-10 h-10 rounded-xl gradient-bg flex items-center justify-center group-hover:scale-110 transition">
+                <svg class="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+            </div>
+            <div class="flex-1 min-w-0"><div class="font-medium text-white">开通会员</div><div class="text-xs text-blue-300">享无限创作</div></div>
+            <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+        </div>
+
+        <div class="pt-4 border-t border-[#2a2a3a]">
+            <div class="bg-gradient-to-r from-blue-500/10 to-indigo-500/10 rounded-xl p-4">
+                <div class="flex items-center gap-2 mb-2"><div class="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div><span class="text-sm font-medium text-gray-300">AI 服务正常</span></div>
+                <div class="text-xs text-gray-500">今日已生成 23 个分镜</div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- 主内容区域 -->
+    <main class="ml-60 mt-16 p-6">
+        <!-- 首页 -->
+        <div id="page-home" class="page-content">
+            <!-- Hero区域 -->
+            <div class="relative mb-8 rounded-2xl overflow-hidden h-80 gradient-bg">
+                <div class="absolute inset-0 flex items-center justify-center">
+                    <div class="text-center text-white">
+                        <h1 class="text-4xl font-bold mb-4">简芯剧创</h1>
+                        <p class="text-xl opacity-90 mb-6">AI智能短片创作平台</p>
+                        <button onclick="switchPage('workshop')" class="px-8 py-3 bg-white text-blue-600 font-semibold rounded-xl hover:bg-opacity-90 transition shadow-lg">立即创作</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 核心能力区域 -->
+            <div class="mb-8">
+                <h2 class="text-2xl font-bold text-white mb-6">核心能力</h2>
+                <div class="grid grid-cols-4 gap-4">
+                    <div onclick="switchPage('workshop')" class="glass-card rounded-2xl p-6 hover-lift cursor-pointer border border-[#2a2a3a]">
+                        <div class="w-14 h-14 gradient-bg rounded-2xl flex items-center justify-center mb-4"><svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg></div>
+                        <h3 class="font-semibold text-white mb-2">剧本创作</h3>
+                        <p class="text-sm text-gray-400 mb-4">智能剧本拆分、Markdown编辑、多章节管理</p>
+                        <button class="text-blue-400 text-sm font-medium hover:text-blue-300 flex items-center gap-1">去体验 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></button>
+                    </div>
+                    <div onclick="switchPage('workshop')" class="glass-card rounded-2xl p-6 hover-lift cursor-pointer border border-[#2a2a3a]">
+                        <div class="w-14 h-14 bg-gradient-to-br from-blue-400 to-indigo-500 rounded-2xl flex items-center justify-center mb-4"><svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"/></svg></div>
+                        <h3 class="font-semibold text-white mb-2">美术设计</h3>
+                        <p class="text-sm text-gray-400 mb-4">角色、场景、道具智能生成</p>
+                        <button class="text-blue-400 text-sm font-medium hover:text-blue-300 flex items-center gap-1">去体验 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></button>
+                    </div>
+                    <div onclick="switchPage('workshop')" class="glass-card rounded-2xl p-6 hover-lift cursor-pointer border border-[#2a2a3a]">
+                        <div class="w-14 h-14 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-2xl flex items-center justify-center mb-4"><svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></div>
+                        <h3 class="font-semibold text-white mb-2">分镜设计</h3>
+                        <p class="text-sm text-gray-400 mb-4">智能分镜生成，可视化编辑</p>
+                        <button class="text-blue-400 text-sm font-medium hover:text-blue-300 flex items-center gap-1">去体验 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></button>
+                    </div>
+                    <div onclick="switchPage('workshop')" class="glass-card rounded-2xl p-6 hover-lift cursor-pointer border border-[#2a2a3a]">
+                        <div class="w-14 h-14 bg-gradient-to-br from-blue-400 to-indigo-400 rounded-2xl flex items-center justify-center mb-4"><svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
+                        <h3 class="font-semibold text-white mb-2">短片合成</h3>
+                        <p class="text-sm text-gray-400 mb-4">视频合成、字幕、导出</p>
+                        <button class="text-blue-400 text-sm font-medium hover:text-blue-300 flex items-center gap-1">去体验 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 展示区域（仅展示不可点击） -->
+            <div class="mb-8">
+                <h2 class="text-2xl font-bold text-white mb-6">热门作品</h2>
+                <div class="grid grid-cols-3 gap-4">
+                    <div class="glass-card rounded-2xl overflow-hidden border border-[#2a2a3a]">
+                        <div class="h-40 bg-gradient-to-br from-purple-500/50 to-pink-500/50 flex items-center justify-center relative">
+                            <svg class="w-16 h-16 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <div class="absolute bottom-2 right-2 px-2 py-1 bg-black/50 rounded text-xs text-white">02:15</div>
+                        </div>
+                        <div class="p-4">
+                            <h3 class="font-medium text-white mb-1">星际旅者</h3>
+                            <p class="text-xs text-gray-500">科幻 · 冒险</p>
+                            <div class="flex items-center gap-2 mt-3">
+                                <div class="w-6 h-6 rounded-full gradient-bg flex items-center justify-center text-white text-xs">A</div>
+                                <span class="text-xs text-gray-400">by Alice</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass-card rounded-2xl overflow-hidden border border-[#2a2a3a]">
+                        <div class="h-40 bg-gradient-to-br from-blue-500/50 to-indigo-500/50 flex items-center justify-center relative">
+                            <svg class="w-16 h-16 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <div class="absolute bottom-2 right-2 px-2 py-1 bg-black/50 rounded text-xs text-white">01:48</div>
+                        </div>
+                        <div class="p-4">
+                            <h3 class="font-medium text-white mb-1">城市印象</h3>
+                            <p class="text-xs text-gray-500">都市 · 治愈</p>
+                            <div class="flex items-center gap-2 mt-3">
+                                <div class="w-6 h-6 rounded-full bg-gradient-to-br from-green-400 to-cyan-500 flex items-center justify-center text-white text-xs">B</div>
+                                <span class="text-xs text-gray-400">by Bob</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="glass-card rounded-2xl overflow-hidden border border-[#2a2a3a]">
+                        <div class="h-40 bg-gradient-to-br from-orange-500/50 to-red-500/50 flex items-center justify-center relative">
+                            <svg class="w-16 h-16 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <div class="absolute bottom-2 right-2 px-2 py-1 bg-black/50 rounded text-xs text-white">03:22</div>
+                        </div>
+                        <div class="p-4">
+                            <h3 class="font-medium text-white mb-1">温暖时刻</h3>
+                            <p class="text-xs text-gray-500">情感 · 家庭</p>
+                            <div class="flex items-center gap-2 mt-3">
+                                <div class="w-6 h-6 rounded-full bg-gradient-to-br from-pink-400 to-rose-500 flex items-center justify-center text-white text-xs">C</div>
+                                <span class="text-xs text-gray-400">by Carol</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 功能特点展示 -->
+            <div class="mb-8">
+                <h2 class="text-2xl font-bold text-white mb-6">为什么选择简芯剧创</h2>
+                <div class="grid grid-cols-4 gap-4">
+                    <div class="glass-card rounded-2xl p-6 border border-[#2a2a3a] text-center">
+                        <div class="w-12 h-12 gradient-bg rounded-xl flex items-center justify-center mx-auto mb-4"><svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></div>
+                        <h3 class="font-semibold text-white mb-2">AI智能生成</h3>
+                        <p class="text-sm text-gray-400">输入剧本即可自动生成完整短片</p>
+                    </div>
+                    <div class="glass-card rounded-2xl p-6 border border-[#2a2a3a] text-center">
+                        <div class="w-12 h-12 gradient-bg rounded-xl flex items-center justify-center mx-auto mb-4"><svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></div>
+                        <h3 class="font-semibold text-white mb-2">多风格支持</h3>
+                        <p class="text-sm text-gray-400">水墨、3D国潮、赛博朋克等风格</p>
+                    </div>
+                    <div class="glass-card rounded-2xl p-6 border border-[#2a2a3a] text-center">
+                        <div class="w-12 h-12 gradient-bg rounded-xl flex items-center justify-center mx-auto mb-4"><svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/></svg></div>
+                        <h3 class="font-semibold text-white mb-2">智能配音</h3>
+                        <p class="text-sm text-gray-400">多音色选择，支持角色配音</p>
+                    </div>
+                    <div class="glass-card rounded-2xl p-6 border border-[#2a2a3a] text-center">
+                        <div class="w-12 h-12 gradient-bg rounded-xl flex items-center justify-center mx-auto mb-4"><svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg></div>
+                        <h3 class="font-semibold text-white mb-2">一键导出</h3>
+                        <p class="text-sm text-gray-400">支持多种格式，快速导出</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI创意工坊 -->
+        <div id="page-workshop" class="page-content hidden">
+            <div class="flex items-center justify-between mb-6">
+                <div><h1 class="text-2xl font-bold text-white">新建短片</h1><p class="text-gray-400">从剧本到成片，一站式完成短片创作</p></div>
+            </div>
+
+            <!-- 工作流程步骤指示器 -->
+            <div class="flex items-center gap-4 mb-6 p-4 bg-[#13131a] rounded-xl">
+                <button onclick="goToStep(1)" class="flex items-center gap-2 cursor-pointer"><div id="step-1" class="w-8 h-8 rounded-full step-active flex items-center justify-center text-white text-sm font-medium">1</div><span id="step-text-1" class="text-sm font-medium text-gray-300">剧本创作</span></button>
+                <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                <button onclick="goToStep(2)" class="flex items-center gap-2 cursor-pointer"><div id="step-2" class="w-8 h-8 rounded-full step-inactive flex items-center justify-center text-white text-sm font-medium">2</div><span id="step-text-2" class="text-sm text-gray-500">美术设定</span></button>
+                <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                <button onclick="goToStep(3)" class="flex items-center gap-2 cursor-pointer"><div id="step-3" class="w-8 h-8 rounded-full step-inactive flex items-center justify-center text-white text-sm font-medium">3</div><span id="step-text-3" class="text-sm text-gray-500">分镜制作</span></button>
+                <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                <button onclick="goToStep(4)" class="flex items-center gap-2 cursor-pointer"><div id="step-4" class="w-8 h-8 rounded-full step-inactive flex items-center justify-center text-white text-sm font-medium">4</div><span id="step-text-4" class="text-sm text-gray-500">导出视频</span></button>
+            </div>
+
+            <!-- 步骤1: 剧本创作 -->
+            <div id="workshop-step-1" class="workshop-step">
+                <div class="grid grid-cols-5 gap-6">
+                    <div class="col-span-3">
+                        <div class="bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-6">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="font-semibold text-white">剧本内容</h3>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm text-gray-500">已输入 0 字</span>
+                                    <input type="file" id="scriptFileInput" class="hidden" accept=".txt,.md">
+                                    <button onclick="document.getElementById('scriptFileInput').click()" class="px-3 py-1.5 text-sm bg-[#1a1a24] text-gray-400 rounded-lg hover:bg-[#252530]">导入剧本</button>
+                                </div>
+                            </div>
+                            <textarea id="scriptContent" class="w-full h-80 p-4 border border-[#2a2a3a] bg-[#1a1a24] text-gray-100 rounded-xl resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="请在此输入您的剧本内容，支持最大25000字...&#10;&#10;支持 txt、md 格式导入"></textarea>
+                            <div class="mt-4 flex items-center justify-between">
+                                <div class="flex items-center gap-4">
+                                    <span class="text-sm text-gray-500">画面比例：</span>
+                                    <select id="aspectRatioSelect" class="px-3 py-1.5 border border-[#2a2a3a] bg-[#1a1a24] text-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                        <option value="16:9">16:9 横屏</option>
+                                        <option value="9:16">9:16 竖屏</option>
+                                        <option value="1:1">1:1 方形</option>
+                                        <option value="3:2">3:2 经典</option>
+                                        <option value="2:3">2:3 竖版</option>
+                                    </select>
+                                </div>
+                                <button onclick="nextStep()" class="px-6 py-2.5 gradient-btn text-white font-medium rounded-xl hover:opacity-90 transition">下一步</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-span-2">
+                        <div class="bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-4 h-full">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="font-semibold text-white">章节列表</h3>
+                                <button onclick="autoSplitChapters()" class="px-3 py-1.5 text-sm gradient-btn text-white rounded-lg hover:opacity-90">智能分章</button>
+                            </div>
+                            <div id="chapterList" class="space-y-2 max-h-96 overflow-y-auto scrollbar-thin">
+                                <div class="p-3 bg-[#1a1a24] rounded-lg text-center text-gray-500 text-sm">点击"智能分章"自动拆分剧本</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 步骤2: 美术设定 -->
+            <div id="workshop-step-2" class="workshop-step hidden">
+                <div class="grid grid-cols-3 gap-6">
+                    <div class="col-span-2">
+                        <div class="bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-6">
+                            <h3 class="font-semibold text-white mb-4">美术设定</h3>
+
+                            <!-- 风格选择 -->
+                            <div class="mb-6">
+                                <label class="block text-sm font-medium text-gray-300 mb-3">选择风格（可多选）</label>
+                                <div class="grid grid-cols-4 gap-3">
+                                    <div onclick="toggleStyle(this)" class="style-card selected p-3 border-2 border-blue-500 rounded-xl cursor-pointer bg-blue-500/10"><div class="text-sm font-medium text-center text-blue-400">水墨</div></div>
+                                    <div onclick="toggleStyle(this)" class="style-card p-3 border border-[#2a2a3a] rounded-xl cursor-pointer hover:border-blue-500/50"><div class="text-sm font-medium text-center text-gray-300">3D国潮</div></div>
+                                    <div onclick="toggleStyle(this)" class="style-card p-3 border border-[#2a2a3a] rounded-xl cursor-pointer hover:border-blue-500/50"><div class="text-sm font-medium text-center text-gray-300">电影超写实</div></div>
+                                    <div onclick="toggleStyle(this)" class="style-card p-3 border border-[#2a2a3a] rounded-xl cursor-pointer hover:border-blue-500/50"><div class="text-sm font-medium text-center text-gray-300">卡通</div></div>
+                                    <div onclick="toggleStyle(this)" class="style-card p-3 border border-[#2a2a3a] rounded-xl cursor-pointer hover:border-blue-500/50"><div class="text-sm font-medium text-center text-gray-300">赛博朋克</div></div>
+                                    <div onclick="toggleStyle(this)" class="style-card p-3 border border-[#2a2a3a] rounded-xl cursor-pointer hover:border-blue-500/50"><div class="text-sm font-medium text-center text-gray-300">油画</div></div>
+                                    <div onclick="toggleStyle(this)" class="style-card p-3 border border-[#2a2a3a] rounded-xl cursor-pointer hover:border-blue-500/50"><div class="text-sm font-medium text-center text-gray-300">水彩</div></div>
+                                    <div onclick="toggleStyle(this)" class="style-card p-3 border border-[#2a2a3a] rounded-xl cursor-pointer hover:border-blue-500/50"><div class="text-sm font-medium text-center text-gray-300">像素风</div></div>
+                                </div>
+                            </div>
+
+                            <!-- 元素提取标签 -->
+                            <div class="mb-6">
+                                <div class="flex border-b border-[#2a2a3a] mb-4">
+                                    <button onclick="switchElementTab('role')" id="tab-role" class="element-tab active px-4 py-2 text-sm font-medium text-gray-400 hover:text-blue-400">角色</button>
+                                    <button onclick="switchElementTab('scene')" id="tab-scene" class="element-tab px-4 py-2 text-sm font-medium text-gray-400 hover:text-blue-400">场景</button>
+                                    <button onclick="switchElementTab('prop')" id="tab-prop" class="element-tab px-4 py-2 text-sm font-medium text-gray-400 hover:text-blue-400">道具</button>
+                                </div>
+
+                                <!-- 生成参数面板 -->
+                                <div class="bg-[#1a1a24] rounded-xl p-4 mb-4">
+                                    <div class="grid grid-cols-3 gap-4 mb-4">
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">模型</label>
+                                            <select id="artModelSelect" class="w-full px-2 py-1.5 border border-[#2a2a3a] bg-[#13131a] text-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                                <option>通用模型 v1.0</option>
+                                                <option>动漫模型 v1.5</option>
+                                                <option>写实模型 v2.0</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">时长</label>
+                                            <select id="artDurationSelect" class="w-full px-2 py-1.5 border border-[#2a2a3a] bg-[#13131a] text-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                                <option>3秒</option>
+                                                <option>5秒</option>
+                                                <option>10秒</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">画质</label>
+                                            <select id="artQualitySelect" class="w-full px-2 py-1.5 border border-[#2a2a3a] bg-[#13131a] text-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                                <option>标准 (720p)</option>
+                                                <option>高清 (1080p)</option>
+                                                <option>超清 (4K)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="text-sm text-gray-500 mb-2">系统将自动识别剧本中的<span id="currentElementType">角色</span></div>
+                                    <button onclick="openExtractModal()" class="px-4 py-2 gradient-btn text-white text-sm rounded-lg hover:opacity-90">开始提取</button>
+                                </div>
+
+                                <!-- 元素展示 -->
+                                <div id="elementContent">
+                                    <div id="roleContent" class="element-panel">
+                                        <div class="grid grid-cols-4 gap-3">
+                                            <div onclick="openCharacterModal(0)" class="aspect-square bg-gradient-to-br from-blue-500/30 to-indigo-500/30 rounded-xl flex items-center justify-center cursor-pointer hover:opacity-80 relative border border-[#2a2a3a]">
+                                                <svg class="w-8 h-8 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                                                <span class="absolute bottom-1 text-xs text-blue-300 font-medium">主角A</span>
+                                            </div>
+                                            <div onclick="openCharacterModal(1)" class="aspect-square bg-gradient-to-br from-blue-400/30 to-cyan-500/30 rounded-xl flex items-center justify-center cursor-pointer hover:opacity-80 relative border border-[#2a2a3a]">
+                                                <svg class="w-8 h-8 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                                                <span class="absolute bottom-1 text-xs text-blue-300 font-medium">主角B</span>
+                                            </div>
+                                            <div class="aspect-square bg-[#1a1a24] rounded-xl flex items-center justify-center cursor-pointer hover:bg-[#252530] border border-dashed border-[#2a2a3a]"><svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg></div>
+                                            <div class="aspect-square bg-[#1a1a24] rounded-xl flex items-center justify-center cursor-pointer hover:bg-[#252530] border border-dashed border-[#2a2a3a]"><svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg></div>
+                                        </div>
+                                    </div>
+                                    <div id="sceneContent" class="element-panel hidden">
+                                        <div class="grid grid-cols-4 gap-3">
+                                            <div class="aspect-video bg-gradient-to-br from-amber-500/20 to-orange-500/20 rounded-xl flex items-center justify-center border border-[#2a2a3a]"><span class="text-xs text-gray-400">城市街道</span></div>
+                                            <div class="aspect-video bg-gradient-to-br from-blue-500/20 to-indigo-500/20 rounded-xl flex items-center justify-center border border-[#2a2a3a]"><span class="text-xs text-gray-400">咖啡馆</span></div>
+                                            <div class="aspect-video bg-[#1a1a24] rounded-xl flex items-center justify-center cursor-pointer hover:bg-[#252530] border border-dashed border-[#2a2a3a]"><svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg></div>
+                                        </div>
+                                    </div>
+                                    <div id="propContent" class="element-panel hidden">
+                                        <div class="grid grid-cols-4 gap-3">
+                                            <div class="aspect-square bg-gradient-to-br from-purple-500/20 to-pink-500/20 rounded-xl flex items-center justify-center border border-[#2a2a3a]"><span class="text-xs text-gray-400">手机</span></div>
+                                            <div class="aspect-square bg-[#1a1a24] rounded-xl flex items-center justify-center cursor-pointer hover:bg-[#252530] border border-dashed border-[#2a2a3a]"><svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="mt-6 flex justify-between">
+                                <button onclick="prevStep()" class="px-6 py-2.5 bg-[#1a1a24] text-gray-300 font-medium rounded-xl hover:bg-[#252530] transition">上一步</button>
+                                <button onclick="nextStep()" class="px-6 py-2.5 gradient-btn text-white font-medium rounded-xl hover:opacity-90 transition">下一步</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="space-y-4">
+                        <div class="bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-4">
+                            <h3 class="font-semibold text-white mb-3">设定进度</h3>
+                            <div class="space-y-3">
+                                <div class="flex items-center justify-between"><span class="text-sm text-gray-500">风格选择</span><span class="text-sm text-blue-400">已选择</span></div>
+                                <div class="flex items-center justify-between"><span class="text-sm text-gray-500">元素提取</span><span class="text-sm text-gray-500">待提取</span></div>
+                                <div class="flex items-center justify-between"><span class="text-sm text-gray-500">角色制作</span><span class="text-sm text-gray-500">2/4</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 步骤3: 分镜制作 -->
+            <div id="workshop-step-3" class="workshop-step hidden">
+                <div class="grid grid-cols-5 gap-6">
+                    <div class="col-span-4">
+                        <div class="bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-6">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="font-semibold text-white">分镜制作</h3>
+                                <div class="flex items-center gap-4">
+                                    <select id="chapterSelect" onchange="showChapterStoryboards()" class="px-4 py-2 border border-[#2a2a3a] bg-[#1a1a24] text-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                        <option value="">请选择章节</option>
+                                        <option value="1">第一章：清晨的城市</option>
+                                        <option value="2">第二章：意外的相遇</option>
+                                        <option value="3">第三章：故事的转折</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <!-- 音效配乐开关 -->
+                            <div class="flex items-center gap-6 mb-4 p-3 bg-[#1a1a24] rounded-xl">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm text-gray-400">音效配乐：</span>
+                                    <input type="checkbox" id="bgmToggle" class="w-4 h-4 text-blue-500 rounded">
+                                    <span class="text-sm text-gray-500">启用背景音乐</span>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <input type="checkbox" id="sfxToggle" class="w-4 h-4 text-blue-500 rounded">
+                                    <span class="text-sm text-gray-500">启用音效</span>
+                                </div>
+                            </div>
+
+                            <!-- 生成参数 -->
+                            <div class="grid grid-cols-3 gap-4 mb-4 p-3 bg-[#1a1a24] rounded-xl">
+                                <div>
+                                    <label class="block text-xs text-gray-500 mb-1">模型选择</label>
+                                    <select id="storyboardModelSelect" class="w-full px-2 py-1.5 border border-[#2a2a3a] bg-[#13131a] text-gray-300 rounded-lg text-sm">
+                                        <option>通用模型 v1.0</option>
+                                        <option>高清模型 v2.0</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-500 mb-1">时长</label>
+                                    <select id="storyboardDurationSelect" class="w-full px-2 py-1.5 border border-[#2a2a3a] bg-[#13131a] text-gray-300 rounded-lg text-sm">
+                                        <option>5秒</option>
+                                        <option>8秒</option>
+                                        <option>10秒</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-500 mb-1">画质</label>
+                                    <select id="storyboardQualitySelect" class="w-full px-2 py-1.5 border border-[#2a2a3a] bg-[#13131a] text-gray-300 rounded-lg text-sm">
+                                        <option>标准 (720p)</option>
+                                        <option>高清 (1080p)</option>
+                                        <option>超清 (4K)</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <!-- 分镜展示区 -->
+                            <div id="storyboardGrid" class="grid grid-cols-3 gap-4 mb-6">
+                                <div class="col-span-3 text-center py-12 text-gray-500">请先选择上方章节以展示对应的分镜</div>
+                            </div>
+
+                            <!-- 已选分镜操作 -->
+                            <div class="flex items-center justify-between pt-4 border-t border-[#2a2a3a]">
+                                <div class="flex items-center gap-4">
+                                    <span class="text-sm text-gray-500">已选 <span id="selectedCount">0</span> 个分镜（需先生成配音）</span>
+                                </div>
+                                <div class="flex items-center gap-3">
+                                    <button onclick="prevStep()" class="px-6 py-2.5 bg-[#1a1a24] text-gray-300 font-medium rounded-xl hover:bg-[#252530] transition">上一步</button>
+                                    <button onclick="nextStep()" class="px-6 py-2.5 gradient-btn text-white font-medium rounded-xl hover:opacity-90 transition">下一步</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-span-1">
+                        <div class="bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-4">
+                            <h3 class="font-semibold text-white mb-3">生成历史</h3>
+                            <div class="space-y-2 max-h-96 overflow-y-auto scrollbar-thin">
+                                <div class="p-3 bg-[#1a1a24] rounded-lg"><div class="text-xs text-gray-500 mb-1">分镜 1-1</div><div class="text-sm text-gray-400">2026-03-09 14:30</div></div>
+                                <div class="p-3 bg-[#1a1a24] rounded-lg"><div class="text-xs text-gray-500 mb-1">分镜 1-2</div><div class="text-sm text-gray-400">2026-03-09 14:25</div></div>
+                                <div class="p-3 bg-[#1a1a24] rounded-lg"><div class="text-xs text-gray-500 mb-1">分镜 2-1</div><div class="text-sm text-gray-400">2026-03-09 14:20</div></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 步骤4: 导出视频 -->
+            <div id="workshop-step-4" class="workshop-step hidden">
+                <div class="grid grid-cols-5 gap-4 h-[calc(100vh-200px)]">
+                    <!-- 左侧：分镜编辑与导出 -->
+                    <div class="col-span-1 bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-4 flex flex-col">
+                        <h3 class="font-semibold text-white mb-3">分镜编辑</h3>
+                        <div class="space-y-2 flex-1 overflow-y-auto scrollbar-thin">
+                            <div class="p-3 bg-[#1a1a24] rounded-xl border border-[#2a2a3a]">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <input type="checkbox" class="w-4 h-4 text-blue-500 rounded" checked>
+                                    <span class="text-sm font-medium text-white">分镜 1-1</span>
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <div class="text-xs text-gray-500">城市清晨</div>
+                                    <div class="flex items-center gap-1">
+                                        <span class="text-xs text-gray-500">时长:</span>
+                                        <input type="number" value="5" class="w-12 px-1 py-0.5 bg-[#13131a] border border-[#2a2a3a] rounded text-xs text-center text-white" min="1" max="30">
+                                        <span class="text-xs text-gray-500">秒</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="p-3 bg-[#1a1a24] rounded-xl border border-[#2a2a3a]">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <input type="checkbox" class="w-4 h-4 text-blue-500 rounded" checked>
+                                    <span class="text-sm font-medium text-white">分镜 1-2</span>
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <div class="text-xs text-gray-500">咖啡馆</div>
+                                    <div class="flex items-center gap-1">
+                                        <span class="text-xs text-gray-500">时长:</span>
+                                        <input type="number" value="8" class="w-12 px-1 py-0.5 bg-[#13131a] border border-[#2a2a3a] rounded text-xs text-center text-white" min="1" max="30">
+                                        <span class="text-xs text-gray-500">秒</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="p-3 bg-[#1a1a24] rounded-xl border border-[#2a2a3a]">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <input type="checkbox" class="w-4 h-4 text-blue-500 rounded" checked>
+                                    <span class="text-sm font-medium text-white">分镜 2-1</span>
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <div class="text-xs text-gray-500">故事转折</div>
+                                    <div class="flex items-center gap-1">
+                                        <span class="text-xs text-gray-500">时长:</span>
+                                        <input type="number" value="6" class="w-12 px-1 py-0.5 bg-[#13131a] border border-[#2a2a3a] rounded text-xs text-center text-white" min="1" max="30">
+                                        <span class="text-xs text-gray-500">秒</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-4 pt-4 border-t border-[#2a2a3a]">
+                            <div class="space-y-2">
+                                <div class="flex items-center justify-between text-sm">
+                                    <span class="text-gray-500">总时长</span>
+                                    <span class="text-white font-medium">19秒</span>
+                                </div>
+                                <div class="flex items-center justify-between text-sm">
+                                    <span class="text-gray-500">已选</span>
+                                    <span class="text-blue-400 font-medium">3个</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 中间：视频预览 + 时间线 -->
+                    <div class="col-span-3 flex flex-col gap-4">
+                        <!-- 中间上方：合并视频预览 -->
+                        <div class="flex-1 bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-4">
+                            <div class="flex items-center justify-between mb-3">
+                                <h3 class="font-semibold text-white">合并视频预览</h3>
+                                <button class="px-3 py-1.5 text-sm gradient-btn text-white rounded-lg hover:opacity-90">预览</button>
+                            </div>
+                            <div class="aspect-video bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl flex items-center justify-center relative overflow-hidden">
+                                <div class="absolute inset-0 flex items-center justify-center">
+                                    <div class="w-20 h-20 rounded-full bg-white/10 flex items-center justify-center cursor-pointer hover:bg-white/20 transition">
+                                        <svg class="w-10 h-10 text-white ml-1" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                    </div>
+                                </div>
+                                <div class="absolute bottom-3 left-3 right-3 flex items-center justify-between">
+                                    <div class="flex items-center gap-2">
+                                        <button class="p-1.5 bg-white/10 rounded-full hover:bg-white/20"><svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+                                        <button class="p-1.5 bg-white/10 rounded-full hover:bg-white/20"><svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg></button>
+                                    </div>
+                                    <span class="text-xs text-white/70">00:05 / 00:19</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 中间下方：分镜时长视频轨道 -->
+                        <div class="h-48 bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-4">
+                            <div class="flex items-center justify-between mb-3">
+                                <h3 class="font-semibold text-white">视频轨道</h3>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs text-gray-500">总时长: </span>
+                                    <span class="text-xs text-white font-medium">19秒</span>
+                                </div>
+                            </div>
+
+                            <!-- 时间线标尺 -->
+                            <div class="timeline-ruler mb-2" id="timelineRuler">
+                                <div class="tick major" style="left: 0%"><span class="label">0s</span></div>
+                                <div class="tick minor" style="left: 10%"></div>
+                                <div class="tick major" style="left: 20%"><span class="label">5s</span></div>
+                                <div class="tick minor" style="left: 30%"></div>
+                                <div class="tick major" style="left: 40%"><span class="label">10s</span></div>
+                                <div class="tick minor" style="left: 50%"></div>
+                                <div class="tick major" style="left: 60%"><span class="label">15s</span></div>
+                                <div class="tick minor" style="left: 70%"></div>
+                                <div class="tick major" style="left: 80%"><span class="label">20s</span></div>
+                                <div class="tick minor" style="left: 90%"></div>
+                                <div class="tick major" style="left: 100%"><span class="label">25s</span></div>
+                            </div>
+
+                            <!-- 视频轨道 -->
+                            <div class="timeline-track" id="videoTrack">
+                                <div class="timeline-clip" style="left: 0%; width: 26%;" draggable="true" data-duration="5">
+                                    <div class="resize-handle left"></div>
+                                    <span class="flex-1 truncate">分镜 1-1</span>
+                                    <span class="text-xs opacity-70">5s</span>
+                                    <div class="resize-handle right"></div>
+                                </div>
+                                <div class="timeline-clip" style="left: 26%; width: 42%;" draggable="true" data-duration="8">
+                                    <div class="resize-handle left"></div>
+                                    <span class="flex-1 truncate">分镜 1-2</span>
+                                    <span class="text-xs opacity-70">8s</span>
+                                    <div class="resize-handle right"></div>
+                                </div>
+                                <div class="timeline-clip" style="left: 68%; width: 32%;" draggable="true" data-duration="6">
+                                    <div class="resize-handle left"></div>
+                                    <span class="flex-1 truncate">分镜 2-1</span>
+                                    <span class="text-xs opacity-70">6s</span>
+                                    <div class="resize-handle right"></div>
+                                </div>
+                            </div>
+
+                            <!-- 音频轨道 -->
+                            <div class="mt-2">
+                                <div class="flex items-center gap-2 mb-1">
+                                    <div class="w-2 h-2 bg-green-500 rounded-full"></div>
+                                    <span class="text-xs text-gray-400">音频轨道</span>
+                                </div>
+                                <div class="timeline-track" id="audioTrack" style="height: 30px;">
+                                    <div class="timeline-clip" style="left: 0%; width: 100%; height: 24px; top: 3px; background: linear-gradient(135deg, #10b981 0%, #34d399 100%);" draggable="true" data-duration="19">
+                                        <span class="text-xs">背景音乐</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 右侧：历史分镜和导出信息 -->
+                    <div class="col-span-1 flex flex-col gap-4">
+                        <!-- 历史分镜 -->
+                        <div class="flex-1 bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-4 overflow-hidden flex flex-col">
+                            <h3 class="font-semibold text-white mb-3">历史分镜</h3>
+                            <div class="grid grid-cols-2 gap-2 overflow-y-auto scrollbar-thin flex-1">
+                                <div onclick="showAddToTimelineOption(this)" class="relative group cursor-pointer">
+                                    <div class="aspect-video bg-gradient-to-br from-blue-500/50 to-indigo-500/50 rounded-lg flex items-center justify-center">
+                                        <svg class="w-8 h-8 text-white/50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                    </div>
+                                    <div class="absolute inset-0 bg-black/60 rounded-lg opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                                        <span class="text-xs text-white font-medium">点击添加</span>
+                                    </div>
+                                    <div class="mt-1 text-xs text-gray-400 text-center">分镜 1-1</div>
+                                </div>
+                                <div onclick="showAddToTimelineOption(this)" class="relative group cursor-pointer">
+                                    <div class="aspect-video bg-gradient-to-br from-cyan-500/50 to-teal-500/50 rounded-lg flex items-center justify-center">
+                                        <svg class="w-8 h-8 text-white/50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                    </div>
+                                    <div class="absolute inset-0 bg-black/60 rounded-lg opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                                        <span class="text-xs text-white font-medium">点击添加</span>
+                                    </div>
+                                    <div class="mt-1 text-xs text-gray-400 text-center">分镜 1-2</div>
+                                </div>
+                                <div onclick="showAddToTimelineOption(this)" class="relative group cursor-pointer">
+                                    <div class="aspect-video bg-gradient-to-br from-purple-500/50 to-pink-500/50 rounded-lg flex items-center justify-center">
+                                        <svg class="w-8 h-8 text-white/50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                    </div>
+                                    <div class="absolute inset-0 bg-black/60 rounded-lg opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                                        <span class="text-xs text-white font-medium">点击添加</span>
+                                    </div>
+                                    <div class="mt-1 text-xs text-gray-400 text-center">分镜 2-1</div>
+                                </div>
+                                <div onclick="showAddToTimelineOption(this)" class="relative group cursor-pointer">
+                                    <div class="aspect-video bg-gradient-to-br from-orange-500/50 to-red-500/50 rounded-lg flex items-center justify-center">
+                                        <svg class="w-8 h-8 text-white/50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                    </div>
+                                    <div class="absolute inset-0 bg-black/60 rounded-lg opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                                        <span class="text-xs text-white font-medium">点击添加</span>
+                                    </div>
+                                    <div class="mt-1 text-xs text-gray-400 text-center">分镜 2-2</div>
+                                </div>
+                                <div onclick="showAddToTimelineOption(this)" class="relative group cursor-pointer">
+                                    <div class="aspect-video bg-gradient-to-br from-green-500/50 to-emerald-500/50 rounded-lg flex items-center justify-center">
+                                        <svg class="w-8 h-8 text-white/50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                    </div>
+                                    <div class="absolute inset-0 bg-black/60 rounded-lg opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                                        <span class="text-xs text-white font-medium">点击添加</span>
+                                    </div>
+                                    <div class="mt-1 text-xs text-gray-400 text-center">分镜 3-1</div>
+                                </div>
+                                <div onclick="showAddToTimelineOption(this)" class="relative group cursor-pointer">
+                                    <div class="aspect-video bg-gradient-to-br from-rose-500/50 to-pink-500/50 rounded-lg flex items-center justify-center">
+                                        <svg class="w-8 h-8 text-white/50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                    </div>
+                                    <div class="absolute inset-0 bg-black/60 rounded-lg opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                                        <span class="text-xs text-white font-medium">点击添加</span>
+                                    </div>
+                                    <div class="mt-1 text-xs text-gray-400 text-center">分镜 3-2</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 导出信息 -->
+                        <div class="bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-4">
+                            <h3 class="font-semibold text-white mb-3">导出信息</h3>
+                            <div class="space-y-2 text-sm mb-4">
+                                <div class="flex justify-between"><span class="text-gray-500">总时长</span><span class="text-gray-300">19秒</span></div>
+                                <div class="flex justify-between"><span class="text-gray-500">分镜数量</span><span class="text-gray-300">3个</span></div>
+                                <div class="flex justify-between"><span class="text-gray-500">预计消耗</span><span class="text-blue-400">580 积分</span></div>
+                            </div>
+                            <div class="space-y-2">
+                                <select class="w-full px-3 py-2 border border-[#2a2a3a] bg-[#1a1a24] text-gray-300 rounded-lg text-sm">
+                                    <option>MP4 (H.264)</option>
+                                    <option>MP4 (H.265)</option>
+                                </select>
+                                <select class="w-full px-3 py-2 border border-[#2a2a3a] bg-[#1a1a24] text-gray-300 rounded-lg text-sm">
+                                    <option>1080p</option>
+                                    <option>720p</option>
+                                    <option>4K</option>
+                                </select>
+                            </div>
+                            <div class="flex gap-2 mt-4">
+                                <button onclick="prevStep()" class="flex-1 px-3 py-2 bg-[#1a1a24] text-gray-300 rounded-lg text-sm hover:bg-[#252530]">上一步</button>
+                                <button class="flex-1 px-3 py-2 gradient-btn text-white rounded-lg text-sm hover:opacity-90">导出视频</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 分镜编辑导出页面 -->
+        <div id="page-export" class="page-content hidden">
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-4">
+                    <button onclick="switchPage('workshop'); goToStep(3);" class="p-2 hover:bg-[#1a1a24] rounded-lg"><svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg></button>
+                    <div><h1 class="text-2xl font-bold text-white">分镜编辑与导出</h1><p class="text-gray-400">调整每个分镜的时长，合并导出短片</p></div>
+                </div>
+            </div>
+            <div class="bg-[#13131a] rounded-2xl border border-[#2a2a3a] p-6 mb-6">
+                <h3 class="font-semibold text-white mb-4">分镜时长编辑</h3>
+                <div class="space-y-4">
+                    <div class="flex items-center gap-4 p-4 bg-[#1a1a24] rounded-xl">
+                        <input type="checkbox" class="w-5 h-5 text-blue-500 rounded" checked>
+                        <div class="w-24 h-16 bg-gradient-to-br from-blue-500/30 to-indigo-500/30 rounded-lg"></div>
+                        <div class="flex-1"><div class="text-sm font-medium text-white">分镜 1-1：城市清晨</div><div class="text-xs text-gray-500">第一章：清晨的城市</div></div>
+                        <div class="flex items-center gap-2"><span class="text-sm text-gray-500">时长：</span><input type="number" value="5" class="w-16 px-2 py-1 border border-[#2a2a3a] bg-[#13131a] text-gray-300 rounded text-sm text-center" min="1" max="30">秒</div>
+                    </div>
+                    <div class="flex items-center gap-4 p-4 bg-[#1a1a24] rounded-xl">
+                        <input type="checkbox" class="w-5 h-5 text-blue-500 rounded" checked>
+                        <div class="w-24 h-16 bg-gradient-to-br from-blue-400/30 to-cyan-500/30 rounded-lg"></div>
+                        <div class="flex-1"><div class="text-sm font-medium text-white">分镜 1-2：咖啡馆</div><div class="text-xs text-gray-500">第一章：清晨的城市</div></div>
+                        <div class="flex items-center gap-2"><span class="text-sm text-gray-500">时长：</span><input type="number" value="8" class="w-16 px-2 py-1 border border-[#2a2a3a] bg-[#13131a] text-gray-300 rounded text-sm text-center" min="1" max="30">秒</div>
+                    </div>
+                </div>
+                <div class="mt-6 pt-4 border-t border-[#2a2a3a] flex items-center justify-between">
+                    <div class="text-sm text-gray-500">已选分镜：2 个，总时长：<span class="font-medium text-gray-300">13 秒</span></div>
+                    <button class="px-6 py-2.5 gradient-btn text-white font-medium rounded-xl hover:opacity-90 transition">合并导出</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 我的作品 -->
+        <div id="page-works" class="page-content hidden">
+            <div class="mb-6"><h1 class="text-2xl font-bold text-white mb-2">我的作品</h1><p class="text-gray-400">管理您创作的所有短片项目</p></div>
+            <div class="flex items-center gap-4 mb-6">
+                <div class="flex-1 max-w-md">
+                    <div class="relative">
+                        <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                        <input type="text" placeholder="搜索作品..." class="w-full pl-10 pr-4 py-2.5 border border-[#2a2a3a] bg-[#13131a] text-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                </div>
+                <select class="px-4 py-2.5 border border-[#2a2a3a] bg-[#13131a] text-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"><option>全部类型</option><option>剧本模式</option></select>
+                <select class="px-4 py-2.5 border border-[#2a2a3a] bg-[#13131a] text-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"><option>最近创建</option><option>最近更新</option></select>
+            </div>
+            <div class="grid grid-cols-3 gap-4">
+                <div class="bg-[#13131a] rounded-2xl border border-[#2a2a3a] overflow-hidden hover-lift cursor-pointer">
+                    <div class="h-40 bg-gradient-to-br from-blue-500/50 to-indigo-500/50 flex items-center justify-center"><svg class="w-16 h-16 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
+                    <div class="p-4">
+                        <h3 class="font-semibold text-white mb-1">城市宣传短片</h3>
+                        <p class="text-sm text-gray-500 mb-3">更新于 2 小时前</p>
+                        <div class="flex items-center justify-between"><span class="px-2 py-1 bg-blue-500/20 text-blue-400 text-xs rounded-full">已完成</span></div>
+                    </div>
+                </div>
+                <div class="bg-[#13131a] rounded-2xl border border-[#2a2a3a] overflow-hidden hover-lift cursor-pointer">
+                    <div class="h-40 bg-gradient-to-br from-blue-400/50 to-cyan-500/50 flex items-center justify-center"><svg class="w-16 h-16 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
+                    <div class="p-4">
+                        <h3 class="font-semibold text-white mb-1">产品介绍视频</h3>
+                        <p class="text-sm text-gray-500 mb-3">更新于 昨天</p>
+                        <div class="flex items-center justify-between"><span class="px-2 py-1 bg-amber-500/20 text-amber-400 text-xs rounded-full">制作中</span></div>
+                    </div>
+                </div>
+                <div class="bg-[#13131a] rounded-2xl border border-[#2a2a3a] overflow-hidden hover-lift cursor-pointer">
+                    <div class="h-40 bg-gradient-to-br from-indigo-500/50 to-blue-500/50 flex items-center justify-center"><svg class="w-16 h-16 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
+                    <div class="p-4">
+                        <h3 class="font-semibold text-white mb-1">品牌故事</h3>
+                        <p class="text-sm text-gray-500 mb-3">更新于 3 天前</p>
+                        <div class="flex items-center justify-between"><span class="px-2 py-1 bg-blue-500/20 text-blue-400 text-xs rounded-full">已完成</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- VIP会员开通弹窗 -->
+    <div id="vipModal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+        <div class="fixed inset-0 bg-black/70 backdrop-blur-sm" onclick="closeVipModal()"></div>
+        <div class="relative bg-[#13131a] rounded-2xl p-6 w-[700px] max-h-[90vh] overflow-y-auto shadow-2xl animate-fadeIn border border-[#2a2a3a]">
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl gradient-bg flex items-center justify-center">
+                        <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-white">开通会员</h3>
+                </div>
+                <button onclick="closeVipModal()" class="text-gray-500 hover:text-white transition"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+            </div>
+
+            <!-- 套餐选择 -->
+            <div id="planSelection" class="mb-6">
+                <div class="grid grid-cols-2 gap-4">
+                    <!-- 套餐1: 周卡 -->
+                    <div onclick="selectPlan('weekly')" class="plan-card selected p-4 border-2 border-blue-500 bg-blue-500/10 rounded-xl cursor-pointer hover:border-blue-400 transition">
+                        <div class="text-center">
+                            <div class="text-lg font-bold text-white mb-1">周卡</div>
+                            <div class="text-3xl font-bold text-blue-400 mb-1">¥28</div>
+                            <div class="text-xs text-gray-500">每天无限次创作</div>
+                        </div>
+                    </div>
+                    <!-- 套餐2: 月卡 -->
+                    <div onclick="selectPlan('monthly')" class="plan-card p-4 border border-[#2a2a3a] bg-[#1a1a24] rounded-xl cursor-pointer hover:border-blue-500/50 transition">
+                        <div class="text-center">
+                            <div class="text-lg font-bold text-white mb-1">月卡</div>
+                            <div class="text-3xl font-bold text-blue-400 mb-1">¥88</div>
+                            <div class="text-xs text-gray-500">原价 ¥128</div>
+                        </div>
+                    </div>
+                    <!-- 套餐3: 年卡 -->
+                    <div onclick="selectPlan('yearly')" class="plan-card p-4 border border-[#2a2a3a] bg-[#1a1a24] rounded-xl cursor-pointer hover:border-blue-500/50 transition">
+                        <div class="text-center relative">
+                            <div class="absolute -top-2 -right-2 px-2 py-0.5 bg-gradient-to-r from-blue-500 to-indigo-500 text-white text-xs rounded-full">超值</div>
+                            <div class="text-lg font-bold text-white mb-1">年卡</div>
+                            <div class="text-3xl font-bold text-blue-400 mb-1">¥588</div>
+                            <div class="text-xs text-gray-500">原价 ¥1288</div>
+                        </div>
+                    </div>
+                    <!-- 套餐4: 终身卡 -->
+                    <div onclick="selectPlan('lifetime')" class="plan-card p-4 border border-[#2a2a3a] bg-[#1a1a24] rounded-xl cursor-pointer hover:border-blue-500/50 transition">
+                        <div class="text-center">
+                            <div class="text-lg font-bold text-white mb-1">终身卡</div>
+                            <div class="text-3xl font-bold text-blue-400 mb-1">¥1888</div>
+                            <div class="text-xs text-gray-500">永久会员</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="mt-6 flex justify-center">
+                    <button onclick="goToPayment()" class="px-8 py-3 gradient-btn text-white font-semibold rounded-xl hover:opacity-90 transition w-full">立即开通</button>
+                </div>
+            </div>
+
+            <!-- 支付方式选择 -->
+            <div id="paymentSelection" class="hidden">
+                <div class="mb-4">
+                    <div class="text-sm text-gray-400 mb-2">已选择：<span id="selectedPlanName" class="text-blue-400 font-medium">周卡 ¥28</span></div>
+                </div>
+                <div class="space-y-3 mb-6">
+                    <div onclick="selectPayment('wechat')" class="payment-option selected flex items-center gap-4 p-4 border-2 border-blue-500 bg-blue-500/10 rounded-xl cursor-pointer">
+                        <div class="w-10 h-10 bg-green-500 rounded-lg flex items-center justify-center">
+                            <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M9.5 4C5.36 4 2 6.69 2 10c0 1.89 1.08 3.56 2.78 4.66L4 17l2.5-1.5c.89.38 1.89.59 2.91.59.17 0 .34-.01.5-.02a5.97 5.97 0 0 1 4.09 1.68 6.07 6.07 0 0 1 1.68 4.1A5.97 5.97 0 0 1 12 20.5c-3.31 0-6-2.69-6-6 0-1.66.67-3.16 1.76-4.24l1.42 1.42C8.39 12.28 8 13.12 8 14c0 2.76 2.24 5 5 5 2.76 0 5-2.24 5-5 0-2.49-1.82-4.55-4.23-4.97L9.5 4z"/></svg>
+                        </div>
+                        <div class="flex-1"><div class="text-sm font-medium text-white">微信支付</div><div class="text-xs text-gray-500">推荐使用</div></div>
+                        <svg class="w-5 h-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+                    </div>
+                    <div onclick="selectPayment('alipay')" class="payment-option flex items-center gap-4 p-4 border border-[#2a2a3a] bg-[#1a1a24] rounded-xl cursor-pointer hover:border-blue-500/50">
+                        <div class="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center">
+                            <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M19.5 3h-15A1.5 1.5 0 003 4.5v15A1.5 1.5 0 004.5 21h15a1.5 1.5 0 001.5-1.5v-15A1.5 1.5 0 0019.5 3zM12 18c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
+                        </div>
+                        <div class="flex-1"><div class="text-sm font-medium text-white">支付宝</div><div class="text-xs text-gray-500">安全快捷</div></div>
+                    </div>
+                    <div onclick="selectPayment('qq')" class="payment-option flex items-center gap-4 p-4 border border-[#2a2a3a] bg-[#1a1a24] rounded-xl cursor-pointer hover:border-blue-500/50">
+                        <div class="w-10 h-10 bg-purple-500 rounded-lg flex items-center justify-center">
+                            <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+                        </div>
+                        <div class="flex-1"><div class="text-sm font-medium text-white">QQ支付</div><div class="text-xs text-gray-500">便捷支付</div></div>
+                    </div>
+                    <div onclick="selectPayment('bank')" class="payment-option flex items-center gap-4 p-4 border border-[#2a2a3a] bg-[#1a1a24] rounded-xl cursor-pointer hover:border-blue-500/50">
+                        <div class="w-10 h-10 bg-indigo-500 rounded-lg flex items-center justify-center">
+                            <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M4 10v7h3v-7H4zm6 0v7h3v-7h-3zM2 22h19v-3H2v3zm14-12v7h3v-7h-3zm-4.5-9L2 6v2h19V6l-9.5-5z"/></svg>
+                        </div>
+                        <div class="flex-1"><div class="text-sm font-medium text-white">银行卡</div><div class="text-xs text-gray-500">安全支付</div></div>
+                    </div>
+                </div>
+                <div class="flex gap-3">
+                    <button onclick="backToPlans()" class="px-6 py-3 bg-[#1a1a24] text-gray-300 font-medium rounded-xl hover:bg-[#252530] transition flex-1">返回</button>
+                    <button onclick="confirmPayment()" class="px-6 py-3 gradient-btn text-white font-semibold rounded-xl hover:opacity-90 transition flex-1">确认支付</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 章节预览弹窗 -->
+    <div id="chapterPreviewModal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+        <div class="fixed inset-0 bg-black/50" onclick="closeChapterPreviewModal()"></div>
+        <div class="relative bg-[#13131a] rounded-2xl p-6 w-[600px] max-h-[80vh] overflow-y-auto shadow-xl animate-fadeIn border border-[#2a2a3a]">
+            <div class="flex items-center justify-between mb-4">
+                <h3 id="previewChapterTitle" class="text-lg font-semibold text-white">章节预览</h3>
+                <button onclick="closeChapterPreviewModal()" class="text-gray-500 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+            </div>
+            <div id="previewChapterContent" class="prose prose-sm max-w-none text-gray-400"></div>
+            <div class="mt-6 flex justify-end"><button onclick="closeChapterPreviewModal()" class="px-4 py-2 gradient-btn text-white rounded-lg hover:opacity-90">关闭</button></div>
+        </div>
+    </div>
+
+    <!-- 元素提取弹窗 -->
+    <div id="extractModal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+        <div class="fixed inset-0 bg-black/50" onclick="closeExtractModal()"></div>
+        <div class="relative bg-[#13131a] rounded-2xl p-6 w-[800px] max-h-[80vh] overflow-y-auto shadow-xl animate-fadeIn border border-[#2a2a3a]">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold text-white">元素提取结果</h3>
+                <button onclick="closeExtractModal()" class="text-gray-500 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+            </div>
+            <div class="mb-4"><div class="text-sm text-gray-500">已从剧本中识别到以下<span id="extractElementType">角色</span>元素：</div></div>
+            <div id="extractResults" class="grid grid-cols-4 gap-4"></div>
+            <div class="mt-6 flex justify-end gap-3">
+                <button onclick="closeExtractModal()" class="px-4 py-2 bg-[#1a1a24] text-gray-400 rounded-lg hover:bg-[#252530]">取消</button>
+                <button onclick="confirmExtract()" class="px-4 py-2 gradient-btn text-white rounded-lg hover:opacity-90">确认提取</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 角色四视图弹窗 -->
+    <div id="characterModal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+        <div class="fixed inset-0 bg-black/50" onclick="closeCharacterModal()"></div>
+        <div class="relative bg-[#13131a] rounded-2xl p-6 w-[700px] max-h-[80vh] overflow-y-auto shadow-xl animate-fadeIn border border-[#2a2a3a]">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold text-white">角色详情 - 四视图</h3>
+                <button onclick="closeCharacterModal()" class="text-gray-500 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+            </div>
+            <!-- 四视图展示 -->
+            <div class="grid grid-cols-2 gap-4 mb-6">
+                <div class="aspect-square bg-gradient-to-br from-blue-500/30 to-indigo-500/30 rounded-xl flex items-center justify-center border border-[#2a2a3a]"><span class="text-blue-300 font-medium">正面</span></div>
+                <div class="aspect-square bg-gradient-to-br from-blue-400/30 to-cyan-500/30 rounded-xl flex items-center justify-center border border-[#2a2a3a]"><span class="text-blue-300 font-medium">背面</span></div>
+                <div class="aspect-square bg-gradient-to-br from-indigo-500/30 to-blue-500/30 rounded-xl flex items-center justify-center border border-[#2a2a3a]"><span class="text-blue-300 font-medium">左侧</span></div>
+                <div class="aspect-square bg-gradient-to-br from-cyan-500/30 to-blue-400/30 rounded-xl flex items-center justify-center border border-[#2a2a3a]"><span class="text-blue-300 font-medium">右侧</span></div>
+            </div>
+            <!-- 音色选择 -->
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-300 mb-3">音色配置</label>
+                <div class="grid grid-cols-3 gap-3">
+                    <div onclick="selectVoice(this)" class="voice-option selected p-3 border-2 border-blue-500 bg-blue-500/10 rounded-xl cursor-pointer text-center">
+                        <div class="text-sm font-medium text-blue-400">温柔女声</div>
+                        <div class="text-xs text-gray-500">适合少女角色</div>
+                    </div>
+                    <div onclick="selectVoice(this)" class="voice-option p-3 border border-[#2a2a3a] bg-[#1a1a24] rounded-xl cursor-pointer hover:border-blue-500/50 text-center">
+                        <div class="text-sm font-medium text-gray-300">成熟男声</div>
+                        <div class="text-xs text-gray-500">适合中年角色</div>
+                    </div>
+                    <div onclick="selectVoice(this)" class="voice-option p-3 border border-[#2a2a3a] bg-[#1a1a24] rounded-xl cursor-pointer hover:border-blue-500/50 text-center">
+                        <div class="text-sm font-medium text-gray-300">清脆童声</div>
+                        <div class="text-xs text-gray-500">适合儿童角色</div>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-6 flex justify-end gap-3">
+                <button onclick="closeCharacterModal()" class="px-4 py-2 bg-[#1a1a24] text-gray-400 rounded-lg hover:bg-[#252530]">取消</button>
+                <button onclick="saveCharacterConfig()" class="px-4 py-2 gradient-btn text-white rounded-lg hover:opacity-90">保存配置</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 配音生成弹窗 -->
+    <div id="voiceGenModal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+        <div class="fixed inset-0 bg-black/50" onclick="closeVoiceGenModal()"></div>
+        <div class="relative bg-[#13131a] rounded-2xl p-6 w-[500px] shadow-xl animate-fadeIn border border-[#2a2a3a]">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold text-white">生成分镜配音</h3>
+                <button onclick="closeVoiceGenModal()" class="text-gray-500 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+            </div>
+            <!-- 配音参数 -->
+            <div class="space-y-4 mb-6">
+                <div>
+                    <label class="block text-sm text-gray-500 mb-1">配音模型</label>
+                    <select id="voiceModelSelect" class="w-full px-3 py-2 border border-[#2a2a3a] bg-[#1a1a24] text-gray-300 rounded-lg text-sm">
+                        <option>标准配音模型</option>
+                        <option>情感配音模型</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-500 mb-1">音色选择</label>
+                    <select id="voiceTimbreSelect" class="w-full px-3 py-2 border border-[#2a2a3a] bg-[#1a1a24] text-gray-300 rounded-lg text-sm">
+                        <option>温柔女声</option>
+                        <option>成熟男声</option>
+                        <option>清脆童声</option>
+                        <option>中性声音</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-500 mb-1">语速</label>
+                    <select id="voiceSpeedSelect" class="w-full px-3 py-2 border border-[#2a2a3a] bg-[#1a1a24] text-gray-300 rounded-lg text-sm">
+                        <option>0.8x 慢速</option>
+                        <option>1.0x 标准</option>
+                        <option>1.2x 快速</option>
+                    </select>
+                </div>
+            </div>
+            <div class="mt-6 flex justify-end gap-3">
+                <button onclick="closeVoiceGenModal()" class="px-4 py-2 bg-[#1a1a24] text-gray-400 rounded-lg hover:bg-[#252530]">取消</button>
+                <button onclick="confirmGenerateVoice()" class="px-4 py-2 gradient-btn text-white rounded-lg hover:opacity-90">开始生成</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 历史分镜添加到时间线弹窗 -->
+    <div id="addToTimelineModal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+        <div class="fixed inset-0 bg-black/50" onclick="closeAddToTimelineModal()"></div>
+        <div class="relative bg-[#13131a] rounded-2xl p-6 w-[400px] shadow-xl animate-fadeIn border border-[#2a2a3a]">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold text-white">添加到视频轨道</h3>
+                <button onclick="closeAddToTimelineModal()" class="text-gray-500 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
+            </div>
+            <div class="mb-6">
+                <div class="text-sm text-gray-400 mb-2">确定要将以下分镜添加到视频轨道吗？</div>
+                <div id="addToTimelineName" class="p-3 bg-[#1a1a24] rounded-lg text-white font-medium text-center"></div>
+            </div>
+            <div class="flex gap-3">
+                <button onclick="closeAddToTimelineModal()" class="flex-1 px-4 py-2 bg-[#1a1a24] text-gray-300 rounded-lg hover:bg-[#252530]">取消</button>
+                <button onclick="confirmAddToTimeline()" class="flex-1 px-4 py-2 gradient-btn text-white rounded-lg hover:opacity-90">确认添加</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // VIP会员相关变量
+        let selectedPlan = 'weekly';
+        let selectedPayment = 'wechat';
+        const planPrices = { 'weekly': '¥28', 'monthly': '¥88', 'yearly': '¥588', 'lifetime': '¥1888' };
+        const planNames = { 'weekly': '周卡', 'monthly': '月卡', 'yearly': '年卡', 'lifetime': '终身卡' };
+
+        // VIP Modal Functions
+        function openVipModal() {
+            document.getElementById('vipModal').classList.remove('hidden');
+            document.getElementById('planSelection').classList.remove('hidden');
+            document.getElementById('paymentSelection').classList.add('hidden');
+        }
+        function closeVipModal() {
+            document.getElementById('vipModal').classList.add('hidden');
+        }
+        function selectPlan(plan) {
+            selectedPlan = plan;
+            document.querySelectorAll('.plan-card').forEach(card => {
+                card.classList.remove('selected', 'border-blue-500', 'bg-blue-500/10');
+                card.classList.add('border-[#2a2a3a]', 'bg-[#1a1a24]');
+            });
+            const selected = document.querySelector(`.plan-card[onclick="selectPlan('${plan}')"]`);
+            selected.classList.add('selected', 'border-blue-500', 'bg-blue-500/10');
+            selected.classList.remove('border-[#2a2a3a]', 'bg-[#1a1a24]');
+        }
+        function goToPayment() {
+            document.getElementById('planSelection').classList.add('hidden');
+            document.getElementById('paymentSelection').classList.remove('hidden');
+            document.getElementById('selectedPlanName').textContent = planNames[selectedPlan] + ' ' + planPrices[selectedPlan];
+        }
+        function backToPlans() {
+            document.getElementById('paymentSelection').classList.add('hidden');
+            document.getElementById('planSelection').classList.remove('hidden');
+        }
+        function selectPayment(method) {
+            selectedPayment = method;
+            document.querySelectorAll('.payment-option').forEach(opt => {
+                opt.classList.remove('selected', 'border-blue-500', 'bg-blue-500/10');
+                opt.classList.add('border-[#2a2a3a]', 'bg-[#1a1a24]');
+            });
+            const selected = document.querySelector(`.payment-option[onclick="selectPayment('${method}')"]`);
+            selected.classList.add('selected', 'border-blue-500', 'bg-blue-500/10');
+            selected.classList.remove('border-[#2a2a3a]', 'bg-[#1a1a24]');
+        }
+        function confirmPayment() {
+            alert('支付成功！感谢您开通' + planNames[selectedPlan] + '，金额：' + planPrices[selectedPlan]);
+            closeVipModal();
+        }
+
+        // 历史分镜添加弹窗
+        function showAddToTimelineOption(element) {
+            const modal = document.getElementById('addToTimelineModal');
+            const storyboardName = element.querySelector('.text-gray-400').textContent;
+            document.getElementById('addToTimelineName').textContent = storyboardName;
+            modal.classList.remove('hidden');
+        }
+
+        function closeAddToTimelineModal() {
+            document.getElementById('addToTimelineModal').classList.add('hidden');
+        }
+
+        function confirmAddToTimeline() {
+            alert('已成功将分镜添加到视频轨道！');
+            closeAddToTimelineModal();
+        }
+
+        let currentStep = 1;
+        const totalSteps = 4;
+        let chapters = [];
+        let currentElementTab = 'role';
+        let storyboards = [];
+        let currentStoryboardId = null;
+
+        function switchPage(page) {
+            document.querySelectorAll('.page-content').forEach(p => p.classList.add('hidden'));
+            document.getElementById(`page-${page}`).classList.remove('hidden');
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.remove('bg-[#1a1a24]', 'text-blue-400');
+                if (item.dataset.page === page) item.classList.add('bg-[#1a1a24]', 'text-blue-400');
+            });
+            if (page === 'workshop') { currentStep = 1; updateStepUI(); }
+        }
+
+        function goToStep(step) { if (step >= 1 && step <= totalSteps) { currentStep = step; updateStepUI(); } }
+        function nextStep() { if (currentStep < totalSteps) { currentStep++; updateStepUI(); } }
+        function prevStep() { if (currentStep > 1) { currentStep--; updateStepUI(); } }
+
+        function updateStepUI() {
+            for (let i = 1; i <= totalSteps; i++) {
+                const stepEl = document.getElementById(`step-${i}`);
+                const textEl = document.getElementById(`step-text-${i}`);
+                const stepContent = document.getElementById(`workshop-step-${i}`);
+                if (i === currentStep) {
+                    stepEl.className = 'w-8 h-8 rounded-full step-active flex items-center justify-center text-white text-sm font-medium';
+                    textEl.className = 'text-sm font-medium text-gray-300';
+                    stepContent.classList.remove('hidden');
+                } else if (i < currentStep) {
+                    stepEl.className = 'w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium';
+                    textEl.className = 'text-sm text-gray-500';
+                    stepContent.classList.add('hidden');
+                } else {
+                    stepEl.className = 'w-8 h-8 rounded-full step-inactive flex items-center justify-center text-white text-sm font-medium';
+                    textEl.className = 'text-sm text-gray-500';
+                    stepContent.classList.add('hidden');
+                }
+            }
+        }
+
+        function toggleDropdown(id) { document.getElementById(id).classList.toggle('hidden'); }
+        function hideDropdown(id) { document.getElementById(id).classList.add('hidden'); }
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('[onclick*="toggleDropdown"]')) {
+                document.querySelectorAll('[id*="Dropdown"]').forEach(d => { if (!d.classList.contains('hidden')) d.classList.add('hidden'); });
+            }
+        });
+
+        document.getElementById('scriptFileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) { const reader = new FileReader(); reader.onload = function(e) { document.getElementById('scriptContent').value = e.target.result; }; reader.readAsText(file); }
+        });
+
+        function autoSplitChapters() {
+            const scriptContent = document.getElementById('scriptContent').value;
+            if (!scriptContent.trim()) { alert('请先输入剧本内容'); return; }
+            chapters = [
+                { id: 1, title: '第一章：清晨的城市', content: '清晨的阳光洒在城市的街道上，主人公漫步在熟悉而又陌生的街角...' },
+                { id: 2, title: '第二章：意外的相遇', content: '就在这个普通的早晨，一次偶然的相遇改变了一切...' },
+                { id: 3, title: '第三章：故事的转折', content: '命运的齿轮开始转动，主人公面临着人生中最重要的选择...' }
+            ];
+            renderChapterList();
+        }
+
+        function renderChapterList() {
+            const chapterList = document.getElementById('chapterList');
+            if (chapters.length === 0) { chapterList.innerHTML = '<div class="p-3 bg-[#1a1a24] rounded-lg text-center text-gray-500 text-sm">点击"智能分章"自动拆分剧本</div>'; return; }
+            chapterList.innerHTML = chapters.map((chapter, index) => `
+                <div onclick="openChapterPreview(${index})" class="p-3 bg-[#1a1a24] rounded-lg cursor-pointer hover:bg-[#252530] hover:border-blue-500/30 border border-transparent transition">
+                    <div class="flex items-center gap-2"><span class="w-6 h-6 rounded-full bg-blue-500/20 text-blue-400 text-xs flex items-center justify-center">${index + 1}</span><span class="text-sm font-medium text-gray-300">${chapter.title}</span></div>
+                    <div class="text-xs text-gray-500 mt-1 ml-8">${chapter.content.substring(0, 50)}...</div>
+                </div>
+            `).join('');
+        }
+
+        function openChapterPreview(index) {
+            const chapter = chapters[index];
+            if (!chapter) return;
+            document.getElementById('previewChapterTitle').textContent = chapter.title;
+            document.getElementById('previewChapterContent').innerHTML = `<p>${chapter.content}</p><p class="mt-4">这是一个完整的章节内容预览区域。</p>`;
+            document.getElementById('chapterPreviewModal').classList.remove('hidden');
+        }
+        function closeChapterPreviewModal() { document.getElementById('chapterPreviewModal').classList.add('hidden'); }
+
+        function toggleStyle(element) {
+            element.classList.toggle('selected');
+            if (element.classList.contains('selected')) { element.classList.remove('border-[#2a2a3a]'); element.classList.add('border-blue-500', 'bg-blue-500/10'); }
+            else { element.classList.add('border-[#2a2a3a]'); element.classList.remove('border-blue-500', 'bg-blue-500/10'); }
+        }
+
+        function switchElementTab(tab) {
+            currentElementTab = tab;
+            document.querySelectorAll('.element-tab').forEach(t => { t.classList.remove('active', 'border-b-2', 'border-blue-500', 'text-blue-400'); });
+            document.getElementById(`tab-${tab}`).classList.add('active');
+            document.querySelectorAll('.element-panel').forEach(p => p.classList.add('hidden'));
+            document.getElementById(`${tab}Content`).classList.remove('hidden');
+            const typeMap = { 'role': '角色', 'scene': '场景', 'prop': '道具' };
+            document.getElementById('currentElementType').textContent = typeMap[tab];
+        }
+
+        function openExtractModal() {
+            const typeMap = { 'role': '角色', 'scene': '场景', 'prop': '道具' };
+            document.getElementById('extractElementType').textContent = typeMap[currentElementTab];
+            const results = [
+                { name: `${typeMap[currentElementTab]} 1`, status: '已识别' },
+                { name: `${typeMap[currentElementTab]} 2`, status: '已识别' },
+                { name: `${typeMap[currentElementTab]} 3`, status: '已识别' },
+                { name: `${typeMap[currentElementTab]} 4`, status: '待确认' }
+            ];
+            document.getElementById('extractResults').innerHTML = results.map((item, i) => `
+                <div class="p-3 bg-[#1a1a24] rounded-xl text-center border border-[#2a2a3a]">
+                    <div class="w-full aspect-square bg-gradient-to-br from-blue-500/20 to-indigo-500/20 rounded-lg mb-2 flex items-center justify-center"><svg class="w-8 h-8 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg><div class="text-sm font-medium text-gray-300"></div>
+                    ${item.name}</div>
+                    <div class="text-xs ${item.status === '已识别' ? 'text-blue-400' : 'text-gray-500'}">${item.status}</div>
+                </div>
+            `).join('');
+            document.getElementById('extractModal').classList.remove('hidden');
+        }
+        function closeExtractModal() { document.getElementById('extractModal').classList.add('hidden'); }
+        function confirmExtract() { alert('元素提取成功！'); closeExtractModal(); }
+
+        // 角色四视图弹窗
+        function openCharacterModal(index) { document.getElementById('characterModal').classList.remove('hidden'); }
+        function closeCharacterModal() { document.getElementById('characterModal').classList.add('hidden'); }
+        function selectVoice(element) {
+            document.querySelectorAll('.voice-option').forEach(v => { v.classList.remove('selected', 'border-blue-500', 'bg-blue-500/10'); v.classList.add('border-[#2a2a3a]', 'bg-[#1a1a24]'); });
+            element.classList.add('selected', 'border-blue-500', 'bg-blue-500/10');
+            element.classList.remove('border-[#2a2a3a]', 'bg-[#1a1a24]');
+        }
+        function saveCharacterConfig() { alert('角色配置已保存！'); closeCharacterModal(); }
+
+        // 分镜制作
+        function showChapterStoryboards() {
+            const chapterSelect = document.getElementById('chapterSelect');
+            const selectedChapter = chapterSelect.value;
+            const storyboardGrid = document.getElementById('storyboardGrid');
+            if (!selectedChapter) { storyboardGrid.innerHTML = '<div class="col-span-3 text-center py-12 text-gray-500">请先选择上方章节以展示对应的分镜</div>'; return; }
+            storyboards = [
+                { id: '1-1', title: '城市清晨', hasVoice: false, selected: false },
+                { id: '1-2', title: '咖啡馆', hasVoice: false, selected: false },
+                { id: '1-3', title: '街道', hasVoice: false, selected: false }
+            ];
+            renderStoryboards();
+        }
+
+        function renderStoryboards() {
+            const storyboardGrid = document.getElementById('storyboardGrid');
+            storyboardGrid.innerHTML = storyboards.map(sb => `
+                <div class="relative group">
+                    <div class="aspect-video bg-gradient-to-br from-blue-500/20 to-indigo-500/20 rounded-xl overflow-hidden cursor-pointer border border-[#2a2a3a] ${sb.hasVoice ? '' : 'opacity-75'}">
+                        <div class="absolute top-2 left-2 z-10">
+                            <span class="px-2 py-1 text-xs rounded-full ${sb.hasVoice ? 'bg-blue-500 text-white' : 'bg-gray-500 text-white'}">${sb.hasVoice ? '已配音' : '待配音'}</span>
+                        </div>
+                        <div class="absolute top-2 right-2 z-10">
+                            <input type="checkbox" ${sb.hasVoice ? '' : 'disabled'} onclick="toggleStoryboardSelect(this, '${sb.id}')" class="w-5 h-5 text-blue-500 rounded cursor-pointer ${sb.hasVoice ? '' : 'opacity-50 cursor-not-allowed'}" ${sb.selected ? 'checked' : ''}>
+                        </div>
+                        <div class="absolute bottom-2 left-2 z-10">
+                            <button onclick="openVoiceGenModal('${sb.id}')" class="p-1.5 bg-[#13131a]/80 rounded-lg hover:bg-[#13131a] transition" title="生成配音">
+                                <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
+                            </button>
+                        </div>
+                        <div class="absolute bottom-2 right-2 z-10">
+                            <button onclick="regenerateStoryboard('${sb.id}')" class="p-1.5 bg-[#13131a]/80 rounded-lg hover:bg-[#13131a] transition"><svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg></button>
+                        </div>
+                        <div class="w-full h-full flex items-center justify-center"><div class="text-center"><svg class="w-8 h-8 text-gray-500 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg><span class="text-xs text-gray-500">分镜 ${sb.id}</span></div></div>
+                    </div>
+                    <div class="mt-1 text-xs text-center text-gray-500">${sb.title}</div>
+                </div>
+            `).join('');
+        }
+
+        function toggleStoryboardSelect(checkbox, id) {
+            const sb = storyboards.find(s => s.id === id);
+            if (sb && sb.hasVoice) {
+                sb.selected = checkbox.checked;
+                const checkedBoxes = document.querySelectorAll('#storyboardGrid input[type="checkbox"]:checked');
+                document.getElementById('selectedCount').textContent = checkedBoxes.length;
+            }
+        }
+
+        function openVoiceGenModal(storyboardId) {
+            currentStoryboardId = storyboardId;
+            document.getElementById('voiceGenModal').classList.remove('hidden');
+        }
+        function closeVoiceGenModal() { document.getElementById('voiceGenModal').classList.add('hidden'); }
+
+        function confirmGenerateVoice() {
+            if (!currentStoryboardId) return;
+            const sb = storyboards.find(s => s.id === currentStoryboardId);
+            if (sb) {
+                sb.hasVoice = true;
+                sb.selected = true;
+                alert(`分镜 ${currentStoryboardId} 配音生成成功！`);
+                closeVoiceGenModal();
+                renderStoryboards();
+                const checkedBoxes = document.querySelectorAll('#storyboardGrid input[type="checkbox"]:checked');
+                document.getElementById('selectedCount').textContent = checkedBoxes.length;
+            }
+        }
+
+        function regenerateStoryboard(id) { alert(`正在重新生成分镜 ${id}...`); }
+        function goToExportPage() { switchPage('export'); }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const homeNav = document.querySelector('.nav-item[data-page="home"]');
+            if (homeNav) homeNav.classList.add('bg-[#1a1a24]', 'text-blue-400');
+        });
+    </script>
+
+<style>
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+.inland-security-footer {
+  position: fixed;
+  z-index: 10;
+  bottom: 0;
+  right: 0;
+  width: fit-content;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tooltip-container {
+  position: relative;
+}
+
+.trigger-content {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  background-color: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.minimax-link {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-weight: 300;
+  color: #adadad;
+  text-decoration: none;
+}
+
+.minimax-link:visited {
+  color: #adadad;
+}
+
+.minimax-link:hover {
+  color: #666666;
+}
+
+.tooltip-content {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  padding-bottom: 16px; /* 8px 内容间距 + 8px 用于鼠标移动的透明区域 */
+  font-size: 12px;
+  line-height: 17px;
+  background-color: #fafafa;
+  border-radius: 12px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  color: #171717;
+}
+
+/* 创建透明的连接区域，让鼠标可以平滑移动到 tooltip */
+.tooltip-content::after {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  left: 0;
+  right: 0;
+  height: 16px;
+}
+
+.tooltip-container:hover .tooltip-content {
+  display: flex;
+}
+
+.info-section {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
+.beian-link {
+  display: flex;
+  align-items: center;
+  text-decoration: none;
+  color: #171717;
+}
+
+.beian-icon {
+  width: 14px;
+  height: 14px;
+  margin-right: 2px;
+}
+
+.underline-text {
+  color: #171717;
+  text-decoration: underline;
+}
+
+.underline-text:hover {
+  color: #000000;
+}
+
+/* 深色模式支持 */
+@media (prefers-color-scheme: dark) {
+  .trigger-content {
+    background-color: transparent;
+  }
+
+  .minimax-link,
+  .minimax-link:visited {
+    color: #666666;
+  }
+
+  .minimax-link:hover {
+    color: #adadad;
+  }
+
+  .tooltip-content {
+    background-color: #262626;
+    color: #ededed;
+  }
+
+  .beian-link,
+  .underline-text {
+    color: #ededed;
+  }
+
+  .underline-text:hover {
+    color: #ffffff;
+  }
+}
+
+</style>
+<div class="inland-security-footer">
+  <div class="tooltip-container">
+    <div class="trigger-content">
+      <a href="https://www.minimaxi.com/" target="_blank" rel="noreferrer" class="minimax-link">
+        <span>© 2026 MiniMax</span>
+      </a>
+    </div>
+    <div class="tooltip-content">
+      <section class="info-section">
+        <span>上海稀宇科技有限公司</span>
+      </section>
+
+      <section class="info-section">
+        <a class="beian-link" href="https://www.beian.gov.cn/portal/registerSystemInfo?recordcode=31010402010179" target="_blank" rel="noreferrer">
+          <img alt="hailuo-beian-icon" src="https://cdn.hailuoai.com/hailuo-video-web/public_assets/223037d3-79fd-4db0-a456-749f38a6a14b.png" class="beian-icon">
+          <span class="underline-text">沪公网安备31010402010179号</span>
+        </a>
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer" class="underline-text">
+          沪ICP备2023003282号-38
+        </a>
+      </section>
+
+      <section class="info-section">
+        <span>模型名称：MiniMax</span>
+        <span>备案号：Shanghai-MiniMax-202505230046</span>
+      </section>
+
+      <section class="info-section">
+        <a href="https://agent.minimaxi.com/doc/zh/terms-of-service.html" target="_blank" rel="noreferrer" class="underline-text">
+          用户协议
+        </a>
+        <a href="https://agent.minimaxi.com/doc/zh/privacy-policy.html" target="_blank" rel="noreferrer" class="underline-text">
+          隐私政策
+        </a>
+      </section>
+    </div>
+  </div>
+</div>
+
+
+<script>
+/**
+ * Iframe 元素高亮注入脚本
+ * 需要在目标网站中引入此脚本来支持跨域 iframe 高亮功能
+ *
+ * 使用方法：
+ * 1. 将此脚本添加到目标网站的 HTML 中
+ * 2. 或通过浏览器扩展、用户脚本等方式注入
+ */
+
+(function () {
+  "use strict";
+
+  // 检查是否在 iframe 中
+  if (window.self === window.top) {
+    return; // 不在 iframe 中，不执行
+  }
+
+  // 检查是否已经初始化过
+  if (window.__iframeHighlightInitialized) {
+    return;
+  }
+  window.__iframeHighlightInitialized = true;
+  console.log("Iframe 高亮脚本已加载");
+
+  // 创建高亮覆盖层
+  var overlay = document.createElement("div");
+  overlay.id = "iframe-highlight-overlay";
+  overlay.style.cssText = "\n    position: fixed;\n    top: 0;\n    left: 0;\n    width: 100vw;\n    height: 100vh;\n    pointer-events: none;\n    z-index: 999999;\n    overflow: hidden;\n  ";
+
+  // 创建悬停高亮框（虚线边框）
+  var highlightBox = document.createElement("div");
+  highlightBox.id = "iframe-highlight-box";
+  highlightBox.style.cssText = "\n    position: absolute;\n    border: 2px dashed #007AFF;\n    background: rgba(0, 122, 255, 0.08);\n    pointer-events: none;\n    display: none;\n    transition: all 0.1s ease;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);\n    border-radius: 2px;\n  ";
+
+  // 创建选中节点的常驻高亮框（实线边框）
+  var selectedBox = document.createElement("div");
+  selectedBox.id = "iframe-selected-box";
+  selectedBox.style.cssText = "\n    position: absolute;\n    border: 2px solid #007AFF;\n    pointer-events: none;\n    display: none;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9), 0 0 8px rgba(255, 107, 53, 0.4);\n    border-radius: 2px;\n    z-index: 1000000;\n  ";
+
+  // 创建悬停标签显示
+  var tagLabel = document.createElement("div");
+  tagLabel.id = "iframe-tag-label";
+  tagLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 2px 6px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 2px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000001;\n    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);\n    font-weight: 500;\n  ";
+
+  // 创建选中节点标签
+  var selectedLabel = document.createElement("div");
+  selectedLabel.id = "iframe-selected-label";
+  selectedLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 3px 8px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 3px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000002;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n    font-weight: 600;\n  ";
+  overlay.appendChild(highlightBox);
+  overlay.appendChild(selectedBox);
+  overlay.appendChild(tagLabel);
+  overlay.appendChild(selectedLabel);
+  document.body.appendChild(overlay);
+
+  // 存储当前选中的元素
+  var selectedElement = null;
+  var highlightEnabled = false;
+
+  // 更新选中元素的高亮显示
+  function updateSelectedHighlight(element) {
+    console.log("updateSelectedHighlight called with:", element);
+    if (!element) {
+      selectedBox.style.display = "none";
+      selectedLabel.style.display = "none";
+      selectedElement = null;
+      console.log("Cleared selected highlight");
+      return;
+    }
+    selectedElement = element;
+    var rect = element.getBoundingClientRect();
+    console.log("Selected element rect:", rect);
+
+    // 更新选中高亮框位置
+    selectedBox.style.display = "block";
+    selectedBox.style.left = "".concat(rect.left - 2, "px");
+    selectedBox.style.top = "".concat(rect.top - 2, "px");
+    selectedBox.style.width = "".concat(rect.width + 4, "px");
+    selectedBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新选中标签位置和内容
+    selectedLabel.style.display = "block";
+    selectedLabel.textContent = "\u2713 <".concat(element.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 28;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 5) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    var labelWidth = selectedLabel.offsetWidth || 100; // 预估宽度
+    if (labelLeft + labelWidth > window.innerWidth - 10) {
+      labelLeft = window.innerWidth - labelWidth - 10;
+    }
+    selectedLabel.style.left = "".concat(Math.max(5, labelLeft), "px");
+    selectedLabel.style.top = "".concat(labelTop, "px");
+    console.log("Selected highlight positioned at:", {
+      left: selectedBox.style.left,
+      top: selectedBox.style.top,
+      width: selectedBox.style.width,
+      height: selectedBox.style.height
+    });
+  }
+  function getElementSelector(element) {
+    if (!(element instanceof Element)) throw new Error('Argument must be a DOM element');
+    var segments = [];
+    var current = element;
+    while (current !== document.documentElement) {
+      var selector = '';
+      // 优先检查唯一ID
+      if (current.id && document.querySelectorAll("#".concat(current.id)).length === 1) {
+        segments.unshift("#".concat(current.id));
+        break; // ID唯一，无需继续向上
+      }
+
+      // 生成类名选择器（取第一个有效类名）
+      var classes = Array.from(current.classList).filter(function (c) {
+        return !c.startsWith('js-');
+      });
+      var className = classes.length > 0 ? ".".concat(classes[0]) : '';
+
+      // 生成位置索引（nth-child）
+      var tag = current.tagName.toLowerCase();
+      if (!className) {
+        var siblings = Array.from(current.parentNode.children);
+        var index = siblings.findIndex(function (el) {
+          return el === current;
+        }) + 1;
+        selector = "".concat(tag, ":nth-child(").concat(index, ")");
+      } else {
+        selector = className;
+      }
+      segments.unshift(selector);
+      current = current.parentElement;
+    }
+
+    // 处理根元素
+    if (current === document.documentElement) {
+      segments.unshift('html');
+    }
+    return segments.join(' > ');
+  }
+
+  // 获取元素文本内容
+  function getElementText(element) {
+    var _element$textContent;
+    if (element.tagName === "INPUT") {
+      return element.value || element.placeholder || "";
+    }
+    if (element.tagName === "TEXTAREA") {
+      return element.value || element.placeholder || "";
+    }
+    var text = ((_element$textContent = element.textContent) === null || _element$textContent === void 0 ? void 0 : _element$textContent.trim()) || "";
+    return text.length > 50 ? text.substring(0, 50) + "..." : text;
+  }
+
+  // 获取元素属性信息
+  function getElementAttributes(element) {
+    var attrs = {};
+    for (var i = 0; i < element.attributes.length; i++) {
+      var attr = element.attributes[i];
+      attrs[attr.name] = attr.value;
+    }
+    return attrs;
+  }
+
+  // 鼠标悬停事件处理
+  function handleMouseOver(e) {
+    if (!highlightEnabled) return;
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免高亮 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 如果是已选中的元素，不显示悬停高亮
+    if (target === selectedElement) {
+      highlightBox.style.display = "none";
+      tagLabel.style.display = "none";
+      return;
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+
+    // 更新悬停高亮框位置
+    highlightBox.style.display = "block";
+    highlightBox.style.left = "".concat(rect.left - 2, "px");
+    highlightBox.style.top = "".concat(rect.top - 2, "px");
+    highlightBox.style.width = "".concat(rect.width + 4, "px");
+    highlightBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新标签位置和内容
+    tagLabel.style.display = "block";
+    tagLabel.textContent = "<".concat(target.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 22;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 0) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    if (labelLeft + tagLabel.offsetWidth > window.innerWidth) {
+      labelLeft = window.innerWidth - tagLabel.offsetWidth - 5;
+    }
+    tagLabel.style.left = "".concat(Math.max(0, labelLeft), "px");
+    tagLabel.style.top = "".concat(labelTop, "px");
+
+    // 发送消息到父窗口
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 鼠标离开事件处理
+  function handleMouseOut(e) {
+    if (!highlightEnabled) return;
+    var relatedTarget = e.relatedTarget;
+
+    // 如果鼠标移动到高亮相关元素上，不隐藏高亮
+    if (relatedTarget && (relatedTarget === highlightBox || relatedTarget === tagLabel || relatedTarget === overlay || relatedTarget === selectedBox || relatedTarget === selectedLabel)) {
+      return;
+    }
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: null,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 点击事件处理
+  function handleClick(e) {
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免处理 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 检查是否是交互元素，这些元素需要保留默认行为
+    var isInteractiveElement = ['input', 'textarea', 'select', 'button', 'a'].includes(target.tagName.toLowerCase());
+
+    // 如果高亮功能启用，对于非交互元素阻止默认行为和事件传播
+    if (highlightEnabled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+    console.log("Element clicked:", {
+      tagName: target.tagName,
+      selector: selector,
+      rect: rect
+    });
+
+    // 立即更新选中高亮
+    updateSelectedHighlight(target);
+
+    // 隐藏悬停高亮，因为现在是选中状态
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-click",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 监听来自父窗口的消息
+  function handleParentMessage(event) {
+    console.log("Received message from parent:", event.data);
+    if (event.data.type === "iframe-highlight-toggle") {
+      var enabled = event.data.enabled;
+      console.log("Highlight toggle:", enabled);
+      if (enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "enable-iframe-highlight") {
+      console.log("Enable iframe highlight");
+      enableHighlight();
+    } else if (event.data.type === "disable-iframe-highlight") {
+      console.log("Disable iframe highlight");
+      disableHighlight();
+    } else if (event.data.type === "toggle-iframe-highlight") {
+      var _enabled = event.data.enabled !== undefined ? event.data.enabled : !highlightEnabled;
+      console.log("Toggle iframe highlight to:", _enabled);
+      if (_enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "update-selected-element") {
+      var selector = event.data.selector;
+      console.log("Update selected element with selector:", selector);
+      if (selector) {
+        try {
+          var element = document.querySelector(selector);
+          console.log("Found element by selector:", element);
+          updateSelectedHighlight(element);
+        } catch (error) {
+          console.warn("Failed to select element:", error);
+          updateSelectedHighlight(null);
+        }
+      } else {
+        updateSelectedHighlight(null);
+      }
+    } else if (event.data.type === "clear-selected-element") {
+      console.log("Clear selected element");
+      updateSelectedHighlight(null);
+    }
+  }
+
+  // 启用高亮功能
+  function enableHighlight() {
+    console.log("Enabling highlight");
+    document.addEventListener("mouseover", handleMouseOver, true);
+    document.addEventListener("mouseout", handleMouseOut, true);
+    document.addEventListener("click", handleClick, true);
+    highlightEnabled = true;
+    overlay.style.display = "block";
+  }
+
+  // 禁用高亮功能
+  function disableHighlight() {
+    console.log("Disabling highlight");
+    highlightEnabled = false;
+    // 保持事件监听器，但通过 highlightEnabled 变量控制行为
+    // 这样可以保留选中状态的显示
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    // 不隐藏 selectedBox 和 selectedLabel，保留选中状态
+  }
+
+  // 完全禁用高亮功能（移除所有监听器）
+  function fullyDisableHighlight() {
+    console.log("Fully disabling highlight");
+    highlightEnabled = false;
+    document.removeEventListener("mouseover", handleMouseOver, true);
+    document.removeEventListener("mouseout", handleMouseOut, true);
+    document.removeEventListener("click", handleClick, true);
+    overlay.style.display = "none";
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    selectedBox.style.display = "none";
+    selectedLabel.style.display = "none";
+  }
+
+  // 添加事件监听
+  enableHighlight();
+  window.addEventListener("message", handleParentMessage);
+
+  // 暴露全局函数供外部调用
+  window.__iframeHighlightControl = {
+    enable: enableHighlight,
+    disable: disableHighlight,
+    fullyDisable: fullyDisableHighlight,
+    isEnabled: function isEnabled() {
+      return highlightEnabled;
+    },
+    getSelectedElement: function getSelectedElement() {
+      return selectedElement;
+    },
+    updateSelected: updateSelectedHighlight,
+    // 通过消息发送开关控制
+    sendToggleMessage: function sendToggleMessage(enabled) {
+      window.parent.postMessage({
+        type: 'iframe-highlight-status',
+        enabled: enabled || highlightEnabled,
+        source: 'iframe-highlight-injector'
+      }, '*');
+    }
+  };
+
+  // 通知父窗口脚本已加载
+  try {
+    window.parent.postMessage({
+      type: "iframe-highlight-ready",
+      data: {
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        timestamp: Date.now()
+      },
+      source: "iframe-highlight-injector"
+    }, "*");
+  } catch (error) {
+    console.warn("无法发送就绪消息到父窗口:", error);
+  }
+
+  // 清理函数
+  window.__iframeHighlightCleanup = function () {
+    fullyDisableHighlight();
+    window.removeEventListener("message", handleParentMessage);
+    if (overlay.parentElement) {
+      overlay.parentElement.removeChild(overlay);
+    }
+    delete window.__iframeHighlightInitialized;
+    delete window.__iframeHighlightCleanup;
+  };
+})();
+
+</script>
+
+<script>
+/**
+ * Iframe 元素高亮注入脚本
+ * 需要在目标网站中引入此脚本来支持跨域 iframe 高亮功能
+ *
+ * 使用方法：
+ * 1. 将此脚本添加到目标网站的 HTML 中
+ * 2. 或通过浏览器扩展、用户脚本等方式注入
+ */
+
+(function () {
+  "use strict";
+
+  // 检查是否在 iframe 中
+  if (window.self === window.top) {
+    return; // 不在 iframe 中，不执行
+  }
+
+  // 检查是否已经初始化过
+  if (window.__iframeHighlightInitialized) {
+    return;
+  }
+  window.__iframeHighlightInitialized = true;
+  console.log("Iframe 高亮脚本已加载");
+
+  // 创建高亮覆盖层
+  var overlay = document.createElement("div");
+  overlay.id = "iframe-highlight-overlay";
+  overlay.style.cssText = "\n    position: fixed;\n    top: 0;\n    left: 0;\n    width: 100vw;\n    height: 100vh;\n    pointer-events: none;\n    z-index: 999999;\n    overflow: hidden;\n  ";
+
+  // 创建悬停高亮框（虚线边框）
+  var highlightBox = document.createElement("div");
+  highlightBox.id = "iframe-highlight-box";
+  highlightBox.style.cssText = "\n    position: absolute;\n    border: 2px dashed #007AFF;\n    background: rgba(0, 122, 255, 0.08);\n    pointer-events: none;\n    display: none;\n    transition: all 0.1s ease;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);\n    border-radius: 2px;\n  ";
+
+  // 创建选中节点的常驻高亮框（实线边框）
+  var selectedBox = document.createElement("div");
+  selectedBox.id = "iframe-selected-box";
+  selectedBox.style.cssText = "\n    position: absolute;\n    border: 2px solid #007AFF;\n    pointer-events: none;\n    display: none;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9), 0 0 8px rgba(255, 107, 53, 0.4);\n    border-radius: 2px;\n    z-index: 1000000;\n  ";
+
+  // 创建悬停标签显示
+  var tagLabel = document.createElement("div");
+  tagLabel.id = "iframe-tag-label";
+  tagLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 2px 6px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 2px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000001;\n    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);\n    font-weight: 500;\n  ";
+
+  // 创建选中节点标签
+  var selectedLabel = document.createElement("div");
+  selectedLabel.id = "iframe-selected-label";
+  selectedLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 3px 8px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 3px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000002;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n    font-weight: 600;\n  ";
+  overlay.appendChild(highlightBox);
+  overlay.appendChild(selectedBox);
+  overlay.appendChild(tagLabel);
+  overlay.appendChild(selectedLabel);
+  document.body.appendChild(overlay);
+
+  // 存储当前选中的元素
+  var selectedElement = null;
+  var highlightEnabled = false;
+
+  // 更新选中元素的高亮显示
+  function updateSelectedHighlight(element) {
+    console.log("updateSelectedHighlight called with:", element);
+    if (!element) {
+      selectedBox.style.display = "none";
+      selectedLabel.style.display = "none";
+      selectedElement = null;
+      console.log("Cleared selected highlight");
+      return;
+    }
+    selectedElement = element;
+    var rect = element.getBoundingClientRect();
+    console.log("Selected element rect:", rect);
+
+    // 更新选中高亮框位置
+    selectedBox.style.display = "block";
+    selectedBox.style.left = "".concat(rect.left - 2, "px");
+    selectedBox.style.top = "".concat(rect.top - 2, "px");
+    selectedBox.style.width = "".concat(rect.width + 4, "px");
+    selectedBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新选中标签位置和内容
+    selectedLabel.style.display = "block";
+    selectedLabel.textContent = "\u2713 <".concat(element.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 28;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 5) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    var labelWidth = selectedLabel.offsetWidth || 100; // 预估宽度
+    if (labelLeft + labelWidth > window.innerWidth - 10) {
+      labelLeft = window.innerWidth - labelWidth - 10;
+    }
+    selectedLabel.style.left = "".concat(Math.max(5, labelLeft), "px");
+    selectedLabel.style.top = "".concat(labelTop, "px");
+    console.log("Selected highlight positioned at:", {
+      left: selectedBox.style.left,
+      top: selectedBox.style.top,
+      width: selectedBox.style.width,
+      height: selectedBox.style.height
+    });
+  }
+  function getElementSelector(element) {
+    if (!(element instanceof Element)) throw new Error('Argument must be a DOM element');
+    var segments = [];
+    var current = element;
+    while (current !== document.documentElement) {
+      var selector = '';
+      // 优先检查唯一ID
+      if (current.id && document.querySelectorAll("#".concat(current.id)).length === 1) {
+        segments.unshift("#".concat(current.id));
+        break; // ID唯一，无需继续向上
+      }
+
+      // 生成类名选择器（取第一个有效类名）
+      var classes = Array.from(current.classList).filter(function (c) {
+        return !c.startsWith('js-');
+      });
+      var className = classes.length > 0 ? ".".concat(classes[0]) : '';
+
+      // 生成位置索引（nth-child）
+      var tag = current.tagName.toLowerCase();
+      if (!className) {
+        var siblings = Array.from(current.parentNode.children);
+        var index = siblings.findIndex(function (el) {
+          return el === current;
+        }) + 1;
+        selector = "".concat(tag, ":nth-child(").concat(index, ")");
+      } else {
+        selector = className;
+      }
+      segments.unshift(selector);
+      current = current.parentElement;
+    }
+
+    // 处理根元素
+    if (current === document.documentElement) {
+      segments.unshift('html');
+    }
+    return segments.join(' > ');
+  }
+
+  // 获取元素文本内容
+  function getElementText(element) {
+    var _element$textContent;
+    if (element.tagName === "INPUT") {
+      return element.value || element.placeholder || "";
+    }
+    if (element.tagName === "TEXTAREA") {
+      return element.value || element.placeholder || "";
+    }
+    var text = ((_element$textContent = element.textContent) === null || _element$textContent === void 0 ? void 0 : _element$textContent.trim()) || "";
+    return text.length > 50 ? text.substring(0, 50) + "..." : text;
+  }
+
+  // 获取元素属性信息
+  function getElementAttributes(element) {
+    var attrs = {};
+    for (var i = 0; i < element.attributes.length; i++) {
+      var attr = element.attributes[i];
+      attrs[attr.name] = attr.value;
+    }
+    return attrs;
+  }
+
+  // 鼠标悬停事件处理
+  function handleMouseOver(e) {
+    if (!highlightEnabled) return;
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免高亮 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 如果是已选中的元素，不显示悬停高亮
+    if (target === selectedElement) {
+      highlightBox.style.display = "none";
+      tagLabel.style.display = "none";
+      return;
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+
+    // 更新悬停高亮框位置
+    highlightBox.style.display = "block";
+    highlightBox.style.left = "".concat(rect.left - 2, "px");
+    highlightBox.style.top = "".concat(rect.top - 2, "px");
+    highlightBox.style.width = "".concat(rect.width + 4, "px");
+    highlightBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新标签位置和内容
+    tagLabel.style.display = "block";
+    tagLabel.textContent = "<".concat(target.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 22;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 0) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    if (labelLeft + tagLabel.offsetWidth > window.innerWidth) {
+      labelLeft = window.innerWidth - tagLabel.offsetWidth - 5;
+    }
+    tagLabel.style.left = "".concat(Math.max(0, labelLeft), "px");
+    tagLabel.style.top = "".concat(labelTop, "px");
+
+    // 发送消息到父窗口
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 鼠标离开事件处理
+  function handleMouseOut(e) {
+    if (!highlightEnabled) return;
+    var relatedTarget = e.relatedTarget;
+
+    // 如果鼠标移动到高亮相关元素上，不隐藏高亮
+    if (relatedTarget && (relatedTarget === highlightBox || relatedTarget === tagLabel || relatedTarget === overlay || relatedTarget === selectedBox || relatedTarget === selectedLabel)) {
+      return;
+    }
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: null,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 点击事件处理
+  function handleClick(e) {
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免处理 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 检查是否是交互元素，这些元素需要保留默认行为
+    var isInteractiveElement = ['input', 'textarea', 'select', 'button', 'a'].includes(target.tagName.toLowerCase());
+
+    // 如果高亮功能启用，对于非交互元素阻止默认行为和事件传播
+    if (highlightEnabled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+    console.log("Element clicked:", {
+      tagName: target.tagName,
+      selector: selector,
+      rect: rect
+    });
+
+    // 立即更新选中高亮
+    updateSelectedHighlight(target);
+
+    // 隐藏悬停高亮，因为现在是选中状态
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-click",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 监听来自父窗口的消息
+  function handleParentMessage(event) {
+    console.log("Received message from parent:", event.data);
+    if (event.data.type === "iframe-highlight-toggle") {
+      var enabled = event.data.enabled;
+      console.log("Highlight toggle:", enabled);
+      if (enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "enable-iframe-highlight") {
+      console.log("Enable iframe highlight");
+      enableHighlight();
+    } else if (event.data.type === "disable-iframe-highlight") {
+      console.log("Disable iframe highlight");
+      disableHighlight();
+    } else if (event.data.type === "toggle-iframe-highlight") {
+      var _enabled = event.data.enabled !== undefined ? event.data.enabled : !highlightEnabled;
+      console.log("Toggle iframe highlight to:", _enabled);
+      if (_enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "update-selected-element") {
+      var selector = event.data.selector;
+      console.log("Update selected element with selector:", selector);
+      if (selector) {
+        try {
+          var element = document.querySelector(selector);
+          console.log("Found element by selector:", element);
+          updateSelectedHighlight(element);
+        } catch (error) {
+          console.warn("Failed to select element:", error);
+          updateSelectedHighlight(null);
+        }
+      } else {
+        updateSelectedHighlight(null);
+      }
+    } else if (event.data.type === "clear-selected-element") {
+      console.log("Clear selected element");
+      updateSelectedHighlight(null);
+    }
+  }
+
+  // 启用高亮功能
+  function enableHighlight() {
+    console.log("Enabling highlight");
+    document.addEventListener("mouseover", handleMouseOver, true);
+    document.addEventListener("mouseout", handleMouseOut, true);
+    document.addEventListener("click", handleClick, true);
+    highlightEnabled = true;
+    overlay.style.display = "block";
+  }
+
+  // 禁用高亮功能
+  function disableHighlight() {
+    console.log("Disabling highlight");
+    highlightEnabled = false;
+    // 保持事件监听器，但通过 highlightEnabled 变量控制行为
+    // 这样可以保留选中状态的显示
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    // 不隐藏 selectedBox 和 selectedLabel，保留选中状态
+  }
+
+  // 完全禁用高亮功能（移除所有监听器）
+  function fullyDisableHighlight() {
+    console.log("Fully disabling highlight");
+    highlightEnabled = false;
+    document.removeEventListener("mouseover", handleMouseOver, true);
+    document.removeEventListener("mouseout", handleMouseOut, true);
+    document.removeEventListener("click", handleClick, true);
+    overlay.style.display = "none";
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    selectedBox.style.display = "none";
+    selectedLabel.style.display = "none";
+  }
+
+  // 添加事件监听
+  enableHighlight();
+  window.addEventListener("message", handleParentMessage);
+
+  // 暴露全局函数供外部调用
+  window.__iframeHighlightControl = {
+    enable: enableHighlight,
+    disable: disableHighlight,
+    fullyDisable: fullyDisableHighlight,
+    isEnabled: function isEnabled() {
+      return highlightEnabled;
+    },
+    getSelectedElement: function getSelectedElement() {
+      return selectedElement;
+    },
+    updateSelected: updateSelectedHighlight,
+    // 通过消息发送开关控制
+    sendToggleMessage: function sendToggleMessage(enabled) {
+      window.parent.postMessage({
+        type: 'iframe-highlight-status',
+        enabled: enabled || highlightEnabled,
+        source: 'iframe-highlight-injector'
+      }, '*');
+    }
+  };
+
+  // 通知父窗口脚本已加载
+  try {
+    window.parent.postMessage({
+      type: "iframe-highlight-ready",
+      data: {
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        timestamp: Date.now()
+      },
+      source: "iframe-highlight-injector"
+    }, "*");
+  } catch (error) {
+    console.warn("无法发送就绪消息到父窗口:", error);
+  }
+
+  // 清理函数
+  window.__iframeHighlightCleanup = function () {
+    fullyDisableHighlight();
+    window.removeEventListener("message", handleParentMessage);
+    if (overlay.parentElement) {
+      overlay.parentElement.removeChild(overlay);
+    }
+    delete window.__iframeHighlightInitialized;
+    delete window.__iframeHighlightCleanup;
+  };
+})();
+
+</script>
+
+<script>
+/**
+ * Iframe 元素高亮注入脚本
+ * 需要在目标网站中引入此脚本来支持跨域 iframe 高亮功能
+ *
+ * 使用方法：
+ * 1. 将此脚本添加到目标网站的 HTML 中
+ * 2. 或通过浏览器扩展、用户脚本等方式注入
+ */
+
+(function () {
+  "use strict";
+
+  // 检查是否在 iframe 中
+  if (window.self === window.top) {
+    return; // 不在 iframe 中，不执行
+  }
+
+  // 检查是否已经初始化过
+  if (window.__iframeHighlightInitialized) {
+    return;
+  }
+  window.__iframeHighlightInitialized = true;
+  console.log("Iframe 高亮脚本已加载");
+
+  // 创建高亮覆盖层
+  var overlay = document.createElement("div");
+  overlay.id = "iframe-highlight-overlay";
+  overlay.style.cssText = "\n    position: fixed;\n    top: 0;\n    left: 0;\n    width: 100vw;\n    height: 100vh;\n    pointer-events: none;\n    z-index: 999999;\n    overflow: hidden;\n  ";
+
+  // 创建悬停高亮框（虚线边框）
+  var highlightBox = document.createElement("div");
+  highlightBox.id = "iframe-highlight-box";
+  highlightBox.style.cssText = "\n    position: absolute;\n    border: 2px dashed #007AFF;\n    background: rgba(0, 122, 255, 0.08);\n    pointer-events: none;\n    display: none;\n    transition: all 0.1s ease;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);\n    border-radius: 2px;\n  ";
+
+  // 创建选中节点的常驻高亮框（实线边框）
+  var selectedBox = document.createElement("div");
+  selectedBox.id = "iframe-selected-box";
+  selectedBox.style.cssText = "\n    position: absolute;\n    border: 2px solid #007AFF;\n    pointer-events: none;\n    display: none;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9), 0 0 8px rgba(255, 107, 53, 0.4);\n    border-radius: 2px;\n    z-index: 1000000;\n  ";
+
+  // 创建悬停标签显示
+  var tagLabel = document.createElement("div");
+  tagLabel.id = "iframe-tag-label";
+  tagLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 2px 6px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 2px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000001;\n    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);\n    font-weight: 500;\n  ";
+
+  // 创建选中节点标签
+  var selectedLabel = document.createElement("div");
+  selectedLabel.id = "iframe-selected-label";
+  selectedLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 3px 8px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 3px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000002;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n    font-weight: 600;\n  ";
+  overlay.appendChild(highlightBox);
+  overlay.appendChild(selectedBox);
+  overlay.appendChild(tagLabel);
+  overlay.appendChild(selectedLabel);
+  document.body.appendChild(overlay);
+
+  // 存储当前选中的元素
+  var selectedElement = null;
+  var highlightEnabled = false;
+
+  // 更新选中元素的高亮显示
+  function updateSelectedHighlight(element) {
+    console.log("updateSelectedHighlight called with:", element);
+    if (!element) {
+      selectedBox.style.display = "none";
+      selectedLabel.style.display = "none";
+      selectedElement = null;
+      console.log("Cleared selected highlight");
+      return;
+    }
+    selectedElement = element;
+    var rect = element.getBoundingClientRect();
+    console.log("Selected element rect:", rect);
+
+    // 更新选中高亮框位置
+    selectedBox.style.display = "block";
+    selectedBox.style.left = "".concat(rect.left - 2, "px");
+    selectedBox.style.top = "".concat(rect.top - 2, "px");
+    selectedBox.style.width = "".concat(rect.width + 4, "px");
+    selectedBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新选中标签位置和内容
+    selectedLabel.style.display = "block";
+    selectedLabel.textContent = "\u2713 <".concat(element.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 28;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 5) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    var labelWidth = selectedLabel.offsetWidth || 100; // 预估宽度
+    if (labelLeft + labelWidth > window.innerWidth - 10) {
+      labelLeft = window.innerWidth - labelWidth - 10;
+    }
+    selectedLabel.style.left = "".concat(Math.max(5, labelLeft), "px");
+    selectedLabel.style.top = "".concat(labelTop, "px");
+    console.log("Selected highlight positioned at:", {
+      left: selectedBox.style.left,
+      top: selectedBox.style.top,
+      width: selectedBox.style.width,
+      height: selectedBox.style.height
+    });
+  }
+  function getElementSelector(element) {
+    if (!(element instanceof Element)) throw new Error('Argument must be a DOM element');
+    var segments = [];
+    var current = element;
+    while (current !== document.documentElement) {
+      var selector = '';
+      // 优先检查唯一ID
+      if (current.id && document.querySelectorAll("#".concat(current.id)).length === 1) {
+        segments.unshift("#".concat(current.id));
+        break; // ID唯一，无需继续向上
+      }
+
+      // 生成类名选择器（取第一个有效类名）
+      var classes = Array.from(current.classList).filter(function (c) {
+        return !c.startsWith('js-');
+      });
+      var className = classes.length > 0 ? ".".concat(classes[0]) : '';
+
+      // 生成位置索引（nth-child）
+      var tag = current.tagName.toLowerCase();
+      if (!className) {
+        var siblings = Array.from(current.parentNode.children);
+        var index = siblings.findIndex(function (el) {
+          return el === current;
+        }) + 1;
+        selector = "".concat(tag, ":nth-child(").concat(index, ")");
+      } else {
+        selector = className;
+      }
+      segments.unshift(selector);
+      current = current.parentElement;
+    }
+
+    // 处理根元素
+    if (current === document.documentElement) {
+      segments.unshift('html');
+    }
+    return segments.join(' > ');
+  }
+
+  // 获取元素文本内容
+  function getElementText(element) {
+    var _element$textContent;
+    if (element.tagName === "INPUT") {
+      return element.value || element.placeholder || "";
+    }
+    if (element.tagName === "TEXTAREA") {
+      return element.value || element.placeholder || "";
+    }
+    var text = ((_element$textContent = element.textContent) === null || _element$textContent === void 0 ? void 0 : _element$textContent.trim()) || "";
+    return text.length > 50 ? text.substring(0, 50) + "..." : text;
+  }
+
+  // 获取元素属性信息
+  function getElementAttributes(element) {
+    var attrs = {};
+    for (var i = 0; i < element.attributes.length; i++) {
+      var attr = element.attributes[i];
+      attrs[attr.name] = attr.value;
+    }
+    return attrs;
+  }
+
+  // 鼠标悬停事件处理
+  function handleMouseOver(e) {
+    if (!highlightEnabled) return;
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免高亮 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 如果是已选中的元素，不显示悬停高亮
+    if (target === selectedElement) {
+      highlightBox.style.display = "none";
+      tagLabel.style.display = "none";
+      return;
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+
+    // 更新悬停高亮框位置
+    highlightBox.style.display = "block";
+    highlightBox.style.left = "".concat(rect.left - 2, "px");
+    highlightBox.style.top = "".concat(rect.top - 2, "px");
+    highlightBox.style.width = "".concat(rect.width + 4, "px");
+    highlightBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新标签位置和内容
+    tagLabel.style.display = "block";
+    tagLabel.textContent = "<".concat(target.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 22;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 0) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    if (labelLeft + tagLabel.offsetWidth > window.innerWidth) {
+      labelLeft = window.innerWidth - tagLabel.offsetWidth - 5;
+    }
+    tagLabel.style.left = "".concat(Math.max(0, labelLeft), "px");
+    tagLabel.style.top = "".concat(labelTop, "px");
+
+    // 发送消息到父窗口
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 鼠标离开事件处理
+  function handleMouseOut(e) {
+    if (!highlightEnabled) return;
+    var relatedTarget = e.relatedTarget;
+
+    // 如果鼠标移动到高亮相关元素上，不隐藏高亮
+    if (relatedTarget && (relatedTarget === highlightBox || relatedTarget === tagLabel || relatedTarget === overlay || relatedTarget === selectedBox || relatedTarget === selectedLabel)) {
+      return;
+    }
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: null,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 点击事件处理
+  function handleClick(e) {
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免处理 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 检查是否是交互元素，这些元素需要保留默认行为
+    var isInteractiveElement = ['input', 'textarea', 'select', 'button', 'a'].includes(target.tagName.toLowerCase());
+
+    // 如果高亮功能启用，对于非交互元素阻止默认行为和事件传播
+    if (highlightEnabled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+    console.log("Element clicked:", {
+      tagName: target.tagName,
+      selector: selector,
+      rect: rect
+    });
+
+    // 立即更新选中高亮
+    updateSelectedHighlight(target);
+
+    // 隐藏悬停高亮，因为现在是选中状态
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-click",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 监听来自父窗口的消息
+  function handleParentMessage(event) {
+    console.log("Received message from parent:", event.data);
+    if (event.data.type === "iframe-highlight-toggle") {
+      var enabled = event.data.enabled;
+      console.log("Highlight toggle:", enabled);
+      if (enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "enable-iframe-highlight") {
+      console.log("Enable iframe highlight");
+      enableHighlight();
+    } else if (event.data.type === "disable-iframe-highlight") {
+      console.log("Disable iframe highlight");
+      disableHighlight();
+    } else if (event.data.type === "toggle-iframe-highlight") {
+      var _enabled = event.data.enabled !== undefined ? event.data.enabled : !highlightEnabled;
+      console.log("Toggle iframe highlight to:", _enabled);
+      if (_enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "update-selected-element") {
+      var selector = event.data.selector;
+      console.log("Update selected element with selector:", selector);
+      if (selector) {
+        try {
+          var element = document.querySelector(selector);
+          console.log("Found element by selector:", element);
+          updateSelectedHighlight(element);
+        } catch (error) {
+          console.warn("Failed to select element:", error);
+          updateSelectedHighlight(null);
+        }
+      } else {
+        updateSelectedHighlight(null);
+      }
+    } else if (event.data.type === "clear-selected-element") {
+      console.log("Clear selected element");
+      updateSelectedHighlight(null);
+    }
+  }
+
+  // 启用高亮功能
+  function enableHighlight() {
+    console.log("Enabling highlight");
+    document.addEventListener("mouseover", handleMouseOver, true);
+    document.addEventListener("mouseout", handleMouseOut, true);
+    document.addEventListener("click", handleClick, true);
+    highlightEnabled = true;
+    overlay.style.display = "block";
+  }
+
+  // 禁用高亮功能
+  function disableHighlight() {
+    console.log("Disabling highlight");
+    highlightEnabled = false;
+    // 保持事件监听器，但通过 highlightEnabled 变量控制行为
+    // 这样可以保留选中状态的显示
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    // 不隐藏 selectedBox 和 selectedLabel，保留选中状态
+  }
+
+  // 完全禁用高亮功能（移除所有监听器）
+  function fullyDisableHighlight() {
+    console.log("Fully disabling highlight");
+    highlightEnabled = false;
+    document.removeEventListener("mouseover", handleMouseOver, true);
+    document.removeEventListener("mouseout", handleMouseOut, true);
+    document.removeEventListener("click", handleClick, true);
+    overlay.style.display = "none";
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    selectedBox.style.display = "none";
+    selectedLabel.style.display = "none";
+  }
+
+  // 添加事件监听
+  enableHighlight();
+  window.addEventListener("message", handleParentMessage);
+
+  // 暴露全局函数供外部调用
+  window.__iframeHighlightControl = {
+    enable: enableHighlight,
+    disable: disableHighlight,
+    fullyDisable: fullyDisableHighlight,
+    isEnabled: function isEnabled() {
+      return highlightEnabled;
+    },
+    getSelectedElement: function getSelectedElement() {
+      return selectedElement;
+    },
+    updateSelected: updateSelectedHighlight,
+    // 通过消息发送开关控制
+    sendToggleMessage: function sendToggleMessage(enabled) {
+      window.parent.postMessage({
+        type: 'iframe-highlight-status',
+        enabled: enabled || highlightEnabled,
+        source: 'iframe-highlight-injector'
+      }, '*');
+    }
+  };
+
+  // 通知父窗口脚本已加载
+  try {
+    window.parent.postMessage({
+      type: "iframe-highlight-ready",
+      data: {
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        timestamp: Date.now()
+      },
+      source: "iframe-highlight-injector"
+    }, "*");
+  } catch (error) {
+    console.warn("无法发送就绪消息到父窗口:", error);
+  }
+
+  // 清理函数
+  window.__iframeHighlightCleanup = function () {
+    fullyDisableHighlight();
+    window.removeEventListener("message", handleParentMessage);
+    if (overlay.parentElement) {
+      overlay.parentElement.removeChild(overlay);
+    }
+    delete window.__iframeHighlightInitialized;
+    delete window.__iframeHighlightCleanup;
+  };
+})();
+
+</script>
+
+<script>
+/**
+ * Iframe 元素高亮注入脚本
+ * 需要在目标网站中引入此脚本来支持跨域 iframe 高亮功能
+ *
+ * 使用方法：
+ * 1. 将此脚本添加到目标网站的 HTML 中
+ * 2. 或通过浏览器扩展、用户脚本等方式注入
+ */
+
+(function () {
+  "use strict";
+
+  // 检查是否在 iframe 中
+  if (window.self === window.top) {
+    return; // 不在 iframe 中，不执行
+  }
+
+  // 检查是否已经初始化过
+  if (window.__iframeHighlightInitialized) {
+    return;
+  }
+  window.__iframeHighlightInitialized = true;
+  console.log("Iframe 高亮脚本已加载");
+
+  // 创建高亮覆盖层
+  var overlay = document.createElement("div");
+  overlay.id = "iframe-highlight-overlay";
+  overlay.style.cssText = "\n    position: fixed;\n    top: 0;\n    left: 0;\n    width: 100vw;\n    height: 100vh;\n    pointer-events: none;\n    z-index: 999999;\n    overflow: hidden;\n  ";
+
+  // 创建悬停高亮框（虚线边框）
+  var highlightBox = document.createElement("div");
+  highlightBox.id = "iframe-highlight-box";
+  highlightBox.style.cssText = "\n    position: absolute;\n    border: 2px dashed #007AFF;\n    background: rgba(0, 122, 255, 0.08);\n    pointer-events: none;\n    display: none;\n    transition: all 0.1s ease;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);\n    border-radius: 2px;\n  ";
+
+  // 创建选中节点的常驻高亮框（实线边框）
+  var selectedBox = document.createElement("div");
+  selectedBox.id = "iframe-selected-box";
+  selectedBox.style.cssText = "\n    position: absolute;\n    border: 2px solid #007AFF;\n    pointer-events: none;\n    display: none;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9), 0 0 8px rgba(255, 107, 53, 0.4);\n    border-radius: 2px;\n    z-index: 1000000;\n  ";
+
+  // 创建悬停标签显示
+  var tagLabel = document.createElement("div");
+  tagLabel.id = "iframe-tag-label";
+  tagLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 2px 6px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 2px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000001;\n    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);\n    font-weight: 500;\n  ";
+
+  // 创建选中节点标签
+  var selectedLabel = document.createElement("div");
+  selectedLabel.id = "iframe-selected-label";
+  selectedLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 3px 8px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 3px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000002;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n    font-weight: 600;\n  ";
+  overlay.appendChild(highlightBox);
+  overlay.appendChild(selectedBox);
+  overlay.appendChild(tagLabel);
+  overlay.appendChild(selectedLabel);
+  document.body.appendChild(overlay);
+
+  // 存储当前选中的元素
+  var selectedElement = null;
+  var highlightEnabled = false;
+
+  // 更新选中元素的高亮显示
+  function updateSelectedHighlight(element) {
+    console.log("updateSelectedHighlight called with:", element);
+    if (!element) {
+      selectedBox.style.display = "none";
+      selectedLabel.style.display = "none";
+      selectedElement = null;
+      console.log("Cleared selected highlight");
+      return;
+    }
+    selectedElement = element;
+    var rect = element.getBoundingClientRect();
+    console.log("Selected element rect:", rect);
+
+    // 更新选中高亮框位置
+    selectedBox.style.display = "block";
+    selectedBox.style.left = "".concat(rect.left - 2, "px");
+    selectedBox.style.top = "".concat(rect.top - 2, "px");
+    selectedBox.style.width = "".concat(rect.width + 4, "px");
+    selectedBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新选中标签位置和内容
+    selectedLabel.style.display = "block";
+    selectedLabel.textContent = "\u2713 <".concat(element.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 28;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 5) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    var labelWidth = selectedLabel.offsetWidth || 100; // 预估宽度
+    if (labelLeft + labelWidth > window.innerWidth - 10) {
+      labelLeft = window.innerWidth - labelWidth - 10;
+    }
+    selectedLabel.style.left = "".concat(Math.max(5, labelLeft), "px");
+    selectedLabel.style.top = "".concat(labelTop, "px");
+    console.log("Selected highlight positioned at:", {
+      left: selectedBox.style.left,
+      top: selectedBox.style.top,
+      width: selectedBox.style.width,
+      height: selectedBox.style.height
+    });
+  }
+  function getElementSelector(element) {
+    if (!(element instanceof Element)) throw new Error('Argument must be a DOM element');
+    var segments = [];
+    var current = element;
+    while (current !== document.documentElement) {
+      var selector = '';
+      // 优先检查唯一ID
+      if (current.id && document.querySelectorAll("#".concat(current.id)).length === 1) {
+        segments.unshift("#".concat(current.id));
+        break; // ID唯一，无需继续向上
+      }
+
+      // 生成类名选择器（取第一个有效类名）
+      var classes = Array.from(current.classList).filter(function (c) {
+        return !c.startsWith('js-');
+      });
+      var className = classes.length > 0 ? ".".concat(classes[0]) : '';
+
+      // 生成位置索引（nth-child）
+      var tag = current.tagName.toLowerCase();
+      if (!className) {
+        var siblings = Array.from(current.parentNode.children);
+        var index = siblings.findIndex(function (el) {
+          return el === current;
+        }) + 1;
+        selector = "".concat(tag, ":nth-child(").concat(index, ")");
+      } else {
+        selector = className;
+      }
+      segments.unshift(selector);
+      current = current.parentElement;
+    }
+
+    // 处理根元素
+    if (current === document.documentElement) {
+      segments.unshift('html');
+    }
+    return segments.join(' > ');
+  }
+
+  // 获取元素文本内容
+  function getElementText(element) {
+    var _element$textContent;
+    if (element.tagName === "INPUT") {
+      return element.value || element.placeholder || "";
+    }
+    if (element.tagName === "TEXTAREA") {
+      return element.value || element.placeholder || "";
+    }
+    var text = ((_element$textContent = element.textContent) === null || _element$textContent === void 0 ? void 0 : _element$textContent.trim()) || "";
+    return text.length > 50 ? text.substring(0, 50) + "..." : text;
+  }
+
+  // 获取元素属性信息
+  function getElementAttributes(element) {
+    var attrs = {};
+    for (var i = 0; i < element.attributes.length; i++) {
+      var attr = element.attributes[i];
+      attrs[attr.name] = attr.value;
+    }
+    return attrs;
+  }
+
+  // 鼠标悬停事件处理
+  function handleMouseOver(e) {
+    if (!highlightEnabled) return;
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免高亮 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 如果是已选中的元素，不显示悬停高亮
+    if (target === selectedElement) {
+      highlightBox.style.display = "none";
+      tagLabel.style.display = "none";
+      return;
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+
+    // 更新悬停高亮框位置
+    highlightBox.style.display = "block";
+    highlightBox.style.left = "".concat(rect.left - 2, "px");
+    highlightBox.style.top = "".concat(rect.top - 2, "px");
+    highlightBox.style.width = "".concat(rect.width + 4, "px");
+    highlightBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新标签位置和内容
+    tagLabel.style.display = "block";
+    tagLabel.textContent = "<".concat(target.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 22;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 0) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    if (labelLeft + tagLabel.offsetWidth > window.innerWidth) {
+      labelLeft = window.innerWidth - tagLabel.offsetWidth - 5;
+    }
+    tagLabel.style.left = "".concat(Math.max(0, labelLeft), "px");
+    tagLabel.style.top = "".concat(labelTop, "px");
+
+    // 发送消息到父窗口
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 鼠标离开事件处理
+  function handleMouseOut(e) {
+    if (!highlightEnabled) return;
+    var relatedTarget = e.relatedTarget;
+
+    // 如果鼠标移动到高亮相关元素上，不隐藏高亮
+    if (relatedTarget && (relatedTarget === highlightBox || relatedTarget === tagLabel || relatedTarget === overlay || relatedTarget === selectedBox || relatedTarget === selectedLabel)) {
+      return;
+    }
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: null,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 点击事件处理
+  function handleClick(e) {
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免处理 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 检查是否是交互元素，这些元素需要保留默认行为
+    var isInteractiveElement = ['input', 'textarea', 'select', 'button', 'a'].includes(target.tagName.toLowerCase());
+
+    // 如果高亮功能启用，对于非交互元素阻止默认行为和事件传播
+    if (highlightEnabled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+    console.log("Element clicked:", {
+      tagName: target.tagName,
+      selector: selector,
+      rect: rect
+    });
+
+    // 立即更新选中高亮
+    updateSelectedHighlight(target);
+
+    // 隐藏悬停高亮，因为现在是选中状态
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-click",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 监听来自父窗口的消息
+  function handleParentMessage(event) {
+    console.log("Received message from parent:", event.data);
+    if (event.data.type === "iframe-highlight-toggle") {
+      var enabled = event.data.enabled;
+      console.log("Highlight toggle:", enabled);
+      if (enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "enable-iframe-highlight") {
+      console.log("Enable iframe highlight");
+      enableHighlight();
+    } else if (event.data.type === "disable-iframe-highlight") {
+      console.log("Disable iframe highlight");
+      disableHighlight();
+    } else if (event.data.type === "toggle-iframe-highlight") {
+      var _enabled = event.data.enabled !== undefined ? event.data.enabled : !highlightEnabled;
+      console.log("Toggle iframe highlight to:", _enabled);
+      if (_enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "update-selected-element") {
+      var selector = event.data.selector;
+      console.log("Update selected element with selector:", selector);
+      if (selector) {
+        try {
+          var element = document.querySelector(selector);
+          console.log("Found element by selector:", element);
+          updateSelectedHighlight(element);
+        } catch (error) {
+          console.warn("Failed to select element:", error);
+          updateSelectedHighlight(null);
+        }
+      } else {
+        updateSelectedHighlight(null);
+      }
+    } else if (event.data.type === "clear-selected-element") {
+      console.log("Clear selected element");
+      updateSelectedHighlight(null);
+    }
+  }
+
+  // 启用高亮功能
+  function enableHighlight() {
+    console.log("Enabling highlight");
+    document.addEventListener("mouseover", handleMouseOver, true);
+    document.addEventListener("mouseout", handleMouseOut, true);
+    document.addEventListener("click", handleClick, true);
+    highlightEnabled = true;
+    overlay.style.display = "block";
+  }
+
+  // 禁用高亮功能
+  function disableHighlight() {
+    console.log("Disabling highlight");
+    highlightEnabled = false;
+    // 保持事件监听器，但通过 highlightEnabled 变量控制行为
+    // 这样可以保留选中状态的显示
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    // 不隐藏 selectedBox 和 selectedLabel，保留选中状态
+  }
+
+  // 完全禁用高亮功能（移除所有监听器）
+  function fullyDisableHighlight() {
+    console.log("Fully disabling highlight");
+    highlightEnabled = false;
+    document.removeEventListener("mouseover", handleMouseOver, true);
+    document.removeEventListener("mouseout", handleMouseOut, true);
+    document.removeEventListener("click", handleClick, true);
+    overlay.style.display = "none";
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    selectedBox.style.display = "none";
+    selectedLabel.style.display = "none";
+  }
+
+  // 添加事件监听
+  enableHighlight();
+  window.addEventListener("message", handleParentMessage);
+
+  // 暴露全局函数供外部调用
+  window.__iframeHighlightControl = {
+    enable: enableHighlight,
+    disable: disableHighlight,
+    fullyDisable: fullyDisableHighlight,
+    isEnabled: function isEnabled() {
+      return highlightEnabled;
+    },
+    getSelectedElement: function getSelectedElement() {
+      return selectedElement;
+    },
+    updateSelected: updateSelectedHighlight,
+    // 通过消息发送开关控制
+    sendToggleMessage: function sendToggleMessage(enabled) {
+      window.parent.postMessage({
+        type: 'iframe-highlight-status',
+        enabled: enabled || highlightEnabled,
+        source: 'iframe-highlight-injector'
+      }, '*');
+    }
+  };
+
+  // 通知父窗口脚本已加载
+  try {
+    window.parent.postMessage({
+      type: "iframe-highlight-ready",
+      data: {
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        timestamp: Date.now()
+      },
+      source: "iframe-highlight-injector"
+    }, "*");
+  } catch (error) {
+    console.warn("无法发送就绪消息到父窗口:", error);
+  }
+
+  // 清理函数
+  window.__iframeHighlightCleanup = function () {
+    fullyDisableHighlight();
+    window.removeEventListener("message", handleParentMessage);
+    if (overlay.parentElement) {
+      overlay.parentElement.removeChild(overlay);
+    }
+    delete window.__iframeHighlightInitialized;
+    delete window.__iframeHighlightCleanup;
+  };
+})();
+
+</script>
+
+<script>
+/**
+ * Iframe 元素高亮注入脚本
+ * 需要在目标网站中引入此脚本来支持跨域 iframe 高亮功能
+ *
+ * 使用方法：
+ * 1. 将此脚本添加到目标网站的 HTML 中
+ * 2. 或通过浏览器扩展、用户脚本等方式注入
+ */
+
+(function () {
+  "use strict";
+
+  // 检查是否在 iframe 中
+  if (window.self === window.top) {
+    return; // 不在 iframe 中，不执行
+  }
+
+  // 检查是否已经初始化过
+  if (window.__iframeHighlightInitialized) {
+    return;
+  }
+  window.__iframeHighlightInitialized = true;
+  console.log("Iframe 高亮脚本已加载");
+
+  // 创建高亮覆盖层
+  var overlay = document.createElement("div");
+  overlay.id = "iframe-highlight-overlay";
+  overlay.style.cssText = "\n    position: fixed;\n    top: 0;\n    left: 0;\n    width: 100vw;\n    height: 100vh;\n    pointer-events: none;\n    z-index: 999999;\n    overflow: hidden;\n  ";
+
+  // 创建悬停高亮框（虚线边框）
+  var highlightBox = document.createElement("div");
+  highlightBox.id = "iframe-highlight-box";
+  highlightBox.style.cssText = "\n    position: absolute;\n    border: 2px dashed #007AFF;\n    background: rgba(0, 122, 255, 0.08);\n    pointer-events: none;\n    display: none;\n    transition: all 0.1s ease;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);\n    border-radius: 2px;\n  ";
+
+  // 创建选中节点的常驻高亮框（实线边框）
+  var selectedBox = document.createElement("div");
+  selectedBox.id = "iframe-selected-box";
+  selectedBox.style.cssText = "\n    position: absolute;\n    border: 2px solid #007AFF;\n    pointer-events: none;\n    display: none;\n    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9), 0 0 8px rgba(255, 107, 53, 0.4);\n    border-radius: 2px;\n    z-index: 1000000;\n  ";
+
+  // 创建悬停标签显示
+  var tagLabel = document.createElement("div");
+  tagLabel.id = "iframe-tag-label";
+  tagLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 2px 6px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 2px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000001;\n    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);\n    font-weight: 500;\n  ";
+
+  // 创建选中节点标签
+  var selectedLabel = document.createElement("div");
+  selectedLabel.id = "iframe-selected-label";
+  selectedLabel.style.cssText = "\n    position: absolute;\n    background: #007AFF;\n    color: white;\n    padding: 3px 8px;\n    font-size: 11px;\n    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;\n    border-radius: 3px;\n    pointer-events: none;\n    display: none;\n    white-space: nowrap;\n    z-index: 1000002;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);\n    font-weight: 600;\n  ";
+  overlay.appendChild(highlightBox);
+  overlay.appendChild(selectedBox);
+  overlay.appendChild(tagLabel);
+  overlay.appendChild(selectedLabel);
+  document.body.appendChild(overlay);
+
+  // 存储当前选中的元素
+  var selectedElement = null;
+  var highlightEnabled = false;
+
+  // 更新选中元素的高亮显示
+  function updateSelectedHighlight(element) {
+    console.log("updateSelectedHighlight called with:", element);
+    if (!element) {
+      selectedBox.style.display = "none";
+      selectedLabel.style.display = "none";
+      selectedElement = null;
+      console.log("Cleared selected highlight");
+      return;
+    }
+    selectedElement = element;
+    var rect = element.getBoundingClientRect();
+    console.log("Selected element rect:", rect);
+
+    // 更新选中高亮框位置
+    selectedBox.style.display = "block";
+    selectedBox.style.left = "".concat(rect.left - 2, "px");
+    selectedBox.style.top = "".concat(rect.top - 2, "px");
+    selectedBox.style.width = "".concat(rect.width + 4, "px");
+    selectedBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新选中标签位置和内容
+    selectedLabel.style.display = "block";
+    selectedLabel.textContent = "\u2713 <".concat(element.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 28;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 5) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    var labelWidth = selectedLabel.offsetWidth || 100; // 预估宽度
+    if (labelLeft + labelWidth > window.innerWidth - 10) {
+      labelLeft = window.innerWidth - labelWidth - 10;
+    }
+    selectedLabel.style.left = "".concat(Math.max(5, labelLeft), "px");
+    selectedLabel.style.top = "".concat(labelTop, "px");
+    console.log("Selected highlight positioned at:", {
+      left: selectedBox.style.left,
+      top: selectedBox.style.top,
+      width: selectedBox.style.width,
+      height: selectedBox.style.height
+    });
+  }
+  function getElementSelector(element) {
+    if (!(element instanceof Element)) throw new Error('Argument must be a DOM element');
+    var segments = [];
+    var current = element;
+    while (current !== document.documentElement) {
+      var selector = '';
+      // 优先检查唯一ID
+      if (current.id && document.querySelectorAll("#".concat(current.id)).length === 1) {
+        segments.unshift("#".concat(current.id));
+        break; // ID唯一，无需继续向上
+      }
+
+      // 生成类名选择器（取第一个有效类名）
+      var classes = Array.from(current.classList).filter(function (c) {
+        return !c.startsWith('js-');
+      });
+      var className = classes.length > 0 ? ".".concat(classes[0]) : '';
+
+      // 生成位置索引（nth-child）
+      var tag = current.tagName.toLowerCase();
+      if (!className) {
+        var siblings = Array.from(current.parentNode.children);
+        var index = siblings.findIndex(function (el) {
+          return el === current;
+        }) + 1;
+        selector = "".concat(tag, ":nth-child(").concat(index, ")");
+      } else {
+        selector = className;
+      }
+      segments.unshift(selector);
+      current = current.parentElement;
+    }
+
+    // 处理根元素
+    if (current === document.documentElement) {
+      segments.unshift('html');
+    }
+    return segments.join(' > ');
+  }
+
+  // 获取元素文本内容
+  function getElementText(element) {
+    var _element$textContent;
+    if (element.tagName === "INPUT") {
+      return element.value || element.placeholder || "";
+    }
+    if (element.tagName === "TEXTAREA") {
+      return element.value || element.placeholder || "";
+    }
+    var text = ((_element$textContent = element.textContent) === null || _element$textContent === void 0 ? void 0 : _element$textContent.trim()) || "";
+    return text.length > 50 ? text.substring(0, 50) + "..." : text;
+  }
+
+  // 获取元素属性信息
+  function getElementAttributes(element) {
+    var attrs = {};
+    for (var i = 0; i < element.attributes.length; i++) {
+      var attr = element.attributes[i];
+      attrs[attr.name] = attr.value;
+    }
+    return attrs;
+  }
+
+  // 鼠标悬停事件处理
+  function handleMouseOver(e) {
+    if (!highlightEnabled) return;
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免高亮 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 如果是已选中的元素，不显示悬停高亮
+    if (target === selectedElement) {
+      highlightBox.style.display = "none";
+      tagLabel.style.display = "none";
+      return;
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+
+    // 更新悬停高亮框位置
+    highlightBox.style.display = "block";
+    highlightBox.style.left = "".concat(rect.left - 2, "px");
+    highlightBox.style.top = "".concat(rect.top - 2, "px");
+    highlightBox.style.width = "".concat(rect.width + 4, "px");
+    highlightBox.style.height = "".concat(rect.height + 4, "px");
+
+    // 更新标签位置和内容
+    tagLabel.style.display = "block";
+    tagLabel.textContent = "<".concat(target.tagName.toLowerCase(), ">");
+
+    // 计算标签位置，确保不超出视窗
+    var labelTop = rect.top - 22;
+    var labelLeft = rect.left;
+
+    // 如果标签会超出顶部，显示在元素下方
+    if (labelTop < 0) {
+      labelTop = rect.bottom + 5;
+    }
+
+    // 如果标签会超出右侧，向左调整
+    if (labelLeft + tagLabel.offsetWidth > window.innerWidth) {
+      labelLeft = window.innerWidth - tagLabel.offsetWidth - 5;
+    }
+    tagLabel.style.left = "".concat(Math.max(0, labelLeft), "px");
+    tagLabel.style.top = "".concat(labelTop, "px");
+
+    // 发送消息到父窗口
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 鼠标离开事件处理
+  function handleMouseOut(e) {
+    if (!highlightEnabled) return;
+    var relatedTarget = e.relatedTarget;
+
+    // 如果鼠标移动到高亮相关元素上，不隐藏高亮
+    if (relatedTarget && (relatedTarget === highlightBox || relatedTarget === tagLabel || relatedTarget === overlay || relatedTarget === selectedBox || relatedTarget === selectedLabel)) {
+      return;
+    }
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-hover",
+        data: null,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 点击事件处理
+  function handleClick(e) {
+    var target = e.target;
+    if (!target || target === overlay || target === highlightBox || target === tagLabel || target === selectedBox || target === selectedLabel) {
+      return;
+    }
+
+    // 避免处理 html 和 body 元素
+    if (target === document.documentElement || target === document.body) {
+      return;
+    }
+
+    // 检查是否是交互元素，这些元素需要保留默认行为
+    var isInteractiveElement = ['input', 'textarea', 'select', 'button', 'a'].includes(target.tagName.toLowerCase());
+
+    // 如果高亮功能启用，对于非交互元素阻止默认行为和事件传播
+    if (highlightEnabled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    var rect = target.getBoundingClientRect();
+    var selector = getElementSelector(target);
+    var text = getElementText(target);
+    var attributes = getElementAttributes(target);
+    console.log("Element clicked:", {
+      tagName: target.tagName,
+      selector: selector,
+      rect: rect
+    });
+
+    // 立即更新选中高亮
+    updateSelectedHighlight(target);
+
+    // 隐藏悬停高亮，因为现在是选中状态
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    var elementInfo = {
+      tagName: target.tagName.toLowerCase(),
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        x: rect.x,
+        y: rect.y
+      },
+      selector: selector,
+      text: text,
+      attributes: attributes,
+      url: window.location.href,
+      path: window.location.pathname,
+      timestamp: Date.now()
+    };
+    try {
+      window.parent.postMessage({
+        type: "iframe-element-click",
+        data: elementInfo,
+        source: "iframe-highlight-injector"
+      }, "*");
+    } catch (error) {
+      console.warn("无法发送消息到父窗口:", error);
+    }
+  }
+
+  // 监听来自父窗口的消息
+  function handleParentMessage(event) {
+    console.log("Received message from parent:", event.data);
+    if (event.data.type === "iframe-highlight-toggle") {
+      var enabled = event.data.enabled;
+      console.log("Highlight toggle:", enabled);
+      if (enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "enable-iframe-highlight") {
+      console.log("Enable iframe highlight");
+      enableHighlight();
+    } else if (event.data.type === "disable-iframe-highlight") {
+      console.log("Disable iframe highlight");
+      disableHighlight();
+    } else if (event.data.type === "toggle-iframe-highlight") {
+      var _enabled = event.data.enabled !== undefined ? event.data.enabled : !highlightEnabled;
+      console.log("Toggle iframe highlight to:", _enabled);
+      if (_enabled) {
+        enableHighlight();
+      } else {
+        disableHighlight();
+      }
+    } else if (event.data.type === "update-selected-element") {
+      var selector = event.data.selector;
+      console.log("Update selected element with selector:", selector);
+      if (selector) {
+        try {
+          var element = document.querySelector(selector);
+          console.log("Found element by selector:", element);
+          updateSelectedHighlight(element);
+        } catch (error) {
+          console.warn("Failed to select element:", error);
+          updateSelectedHighlight(null);
+        }
+      } else {
+        updateSelectedHighlight(null);
+      }
+    } else if (event.data.type === "clear-selected-element") {
+      console.log("Clear selected element");
+      updateSelectedHighlight(null);
+    }
+  }
+
+  // 启用高亮功能
+  function enableHighlight() {
+    console.log("Enabling highlight");
+    document.addEventListener("mouseover", handleMouseOver, true);
+    document.addEventListener("mouseout", handleMouseOut, true);
+    document.addEventListener("click", handleClick, true);
+    highlightEnabled = true;
+    overlay.style.display = "block";
+  }
+
+  // 禁用高亮功能
+  function disableHighlight() {
+    console.log("Disabling highlight");
+    highlightEnabled = false;
+    // 保持事件监听器，但通过 highlightEnabled 变量控制行为
+    // 这样可以保留选中状态的显示
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    // 不隐藏 selectedBox 和 selectedLabel，保留选中状态
+  }
+
+  // 完全禁用高亮功能（移除所有监听器）
+  function fullyDisableHighlight() {
+    console.log("Fully disabling highlight");
+    highlightEnabled = false;
+    document.removeEventListener("mouseover", handleMouseOver, true);
+    document.removeEventListener("mouseout", handleMouseOut, true);
+    document.removeEventListener("click", handleClick, true);
+    overlay.style.display = "none";
+    highlightBox.style.display = "none";
+    tagLabel.style.display = "none";
+    selectedBox.style.display = "none";
+    selectedLabel.style.display = "none";
+  }
+
+  // 添加事件监听
+  enableHighlight();
+  window.addEventListener("message", handleParentMessage);
+
+  // 暴露全局函数供外部调用
+  window.__iframeHighlightControl = {
+    enable: enableHighlight,
+    disable: disableHighlight,
+    fullyDisable: fullyDisableHighlight,
+    isEnabled: function isEnabled() {
+      return highlightEnabled;
+    },
+    getSelectedElement: function getSelectedElement() {
+      return selectedElement;
+    },
+    updateSelected: updateSelectedHighlight,
+    // 通过消息发送开关控制
+    sendToggleMessage: function sendToggleMessage(enabled) {
+      window.parent.postMessage({
+        type: 'iframe-highlight-status',
+        enabled: enabled || highlightEnabled,
+        source: 'iframe-highlight-injector'
+      }, '*');
+    }
+  };
+
+  // 通知父窗口脚本已加载
+  try {
+    window.parent.postMessage({
+      type: "iframe-highlight-ready",
+      data: {
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+        timestamp: Date.now()
+      },
+      source: "iframe-highlight-injector"
+    }, "*");
+  } catch (error) {
+    console.warn("无法发送就绪消息到父窗口:", error);
+  }
+
+  // 清理函数
+  window.__iframeHighlightCleanup = function () {
+    fullyDisableHighlight();
+    window.removeEventListener("message", handleParentMessage);
+    if (overlay.parentElement) {
+      overlay.parentElement.removeChild(overlay);
+    }
+    delete window.__iframeHighlightInitialized;
+    delete window.__iframeHighlightCleanup;
+  };
+})();
+
+</script>
+</body>
+</html>
