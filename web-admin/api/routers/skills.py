@@ -18,12 +18,17 @@ from fastapi.responses import StreamingResponse
 from core.deps import employee_store, ensure_permission, require_auth, usage_store
 from core.ownership import assert_can_manage_record, ownership_payload
 from models.requests import SkillCreateReq, SkillInstallReq, SkillUpdateReq
+from services.dynamic_mcp_skill_proxies import discover_skill_proxy_specs
 from services.skill_import_service import (
     PROJECT_ROOT,
     SENSITIVE_SKILL_FILE_PATTERNS,
     backfill_existing_skill_packages,
     import_skill_from_dir,
     pick_extracted_skill_dir,
+    read_manifest,
+    read_skill_frontmatter,
+    scan_declared_proxy_entries,
+    scan_proxy_entries,
 )
 from stores.mcp_bridge import (
     EmployeeSkillBinding,
@@ -71,8 +76,161 @@ def _cleanup_employee_skill_references(skill_id: str) -> list[str]:
     return cleaned_employee_ids
 
 
+def _upsert_employee_skill_reference(employee_id: str, skill_id: str) -> bool:
+    employee = employee_store.get(employee_id)
+    if employee is None:
+        raise HTTPException(404, f"Employee {employee_id} not found")
+    normalized_skill_id = str(skill_id or "").strip()
+    if not normalized_skill_id:
+        raise HTTPException(400, "skill_id is required")
+    current_skills = [
+        str(item or "").strip()
+        for item in (getattr(employee, "skills", []) or [])
+        if str(item or "").strip()
+    ]
+    if normalized_skill_id in current_skills:
+        return False
+    employee.skills = [*current_skills, normalized_skill_id]
+    employee.updated_at = skills_now_iso()
+    employee_store.save(employee)
+    return True
+
+
+def _remove_employee_skill_reference(employee_id: str, skill_id: str) -> bool:
+    employee = employee_store.get(employee_id)
+    if employee is None:
+        return False
+    normalized_skill_id = str(skill_id or "").strip()
+    current_skills = [
+        str(item or "").strip()
+        for item in (getattr(employee, "skills", []) or [])
+        if str(item or "").strip()
+    ]
+    next_skills = [item for item in current_skills if item != normalized_skill_id]
+    if next_skills == current_skills:
+        return False
+    employee.skills = next_skills
+    employee.updated_at = skills_now_iso()
+    employee_store.save(employee)
+    return True
+
+
+def _resolve_skill_package_path(skill: Skill) -> Path | None:
+    package_dir = str(getattr(skill, "package_dir", "") or "").strip()
+    if not package_dir:
+        return None
+    package_path = Path(package_dir)
+    if not package_path.is_absolute():
+        package_path = PROJECT_ROOT / package_path
+    package_path = package_path.resolve()
+    if not package_path.exists() or not package_path.is_dir():
+        return None
+    return package_path
+
+
+def _scan_proxy_candidate_files(package_path: Path) -> dict[str, Any]:
+    candidate_files: list[str] = []
+    tools_dir_exists = (package_path / "tools").exists()
+    scripts_dir_exists = (package_path / "scripts").exists()
+    for base_dir in ("tools", "scripts"):
+        root = package_path / base_dir
+        if not root.exists():
+            continue
+        for file in sorted(root.rglob("*")):
+            if not file.is_file() or file.suffix.lower() not in {".py", ".js"}:
+                continue
+            candidate_files.append(file.relative_to(package_path).as_posix())
+    return {
+        "tools_dir_exists": tools_dir_exists,
+        "scripts_dir_exists": scripts_dir_exists,
+        "candidate_files": candidate_files,
+    }
+
+
+def _collect_skill_proxy_state(skill: Skill) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    package_path = _resolve_skill_package_path(skill)
+    resolved_entries = list(getattr(skill, "proxy_entries", ()) or ())
+    declared_entries = []
+    diagnostics: dict[str, Any] = {
+        "package_exists": bool(package_path),
+        "tools_dir_exists": False,
+        "scripts_dir_exists": False,
+        "candidate_files": [],
+        "guidance": [],
+        "can_refresh": bool(package_path),
+    }
+    if package_path is not None:
+        manifest = read_manifest(package_path)
+        frontmatter = read_skill_frontmatter(package_path)
+        declared_entries = list(scan_declared_proxy_entries(package_path, manifest, frontmatter))
+        resolved_entries = list(scan_proxy_entries(package_path, manifest, frontmatter))
+        diagnostics.update(_scan_proxy_candidate_files(package_path))
+
+    effective_specs = discover_skill_proxy_specs(skill)
+    declaration_status = "none"
+    if resolved_entries:
+        declaration_status = (
+            "declared"
+            if any(str(getattr(entry, "source", "") or "") == "declared" for entry in resolved_entries)
+            else "auto_inferred"
+        )
+
+    guidance: list[str] = []
+    if package_path is None:
+        guidance.append("技能包目录不存在或不可读取，先修复 package_dir。")
+    elif not diagnostics["candidate_files"] and not declared_entries:
+        if not diagnostics["tools_dir_exists"] and not diagnostics["scripts_dir_exists"]:
+            guidance.append("在技能包下新增 scripts/ 或 tools/ 目录，并放入 .py/.js 可执行文件。")
+        else:
+            guidance.append("在现有 scripts/ 或 tools/ 目录下添加 .py/.js 可执行文件。")
+        guidance.append("或者在 manifest.json / SKILL.md frontmatter 中显式声明 proxy_entries。")
+    elif resolved_entries and not effective_specs:
+        guidance.append("已解析到代理入口，但当前运行时未暴露成功，建议点击“重扫声明”后再检查项目/员工绑定。")
+    elif effective_specs:
+        guidance.append("技能入口已生效；如项目中仍不可见，请确认技能已安装到员工且员工已加入项目。")
+    diagnostics["guidance"] = guidance
+
+    proxy_entries_payload = [
+        {
+            "name": str(getattr(entry, "name", "") or ""),
+            "path": str(getattr(entry, "path", "") or ""),
+            "runtime": str(getattr(entry, "runtime", "") or ""),
+            "description": str(getattr(entry, "description", "") or ""),
+            "source": str(getattr(entry, "source", "declared") or "declared"),
+            "args_schema": getattr(entry, "args_schema", {}) or {},
+            "command": list(getattr(entry, "command", ()) or ()),
+            "cwd": str(getattr(entry, "cwd", "") or ""),
+            "employee_id_flag": str(getattr(entry, "employee_id_flag", "--employee-id") or ""),
+            "api_key_flag": str(getattr(entry, "api_key_flag", "--api-key") or ""),
+        }
+        for entry in resolved_entries
+    ]
+    proxy_status = {
+        "declaration_status": declaration_status,
+        "declared_count": len(declared_entries),
+        "resolved_count": len(resolved_entries),
+        "effective_count": len(effective_specs),
+        "has_explicit_declaration": bool(declared_entries),
+        "has_proxy_entries": bool(resolved_entries),
+        "is_executable": bool(effective_specs),
+        "effective_entry_names": [str(item.get("entry_name") or "") for item in effective_specs],
+        "summary": (
+            "已显式声明代理入口"
+            if declaration_status == "declared"
+            else "上传时自动推断代理入口"
+            if declaration_status == "auto_inferred"
+            else "未发现代理入口"
+        ),
+        "diagnostics": diagnostics,
+    }
+    return proxy_entries_payload, proxy_status
+
+
 def _serialize_skill_payload(skill: Skill, auth_payload: dict | None = None) -> dict[str, Any]:
     payload = serialize_skill(skill)
+    proxy_entries, proxy_status = _collect_skill_proxy_state(skill)
+    payload["proxy_entries"] = proxy_entries
+    payload["proxy_status"] = proxy_status
     payload.update(ownership_payload(skill, auth_payload))
     return payload
 
@@ -178,6 +336,27 @@ async def get_skill(skill_id: str, auth_payload: dict = Depends(require_auth)):
     return {"skill": _serialize_skill_payload(skill, auth_payload)}
 
 
+@router.post("/skills/{skill_id}/refresh-proxy-entries")
+async def refresh_skill_proxy_entries(skill_id: str, auth_payload: dict = Depends(require_auth)):
+    _ensure_historical_skills_registered()
+    skill = skill_store.get(skill_id)
+    if skill is None:
+        raise HTTPException(404, f"Skill {skill_id} not found")
+    assert_can_manage_record(skill, auth_payload, "技能")
+    package_path = _resolve_skill_package_path(skill)
+    if package_path is None:
+        raise HTTPException(404, f"Skill package directory for {skill_id} not found")
+    manifest = read_manifest(package_path)
+    frontmatter = read_skill_frontmatter(package_path)
+    updated = replace(
+        skill,
+        proxy_entries=scan_proxy_entries(package_path, manifest, frontmatter),
+        updated_at=skills_now_iso(),
+    )
+    skill_store.save(updated)
+    return {"status": "updated", "skill": _serialize_skill_payload(updated, auth_payload)}
+
+
 @router.get("/skills/{skill_id}/package-tree")
 async def get_skill_package_tree(skill_id: str):
     _, package_path = _resolve_skill_package(skill_id)
@@ -203,16 +382,34 @@ async def get_skill_package_file(skill_id: str, path: str):
 
 @router.get("/employees/{employee_id}/skills")
 async def employee_skills(employee_id: str):
+    employee = employee_store.get(employee_id)
     bindings = binding_store.get_bindings(employee_id)
+    binding_by_skill_id = {
+        str(binding.skill_id or "").strip(): binding
+        for binding in bindings
+        if str(binding.skill_id or "").strip()
+    }
+    skill_ids: list[str] = []
+    for skill_id in getattr(employee, "skills", []) if employee else []:
+        normalized_skill_id = str(skill_id or "").strip()
+        if normalized_skill_id and normalized_skill_id not in skill_ids:
+            skill_ids.append(normalized_skill_id)
+    for skill_id in binding_by_skill_id:
+        if skill_id not in skill_ids:
+            skill_ids.append(skill_id)
+
     items = []
-    for binding in bindings:
-        skill = skill_store.get(binding.skill_id)
+    for skill_id in skill_ids:
+        binding = binding_by_skill_id.get(skill_id)
+        skill = skill_store.get(skill_id)
+        enabled_tools = list(binding.enabled_tools) if binding else [tool.name for tool in getattr(skill, "tools", ()) or ()]
         items.append(
             {
-                "skill_id": binding.skill_id,
-                "skill_name": skill.name if skill else binding.skill_id,
-                "enabled_tools": list(binding.enabled_tools),
-                "installed_at": binding.installed_at,
+                "skill_id": skill_id,
+                "skill_name": skill.name if skill else skill_id,
+                "enabled_tools": enabled_tools,
+                "installed_at": binding.installed_at if binding else "",
+                "source": "binding" if binding else "employee_profile",
             }
         )
     return {"bindings": items}
@@ -220,15 +417,26 @@ async def employee_skills(employee_id: str):
 
 @router.post("/employees/{employee_id}/skills")
 async def install_skill(employee_id: str, req: SkillInstallReq):
-    if skill_store.get(req.skill_id) is None:
+    employee = employee_store.get(employee_id)
+    if employee is None:
+        raise HTTPException(404, f"Employee {employee_id} not found")
+    skill = skill_store.get(req.skill_id)
+    if skill is None:
         raise HTTPException(404, f"Skill {req.skill_id} not found")
+    enabled_tools = tuple(req.enabled_tools) or tuple(tool.name for tool in getattr(skill, "tools", ()) or ())
     binding = EmployeeSkillBinding(
         employee_id=employee_id,
         skill_id=req.skill_id,
-        enabled_tools=tuple(req.enabled_tools),
+        enabled_tools=enabled_tools,
     )
     binding_store.add(binding)
-    return {"status": "installed", "skill_id": req.skill_id}
+    _upsert_employee_skill_reference(employee.id, req.skill_id)
+    return {
+        "status": "installed",
+        "skill_id": req.skill_id,
+        "employee_id": employee.id,
+        "enabled_tools": list(enabled_tools),
+    }
 
 
 @router.post("/skills")
@@ -353,9 +561,17 @@ async def delete_skill(skill_id: str, auth_payload: dict = Depends(require_auth)
 
 @router.delete("/employees/{employee_id}/skills/{skill_id}")
 async def uninstall_skill(employee_id: str, skill_id: str):
-    if not binding_store.remove(employee_id, skill_id):
+    removed_binding = binding_store.remove(employee_id, skill_id)
+    removed_skill_ref = _remove_employee_skill_reference(employee_id, skill_id)
+    if not removed_binding and not removed_skill_ref:
         raise HTTPException(404, "Binding not found")
-    return {"status": "uninstalled", "skill_id": skill_id}
+    return {
+        "status": "uninstalled",
+        "skill_id": skill_id,
+        "employee_id": employee_id,
+        "removed_binding": removed_binding,
+        "removed_employee_skill": removed_skill_ref,
+    }
 
 
 @router.get("/skills/{skill_id}/configs")

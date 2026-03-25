@@ -93,40 +93,38 @@
 </template>
 
 <script setup>
-import { reactive, ref } from "vue";
-import { useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
-import api from "@/utils/api.js";
-import { setPermissionArray } from "@/utils/permissions.js";
+import { reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
-const router = useRouter();
-const formRef = ref(null);
-const loading = ref(false);
+import { ElMessage } from 'element-plus'
 
-const form = reactive({ username: "", password: "" });
+import { loginWithPassword, resolveSafeRedirectPath } from '@/utils/auth.js'
+
+const route = useRoute()
+const router = useRouter()
+const formRef = ref(null)
+const loading = ref(false)
+
+const form = reactive({ username: '', password: '' })
 const rules = {
-  username: [{ required: true, message: "请输入账号", trigger: "blur" }],
-  password: [{ required: true, message: "请输入密码", trigger: "blur" }],
-};
+  username: [{ required: true, message: '请输入账号', trigger: 'blur' }],
+  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+}
 
 async function handleLogin() {
-  await formRef.value.validate();
-  loading.value = true;
+  await formRef.value.validate()
+  loading.value = true
   try {
-    const { token, username, role, permissions } = await api.post(
-      "/auth/login",
-      form,
-    );
-    localStorage.setItem("token", token);
-    localStorage.setItem("username", username);
-    localStorage.setItem("role", role || "user");
-    setPermissionArray(permissions || []);
-    ElMessage.success("登录成功");
-    await router.replace("/ai/chat");
-  } catch {
-    ElMessage.error("账号或密码错误");
+    await loginWithPassword({
+      username: form.username.trim(),
+      password: form.password,
+    })
+    ElMessage.success('登录成功')
+    await router.replace(resolveSafeRedirectPath(route.query.redirect, '/ai/chat'))
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || '账号或密码错误')
   } finally {
-    loading.value = false;
+    loading.value = false
   }
 }
 </script>

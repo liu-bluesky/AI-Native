@@ -316,11 +316,14 @@ def create_query_mcp():
         return (
             "# Unified Query MCP\n\n"
             "- 统一入口路径: /mcp/query\n"
-            "- 目标: 在保留现有员工/项目/规则 MCP 的前提下，提供一个聚合查询入口。\n"
+            "- 目标: 在保留现有员工/项目/规则 MCP 的前提下，提供一个聚合查询入口，并补充最常用的项目执行代理。\n"
             "- 推荐工具: search_ids / get_content / get_manual_content\n"
             "- 典型用法: 先 search_ids 找到目标 ID，再用 get_content 或 get_manual_content 取正文。\n"
             "- 记忆留痕: 首次查询必须把用户原始问题放进可检索字段，优先使用 search_ids(keyword=\"<用户原始问题>\")；不要只传“当前项目”“这个规则”之类代称。\n"
-            "- 注意: 本入口只做查询与聚合，不执行员工技能、不替代现有专用 MCP。\n"
+            "- 执行代理: 本入口默认仍以查询与聚合优先；如宿主只接统一入口，项目协作型任务可优先调用 execute_project_collaboration(project_id, task, ...)。\n"
+            "- 执行代理: execute_project_collaboration 是统一编排入口，但是否单人主责、是否需要多人协作以及如何拆分，仍由 AI 结合项目手册、员工手册、规则和工具自主判断，不预设固定行业分工模板。\n"
+            "- 执行代理: 若需要手动编排项目执行，再继续调用 list_project_members / get_project_runtime_context / list_project_proxy_tools / invoke_project_skill_tool。\n"
+            "- 注意: 本入口仍以查询与聚合优先；如宿主支持多 MCP，复杂执行场景仍优先直连对应 project MCP。\n"
             "- 记忆说明: 本入口不暴露 save_project_memory/save_employee_memory；如宿主系统已启用自动记忆，可在入口层自动记录问题快照。"
         )
 
@@ -412,6 +415,179 @@ def create_query_mcp():
             "manual": payload.get("manual") or "",
             "manual_endpoint": f"/api/projects/{project_id_value}/manual-template",
             "mcp_path": f"/mcp/projects/{project_id_value}",
+        }
+
+    @mcp.tool()
+    def list_project_members(project_id: str) -> dict:
+        """通过统一入口列出项目成员详情。"""
+
+        project_id_value = str(project_id or "").strip()
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        project = project_store.get(project_id_value)
+        if project is None:
+            return {"error": f"Project {project_id_value} not found"}
+        items = list_project_member_profiles_runtime(
+            project_id_value,
+            include_disabled=False,
+            include_missing=False,
+            rule_limit=30,
+        )
+        return {
+            "project_id": project_id_value,
+            "project_name": str(getattr(project, "name", "") or ""),
+            "items": items,
+            "total": len(items),
+            "project_mcp_path": f"/mcp/projects/{project_id_value}",
+        }
+
+    @mcp.tool()
+    def get_project_runtime_context(project_id: str) -> dict:
+        """通过统一入口返回项目运行时上下文摘要。"""
+
+        project_id_value = str(project_id or "").strip()
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        project = project_store.get(project_id_value)
+        if project is None:
+            return {"error": f"Project {project_id_value} not found"}
+        pairs = list_project_member_profiles_runtime(
+            project_id_value,
+            include_disabled=False,
+            include_missing=False,
+            rule_limit=30,
+        )
+        rules = query_project_rules_runtime(project_id_value)
+        from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
+
+        proxy_tools = list_project_proxy_tools_runtime(project_id_value, "")
+        return {
+            "project_id": project_id_value,
+            "project_name": str(getattr(project, "name", "") or ""),
+            "member_count": len(pairs),
+            "members": [
+                str(item.get("employee_id") or "").strip()
+                for item in pairs
+                if str(item.get("employee_id") or "").strip()
+            ],
+            "scoped_proxy_tool_count": len(proxy_tools),
+            "rule_count": len(rules),
+            "project_mcp_path": f"/mcp/projects/{project_id_value}",
+        }
+
+    @mcp.tool()
+    def list_project_proxy_tools(project_id: str, employee_id: str = "") -> dict:
+        """通过统一入口列出项目成员技能代理工具。"""
+
+        project_id_value = str(project_id or "").strip()
+        employee_id_value = str(employee_id or "").strip()
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        project = project_store.get(project_id_value)
+        if project is None:
+            return {"error": f"Project {project_id_value} not found"}
+        from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
+
+        items = list_project_proxy_tools_runtime(project_id_value, employee_id_value)
+        return {
+            "project_id": project_id_value,
+            "employee_id": employee_id_value,
+            "items": items,
+            "total": len(items),
+            "project_mcp_path": f"/mcp/projects/{project_id_value}",
+        }
+
+    @mcp.tool()
+    def invoke_project_skill_tool(
+        project_id: str,
+        tool_name: str,
+        employee_id: str = "",
+        args: dict | None = None,
+        args_json: str = "{}",
+        timeout_sec: int = 30,
+    ) -> dict:
+        """通过统一入口代理调用项目成员技能工具。"""
+
+        project_id_value = str(project_id or "").strip()
+        tool_name_value = str(tool_name or "").strip()
+        employee_id_value = str(employee_id or "").strip()
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        if not tool_name_value:
+            return {"error": "tool_name is required"}
+        project = project_store.get(project_id_value)
+        if project is None:
+            return {"error": f"Project {project_id_value} not found"}
+        from services.dynamic_mcp_runtime import invoke_project_skill_tool_runtime
+
+        result = invoke_project_skill_tool_runtime(
+            project_id=project_id_value,
+            tool_name=tool_name_value,
+            employee_id=employee_id_value,
+            args=args,
+            args_json=args_json,
+            timeout_sec=timeout_sec,
+        )
+        if isinstance(result, dict):
+            return {
+                "project_id": project_id_value,
+                "project_name": str(getattr(project, "name", "") or ""),
+                "project_mcp_path": f"/mcp/projects/{project_id_value}",
+                **result,
+            }
+        return {
+            "project_id": project_id_value,
+            "project_name": str(getattr(project, "name", "") or ""),
+            "project_mcp_path": f"/mcp/projects/{project_id_value}",
+            "result": result,
+        }
+
+    @mcp.tool()
+    def execute_project_collaboration(
+        project_id: str,
+        task: str,
+        employee_ids: list[str] | None = None,
+        max_employees: int = 3,
+        max_tool_calls: int = 6,
+        auto_execute: bool = True,
+        include_external_tools: bool = True,
+        timeout_sec: int = 30,
+    ) -> dict:
+        """通过统一入口代理调用项目多员工协作执行工具。"""
+
+        project_id_value = str(project_id or "").strip()
+        task_value = str(task or "").strip()
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        if not task_value:
+            return {"error": "task is required"}
+        project = project_store.get(project_id_value)
+        if project is None:
+            return {"error": f"Project {project_id_value} not found"}
+        from services.dynamic_mcp_runtime import execute_project_collaboration_runtime
+
+        result = execute_project_collaboration_runtime(
+            project_id=project_id_value,
+            task=task_value,
+            employee_ids=employee_ids or [],
+            max_employees=max_employees,
+            max_tool_calls=max_tool_calls,
+            auto_execute=auto_execute,
+            include_external_tools=include_external_tools,
+            timeout_sec=timeout_sec,
+        )
+        if isinstance(result, dict):
+            return {
+                "project_id": project_id_value,
+                "project_name": str(getattr(project, "name", "") or ""),
+                "project_mcp_path": f"/mcp/projects/{project_id_value}",
+                **result,
+            }
+        return {
+            "project_id": project_id_value,
+            "project_name": str(getattr(project, "name", "") or ""),
+            "project_mcp_path": f"/mcp/projects/{project_id_value}",
+            "result": result,
         }
 
     return mcp

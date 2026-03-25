@@ -2718,16 +2718,26 @@ def test_project_runtime_builtin_tools_include_and_invoke_full_detail_helpers(mo
 
     monkeypatch.setattr(
         runtime_svc,
-        "get_project_detail_runtime",
-        lambda project_id: {"id": project_id, "chat_settings": {"auto_use_tools": True}},
+        "invoke_project_builtin_tool",
+        lambda project_id, tool_name, employee_id="", args=None, args_json="{}": (
+            {"tool_name": "get_project_detail", "id": project_id, "chat_settings": {"auto_use_tools": True}}
+            if tool_name == "get_project_detail"
+            else {
+                "tool_name": "get_project_employee_detail",
+                "employee_id": "emp-9",
+                "employee_exists": True,
+            }
+            if tool_name == "get_project_employee_detail"
+            else None
+        ),
     )
     monkeypatch.setattr(
         runtime_svc,
-        "get_project_employee_detail_runtime",
-        lambda project_id, employee_id: {
-            "project_id": project_id,
-            "employee_id": employee_id,
-            "employee_exists": True,
+        "execute_project_collaboration_runtime",
+        lambda **kwargs: {
+            "tool_name": "execute_project_collaboration",
+            "task": kwargs["task"],
+            "selected_employee_ids": ["emp-9"],
         },
     )
 
@@ -2737,21 +2747,225 @@ def test_project_runtime_builtin_tools_include_and_invoke_full_detail_helpers(mo
         "get_project_employee_detail",
         args={"employee_id": "emp-9"},
     )
+    collaboration_result = runtime_svc.invoke_project_skill_tool_runtime(
+        "proj-test",
+        "execute_project_collaboration",
+        args={"task": "实现一个新页面"},
+    )
 
     assert "get_project_detail" in tool_names
     assert "get_project_employee_detail" in tool_names
+    assert "execute_project_collaboration" in tool_names
     assert project_result["tool_name"] == "get_project_detail"
     assert project_result["id"] == "proj-test"
     assert project_result["chat_settings"]["auto_use_tools"] is True
     assert employee_result["tool_name"] == "get_project_employee_detail"
     assert employee_result["employee_id"] == "emp-9"
     assert employee_result["employee_exists"] is True
+    assert collaboration_result["tool_name"] == "execute_project_collaboration"
+    assert collaboration_result["task"] == "实现一个新页面"
+    assert collaboration_result["selected_employee_ids"] == ["emp-9"]
+
+
+def test_project_collaboration_runtime_selects_members_and_executes_safe_tools(monkeypatch):
+    from services import dynamic_mcp_collaboration as collab_svc
+
+    class DummyProject:
+        id = "proj-1"
+        name = "项目一"
+
+    monkeypatch.setattr(
+        collab_svc,
+        "project_store",
+        type("DummyProjectStore", (), {"get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None)})(),
+    )
+    monkeypatch.setattr(
+        collab_svc,
+        "list_project_member_profiles_runtime",
+        lambda project_id, include_disabled=False, include_missing=False, rule_limit=30: [
+            {
+                "employee_id": "emp-ui",
+                "id": "emp-ui",
+                "name": "前端开发",
+                "goal": "负责页面实现",
+                "skill_names": ["vue", "ui"],
+                "rule_bindings": [{"id": "rule-ui", "title": "UI 规范", "domain": "ui"}],
+            },
+            {
+                "employee_id": "emp-pm",
+                "id": "emp-pm",
+                "name": "产品经理",
+                "goal": "负责需求拆解",
+                "skill_names": ["prd"],
+                "rule_bindings": [{"id": "rule-prd", "title": "需求追踪", "domain": "product"}],
+            },
+        ] if project_id == "proj-1" else [],
+    )
+    monkeypatch.setattr(
+        collab_svc,
+        "list_project_proxy_tools_runtime",
+        lambda project_id, employee_id="": [
+            {
+                "tool_name": "emp_ui__skill_vue__page",
+                "employee_id": "emp-ui",
+                "skill_name": "Vue",
+                "description": "实现前端页面",
+            }
+        ] if project_id == "proj-1" else [],
+    )
+    monkeypatch.setattr(
+        collab_svc,
+        "list_project_external_tools_runtime",
+        lambda project_id: [
+            {
+                "tool_name": "ext_plan_task",
+                "module_name": "planner",
+                "remote_tool_name": "planTask",
+                "description": "根据 task 输出执行计划",
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {"task": {"type": "string"}},
+                    "required": ["task"],
+                },
+            }
+        ] if project_id == "proj-1" else [],
+    )
+
+    captured_calls: list[dict] = []
+
+    def fake_invoke(**kwargs):
+        captured_calls.append(kwargs)
+        return {"status": "ok", "tool_name": kwargs["tool_name"]}
+
+    result = collab_svc.execute_project_collaboration_runtime(
+        "proj-1",
+        "请实现一个新的前端页面并整理方案",
+        invoke_tool=fake_invoke,
+    )
+
+    assert result["tool_name"] == "execute_project_collaboration"
+    assert result["selected_employee_ids"][0] == "emp-ui"
+    assert any(item["tool_name"] == "search_project_context" for item in result["executed_calls"])
+    assert any(item["tool_name"] == "query_project_rules" for item in result["executed_calls"])
+    assert any(item["tool_name"] == "ext_plan_task" for item in result["executed_calls"])
+    assert any(item["tool_name"] == "emp_ui__skill_vue__page" for item in result["skipped_calls"])
+    assert any(call["tool_name"] == "search_project_context" for call in captured_calls)
+
+
+def test_project_collaboration_runtime_prefers_external_executor_and_stops_after_success(monkeypatch):
+    from services import dynamic_mcp_collaboration as collab_svc
+
+    class DummyProject:
+        id = "proj-1"
+        name = "项目一"
+
+    monkeypatch.setattr(
+        collab_svc,
+        "project_store",
+        type("DummyProjectStore", (), {"get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None)})(),
+    )
+    monkeypatch.setattr(
+        collab_svc,
+        "list_project_member_profiles_runtime",
+        lambda project_id, include_disabled=False, include_missing=False, rule_limit=30: [
+            {
+                "employee_id": "emp-ui",
+                "id": "emp-ui",
+                "name": "前端开发",
+                "goal": "负责页面实现",
+                "skill_names": ["vue", "ui"],
+                "rule_bindings": [{"id": "rule-ui", "title": "UI 规范", "domain": "ui"}],
+            },
+            {
+                "employee_id": "emp-api",
+                "id": "emp-api",
+                "name": "后端开发",
+                "goal": "负责接口实现",
+                "skill_names": ["python", "api"],
+                "rule_bindings": [{"id": "rule-api", "title": "接口规范", "domain": "api"}],
+            },
+        ] if project_id == "proj-1" else [],
+    )
+    monkeypatch.setattr(
+        collab_svc,
+        "list_project_proxy_tools_runtime",
+        lambda project_id, employee_id="": [
+            {
+                "tool_name": "emp_ui__skill_vue__page",
+                "employee_id": "emp-ui",
+                "skill_name": "Vue",
+                "description": "实现前端页面",
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {"task": {"type": "string"}},
+                    "required": ["task"],
+                },
+            }
+        ] if project_id == "proj-1" else [],
+    )
+    monkeypatch.setattr(
+        collab_svc,
+        "list_project_external_tools_runtime",
+        lambda project_id: [
+            {
+                "tool_name": "external__coder__execute_task",
+                "module_name": "coder",
+                "remote_tool_name": "execute_task",
+                "description": "代码 Agent，接收任务后自动执行仓库修改",
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string"},
+                        "project_name": {"type": "string"},
+                        "employee_ids": {"type": "array"},
+                        "selected_members": {"type": "array"},
+                    },
+                    "required": ["task", "project_name", "employee_ids"],
+                },
+            },
+            {
+                "tool_name": "external__files__read_file",
+                "module_name": "files",
+                "remote_tool_name": "read_file",
+                "description": "读取文件",
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        ] if project_id == "proj-1" else [],
+    )
+
+    captured_calls: list[dict] = []
+
+    def fake_invoke(**kwargs):
+        captured_calls.append(kwargs)
+        return {"status": "ok", "tool_name": kwargs["tool_name"]}
+
+    result = collab_svc.execute_project_collaboration_runtime(
+        "proj-1",
+        "请修复前端页面样式并同步调整接口交互",
+        max_tool_calls=8,
+        invoke_tool=fake_invoke,
+    )
+
+    assert result["candidate_tools"][0]["tool_name"] == "external__coder__execute_task"
+    assert result["execution_halt_reason"] == "external_executor_completed"
+    assert any(item["tool_name"] == "external__coder__execute_task" for item in result["executed_calls"])
+    assert not any(call["tool_name"] == "emp_ui__skill_vue__page" for call in captured_calls)
+    external_call = next(call for call in captured_calls if call["tool_name"] == "external__coder__execute_task")
+    assert external_call["args"]["task"] == "请修复前端页面样式并同步调整接口交互"
+    assert external_call["args"]["project_name"] == "项目一"
+    assert external_call["args"]["employee_ids"] == ["emp-ui", "emp-api"]
+    assert len(external_call["args"]["selected_members"]) == 2
 
 
 def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monkeypatch, tmp_path):
     from services import dynamic_mcp_apps_project as project_mcp_svc
 
     registered_tools: dict[str, object] = {}
+    registered_resources: dict[str, object] = {}
     captured: dict = {}
 
     class FakeMcp:
@@ -2762,8 +2976,9 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
 
             return decorator
 
-        def resource(self, *_args, **_kwargs):
+        def resource(self, uri, **_kwargs):
             def decorator(fn):
+                registered_resources[uri] = fn
                 return fn
 
             return decorator
@@ -2798,6 +3013,31 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
     monkeypatch.setattr(project_mcp_svc, "_DualTransportMcpApp", lambda sse_app, http_app: (sse_app, http_app))
     monkeypatch.setattr(
         project_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(
+                    lambda project_id: type(
+                        "DummyProject",
+                        (),
+                        {
+                            "id": "proj-1",
+                            "name": "项目一",
+                            "description": "测试项目",
+                            "mcp_enabled": True,
+                            "feedback_upgrade_enabled": False,
+                        },
+                    )()
+                    if project_id == "proj-1"
+                    else None
+                )
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        project_mcp_svc,
         "_build_project_proxy_specs",
         lambda _project_id: ({spec["scoped_tool_name"]: spec}, {"emp-1": {spec["base_tool_name"]: spec}}),
     )
@@ -2809,6 +3049,16 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
         return {"status": "ok"}
 
     monkeypatch.setattr(project_mcp_svc, "_execute_skill_proxy", fake_execute)
+    monkeypatch.setattr(
+        project_mcp_svc,
+        "execute_project_collaboration_runtime",
+        lambda **kwargs: {
+            "tool_name": "execute_project_collaboration",
+            "task": kwargs["task"],
+            "selected_employee_ids": list(kwargs["employee_ids"]),
+            "auto_execute": kwargs["auto_execute"],
+        },
+    )
 
     project_mcp_svc.create_project_mcp(
         "proj-1",
@@ -2819,6 +3069,11 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
     )
 
     result = registered_tools[spec["scoped_tool_name"]](args={"sql": "show tables"}, timeout_sec=15)
+    collaboration_result = registered_tools["execute_project_collaboration"](
+        "完成前端页面",
+        employee_ids=["emp-1"],
+        auto_execute=False,
+    )
 
     assert result["status"] == "ok"
     assert captured["spec"] == spec
@@ -2827,6 +3082,140 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
     assert captured["kwargs"]["employee_id"] == "emp-1"
     assert captured["kwargs"]["args"] == {"sql": "show tables"}
     assert captured["kwargs"]["timeout_sec"] == 15
+    assert collaboration_result["tool_name"] == "execute_project_collaboration"
+    assert collaboration_result["selected_employee_ids"] == ["emp-1"]
+    assert collaboration_result["auto_execute"] is False
+    assert "project://proj-1/usage-guide" in registered_resources
+    usage_guide = registered_resources["project://proj-1/usage-guide"]()
+    assert "execute_project_collaboration" in usage_guide
+    assert "自主判断单人主责或多人协作" in usage_guide
+
+
+def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+
+    registered_tools: dict[str, object] = {}
+    registered_resources: dict[str, object] = {}
+
+    class FakeMcp:
+        def tool(self, name=None, description=None):
+            def decorator(fn):
+                registered_tools[name or fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri, **_kwargs):
+            def decorator(fn):
+                registered_resources[uri] = fn
+                return fn
+
+            return decorator
+
+    class DummyProject:
+        id = "proj-1"
+        name = "项目一"
+
+    monkeypatch.setattr(query_mcp_svc, "_new_mcp", lambda _service_name: FakeMcp())
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type("DummyProjectStore", (), {"get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None)})(),
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "list_project_member_profiles_runtime",
+        lambda project_id, include_disabled=False, include_missing=False, rule_limit=30: [
+            {"employee_id": "emp-1", "name": "员工一"}
+        ] if project_id == "proj-1" else [],
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "query_project_rules_runtime",
+        lambda project_id, keyword="", employee_id="": [{"id": "rule-1"}] if project_id == "proj-1" else [],
+    )
+
+    query_mcp_svc.create_query_mcp()
+
+    assert "list_project_members" in registered_tools
+    assert "get_project_runtime_context" in registered_tools
+    assert "list_project_proxy_tools" in registered_tools
+    assert "invoke_project_skill_tool" in registered_tools
+    assert "execute_project_collaboration" in registered_tools
+    assert "query://usage-guide" in registered_resources
+    query_usage_guide = registered_resources["query://usage-guide"]()
+    assert "execute_project_collaboration" in query_usage_guide
+    assert "统一编排入口" in query_usage_guide
+    assert "不预设固定行业分工模板" in query_usage_guide
+
+    import sys
+    import types
+
+    runtime_module = types.SimpleNamespace(
+        list_project_proxy_tools_runtime=lambda project_id, employee_id="": [
+            {"tool_name": "skill_db__query_db", "employee_id": "emp-1"}
+        ] if project_id == "proj-1" else [],
+        invoke_project_skill_tool_runtime=lambda **kwargs: {
+            "tool_name": kwargs["tool_name"],
+            "employee_id": kwargs["employee_id"] or "emp-1",
+            "status": "ok",
+        },
+        execute_project_collaboration_runtime=lambda **kwargs: {
+            "tool_name": "execute_project_collaboration",
+            "task": kwargs["task"],
+            "selected_employee_ids": kwargs["employee_ids"] or ["emp-1"],
+            "status": "ok",
+        },
+    )
+    original_runtime_module = sys.modules.get("services.dynamic_mcp_runtime")
+    sys.modules["services.dynamic_mcp_runtime"] = runtime_module
+    try:
+        members = registered_tools["list_project_members"]("proj-1")
+        context = registered_tools["get_project_runtime_context"]("proj-1")
+        tools = registered_tools["list_project_proxy_tools"]("proj-1", "emp-1")
+        invoke_result = registered_tools["invoke_project_skill_tool"](
+            "proj-1",
+            "skill_db__query_db",
+            "emp-1",
+            args={"sql": "show tables"},
+            timeout_sec=20,
+        )
+        collaboration_result = registered_tools["execute_project_collaboration"](
+            "proj-1",
+            "完成页面协作",
+            employee_ids=["emp-1"],
+            auto_execute=False,
+            timeout_sec=20,
+        )
+    finally:
+        if original_runtime_module is None:
+            sys.modules.pop("services.dynamic_mcp_runtime", None)
+        else:
+            sys.modules["services.dynamic_mcp_runtime"] = original_runtime_module
+
+    assert members["project_id"] == "proj-1"
+    assert members["total"] == 1
+    assert members["items"][0]["employee_id"] == "emp-1"
+
+    assert context["project_id"] == "proj-1"
+    assert context["member_count"] == 1
+    assert context["scoped_proxy_tool_count"] == 1
+    assert context["rule_count"] == 1
+
+    assert tools["project_id"] == "proj-1"
+    assert tools["employee_id"] == "emp-1"
+    assert tools["total"] == 1
+    assert tools["items"][0]["tool_name"] == "skill_db__query_db"
+
+    assert invoke_result["project_id"] == "proj-1"
+    assert invoke_result["project_name"] == "项目一"
+    assert invoke_result["tool_name"] == "skill_db__query_db"
+    assert invoke_result["employee_id"] == "emp-1"
+    assert invoke_result["status"] == "ok"
+    assert collaboration_result["project_id"] == "proj-1"
+    assert collaboration_result["tool_name"] == "execute_project_collaboration"
+    assert collaboration_result["task"] == "完成页面协作"
+    assert collaboration_result["selected_employee_ids"] == ["emp-1"]
 
 
 def test_project_chat_store_truncate_messages_updates_session_snapshot(tmp_path):
@@ -3195,6 +3584,518 @@ def test_backfill_existing_skill_packages_registers_history(tmp_path, monkeypatc
     assert [skill.id for skill in result.created] == ["css", "system-mcp-prompts-chat"]
     assert skill_store.get("css") is not None
     assert skill_store.get("system-mcp-prompts-chat") is not None
+
+
+def test_build_skill_record_from_package_dir_reads_proxy_entries(tmp_path):
+    import json
+
+    from services import skill_import_service as import_svc
+
+    package_dir = tmp_path / "skill-packages" / "proxy-skill"
+    (package_dir / "scripts").mkdir(parents=True)
+    (package_dir / "scripts" / "validate.py").write_text("print('ok')\n", encoding="utf-8")
+    (package_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "Proxy Skill",
+                "description": "skill with explicit proxy entries",
+                "proxy_entries": [
+                    {
+                        "name": "validate",
+                        "path": "scripts/validate.py",
+                        "runtime": "python",
+                        "description": "Validate current project",
+                        "args_schema": {
+                            "type": "object",
+                            "properties": {"target": {"type": "string"}},
+                        },
+                        "employee_id_flag": "",
+                        "api_key_flag": "--token",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    skill = import_svc.build_skill_record_from_package_dir(package_dir, created_by="tester")
+
+    assert len(skill.proxy_entries) == 1
+    assert skill.proxy_entries[0].name == "validate"
+    assert skill.proxy_entries[0].path == "scripts/validate.py"
+    assert skill.proxy_entries[0].runtime == "python"
+    assert skill.proxy_entries[0].employee_id_flag == ""
+    assert skill.proxy_entries[0].api_key_flag == "--token"
+    assert len(skill.tools) == 1
+    assert skill.tools[0].name == "validate"
+    assert skill.tools[0].parameters["type"] == "object"
+
+
+def test_build_skill_record_from_package_dir_infers_proxy_entries_when_missing_declaration(tmp_path):
+    from services import skill_import_service as import_svc
+
+    package_dir = tmp_path / "skill-packages" / "auto-proxy-skill"
+    (package_dir / "scripts").mkdir(parents=True)
+    (package_dir / "scripts" / "run.py").write_text("print('ok')\n", encoding="utf-8")
+    (package_dir / "SKILL.md").write_text(
+        "---\nname: auto-proxy-skill\ndescription: inferred proxy entries\n---\n",
+        encoding="utf-8",
+    )
+
+    skill = import_svc.build_skill_record_from_package_dir(package_dir, created_by="tester")
+
+    assert len(skill.proxy_entries) == 1
+    assert skill.proxy_entries[0].name == "run"
+    assert skill.proxy_entries[0].path == "scripts/run.py"
+    assert skill.proxy_entries[0].runtime == "python"
+    assert skill.proxy_entries[0].source == "inferred"
+
+
+def test_discover_skill_proxy_specs_prefers_manifest_proxy_entries(tmp_path):
+    from services import dynamic_mcp_skill_proxies as proxy_svc
+    from stores import mcp_bridge
+
+    package_dir = tmp_path / "skill-packages" / "proxy-skill"
+    (package_dir / "scripts").mkdir(parents=True)
+    (package_dir / "tools").mkdir(parents=True)
+    (package_dir / "scripts" / "validate.py").write_text("print('validate')\n", encoding="utf-8")
+    (package_dir / "tools" / "legacy.py").write_text("print('legacy')\n", encoding="utf-8")
+
+    skill = mcp_bridge.Skill(
+        id="proxy-skill",
+        version="1.0.0",
+        name="Proxy Skill",
+        description="",
+        mcp_service="",
+        created_by="tester",
+        package_dir=str(package_dir),
+        proxy_entries=(
+            mcp_bridge.ProxyEntryDef(
+                name="validate",
+                path="scripts/validate.py",
+                runtime="python",
+                description="Validate current project",
+                source="declared",
+                args_schema={
+                    "type": "object",
+                    "properties": {"target": {"type": "string"}},
+                },
+            ),
+        ),
+    )
+
+    specs = proxy_svc.discover_skill_proxy_specs(skill)
+
+    assert len(specs) == 1
+    assert specs[0]["entry_name"] == "validate"
+    assert specs[0]["runtime"] == "python"
+    assert specs[0]["script_type"] == "py"
+    assert specs[0]["parameters_schema"]["type"] == "object"
+    assert "legacy" not in {item["entry_name"] for item in specs}
+
+
+def test_execute_skill_proxy_supports_command_entries_and_custom_flags(tmp_path):
+    import json
+    import sys
+
+    from services import dynamic_mcp_skill_executor as executor_svc
+
+    script_path = tmp_path / "runner.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "import argparse",
+                "import json",
+                "import os",
+                "",
+                "parser = argparse.ArgumentParser()",
+                "parser.add_argument('--message')",
+                "parser.add_argument('--worker')",
+                "args = parser.parse_args()",
+                "print(json.dumps({'message': args.message, 'worker': args.worker, 'cwd': os.getcwd()}))",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = executor_svc.execute_skill_proxy(
+        {
+            "script_path": str(script_path),
+            "runtime": "command",
+            "command": [sys.executable],
+            "employee_id_flag": "--worker",
+            "api_key_flag": "",
+            "cwd": str(tmp_path),
+        },
+        project_root=tmp_path / "workspace",
+        args={"message": "hello"},
+        employee_id="emp-42",
+    )
+
+    payload = json.loads(result["stdout"])
+
+    assert result["status"] == "ok"
+    assert result["command"][0] == sys.executable
+    assert payload["message"] == "hello"
+    assert payload["worker"] == "emp-42"
+    assert payload["cwd"] == str(tmp_path.resolve())
+
+
+@pytest.mark.asyncio
+async def test_skill_list_payload_includes_proxy_status(tmp_path, monkeypatch):
+    from routers import skills as skills_router
+    from stores import mcp_bridge
+
+    package_dir = tmp_path / "skill-packages" / "auto-proxy-skill"
+    (package_dir / "scripts").mkdir(parents=True)
+    (package_dir / "scripts" / "run.py").write_text("print('ok')\n", encoding="utf-8")
+    (package_dir / "SKILL.md").write_text(
+        "---\nname: auto-proxy-skill\ndescription: inferred proxy entries\n---\n",
+        encoding="utf-8",
+    )
+
+    skill = mcp_bridge.Skill(
+        id="auto-proxy-skill",
+        version="1.0.0",
+        name="Auto Proxy Skill",
+        description="",
+        mcp_service="",
+        created_by="tester",
+        package_dir=str(package_dir),
+    )
+
+    class StubSkillStore:
+        def list_all(self):
+            return [skill]
+
+        def get(self, skill_id):
+            return skill if skill_id == "auto-proxy-skill" else None
+
+    monkeypatch.setattr(skills_router, "skill_store", StubSkillStore())
+    monkeypatch.setattr(skills_router, "_ensure_historical_skills_registered", lambda: None)
+
+    payload = await skills_router.list_skills({"sub": "tester"})
+
+    assert len(payload["skills"]) == 1
+    item = payload["skills"][0]
+    assert item["proxy_status"]["declaration_status"] == "auto_inferred"
+    assert item["proxy_status"]["effective_count"] == 1
+    assert item["proxy_entries"][0]["name"] == "run"
+    assert item["proxy_entries"][0]["source"] == "inferred"
+    assert item["proxy_status"]["diagnostics"]["candidate_files"] == ["scripts/run.py"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_skill_proxy_entries_persists_inferred_entries(tmp_path, monkeypatch):
+    from routers import skills as skills_router
+    from stores import mcp_bridge
+
+    package_dir = tmp_path / "skill-packages" / "auto-proxy-skill"
+    (package_dir / "scripts").mkdir(parents=True)
+    (package_dir / "scripts" / "run.py").write_text("print('ok')\n", encoding="utf-8")
+    (package_dir / "SKILL.md").write_text(
+        "---\nname: auto-proxy-skill\ndescription: inferred proxy entries\n---\n",
+        encoding="utf-8",
+    )
+
+    stored_skill = mcp_bridge.Skill(
+        id="auto-proxy-skill",
+        version="1.0.0",
+        name="Auto Proxy Skill",
+        description="",
+        mcp_service="",
+        created_by="tester",
+        package_dir=str(package_dir),
+        proxy_entries=(),
+    )
+    saved: dict[str, object] = {}
+
+    class StubSkillStore:
+        def get(self, skill_id):
+            return stored_skill if skill_id == "auto-proxy-skill" else None
+
+        def save(self, skill):
+            saved["skill"] = skill
+
+    monkeypatch.setattr(skills_router, "skill_store", StubSkillStore())
+    monkeypatch.setattr(skills_router, "_ensure_historical_skills_registered", lambda: None)
+    monkeypatch.setattr(skills_router, "assert_can_manage_record", lambda *args, **kwargs: None)
+
+    payload = await skills_router.refresh_skill_proxy_entries("auto-proxy-skill", {"sub": "tester"})
+
+    assert payload["status"] == "updated"
+    assert payload["skill"]["proxy_status"]["declaration_status"] == "auto_inferred"
+    assert payload["skill"]["proxy_entries"][0]["name"] == "run"
+    assert saved["skill"].proxy_entries[0].source == "inferred"
+
+
+@pytest.mark.asyncio
+async def test_install_skill_syncs_employee_skills_and_defaults_enabled_tools(tmp_path, monkeypatch):
+    from routers import skills as skills_router
+    from stores import mcp_bridge
+    from stores.json.employee_store import EmployeeConfig, EmployeeStore
+
+    employee_store = EmployeeStore(tmp_path)
+    employee_store.save(EmployeeConfig(id="emp-1", name="员工一", skills=[]))
+
+    skill = mcp_bridge.Skill(
+        id="skill-1",
+        version="1.0.0",
+        name="Skill One",
+        description="",
+        mcp_service="",
+        tools=(
+            mcp_bridge.ToolDef(name="lookup", description=""),
+            mcp_bridge.ToolDef(name="analyze", description=""),
+        ),
+    )
+
+    class StubSkillStore:
+        def get(self, skill_id):
+            return skill if skill_id == "skill-1" else None
+
+    class StubBindingStore:
+        def __init__(self):
+            self.saved = []
+
+        def add(self, binding):
+            self.saved = [item for item in self.saved if item.skill_id != binding.skill_id]
+            self.saved.append(binding)
+
+        def get_bindings(self, employee_id):
+            return [item for item in self.saved if item.employee_id == employee_id]
+
+    binding_store = StubBindingStore()
+
+    monkeypatch.setattr(skills_router, "employee_store", employee_store)
+    monkeypatch.setattr(skills_router, "skill_store", StubSkillStore())
+    monkeypatch.setattr(skills_router, "binding_store", binding_store)
+
+    payload = await skills_router.install_skill(
+        "emp-1",
+        skills_router.SkillInstallReq(skill_id="skill-1", enabled_tools=[]),
+    )
+
+    employee = employee_store.get("emp-1")
+    assert payload["status"] == "installed"
+    assert payload["enabled_tools"] == ["lookup", "analyze"]
+    assert employee is not None
+    assert employee.skills == ["skill-1"]
+    assert binding_store.get_bindings("emp-1")[0].enabled_tools == ("lookup", "analyze")
+
+
+@pytest.mark.asyncio
+async def test_employee_skills_merges_employee_profile_and_bindings(tmp_path, monkeypatch):
+    from routers import skills as skills_router
+    from stores import mcp_bridge
+    from stores.json.employee_store import EmployeeConfig, EmployeeStore
+
+    employee_store = EmployeeStore(tmp_path)
+    employee_store.save(EmployeeConfig(id="emp-1", name="员工一", skills=["skill-profile", "skill-binding"]))
+
+    class StubSkillStore:
+        def get(self, skill_id):
+            return mcp_bridge.Skill(
+                id=skill_id,
+                version="1.0.0",
+                name=f"Name {skill_id}",
+                description="",
+                mcp_service="",
+                tools=(mcp_bridge.ToolDef(name="run", description=""),) if skill_id == "skill-profile" else (),
+            )
+
+    class StubBindingStore:
+        def get_bindings(self, employee_id):
+            return [
+                mcp_bridge.EmployeeSkillBinding(
+                    employee_id=employee_id,
+                    skill_id="skill-binding",
+                    enabled_tools=("proxy",),
+                )
+            ]
+
+    monkeypatch.setattr(skills_router, "employee_store", employee_store)
+    monkeypatch.setattr(skills_router, "skill_store", StubSkillStore())
+    monkeypatch.setattr(skills_router, "binding_store", StubBindingStore())
+
+    payload = await skills_router.employee_skills("emp-1")
+
+    assert payload["bindings"] == [
+        {
+            "skill_id": "skill-profile",
+            "skill_name": "Name skill-profile",
+            "enabled_tools": ["run"],
+            "installed_at": "",
+            "source": "employee_profile",
+        },
+        {
+            "skill_id": "skill-binding",
+            "skill_name": "Name skill-binding",
+            "enabled_tools": ["proxy"],
+            "installed_at": payload["bindings"][1]["installed_at"],
+            "source": "binding",
+        },
+    ]
+    assert payload["bindings"][1]["installed_at"]
+
+
+@pytest.mark.asyncio
+async def test_uninstall_skill_removes_binding_and_employee_skill(tmp_path, monkeypatch):
+    from routers import skills as skills_router
+    from stores.json.employee_store import EmployeeConfig, EmployeeStore
+
+    employee_store = EmployeeStore(tmp_path)
+    employee_store.save(EmployeeConfig(id="emp-1", name="员工一", skills=["skill-1"]))
+
+    class StubBindingStore:
+        def __init__(self):
+            self.skill_ids = {"skill-1"}
+
+        def remove(self, employee_id, skill_id):
+            if skill_id not in self.skill_ids:
+                return False
+            self.skill_ids.remove(skill_id)
+            return True
+
+    monkeypatch.setattr(skills_router, "employee_store", employee_store)
+    monkeypatch.setattr(skills_router, "binding_store", StubBindingStore())
+
+    payload = await skills_router.uninstall_skill("emp-1", "skill-1")
+
+    employee = employee_store.get("emp-1")
+    assert payload["status"] == "uninstalled"
+    assert payload["removed_binding"] is True
+    assert payload["removed_employee_skill"] is True
+    assert employee is not None
+    assert employee.skills == []
+
+
+def test_normalize_project_chat_settings_supports_employee_coordination_mode():
+    from routers.projects import _normalize_project_chat_settings
+
+    default_settings = _normalize_project_chat_settings({})
+    manual_settings = _normalize_project_chat_settings(
+        {"employee_coordination_mode": "manual"}
+    )
+    invalid_settings = _normalize_project_chat_settings(
+        {"employee_coordination_mode": "planner-workers"}
+    )
+
+    assert default_settings["employee_coordination_mode"] == "auto"
+    assert manual_settings["employee_coordination_mode"] == "manual"
+    assert invalid_settings["employee_coordination_mode"] == "auto"
+
+
+def test_build_project_chat_messages_includes_multi_employee_coordination_prompt():
+    from routers.projects import _build_project_chat_messages
+    from stores.json.project_store import ProjectConfig
+
+    project = ProjectConfig(id="proj-1", name="项目一", description="测试项目")
+    selected_employees = [
+        {
+            "id": "emp-1",
+            "name": "产品经理",
+            "goal": "负责需求拆解",
+            "skill_names": ["prd", "planning"],
+            "rule_bindings": [{"id": "rule-1", "title": "需求追踪", "domain": "product"}],
+            "default_workflow": ["澄清需求", "拆解任务"],
+            "tool_usage_policy": "先检索规则，再调用技能",
+        },
+        {
+            "id": "emp-2",
+            "name": "前端开发",
+            "goal": "负责页面实现",
+            "skill_names": ["vue", "ui"],
+            "rule_bindings": [{"id": "rule-2", "title": "UI 规范", "domain": "ui"}],
+            "default_workflow": ["分析现状", "编码实现"],
+        },
+    ]
+    tools = [
+        {"tool_name": "emp_1__prd__draft", "employee_id": "emp-1"},
+        {"tool_name": "emp_2__vue__page", "employee_id": "emp-2"},
+        {"tool_name": "query_project_rules", "employee_id": ""},
+    ]
+
+    messages = _build_project_chat_messages(
+        project,
+        "请协作完成一个新页面",
+        [],
+        selected_employees=selected_employees,
+        tools=tools,
+        employee_coordination_mode="auto",
+    )
+    system_prompt = str(messages[0]["content"])
+
+    assert "多员工自动协作" in system_prompt
+    assert "产品经理 (emp-1)" in system_prompt
+    assert "前端开发 (emp-2)" in system_prompt
+    assert "emp_1__prd__draft" in system_prompt
+    assert "emp_2__vue__page" in system_prompt
+    assert "共享/全局工具" in system_prompt
+    assert "项目手册、员工手册、规则和工具" in system_prompt
+    assert "不要预设固定行业分工模板" in system_prompt
+
+    manual_messages = _build_project_chat_messages(
+        project,
+        "请协作完成一个新页面",
+        [],
+        selected_employees=selected_employees,
+        tools=tools,
+        employee_coordination_mode="manual",
+    )
+    assert "多员工自动协作" not in str(manual_messages[0]["content"])
+
+
+def test_build_project_manual_template_payload_prefers_ai_decided_collaboration(monkeypatch):
+    from routers import employees as employees_router
+    from routers import projects as projects_router
+
+    class DummyProject:
+        id = "proj-1"
+        name = "项目一"
+        description = "测试项目"
+        type = "mixed"
+        feedback_upgrade_enabled = True
+
+    class DummyEmployee:
+        id = "emp-1"
+        name = "通用员工"
+
+    class DummyMember:
+        role = "member"
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type("DummyProjectStore", (), {"get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None)})(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "_project_member_details",
+        lambda project_id: [
+            {
+                "employee": DummyEmployee(),
+                "member": DummyMember(),
+                "skills": [],
+                "rule_bindings": [],
+            }
+        ] if project_id == "proj-1" else [],
+    )
+    monkeypatch.setattr(
+        employees_router,
+        "_build_employee_manual_payload",
+        lambda employee_id: {"manual": f"# {employee_id} 手册\n\n- 默认按规则与工具自主判断是否协作"},
+    )
+
+    payload = projects_router._build_project_manual_template_payload("proj-1")
+    manual = str(payload["manual"])
+
+    assert "自主判断单人主责还是多人协作" in manual
+    assert "execute_project_collaboration" in manual
+    assert "不要默认多员工并行" in manual
 
 
 if __name__ == "__main__":

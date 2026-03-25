@@ -14,6 +14,7 @@ from core.deps import project_material_store, project_store, project_studio_expo
 from routers import (
     agent_templates,
     init_auth,
+    market,
     system_config,
     projects,
     employees,
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
 
     for r in (
         init_auth,
+        market,
         agent_templates,
         system_config,
         projects,

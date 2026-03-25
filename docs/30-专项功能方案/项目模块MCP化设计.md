@@ -72,10 +72,13 @@
 - `submit_project_feedback_bug(employee_id, title, symptom, expected, ...)`
 - `query_project_rules(keyword="", employee_id="")`
 - `list_project_proxy_tools()`
+- `execute_project_collaboration(task, employee_ids=[], max_employees=3, max_tool_calls=6, auto_execute=true, include_external_tools=true, timeout_sec=30)`
 - `invoke_project_skill_tool(tool_name, employee_id, args/args_json, timeout_sec)`
 
 说明：
 - `recall_project_memory` 默认使用项目 `name` 作为 `project_name` 过滤。
+- 协作型任务优先通过 `execute_project_collaboration(...)` 进入，由项目 MCP 提供统一编排入口；是否单人主责、是否需要多人协作以及如何拆分，仍由 AI 结合项目手册、员工手册、规则和工具自主判断，并在参数可安全映射时自动执行。
+- 需要精细控制执行顺序或参数时，再退回 `list_project_members` / `get_project_runtime_context` / `list_project_proxy_tools` / `invoke_project_skill_tool` 手动编排。
 - 技能执行通过本地脚本代理直接调用，不依赖员工 MCP 转发。
 - 反馈工单以 `project_id` 入库，员工仅作为归属人。
 

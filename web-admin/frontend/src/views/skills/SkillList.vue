@@ -26,6 +26,78 @@
       <el-table-column label="工具数" width="80" align="center">
         <template #default="{ row }">{{ row.tools?.length || 0 }}</template>
       </el-table-column>
+      <el-table-column label="代理声明 / 生效状态" width="260">
+        <template #default="{ row }">
+          <div class="proxy-status-cell">
+            <div class="proxy-status-tags">
+              <el-tag :type="proxyDeclarationType(row)" size="small">
+                {{ proxyDeclarationLabel(row) }}
+              </el-tag>
+              <el-tag :type="proxyEffectiveType(row)" size="small">
+                {{ proxyEffectiveLabel(row) }}
+              </el-tag>
+            </div>
+            <div class="proxy-status-summary">
+              {{ row.proxy_status?.summary || '未分析' }}
+            </div>
+            <el-popover placement="left" trigger="hover" width="320">
+              <template #reference>
+                <el-button text type="primary" size="small">查看详情</el-button>
+              </template>
+              <div class="proxy-popover">
+                <div class="proxy-popover__title">代理状态</div>
+                <div class="proxy-popover__item">显式声明: {{ row.proxy_status?.declared_count || 0 }}</div>
+                <div class="proxy-popover__item">解析入口: {{ row.proxy_status?.resolved_count || 0 }}</div>
+                <div class="proxy-popover__item">生效入口: {{ row.proxy_status?.effective_count || 0 }}</div>
+                <div class="proxy-popover__item">
+                  来源:
+                  {{
+                    row.proxy_status?.declaration_status === 'declared'
+                      ? '技能包显式声明'
+                      : row.proxy_status?.declaration_status === 'auto_inferred'
+                        ? '上传时自动推断'
+                      : '无'
+                  }}
+                </div>
+                <div
+                  v-for="(tip, index) in (row.proxy_status?.diagnostics?.guidance || [])"
+                  :key="`${row.id}-tip-${index}`"
+                  class="proxy-popover__tip"
+                >
+                  {{ tip }}
+                </div>
+                <div v-if="(row.proxy_entries || []).length" class="proxy-popover__entries">
+                  <div class="proxy-popover__subtitle">入口列表</div>
+                  <div
+                    v-for="entry in row.proxy_entries"
+                    :key="`${row.id}-${entry.name}-${entry.path}`"
+                    class="proxy-entry"
+                  >
+                    <div class="proxy-entry__head">
+                      <span>{{ entry.name }}</span>
+                      <el-tag size="small" effect="plain">
+                        {{ entry.source === 'declared' ? '显式' : '自动' }}
+                      </el-tag>
+                    </div>
+                    <div class="proxy-entry__meta">{{ entry.runtime || '-' }} · {{ entry.path || '-' }}</div>
+                  </div>
+                </div>
+                <div class="proxy-popover__actions" v-if="canManageRow(row)">
+                  <el-button
+                    size="small"
+                    type="primary"
+                    plain
+                    :disabled="!row.proxy_status?.diagnostics?.can_refresh"
+                    @click.stop="refreshProxyEntries(row)"
+                  >
+                    重扫声明
+                  </el-button>
+                </div>
+              </div>
+            </el-popover>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="350" fixed="right">
         <template #default="{ row }">
           <el-button v-if="row.mcp_enabled" text type="success" size="small" @click="showSingleMcpConfig(row)">接入</el-button>
@@ -149,6 +221,30 @@ function canManageRow(row) {
   return canManageRecord(row)
 }
 
+function proxyDeclarationLabel(row) {
+  const status = row?.proxy_status?.declaration_status
+  if (status === 'declared') return '已声明'
+  if (status === 'auto_inferred') return '自动推断'
+  return '无声明'
+}
+
+function proxyDeclarationType(row) {
+  const status = row?.proxy_status?.declaration_status
+  if (status === 'declared') return 'success'
+  if (status === 'auto_inferred') return 'warning'
+  return 'info'
+}
+
+function proxyEffectiveLabel(row) {
+  const count = Number(row?.proxy_status?.effective_count || 0)
+  return count > 0 ? `${count} 个生效` : '未生效'
+}
+
+function proxyEffectiveType(row) {
+  const count = Number(row?.proxy_status?.effective_count || 0)
+  return count > 0 ? 'success' : 'info'
+}
+
 async function enableMcp(skill) {
   try {
     loading.value = true
@@ -160,6 +256,24 @@ async function enableMcp(skill) {
     showSingleMcpConfig(updatedSkill)
   } catch {
     ElMessage.error('开启 MCP 失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function refreshProxyEntries(skill) {
+  try {
+    loading.value = true
+    const { skill: updatedSkill } = await api.post(`/skills/${skill.id}/refresh-proxy-entries`)
+    const index = skills.value.findIndex((item) => item.id === skill.id)
+    if (index >= 0) {
+      skills.value[index] = updatedSkill
+    } else {
+      await fetchSkills()
+    }
+    ElMessage.success('已完成代理声明重扫')
+  } catch {
+    ElMessage.error('重扫代理声明失败')
   } finally {
     loading.value = false
   }
@@ -272,6 +386,86 @@ onMounted(fetchSkills)
 
 .tag-item {
   margin-right: 6px;
+}
+
+.proxy-status-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.proxy-status-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.proxy-status-summary {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.proxy-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.proxy-popover__title {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.proxy-popover__item {
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+.proxy-popover__tip {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.proxy-popover__entries {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--el-border-color-light);
+}
+
+.proxy-popover__subtitle {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.proxy-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.proxy-entry__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+.proxy-entry__meta {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  word-break: break-all;
+}
+
+.proxy-popover__actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 6px;
+  border-top: 1px dashed var(--el-border-color-light);
 }
 
 .mcp-desc {

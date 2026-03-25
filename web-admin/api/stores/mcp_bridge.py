@@ -57,6 +57,7 @@ EmployeeSkillBinding = _skills_mod.EmployeeSkillBinding
 Skill = _skills_mod.Skill
 ToolDef = _skills_mod.ToolDef
 ResourceDef = _skills_mod.ResourceDef
+ProxyEntryDef = _skills_mod.ProxyEntryDef
 Rule = _rules_mod.Rule
 Persona = _persona_mod.Persona
 Memory = _memory_mod.Memory

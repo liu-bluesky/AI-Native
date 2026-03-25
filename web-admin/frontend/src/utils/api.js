@@ -1,5 +1,6 @@
 import axios from 'axios'
-import { clearPermissionArray } from './permissions.js'
+
+import { clearAuthSession } from './auth-storage.js'
 
 const api = axios.create({ baseURL: '/api' })
 
@@ -45,11 +46,12 @@ api.interceptors.response.use(
   (res) => res.data,
   (err) => {
     if (err.response?.status === 401) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('role')
-      localStorage.removeItem('username')
-      clearPermissionArray()
-      window.location.hash = '#/login'
+      clearAuthSession()
+      const currentPath = String(window.location.hash || '#/intro').replace(/^#/, '') || '/intro'
+      const publicPaths = new Set(['/intro', '/market', '/login', '/register'])
+      if (!publicPaths.has(currentPath)) {
+        window.location.hash = '#/login'
+      }
     }
     return Promise.reject(normalizeApiError(err))
   },

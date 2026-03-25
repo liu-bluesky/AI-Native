@@ -1543,6 +1543,29 @@
                           </el-option>
                         </el-select>
                       </el-form-item>
+                      <el-form-item>
+                        <template #label>
+                          <span class="label-with-tooltip">
+                            协作模式
+                            <el-tooltip
+                              content="多选员工时，自动协作会把任务拆解、协作边界和工具约束写入系统提示词；是否需要多人协作以及如何分工，仍由 AI 结合手册和规则自主判断。手动模式只保留当前工具池，不额外注入协作约束。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <el-select
+                          v-model="projectChatSettings.employee_coordination_mode"
+                          class="full-width"
+                          :disabled="!selectedProjectId"
+                        >
+                          <el-option label="自动协作" value="auto" />
+                          <el-option label="手动模式" value="manual" />
+                        </el-select>
+                      </el-form-item>
 
                       <el-form-item v-if="hasSelectedProject">
                         <template #label>
@@ -2341,6 +2364,7 @@ const CHAT_SETTINGS_DEFAULTS = {
   connector_sandbox_mode_explicit: false,
   selected_employee_id: "",
   selected_employee_ids: [],
+  employee_coordination_mode: "auto",
   provider_id: "",
   model_name: "",
   temperature: 0.1,
@@ -4279,6 +4303,12 @@ function normalizeProjectChatSettings(raw) {
     normalizedSandboxMode === "read-only" && !sandboxModeExplicit
       ? CHAT_SETTINGS_DEFAULTS.connector_sandbox_mode
       : normalizedSandboxMode;
+  const coordinationMode = String(
+    source.employee_coordination_mode ||
+      CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
+  )
+    .trim()
+    .toLowerCase();
   return {
     ...CHAT_SETTINGS_DEFAULTS,
     ...source,
@@ -4294,6 +4324,8 @@ function normalizeProjectChatSettings(raw) {
         CHAT_SETTINGS_DEFAULTS.connector_workspace_path,
     ).trim(),
     selected_employee_ids: selectedEmployeeIds,
+    employee_coordination_mode:
+      coordinationMode === "manual" ? "manual" : "auto",
     enabled_project_tool_names: normalizeStringList(
       source.enabled_project_tool_names ||
         CHAT_SETTINGS_DEFAULTS.enabled_project_tool_names,
@@ -7425,6 +7457,12 @@ function buildProjectChatSettingsPayload() {
     chat_mode: "system",
     selected_employee_id: employeeIds.length === 1 ? employeeIds[0] : "",
     selected_employee_ids: employeeIds,
+    employee_coordination_mode: String(
+      projectChatSettings.value.employee_coordination_mode ||
+        CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
+    )
+      .trim()
+      .toLowerCase(),
     provider_id: String(selectedProviderId.value || "").trim(),
     model_name: String(selectedModelName.value || "").trim(),
     temperature: Number(
@@ -8689,6 +8727,12 @@ async function prepareExternalAgentSession({
       ).trim(),
       employee_ids: employeeIds,
       employee_id: employeeIds.length === 1 ? employeeIds[0] : undefined,
+      employee_coordination_mode: String(
+        projectChatSettings.value.employee_coordination_mode ||
+          CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
+      )
+        .trim()
+        .toLowerCase(),
       system_prompt: systemPrompt.value || undefined,
     });
     await donePromise;
@@ -9144,6 +9188,12 @@ async function doSend() {
       message: finalUserPrompt,
       employee_ids: employeeIds,
       employee_id: employeeIds.length === 1 ? employeeIds[0] : undefined,
+      employee_coordination_mode: String(
+        projectChatSettings.value.employee_coordination_mode ||
+          CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
+      )
+        .trim()
+        .toLowerCase(),
       history: historyRows,
       provider_id: selectedProviderId.value || undefined,
       model_name: selectedModelName.value || undefined,

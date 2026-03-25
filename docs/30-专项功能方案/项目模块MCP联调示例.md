@@ -114,6 +114,44 @@ curl -sS -X POST "http://localhost:8000/mcp/projects/$PROJECT_ID/mcp?key=$API_KE
   }'
 ```
 
+### 6.4 项目协作编排执行
+
+适用场景：
+- 接入方只连接项目 MCP，希望直接输入一个任务，由 AI 结合项目手册、员工手册、规则和工具，自主判断是否需要多人协作并尝试执行。
+- 不想自己先做“选人 -> 查工具 -> 手动逐个调用”的编排。
+
+```bash
+curl -sS -X POST "http://localhost:8000/mcp/projects/$PROJECT_ID/mcp?key=$API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tools/call",
+    "params": {
+      "name": "execute_project_collaboration",
+      "arguments": {
+        "task": "请完成一个新的前端页面需求，先梳理规则，再由 AI 判断是否需要协作并输出实现方案",
+        "max_employees": 3,
+        "max_tool_calls": 6,
+        "auto_execute": true,
+        "include_external_tools": true
+      }
+    }
+  }'
+```
+
+返回结果说明：
+- `selected_employee_ids`：本轮被纳入协作范围的项目成员。
+- `candidate_tools`：按任务匹配出的候选工具。
+- `plan_steps`：项目 MCP 生成的协作执行步骤。
+- `executed_calls`：已自动执行的安全调用。
+- `skipped_calls`：因参数不可安全映射等原因未自动执行的调用。
+
+建议：
+- 如果只是做项目内多员工协作，优先调用 `execute_project_collaboration`。
+- `execute_project_collaboration` 是统一编排入口，不预设前端/后端/行业顾问等固定分工模板；若单个成员已能闭环，可保持单人主责。
+- 如果需要人工精细控制参数或执行顺序，再回退到 `list_project_members` / `get_project_runtime_context` / `list_project_proxy_tools` / `invoke_project_skill_tool`。
+
 ## 7. 前端入口
 
 - 项目列表：`#/projects`

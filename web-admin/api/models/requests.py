@@ -392,6 +392,7 @@ class ProjectChatReq(BaseModel):
     skill_resource_directory: str = ""
     employee_id: str = ""
     employee_ids: list[str] = []
+    employee_coordination_mode: str | None = None
     history: list[dict] = []
     provider_id: str = ""
     model_name: str = ""

@@ -86,6 +86,7 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "connector_sandbox_mode_explicit": False,
     "selected_employee_id": "",
     "selected_employee_ids": [],
+    "employee_coordination_mode": "auto",
     "provider_id": "",
     "model_name": "",
     "temperature": 0.1,
@@ -1745,6 +1746,18 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     settings["selected_employee_ids"] = _to_unique_string_list(source.get("selected_employee_ids"), max_items=200, max_item_len=120)
     if not settings["selected_employee_ids"] and settings["selected_employee_id"]:
         settings["selected_employee_ids"] = [settings["selected_employee_id"]]
+    coordination_mode = str(
+        source.get(
+            "employee_coordination_mode",
+            settings["employee_coordination_mode"],
+        )
+        or ""
+    ).strip().lower()
+    settings["employee_coordination_mode"] = (
+        coordination_mode
+        if coordination_mode in {"auto", "manual"}
+        else settings["employee_coordination_mode"]
+    )
     settings["provider_id"] = str(source.get("provider_id", settings["provider_id"]) or "").strip()
     settings["model_name"] = str(source.get("model_name", settings["model_name"]) or "").strip()
     settings["temperature"] = _coerce_float(source.get("temperature"), settings["temperature"], min_value=0.0, max_value=2.0)
@@ -2559,6 +2572,7 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
         "connector_sandbox_mode_explicit": req.connector_sandbox_mode_explicit,
         "selected_employee_id": req.employee_id,
         "selected_employee_ids": req.employee_ids,
+        "employee_coordination_mode": req.employee_coordination_mode,
         "provider_id": req.provider_id,
         "model_name": req.model_name,
         "temperature": req.temperature,
@@ -2637,12 +2651,98 @@ def _build_skill_resource_prompt_block(skill_resource_directory: str) -> str:
     )
 
 
+def _summarize_prompt_values(
+    values: list[Any] | tuple[Any, ...] | set[Any] | None,
+    *,
+    limit: int = 8,
+) -> str:
+    normalized = [str(item or "").strip() for item in (values or []) if str(item or "").strip()]
+    if not normalized:
+        return "-"
+    if len(normalized) <= limit:
+        return ", ".join(normalized)
+    return f"{', '.join(normalized[:limit])} 等{len(normalized)}项"
+
+
+def _build_multi_employee_collaboration_prompt(
+    selected_employees: list[dict[str, Any]] | None,
+    tools: list[dict[str, Any]] | None,
+) -> str:
+    employees = [
+        item
+        for item in (selected_employees or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
+    if len(employees) <= 1:
+        return ""
+
+    employee_name_map = {
+        str(item.get("id") or "").strip(): str(item.get("name") or item.get("id") or "").strip()
+        for item in employees
+        if str(item.get("id") or "").strip()
+    }
+    tool_groups: dict[str, list[str]] = {}
+    for item in tools or []:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool_name") or "").strip()
+        if not tool_name:
+            continue
+        employee_id = str(item.get("employee_id") or "").strip() or "__shared__"
+        tool_groups.setdefault(employee_id, []).append(tool_name)
+
+    lines = [
+        f"当前启用多员工自动协作，共 {len(employees)} 名执行员工。",
+        "协作要求：先结合当前项目手册、员工手册、规则和工具判断是否需要多人协作，再决定拆分方式；不要预设固定行业分工模板。",
+        "协作要求：若单个员工已足以完成任务，可保持单人主责；仅在确有必要时引入其他员工辅助，避免多人对同一子任务重复调用工具。",
+        "协作要求：调用工具时优先选择最匹配员工名下的工具；跨员工串联时先明确负责人、输入和输出，再复用上一步结果继续。",
+        "协作要求：最终只输出一份汇总结论；仅在有帮助时简要说明为何这样协作、关键依据和剩余风险。",
+        "已选员工清单：",
+    ]
+    for employee in employees:
+        employee_id = str(employee.get("id") or "").strip()
+        employee_name = str(employee.get("name") or employee_id).strip() or employee_id
+        rule_bindings = list(employee.get("rule_bindings") or [])
+        workflow = [
+            str(item or "").strip()
+            for item in (employee.get("default_workflow") or [])
+            if str(item or "").strip()
+        ]
+        lines.append(
+            f"- {employee_name} ({employee_id}): "
+            f"goal={str(employee.get('goal') or '-').strip() or '-'}; "
+            f"skills={_summarize_prompt_values(employee.get('skill_names') or [])}; "
+            f"rule_titles={_summarize_prompt_values([item.get('title') or item.get('id') for item in rule_bindings])}; "
+            f"rule_domains={_summarize_prompt_values(_collect_rule_domains(rule_bindings))}; "
+            f"workflow={_summarize_prompt_values(workflow)}"
+        )
+        tool_usage_policy = str(employee.get("tool_usage_policy") or "").strip()
+        if tool_usage_policy:
+            lines.append(f"  tool_policy={tool_usage_policy}")
+
+    if tool_groups:
+        lines.append("按员工分组的可用工具：")
+        for employee in employees:
+            employee_id = str(employee.get("id") or "").strip()
+            employee_name = employee_name_map.get(employee_id) or employee_id
+            lines.append(
+                f"- {employee_name} ({employee_id}): "
+                f"{_summarize_prompt_values(tool_groups.get(employee_id, []), limit=10)}"
+            )
+        if tool_groups.get("__shared__"):
+            lines.append(
+                f"- 共享/全局工具: {_summarize_prompt_values(tool_groups.get('__shared__'), limit=10)}"
+            )
+    return "\n" + "\n".join(lines)
+
+
 def _build_project_chat_messages(
     project: ProjectConfig,
     user_message: str,
     history: list[dict] | None,
     images: list[str] | None = None,
     selected_employee: dict[str, Any] | None = None,
+    selected_employees: list[dict[str, Any]] | None = None,
     tools: list[dict] | None = None,
     custom_system_prompt: str | None = None,
     history_limit: int = 20,
@@ -2650,6 +2750,7 @@ def _build_project_chat_messages(
     prefer_conclusion_first: bool = True,
     workspace_path: str = "",
     skill_resource_directory: str = "",
+    employee_coordination_mode: str = "auto",
 ) -> list[dict[str, Any]]:
     workspace_info = ""
     effective_workspace_path = str(workspace_path or project.workspace_path or "").strip()
@@ -2694,9 +2795,15 @@ def _build_project_chat_messages(
     skill_resource_prompt = _build_skill_resource_prompt_block(
         skill_resource_directory,
     )
+    coordination_mode = str(employee_coordination_mode or "auto").strip().lower()
+    multi_employee_prompt = (
+        _build_multi_employee_collaboration_prompt(selected_employees, tools)
+        if coordination_mode == "auto"
+        else ""
+    )
     system_prompt = (
         f"{base_prompt}\n{workspace_info}{ai_entry_info}\n\n{tool_list_text}\n{order_hint}\n{style_hint}"
-        f"{skill_resource_prompt}"
+        f"{skill_resource_prompt}{multi_employee_prompt}"
     )
     if selected_employee:
         rule_bindings = list(selected_employee.get("rule_bindings") or [])
@@ -5191,6 +5298,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             messages = _build_project_chat_messages(
                 project, effective_user_message, req.history, normalized_images,
                 selected_employee=selected_employee,
+                selected_employees=selected_employees,
                 tools=tools,
                 custom_system_prompt=_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")),
                 history_limit=int(runtime_settings.get("history_limit") or 20),
@@ -5198,6 +5306,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 prefer_conclusion_first=bool(runtime_settings.get("prefer_conclusion_first", True)),
                 workspace_path=effective_workspace_path,
                 skill_resource_directory=req.skill_resource_directory,
+                employee_coordination_mode=str(runtime_settings.get("employee_coordination_mode") or "auto"),
             )
             
         except Exception as exc:
@@ -5639,6 +5748,7 @@ async def stream_project_chat(
         req.history,
         normalized_images,
         selected_employee=selected_employee,
+        selected_employees=selected_employees,
         tools=tools,
         custom_system_prompt=_resolve_default_chat_system_prompt(runtime_settings.get("system_prompt")),
         history_limit=int(runtime_settings.get("history_limit") or 20),
@@ -5646,6 +5756,7 @@ async def stream_project_chat(
         prefer_conclusion_first=bool(runtime_settings.get("prefer_conclusion_first", True)),
         workspace_path=effective_workspace_path,
         skill_resource_directory=req.skill_resource_directory,
+        employee_coordination_mode=str(runtime_settings.get("employee_coordination_mode") or "auto"),
     )
 
     async def event_stream() -> AsyncIterator[str]:
@@ -5893,10 +6004,11 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
 1. 收到用户提问后，先调用 `get_project_runtime_context` 或 `list_project_members` 了解成员和能力范围。
 2. 再调用 `recall_project_memory` 检索相关记忆，优先传 `project_name="{project.name}"`。
 3. 每次有效对话都必须记录到项目记忆；当前宿主系统对项目聊天默认自动记录问答快照，如当前入口未覆盖自动记录链路，则在本轮结束后立即调用 `save_project_memory` 补记。
-4. 开始实现或排查前，调用 `query_project_rules` 和 `list_project_proxy_tools` 搜索匹配的规则与技能。
-5. 锁定匹配项后，再调用 `invoke_project_skill_tool`，必要时补 `employee_id` 消歧。
-6. 如需沉淀结构化结论、排查经验或关键决策，在自动记录之外显式调用 `save_project_memory` 追加一条可复用记忆。
-7. 发现规则缺口、工具异常或稳定性问题时，调用 `submit_project_feedback_bug`。
+4. 在决定是否需要多人协作前，先把本项目手册与相关员工手册视为协作基线：AI 需结合任务目标、规则、技能和工具，自主判断单人主责还是多人协作，不预设固定行业角色分工。
+5. 开始实现或排查前，调用 `query_project_rules` 和 `list_project_proxy_tools` 搜索匹配的规则与技能；若任务需要项目内多员工自动协作，可优先调用 `execute_project_collaboration`。
+6. 锁定匹配项后，再调用 `invoke_project_skill_tool`，必要时补 `employee_id` 消歧；若采用多人协作，先明确负责人、子任务边界和结果交接。
+7. 如需沉淀结构化结论、排查经验或关键决策，在自动记录之外显式调用 `save_project_memory` 追加一条可复用记忆。
+8. 发现规则缺口、工具异常或稳定性问题时，调用 `submit_project_feedback_bug`。
 
 ### 记忆保存示例
 ```json
@@ -5930,6 +6042,7 @@ save_project_memory({{
 - **`save_project_memory`**：手动补记项目级结论、经验和关键决策；当当前入口未自动记录或需要追加结构化沉淀时必须调用。
 - **`query_project_rules`**：按关键词查询项目规则，最终以具体规则正文为准。
 - **`list_project_proxy_tools`**：列出项目可调用的成员技能工具。
+- **`execute_project_collaboration`**：输入用户原始任务，由 AI 基于项目手册、员工手册、规则和工具，自主判断是否需要多人协作并生成协作步骤。
 - **`invoke_project_skill_tool`**：调用项目成员技能，必要时补 `employee_id` 消歧。
 - **`submit_project_feedback_bug`**：提交结构化反馈工单。
 
@@ -5939,10 +6052,11 @@ save_project_memory({{
 1. 获取项目上下文 / 成员信息 → get_project_runtime_context 或 list_project_members
 2. 记忆检索 → recall_project_memory
 3. 每次对话记录 → 默认自动记录；未覆盖入口则立刻 save_project_memory 补记
-4. 先搜索匹配的规则与技能 → query_project_rules + list_project_proxy_tools
-5. 锁定匹配项后再调用技能 → invoke_project_skill_tool
-6. 结构化沉淀结论 → save_project_memory
-7. 反馈闭环 → submit_project_feedback_bug
+4. 结合项目手册与员工手册，自主判断单人主责还是多人协作；多人任务优先考虑 execute_project_collaboration
+5. 先搜索匹配的规则与技能 → query_project_rules + list_project_proxy_tools
+6. 锁定匹配项后再调用技能 → execute_project_collaboration 或 invoke_project_skill_tool
+7. 结构化沉淀结论 → save_project_memory
+8. 反馈闭环 → submit_project_feedback_bug
 ```
 
 ## 常见问题与故障排查
@@ -5974,8 +6088,9 @@ save_project_memory({{
 - 提交反馈时，至少传 `employee_id`、`title`、`symptom`、`expected`。
 
 ### 员工选择
-- 根据任务类型选择合适员工。
-- 跨端任务拆分给相关员工分别处理，再做汇总。
+- 先结合项目手册、员工手册、规则和工具判断是否真的需要多人协作，不要默认多员工并行。
+- 员工选择由 AI 根据当前任务自主决定；若单个员工已能闭环，就不要为凑分工而强行拆给多人。
+- 需要多人协作时，先明确主负责人、辅助成员、交接边界和汇总责任。
 
 ### 记忆与规则
 - 先检索记忆，再检索规则，再决定是否调用技能。

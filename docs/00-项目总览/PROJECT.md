@@ -6,6 +6,25 @@
 
 基于 MCP（Model Context Protocol）的 AI-Native 开发平台。用户可自由组合 Skills + Rules + Memory + Persona 创建多个 AI 员工，通过进化引擎实现"越用越聪明"。
 
+## 当前接入重点
+
+当前项目已经补齐两类项目级入口：
+
+- 项目 MCP：适合直接面向某个项目做上下文查询、规则读取、技能调用和项目协作编排。
+- 统一查询 MCP：适合宿主只接一个聚合入口时，先定位项目/员工/规则，再读取正文或代理项目协作。
+
+当前项目协作口径：
+
+- `execute_project_collaboration` 是统一协作编排入口。
+- 是否单人主责、是否需要多人协作以及如何拆分，不由固定行业模板决定，而是由 AI 结合项目手册、员工手册、规则和工具自主判断。
+- 若单个员工已能闭环，可保持单人主责；若需要多人协作，应先明确负责人、边界和交接。
+
+推荐继续阅读：
+
+- `docs/30-专项功能方案/项目模块MCP化设计.md`
+- `docs/30-专项功能方案/项目模块MCP联调示例.md`
+- `docs/30-专项功能方案/统一查询MCP联调示例.md`
+
 ## 技术栈
 
 | 层 | 技术 |
@@ -120,6 +139,7 @@ MCP 服务层 (6 个 FastMCP 微服务)
 - **后端路由**: APIRouter 按域拆分，`routers/*.py`，通过 `stores.py` importlib 桥接 MCP Store
 - **技能创建**: 前端默认 `POST /api/skills/import-file` 上传 ZIP 技能包导入（也支持 `/api/skills` 目录导入）
 - **前端路由**: hash 模式，懒加载 `() => import('../views/{domain}/Xxx.vue')`
+- **项目协作**: 优先通过 `execute_project_collaboration` 进入统一编排；需要人工控参时回退到手动编排链路
 
 ## 快速启动
 

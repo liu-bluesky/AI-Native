@@ -30,6 +30,20 @@ class ResourceDef:
 
 
 @dataclass(frozen=True)
+class ProxyEntryDef:
+    name: str
+    path: str = ""
+    runtime: str = ""
+    description: str = ""
+    source: str = "declared"
+    args_schema: dict = field(default_factory=dict)
+    command: tuple[str, ...] = ()
+    cwd: str = ""
+    employee_id_flag: str = "--employee-id"
+    api_key_flag: str = "--api-key"
+
+
+@dataclass(frozen=True)
 class Dependency:
     skill_id: str
     version: str = ">=1.0.0"
@@ -47,6 +61,7 @@ class Skill:
     package_dir: str = ""
     tools: tuple[ToolDef, ...] = ()
     resources: tuple[ResourceDef, ...] = ()
+    proxy_entries: tuple[ProxyEntryDef, ...] = ()
     dependencies: tuple[Dependency, ...] = ()
     tags: tuple[str, ...] = ()
     mcp_enabled: bool = False
@@ -68,6 +83,7 @@ def _serialize_skill(s: Skill) -> dict:
     d = asdict(s)
     d["tools"] = [asdict(t) for t in s.tools]
     d["resources"] = [asdict(r) for r in s.resources]
+    d["proxy_entries"] = [asdict(entry) for entry in s.proxy_entries]
     d["dependencies"] = [asdict(dep) for dep in s.dependencies]
     d["tags"] = list(s.tags)
     return d
@@ -82,6 +98,21 @@ def _deserialize_skill(data: dict) -> Skill:
         package_dir=data.get("package_dir", data.get("source_dir", "")),
         tools=tuple(ToolDef(**t) for t in data.get("tools", [])),
         resources=tuple(ResourceDef(**r) for r in data.get("resources", [])),
+        proxy_entries=tuple(
+            ProxyEntryDef(
+                name=entry.get("name", ""),
+                path=entry.get("path", ""),
+                runtime=entry.get("runtime", ""),
+                description=entry.get("description", ""),
+                source=entry.get("source", "declared"),
+                args_schema=entry.get("args_schema", {}) or {},
+                command=tuple(entry.get("command", []) or ()),
+                cwd=entry.get("cwd", ""),
+                employee_id_flag=entry.get("employee_id_flag", "--employee-id"),
+                api_key_flag=entry.get("api_key_flag", "--api-key"),
+            )
+            for entry in data.get("proxy_entries", [])
+        ),
         dependencies=tuple(Dependency(**d) for d in data.get("dependencies", [])),
         tags=tuple(data.get("tags", [])),
         mcp_enabled=data.get("mcp_enabled", False),

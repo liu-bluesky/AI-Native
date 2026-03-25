@@ -110,64 +110,72 @@
 </template>
 
 <script setup>
-import { reactive, ref } from "vue";
-import { useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
-import api from "@/utils/api.js";
+import { reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
-const router = useRouter();
-const loading = ref(false);
-const formRef = ref(null);
-const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+import { ElMessage } from 'element-plus'
+
+import { registerWithEmail, resolveSafeRedirectPath } from '@/utils/auth.js'
+
+const route = useRoute()
+const router = useRouter()
+const loading = ref(false)
+const formRef = ref(null)
+const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
 const form = reactive({
-  email: "",
-  password: "",
-  confirmPassword: "",
-});
+  email: '',
+  password: '',
+  confirmPassword: '',
+})
 
 const validateConfirmPassword = (_rule, value, callback) => {
   if (!value) {
-    callback(new Error("请再次输入密码"));
-    return;
+    callback(new Error('请再次输入密码'))
+    return
   }
   if (value !== form.password) {
-    callback(new Error("两次输入的密码不一致"));
-    return;
+    callback(new Error('两次输入的密码不一致'))
+    return
   }
-  callback();
-};
+  callback()
+}
 
 const rules = {
   email: [
-    { required: true, message: "请输入邮箱地址", trigger: "blur" },
+    { required: true, message: '请输入邮箱地址', trigger: 'blur' },
     {
       pattern: EMAIL_PATTERN,
-      message: "请输入正确的邮箱地址",
-      trigger: "blur",
+      message: '请输入正确的邮箱地址',
+      trigger: 'blur',
     },
   ],
   password: [
-    { required: true, message: "请输入密码", trigger: "blur" },
-    { min: 6, message: "密码至少 6 位", trigger: "blur" },
+    { required: true, message: '请输入密码', trigger: 'blur' },
+    { min: 6, message: '密码至少 6 位', trigger: 'blur' },
   ],
-  confirmPassword: [{ validator: validateConfirmPassword, trigger: "blur" }],
-};
+  confirmPassword: [{ validator: validateConfirmPassword, trigger: 'blur' }],
+}
 
 async function handleRegister() {
-  await formRef.value.validate();
-  loading.value = true;
+  await formRef.value.validate()
+  loading.value = true
   try {
-    const email = form.email.trim();
-    await api.post("/auth/register", {
+    const email = form.email.trim()
+    await registerWithEmail({
       email,
       password: form.password,
-    });
-    ElMessage.success("注册成功，请登录");
-    await router.replace("/login");
+    })
+    ElMessage.success('注册成功，请登录')
+    const redirect = resolveSafeRedirectPath(route.query.redirect, '')
+    await router.replace(
+      redirect
+        ? { path: '/login', query: { redirect } }
+        : '/login',
+    )
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "注册失败");
+    ElMessage.error(err?.detail || err?.message || '注册失败')
   } finally {
-    loading.value = false;
+    loading.value = false
   }
 }
 </script>

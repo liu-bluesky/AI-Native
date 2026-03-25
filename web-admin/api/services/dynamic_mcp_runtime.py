@@ -29,6 +29,13 @@ from services.dynamic_mcp_context import (
     query_project_mcp_modules_runtime,
     search_project_context_runtime,
 )
+from services.dynamic_mcp_collaboration import (
+    COLLABORATION_TOOL_NAME,
+    collaboration_tool_descriptor,
+    execute_project_collaboration_runtime,
+    invoke_project_builtin_tool,
+    parse_object_args,
+)
 from services.dynamic_mcp_external_tools import (
     _list_visible_external_mcp_modules,
     invoke_external_mcp_tool_runtime,
@@ -43,11 +50,8 @@ from services.dynamic_mcp_profiles import (
     query_rules_by_employee as _query_rules_by_employee,
 )
 from services.dynamic_mcp_skill_proxies import (
-    active_project_member_employees as _active_project_member_employees,
-    build_project_proxy_specs as _build_project_proxy_specs,
-    discover_skill_proxy_specs as _discover_skill_proxy_specs,
-    list_project_proxy_tools_runtime,
-    resolve_project_proxy_tool_spec as _resolve_project_proxy_tool_spec,
+    build_project_proxy_specs as _shared_build_project_proxy_specs,
+    resolve_project_proxy_tool_spec as _shared_resolve_project_proxy_tool_spec,
 )
 from services.dynamic_mcp_transports import (
     DualTransportMcpApp as _DualTransportMcpApp,
@@ -103,22 +107,11 @@ _current_developer_name: ContextVar[str] = ContextVar("_current_developer_name",
 _EMPLOYEE_MCP_APP_REV = "2026-03-04-sse-post-bridge"
 _PROJECT_MCP_APP_REV = "2026-03-05-project-mcp-v1"
 _PROJECT_ROOT = get_project_root()
-_EXECUTABLE_SUFFIXES = {".py", ".js"}
 _FASTMCP_HOST = os.environ.get("FASTMCP_HOST", "0.0.0.0")
 
 # 启动时加载底层安全策略（不可运行时修改，需重启生效）
 _SYSTEM_POLICY_PATH = Path(__file__).resolve().parents[1] / "system-policy.md"
 _SYSTEM_POLICY = _SYSTEM_POLICY_PATH.read_text(encoding="utf-8") if _SYSTEM_POLICY_PATH.exists() else ""
-
-
-def _tool_token(value: str) -> str:
-    text = "".join(ch if ch.isalnum() else "_" for ch in str(value or "").strip().lower())
-    text = "_".join(part for part in text.split("_") if part)
-    if not text:
-        return "tool"
-    if text[0].isdigit():
-        return f"t_{text}"
-    return text
 
 
 _RECALL_EMPLOYEE_MEMORY_LIMIT = 100
@@ -152,30 +145,7 @@ def invoke_project_tool_runtime(
 
 
 def _build_project_proxy_specs(project_id: str) -> tuple[dict[str, dict], dict[str, dict[str, dict]]]:
-    by_scoped_name: dict[str, dict] = {}
-    by_employee_base_name: dict[str, dict[str, dict]] = {}
-    for _member, employee in _active_project_member_employees(project_id):
-        name_counter: dict[str, int] = {}
-        employee_map = by_employee_base_name.setdefault(employee.id, {})
-        for skill_id in employee.skills or []:
-            skill = skill_store.get(skill_id)
-            if not skill:
-                continue
-            for spec in _discover_skill_proxy_specs(skill):
-                base_name = f"{_tool_token(skill.id)}__{_tool_token(spec['entry_name'])}"
-                idx = name_counter.get(base_name, 0) + 1
-                name_counter[base_name] = idx
-                base_key = base_name if idx == 1 else f"{base_name}_{idx}"
-                scoped_name = f"{_tool_token(employee.id)}__{base_key}"
-                wrapped = {
-                    **spec,
-                    "employee_id": employee.id,
-                    "base_tool_name": base_key,
-                    "scoped_tool_name": scoped_name,
-                }
-                by_scoped_name[scoped_name] = wrapped
-                employee_map[base_key] = wrapped
-    return by_scoped_name, by_employee_base_name
+    return _shared_build_project_proxy_specs(project_id)
 
 
 def _resolve_project_proxy_tool_spec(
@@ -183,41 +153,13 @@ def _resolve_project_proxy_tool_spec(
     tool_name: str,
     employee_id: str = "",
 ) -> tuple[dict | None, str]:
-    scoped_proxy_specs, employee_proxy_specs = _build_project_proxy_specs(project_id)
-    normalized_tool_name = str(tool_name or "").strip()
-    employee_id_value = str(employee_id or "").strip()
-    if not normalized_tool_name:
-        return None, "tool_name is required"
-
-    if employee_id_value:
-        employee_specs = employee_proxy_specs.get(employee_id_value, {})
-        if normalized_tool_name in employee_specs:
-            return employee_specs[normalized_tool_name], ""
-        scoped_name = f"{_tool_token(employee_id_value)}__{normalized_tool_name}"
-        scoped_spec = scoped_proxy_specs.get(scoped_name)
-        if scoped_spec:
-            return scoped_spec, ""
-        return None, f"Tool not found for employee {employee_id_value}: {normalized_tool_name}"
-
-    if normalized_tool_name in scoped_proxy_specs:
-        return scoped_proxy_specs[normalized_tool_name], ""
-
-    matched: list[dict] = []
-    for specs in employee_proxy_specs.values():
-        if normalized_tool_name in specs:
-            matched.append(specs[normalized_tool_name])
-    if not matched:
-        return None, f"Tool not found: {normalized_tool_name}"
-    if len(matched) > 1:
-        employee_ids = sorted({item["employee_id"] for item in matched})
-        return None, f"Ambiguous tool_name, provide employee_id. Candidates: {employee_ids}"
-    return matched[0], ""
+    return _shared_resolve_project_proxy_tool_spec(project_id, tool_name, employee_id)
 
 
 def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> list[dict]:
     """列出项目技能代理工具，供非 MCP 路径（如聊天路由）复用。"""
-    scoped_proxy_specs, employee_proxy_specs = _build_project_proxy_specs(project_id)
     employee_id_value = str(employee_id or "").strip()
+    scoped_proxy_specs, employee_proxy_specs = _build_project_proxy_specs(project_id)
     tools: list[dict] = []
     if employee_id_value:
         specs = employee_proxy_specs.get(employee_id_value, {})
@@ -231,8 +173,10 @@ def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> 
                     "skill_id": spec["skill_id"],
                     "skill_name": spec["skill_name"],
                     "entry_name": spec["entry_name"],
+                    "runtime": spec.get("runtime", spec["script_type"]),
                     "script_type": spec["script_type"],
                     "description": spec["description"],
+                    "parameters_schema": spec.get("parameters_schema", {}),
                 }
             )
     else:
@@ -246,8 +190,10 @@ def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> 
                     "skill_id": spec["skill_id"],
                     "skill_name": spec["skill_name"],
                     "entry_name": spec["entry_name"],
+                    "runtime": spec.get("runtime", spec["script_type"]),
                     "script_type": spec["script_type"],
                     "description": spec["description"],
+                    "parameters_schema": spec.get("parameters_schema", {}),
                 }
             )
 
@@ -381,6 +327,8 @@ def list_project_proxy_tools_runtime(project_id: str, employee_id: str = "") -> 
                 },
             }
         )
+    if COLLABORATION_TOOL_NAME not in existing_names:
+        tools.append(collaboration_tool_descriptor(employee_id_value))
     return tools
 
 
@@ -395,106 +343,31 @@ def invoke_project_skill_tool_runtime(
     """执行项目成员技能脚本，供非 MCP 路径（如聊天路由）复用。"""
     normalized_tool_name = str(tool_name or "").strip()
     employee_id_value = str(employee_id or "").strip()
+    builtin_result = invoke_project_builtin_tool(
+        project_id,
+        normalized_tool_name,
+        employee_id_value,
+        args=args,
+        args_json=args_json,
+    )
+    if builtin_result is not None:
+        return builtin_result
 
-    if normalized_tool_name == "query_project_rules":
-        payload: dict = {}
-        if args is not None:
-            if not isinstance(args, dict):
-                return {"error": "args must be an object"}
-            payload = args
-        else:
-            try:
-                payload = json.loads(args_json or "{}")
-            except Exception as exc:
-                return {"error": f"Invalid args_json: {exc}"}
-            if not isinstance(payload, dict):
-                return {"error": "args_json must be a JSON object"}
-        keyword = str(payload.get("keyword") or "").strip()
-        target_employee_id = str(payload.get("employee_id") or employee_id_value).strip()
-        result = query_project_rules_runtime(
+    if normalized_tool_name == COLLABORATION_TOOL_NAME:
+        payload, err = parse_object_args(args=args, args_json=args_json)
+        if payload is None:
+            return {"error": err}
+        return execute_project_collaboration_runtime(
             project_id=project_id,
-            keyword=keyword,
-            employee_id=target_employee_id,
+            task=str(payload.get("task") or "").strip(),
+            employee_ids=payload.get("employee_ids") or [],
+            max_employees=payload.get("max_employees", 3),
+            max_tool_calls=payload.get("max_tool_calls", 6),
+            auto_execute=bool(payload.get("auto_execute", True)),
+            include_external_tools=bool(payload.get("include_external_tools", True)),
+            timeout_sec=timeout_sec,
+            invoke_tool=invoke_project_tool_runtime,
         )
-        return {
-            "tool_name": "query_project_rules",
-            "employee_id": target_employee_id,
-            "result": result,
-            "total": len(result),
-        }
-
-    if normalized_tool_name == "query_project_members":
-        result = query_project_members_runtime(project_id)
-        if isinstance(result, dict):
-            return {
-                "tool_name": "query_project_members",
-                "employee_id": employee_id_value,
-                **result,
-            }
-        return {
-            "tool_name": "query_project_members",
-            "employee_id": employee_id_value,
-            "result": result,
-        }
-
-    if normalized_tool_name == "search_project_context":
-        payload: dict = {}
-        if args is not None:
-            if not isinstance(args, dict):
-                return {"error": "args must be an object"}
-            payload = args
-        else:
-            try:
-                payload = json.loads(args_json or "{}")
-            except Exception as exc:
-                return {"error": f"Invalid args_json: {exc}"}
-            if not isinstance(payload, dict):
-                return {"error": "args_json must be a JSON object"}
-        scope_value = str(payload.get("scope") or "all").strip()
-        keyword_value = str(payload.get("keyword") or "").strip()
-        target_employee_id = str(payload.get("employee_id") or employee_id_value).strip()
-        limit_value = payload.get("limit", 20)
-        result = search_project_context_runtime(
-            project_id=project_id,
-            scope=scope_value,
-            keyword=keyword_value,
-            employee_id=target_employee_id,
-            limit=limit_value,
-        )
-        return {
-            "tool_name": "search_project_context",
-            "employee_id": target_employee_id,
-            **result,
-        }
-
-    if normalized_tool_name == "get_project_detail":
-        result = get_project_detail_runtime(project_id)
-        return {
-            "tool_name": "get_project_detail",
-            "employee_id": employee_id_value,
-            **result,
-        }
-
-    if normalized_tool_name == "get_project_employee_detail":
-        payload: dict = {}
-        if args is not None:
-            if not isinstance(args, dict):
-                return {"error": "args must be an object"}
-            payload = args
-        else:
-            try:
-                payload = json.loads(args_json or "{}")
-            except Exception as exc:
-                return {"error": f"Invalid args_json: {exc}"}
-            if not isinstance(payload, dict):
-                return {"error": "args_json must be a JSON object"}
-        target_employee_id = str(payload.get("employee_id") or employee_id_value).strip()
-        result = get_project_employee_detail_runtime(project_id, target_employee_id)
-        return {
-            "tool_name": "get_project_employee_detail",
-            "employee_id": target_employee_id,
-            **result,
-        }
 
     spec, err = _resolve_project_proxy_tool_spec(project_id, tool_name, employee_id)
     if spec is None:

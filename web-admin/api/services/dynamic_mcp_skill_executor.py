@@ -29,6 +29,30 @@ def build_cli_args(payload: dict) -> list[str]:
     return argv
 
 
+def _build_command(spec: dict, *, script_path: Path | None) -> list[str] | None:
+    runtime = str(spec.get("runtime") or spec.get("script_type") or "").strip().lower()
+    explicit_command = [str(item).strip() for item in spec.get("command", []) if str(item).strip()]
+    if explicit_command:
+        return [*explicit_command, *([str(script_path)] if script_path is not None else [])]
+    if runtime in {"python", "py"}:
+        if script_path is None:
+            return None
+        return [sys.executable, str(script_path)]
+    if runtime in {"node", "js"}:
+        if script_path is None:
+            return None
+        return ["node", str(script_path)]
+    if runtime == "command" and script_path is not None:
+        return [str(script_path)]
+    return None
+
+
+def _append_context_flag(cmd: list[str], flag_name: str, value: str) -> None:
+    flag = str(flag_name or "").strip()
+    if flag and value:
+        cmd.extend([flag, value])
+
+
 def execute_skill_proxy(
     spec: dict,
     *,
@@ -39,8 +63,9 @@ def execute_skill_proxy(
     timeout_sec: int = 30,
     employee_id: str | None = None,
 ) -> dict:
-    script_path = Path(spec["script_path"]).resolve()
-    if not script_path.exists():
+    script_path_text = str(spec.get("script_path") or "").strip()
+    script_path = Path(script_path_text).resolve() if script_path_text else None
+    if script_path is not None and not script_path.exists():
         return {"error": f"Script not found: {script_path}"}
 
     if args is not None:
@@ -60,22 +85,20 @@ def execute_skill_proxy(
     except (TypeError, ValueError):
         timeout = 30
     timeout = max(1, min(timeout, 600))
-    if spec["script_type"] == "py":
-        cmd = [sys.executable, str(script_path)]
-    elif spec["script_type"] == "js":
-        cmd = ["node", str(script_path)]
-    else:
-        return {"error": f"Unsupported script type: {spec['script_type']}"}
+    cmd = _build_command(spec, script_path=script_path)
+    if cmd is None:
+        runtime = str(spec.get("runtime") or spec.get("script_type") or "").strip() or "unknown"
+        return {"error": f"Unsupported proxy runtime: {runtime}"}
 
     cmd.extend(build_cli_args(payload))
-    if employee_id:
-        cmd.extend(["--employee-id", employee_id])
-    if current_api_key:
-        cmd.extend(["--api-key", current_api_key])
+    _append_context_flag(cmd, str(spec.get("employee_id_flag", "--employee-id") or ""), str(employee_id or ""))
+    _append_context_flag(cmd, str(spec.get("api_key_flag", "--api-key") or ""), current_api_key)
+    cwd_value = str(spec.get("cwd") or "").strip()
+    cwd = str(Path(cwd_value).resolve()) if cwd_value else str(project_root)
     try:
         result = subprocess.run(
             cmd,
-            cwd=str(project_root),
+            cwd=cwd,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -96,4 +119,5 @@ def execute_skill_proxy(
         "stdout": result.stdout,
         "stderr": result.stderr,
         "command": cmd,
+        "cwd": cwd,
     }

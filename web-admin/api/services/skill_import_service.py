@@ -15,10 +15,15 @@ from fastapi import HTTPException
 from core.config import get_project_root
 from core.ownership import current_username
 from models.requests import SkillCreateReq
-from stores.mcp_bridge import ResourceDef, Skill, ToolDef, skill_store
+from stores.mcp_bridge import ProxyEntryDef, ResourceDef, Skill, ToolDef, skill_store
 
 PROJECT_ROOT = get_project_root()
 TOOL_SUFFIXES = {".py", ".js"}
+SCRIPT_RUNTIME_BY_SUFFIX = {
+    ".py": "python",
+    ".js": "node",
+}
+SUPPORTED_PROXY_RUNTIMES = {"python", "node", "command"}
 SENSITIVE_SKILL_FILE_PATTERNS = (".db-config*.json",)
 
 
@@ -88,6 +93,149 @@ def _as_tags(raw: Any) -> tuple[str, ...]:
     if isinstance(raw, str):
         return tuple(item.strip() for item in raw.split(",") if item.strip())
     return ()
+
+
+def _as_command(raw: Any) -> tuple[str, ...]:
+    if isinstance(raw, list):
+        return tuple(str(item).strip() for item in raw if str(item).strip())
+    if isinstance(raw, str):
+        text = raw.strip()
+        return (text,) if text else ()
+    return ()
+
+
+def _normalize_proxy_runtime(raw: Any, *, path: str = "", command: tuple[str, ...] = ()) -> str:
+    runtime = str(raw or "").strip().lower()
+    if runtime in {"py", "python3"}:
+        return "python"
+    if runtime in {"js", "nodejs"}:
+        return "node"
+    if runtime:
+        return runtime
+    suffix = Path(path).suffix.lower()
+    if suffix in SCRIPT_RUNTIME_BY_SUFFIX:
+        return SCRIPT_RUNTIME_BY_SUFFIX[suffix]
+    if command:
+        return "command"
+    return ""
+
+
+def _normalize_proxy_entries(raw: Any) -> list[dict[str, Any]]:
+    if isinstance(raw, dict):
+        raw = raw.get("entries", [])
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+    if not isinstance(raw, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, str):
+            text = item.strip()
+            if text:
+                normalized.append({"path": text})
+            continue
+        if isinstance(item, dict):
+            normalized.append(item)
+    return normalized
+
+
+def scan_declared_proxy_entries(
+    source_dir: Path,
+    manifest: dict[str, Any],
+    frontmatter: dict[str, Any] | None = None,
+) -> tuple[ProxyEntryDef, ...]:
+    frontmatter = frontmatter or {}
+    raw_entries = manifest.get(
+        "proxy_entries",
+        manifest.get("proxyEntries", frontmatter.get("proxy_entries", frontmatter.get("proxyEntries", []))),
+    )
+    seen_names: set[str] = set()
+    entries: list[ProxyEntryDef] = []
+    for item in _normalize_proxy_entries(raw_entries):
+        path = str(item.get("path") or item.get("script") or item.get("entry") or "").strip()
+        command = _as_command(item.get("command"))
+        runtime = _normalize_proxy_runtime(item.get("runtime"), path=path, command=command)
+        if runtime not in SUPPORTED_PROXY_RUNTIMES:
+            continue
+        if not path and not command:
+            continue
+        if path:
+            resolved = (source_dir / path).resolve()
+            if not resolved.exists() or not resolved.is_file():
+                continue
+        entry_name = str(item.get("name") or "").strip()
+        if not entry_name:
+            if path:
+                entry_name = Path(path).with_suffix("").as_posix().replace("/", "-")
+            elif command:
+                entry_name = Path(command[-1]).stem or Path(command[0]).name
+        if not entry_name or entry_name in seen_names:
+            continue
+        seen_names.add(entry_name)
+        args_schema = item.get("args_schema", item.get("parameters_schema", {}))
+        entries.append(
+            ProxyEntryDef(
+                name=entry_name,
+                path=path,
+                runtime=runtime,
+                description=str(item.get("description") or "").strip(),
+                source="declared",
+                args_schema=args_schema if isinstance(args_schema, dict) else {},
+                command=command,
+                cwd=str(item.get("cwd") or "").strip(),
+                employee_id_flag=str(item.get("employee_id_flag", "--employee-id") or "").strip(),
+                api_key_flag=str(item.get("api_key_flag", "--api-key") or "").strip(),
+            )
+        )
+    return tuple(entries)
+
+
+def infer_proxy_entries(
+    source_dir: Path,
+    manifest: dict[str, Any],
+    frontmatter: dict[str, Any] | None = None,
+) -> tuple[ProxyEntryDef, ...]:
+    frontmatter = frontmatter or {}
+    desc_map = _manifest_tool_desc(manifest)
+    entries: list[ProxyEntryDef] = []
+    for base_dir in ("tools", "scripts"):
+        root = source_dir / base_dir
+        if not root.exists():
+            continue
+        for file in sorted(root.rglob("*")):
+            if not file.is_file() or file.suffix.lower() not in TOOL_SUFFIXES:
+                continue
+            rel = file.relative_to(root).with_suffix("").as_posix()
+            entry_name = rel.replace("/", "-")
+            description = (
+                desc_map.get(entry_name, "")
+                or desc_map.get(file.stem, "")
+                or f"Auto inferred proxy entry from {base_dir}/{file.name}"
+            )
+            entries.append(
+                ProxyEntryDef(
+                    name=entry_name,
+                    path=file.relative_to(source_dir).as_posix(),
+                    runtime=_normalize_proxy_runtime("", path=file.name),
+                    description=description,
+                    source="inferred",
+                )
+            )
+    return tuple(entries)
+
+
+def scan_proxy_entries(
+    source_dir: Path,
+    manifest: dict[str, Any],
+    frontmatter: dict[str, Any] | None = None,
+) -> tuple[ProxyEntryDef, ...]:
+    declared = scan_declared_proxy_entries(source_dir, manifest, frontmatter)
+    if declared:
+        return declared
+    return infer_proxy_entries(source_dir, manifest, frontmatter)
 
 
 def _resolve_package_dir_for_storage(source_dir: Path) -> str:
@@ -173,8 +321,9 @@ def build_skill_record_from_package_dir(
         mcp_service=mcp_service,
         created_by=created_by,
         package_dir=_resolve_package_dir_for_storage(source_dir),
-        tools=scan_tools(source_dir, manifest),
+        tools=scan_tools(source_dir, manifest, frontmatter),
         resources=scan_resources(source_dir),
+        proxy_entries=scan_proxy_entries(source_dir, manifest, frontmatter),
         tags=tags,
         mcp_enabled=bool(manifest.get("mcp_enabled", False)),
     )
@@ -209,24 +358,42 @@ def _manifest_tool_desc(manifest: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def scan_tools(source_dir: Path, manifest: dict[str, Any]) -> tuple[ToolDef, ...]:
+def scan_tools(
+    source_dir: Path,
+    manifest: dict[str, Any],
+    frontmatter: dict[str, Any] | None = None,
+) -> tuple[ToolDef, ...]:
     tools_dir = source_dir / "tools"
     desc_map = _manifest_tool_desc(manifest)
     scanned: list[ToolDef] = []
+    seen_names: set[str] = set()
     if tools_dir.exists():
         for file in sorted(tools_dir.rglob("*")):
             if not file.is_file() or file.suffix.lower() not in TOOL_SUFFIXES:
                 continue
             rel = file.relative_to(tools_dir).with_suffix("").as_posix()
             tool_name = rel.replace("/", "-")
+            seen_names.add(tool_name)
             description = (
                 desc_map.pop(tool_name, "")
                 or desc_map.pop(file.stem, "")
                 or f"Imported tool from {file.name}"
             )
             scanned.append(ToolDef(name=tool_name, description=description))
+    for entry in scan_proxy_entries(source_dir, manifest, frontmatter):
+        if entry.name in seen_names:
+            continue
+        seen_names.add(entry.name)
+        scanned.append(
+            ToolDef(
+                name=entry.name,
+                description=entry.description or "Imported proxy entry from manifest",
+                parameters=entry.args_schema,
+            )
+        )
     for name, description in desc_map.items():
-        if name:
+        if name and name not in seen_names:
+            seen_names.add(name)
             scanned.append(
                 ToolDef(name=name, description=description or "Imported from manifest")
             )
@@ -380,8 +547,9 @@ def import_skill_from_dir(
         mcp_service=mcp_service,
         created_by=current_username(auth_payload),
         package_dir=str(package_path.relative_to(PROJECT_ROOT)),
-        tools=scan_tools(source_dir, manifest),
+        tools=scan_tools(source_dir, manifest, frontmatter),
         resources=scan_resources(source_dir),
+        proxy_entries=scan_proxy_entries(source_dir, manifest, frontmatter),
         tags=tags,
         mcp_enabled=req.mcp_enabled,
     )

@@ -7,6 +7,7 @@ const SettingsCenterChatStub = { render: () => null }
 const routes = [
   { path: '/init', component: () => import('../views/auth/InitPage.vue') },
   { path: '/intro', component: () => import('../views/public/IntroPage.vue') },
+  { path: '/market', component: () => import('../views/public/MarketPage.vue') },
   { path: '/login', component: () => import('../views/auth/LoginPage.vue') },
   { path: '/register', component: () => import('../views/auth/RegisterPage.vue') },
   {
@@ -107,7 +108,7 @@ const router = createRouter({
   routes,
 })
 
-const PUBLIC_PATHS = new Set(['/init', '/intro', '/login', '/register'])
+const PUBLIC_PATHS = new Set(['/init', '/intro', '/market', '/login', '/register'])
 router.beforeEach((to, from) => {
   const normalizedPath = String(to.path || '').trim() || '/'
   if (normalizedPath === '/') {

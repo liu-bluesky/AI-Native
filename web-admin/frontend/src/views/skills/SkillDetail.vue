@@ -49,6 +49,144 @@
     <div class="meta-grid">
       <section class="meta-panel">
         <div class="panel-head">
+          <div>
+            <h4>代理状态</h4>
+            <p class="panel-desc">{{ skill.proxy_status?.summary || '未分析' }}</p>
+          </div>
+          <el-button
+            v-if="canManageRecord(skill)"
+            size="small"
+            type="primary"
+            plain
+            :disabled="!skill.proxy_status?.diagnostics?.can_refresh"
+            :loading="refreshingProxy"
+            @click="refreshProxyEntries"
+          >
+            重扫声明
+          </el-button>
+        </div>
+        <div class="proxy-status-tags">
+          <el-tag :type="proxyDeclarationType(skill)">
+            {{ proxyDeclarationLabel(skill) }}
+          </el-tag>
+          <el-tag :type="proxyEffectiveType(skill)">
+            {{ proxyEffectiveLabel(skill) }}
+          </el-tag>
+        </div>
+        <div class="proxy-stats">
+          <div class="proxy-stat-card">
+            <span class="proxy-stat-label">显式声明</span>
+            <strong>{{ skill.proxy_status?.declared_count || 0 }}</strong>
+          </div>
+          <div class="proxy-stat-card">
+            <span class="proxy-stat-label">解析入口</span>
+            <strong>{{ skill.proxy_status?.resolved_count || 0 }}</strong>
+          </div>
+          <div class="proxy-stat-card">
+            <span class="proxy-stat-label">生效入口</span>
+            <strong>{{ skill.proxy_status?.effective_count || 0 }}</strong>
+          </div>
+        </div>
+        <div
+          v-if="(skill.proxy_status?.diagnostics?.guidance || []).length"
+          class="proxy-guidance"
+        >
+          <div class="proxy-guidance__title">如何让它生效</div>
+          <div
+            v-for="(tip, index) in (skill.proxy_status?.diagnostics?.guidance || [])"
+            :key="`tip-${index}`"
+            class="proxy-guidance__item"
+          >
+            {{ tip }}
+          </div>
+        </div>
+        <div class="proxy-diagnostics">
+          <div class="proxy-diagnostics__title">诊断信息</div>
+          <div class="proxy-diagnostics__item">
+            package 目录: {{ skill.proxy_status?.diagnostics?.package_exists ? '正常' : '缺失' }}
+          </div>
+          <div class="proxy-diagnostics__item">
+            tools 目录: {{ skill.proxy_status?.diagnostics?.tools_dir_exists ? '存在' : '无' }}
+          </div>
+          <div class="proxy-diagnostics__item">
+            scripts 目录: {{ skill.proxy_status?.diagnostics?.scripts_dir_exists ? '存在' : '无' }}
+          </div>
+          <div
+            v-if="(skill.proxy_status?.diagnostics?.candidate_files || []).length"
+            class="proxy-candidates"
+          >
+            <div class="proxy-diagnostics__subtitle">候选脚本</div>
+            <div
+              v-for="file in skill.proxy_status?.diagnostics?.candidate_files || []"
+              :key="file"
+              class="proxy-candidates__item"
+            >
+              {{ file }}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="meta-panel meta-panel-wide">
+        <div class="panel-head">
+          <div>
+            <h4>安装到员工</h4>
+            <p class="panel-desc">技能只和员工绑定；项目只是员工的使用范围，不是技能绑定对象。</p>
+          </div>
+          <el-button text type="primary" :loading="targetLoading" @click="refreshInstallTargets">
+            刷新目标
+          </el-button>
+        </div>
+        <div class="activation-grid">
+          <div class="activation-form">
+            <el-form :model="installForm" label-width="92px">
+              <el-form-item label="员工" required>
+                <el-select
+                  v-model="installForm.employee_id"
+                  filterable
+                  clearable
+                  placeholder="选择要安装技能的员工"
+                  style="width: 100%"
+                  @change="handleEmployeeChange"
+                >
+                  <el-option
+                    v-for="item in employeeOptions"
+                    :key="item.id"
+                    :label="`${item.name} (${item.id})`"
+                    :value="item.id"
+                  />
+                </el-select>
+              </el-form-item>
+            </el-form>
+            <div v-if="contextHintText" class="activation-context">
+              {{ contextHintText }}
+            </div>
+          </div>
+          <div class="activation-status">
+            <div class="activation-card">
+              <span class="activation-card__label">员工技能状态</span>
+              <strong>{{ employeeSkillStatusLabel }}</strong>
+              <span class="activation-card__meta">{{ employeeSkillStatusMeta }}</span>
+            </div>
+            <div class="activation-hint">
+              说明：安装会同步写入员工技能清单。若你是在项目聊天里使用该员工，项目侧会通过“员工已加入项目”这层关系间接获得该技能。
+            </div>
+          </div>
+        </div>
+        <div class="activation-actions">
+          <el-button
+            type="primary"
+            :loading="installing"
+            :disabled="!installForm.employee_id"
+            @click="installSkillFlow"
+          >
+            安装到员工
+          </el-button>
+        </div>
+      </section>
+
+      <section class="meta-panel">
+        <div class="panel-head">
           <h4>标签</h4>
         </div>
         <div v-if="(skill.tags || []).length" class="tag-wrap">
@@ -67,6 +205,27 @@
           <el-table-column prop="description" label="描述" />
         </el-table>
         <el-empty v-else description="暂无工具" :image-size="50" />
+      </section>
+
+      <section class="meta-panel meta-panel-wide">
+        <div class="panel-head">
+          <h4>代理入口</h4>
+          <span class="panel-meta">{{ skill.proxy_entries?.length || 0 }} 项</span>
+        </div>
+        <el-table v-if="(skill.proxy_entries || []).length" :data="skill.proxy_entries" stripe size="small">
+          <el-table-column prop="name" label="入口名" width="180" />
+          <el-table-column prop="runtime" label="运行时" width="100" />
+          <el-table-column prop="path" label="路径" width="260" show-overflow-tooltip />
+          <el-table-column label="来源" width="100">
+            <template #default="{ row }">
+              <el-tag size="small" effect="plain">
+                {{ row.source === 'declared' ? '显式' : '自动' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="description" label="描述" />
+        </el-table>
+        <el-empty v-else description="暂无代理入口" :image-size="50" />
       </section>
 
       <section class="meta-panel meta-panel-wide">
@@ -150,11 +309,12 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { computed, ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
 import { formatDateTime } from '@/utils/date.js'
+import { isChatSettingsRoutePath } from '@/utils/chat-settings-route.js'
 import {
   canManageRecord,
   formatRecordOwner,
@@ -164,10 +324,16 @@ import {
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
+const refreshingProxy = ref(false)
+const targetLoading = ref(false)
+const employeeBindingLoading = ref(false)
+const installing = ref(false)
 const skill = reactive({})
 const packageLoading = ref(false)
 const fileLoading = ref(false)
 const packageTree = ref([])
+const employeeOptions = ref([])
+const employeeBindings = ref([])
 const activeFilePath = ref('')
 const activeFile = reactive({
   path: '',
@@ -175,6 +341,63 @@ const activeFile = reactive({
   content: '',
   is_binary: false,
   truncated: false,
+})
+const installForm = reactive({
+  employee_id: '',
+})
+const chatContext = reactive({
+  is_settings_route: false,
+  project_id: '',
+  selected_employee_ids: [],
+  auto_selected_employee_id: '',
+})
+
+const currentSkillBinding = computed(() => {
+  const skillId = String(skill.id || '').trim()
+  if (!skillId) return null
+  return (
+    employeeBindings.value.find((item) => String(item.skill_id || '').trim() === skillId) || null
+  )
+})
+
+const employeeSkillStatusLabel = computed(() => {
+  if (!installForm.employee_id) return '待选择员工'
+  if (employeeBindingLoading.value) return '检查中'
+  const binding = currentSkillBinding.value
+  if (!binding) return '未安装'
+  return binding.installed_at ? '已安装' : '员工已绑定'
+})
+
+const employeeSkillStatusMeta = computed(() => {
+  if (!installForm.employee_id) {
+    if (chatContext.is_settings_route && chatContext.selected_employee_ids.length > 1) {
+      return '当前聊天选择了多个员工，请手动选择一个员工查看绑定状态。'
+    }
+    if (chatContext.is_settings_route && chatContext.project_id) {
+      return '当前聊天没有锁定单个员工，请先选择员工。'
+    }
+    return '先选择目标员工。'
+  }
+  if (employeeBindingLoading.value) return '正在读取员工当前技能绑定。'
+  const binding = currentSkillBinding.value
+  if (!binding) return '当前员工还没有接入这个技能。'
+  const tools = Array.isArray(binding.enabled_tools) ? binding.enabled_tools.length : 0
+  if (binding.installed_at) {
+    return `已启用 ${tools} 个工具，安装时间 ${formatDateTime(binding.installed_at)}`
+  }
+  return `员工资料里已绑定该技能${tools ? `，默认启用 ${tools} 个工具` : ''}`
+})
+
+const contextHintText = computed(() => {
+  if (!chatContext.is_settings_route) return ''
+  if (!chatContext.project_id) return '当前位于聊天设置页，但没有识别到项目上下文。'
+  if (chatContext.auto_selected_employee_id) {
+    return `已按当前聊天设置自动选择员工 ${chatContext.auto_selected_employee_id}。`
+  }
+  if (chatContext.selected_employee_ids.length > 1) {
+    return `当前聊天已选择 ${chatContext.selected_employee_ids.length} 个员工，请手动选择一个员工安装。`
+  }
+  return '当前聊天未锁定单个员工，请手动选择一个员工。'
 })
 
 async function fetchDetail() {
@@ -187,6 +410,120 @@ async function fetchDetail() {
   } finally {
     loading.value = false
   }
+}
+
+async function fetchInstallTargets() {
+  targetLoading.value = true
+  try {
+    const employeesRes = await api.get('/employees').catch(() => ({ employees: [] }))
+    employeeOptions.value = Array.isArray(employeesRes?.employees) ? employeesRes.employees : []
+  } finally {
+    targetLoading.value = false
+  }
+}
+
+function normalizeSelectedEmployeeIds(rawSettings = {}) {
+  const values = []
+  const selectedList = Array.isArray(rawSettings?.selected_employee_ids)
+    ? rawSettings.selected_employee_ids
+    : []
+  for (const item of selectedList) {
+    const value = String(item || '').trim()
+    if (value && !values.includes(value)) {
+      values.push(value)
+    }
+  }
+  const legacyValue = String(rawSettings?.selected_employee_id || '').trim()
+  if (legacyValue && !values.includes(legacyValue)) {
+    values.push(legacyValue)
+  }
+  return values
+}
+
+async function hydrateChatContext() {
+  chatContext.is_settings_route = isChatSettingsRoutePath(route.path)
+  chatContext.project_id = ''
+  chatContext.selected_employee_ids = []
+  chatContext.auto_selected_employee_id = ''
+  if (!chatContext.is_settings_route) {
+    return
+  }
+  const projectId = String(
+    route.query.project_id || (typeof window !== 'undefined' ? window.localStorage.getItem('project_id') : '') || '',
+  ).trim()
+  if (!projectId) {
+    return
+  }
+  chatContext.project_id = projectId
+  try {
+    const data = await api.get(`/projects/${encodeURIComponent(projectId)}/chat/settings`)
+    const selectedEmployeeIds = normalizeSelectedEmployeeIds(data?.settings || {})
+    chatContext.selected_employee_ids = selectedEmployeeIds
+    if (selectedEmployeeIds.length === 1) {
+      installForm.employee_id = selectedEmployeeIds[0]
+      chatContext.auto_selected_employee_id = selectedEmployeeIds[0]
+      await fetchEmployeeBindings(selectedEmployeeIds[0])
+    }
+  } catch {
+    chatContext.selected_employee_ids = []
+  }
+}
+
+async function fetchEmployeeBindings(employeeId = installForm.employee_id) {
+  const normalizedEmployeeId = String(employeeId || '').trim()
+  if (!normalizedEmployeeId) {
+    employeeBindings.value = []
+    return
+  }
+  employeeBindingLoading.value = true
+  try {
+    const data = await api.get(`/employees/${normalizedEmployeeId}/skills`)
+    employeeBindings.value = Array.isArray(data?.bindings) ? data.bindings : []
+  } catch {
+    employeeBindings.value = []
+  } finally {
+    employeeBindingLoading.value = false
+  }
+}
+
+function refreshInstallTargets() {
+  void fetchInstallTargets()
+  if (installForm.employee_id) {
+    void fetchEmployeeBindings()
+  }
+  if (chatContext.is_settings_route) {
+    void hydrateChatContext()
+  }
+}
+
+function handleEmployeeChange(value) {
+  installForm.employee_id = String(value || '').trim()
+  chatContext.auto_selected_employee_id = ''
+  void fetchEmployeeBindings()
+}
+
+function proxyDeclarationLabel(row) {
+  const status = row?.proxy_status?.declaration_status
+  if (status === 'declared') return '已声明'
+  if (status === 'auto_inferred') return '自动推断'
+  return '无声明'
+}
+
+function proxyDeclarationType(row) {
+  const status = row?.proxy_status?.declaration_status
+  if (status === 'declared') return 'success'
+  if (status === 'auto_inferred') return 'warning'
+  return 'info'
+}
+
+function proxyEffectiveLabel(row) {
+  const count = Number(row?.proxy_status?.effective_count || 0)
+  return count > 0 ? `${count} 个生效` : '未生效'
+}
+
+function proxyEffectiveType(row) {
+  const count = Number(row?.proxy_status?.effective_count || 0)
+  return count > 0 ? 'success' : 'info'
 }
 
 function resetActiveFile() {
@@ -262,12 +599,64 @@ function refreshPackageBrowser() {
   void fetchPackageTree()
 }
 
+async function refreshProxyEntries() {
+  if (!canManageRecord(skill)) {
+    ElMessage.warning(getOwnershipDeniedMessage(skill, '重扫'))
+    return
+  }
+  try {
+    refreshingProxy.value = true
+    const data = await api.post(`/skills/${route.params.id}/refresh-proxy-entries`)
+    Object.keys(skill).forEach((key) => delete skill[key])
+    Object.assign(skill, data.skill || {})
+    ElMessage.success('已完成代理声明重扫')
+  } catch {
+    ElMessage.error('重扫代理声明失败')
+  } finally {
+    refreshingProxy.value = false
+  }
+}
+
 function formatFileSize(size) {
   const value = Number(size || 0)
   if (!Number.isFinite(value) || value <= 0) return '0 B'
   if (value < 1024) return `${value} B`
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
   return `${(value / (1024 * 1024)).toFixed(1)} MB`
+}
+
+async function installSkillFlow() {
+  const employeeId = String(installForm.employee_id || '').trim()
+  const skillId = String(skill.id || '').trim()
+  if (!employeeId) {
+    ElMessage.warning('请选择员工')
+    return
+  }
+  if (!skillId) {
+    ElMessage.warning('技能信息未加载完成')
+    return
+  }
+  const enabledTools = Array.isArray(skill.tools)
+    ? skill.tools.map((item) => String(item?.name || '').trim()).filter(Boolean)
+    : []
+  try {
+    installing.value = true
+    const installResult = await api.post(`/employees/${employeeId}/skills`, {
+      skill_id: skillId,
+      enabled_tools: enabledTools,
+    })
+    const installText = currentSkillBinding.value
+      ? '已刷新员工技能绑定'
+      : installResult?.enabled_tools?.length
+      ? `已安装并启用 ${installResult.enabled_tools.length} 个工具`
+      : '已安装技能'
+    await Promise.all([fetchInstallTargets(), fetchEmployeeBindings(employeeId)])
+    ElMessage.success(installText)
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || '安装失败')
+  } finally {
+    installing.value = false
+  }
 }
 
 async function handleDelete() {
@@ -286,7 +675,7 @@ async function handleDelete() {
 }
 
 onMounted(async () => {
-  await fetchDetail()
+  await Promise.all([fetchDetail(), fetchInstallTargets(), hydrateChatContext()])
   await fetchPackageTree()
 })
 </script>
@@ -443,6 +832,129 @@ onMounted(async () => {
   gap: 10px;
 }
 
+.proxy-status-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.proxy-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.proxy-stat-card {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: #f7f7f8;
+  border: 1px solid rgba(17, 24, 39, 0.06);
+}
+
+.proxy-stat-label {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.proxy-guidance {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(255, 248, 220, 0.55);
+  border: 1px solid rgba(245, 158, 11, 0.16);
+}
+
+.proxy-guidance__title,
+.proxy-diagnostics__title,
+.proxy-diagnostics__subtitle {
+  font-size: 12px;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.proxy-guidance__item,
+.proxy-diagnostics__item,
+.proxy-candidates__item {
+  color: #374151;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.proxy-diagnostics {
+  display: grid;
+  gap: 8px;
+}
+
+.proxy-candidates {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.activation-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.9fr);
+  gap: 16px;
+}
+
+.activation-form {
+  padding: 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(247, 247, 248, 0.96));
+  border: 1px solid rgba(17, 24, 39, 0.08);
+}
+
+.activation-status {
+  display: grid;
+  gap: 12px;
+}
+
+.activation-card {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  background: rgba(248, 248, 249, 0.92);
+}
+
+.activation-card strong {
+  color: #171717;
+  font-size: 16px;
+}
+
+.activation-card__label {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.activation-card__meta {
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.activation-hint {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 245, 230, 0.78);
+  color: #7c5b28;
+  line-height: 1.7;
+}
+
+.activation-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
 .tag-chip {
   display: inline-flex;
   align-items: center;
@@ -582,7 +1094,8 @@ onMounted(async () => {
 @media (max-width: 960px) {
   .detail-summary,
   .meta-grid,
-  .package-browser__body {
+  .package-browser__body,
+  .activation-grid {
     grid-template-columns: 1fr;
   }
 

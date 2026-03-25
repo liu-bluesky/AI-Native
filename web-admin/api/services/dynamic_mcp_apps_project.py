@@ -18,6 +18,13 @@ from services.dynamic_mcp_context import (
     get_project_detail_runtime,
     get_project_employee_detail_runtime,
 )
+from services.dynamic_mcp_collaboration import (
+    COLLABORATION_TOOL_NAME,
+    collaboration_tool_descriptor,
+    execute_project_collaboration_runtime,
+    invoke_project_builtin_tool,
+    parse_object_args,
+)
 from services.dynamic_mcp_profiles import (
     employee_rule_summary as _employee_rule_summary,
     list_project_member_profiles_runtime,
@@ -137,11 +144,12 @@ def create_project_mcp(
             "3. 调用 get_project_profile，确认项目基础配置、工作区与入口文件配置。",
             "4. 调用 get_project_runtime_context，快速了解成员数量、规则规模和代理工具规模。",
             f"5. 如需选人，先调用 list_project_members；如需选工具，先调用 list_project_proxy_tools 或读取 project://{project.id}/proxy-tools。",
-            "6. 规则检索用 query_project_rules；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
+            "6. 规则检索用 query_project_rules；协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断单人主责或多人协作；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
             "",
             "## 调用建议",
             "- 当 tool_name 可能重名时，给 invoke_project_skill_tool 同时传 employee_id 做消歧。",
             "- 在直接调用技能脚本前，先读取项目规则和成员信息，避免工具选错。",
+            "- execute_project_collaboration 是统一协作入口，但不内置固定行业分工模板；若单个成员足以闭环，可保持单人主责。",
             "- 外部 MCP 工具的参数以远端工具 schema 为准，先用 list_external_mcp_tools 查看。",
             "",
             "## 当前项目能力概览",
@@ -242,13 +250,17 @@ def create_project_mcp(
         if not project:
             return "Project deleted or unavailable."
         if not scoped_proxy_specs:
-            return "No executable skill tools discovered from project members."
-        lines = []
-        for tool_name, spec in sorted(scoped_proxy_specs.items()):
-            lines.append(
-                f"- {tool_name}: {spec['employee_id']} / {spec['skill_name']} / {spec['skill_id']} / "
-                f"{spec['entry_name']} ({spec['script_type']})"
-            )
+            lines = []
+        else:
+            lines = []
+            for tool_name, spec in sorted(scoped_proxy_specs.items()):
+                lines.append(
+                    f"- {tool_name}: {spec['employee_id']} / {spec['skill_name']} / {spec['skill_id']} / "
+                    f"{spec['entry_name']} ({spec['script_type']})"
+                )
+        lines.append(
+            f"- {COLLABORATION_TOOL_NAME}: builtin / 多员工协作执行工具"
+        )
         return "\n".join(lines)
 
     @mcp.resource(f"project://{project_id}/external-mcp-tools")
@@ -504,6 +516,7 @@ def create_project_mcp(
                     "description": spec["description"],
                 }
             )
+        tools.append(collaboration_tool_descriptor())
         return tools
 
     @mcp.tool()
@@ -558,15 +571,32 @@ def create_project_mcp(
             )
         return matched[0], ""
 
-    @mcp.tool()
-    def invoke_project_skill_tool(
+    def _invoke_project_tool_local(
+        *,
+        project_id: str,
         tool_name: str,
         employee_id: str = "",
         args: dict | None = None,
         args_json: str = "{}",
         timeout_sec: int = 30,
     ) -> dict:
-        """按工具名直接调用项目成员技能脚本（支持 employee_id 消歧）"""
+        builtin_result = invoke_project_builtin_tool(
+            project_id,
+            tool_name,
+            employee_id,
+            args=args,
+            args_json=args_json,
+        )
+        if builtin_result is not None:
+            return builtin_result
+        if any(str(item.get("tool_name") or "").strip() == str(tool_name or "").strip() for item in external_tool_specs):
+            return invoke_external_mcp_tool_runtime(
+                project_id=project_id,
+                tool_name=tool_name,
+                args=args,
+                args_json=args_json,
+                timeout_sec=timeout_sec,
+            )
         spec, err = _resolve_project_tool_spec(tool_name, employee_id)
         if spec is None:
             return {"error": err}
@@ -578,6 +608,62 @@ def create_project_mcp(
             args_json=args_json,
             timeout_sec=timeout_sec,
             employee_id=spec["employee_id"],
+        )
+
+    @mcp.tool()
+    def invoke_project_skill_tool(
+        tool_name: str,
+        employee_id: str = "",
+        args: dict | None = None,
+        args_json: str = "{}",
+        timeout_sec: int = 30,
+    ) -> dict:
+        """按工具名直接调用项目成员技能脚本（支持 employee_id 消歧）"""
+        if str(tool_name or "").strip() == COLLABORATION_TOOL_NAME:
+            payload, err = parse_object_args(args=args, args_json=args_json)
+            if payload is None:
+                return {"error": err}
+            return execute_project_collaboration_runtime(
+                project_id=project_id,
+                task=str(payload.get("task") or "").strip(),
+                employee_ids=payload.get("employee_ids") or [],
+                max_employees=payload.get("max_employees", 3),
+                max_tool_calls=payload.get("max_tool_calls", 6),
+                auto_execute=bool(payload.get("auto_execute", True)),
+                include_external_tools=bool(payload.get("include_external_tools", True)),
+                timeout_sec=timeout_sec,
+                invoke_tool=_invoke_project_tool_local,
+            )
+        return _invoke_project_tool_local(
+            project_id=project_id,
+            tool_name=tool_name,
+            employee_id=employee_id,
+            args=args,
+            args_json=args_json,
+            timeout_sec=timeout_sec,
+        )
+
+    @mcp.tool()
+    def execute_project_collaboration(
+        task: str,
+        employee_ids: list[str] | None = None,
+        max_employees: int = 3,
+        max_tool_calls: int = 6,
+        auto_execute: bool = True,
+        include_external_tools: bool = True,
+        timeout_sec: int = 30,
+    ) -> dict:
+        """输入用户任务，自动选取项目成员并执行协作编排。"""
+        return execute_project_collaboration_runtime(
+            project_id=project_id,
+            task=task,
+            employee_ids=employee_ids or [],
+            max_employees=max_employees,
+            max_tool_calls=max_tool_calls,
+            auto_execute=auto_execute,
+            include_external_tools=include_external_tools,
+            timeout_sec=timeout_sec,
+            invoke_tool=_invoke_project_tool_local,
         )
 
     for tool_name, spec in sorted(scoped_proxy_specs.items()):

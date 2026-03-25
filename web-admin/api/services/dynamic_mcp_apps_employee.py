@@ -14,7 +14,7 @@ from services.dynamic_mcp_profiles import (
     query_rules_by_employee as _query_rules_by_employee,
 )
 from services.dynamic_mcp_skill_executor import execute_skill_proxy as _execute_skill_proxy
-from services.dynamic_mcp_skill_proxies import discover_skill_proxy_specs as _discover_skill_proxy_specs
+from services.dynamic_mcp_skill_proxies import build_employee_proxy_specs as _build_employee_proxy_specs
 from services.dynamic_mcp_transports import (
     DualTransportMcpApp as _DualTransportMcpApp,
     apply_mcp_arguments_compat as _apply_mcp_arguments_compat,
@@ -29,7 +29,6 @@ from stores.mcp_bridge import (
     serialize_memory,
     serialize_rule,
     serialize_skill,
-    skill_store,
 )
 
 _FASTMCP_HOST = os.environ.get("FASTMCP_HOST", "0.0.0.0")
@@ -37,18 +36,6 @@ _FASTMCP_HOST = os.environ.get("FASTMCP_HOST", "0.0.0.0")
 
 def _new_mcp(service_name: str) -> FastMCP:
     return FastMCP(service_name, host=_FASTMCP_HOST, stateless_http=True)
-
-
-def _tool_token(value: str) -> str:
-    text = "".join(
-        ch if ch.isalnum() else "_" for ch in str(value or "").strip().lower()
-    )
-    text = "_".join(part for part in text.split("_") if part)
-    if not text:
-        return "tool"
-    if text[0].isdigit():
-        return f"t_{text}"
-    return text
 
 
 def create_employee_mcp(
@@ -65,18 +52,7 @@ def create_employee_mcp(
     proxy_specs_by_name: dict[str, dict] = {}
     employee = employee_store.get(employee_id)
     if employee:
-        name_counter: dict[str, int] = {}
-        for skill_id in employee.skills or []:
-            skill = skill_store.get(skill_id)
-            if not skill:
-                continue
-            for spec in _discover_skill_proxy_specs(skill):
-                base_name = f"{_tool_token(skill.id)}__{_tool_token(spec['entry_name'])}"
-                idx = name_counter.get(base_name, 0) + 1
-                name_counter[base_name] = idx
-                tool_name = base_name if idx == 1 else f"{base_name}_{idx}"
-                spec["tool_name"] = tool_name
-                proxy_specs_by_name[tool_name] = spec
+        proxy_specs_by_name = _build_employee_proxy_specs(employee_id)
 
     def _get_employee():
         return employee_store.get(employee_id)

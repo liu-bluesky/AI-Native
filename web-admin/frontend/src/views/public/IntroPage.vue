@@ -26,11 +26,11 @@
       </nav>
 
       <div class="site-nav__actions">
-        <el-button text class="site-nav__link" @click="router.push('/login')">
-          登录
+        <el-button text class="site-nav__link" @click="handleSecondaryAction">
+          {{ authenticated ? '进入市场' : '登录' }}
         </el-button>
-        <el-button type="primary" class="site-nav__primary" @click="router.push('/register')">
-          立即开始
+        <el-button type="primary" class="site-nav__primary" @click="handlePrimaryAction">
+          {{ authenticated ? '进入工作台' : '立即开始' }}
         </el-button>
       </div>
     </header>
@@ -49,9 +49,9 @@
               type="primary"
               size="large"
               class="site-nav__primary hero-copy__button"
-              @click="router.push('/register')"
+              @click="handlePrimaryAction"
             >
-              立即开始
+              {{ authenticated ? '进入工作台' : '立即开始' }}
             </el-button>
             <el-button
               size="large"
@@ -151,6 +151,58 @@
         </div>
       </section>
 
+      <section id="market" class="content-section market-section" data-reveal>
+        <div class="section-heading section-heading--center">
+          <div class="section-heading__eyebrow">Market</div>
+          <h2 class="section-heading__title">技能、员工、规则进入同一市场。</h2>
+          <p class="section-heading__text">
+            先看能力结构，再决定接入路径。市场页统一承载技能目录、员工模板与规则标准。
+          </p>
+        </div>
+
+        <div class="market-grid">
+          <article
+            v-for="(item, index) in marketHighlights"
+            :key="item.label"
+            class="market-card"
+            data-reveal
+            :style="{ '--reveal-delay': `${index * 90}ms` }"
+          >
+            <div class="market-card__label">{{ item.label }}</div>
+            <h3 class="market-card__title">{{ item.title }}</h3>
+            <p class="market-card__text">{{ item.text }}</p>
+            <div class="market-card__chips">
+              <span v-for="chip in item.chips" :key="chip">{{ chip }}</span>
+            </div>
+          </article>
+        </div>
+
+        <div class="market-banner" data-reveal>
+          <div class="market-banner__copy">
+            <div class="market-banner__eyebrow">Access Gate</div>
+            <h3 class="market-banner__title">
+              {{ authenticated ? '已登录，可直接进入能力市场。' : '进入市场前先完成登录或注册。' }}
+            </h3>
+            <p class="market-banner__text">
+              {{
+                authenticated
+                  ? '你的账号状态已生效，可以继续进入市场或直接回到工作台。'
+                  : '市场入口会复用同一套登录注册能力，后续其他页面也可以直接接入。'
+              }}
+            </p>
+          </div>
+
+          <div class="market-banner__actions">
+            <el-button type="primary" class="site-nav__primary" @click="router.push('/market')">
+              进入市场
+            </el-button>
+            <el-button class="hero-copy__secondary" @click="handleMarketFollowUpAction">
+              {{ authenticated ? '进入工作台' : '登录后继续' }}
+            </el-button>
+          </div>
+        </div>
+      </section>
+
       <section id="workflow" class="content-section workflow-section" data-reveal>
         <div class="section-heading section-heading--center">
           <div class="section-heading__eyebrow">Workflow</div>
@@ -184,11 +236,11 @@
         </div>
 
         <div class="cta-section__actions">
-          <el-button type="primary" class="site-nav__primary cta-section__button" @click="router.push('/register')">
-            创建账号
+          <el-button type="primary" class="site-nav__primary cta-section__button" @click="handlePrimaryAction">
+            {{ authenticated ? '进入工作台' : '创建账号' }}
           </el-button>
-          <el-button class="hero-copy__secondary cta-section__button" @click="router.push('/login')">
-            已有账号，去登录
+          <el-button class="hero-copy__secondary cta-section__button" @click="handleSecondaryAction">
+            {{ authenticated ? '进入市场' : '已有账号，去登录' }}
           </el-button>
         </div>
       </section>
@@ -197,14 +249,22 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+
+import { authStateVersion, hasStoredToken } from '@/utils/auth-storage.js'
 
 const router = useRouter()
 let sectionObserver
 
+const authenticated = computed(() => {
+  authStateVersion.value
+  return hasStoredToken()
+})
+
 const navItems = [
   { id: 'principles', label: '能力' },
+  { id: 'market', label: '市场' },
   { id: 'workflow', label: '流程' },
 ]
 
@@ -306,6 +366,27 @@ const workflowItems = [
   },
 ]
 
+const marketHighlights = [
+  {
+    label: 'Skill',
+    title: '技能市场。',
+    text: '统一浏览技能目录、标签与工具入口，先判断适用范围，再决定接入方式。',
+    chips: ['目录化', '可接入', '可复用'],
+  },
+  {
+    label: 'Employee',
+    title: '员工市场。',
+    text: '把员工能力、目标和技能组合放进同一个入口，快速识别谁适合当前任务。',
+    chips: ['目标清晰', '模板化', '协作视角'],
+  },
+  {
+    label: 'Rule',
+    title: '规则市场。',
+    text: '把规则从后台配置升级成可浏览标准，让技能和员工在进入项目前先对齐边界。',
+    chips: ['标准化', '可追溯', '可约束'],
+  },
+]
+
 function scrollToSection(id) {
   const element = document.getElementById(id)
   if (!element) {
@@ -316,6 +397,26 @@ function scrollToSection(id) {
     behavior: 'smooth',
     block: 'start',
   })
+}
+
+function handlePrimaryAction() {
+  router.push(authenticated.value ? '/ai/chat' : '/register')
+}
+
+function handleSecondaryAction() {
+  if (authenticated.value) {
+    router.push('/market')
+    return
+  }
+  router.push('/login')
+}
+
+function handleMarketFollowUpAction() {
+  if (authenticated.value) {
+    router.push('/ai/chat')
+    return
+  }
+  router.push({ path: '/login', query: { redirect: '/market' } })
 }
 
 onMounted(() => {
@@ -380,6 +481,49 @@ onBeforeUnmount(() => {
   background: var(--page-bg);
 }
 
+.intro-page::before,
+.intro-page::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.intro-page::before {
+  inset: 4% -12% auto;
+  height: 640px;
+  background:
+    conic-gradient(
+      from 180deg at 50% 38%,
+      rgba(56, 189, 248, 0) 0deg,
+      rgba(56, 189, 248, 0.2) 76deg,
+      rgba(14, 165, 233, 0) 156deg,
+      rgba(251, 191, 36, 0.14) 226deg,
+      rgba(56, 189, 248, 0) 360deg
+    );
+  filter: blur(74px);
+  opacity: 0.5;
+  transform-origin: 50% 28%;
+  animation: spectralOrbit 24s linear infinite;
+}
+
+.intro-page::after {
+  inset: 112px 10% auto;
+  height: 420px;
+  background:
+    linear-gradient(
+      120deg,
+      rgba(255, 255, 255, 0) 16%,
+      rgba(255, 255, 255, 0.44) 34%,
+      rgba(125, 211, 252, 0.18) 54%,
+      rgba(255, 255, 255, 0) 74%
+    );
+  opacity: 0.42;
+  filter: blur(44px);
+  transform: translate3d(-8%, 0, 0);
+  animation: auroraSweep 14s ease-in-out infinite;
+}
+
 .intro-page__ambient,
 .intro-page__mesh {
   position: absolute;
@@ -410,12 +554,14 @@ onBeforeUnmount(() => {
 
 .intro-page__mesh {
   inset: 0;
-  opacity: 0.34;
+  opacity: 0.4;
   background:
     linear-gradient(rgba(15, 23, 42, 0.03) 1px, transparent 1px),
     linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
   background-size: 88px 88px;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.72), transparent 78%);
+  transform-origin: 50% 0;
+  animation: meshDrift 22s linear infinite;
 }
 
 .site-nav,
@@ -559,7 +705,7 @@ onBeforeUnmount(() => {
   inset: 0;
   background: linear-gradient(120deg, transparent 20%, rgba(255, 255, 255, 0.26) 50%, transparent 80%);
   transform: translateX(-130%);
-  animation: buttonSweep 1.8s cubic-bezier(0.22, 1, 0.36, 1) 1.1s 1 both;
+  animation: buttonSweep 5.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
 }
 
 .site-main {
@@ -648,6 +794,8 @@ onBeforeUnmount(() => {
 }
 
 .hero-copy__signals span {
+  position: relative;
+  overflow: hidden;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -659,15 +807,38 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.54);
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
   backdrop-filter: blur(14px);
+  animation: signalChipPulse 7.2s ease-in-out infinite;
 }
 
 .hero-copy__signals span::before {
   content: '';
+  position: relative;
+  z-index: 1;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: rgba(56, 189, 248, 0.72);
   box-shadow: 0 0 16px rgba(56, 189, 248, 0.42);
+}
+
+.hero-copy__signals span::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 24%, rgba(255, 255, 255, 0.72) 50%, transparent 76%);
+  opacity: 0;
+  transform: translateX(-120%);
+  animation: chipSweep 7.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.hero-copy__signals span:nth-child(2),
+.hero-copy__signals span:nth-child(2)::after {
+  animation-delay: 0.9s;
+}
+
+.hero-copy__signals span:nth-child(3),
+.hero-copy__signals span:nth-child(3)::after {
+  animation-delay: 1.8s;
 }
 
 .hero-stage {
@@ -676,6 +847,8 @@ onBeforeUnmount(() => {
 
 .hero-stage__shell,
 .principle-card,
+.market-card,
+.market-banner,
 .workflow-panel,
 .cta-section {
   position: relative;
@@ -696,9 +869,11 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.86), transparent 34%),
-    linear-gradient(180deg, rgba(125, 211, 252, 0.08), transparent 46%);
+    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.9), transparent 30%),
+    radial-gradient(circle at 50% 52%, rgba(56, 189, 248, 0.12), transparent 42%),
+    linear-gradient(180deg, rgba(125, 211, 252, 0.1), transparent 46%);
   pointer-events: none;
+  animation: shellFlux 12s ease-in-out infinite;
 }
 
 .hero-stage__shell::after {
@@ -735,6 +910,7 @@ onBeforeUnmount(() => {
   background-size: 84px 84px;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.5), transparent 86%);
   opacity: 0.42;
+  animation: fieldGridDrift 18s linear infinite;
 }
 
 .hero-stage__field::after {
@@ -742,8 +918,11 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 14% 12%;
   border-radius: 999px;
-  background: radial-gradient(circle, rgba(125, 211, 252, 0.14), transparent 62%);
+  background:
+    radial-gradient(circle, rgba(125, 211, 252, 0.2), transparent 58%),
+    conic-gradient(from 90deg, rgba(56, 189, 248, 0.1), rgba(56, 189, 248, 0), rgba(251, 191, 36, 0.08), rgba(56, 189, 248, 0.1));
   filter: blur(18px);
+  animation: fieldGlow 7.4s ease-in-out infinite;
 }
 
 .hero-stage__halo,
@@ -761,10 +940,12 @@ onBeforeUnmount(() => {
   width: 520px;
   height: 260px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(125, 211, 252, 0.16), transparent 68%);
+  background:
+    radial-gradient(circle, rgba(125, 211, 252, 0.2), transparent 62%),
+    conic-gradient(from 180deg, rgba(56, 189, 248, 0.14), rgba(56, 189, 248, 0), rgba(251, 191, 36, 0.1), rgba(56, 189, 248, 0.14));
   transform: translate(-50%, -50%);
-  filter: blur(22px);
-  animation: haloDrift 15s ease-in-out infinite;
+  filter: blur(22px) saturate(118%);
+  animation: haloOrbit 16s ease-in-out infinite;
 }
 
 .hero-stage__links {
@@ -792,9 +973,10 @@ onBeforeUnmount(() => {
 
 .hero-link::before {
   right: 0;
-  height: 1px;
+  height: 2px;
   border-radius: 999px;
   background: linear-gradient(90deg, rgba(15, 23, 42, 0.06), rgba(56, 189, 248, 0.24), transparent 86%);
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.12);
 }
 
 .hero-link::after {
@@ -825,6 +1007,11 @@ onBeforeUnmount(() => {
   animation-delay: var(--link-delay);
 }
 
+.hero-stage.is-visible .hero-link::before {
+  animation: linkCharge 4.8s ease-in-out infinite;
+  animation-delay: var(--link-delay);
+}
+
 .hero-core {
   top: 50%;
   left: 50%;
@@ -843,6 +1030,24 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   transform: translate(-50%, -50%) scale(0.78);
   opacity: 0;
+}
+
+.hero-core::after {
+  content: '';
+  position: absolute;
+  inset: 16px;
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      from 90deg,
+      rgba(56, 189, 248, 0.12),
+      rgba(56, 189, 248, 0.02) 26%,
+      rgba(15, 23, 42, 0) 44%,
+      rgba(251, 191, 36, 0.14) 72%,
+      rgba(56, 189, 248, 0.12)
+    );
+  mask: radial-gradient(circle, transparent 56%, #000 57%, #000 66%, transparent 68%);
+  opacity: 0.68;
 }
 
 .hero-core__ring,
@@ -874,6 +1079,10 @@ onBeforeUnmount(() => {
   animation: coreBroadcast 4.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
 }
 
+.hero-stage.is-visible .hero-core::after {
+  animation: coreSpin 12s linear infinite;
+}
+
 .hero-stage.is-visible .hero-core__ring--outer {
   animation: coreShellBreath 6.6s ease-in-out infinite;
 }
@@ -891,6 +1100,7 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 50% auto auto 50%;
   z-index: 1;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -904,6 +1114,21 @@ onBeforeUnmount(() => {
   box-shadow: 0 18px 40px rgba(56, 189, 248, 0.12);
   text-align: center;
   transform: translate(-50%, -50%);
+}
+
+.hero-core__body::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(120deg, transparent 18%, rgba(255, 255, 255, 0.84) 50%, transparent 82%);
+  opacity: 0;
+  transform: translateX(-135%);
+  z-index: -1;
+}
+
+.hero-stage.is-visible .hero-core__body::before {
+  animation: coreBodyScan 5.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
 }
 
 .hero-core__title {
@@ -929,6 +1154,8 @@ onBeforeUnmount(() => {
   --node-border-idle: rgba(255, 255, 255, 0.84);
   --node-border-active: rgba(125, 211, 252, 0.28);
   --node-glow: rgba(56, 189, 248, 0.12);
+  position: absolute;
+  overflow: hidden;
   left: var(--node-x);
   top: var(--node-y);
   min-width: 188px;
@@ -944,8 +1171,22 @@ onBeforeUnmount(() => {
     box-shadow var(--page-transition);
 }
 
+.hero-node::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 18%, rgba(255, 255, 255, 0.7) 52%, transparent 84%);
+  opacity: 0;
+  transform: translateX(-132%);
+}
+
 .hero-stage.is-visible .hero-node {
   animation: nodeRespond 4.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+  animation-delay: var(--node-pulse-delay);
+}
+
+.hero-stage.is-visible .hero-node::before {
+  animation: nodeBeam 4.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
   animation-delay: var(--node-pulse-delay);
 }
 
@@ -989,6 +1230,8 @@ onBeforeUnmount(() => {
 }
 
 .hero-stage__footer span {
+  position: relative;
+  overflow: hidden;
   display: inline-flex;
   align-items: center;
   min-height: 32px;
@@ -1000,6 +1243,7 @@ onBeforeUnmount(() => {
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  animation: footerChipPulse 6.2s ease-in-out infinite;
 }
 
 [data-reveal] {
@@ -1107,6 +1351,7 @@ onBeforeUnmount(() => {
     transform var(--page-transition),
     border-color var(--page-transition),
     box-shadow var(--page-transition);
+  animation: cardFloat 10s ease-in-out infinite;
 }
 
 .principle-card__title {
@@ -1118,6 +1363,96 @@ onBeforeUnmount(() => {
 
 .principle-card__text {
   margin: 16px 0 0;
+}
+
+.market-section {
+  position: relative;
+}
+
+.market-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 32px;
+}
+
+.market-card {
+  min-height: 232px;
+  padding: 24px;
+  transition:
+    transform var(--page-transition),
+    border-color var(--page-transition),
+    box-shadow var(--page-transition);
+  animation: cardFloat 11.4s ease-in-out infinite;
+}
+
+.market-card__label,
+.market-banner__eyebrow {
+  color: var(--page-text-soft);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.market-card__title,
+.market-banner__title {
+  margin: 16px 0 0;
+  font-family: 'Avenir Next', 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 28px;
+  line-height: 1.08;
+  letter-spacing: -0.05em;
+}
+
+.market-card__text,
+.market-banner__text {
+  margin: 16px 0 0;
+  color: var(--page-text-muted);
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.market-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 18px;
+}
+
+.market-card__chips span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: var(--page-radius-pill);
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--page-text-muted);
+  font-size: 12px;
+}
+
+.market-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 18px;
+  padding: 24px;
+}
+
+.market-banner__copy {
+  max-width: 620px;
+}
+
+.market-banner__title {
+  margin-top: 14px;
+}
+
+.market-banner__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .workflow-section {
@@ -1178,6 +1513,7 @@ onBeforeUnmount(() => {
     transform var(--page-transition),
     border-color var(--page-transition),
     box-shadow var(--page-transition);
+  animation: cardFloat 12.2s ease-in-out infinite;
 }
 
 .workflow-card__step {
@@ -1218,6 +1554,7 @@ onBeforeUnmount(() => {
 }
 
 .principle-card.is-visible:hover,
+.market-card.is-visible:hover,
 .workflow-card.is-visible:hover {
   transform: translate3d(0, -6px, 0);
   border-color: rgba(125, 211, 252, 0.26);
@@ -1231,6 +1568,7 @@ onBeforeUnmount(() => {
   }
 
   .principle-grid,
+  .market-grid,
   .workflow-panel {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1269,8 +1607,14 @@ onBeforeUnmount(() => {
   }
 
   .principle-grid,
+  .market-grid,
   .workflow-panel {
     grid-template-columns: 1fr;
+  }
+
+  .market-banner {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .hero-stage__halo,
@@ -1360,6 +1704,8 @@ onBeforeUnmount(() => {
 
   .hero-stage__shell,
   .principle-card,
+  .market-card,
+  .market-banner,
   .workflow-panel,
   .workflow-card,
   .cta-section {
@@ -1412,6 +1758,8 @@ onBeforeUnmount(() => {
 
   .hero-node__title,
   .principle-card__title,
+  .market-card__title,
+  .market-banner__title,
   .workflow-card__title {
     font-size: 26px;
   }
@@ -1455,6 +1803,45 @@ onBeforeUnmount(() => {
   }
 }
 
+@keyframes spectralOrbit {
+  0% {
+    transform: rotate(0deg) scale(1);
+    opacity: 0.38;
+  }
+  50% {
+    transform: rotate(180deg) scale(1.04);
+    opacity: 0.58;
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+    opacity: 0.38;
+  }
+}
+
+@keyframes auroraSweep {
+  0%,
+  100% {
+    transform: translate3d(-8%, 0, 0) scaleX(0.96);
+    opacity: 0.28;
+  }
+  50% {
+    transform: translate3d(8%, 18px, 0) scaleX(1.04);
+    opacity: 0.54;
+  }
+}
+
+@keyframes meshDrift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(20px, 14px, 0) scale(1.02);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
 @keyframes haloDrift {
   0%,
   100% {
@@ -1464,6 +1851,51 @@ onBeforeUnmount(() => {
   50% {
     transform: translate(-50%, -50%) scale(1.04);
     opacity: 0.82;
+  }
+}
+
+@keyframes haloOrbit {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(0.98) rotate(0deg);
+    opacity: 0.58;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.08) rotate(10deg);
+    opacity: 0.88;
+  }
+}
+
+@keyframes shellFlux {
+  0%,
+  100% {
+    opacity: 0.76;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.015);
+  }
+}
+
+@keyframes fieldGridDrift {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(84px, 84px, 0);
+  }
+}
+
+@keyframes fieldGlow {
+  0%,
+  100% {
+    opacity: 0.46;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 0.88;
+    transform: scale(1.05);
   }
 }
 
@@ -1506,6 +1938,36 @@ onBeforeUnmount(() => {
   42% {
     transform: translate(-50%, -50%) scale(3.3);
     opacity: 0;
+  }
+}
+
+@keyframes coreSpin {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.05);
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+@keyframes coreBodyScan {
+  0%,
+  100% {
+    opacity: 0;
+    transform: translateX(-135%);
+  }
+  24% {
+    opacity: 0;
+  }
+  38% {
+    opacity: 0.94;
+  }
+  58% {
+    opacity: 0;
+    transform: translateX(135%);
   }
 }
 
@@ -1568,6 +2030,94 @@ onBeforeUnmount(() => {
     transform: translate3d(-50%, -50%, 0);
     border-color: var(--node-border-idle);
     box-shadow: 0 12px 28px rgba(15, 23, 42, 0.04);
+  }
+}
+
+@keyframes nodeBeam {
+  0%,
+  100% {
+    opacity: 0;
+    transform: translateX(-132%);
+  }
+  16% {
+    opacity: 0.86;
+  }
+  36% {
+    opacity: 0;
+    transform: translateX(132%);
+  }
+}
+
+@keyframes linkCharge {
+  0%,
+  100% {
+    opacity: 0.46;
+    filter: saturate(100%);
+  }
+  24% {
+    opacity: 1;
+    filter: saturate(148%);
+  }
+  52% {
+    opacity: 0.52;
+    filter: saturate(104%);
+  }
+}
+
+@keyframes signalChipPulse {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+  }
+  22% {
+    transform: translate3d(0, -4px, 0);
+    box-shadow: 0 18px 34px rgba(56, 189, 248, 0.12);
+  }
+  48% {
+    transform: translate3d(0, 0, 0);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+  }
+}
+
+@keyframes chipSweep {
+  0%,
+  100% {
+    opacity: 0;
+    transform: translateX(-120%);
+  }
+  26% {
+    opacity: 0.84;
+  }
+  46% {
+    opacity: 0;
+    transform: translateX(120%);
+  }
+}
+
+@keyframes footerChipPulse {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    box-shadow: none;
+  }
+  26% {
+    transform: translate3d(0, -3px, 0);
+    box-shadow: 0 10px 22px rgba(56, 189, 248, 0.1);
+  }
+  52% {
+    transform: translate3d(0, 0, 0);
+    box-shadow: none;
+  }
+}
+
+@keyframes cardFloat {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -5px, 0);
   }
 }
 
