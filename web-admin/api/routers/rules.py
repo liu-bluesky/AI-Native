@@ -6,7 +6,14 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from dataclasses import replace
 
-from core.ownership import assert_can_manage_record, current_username, ownership_payload
+from core.ownership import (
+    assert_can_manage_record,
+    can_view_record,
+    current_username,
+    normalize_share_scope,
+    normalize_shared_usernames,
+    ownership_payload,
+)
 from core.deps import employee_store, ensure_permission, require_auth
 from stores.json.employee_store import _now_iso
 from stores.mcp_bridge import rule_store, serialize_rule, Rule, Severity, RiskDomain, rules_now_iso
@@ -83,6 +90,48 @@ def _sanitize_bound_employees(values: list[str] | tuple[str, ...] | None) -> lis
     return [eid for eid in normalized if eid in valid_ids]
 
 
+def _visible_employee_map(auth_payload: dict | None) -> dict[str, str]:
+    if not isinstance(auth_payload, dict):
+        return {
+            str(getattr(emp, "id", "") or "").strip(): str(getattr(emp, "name", "") or "").strip()
+            for emp in employee_store.list_all()
+            if str(getattr(emp, "id", "") or "").strip()
+        }
+    return {
+        str(getattr(emp, "id", "") or "").strip(): str(getattr(emp, "name", "") or "").strip()
+        for emp in employee_store.list_all()
+        if str(getattr(emp, "id", "") or "").strip() and can_view_record(emp, auth_payload)
+    }
+
+
+def _rule_shared_via_employees(rule: Rule, auth_payload: dict | None) -> list[dict[str, str]]:
+    visible_employees = _visible_employee_map(auth_payload)
+    items: list[dict[str, str]] = []
+    for employee_id in _employees_having_rule(rule.id):
+        if employee_id not in visible_employees:
+            continue
+        items.append({"id": employee_id, "name": visible_employees.get(employee_id) or employee_id})
+    return items
+
+
+def _can_view_rule(rule: Rule, auth_payload: dict | None) -> bool:
+    if not isinstance(auth_payload, dict):
+        return True
+    if can_view_record(rule, auth_payload):
+        return True
+    return bool(_rule_shared_via_employees(rule, auth_payload))
+
+
+def _ensure_rule_view_access(rule: Rule | None, auth_payload: dict | None) -> Rule:
+    if rule is None:
+        raise HTTPException(404, "Rule not found")
+    if not isinstance(auth_payload, dict):
+        return rule
+    if not _can_view_rule(rule, auth_payload):
+        raise HTTPException(404, f"Rule {rule.id} not found")
+    return rule
+
+
 def _sync_rule_to_employee_bindings(rule_id: str, target_employee_ids: list[str]) -> None:
     target = str(rule_id or "").strip()
     if not target:
@@ -144,6 +193,7 @@ def _refresh_employee_domains_for_rule(rule_id: str) -> None:
 def _serialize_rule_payload(rule: Rule, auth_payload: dict | None = None) -> dict:
     payload = serialize_rule(rule)
     bound_ids = _employees_having_rule(rule.id)
+    shared_via_employees = _rule_shared_via_employees(rule, auth_payload)
     name_map = {
         str(getattr(emp, "id", "") or "").strip(): str(getattr(emp, "name", "") or "").strip()
         for emp in employee_store.list_all()
@@ -152,19 +202,27 @@ def _serialize_rule_payload(rule: Rule, auth_payload: dict | None = None) -> dic
     payload["bound_employees"] = bound_ids
     payload["bound_employee_count"] = len(bound_ids)
     payload["bound_employee_names"] = [name_map.get(eid) or eid for eid in bound_ids]
+    payload["shared_via_employees"] = shared_via_employees
     payload.update(ownership_payload(rule, auth_payload))
     return payload
 
 
 @router.get("")
 async def list_rules(auth_payload: dict = Depends(require_auth)):
-    rules = rule_store.list_all()
+    rules = [rule for rule in rule_store.list_all() if _can_view_rule(rule, auth_payload)]
     return {"rules": [_serialize_rule_payload(r, auth_payload) for r in rules]}
 
 
 @router.get("/domains")
-async def rule_domains():
-    return {"domains": rule_store.domains()}
+async def rule_domains(auth_payload: dict = Depends(require_auth)):
+    domains = sorted(
+        {
+            str(getattr(rule, "domain", "") or "").strip()
+            for rule in rule_store.list_all()
+            if _can_view_rule(rule, auth_payload) and str(getattr(rule, "domain", "") or "").strip()
+        }
+    )
+    return {"domains": domains}
 
 
 @router.get("/search")
@@ -173,23 +231,19 @@ async def search_rules(
     domain: str = None,
     auth_payload: dict = Depends(require_auth),
 ):
-    results = rule_store.query(keyword, domain)
+    results = [rule for rule in rule_store.query(keyword, domain) if _can_view_rule(rule, auth_payload)]
     return {"rules": [_serialize_rule_payload(r, auth_payload) for r in results]}
 
 
 @router.get("/{rule_id}")
 async def get_rule(rule_id: str, auth_payload: dict = Depends(require_auth)):
-    r = rule_store.get(rule_id)
-    if r is None:
-        raise HTTPException(404, f"Rule {rule_id} not found")
+    r = _ensure_rule_view_access(rule_store.get(rule_id), auth_payload)
     return {"rule": _serialize_rule_payload(r, auth_payload)}
 
 
 @router.delete("/{rule_id}")
 async def delete_rule(rule_id: str, auth_payload: dict = Depends(require_auth)):
-    rule = rule_store.get(rule_id)
-    if rule is None:
-        raise HTTPException(404, f"Rule {rule_id} not found")
+    rule = _ensure_rule_view_access(rule_store.get(rule_id), auth_payload)
     assert_can_manage_record(rule, auth_payload, "规则")
     _remove_rule_from_all_employees(rule_id)
     if not rule_store.delete(rule_id):
@@ -211,6 +265,13 @@ async def create_rule(req: RuleCreateReq, auth_payload: dict = Depends(require_a
         domain=req.domain,
         title=req.title,
         content=req.content,
+        share_scope=normalize_share_scope(req.share_scope),
+        shared_with_usernames=tuple(
+            normalize_shared_usernames(
+                req.shared_with_usernames,
+                owner_username=current_username(auth_payload),
+            )
+        ),
         severity=Severity(req.severity),
         risk_domain=RiskDomain(req.risk_domain),
         bound_employees=bound_employees,
@@ -226,11 +287,18 @@ async def create_rule(req: RuleCreateReq, auth_payload: dict = Depends(require_a
 
 @router.put("/{rule_id}")
 async def update_rule(rule_id: str, req: RuleUpdateReq, auth_payload: dict = Depends(require_auth)):
-    r = rule_store.get(rule_id)
-    if r is None:
-        raise HTTPException(404, f"Rule {rule_id} not found")
+    r = _ensure_rule_view_access(rule_store.get(rule_id), auth_payload)
     assert_can_manage_record(r, auth_payload, "规则")
     updates = req.model_dump(exclude_unset=True)
+    if "share_scope" in updates:
+        updates["share_scope"] = normalize_share_scope(updates["share_scope"])
+    if "shared_with_usernames" in updates:
+        updates["shared_with_usernames"] = tuple(
+            normalize_shared_usernames(
+                updates["shared_with_usernames"],
+                owner_username=str(getattr(r, "created_by", "") or "").strip(),
+            )
+        )
     if "severity" in updates:
         updates["severity"] = Severity(updates["severity"])
     if "risk_domain" in updates:

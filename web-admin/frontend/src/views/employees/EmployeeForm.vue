@@ -40,6 +40,7 @@
             定义该员工判断任务和输出结果时最优先追求的目标。
           </div>
         </el-form-item>
+        <ResourceShareSettings :form="form" />
       </template>
 
       <template v-else-if="currentStep === 1">
@@ -466,6 +467,7 @@ import { ref, reactive, onMounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
+import ResourceShareSettings from "@/components/ResourceShareSettings.vue";
 import { getOwnershipDeniedMessage } from "@/utils/ownership.js";
 import { canCreateEmployee, canUpdateEmployee } from "@/utils/employee-permissions.js";
 
@@ -497,6 +499,8 @@ const form = reactive({
   name: "",
   description: "",
   goal: "",
+  share_scope: "private",
+  shared_with_usernames: [],
   skills: [],
   memory_scope: "project",
   memory_retention_days: 90,
@@ -756,6 +760,10 @@ async function fetchDetail() {
     name: employee.name || "",
     description: employee.description || "",
     goal: employee.goal || "",
+    share_scope: employee.share_scope || "private",
+    shared_with_usernames: Array.isArray(employee.shared_with_usernames)
+      ? employee.shared_with_usernames
+      : [],
     skills: employee.skills || [],
     memory_scope: employee.memory_scope || "project",
     memory_retention_days: employee.memory_retention_days ?? 90,

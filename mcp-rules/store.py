@@ -75,6 +75,8 @@ class Rule:
     mcp_enabled: bool = False
     mcp_service: str = ""
     created_by: str = ""
+    share_scope: str = "private"
+    shared_with_usernames: tuple[str, ...] = ()
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -117,6 +119,8 @@ def _deserialize_rule(data: dict) -> Rule:
         mcp_enabled=data.get("mcp_enabled", False),
         mcp_service=data.get("mcp_service", ""),
         created_by=data.get("created_by", ""),
+        share_scope=data.get("share_scope", "private"),
+        shared_with_usernames=tuple(data.get("shared_with_usernames", [])),
         created_at=data.get("created_at", _now_iso()),
         updated_at=data.get("updated_at", _now_iso()),
     )

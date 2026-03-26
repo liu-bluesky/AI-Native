@@ -25,6 +25,7 @@
       <el-form-item label="内容" prop="content">
         <el-input v-model="form.content" type="textarea" :rows="6" placeholder="规则详细内容" />
       </el-form-item>
+      <ResourceShareSettings :form="form" />
       <el-form-item label="级别">
         <el-select v-model="form.severity">
           <el-option label="必须" value="required" />
@@ -96,6 +97,7 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api.js'
+import ResourceShareSettings from '@/components/ResourceShareSettings.vue'
 
 const router = useRouter()
 const formRef = ref(null)
@@ -107,6 +109,8 @@ const form = reactive({
   domain: '',
   title: '',
   content: '',
+  share_scope: 'private',
+  shared_with_usernames: [],
   severity: 'recommended',
   risk_domain: 'low',
   mcp_enabled: false,

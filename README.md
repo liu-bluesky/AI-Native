@@ -124,6 +124,7 @@ ai设计规范/
 
 - [项目总览](docs/00-项目总览/PROJECT.md)
 - [Docker 使用说明](docker/README.md)
+- [远程 Docker 发布工具](remote-docker-deploy/README.md)
 - [编码规范](rules/)
 
 ## License

@@ -25,6 +25,7 @@
       <el-form-item label="内容" prop="content">
         <el-input v-model="form.content" type="textarea" :rows="6" />
       </el-form-item>
+      <ResourceShareSettings :form="form" />
       <el-form-item label="级别">
         <el-select v-model="form.severity">
           <el-option label="必须" value="required" />
@@ -96,6 +97,7 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api.js'
+import ResourceShareSettings from '@/components/ResourceShareSettings.vue'
 import { canManageRecord, getOwnershipDeniedMessage } from '@/utils/ownership.js'
 
 const route = useRoute()
@@ -110,6 +112,8 @@ const form = reactive({
   domain: '',
   title: '',
   content: '',
+  share_scope: 'private',
+  shared_with_usernames: [],
   severity: 'recommended',
   risk_domain: 'low',
   mcp_enabled: false,
@@ -148,6 +152,8 @@ async function fetchDetail() {
       domain: rule.domain || '',
       title: rule.title || '',
       content: rule.content || '',
+      share_scope: rule.share_scope || 'private',
+      shared_with_usernames: Array.isArray(rule.shared_with_usernames) ? rule.shared_with_usernames : [],
       severity: rule.severity || 'recommended',
       risk_domain: rule.risk_domain || 'low',
       mcp_enabled: rule.mcp_enabled || false,

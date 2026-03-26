@@ -1,0 +1,18 @@
+.ace-tool/
+.claude
+.db-config*.json
+.DS_Store
+.pytest_cache/
+.env
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+
+# Frontend build artifacts
+web-admin/frontend/dist/
+rules
+# Local virtualenvs
+.venv/
+web-admin/api/.venv/
+backup
+dist

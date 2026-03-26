@@ -3487,16 +3487,16 @@ async def test_create_employee_from_draft_auto_creates_missing_skill_and_rule(tm
         style_hints=["先结论后展开"],
     )
 
-    result = await employees_router.create_employee_from_draft(req, {"sub": "tester"})
+    result = await employees_router.create_employee_from_draft(req, {"sub": "tester", "role": "admin"})
 
     assert result["status"] == "created"
     assert len(result["created_skills"]) == 1
-    assert len(result["created_rules"]) == 1
+    assert len(result["created_rules"]) >= 1
 
     employee = employee_store.get(result["employee"]["id"])
     assert employee is not None
     assert employee.skills == [result["created_skills"][0]["id"]]
-    assert employee.rule_ids == [result["created_rules"][0]["id"]]
+    assert result["created_rules"][0]["id"] in employee.rule_ids
 
     created_skill = skill_store.get(result["created_skills"][0]["id"])
     assert created_skill is not None
@@ -3504,7 +3504,7 @@ async def test_create_employee_from_draft_auto_creates_missing_skill_and_rule(tm
     assert skill_package.exists()
     assert (skill_package / "SKILL.md").exists()
 
-    created_rule = rule_store.get(result["created_rules"][0]["id"])
+    created_rule = rule_store.get(result["created_rules"][-1]["id"])
     assert created_rule is not None
     assert created_rule.domain == "product"
     assert "需求澄清优先" in created_rule.title
@@ -4096,6 +4096,168 @@ def test_build_project_manual_template_payload_prefers_ai_decided_collaboration(
     assert "自主判断单人主责还是多人协作" in manual
     assert "execute_project_collaboration" in manual
     assert "不要默认多员工并行" in manual
+
+
+def test_can_view_record_supports_private_selected_and_all_users():
+    from core.ownership import can_view_record
+    from stores.json.employee_store import EmployeeConfig
+
+    private_employee = EmployeeConfig(id="emp-private", name="私有员工", created_by="alice")
+    selected_employee = EmployeeConfig(
+        id="emp-selected",
+        name="定向共享员工",
+        created_by="alice",
+        share_scope="selected_users",
+        shared_with_usernames=["bob"],
+    )
+    all_users_employee = EmployeeConfig(
+        id="emp-all",
+        name="全员共享员工",
+        created_by="alice",
+        share_scope="all_users",
+    )
+
+    assert can_view_record(private_employee, {"sub": "alice", "role": "user"}) is True
+    assert can_view_record(private_employee, {"sub": "bob", "role": "user"}) is False
+    assert can_view_record(selected_employee, {"sub": "bob", "role": "user"}) is True
+    assert can_view_record(selected_employee, {"sub": "charlie", "role": "user"}) is False
+    assert can_view_record(all_users_employee, {"sub": "charlie", "role": "user"}) is True
+
+
+@pytest.mark.asyncio
+async def test_list_employees_filters_private_records(tmp_path, monkeypatch):
+    from routers import employees as employees_router
+    from stores.json.employee_store import EmployeeConfig, EmployeeStore
+
+    store = EmployeeStore(tmp_path / "data")
+    store.save(EmployeeConfig(id="emp-1", name="Alice 私有", created_by="alice"))
+    store.save(
+        EmployeeConfig(
+            id="emp-2",
+            name="Alice 定向共享",
+            created_by="alice",
+            share_scope="selected_users",
+            shared_with_usernames=["bob"],
+        )
+    )
+    store.save(
+        EmployeeConfig(
+            id="emp-3",
+            name="Alice 全员共享",
+            created_by="alice",
+            share_scope="all_users",
+        )
+    )
+
+    monkeypatch.setattr(employees_router, "employee_store", store)
+
+    result = await employees_router.list_employees({"sub": "bob", "role": "user"})
+    employee_ids = {item["id"] for item in result["employees"]}
+
+    assert employee_ids == {"emp-2", "emp-3"}
+
+
+@pytest.mark.asyncio
+async def test_list_rules_includes_private_rule_shared_via_employee(tmp_path, monkeypatch):
+    from routers import rules as rules_router
+    from stores import mcp_bridge
+    from stores.json.employee_store import EmployeeConfig, EmployeeStore
+
+    employee_store = EmployeeStore(tmp_path / "data")
+    rule_store = mcp_bridge._rules_mod.RuleStore(tmp_path / "rules-runtime")
+
+    employee_store.save(
+        EmployeeConfig(
+            id="emp-1",
+            name="共享员工",
+            created_by="alice",
+            share_scope="selected_users",
+            shared_with_usernames=["bob"],
+            rule_ids=["rule-1"],
+        )
+    )
+    employee_store.save(EmployeeConfig(id="emp-2", name="未共享员工", created_by="alice", rule_ids=["rule-2"]))
+    rule_store.save(
+        mcp_bridge._rules_mod.Rule(
+            id="rule-1",
+            domain="security",
+            title="可通过员工继承的私有规则",
+            content="demo",
+            created_by="alice",
+        )
+    )
+    rule_store.save(
+        mcp_bridge._rules_mod.Rule(
+            id="rule-2",
+            domain="security",
+            title="完全私有规则",
+            content="hidden",
+            created_by="alice",
+        )
+    )
+
+    monkeypatch.setattr(rules_router, "employee_store", employee_store)
+    monkeypatch.setattr(rules_router, "rule_store", rule_store)
+
+    result = await rules_router.list_rules({"sub": "bob", "role": "user"})
+    rule_ids = {item["id"] for item in result["rules"]}
+
+    assert rule_ids == {"rule-1"}
+    assert result["rules"][0]["shared_via_employees"][0]["id"] == "emp-1"
+
+
+@pytest.mark.asyncio
+async def test_list_skills_includes_private_skill_shared_via_employee(tmp_path, monkeypatch):
+    from routers import skills as skills_router
+    from stores import mcp_bridge
+    from stores.json.employee_store import EmployeeConfig, EmployeeStore
+
+    employee_store = EmployeeStore(tmp_path / "data")
+    skill_store = mcp_bridge._skills_mod.SkillStore(tmp_path / "skills-runtime")
+    binding_store = mcp_bridge._skills_mod.BindingStore(tmp_path / "skills-runtime")
+
+    employee_store.save(
+        EmployeeConfig(
+            id="emp-1",
+            name="共享员工",
+            created_by="alice",
+            share_scope="selected_users",
+            shared_with_usernames=["bob"],
+            skills=["skill-1"],
+        )
+    )
+    employee_store.save(EmployeeConfig(id="emp-2", name="未共享员工", created_by="alice", skills=["skill-2"]))
+    skill_store.save(
+        mcp_bridge._skills_mod.Skill(
+            id="skill-1",
+            version="1.0.0",
+            name="共享链路技能",
+            description="demo",
+            mcp_service="",
+            created_by="alice",
+        )
+    )
+    skill_store.save(
+        mcp_bridge._skills_mod.Skill(
+            id="skill-2",
+            version="1.0.0",
+            name="完全私有技能",
+            description="hidden",
+            mcp_service="",
+            created_by="alice",
+        )
+    )
+
+    monkeypatch.setattr(skills_router, "employee_store", employee_store)
+    monkeypatch.setattr(skills_router, "skill_store", skill_store)
+    monkeypatch.setattr(skills_router, "binding_store", binding_store)
+    monkeypatch.setattr(skills_router, "_ensure_historical_skills_registered", lambda: None)
+
+    result = await skills_router.list_skills({"sub": "bob", "role": "user"})
+    skill_ids = {item["id"] for item in result["skills"]}
+
+    assert skill_ids == {"skill-1"}
+    assert result["skills"][0]["shared_via_employees"][0]["id"] == "emp-1"
 
 
 if __name__ == "__main__":

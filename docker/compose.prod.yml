@@ -1,4 +1,4 @@
-name: ai_employee
+name: ai_employee_prod
 
 services:
   postgres:
@@ -32,9 +32,7 @@ services:
       retries: 5
 
   api:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.api
+    image: ${API_IMAGE:?set API_IMAGE in .env.prod}
     container_name: ai-employee-api
     restart: unless-stopped
     depends_on:
@@ -53,20 +51,26 @@ services:
       API_HOST: 0.0.0.0
       API_PORT: 8000
       API_RELOAD: "false"
-    volumes:
-      - ${HOME}/.ai-native/web-admin-api:/root/.ai-native/web-admin-api
     ports:
-      - "8000:8000"
+      - "${HOST_API_PORT:-8000}:8000"
+    volumes:
+      - api_data:/root/.ai-native/web-admin-api
+      - mcp_skills_knowledge:/app/mcp-skills/knowledge
 
   frontend:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.frontend
+    image: ${FRONTEND_IMAGE:?set FRONTEND_IMAGE in .env.prod}
     container_name: ai-employee-frontend
     restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
     ports:
-      - "3000:80"
+      - "${HOST_FRONTEND_PORT:-3000}:80"
 
 volumes:
   pgdata:
-    name: ai_employee_pgdata
+    name: ai_employee_pgdata_prod
+  api_data:
+    name: ai_employee_api_data_prod
+  mcp_skills_knowledge:
+    name: ai_employee_mcp_skills_knowledge_prod

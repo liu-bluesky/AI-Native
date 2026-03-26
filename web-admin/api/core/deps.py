@@ -39,26 +39,32 @@ async def require_auth(
     return payload
 
 
+def _resolve_role_permissions_from_payload(auth_payload: dict | None) -> tuple[str, list[str] | None]:
+    payload = auth_payload if isinstance(auth_payload, dict) else {}
+    role_id = str(payload.get("role") or "").strip().lower()
+    if not role_id:
+        return "", None
+    try:
+        role = role_store.get(role_id)
+    except ValueError:
+        return role_id, None
+    return role_id, getattr(role, "permissions", None)
+
+
 def ensure_permission(auth_payload: dict, permission_key: str) -> None:
-    role_id = str(auth_payload.get("role") or "").strip().lower()
-    role = role_store.get(role_id)
-    role_permissions = getattr(role, "permissions", None)
+    role_id, role_permissions = _resolve_role_permissions_from_payload(auth_payload)
     if not role_has_permission(role_permissions, permission_key, role_id=role_id):
         raise HTTPException(403, f"Permission denied: {permission_key}")
 
 
 def ensure_any_permission(auth_payload: dict, permission_keys: list[str]) -> None:
-    role_id = str(auth_payload.get("role") or "").strip().lower()
-    role = role_store.get(role_id)
-    role_permissions = getattr(role, "permissions", None)
+    role_id, role_permissions = _resolve_role_permissions_from_payload(auth_payload)
     if any(role_has_permission(role_permissions, key, role_id=role_id) for key in permission_keys):
         return
     raise HTTPException(403, f"Permission denied: {permission_keys}")
 
 
 def is_admin_like(auth_payload: dict) -> bool:
-    role_id = str(auth_payload.get("role") or "").strip().lower()
-    role = role_store.get(role_id)
-    permissions = getattr(role, "permissions", [])
+    role_id, permissions = _resolve_role_permissions_from_payload(auth_payload)
     resolved = resolve_role_permissions(permissions, role_id)
     return "*" in set(resolved)

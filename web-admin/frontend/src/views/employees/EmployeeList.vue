@@ -32,6 +32,11 @@
           {{ formatRecordOwner(row) }}
         </template>
       </el-table-column>
+      <el-table-column label="可见范围" width="140">
+        <template #default="{ row }">
+          {{ formatRecordVisibility(row) }}
+        </template>
+      </el-table-column>
       <el-table-column label="描述" min-width="220" show-overflow-tooltip>
         <template #default="{ row }">
           <span class="employee-description-cell">{{ row.description || "-" }}</span>
@@ -705,6 +710,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import api from "@/utils/api.js";
 import {
+  formatRecordVisibility,
   formatRecordOwner,
   getOwnershipDeniedMessage,
 } from "@/utils/ownership.js";

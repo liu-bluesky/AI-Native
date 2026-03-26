@@ -25,6 +25,19 @@
 - `40-数据存储升级`：数据库与存储迁移规划
 - `反馈驱动规则升级模块`：独立模块需求与 PRD
 
+## Docker 与部署入口
+
+当前 Docker 部署、镜像打包、服务器迁移统一看 `docker/` 目录，不再分散写在多个说明里：
+
+- `docker/README.md`：完整 Docker 使用说明，包含仓库拉镜像部署和镜像 tar 离线部署
+- `docker/README.quick.md`：最短命令速查
+- `docker/README.migration.md`：旧服务器到新服务器的数据迁移清单
+
+如果你是按“本地打包镜像 tar -> 上传服务器 -> `docker load` -> 启动”的路径部署，优先看：
+
+- `docker/README.md`
+- `docker/README.quick.md`
+
 ## 项目协作与 MCP 入口
 
 当前与项目协作相关的对外口径统一如下：

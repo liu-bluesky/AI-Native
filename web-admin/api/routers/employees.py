@@ -10,7 +10,15 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends
 
 from core.config import get_project_root
-from core.ownership import assert_can_manage_record, current_username, ownership_payload
+from core.ownership import (
+    assert_can_manage_record,
+    assert_can_view_record,
+    can_view_record,
+    current_username,
+    normalize_share_scope,
+    normalize_shared_usernames,
+    ownership_payload,
+)
 from core.deps import (
     employee_store,
     ensure_permission,
@@ -46,7 +54,12 @@ def _require_employee_permission(auth_payload: dict = Depends(require_auth)) -> 
 def _has_employee_action_permission(auth_payload: dict | None, permission_key: str) -> bool:
     payload = auth_payload or {}
     role_id = str(payload.get("role") or "").strip().lower()
-    role = role_store.get(role_id)
+    if not role_id:
+        return False
+    try:
+        role = role_store.get(role_id)
+    except ValueError:
+        return False
     role_permissions = getattr(role, "permissions", None)
     return has_permission(role_permissions, permission_key, role_id=role_id)
 
@@ -60,6 +73,21 @@ def _assert_can_manage_employee_action(
     if _has_employee_action_permission(auth_payload, permission_key):
         return
     assert_can_manage_record(employee, auth_payload, resource_label)
+
+
+def _can_view_employee_record(employee: EmployeeConfig, auth_payload: dict | None) -> bool:
+    if not isinstance(auth_payload, dict):
+        return True
+    return can_view_record(employee, auth_payload)
+
+
+def _ensure_employee_view_access(employee: EmployeeConfig | None, auth_payload: dict | None) -> EmployeeConfig:
+    if employee is None:
+        raise HTTPException(404, "Employee not found")
+    if not isinstance(auth_payload, dict):
+        return employee
+    assert_can_view_record(employee, auth_payload, "Employee")
+    return employee
 
 
 router = APIRouter(
@@ -1249,6 +1277,8 @@ def _create_employee_record(
     name: str,
     description: str,
     goal: str,
+    share_scope: str,
+    shared_with_usernames: list[str],
     skills: list[str],
     rule_bindings: list[dict[str, str]] | None,
     rule_ids: list[str] | None,
@@ -1279,6 +1309,11 @@ def _create_employee_record(
         id=employee_store.new_id(),
         name=normalized_name,
         created_by=current_username(auth_payload),
+        share_scope=normalize_share_scope(share_scope),
+        shared_with_usernames=normalize_shared_usernames(
+            shared_with_usernames,
+            owner_username=current_username(auth_payload),
+        ),
         description=_normalize_text_value(description, limit=2000),
         goal=_normalize_text_value(goal, limit=2000),
         skills=_normalize_text_list(skills, limit=200, item_limit=160),
@@ -1303,7 +1338,11 @@ def _create_employee_record(
 
 @router.get("")
 async def list_employees(auth_payload: dict = Depends(require_auth)):
-    employees = employee_store.list_all()
+    employees = [
+        employee
+        for employee in employee_store.list_all()
+        if _can_view_employee_record(employee, auth_payload)
+    ]
     return {"employees": [_serialize_employee_payload(e, auth_payload) for e in employees]}
 
 
@@ -1315,6 +1354,8 @@ async def create_employee(req: EmployeeCreateReq, auth_payload: dict = Depends(r
         name=req.name,
         description=req.description,
         goal=req.goal,
+        share_scope=req.share_scope,
+        shared_with_usernames=req.shared_with_usernames,
         skills=req.skills,
         rule_bindings=rule_bindings_input,
         rule_ids=req.rule_ids,
@@ -1540,6 +1581,8 @@ async def create_employee_from_draft(req: EmployeeDraftCreateReq, auth_payload: 
         name=name,
         description=req.description,
         goal=req.goal,
+        share_scope="private",
+        shared_with_usernames=[],
         skills=matched_skill_ids,
         rule_bindings=matched_rule_bindings,
         rule_ids=req.rule_ids,
@@ -1666,10 +1709,8 @@ async def generate_employee_draft(
 
 
 @router.get("/{employee_id}/config-test")
-async def test_employee_config(employee_id: str):
-    emp = employee_store.get(employee_id)
-    if emp is None:
-        raise HTTPException(404, f"Employee {employee_id} not found")
+async def test_employee_config(employee_id: str, auth_payload: dict = Depends(require_auth)):
+    emp = _ensure_employee_view_access(employee_store.get(employee_id), auth_payload)
 
     skill_checks = []
     blocking_issues = []
@@ -1808,16 +1849,12 @@ async def test_employee_config(employee_id: str):
 
 @router.get("/{employee_id}")
 async def get_employee(employee_id: str, auth_payload: dict = Depends(require_auth)):
-    emp = employee_store.get(employee_id)
-    if emp is None:
-        raise HTTPException(404, f"Employee {employee_id} not found")
+    emp = _ensure_employee_view_access(employee_store.get(employee_id), auth_payload)
     return {"employee": _serialize_employee_payload(emp, auth_payload)}
 
 
 def _apply_employee_update(employee_id: str, req: EmployeeUpdateReq, auth_payload: dict | None = None):
-    emp = employee_store.get(employee_id)
-    if emp is None:
-        raise HTTPException(404, f"Employee {employee_id} not found")
+    emp = _ensure_employee_view_access(employee_store.get(employee_id), auth_payload)
     _assert_can_manage_employee_action(emp, auth_payload, "员工", "button.employees.update")
     updates = req.model_dump(exclude_none=True)
     if not updates:
@@ -1856,6 +1893,13 @@ def _apply_employee_update(employee_id: str, req: EmployeeUpdateReq, auth_payloa
         updates["description"] = _normalize_text_value(updates["description"], limit=2000)
     if "goal" in updates:
         updates["goal"] = _normalize_text_value(updates["goal"], limit=2000)
+    if "share_scope" in updates:
+        updates["share_scope"] = normalize_share_scope(updates["share_scope"])
+    if "shared_with_usernames" in updates:
+        updates["shared_with_usernames"] = normalize_shared_usernames(
+            updates["shared_with_usernames"],
+            owner_username=str(getattr(emp, "created_by", "") or "").strip(),
+        )
     if "skills" in updates:
         updates["skills"] = _normalize_text_list(updates["skills"], limit=200, item_limit=160)
     if "tone" in updates:
@@ -1900,9 +1944,7 @@ async def update_employee_compat(
 
 @router.delete("/{employee_id}")
 async def delete_employee(employee_id: str, auth_payload: dict = Depends(require_auth)):
-    employee = employee_store.get(employee_id)
-    if employee is None:
-        raise HTTPException(404, f"Employee {employee_id} not found")
+    employee = _ensure_employee_view_access(employee_store.get(employee_id), auth_payload)
     _assert_can_manage_employee_action(employee, auth_payload, "员工", "button.employees.delete")
     if not employee_store.delete(employee_id):
         raise HTTPException(404, f"Employee {employee_id} not found")
@@ -1964,11 +2006,12 @@ async def test_employee_mcp(employee_id: str):
 
 
 
-def _build_employee_manual_payload(employee_id: str) -> dict[str, Any]:
+def _build_employee_manual_payload(
+    employee_id: str,
+    auth_payload: dict | None = None,
+) -> dict[str, Any]:
     """构建员工使用手册正文。"""
-    emp = employee_store.get(employee_id)
-    if emp is None:
-        raise HTTPException(404, f"Employee {employee_id} not found")
+    emp = _ensure_employee_view_access(employee_store.get(employee_id), auth_payload)
 
     bound_skills = []
     for skill_id in emp.skills or []:
@@ -2194,6 +2237,6 @@ save_employee_memory({{
 
 
 @router.get("/{employee_id}/manual-template")
-async def get_manual_template(employee_id: str):
+async def get_manual_template(employee_id: str, auth_payload: dict = Depends(require_auth)):
     """获取员工使用手册正文。"""
-    return _build_employee_manual_payload(employee_id)
+    return _build_employee_manual_payload(employee_id, auth_payload)

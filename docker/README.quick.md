@@ -49,7 +49,7 @@ docker compose up -d --no-build --force-recreate api frontend
 docker compose up -d --build api frontend
 ```
 
-意思：。
+意思：
 
 - 只重建并启动 `api` 和 `frontend`
 - 不会主动重建 `postgres`、`redis`
@@ -132,3 +132,37 @@ docker compose down -v
 
 - 先 `docker compose ps`
 - 再 `docker compose logs -f api`
+
+## 9. 服务器上传 tar 后怎么启动
+
+如果你上传到服务器的是镜像 tar，不是仓库地址，最短流程是：
+
+```bash
+cd /path/to/ai-employee
+docker load -i ai_employee-api_latest.tar
+docker load -i ai_employee-frontend_latest.tar
+
+cd docker
+cp .env.prod.example .env.prod
+chmod +x deploy.sh
+```
+
+`.env.prod` 至少改：
+
+```env
+API_IMAGE=ai_employee-api:latest
+FRONTEND_IMAGE=ai_employee-frontend:latest
+DB_PASSWORD=你的密码
+```
+
+启动：
+
+```bash
+./deploy.sh up
+./deploy.sh ps
+```
+
+记住：
+
+- `./deploy.sh deploy` 适合服务器自己从仓库拉镜像
+- `./deploy.sh up` 适合已经 `docker load` 到本机的离线部署

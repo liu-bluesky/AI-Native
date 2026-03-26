@@ -40,6 +40,11 @@
           {{ formatRecordOwner(row) }}
         </template>
       </el-table-column>
+      <el-table-column label="可见范围" width="140">
+        <template #default="{ row }">
+          {{ formatRecordVisibility(row) }}
+        </template>
+      </el-table-column>
 
       <el-table-column prop="severity" label="级别" width="100">
         <template #default="{ row }">
@@ -170,6 +175,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/utils/api.js";
 import {
   canManageRecord,
+  formatRecordVisibility,
   formatRecordOwner,
   getOwnershipDeniedMessage,
 } from "@/utils/ownership.js";

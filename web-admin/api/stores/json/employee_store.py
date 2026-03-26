@@ -19,6 +19,8 @@ class EmployeeConfig:
     id: str
     name: str
     created_by: str = ""
+    share_scope: str = "private"
+    shared_with_usernames: list[str] = field(default_factory=list)
     description: str = ""
     goal: str = ""
     skills: list[str] = field(default_factory=list)

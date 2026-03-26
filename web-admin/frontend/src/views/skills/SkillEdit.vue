@@ -25,6 +25,8 @@
         <el-button text type="primary" size="small" @click="form.tags.push('')">+ 添加标签</el-button>
       </el-form-item>
 
+      <ResourceShareSettings :form="form" />
+
       <el-divider content-position="left">服务</el-divider>
       <el-form-item label="独立 MCP 服务">
         <el-switch v-model="form.mcp_enabled" />
@@ -46,6 +48,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api.js'
+import ResourceShareSettings from '@/components/ResourceShareSettings.vue'
 import { canManageRecord, getOwnershipDeniedMessage } from '@/utils/ownership.js'
 
 const route = useRoute()
@@ -58,6 +61,8 @@ const form = reactive({
   name: '',
   version: '1.0.0',
   description: '',
+  share_scope: 'private',
+  shared_with_usernames: [],
   mcp_service: '',
   tags: [],
   mcp_enabled: false,
@@ -80,6 +85,8 @@ async function fetchDetail() {
       name: skill.name || '',
       version: skill.version || '1.0.0',
       description: skill.description || '',
+      share_scope: skill.share_scope || 'private',
+      shared_with_usernames: Array.isArray(skill.shared_with_usernames) ? skill.shared_with_usernames : [],
       mcp_service: skill.mcp_service || '',
       tags: [...(skill.tags || [])],
       mcp_enabled: skill.mcp_enabled || false,

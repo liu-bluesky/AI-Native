@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from core.config import get_project_root
-from core.ownership import current_username
+from core.ownership import current_username, normalize_share_scope, normalize_shared_usernames
 from models.requests import SkillCreateReq
 from stores.mcp_bridge import ProxyEntryDef, ResourceDef, Skill, ToolDef, skill_store
 
@@ -546,6 +546,13 @@ def import_skill_from_dir(
         description=description,
         mcp_service=mcp_service,
         created_by=current_username(auth_payload),
+        share_scope=normalize_share_scope(req.share_scope),
+        shared_with_usernames=tuple(
+            normalize_shared_usernames(
+                req.shared_with_usernames,
+                owner_username=current_username(auth_payload),
+            )
+        ),
         package_dir=str(package_path.relative_to(PROJECT_ROOT)),
         tools=scan_tools(source_dir, manifest, frontmatter),
         resources=scan_resources(source_dir),

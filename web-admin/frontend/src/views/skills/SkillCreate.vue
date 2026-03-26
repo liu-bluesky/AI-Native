@@ -55,6 +55,8 @@
         <el-button text type="primary" size="small" @click="form.tags.push('')">+ 添加标签</el-button>
       </el-form-item>
 
+      <ResourceShareSettings :form="form" />
+
       <el-divider content-position="left">服务</el-divider>
       <el-form-item label="独立 MCP 服务">
         <el-switch v-model="form.mcp_enabled" />
@@ -76,6 +78,7 @@ import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api.js'
+import ResourceShareSettings from '@/components/ResourceShareSettings.vue'
 
 const router = useRouter()
 const uploadRef = ref(null)
@@ -96,6 +99,8 @@ const form = reactive({
   name: '',
   version: '',
   description: '',
+  share_scope: 'private',
+  shared_with_usernames: [],
   mcp_service: '',
   tags: [],
   mcp_enabled: false,
@@ -127,6 +132,11 @@ async function handleCreate() {
     if (form.name.trim()) payload.append('name', form.name.trim())
     if (form.version.trim()) payload.append('version', form.version.trim())
     if (form.description.trim()) payload.append('description', form.description.trim())
+    payload.append('share_scope', String(form.share_scope || 'private').trim() || 'private')
+    const sharedUsers = Array.isArray(form.shared_with_usernames)
+      ? form.shared_with_usernames.map((item) => String(item || '').trim()).filter(Boolean)
+      : []
+    if (sharedUsers.length) payload.append('shared_with_usernames', sharedUsers.join(','))
     if (form.mcp_service.trim()) payload.append('mcp_service', form.mcp_service.trim())
     payload.append('mcp_enabled', form.mcp_enabled ? 'true' : '')
     const tags = form.tags.map((t) => t.trim()).filter(Boolean)

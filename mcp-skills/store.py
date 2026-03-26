@@ -58,6 +58,8 @@ class Skill:
     description: str
     mcp_service: str
     created_by: str = ""
+    share_scope: str = "private"
+    shared_with_usernames: tuple[str, ...] = ()
     package_dir: str = ""
     tools: tuple[ToolDef, ...] = ()
     resources: tuple[ResourceDef, ...] = ()
@@ -95,6 +97,8 @@ def _deserialize_skill(data: dict) -> Skill:
         name=data["name"], description=data["description"],
         mcp_service=data.get("mcp_service", ""),
         created_by=data.get("created_by", ""),
+        share_scope=data.get("share_scope", "private"),
+        shared_with_usernames=tuple(data.get("shared_with_usernames", [])),
         package_dir=data.get("package_dir", data.get("source_dir", "")),
         tools=tuple(ToolDef(**t) for t in data.get("tools", [])),
         resources=tuple(ResourceDef(**r) for r in data.get("resources", [])),

@@ -6,7 +6,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.deps import is_admin_like, project_store, require_auth, role_store, user_store
+from core.deps import ensure_any_permission, is_admin_like, project_store, require_auth, role_store, user_store
 from models.requests import UserCreateReq, UserPasswordUpdateReq, UserSettingsUpdateReq
 from core.role_permissions import has_permission
 from services.llm_provider_service import get_llm_provider_service
@@ -63,6 +63,25 @@ async def list_user_role_options(auth_payload: dict = Depends(require_auth)):
             for item in roles
         ]
     }
+
+
+@router.get("/share-options")
+async def list_user_share_options(auth_payload: dict = Depends(require_auth)):
+    ensure_any_permission(
+        auth_payload,
+        ["menu.users", "menu.employees", "menu.rules", "menu.skills", "menu.llm.providers"],
+    )
+    current_username = _sanitize_username(str(auth_payload.get("sub") or ""))
+    users = [
+        {
+            "username": user.username,
+            "role": user.role,
+            "created_at": user.created_at,
+        }
+        for user in user_store.list_all()
+        if str(user.username or "").strip() and str(user.username or "").strip() != current_username
+    ]
+    return {"users": users}
 
 
 @router.get("/me/settings")

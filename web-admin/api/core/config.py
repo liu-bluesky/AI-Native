@@ -105,6 +105,7 @@ class Settings:
     api_host: str
     api_port: int
     api_reload: bool
+    auto_run_db_migrations: bool
     api_cors_allow_origins: list[str]
     api_cors_allow_methods: list[str]
     api_cors_allow_headers: list[str]
@@ -150,6 +151,7 @@ def get_settings() -> Settings:
         api_host=_get_env("API_HOST", "0.0.0.0"),
         api_port=int(_get_env("API_PORT", "8000")),
         api_reload=_env_bool("API_RELOAD", True),
+        auto_run_db_migrations=_env_bool("AUTO_RUN_DB_MIGRATIONS", True),
         api_cors_allow_origins=_split_env_list("API_CORS_ALLOW_ORIGINS", ["*"]),
         api_cors_allow_methods=_split_env_list("API_CORS_ALLOW_METHODS", ["*"]),
         api_cors_allow_headers=_split_env_list("API_CORS_ALLOW_HEADERS", ["*"]),

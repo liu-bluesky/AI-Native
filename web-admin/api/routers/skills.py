@@ -16,7 +16,13 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from core.deps import employee_store, ensure_permission, require_auth, usage_store
-from core.ownership import assert_can_manage_record, ownership_payload
+from core.ownership import (
+    assert_can_manage_record,
+    can_view_record,
+    normalize_share_scope,
+    normalize_shared_usernames,
+    ownership_payload,
+)
 from models.requests import SkillCreateReq, SkillInstallReq, SkillUpdateReq
 from services.dynamic_mcp_skill_proxies import discover_skill_proxy_specs
 from services.skill_import_service import (
@@ -113,6 +119,81 @@ def _remove_employee_skill_reference(employee_id: str, skill_id: str) -> bool:
     employee.updated_at = skills_now_iso()
     employee_store.save(employee)
     return True
+
+
+def _employees_having_skill(skill_id: str) -> list[dict[str, str]]:
+    normalized_skill_id = str(skill_id or "").strip()
+    if not normalized_skill_id:
+        return []
+    matched: list[dict[str, str]] = []
+    seen_employee_ids: set[str] = set()
+    for employee in employee_store.list_all():
+        employee_id = str(getattr(employee, "id", "") or "").strip()
+        if not employee_id or employee_id in seen_employee_ids:
+            continue
+        current_skills = {
+            str(item or "").strip()
+            for item in (getattr(employee, "skills", []) or [])
+            if str(item or "").strip()
+        }
+        if normalized_skill_id not in current_skills:
+            for binding in binding_store.get_bindings(employee_id):
+                if str(getattr(binding, "skill_id", "") or "").strip() == normalized_skill_id:
+                    current_skills.add(normalized_skill_id)
+                    break
+        if normalized_skill_id not in current_skills:
+            continue
+        seen_employee_ids.add(employee_id)
+        matched.append(
+            {
+                "id": employee_id,
+                "name": str(getattr(employee, "name", "") or "").strip() or employee_id,
+            }
+        )
+    return matched
+
+
+def _visible_employee_map(auth_payload: dict | None) -> dict[str, str]:
+    if not isinstance(auth_payload, dict):
+        return {
+            str(getattr(employee, "id", "") or "").strip(): str(getattr(employee, "name", "") or "").strip()
+            for employee in employee_store.list_all()
+            if str(getattr(employee, "id", "") or "").strip()
+        }
+    return {
+        str(getattr(employee, "id", "") or "").strip(): str(getattr(employee, "name", "") or "").strip()
+        for employee in employee_store.list_all()
+        if str(getattr(employee, "id", "") or "").strip() and can_view_record(employee, auth_payload)
+    }
+
+
+def _skill_shared_via_employees(skill: Skill, auth_payload: dict | None) -> list[dict[str, str]]:
+    visible_employees = _visible_employee_map(auth_payload)
+    shared_via: list[dict[str, str]] = []
+    for item in _employees_having_skill(skill.id):
+        employee_id = str(item.get("id") or "").strip()
+        if employee_id not in visible_employees:
+            continue
+        shared_via.append({"id": employee_id, "name": visible_employees.get(employee_id) or employee_id})
+    return shared_via
+
+
+def _can_view_skill(skill: Skill, auth_payload: dict | None) -> bool:
+    if not isinstance(auth_payload, dict):
+        return True
+    if can_view_record(skill, auth_payload):
+        return True
+    return bool(_skill_shared_via_employees(skill, auth_payload))
+
+
+def _ensure_skill_view_access(skill: Skill | None, auth_payload: dict | None) -> Skill:
+    if skill is None:
+        raise HTTPException(404, "Skill not found")
+    if not isinstance(auth_payload, dict):
+        return skill
+    if not _can_view_skill(skill, auth_payload):
+        raise HTTPException(404, f"Skill {skill.id} not found")
+    return skill
 
 
 def _resolve_skill_package_path(skill: Skill) -> Path | None:
@@ -231,15 +312,14 @@ def _serialize_skill_payload(skill: Skill, auth_payload: dict | None = None) -> 
     proxy_entries, proxy_status = _collect_skill_proxy_state(skill)
     payload["proxy_entries"] = proxy_entries
     payload["proxy_status"] = proxy_status
+    payload["shared_via_employees"] = _skill_shared_via_employees(skill, auth_payload)
     payload.update(ownership_payload(skill, auth_payload))
     return payload
 
 
-def _resolve_skill_package(skill_id: str) -> tuple[Skill, Path]:
+def _resolve_skill_package(skill_id: str, auth_payload: dict | None = None) -> tuple[Skill, Path]:
     _ensure_historical_skills_registered()
-    skill = skill_store.get(skill_id)
-    if skill is None:
-        raise HTTPException(404, f"Skill {skill_id} not found")
+    skill = _ensure_skill_view_access(skill_store.get(skill_id), auth_payload)
     package_path = PROJECT_ROOT / str(skill.package_dir or "").strip()
     if not package_path.exists() or not package_path.is_dir():
         raise HTTPException(404, f"Skill package directory for {skill_id} not found")
@@ -316,32 +396,28 @@ def _read_skill_file_preview(file_path: Path) -> tuple[str, bool, bool]:
 @router.get("/skills")
 async def list_skills(auth_payload: dict = Depends(require_auth)):
     _ensure_historical_skills_registered()
-    skills = skill_store.list_all()
+    skills = [skill for skill in skill_store.list_all() if _can_view_skill(skill, auth_payload)]
     return {"skills": [_serialize_skill_payload(skill, auth_payload) for skill in skills]}
 
 
 @router.get("/skills/query/{domain}")
 async def query_skills(domain: str, auth_payload: dict = Depends(require_auth)):
     _ensure_historical_skills_registered()
-    results = skill_store.query(domain=domain)
+    results = [skill for skill in skill_store.query(domain=domain) if _can_view_skill(skill, auth_payload)]
     return {"skills": [_serialize_skill_payload(skill, auth_payload) for skill in results]}
 
 
 @router.get("/skills/{skill_id}")
 async def get_skill(skill_id: str, auth_payload: dict = Depends(require_auth)):
     _ensure_historical_skills_registered()
-    skill = skill_store.get(skill_id)
-    if skill is None:
-        raise HTTPException(404, f"Skill {skill_id} not found")
+    skill = _ensure_skill_view_access(skill_store.get(skill_id), auth_payload)
     return {"skill": _serialize_skill_payload(skill, auth_payload)}
 
 
 @router.post("/skills/{skill_id}/refresh-proxy-entries")
 async def refresh_skill_proxy_entries(skill_id: str, auth_payload: dict = Depends(require_auth)):
     _ensure_historical_skills_registered()
-    skill = skill_store.get(skill_id)
-    if skill is None:
-        raise HTTPException(404, f"Skill {skill_id} not found")
+    skill = _ensure_skill_view_access(skill_store.get(skill_id), auth_payload)
     assert_can_manage_record(skill, auth_payload, "技能")
     package_path = _resolve_skill_package_path(skill)
     if package_path is None:
@@ -358,14 +434,14 @@ async def refresh_skill_proxy_entries(skill_id: str, auth_payload: dict = Depend
 
 
 @router.get("/skills/{skill_id}/package-tree")
-async def get_skill_package_tree(skill_id: str):
-    _, package_path = _resolve_skill_package(skill_id)
+async def get_skill_package_tree(skill_id: str, auth_payload: dict = Depends(require_auth)):
+    _, package_path = _resolve_skill_package(skill_id, auth_payload)
     return {"tree": _build_skill_package_tree(package_path, package_path)}
 
 
 @router.get("/skills/{skill_id}/package-file")
-async def get_skill_package_file(skill_id: str, path: str):
-    _, package_path = _resolve_skill_package(skill_id)
+async def get_skill_package_file(skill_id: str, path: str, auth_payload: dict = Depends(require_auth)):
+    _, package_path = _resolve_skill_package(skill_id, auth_payload)
     rel_path, file_path = _resolve_skill_file_path(package_path, path)
     content, is_binary, truncated = _read_skill_file_preview(file_path)
     return {
@@ -381,8 +457,11 @@ async def get_skill_package_file(skill_id: str, path: str):
 
 
 @router.get("/employees/{employee_id}/skills")
-async def employee_skills(employee_id: str):
+async def employee_skills(employee_id: str, auth_payload: dict = Depends(require_auth)):
     employee = employee_store.get(employee_id)
+    auth = auth_payload if isinstance(auth_payload, dict) else None
+    if employee is None or (auth is not None and not can_view_record(employee, auth)):
+        raise HTTPException(404, f"Employee {employee_id} not found")
     bindings = binding_store.get_bindings(employee_id)
     binding_by_skill_id = {
         str(binding.skill_id or "").strip(): binding
@@ -416,11 +495,18 @@ async def employee_skills(employee_id: str):
 
 
 @router.post("/employees/{employee_id}/skills")
-async def install_skill(employee_id: str, req: SkillInstallReq):
+async def install_skill(
+    employee_id: str,
+    req: SkillInstallReq,
+    auth_payload: dict = Depends(require_auth),
+):
     employee = employee_store.get(employee_id)
-    if employee is None:
+    auth = auth_payload if isinstance(auth_payload, dict) else None
+    if employee is None or (auth is not None and not can_view_record(employee, auth)):
         raise HTTPException(404, f"Employee {employee_id} not found")
-    skill = skill_store.get(req.skill_id)
+    if auth is not None:
+        assert_can_manage_record(employee, auth, "员工")
+    skill = _ensure_skill_view_access(skill_store.get(req.skill_id), auth)
     if skill is None:
         raise HTTPException(404, f"Skill {req.skill_id} not found")
     enabled_tools = tuple(req.enabled_tools) or tuple(tool.name for tool in getattr(skill, "tools", ()) or ())
@@ -457,6 +543,8 @@ async def import_skill_file(
     name: str = Form(""),
     version: str = Form(""),
     description: str = Form(""),
+    share_scope: str = Form("private"),
+    shared_with_usernames: str = Form(""),
     mcp_service: str = Form(""),
     tags: str = Form(""),
     mcp_enabled: bool = Form(False),
@@ -496,6 +584,14 @@ async def import_skill_file(
             payload["version"] = version.strip()
         if description.strip():
             payload["description"] = description.strip()
+        payload["share_scope"] = normalize_share_scope(share_scope)
+        shared_username_list = [
+            item.strip()
+            for item in shared_with_usernames.split(",")
+            if item.strip()
+        ]
+        if shared_username_list:
+            payload["shared_with_usernames"] = shared_username_list
         if mcp_service.strip():
             payload["mcp_service"] = mcp_service.strip()
         tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
@@ -506,8 +602,8 @@ async def import_skill_file(
 
 
 @router.get("/skills/{skill_id}/export")
-async def export_skill(skill_id: str):
-    _, package_path = _resolve_skill_package(skill_id)
+async def export_skill(skill_id: str, auth_payload: dict = Depends(require_auth)):
+    _, package_path = _resolve_skill_package(skill_id, auth_payload)
 
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -526,11 +622,18 @@ async def export_skill(skill_id: str):
 
 @router.put("/skills/{skill_id}")
 async def update_skill(skill_id: str, req: SkillUpdateReq, auth_payload: dict = Depends(require_auth)):
-    skill = skill_store.get(skill_id)
-    if skill is None:
-        raise HTTPException(404, f"Skill {skill_id} not found")
+    skill = _ensure_skill_view_access(skill_store.get(skill_id), auth_payload)
     assert_can_manage_record(skill, auth_payload, "技能")
     updates = {key: value for key, value in req.model_dump(exclude_unset=True).items()}
+    if "share_scope" in updates:
+        updates["share_scope"] = normalize_share_scope(updates["share_scope"])
+    if "shared_with_usernames" in updates:
+        updates["shared_with_usernames"] = tuple(
+            normalize_shared_usernames(
+                updates["shared_with_usernames"],
+                owner_username=str(getattr(skill, "created_by", "") or "").strip(),
+            )
+        )
     if "tags" in updates:
         updates["tags"] = tuple(updates["tags"])
     updates["updated_at"] = skills_now_iso()
@@ -541,9 +644,7 @@ async def update_skill(skill_id: str, req: SkillUpdateReq, auth_payload: dict = 
 
 @router.delete("/skills/{skill_id}")
 async def delete_skill(skill_id: str, auth_payload: dict = Depends(require_auth)):
-    skill = skill_store.get(skill_id)
-    if skill is None:
-        raise HTTPException(404, f"Skill {skill_id} not found")
+    skill = _ensure_skill_view_access(skill_store.get(skill_id), auth_payload)
     assert_can_manage_record(skill, auth_payload, "技能")
     package_path = skill_store.package_path(skill_id)
     if package_path.exists():
@@ -560,7 +661,17 @@ async def delete_skill(skill_id: str, auth_payload: dict = Depends(require_auth)
 
 
 @router.delete("/employees/{employee_id}/skills/{skill_id}")
-async def uninstall_skill(employee_id: str, skill_id: str):
+async def uninstall_skill(
+    employee_id: str,
+    skill_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    employee = employee_store.get(employee_id)
+    auth = auth_payload if isinstance(auth_payload, dict) else None
+    if employee is None or (auth is not None and not can_view_record(employee, auth)):
+        raise HTTPException(404, f"Employee {employee_id} not found")
+    if auth is not None:
+        assert_can_manage_record(employee, auth, "员工")
     removed_binding = binding_store.remove(employee_id, skill_id)
     removed_skill_ref = _remove_employee_skill_reference(employee_id, skill_id)
     if not removed_binding and not removed_skill_ref:

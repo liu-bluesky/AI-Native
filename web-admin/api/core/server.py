@@ -48,7 +48,9 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        if settings.core_store_backend == "postgres" or settings.usage_store_backend == "postgres":
+        if settings.auto_run_db_migrations and (
+            settings.core_store_backend == "postgres" or settings.usage_store_backend == "postgres"
+        ):
             run_postgres_migrations(settings.database_url)
         worker = StudioExportBackgroundService(
             project_store=project_store,

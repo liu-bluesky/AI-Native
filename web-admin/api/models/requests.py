@@ -54,6 +54,8 @@ class EmployeeCreateReq(BaseModel):
     name: str
     description: str = ""
     goal: str = ""
+    share_scope: str = "private"
+    shared_with_usernames: list[str] = []
     skills: list[str] = []
     rule_bindings: list[dict[str, Any] | str] = []
     rule_ids: list[str] = []
@@ -76,6 +78,8 @@ class EmployeeUpdateReq(BaseModel):
     name: str | None = None
     description: str | None = None
     goal: str | None = None
+    share_scope: str | None = None
+    shared_with_usernames: list[str] | None = None
     skills: list[str] | None = None
     rule_bindings: list[dict[str, Any] | str] | None = None
     rule_ids: list[str] | None = None
@@ -652,6 +656,8 @@ class SkillCreateReq(BaseModel):
     name: str = ""
     version: str = "1.0.0"
     description: str = ""
+    share_scope: str = "private"
+    shared_with_usernames: list[str] = []
     mcp_service: str = ""
     tags: list[str] = []
     mcp_enabled: bool = False
@@ -661,6 +667,8 @@ class SkillUpdateReq(BaseModel):
     name: str | None = None
     version: str | None = None
     description: str | None = None
+    share_scope: str | None = None
+    shared_with_usernames: list[str] | None = None
     mcp_service: str | None = None
     tags: list[str] | None = None
     mcp_enabled: bool | None = None
@@ -672,6 +680,8 @@ class RuleCreateReq(BaseModel):
     domain: str
     title: str
     content: str
+    share_scope: str = "private"
+    shared_with_usernames: list[str] = []
     severity: str = "recommended"
     risk_domain: str = "low"
     mcp_enabled: bool = False
@@ -683,6 +693,8 @@ class RuleUpdateReq(BaseModel):
     domain: str | None = None
     title: str | None = None
     content: str | None = None
+    share_scope: str | None = None
+    shared_with_usernames: list[str] | None = None
     severity: str | None = None
     risk_domain: str | None = None
     mcp_enabled: bool | None = None
