@@ -53,8 +53,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backup-prefix", default="visibility-sync")
     parser.add_argument("--healthcheck-url", default="")
     parser.add_argument("--ssh-key", default="")
-    parser.add_argument("--password", default="")
-    parser.add_argument("--password-env", default="REMOTE_DEPLOY_PASSWORD")
+    parser.add_argument("--password", "--remote-deploy-password", dest="password", default="")
+    parser.add_argument("--password-env", default="")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--employee-id", default="")
     parser.add_argument("--api-key", default="")
@@ -377,7 +377,7 @@ def main() -> int:
     args.rollback_from = ""
     config = deploylib.merged_config(args, stored)
     password = deploylib.resolve_password(args, stored)
-    deploylib.validate_inputs(config, password)
+    deploylib.validate_inputs(config, password, stage="remote")
 
     if args.save:
         to_store = {

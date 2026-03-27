@@ -81,6 +81,7 @@ def save_config(path: Path, payload: dict[str, Any]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deploy remote Docker services over SSH.")
     parser.add_argument("--profile", default="default")
+    parser.add_argument("--stage", choices=["all", "package", "upload", "remote"], default="all")
     parser.add_argument("--host", default="")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--user", default="")
@@ -97,8 +98,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backup-prefix", default="")
     parser.add_argument("--healthcheck-url", default="")
     parser.add_argument("--ssh-key", default="")
-    parser.add_argument("--password", default="")
-    parser.add_argument("--password-env", default="REMOTE_DEPLOY_PASSWORD")
+    parser.add_argument("--password", "--remote-deploy-password", dest="password", default="")
+    parser.add_argument("--password-env", default="")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--employee-id", default="")
     parser.add_argument("--api-key", default="")
@@ -145,7 +146,7 @@ def merged_config(args: argparse.Namespace, stored: dict[str, Any]) -> dict[str,
 def resolve_password(args: argparse.Namespace, stored: dict[str, Any]) -> str:
     if args.password:
         return args.password
-    env_name = str(args.password_env or "REMOTE_DEPLOY_PASSWORD").strip()
+    env_name = str(args.password_env or "").strip()
     if env_name:
         env_value = os.getenv(env_name, "")
         if env_value:
@@ -153,29 +154,37 @@ def resolve_password(args: argparse.Namespace, stored: dict[str, Any]) -> str:
     return str(stored.get("password") or "")
 
 
-def validate_inputs(config: dict[str, Any], password: str) -> None:
-    if not str(config.get("host") or "").strip():
-        raise SystemExit("NO_CONFIG: host is required")
-    if not str(config.get("user") or "").strip():
-        raise SystemExit("NO_CONFIG: user is required")
-    if not str(config.get("remote_dir") or "").strip():
-        raise SystemExit("NO_CONFIG: remote_dir is required")
-    ssh_key = str(config.get("ssh_key") or "").strip()
-    if not password and not ssh_key:
-        raise SystemExit("NO_AUTH: provide --password, --password-env, or --ssh-key")
-    if ssh_key:
-        ssh_key_path = Path(ssh_key).expanduser()
-        if not ssh_key_path.exists():
-            raise SystemExit(f"NO_SSH_KEY: ssh key not found: {ssh_key_path}")
-    if str(config.get("action") or "").strip() == "rollback" and not str(config.get("rollback_from") or "").strip():
-        raise SystemExit("NO_ROLLBACK_SOURCE: provide --rollback-from")
+def validate_inputs(config: dict[str, Any], password: str, *, stage: str) -> None:
+    action = str(config.get("action") or "").strip()
     delivery_mode = str(config.get("delivery_mode") or "registry").strip()
     if delivery_mode not in {"offline", "registry", "remote-build"}:
         raise SystemExit("INVALID_DELIVERY_MODE: choose offline, registry, or remote-build")
-    if delivery_mode == "offline" and str(config.get("action") or "").strip() == "pull":
+    if delivery_mode == "offline" and action == "pull":
         raise SystemExit("INVALID_ACTION: offline delivery does not support action=pull")
-    if delivery_mode == "remote-build" and str(config.get("action") or "").strip() == "pull":
+    if delivery_mode == "remote-build" and action == "pull":
         raise SystemExit("INVALID_ACTION: remote-build delivery does not support action=pull")
+    if stage in {"package", "upload"} and action != "deploy":
+        raise SystemExit("INVALID_STAGE: package/upload only support action=deploy")
+    if stage in {"package", "upload"} and delivery_mode == "registry":
+        raise SystemExit("INVALID_STAGE: registry delivery only supports stage=all or stage=remote")
+    requires_remote = stage in {"upload", "remote", "all"}
+    if requires_remote:
+        if not str(config.get("host") or "").strip():
+            raise SystemExit("NO_CONFIG: host is required")
+        if not str(config.get("user") or "").strip():
+            raise SystemExit("NO_CONFIG: user is required")
+        if not str(config.get("remote_dir") or "").strip():
+            raise SystemExit("NO_CONFIG: remote_dir is required")
+        ssh_key = str(config.get("ssh_key") or "").strip()
+        if not password and not ssh_key:
+            raise SystemExit("NO_AUTH: provide --password/--remote-deploy-password, --password-env, or --ssh-key")
+        if ssh_key:
+            ssh_key_path = Path(ssh_key).expanduser()
+            if not ssh_key_path.exists():
+                raise SystemExit(f"NO_SSH_KEY: ssh key not found: {ssh_key_path}")
+    if stage in {"remote", "all"}:
+        if action == "rollback" and not str(config.get("rollback_from") or "").strip():
+            raise SystemExit("NO_ROLLBACK_SOURCE: provide --rollback-from")
 
 
 def build_ssh_command(config: dict[str, Any]) -> list[str]:
@@ -258,6 +267,44 @@ def local_artifact_paths(config: dict[str, Any]) -> dict[str, Path]:
         "api_tar": artifact_dir / f"{slugify_image_name(str(config['api_image']))}.tar",
         "frontend_tar": artifact_dir / f"{slugify_image_name(str(config['frontend_image']))}.tar",
         "source_tar": artifact_dir / f"{project_root().name}-src.tar.gz",
+    }
+
+
+def fail_plan(plan: dict[str, Any], step: str, message: str) -> dict[str, Any]:
+    return {
+        **plan,
+        "status": "error",
+        "failed_step": step,
+        "steps": [
+            {
+                "step": step,
+                "status": "error",
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": message,
+                "command": [],
+            }
+        ],
+    }
+
+
+def run_plan_steps(plan: dict[str, Any], step_names: list[str], *, timeout: int) -> dict[str, Any]:
+    steps: list[dict[str, Any]] = []
+    for key in step_names:
+        step_result = run_local_command(plan["commands"][key], timeout=timeout)
+        step_result["step"] = key
+        steps.append(step_result)
+        if step_result["status"] != "ok":
+            return {
+                **plan,
+                "status": "error",
+                "failed_step": key,
+                "steps": steps,
+            }
+    return {
+        **plan,
+        "status": "ok",
+        "steps": steps,
     }
 
 
@@ -357,7 +404,7 @@ def create_source_bundle(bundle_path: Path) -> dict[str, Any]:
     }
 
 
-def prepare_offline_artifacts(config: dict[str, Any], *, password: str, dry_run: bool) -> dict[str, Any]:
+def build_offline_delivery_plan(config: dict[str, Any], *, password: str, dry_run: bool) -> dict[str, Any]:
     paths = local_artifact_paths(config)
     remote_paths = remote_artifact_paths(config)
     commands = {
@@ -416,41 +463,61 @@ def prepare_offline_artifacts(config: dict[str, Any], *, password: str, dry_run:
             "frontend": upload_frontend_auth_mode,
         },
     }
+    return plan
+
+
+def package_offline_artifacts(config: dict[str, Any], *, password: str, dry_run: bool) -> dict[str, Any]:
+    plan = build_offline_delivery_plan(config, password=password, dry_run=dry_run)
+    if dry_run:
+        return {
+            **plan,
+            "status": "dry_run",
+            "stage": "package",
+        }
+    paths = local_artifact_paths(config)
+    paths["dir"].mkdir(parents=True, exist_ok=True)
+    return run_plan_steps(plan, ["build_api", "build_frontend", "save_api", "save_frontend"], timeout=int(config["timeout"]))
+
+
+def upload_offline_artifacts(config: dict[str, Any], *, password: str, dry_run: bool) -> dict[str, Any]:
+    plan = build_offline_delivery_plan(config, password=password, dry_run=dry_run)
+    if dry_run:
+        return {
+            **plan,
+            "status": "dry_run",
+            "stage": "upload",
+        }
+    paths = local_artifact_paths(config)
+    missing = [str(paths[key]) for key in ("api_tar", "frontend_tar") if not paths[key].is_file()]
+    if missing:
+        return fail_plan(plan, "upload_precheck", f"missing local artifact(s): {', '.join(missing)}")
+    return run_plan_steps(plan, ["upload_api", "upload_frontend"], timeout=int(config["timeout"]))
+
+
+def prepare_offline_artifacts(config: dict[str, Any], *, password: str, dry_run: bool) -> dict[str, Any]:
+    plan = build_offline_delivery_plan(config, password=password, dry_run=dry_run)
     if dry_run:
         plan["status"] = "dry_run"
         return plan
-    paths["dir"].mkdir(parents=True, exist_ok=True)
-    steps: list[dict[str, Any]] = []
-    for key in ("build_api", "build_frontend", "save_api", "save_frontend"):
-        step_result = run_local_command(plan["commands"][key], timeout=int(config["timeout"]))
-        step_result["step"] = key
-        steps.append(step_result)
-        if step_result["status"] != "ok":
-            return {
-                **plan,
-                "status": "error",
-                "failed_step": key,
-                "steps": steps,
-            }
-    for key in ("upload_api", "upload_frontend"):
-        step_result = run_local_command(plan["commands"][key], timeout=int(config["timeout"]))
-        step_result["step"] = key
-        steps.append(step_result)
-        if step_result["status"] != "ok":
-            return {
-                **plan,
-                "status": "error",
-                "failed_step": key,
-                "steps": steps,
-            }
+    package_result = package_offline_artifacts(config, password=password, dry_run=False)
+    if package_result.get("status") != "ok":
+        return package_result
+    upload_result = upload_offline_artifacts(config, password=password, dry_run=False)
+    if upload_result.get("status") != "ok":
+        return {
+            **plan,
+            "status": "error",
+            "failed_step": upload_result.get("failed_step"),
+            "steps": [*package_result.get("steps", []), *upload_result.get("steps", [])],
+        }
     return {
         **plan,
         "status": "ok",
-        "steps": steps,
+        "steps": [*package_result.get("steps", []), *upload_result.get("steps", [])],
     }
 
 
-def prepare_remote_build_artifacts(config: dict[str, Any], *, password: str, dry_run: bool) -> dict[str, Any]:
+def build_remote_build_plan(config: dict[str, Any], *, password: str, dry_run: bool) -> dict[str, Any]:
     paths = local_artifact_paths(config)
     remote_paths = remote_artifact_paths(config)
     commands = {
@@ -479,34 +546,68 @@ def prepare_remote_build_artifacts(config: dict[str, Any], *, password: str, dry
             "source": upload_auth_mode,
         },
     }
+    return plan
+
+
+def package_remote_build_artifacts(config: dict[str, Any], *, password: str, dry_run: bool) -> dict[str, Any]:
+    plan = build_remote_build_plan(config, password=password, dry_run=dry_run)
     if dry_run:
-        plan["status"] = "dry_run"
-        return plan
-    steps: list[dict[str, Any]] = []
+        return {
+            **plan,
+            "status": "dry_run",
+            "stage": "package",
+        }
+    paths = local_artifact_paths(config)
     bundle_result = create_source_bundle(paths["source_tar"])
     bundle_result["step"] = "bundle_source"
-    steps.append(bundle_result)
     if bundle_result["status"] != "ok":
         return {
             **plan,
             "status": "error",
             "failed_step": "bundle_source",
-            "steps": steps,
-        }
-    upload_result = run_local_command(plan["commands"]["upload_source"], timeout=int(config["timeout"]))
-    upload_result["step"] = "upload_source"
-    steps.append(upload_result)
-    if upload_result["status"] != "ok":
-        return {
-            **plan,
-            "status": "error",
-            "failed_step": "upload_source",
-            "steps": steps,
+            "steps": [bundle_result],
         }
     return {
         **plan,
         "status": "ok",
-        "steps": steps,
+        "steps": [bundle_result],
+    }
+
+
+def upload_remote_build_artifacts(config: dict[str, Any], *, password: str, dry_run: bool) -> dict[str, Any]:
+    plan = build_remote_build_plan(config, password=password, dry_run=dry_run)
+    if dry_run:
+        return {
+            **plan,
+            "status": "dry_run",
+            "stage": "upload",
+        }
+    paths = local_artifact_paths(config)
+    if not paths["source_tar"].is_file():
+        return fail_plan(plan, "upload_precheck", f"missing local artifact: {paths['source_tar']}")
+    return run_plan_steps(plan, ["upload_source"], timeout=int(config["timeout"]))
+
+
+def prepare_remote_build_artifacts(config: dict[str, Any], *, password: str, dry_run: bool) -> dict[str, Any]:
+    plan = build_remote_build_plan(config, password=password, dry_run=dry_run)
+    if dry_run:
+        plan["status"] = "dry_run"
+        return plan
+    package_result = package_remote_build_artifacts(config, password=password, dry_run=False)
+    if package_result.get("status") != "ok":
+        return package_result
+    upload_result = upload_remote_build_artifacts(config, password=password, dry_run=False)
+    if upload_result.get("status") != "ok":
+        return {
+            **plan,
+            "status": "error",
+            "failed_step": upload_result.get("failed_step"),
+            "steps": [*package_result.get("steps", []), *upload_result.get("steps", [])],
+        }
+    return {
+        **plan,
+        "status": "ok",
+        "steps": [*package_result.get("steps", []), *upload_result.get("steps", [])],
     }
 
 
@@ -705,7 +806,7 @@ def main() -> int:
     stored = load_config(cfg_path)
     config = merged_config(args, stored)
     password = resolve_password(args, stored)
-    validate_inputs(config, password)
+    validate_inputs(config, password, stage=args.stage)
     delivery_result: dict[str, Any] | None = None
 
     if args.save:
@@ -732,39 +833,54 @@ def main() -> int:
 
     delivery_mode = str(config.get("delivery_mode") or "").strip()
     action = str(config.get("action") or "").strip()
-    if delivery_mode == "offline" and action == "deploy":
-        delivery_result = prepare_offline_artifacts(config, password=password, dry_run=args.dry_run)
-    elif delivery_mode == "remote-build" and action == "deploy":
-        delivery_result = prepare_remote_build_artifacts(config, password=password, dry_run=args.dry_run)
+    if action == "deploy" and delivery_mode == "offline":
+        if args.stage == "package":
+            delivery_result = package_offline_artifacts(config, password=password, dry_run=args.dry_run)
+        elif args.stage == "upload":
+            delivery_result = upload_offline_artifacts(config, password=password, dry_run=args.dry_run)
+        elif args.stage == "all":
+            delivery_result = prepare_offline_artifacts(config, password=password, dry_run=args.dry_run)
+    elif action == "deploy" and delivery_mode == "remote-build":
+        if args.stage == "package":
+            delivery_result = package_remote_build_artifacts(config, password=password, dry_run=args.dry_run)
+        elif args.stage == "upload":
+            delivery_result = upload_remote_build_artifacts(config, password=password, dry_run=args.dry_run)
+        elif args.stage == "all":
+            delivery_result = prepare_remote_build_artifacts(config, password=password, dry_run=args.dry_run)
     if delivery_result is not None and delivery_result.get("status") == "error":
-            payload = {
-                "config_path": str(cfg_path),
-                "target": {
-                    "profile": config["profile"],
-                    "host": config["host"],
-                    "port": config["port"],
-                    "user": config["user"],
-                    "remote_dir": config["remote_dir"],
-                    "action": config["action"],
-                    "delivery_mode": config["delivery_mode"],
-                    "rollback_from": str(config.get("rollback_from") or ""),
-                    "update_db": bool(config.get("update_db")),
-                },
-                "delivery": delivery_result,
-            }
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
-            return 1
+        payload = {
+            "config_path": str(cfg_path),
+            "target": {
+                "profile": config["profile"],
+                "stage": args.stage,
+                "host": config["host"],
+                "port": config["port"],
+                "user": config["user"],
+                "remote_dir": config["remote_dir"],
+                "action": config["action"],
+                "delivery_mode": config["delivery_mode"],
+                "rollback_from": str(config.get("rollback_from") or ""),
+                "update_db": bool(config.get("update_db")),
+            },
+            "delivery": delivery_result,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 1
 
     deploy_result = run_remote(
         config,
         password=password,
         skip_backup=args.skip_backup,
         dry_run=args.dry_run,
-    )
+    ) if args.stage in {"all", "remote"} else {
+        "status": "skipped",
+        "reason": f"stage={args.stage}",
+    }
     payload: dict[str, Any] = {
         "config_path": str(cfg_path),
         "target": {
             "profile": config["profile"],
+            "stage": args.stage,
             "host": config["host"],
             "port": config["port"],
             "user": config["user"],
@@ -781,6 +897,9 @@ def main() -> int:
     backup_dir = extract_backup_dir(str(deploy_result.get("stdout") or ""))
     if backup_dir:
         payload["backup_dir"] = backup_dir
+    if deploy_result["status"] == "skipped":
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
     if deploy_result["status"] == "dry_run":
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0

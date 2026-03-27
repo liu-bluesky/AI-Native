@@ -37,8 +37,34 @@
 推荐用法：
 
 ```bash
-export REMOTE_DEPLOY_PASSWORD='你的服务器密码'
-python3 remote-docker-deploy/remote_docker_deploy.py
+python3 remote-docker-deploy/remote_docker_deploy.py \
+  --profile prod \
+  --remote-deploy-password '你的服务器密码'
+```
+
+如果你要把发布拆成 3 步，直接用这 3 个脚本：
+
+```bash
+./remote-docker-deploy/package_deploy_artifacts.sh --profile prod
+./remote-docker-deploy/upload_deploy_artifacts.sh --profile prod --remote-deploy-password '你的服务器密码'
+./remote-docker-deploy/update_remote_stack.sh --profile prod --remote-deploy-password '你的服务器密码'
+```
+
+这 3 个脚本分别做：
+
+1. `package_deploy_artifacts.sh`
+   本地构建镜像并打包离线 tar；如果是 `remote-build`，则改为打源码包。
+2. `upload_deploy_artifacts.sh`
+   把上一步产物上传到服务器，但还不执行远程更新。
+3. `update_remote_stack.sh`
+   只在服务器上执行备份、`docker load` / `docker build`、`deploy.sh up`，默认带 `--update-db`。
+
+如果这次不想跑数据库 migration：
+
+```bash
+DEPLOY_UPDATE_DB=false ./remote-docker-deploy/update_remote_stack.sh \
+  --profile prod \
+  --remote-deploy-password '你的服务器密码'
 ```
 
 保存生产环境配置到 `prod` profile：
@@ -56,8 +82,9 @@ python3 remote-docker-deploy/remote_docker_deploy.py \
 之后直接用 `prod` profile 发布：
 
 ```bash
-export REMOTE_DEPLOY_PASSWORD='你的服务器密码'
-python3 remote-docker-deploy/remote_docker_deploy.py --profile prod
+python3 remote-docker-deploy/remote_docker_deploy.py \
+  --profile prod \
+  --remote-deploy-password '你的服务器密码'
 ```
 
 如果你要改回仓库拉取模式：
@@ -71,10 +98,10 @@ python3 remote-docker-deploy/remote_docker_deploy.py \
 如果你要改成“上传源码到远程再构建”的模式：
 
 ```bash
-export REMOTE_DEPLOY_PASSWORD='你的服务器密码'
 python3 remote-docker-deploy/remote_docker_deploy.py \
   --profile prod \
-  --delivery-mode remote-build
+  --delivery-mode remote-build \
+  --remote-deploy-password '你的服务器密码'
 ```
 
 这个模式会：
@@ -88,8 +115,10 @@ python3 remote-docker-deploy/remote_docker_deploy.py \
 如果这次部署需要顺带更新数据库 migration：
 
 ```bash
-export REMOTE_DEPLOY_PASSWORD='你的服务器密码'
-python3 remote-docker-deploy/remote_docker_deploy.py --update-db
+python3 remote-docker-deploy/remote_docker_deploy.py \
+  --profile prod \
+  --remote-deploy-password '你的服务器密码' \
+  --update-db
 ```
 
 保存非敏感配置：
@@ -107,8 +136,9 @@ python3 remote-docker-deploy/remote_docker_deploy.py --action up
 回滚到某次备份：
 
 ```bash
-export REMOTE_DEPLOY_PASSWORD='你的服务器密码'
 python3 remote-docker-deploy/remote_docker_deploy.py \
+  --profile prod \
+  --remote-deploy-password '你的服务器密码' \
   --action rollback \
   --rollback-from backup/auto-deploy-20260326-120000
 ```
@@ -124,12 +154,14 @@ python3 remote-docker-deploy/remote_docker_deploy.py \
 支持：
 
 - `--profile`
+- `--stage all|package|upload|remote`
 - `--delivery-mode offline|registry|remote-build`
 - `--platform`
 - `--api-image`
 - `--frontend-image`
 - `--artifact-dir`
 - `--password`
+- `--remote-deploy-password`
 - `--password-env`
 - `--ssh-key`
 - `--action rollback`
@@ -167,8 +199,9 @@ python3 remote-docker-deploy/remote_docker_deploy.py \
 如果你本地已经把员工 / 规则 / 技能改成了新的可见范围，但远程 PostgreSQL 里还是旧值，可以直接同步：
 
 ```bash
-export REMOTE_DEPLOY_PASSWORD='你的服务器密码'
-python3 remote-docker-deploy/sync_resource_visibility.py
+python3 remote-docker-deploy/sync_resource_visibility.py \
+  --profile prod \
+  --remote-deploy-password '你的服务器密码'
 ```
 
 默认行为：
@@ -181,8 +214,10 @@ python3 remote-docker-deploy/sync_resource_visibility.py
 如果你只是想强制把本地读到的这三类资源全部同步为“所有人可见”：
 
 ```bash
-export REMOTE_DEPLOY_PASSWORD='你的服务器密码'
-python3 remote-docker-deploy/sync_resource_visibility.py --all-users
+python3 remote-docker-deploy/sync_resource_visibility.py \
+  --profile prod \
+  --remote-deploy-password '你的服务器密码' \
+  --all-users
 ```
 
 常用参数：
