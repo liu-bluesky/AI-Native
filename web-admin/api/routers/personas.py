@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from dataclasses import replace
 
 from core.deps import require_auth
+from core.ownership import assert_can_manage_record, current_username, ownership_payload
 from stores.mcp_bridge import (
     persona_store, snapshot_store, serialize_persona,
     Persona, DecisionPolicy, DriftControl, persona_now_iso,
@@ -16,18 +17,25 @@ from models.requests import PersonaCreateReq, PersonaUpdateReq
 router = APIRouter(prefix="/api/personas", dependencies=[Depends(require_auth)])
 
 
+def _serialize_persona_with_ownership(persona: Persona, auth_payload: dict | None = None) -> dict:
+    data = serialize_persona(persona)
+    if auth_payload is not None:
+        data.update(ownership_payload(persona, auth_payload))
+    return data
+
+
 @router.get("")
-async def list_personas():
+async def list_personas(auth_payload: dict = Depends(require_auth)):
     personas = persona_store.list_all()
-    return {"personas": [serialize_persona(p) for p in personas]}
+    return {"personas": [_serialize_persona_with_ownership(p, auth_payload) for p in personas]}
 
 
 @router.get("/{persona_id}")
-async def get_persona(persona_id: str):
+async def get_persona(persona_id: str, auth_payload: dict = Depends(require_auth)):
     p = persona_store.get(persona_id)
     if p is None:
         raise HTTPException(404, f"Persona {persona_id} not found")
-    return {"persona": serialize_persona(p)}
+    return {"persona": _serialize_persona_with_ownership(p, auth_payload)}
 
 
 @router.get("/{persona_id}/snapshots")
@@ -62,10 +70,11 @@ def _build_drift_control(d: dict | None) -> DriftControl:
 
 
 @router.post("")
-async def create_persona(req: PersonaCreateReq):
+async def create_persona(req: PersonaCreateReq, auth_payload: dict = Depends(require_auth)):
     persona = Persona(
         id=persona_store.new_id(),
         name=req.name,
+        created_by=current_username(auth_payload),
         tone=req.tone,
         verbosity=req.verbosity,
         language=req.language,
@@ -75,14 +84,15 @@ async def create_persona(req: PersonaCreateReq):
         drift_control=_build_drift_control(req.drift_control),
     )
     persona_store.save(persona)
-    return {"status": "created", "persona": serialize_persona(persona)}
+    return {"status": "created", "persona": _serialize_persona_with_ownership(persona, auth_payload)}
 
 
 @router.put("/{persona_id}")
-async def update_persona(persona_id: str, req: PersonaUpdateReq):
+async def update_persona(persona_id: str, req: PersonaUpdateReq, auth_payload: dict = Depends(require_auth)):
     p = persona_store.get(persona_id)
     if p is None:
         raise HTTPException(404, f"Persona {persona_id} not found")
+    assert_can_manage_record(p, auth_payload, "人设")
     updates = req.model_dump(exclude_unset=True)
     if "behaviors" in updates:
         updates["behaviors"] = tuple(updates["behaviors"])
@@ -95,11 +105,15 @@ async def update_persona(persona_id: str, req: PersonaUpdateReq):
     updates["updated_at"] = persona_now_iso()
     updated = replace(p, **updates)
     persona_store.save(updated)
-    return {"status": "updated", "persona": serialize_persona(updated)}
+    return {"status": "updated", "persona": _serialize_persona_with_ownership(updated, auth_payload)}
 
 
 @router.delete("/{persona_id}")
-async def delete_persona(persona_id: str):
+async def delete_persona(persona_id: str, auth_payload: dict = Depends(require_auth)):
+    persona = persona_store.get(persona_id)
+    if persona is None:
+        raise HTTPException(404, f"Persona {persona_id} not found")
+    assert_can_manage_record(persona, auth_payload, "人设")
     if not persona_store.delete(persona_id):
         raise HTTPException(404, f"Persona {persona_id} not found")
     return {"status": "deleted", "persona_id": persona_id}

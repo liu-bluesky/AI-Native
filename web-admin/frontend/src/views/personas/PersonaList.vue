@@ -16,12 +16,36 @@
         </template>
       </el-table-column>
       <el-table-column prop="alignment_score" label="对齐分" width="90" align="center" />
-      <el-table-column label="操作" width="180" fixed="right">
+      <el-table-column label="操作" width="220" fixed="right">
         <template #default="{ row }">
-          <el-button text type="primary" size="small" @click="$router.push(`/personas/${row.id}`)">详情</el-button>
-          <el-button text type="primary" size="small" @click="$router.push(`/personas/${row.id}/edit`)">编辑</el-button>
-          <el-button text size="small" @click="showSnapshots(row.id)">快照</el-button>
-          <el-button text type="danger" size="small" @click="handleDelete(row.id)">删除</el-button>
+          <el-button
+            v-for="action in getPrimaryPersonaActions(row)"
+            :key="`${row.id}-${action.key}`"
+            text
+            :type="action.type"
+            size="small"
+            @click="handlePersonaAction(row, action.key)"
+          >
+            {{ action.label }}
+          </el-button>
+          <el-dropdown
+            v-if="getOverflowPersonaActions(row).length"
+            trigger="click"
+            @command="(actionKey) => handlePersonaAction(row, actionKey)"
+          >
+            <el-button text type="primary" size="small">更多</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="action in getOverflowPersonaActions(row)"
+                  :key="`${row.id}-${action.key}`"
+                  :command="action.key"
+                >
+                  {{ action.label }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -32,11 +56,49 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
 
 const loading = ref(false)
 const personas = ref([])
+const router = useRouter()
+
+function getPersonaActions() {
+  return [
+    { key: 'detail', label: '详情', type: 'primary' },
+    { key: 'edit', label: '编辑', type: 'primary' },
+    { key: 'snapshots', label: '快照' },
+    { key: 'delete', label: '删除', type: 'danger' },
+  ]
+}
+
+function getPrimaryPersonaActions(row) {
+  return getPersonaActions(row).slice(0, 3)
+}
+
+function getOverflowPersonaActions(row) {
+  return getPersonaActions(row).slice(3)
+}
+
+function handlePersonaAction(row, actionKey) {
+  switch (actionKey) {
+    case 'detail':
+      router.push(`/personas/${row.id}`)
+      break
+    case 'edit':
+      router.push(`/personas/${row.id}/edit`)
+      break
+    case 'snapshots':
+      void showSnapshots(row.id)
+      break
+    case 'delete':
+      void handleDelete(row.id)
+      break
+    default:
+      break
+  }
+}
 
 async function fetchPersonas() {
   loading.value = true

@@ -75,54 +75,35 @@
       <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
           <el-button
-            v-if="row.mcp_enabled"
+            v-for="action in getPrimaryRuleActions(row)"
+            :key="`${row.id}-${action.key}`"
             text
-            type="success"
+            :type="action.type"
             size="small"
-            @click="showSingleMcpConfig(row)"
-            >接入</el-button
+            :disabled="action.disabled"
+            @click="handleRuleAction(row, action.key)"
           >
-          <el-button
-            v-if="row.mcp_enabled"
-            text
-            type="warning"
-            size="small"
-            :disabled="!canManageRow(row)"
-            @click="disableMcp(row)"
-            >关闭 MCP</el-button
+            {{ action.label }}
+          </el-button>
+          <el-dropdown
+            v-if="getOverflowRuleActions(row).length"
+            trigger="click"
+            @command="(actionKey) => handleRuleAction(row, actionKey)"
           >
-          <el-button
-            v-else
-            text
-            type="warning"
-            size="small"
-            :disabled="!canManageRow(row)"
-            @click="enableMcp(row)"
-            >开启 MCP</el-button
-          >
-          <el-button
-            text
-            type="primary"
-            size="small"
-            @click="$router.push(`/rules/${row.id}`)"
-            >详情</el-button
-          >
-          <el-button
-            text
-            type="primary"
-            size="small"
-            :disabled="!canManageRow(row)"
-            @click="$router.push(`/rules/${row.id}/edit`)"
-            >编辑</el-button
-          >
-          <el-button
-            text
-            type="danger"
-            size="small"
-            :disabled="!canManageRow(row)"
-            @click="handleDelete(row.id)"
-            >删除</el-button
-          >
+            <el-button text type="primary" size="small">更多</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="action in getOverflowRuleActions(row)"
+                  :key="`${row.id}-${action.key}`"
+                  :command="action.key"
+                  :disabled="action.disabled"
+                >
+                  {{ action.label }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -171,6 +152,7 @@
 
 <script setup>
 import { ref, onMounted, computed } from "vue";
+import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/utils/api.js";
 import {
@@ -188,6 +170,7 @@ const filterDomain = ref("");
 const keyword = ref("");
 const showMcpConfig = ref(false);
 const isAdmin = computed(() => localStorage.getItem("role") === "admin");
+const router = useRouter();
 
 const mcpDialogTitle = ref("接入 MCP 服务");
 const mcpDialogDesc = ref(
@@ -335,6 +318,77 @@ function sevColor(s) {
 
 function canManageRow(row) {
   return canManageRecord(row);
+}
+
+function getRuleActions(row) {
+  const actions = [];
+  if (row.mcp_enabled) {
+    actions.push({ key: "mcp-config", label: "接入", type: "success", disabled: false });
+    actions.push({
+      key: "disable-mcp",
+      label: "关闭 MCP",
+      type: "warning",
+      disabled: !canManageRow(row),
+    });
+  } else {
+    actions.push({
+      key: "enable-mcp",
+      label: "开启 MCP",
+      type: "warning",
+      disabled: !canManageRow(row),
+    });
+  }
+  actions.push({ key: "detail", label: "详情", type: "primary", disabled: false });
+  actions.push({
+    key: "edit",
+    label: "编辑",
+    type: "primary",
+    disabled: !canManageRow(row),
+  });
+  actions.push({
+    key: "delete",
+    label: "删除",
+    type: "danger",
+    disabled: !canManageRow(row),
+  });
+  return actions;
+}
+
+function getPrimaryRuleActions(row) {
+  return getRuleActions(row).slice(0, 3);
+}
+
+function getOverflowRuleActions(row) {
+  return getRuleActions(row).slice(3);
+}
+
+function handleRuleAction(row, actionKey) {
+  switch (actionKey) {
+    case "mcp-config":
+      showSingleMcpConfig(row);
+      break;
+    case "enable-mcp":
+      if (!canManageRow(row)) return;
+      void enableMcp(row);
+      break;
+    case "disable-mcp":
+      if (!canManageRow(row)) return;
+      void disableMcp(row);
+      break;
+    case "detail":
+      router.push(`/rules/${row.id}`);
+      break;
+    case "edit":
+      if (!canManageRow(row)) return;
+      router.push(`/rules/${row.id}/edit`);
+      break;
+    case "delete":
+      if (!canManageRow(row)) return;
+      void handleDelete(row.id);
+      break;
+    default:
+      break;
+  }
 }
 
 async function fetchDomains() {

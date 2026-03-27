@@ -28,6 +28,7 @@ from services.dynamic_mcp_collaboration import (
 from services.dynamic_mcp_profiles import (
     employee_rule_summary as _employee_rule_summary,
     list_project_member_profiles_runtime,
+    project_ui_rule_summary,
     query_project_members_runtime,
     query_project_rules_runtime,
     query_rules_by_employee as _query_rules_by_employee,
@@ -129,30 +130,35 @@ def create_project_mcp(
         mcp_instruction = _resolve_mcp_instruction(project)
         proxy_tool_count = len(scoped_proxy_specs)
         external_tool_count = len(external_tool_specs)
+        ui_rule_bindings = project_ui_rule_summary(project.id, limit=20)
+        ui_rule_titles = [str(item.get("title") or item.get("id") or "").strip() for item in ui_rule_bindings if str(item.get("title") or item.get("id") or "").strip()]
         guide_lines = [
             f"# {project.name} Project MCP Usage Guide",
             "",
             f"- 项目 ID: {project.id}",
             f"- 项目描述: {project.description or '-'}",
             f"- MCP 使用说明: {mcp_instruction or '-'}",
-            f"- 适用场景: 读取项目画像、项目成员、项目规则、项目成员技能代理工具，以及当前项目挂载的外部 MCP 工具。",
+            f"- 适用场景: 读取项目画像、项目级 UI 规则、项目成员规则、项目成员技能代理工具，以及当前项目挂载的外部 MCP 工具。",
             f"- 项目使用手册 Resource: {manual_resource}",
             "",
             "## 推荐调用顺序",
             f"1. 先调用 get_project_usage_guide 或读取 project://{project.id}/usage-guide，了解项目范围与约定。",
             "2. 如需项目手册，直接读取 project://<project_id>/manual 或调用 get_project_manual。",
             "3. 调用 get_project_profile，确认项目基础配置、工作区与入口文件配置。",
-            "4. 调用 get_project_runtime_context，快速了解成员数量、规则规模和代理工具规模。",
+            "4. 调用 get_project_runtime_context，快速了解成员数量、项目级 UI 规则、规则规模和代理工具规模。",
             f"5. 如需选人，先调用 list_project_members；如需选工具，先调用 list_project_proxy_tools 或读取 project://{project.id}/proxy-tools。",
-            "6. 规则检索用 query_project_rules；协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断单人主责或多人协作；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
+            "6. 规则检索用 query_project_rules；其中项目级 UI 规则优先于员工个人规则。协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断单人主责或多人协作；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
             "",
             "## 调用建议",
+            "- 页面、交互、视觉相关任务先检查项目级 UI 规则，其优先级高于员工个人规则。",
             "- 当 tool_name 可能重名时，给 invoke_project_skill_tool 同时传 employee_id 做消歧。",
             "- 在直接调用技能脚本前，先读取项目规则和成员信息，避免工具选错。",
             "- execute_project_collaboration 是统一协作入口，但不内置固定行业分工模板；若单个成员足以闭环，可保持单人主责。",
             "- 外部 MCP 工具的参数以远端工具 schema 为准，先用 list_external_mcp_tools 查看。",
             "",
             "## 当前项目能力概览",
+            f"- 项目级 UI 规则数: {len(ui_rule_bindings)}",
+            f"- 项目级 UI 规则: {', '.join(ui_rule_titles) or '-'}",
             f"- 项目成员技能代理工具数: {proxy_tool_count}",
             f"- 外部 MCP 工具数: {external_tool_count}",
         ]
@@ -182,6 +188,8 @@ def create_project_mcp(
             "mcp_instruction": mcp_instruction,
             "workspace_path": str(getattr(project, "workspace_path", "") or ""),
             "ai_entry_file": display_path,
+            "ui_rule_count": len(ui_rule_bindings),
+            "ui_rules": ui_rule_bindings,
             "proxy_tool_count": proxy_tool_count,
             "external_tool_count": external_tool_count,
             "recommended_flow": [
@@ -345,10 +353,15 @@ def create_project_mcp(
         if not project:
             return {"error": "Project not found"}
         pairs = _list_member_pairs()
+        ui_rules = project_ui_rule_summary(project.id, limit=30)
         rule_ids: set[str] = set()
         for _member, employee in pairs:
             for rule in _query_rules_by_employee(employee):
                 rule_ids.add(rule.id)
+        for item in ui_rules:
+            rule_id = str(item.get("id") or "").strip()
+            if rule_id:
+                rule_ids.add(rule_id)
         return {
             "project_id": project.id,
             "project_name": project.name,
@@ -356,6 +369,8 @@ def create_project_mcp(
             "members": [employee.id for _member, employee in pairs],
             "scoped_proxy_tool_count": len(scoped_proxy_specs),
             "rule_count": len(rule_ids),
+            "ui_rule_count": len(ui_rules),
+            "ui_rules": ui_rules,
         }
 
     @mcp.tool()
@@ -482,22 +497,12 @@ def create_project_mcp(
 
     @mcp.tool()
     def query_project_rules(keyword: str = "", employee_id: str = "") -> list[dict]:
-        """检索项目成员规则（支持按 employee_id 过滤）"""
+        """检索项目规则，包含项目级 UI 规则与成员规则（支持按 employee_id 过滤成员规则）"""
         project = _get_project()
         if not project:
             return []
         employee_id_value = str(employee_id or "").strip()
-        results = []
-        seen: set[str] = set()
-        for _member, employee in _list_member_pairs():
-            if employee_id_value and employee.id != employee_id_value:
-                continue
-            for rule in _query_rules_by_employee(employee, keyword):
-                if rule.id in seen:
-                    continue
-                seen.add(rule.id)
-                results.append(serialize_rule(rule))
-        return results
+        return query_project_rules_runtime(project.id, keyword=keyword, employee_id=employee_id_value)
 
     @mcp.tool()
     def list_project_proxy_tools() -> list[dict]:

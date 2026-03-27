@@ -57,92 +57,36 @@
       <el-table-column label="技能数" width="80">
         <template #default="{ row }">{{ row.skills?.length || 0 }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="800" fixed="right">
+      <el-table-column label="操作" width="360" fixed="right">
         <template #default="{ row }">
           <div class="employee-actions-cell">
             <el-button
+              v-for="action in getPrimaryEmployeeActions(row)"
+              :key="`${row.id}-${action.key}`"
               text
-              type="primary"
-              @click="$router.push(`/employees/${row.id}`)"
-              >详情</el-button
+              :type="action.type"
+              @click="handleEmployeeAction(row, action.key)"
             >
-            <el-button
-              v-if="canUpdateRow(row)"
-              text
-              type="primary"
-              @click="$router.push(`/employees/${row.id}/edit`)"
-              >编辑</el-button
-            >
-            <el-button
-              v-if="row.mcp_enabled"
-              text
-              type="success"
-              @click="showEmployeeMcpConfig(row)"
-              >接入</el-button
-            >
-            <el-button
-              v-if="row.mcp_enabled && canUpdateRow(row)"
-              text
-              type="warning"
-              @click="disableEmployeeMcp(row)"
-              >关闭 MCP</el-button
-            >
-            <el-button
-              v-else-if="canUpdateRow(row)"
-              text
-              type="warning"
-              @click="enableEmployeeMcp(row)"
-              >开启 MCP</el-button
-            >
-            <el-button text type="info" @click="showEmployeeConfigTest(row)"
-              >测试</el-button
-            >
-            <el-button text type="success" @click="showEmployeeManual(row)"
-              >使用手册</el-button
-            >
-            <el-button
-              text
-              type="primary"
-              @click="$router.push(`/employees/${row.id}/usage`)"
-              >统计</el-button
-            >
-            <el-button
-              v-if="row.feedback_upgrade_enabled"
-              text
-              type="primary"
-              @click="$router.push(`/feedback/${row.id}`)"
-            >
-              反馈
+              {{ action.label }}
             </el-button>
-            <el-button
-              v-if="!row.feedback_upgrade_enabled && canUpdateRow(row)"
-              text
-              type="primary"
-              @click="enableFeedbackUpgrade(row)"
+            <el-dropdown
+              v-if="getOverflowEmployeeActions(row).length"
+              trigger="click"
+              @command="(actionKey) => handleEmployeeAction(row, actionKey)"
             >
-              开启反馈
-            </el-button>
-            <el-button
-              v-else-if="canUpdateRow(row)"
-              text
-              type="warning"
-              @click="disableFeedbackUpgrade(row)"
-            >
-              关闭反馈
-            </el-button>
-            <el-button text @click="$router.push(`/memory/${row.id}`)"
-              >记忆</el-button
-            >
-            <el-button text @click="$router.push(`/sync/${row.id}`)"
-              >同步</el-button
-            >
-            <el-button
-              v-if="canDeleteRow(row)"
-              text
-              type="danger"
-              @click="handleDelete(row)"
-              >删除</el-button
-            >
+              <el-button text type="primary" size="small">更多</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="action in getOverflowEmployeeActions(row)"
+                    :key="`${row.id}-${action.key}`"
+                    :command="action.key"
+                  >
+                    {{ action.label }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
         </template>
       </el-table-column>
@@ -907,6 +851,101 @@ function canUpdateRow(row) {
 
 function canDeleteRow(row) {
   return canDeleteEmployee(row);
+}
+
+function getEmployeeActions(row) {
+  const actions = [
+    { key: "detail", label: "详情", type: "primary" },
+  ];
+  if (canUpdateRow(row)) {
+    actions.push({ key: "edit", label: "编辑", type: "primary" });
+  }
+  if (row.mcp_enabled) {
+    actions.push({ key: "mcp-config", label: "接入", type: "success" });
+    if (canUpdateRow(row)) {
+      actions.push({ key: "disable-mcp", label: "关闭 MCP", type: "warning" });
+    }
+  } else if (canUpdateRow(row)) {
+    actions.push({ key: "enable-mcp", label: "开启 MCP", type: "warning" });
+  }
+  actions.push({ key: "config-test", label: "测试", type: "info" });
+  actions.push({ key: "manual", label: "使用手册", type: "success" });
+  actions.push({ key: "usage", label: "统计", type: "primary" });
+  if (row.feedback_upgrade_enabled) {
+    actions.push({ key: "feedback", label: "反馈", type: "primary" });
+    if (canUpdateRow(row)) {
+      actions.push({
+        key: "disable-feedback",
+        label: "关闭反馈",
+        type: "warning",
+      });
+    }
+  } else if (canUpdateRow(row)) {
+    actions.push({ key: "enable-feedback", label: "开启反馈", type: "primary" });
+  }
+  actions.push({ key: "memory", label: "记忆" });
+  actions.push({ key: "sync", label: "同步" });
+  if (canDeleteRow(row)) {
+    actions.push({ key: "delete", label: "删除", type: "danger" });
+  }
+  return actions;
+}
+
+function getPrimaryEmployeeActions(row) {
+  return getEmployeeActions(row).slice(0, 3);
+}
+
+function getOverflowEmployeeActions(row) {
+  return getEmployeeActions(row).slice(3);
+}
+
+function handleEmployeeAction(row, actionKey) {
+  switch (actionKey) {
+    case "detail":
+      router.push(`/employees/${row.id}`);
+      break;
+    case "edit":
+      router.push(`/employees/${row.id}/edit`);
+      break;
+    case "mcp-config":
+      showEmployeeMcpConfig(row);
+      break;
+    case "enable-mcp":
+      void enableEmployeeMcp(row);
+      break;
+    case "disable-mcp":
+      void disableEmployeeMcp(row);
+      break;
+    case "config-test":
+      void showEmployeeConfigTest(row);
+      break;
+    case "manual":
+      void showEmployeeManual(row);
+      break;
+    case "usage":
+      router.push(`/employees/${row.id}/usage`);
+      break;
+    case "feedback":
+      router.push(`/feedback/${row.id}`);
+      break;
+    case "enable-feedback":
+      void enableFeedbackUpgrade(row);
+      break;
+    case "disable-feedback":
+      void disableFeedbackUpgrade(row);
+      break;
+    case "memory":
+      router.push(`/memory/${row.id}`);
+      break;
+    case "sync":
+      router.push(`/sync/${row.id}`);
+      break;
+    case "delete":
+      void handleDelete(row);
+      break;
+    default:
+      break;
+  }
 }
 
 async function fetchList() {

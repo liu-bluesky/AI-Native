@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import HTTPException
-
 from core.deps import is_admin_like
 
 VALID_SHARE_SCOPES = {"private", "selected_users", "all_users"}
@@ -53,7 +52,7 @@ def shared_usernames(item: Any) -> list[str]:
 
 
 def can_view_record(item: Any, auth_payload: dict | None) -> bool:
-    if is_admin_like(auth_payload or {}):
+    if isinstance(auth_payload, dict) and is_admin_like(auth_payload):
         return True
     created_by = created_by_username(item)
     if not created_by:
@@ -72,7 +71,7 @@ def can_view_record(item: Any, auth_payload: dict | None) -> bool:
 
 
 def can_manage_record(item: Any, auth_payload: dict | None) -> bool:
-    if is_admin_like(auth_payload or {}):
+    if isinstance(auth_payload, dict) and is_admin_like(auth_payload):
         return True
     username = current_username(auth_payload)
     created_by = created_by_username(item)

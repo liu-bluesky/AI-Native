@@ -18,7 +18,9 @@ class ProjectConfig:
     id: str
     name: str
     description: str = ""
+    created_by: str = ""
     type: str = "mixed"
+    ui_rule_ids: list[str] = field(default_factory=list)
     mcp_instruction: str = ""
     workspace_path: str = ""
     ai_entry_file: str = ""

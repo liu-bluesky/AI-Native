@@ -10,6 +10,21 @@ def _normalize_domain(value: str) -> str:
     return str(value or "").strip().lower()
 
 
+def _matches_rule_keyword(rule, keyword: str) -> bool:
+    kw = str(keyword or "").strip().lower()
+    if not kw:
+        return True
+    return any(
+        kw in str(value or "").strip().lower()
+        for value in (
+            getattr(rule, "id", ""),
+            getattr(rule, "title", ""),
+            getattr(rule, "domain", ""),
+            getattr(rule, "content", ""),
+        )
+    )
+
+
 def query_rules_by_employee(employee, keyword: str = "") -> list:
     rule_ids = [
         str(item or "").strip()
@@ -43,6 +58,40 @@ def query_rules_by_employee(employee, keyword: str = "") -> list:
             continue
         results.append(rule)
     return results
+
+
+def query_project_ui_rules_runtime(project_id: str, keyword: str = "") -> list[dict]:
+    project = project_store.get(project_id)
+    if project is None:
+        return []
+    results: list[dict] = []
+    seen_rule_ids: set[str] = set()
+    for item in getattr(project, "ui_rule_ids", []) or []:
+        rule_id = str(item or "").strip()
+        if not rule_id or rule_id in seen_rule_ids:
+            continue
+        seen_rule_ids.add(rule_id)
+        rule = rule_store.get(rule_id)
+        if rule is None or not _matches_rule_keyword(rule, keyword):
+            continue
+        payload = serialize_rule(rule)
+        payload["binding_scope"] = "project_ui"
+        results.append(payload)
+    return results
+
+
+def project_ui_rule_summary(project_id: str, limit: int = 50) -> list[dict[str, str]]:
+    items = query_project_ui_rules_runtime(project_id)
+    summary: list[dict[str, str]] = []
+    for rule in items[:limit]:
+        summary.append(
+            {
+                "id": str(rule.get("id") or "").strip(),
+                "title": str(rule.get("title") or rule.get("id") or "").strip(),
+                "domain": str(rule.get("domain") or "").strip(),
+            }
+        )
+    return summary
 
 
 def employee_rule_summary(employee, limit: int = 50) -> list[dict[str, str]]:
@@ -200,6 +249,10 @@ def query_project_rules_runtime(project_id: str, keyword: str = "", employee_id:
     keyword_value = str(keyword or "").strip()
     keyword_lower = keyword_value.lower()
     employee_id_value = str(employee_id or "").strip()
+    results: list[dict] = list(query_project_ui_rules_runtime(project_id, keyword=keyword_value))
+    seen_rule_ids: set[str] = {
+        str(item.get("id") or "").strip() for item in results if str(item.get("id") or "").strip()
+    }
     selected_employees = []
     for member in project_store.list_members(project_id):
         member_employee_id = str(getattr(member, "employee_id", "") or "").strip()
@@ -211,9 +264,6 @@ def query_project_rules_runtime(project_id: str, keyword: str = "", employee_id:
         if employee is None:
             continue
         selected_employees.append(employee)
-
-    results: list[dict] = []
-    seen_rule_ids: set[str] = set()
     for employee in selected_employees:
         for rule in query_rules_by_employee(employee, keyword_value):
             rid = str(getattr(rule, "id", "") or "").strip()
@@ -221,7 +271,9 @@ def query_project_rules_runtime(project_id: str, keyword: str = "", employee_id:
                 continue
             if rid:
                 seen_rule_ids.add(rid)
-            results.append(serialize_rule(rule))
+            payload = serialize_rule(rule)
+            payload["binding_scope"] = "employee"
+            results.append(payload)
 
     if results:
         return results
@@ -244,5 +296,7 @@ def query_project_rules_runtime(project_id: str, keyword: str = "", employee_id:
             continue
         if rid:
             seen_rule_ids.add(rid)
-        results.append(serialize_rule(rule))
+        payload = serialize_rule(rule)
+        payload["binding_scope"] = "catalog"
+        results.append(payload)
     return results

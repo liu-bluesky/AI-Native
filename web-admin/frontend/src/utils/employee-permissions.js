@@ -6,9 +6,9 @@ export function canCreateEmployee() {
 }
 
 export function canUpdateEmployee(record) {
-  return hasPermission('button.employees.update') || canManageRecord(record)
+  return canManageRecord(record)
 }
 
 export function canDeleteEmployee(record) {
-  return hasPermission('button.employees.delete') || canManageRecord(record)
+  return canManageRecord(record)
 }

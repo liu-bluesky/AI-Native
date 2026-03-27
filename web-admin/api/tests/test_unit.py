@@ -2284,6 +2284,128 @@ def test_permission_catalog_includes_dictionary_management():
     assert any(item["key"] == "menu.system.dictionaries" for item in menu_items)
 
 
+def test_project_manage_access_prefers_creator_over_later_owner(monkeypatch):
+    from fastapi import HTTPException
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+
+    project = ProjectConfig(id="proj-1", name="项目一")
+    members = [
+        ProjectUserMember(
+            project_id="proj-1",
+            username="alice",
+            role="owner",
+            enabled=True,
+            joined_at="2026-03-01T00:00:00+00:00",
+        ),
+        ProjectUserMember(
+            project_id="proj-1",
+            username="bob",
+            role="owner",
+            enabled=True,
+            joined_at="2026-03-02T00:00:00+00:00",
+        ),
+    ]
+
+    class DummyProjectStore:
+        @staticmethod
+        def get(project_id):
+            return project if project_id == "proj-1" else None
+
+        @staticmethod
+        def list_user_members(project_id):
+            return members if project_id == "proj-1" else []
+
+        @staticmethod
+        def get_user_member(project_id, username):
+            for item in members:
+                if item.project_id == project_id and item.username == username:
+                    return item
+            return None
+
+        @staticmethod
+        def list_members(project_id):
+            return []
+
+    monkeypatch.setattr(projects_router, "project_store", DummyProjectStore())
+    monkeypatch.setattr(projects_router, "_is_admin_like", lambda auth_payload: auth_payload.get("role") == "admin")
+    monkeypatch.setattr(projects_router, "_ensure_project_access", lambda project_id, auth_payload: project)
+
+    serialized_for_alice = projects_router._serialize_project(project, {"sub": "alice", "role": "user"})
+    serialized_for_bob = projects_router._serialize_project(project, {"sub": "bob", "role": "user"})
+    serialized_for_admin = projects_router._serialize_project(project, {"sub": "root", "role": "admin"})
+
+    assert serialized_for_alice["created_by"] == "alice"
+    assert serialized_for_alice["can_manage"] is True
+    assert serialized_for_bob["can_manage"] is False
+    assert serialized_for_admin["can_manage"] is True
+    assert projects_router._can_manage_project("proj-1", {"sub": "admin", "role": "admin"}, project) is True
+
+    projects_router._ensure_project_manage_access("proj-1", {"sub": "alice", "role": "user"})
+    with pytest.raises(HTTPException):
+        projects_router._ensure_project_manage_access("proj-1", {"sub": "bob", "role": "user"})
+
+
+def test_serialize_project_includes_ui_rule_bindings(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+
+    class DummyRule:
+        def __init__(self, rule_id: str, title: str, domain: str, content: str = "") -> None:
+            self.id = rule_id
+            self.title = title
+            self.domain = domain
+            self.content = content
+
+    project = ProjectConfig(
+        id="proj-ui",
+        name="UI 项目",
+        created_by="alice",
+        ui_rule_ids=["rule-ui", "rule-missing", "rule-ui"],
+    )
+    members = [
+        ProjectUserMember(project_id="proj-ui", username="alice", role="owner", enabled=True),
+    ]
+
+    class DummyProjectStore:
+        @staticmethod
+        def get(project_id):
+            return project if project_id == "proj-ui" else None
+
+        @staticmethod
+        def list_user_members(project_id):
+            return members if project_id == "proj-ui" else []
+
+        @staticmethod
+        def get_user_member(project_id, username):
+            for item in members:
+                if item.project_id == project_id and item.username == username:
+                    return item
+            return None
+
+        @staticmethod
+        def list_members(project_id):
+            return []
+
+    class DummyRuleStore:
+        @staticmethod
+        def get(rule_id):
+            if rule_id == "rule-ui":
+                return DummyRule("rule-ui", "主视觉规范", "ui", "按钮圆角 12px")
+            return None
+
+    monkeypatch.setattr(projects_router, "project_store", DummyProjectStore())
+    monkeypatch.setattr(projects_router, "rule_store", DummyRuleStore())
+
+    serialized = projects_router._serialize_project(project, {"sub": "alice", "role": "user"})
+
+    assert serialized["ui_rule_ids"] == ["rule-ui", "rule-missing"]
+    assert serialized["ui_rule_bindings"] == [
+        {"id": "rule-ui", "title": "主视觉规范", "domain": "ui"},
+        {"id": "rule-missing", "title": "rule-missing（规则不存在）", "domain": ""},
+    ]
+
+
 def test_dictionary_catalog_applies_system_override(monkeypatch):
     import services.dictionary_catalog as catalog
 
@@ -2649,6 +2771,168 @@ def test_save_auto_query_memory_writes_to_active_project_members(tmp_path, monke
         "user-question",
         "mcp:tools/call:get_manual_content",
     )
+
+
+class _FakeMemoryStore:
+    def __init__(self, memories):
+        self._memories = {item.id: item for item in memories}
+
+    def list_by_employee(self, employee_id: str):
+        return [item for item in self._memories.values() if item.employee_id == employee_id]
+
+    def get(self, memory_id: str):
+        return self._memories.get(memory_id)
+
+    def delete(self, memory_id: str) -> bool:
+        return self._memories.pop(memory_id, None) is not None
+
+
+def _build_memory_test_client(tmp_path, monkeypatch, auth_payload):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from routers import memory as memory_router
+    from stores import factory as store_factory
+    from stores.json.employee_store import EmployeeStore
+    from stores.json.project_store import ProjectStore
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in ("employee_store", "project_store", "role_store"):
+        getattr(store_factory, proxy_name)._instance = None
+
+    employee_store = EmployeeStore(tmp_path / "data")
+    project_store = ProjectStore(tmp_path / "data")
+    monkeypatch.setattr(memory_router, "employee_store", employee_store)
+    monkeypatch.setattr(memory_router, "project_store", project_store)
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: auth_payload
+    client = TestClient(app)
+    return client, employee_store, project_store, memory_router
+
+
+def test_memory_routes_filter_memories_by_project_membership(tmp_path, monkeypatch):
+    from routers import memory as memory_router
+    from stores.json.employee_store import EmployeeConfig
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+    from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType
+
+    client, employee_store, project_store, _ = _build_memory_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "alice", "role": "user"},
+    )
+    employee_store.save(
+        EmployeeConfig(
+            id="emp-1",
+            name="员工一",
+            created_by="owner",
+            share_scope="all_users",
+        )
+    )
+    project_store.save(ProjectConfig(id="proj-1", name="可见项目"))
+    project_store.save(ProjectConfig(id="proj-2", name="隐藏项目"))
+    project_store.upsert_user_member(
+        ProjectUserMember(project_id="proj-1", username="alice", role="member", enabled=True)
+    )
+    monkeypatch.setattr(
+        memory_router,
+        "memory_store",
+        _FakeMemoryStore(
+            [
+                Memory(
+                    id="mem-visible",
+                    employee_id="emp-1",
+                    type=MemoryType.PROJECT_CONTEXT,
+                    content="可见项目记忆",
+                    project_name="可见项目",
+                    importance=0.9,
+                    scope=MemoryScope.EMPLOYEE_PRIVATE,
+                    classification=Classification.INTERNAL,
+                    created_at="2026-03-26T10:00:00+00:00",
+                ),
+                Memory(
+                    id="mem-hidden",
+                    employee_id="emp-1",
+                    type=MemoryType.PROJECT_CONTEXT,
+                    content="隐藏项目记忆",
+                    project_name="隐藏项目",
+                    importance=0.8,
+                    scope=MemoryScope.EMPLOYEE_PRIVATE,
+                    classification=Classification.INTERNAL,
+                    created_at="2026-03-26T09:00:00+00:00",
+                ),
+                Memory(
+                    id="mem-legacy",
+                    employee_id="emp-1",
+                    type=MemoryType.KEY_EVENT,
+                    content="未绑定项目的旧记忆",
+                    project_name="",
+                    importance=0.4,
+                    scope=MemoryScope.EMPLOYEE_PRIVATE,
+                    classification=Classification.INTERNAL,
+                    created_at="2026-03-26T08:00:00+00:00",
+                ),
+            ]
+        ),
+    )
+
+    response = client.get("/api/memory/emp-1")
+
+    assert response.status_code == 200
+    payload = response.json()["memories"]
+    assert {item["id"] for item in payload} == {"mem-visible", "mem-legacy"}
+
+    filtered_response = client.get("/api/memory/emp-1", params={"project_name": "可见项目"})
+
+    assert filtered_response.status_code == 200
+    filtered_payload = filtered_response.json()["memories"]
+    assert [item["id"] for item in filtered_payload] == ["mem-visible"]
+
+
+def test_memory_delete_returns_404_without_project_access(tmp_path, monkeypatch):
+    from stores.json.employee_store import EmployeeConfig
+    from stores.json.project_store import ProjectConfig
+    from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType
+
+    client, employee_store, project_store, memory_router = _build_memory_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "alice", "role": "user"},
+    )
+    employee_store.save(
+        EmployeeConfig(
+            id="emp-1",
+            name="员工一",
+            created_by="owner",
+            share_scope="all_users",
+        )
+    )
+    project_store.save(ProjectConfig(id="proj-2", name="隐藏项目"))
+    fake_store = _FakeMemoryStore(
+        [
+            Memory(
+                id="mem-hidden",
+                employee_id="emp-1",
+                type=MemoryType.PROJECT_CONTEXT,
+                content="隐藏项目记忆",
+                project_name="隐藏项目",
+                importance=0.8,
+                scope=MemoryScope.EMPLOYEE_PRIVATE,
+                classification=Classification.INTERNAL,
+                created_at="2026-03-26T09:00:00+00:00",
+            )
+        ]
+    )
+    monkeypatch.setattr(memory_router, "memory_store", fake_store)
+
+    response = client.delete("/api/memory/item/mem-hidden")
+
+    assert response.status_code == 404
+    assert fake_store.get("mem-hidden") is not None
 
 
 def test_project_detail_runtime_includes_full_config_and_member_lists(tmp_path, monkeypatch):
@@ -3059,6 +3343,13 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
             "auto_execute": kwargs["auto_execute"],
         },
     )
+    monkeypatch.setattr(
+        project_mcp_svc,
+        "project_ui_rule_summary",
+        lambda project_id, limit=20: [{"id": "rule-ui", "title": "项目 UI 规则", "domain": "ui"}]
+        if project_id == "proj-1"
+        else [],
+    )
 
     project_mcp_svc.create_project_mcp(
         "proj-1",
@@ -3089,6 +3380,8 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
     usage_guide = registered_resources["project://proj-1/usage-guide"]()
     assert "execute_project_collaboration" in usage_guide
     assert "自主判断单人主责或多人协作" in usage_guide
+    assert "项目级 UI 规则" in usage_guide
+    assert "优先级高于员工个人规则" in usage_guide
 
 
 def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
@@ -3133,6 +3426,13 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
         query_mcp_svc,
         "query_project_rules_runtime",
         lambda project_id, keyword="", employee_id="": [{"id": "rule-1"}] if project_id == "proj-1" else [],
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_ui_rule_summary",
+        lambda project_id, limit=30: [{"id": "rule-ui", "title": "项目 UI 规则", "domain": "ui"}]
+        if project_id == "proj-1"
+        else [],
     )
 
     query_mcp_svc.create_query_mcp()
@@ -3201,6 +3501,8 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert context["member_count"] == 1
     assert context["scoped_proxy_tool_count"] == 1
     assert context["rule_count"] == 1
+    assert context["ui_rule_count"] == 1
+    assert context["ui_rules"][0]["id"] == "rule-ui"
 
     assert tools["project_id"] == "proj-1"
     assert tools["employee_id"] == "emp-1"
@@ -3216,6 +3518,73 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert collaboration_result["tool_name"] == "execute_project_collaboration"
     assert collaboration_result["task"] == "完成页面协作"
     assert collaboration_result["selected_employee_ids"] == ["emp-1"]
+
+
+def test_query_project_rules_runtime_includes_project_ui_rules(monkeypatch):
+    from services import dynamic_mcp_profiles as profiles_svc
+
+    class DummyProject:
+        ui_rule_ids = ["rule-ui"]
+
+    class DummyMember:
+        employee_id = "emp-1"
+
+    class DummyEmployee:
+        rule_ids = ["rule-emp"]
+        rule_domains = []
+
+    class DummyRule:
+        def __init__(self, rule_id: str, title: str, domain: str, content: str) -> None:
+            self.id = rule_id
+            self.title = title
+            self.domain = domain
+            self.content = content
+
+    monkeypatch.setattr(
+        profiles_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None),
+                "list_members": staticmethod(lambda project_id: [DummyMember()] if project_id == "proj-1" else []),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        profiles_svc,
+        "employee_store",
+        type("DummyEmployeeStore", (), {"get": staticmethod(lambda employee_id: DummyEmployee() if employee_id == "emp-1" else None)})(),
+    )
+    monkeypatch.setattr(
+        profiles_svc,
+        "rule_store",
+        type(
+            "DummyRuleStore",
+            (),
+            {
+                "get": staticmethod(
+                    lambda rule_id: {
+                        "rule-ui": DummyRule("rule-ui", "项目 UI 规则", "ui", "按钮圆角 12px"),
+                        "rule-emp": DummyRule("rule-emp", "员工规则", "frontend", "组件命名统一"),
+                    }.get(rule_id)
+                ),
+                "list_all": staticmethod(lambda: []),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        profiles_svc,
+        "serialize_rule",
+        lambda rule: {"id": rule.id, "title": rule.title, "domain": rule.domain, "content": rule.content},
+    )
+
+    results = profiles_svc.query_project_rules_runtime("proj-1")
+
+    assert [item["id"] for item in results] == ["rule-ui", "rule-emp"]
+    assert results[0]["binding_scope"] == "project_ui"
+    assert results[1]["binding_scope"] == "employee"
 
 
 def test_project_chat_store_truncate_messages_updates_session_snapshot(tmp_path):
@@ -4049,6 +4418,61 @@ def test_build_project_chat_messages_includes_multi_employee_coordination_prompt
     assert "多员工自动协作" not in str(manual_messages[0]["content"])
 
 
+def test_build_project_chat_messages_prefers_project_ui_rules(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig
+
+    class DummyRule:
+        def __init__(self, rule_id: str, title: str, domain: str, content: str) -> None:
+            self.id = rule_id
+            self.title = title
+            self.domain = domain
+            self.content = content
+
+    class DummyRuleStore:
+        @staticmethod
+        def get(rule_id):
+            if rule_id == "rule-ui":
+                return DummyRule(
+                    "rule-ui",
+                    "项目 UI 规则",
+                    "ui",
+                    "按钮采用圆角 12px，主按钮使用品牌色，列表卡片保持 16px 留白。",
+                )
+            return None
+
+    monkeypatch.setattr(projects_router, "rule_store", DummyRuleStore())
+
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        description="测试项目",
+        ui_rule_ids=["rule-ui"],
+    )
+    selected_employee = {
+        "id": "emp-1",
+        "name": "前端开发",
+        "goal": "负责页面实现",
+        "skill_names": ["vue", "ui"],
+        "rule_bindings": [{"id": "rule-emp", "title": "员工规则", "domain": "frontend"}],
+        "default_workflow": ["分析现状", "编码实现"],
+    }
+
+    messages = projects_router._build_project_chat_messages(
+        project,
+        "请实现一个项目首页",
+        [],
+        selected_employee=selected_employee,
+    )
+    system_prompt = str(messages[0]["content"])
+
+    assert "当前项目已绑定 UI 规则" in system_prompt
+    assert "优先级高于员工个人规则" in system_prompt
+    assert "按钮采用圆角 12px" in system_prompt
+    assert "当前执行员工" in system_prompt
+    assert system_prompt.index("当前项目已绑定 UI 规则") < system_prompt.index("当前执行员工")
+
+
 def test_build_project_manual_template_payload_prefers_ai_decided_collaboration(monkeypatch):
     from routers import employees as employees_router
     from routers import projects as projects_router
@@ -4059,6 +4483,7 @@ def test_build_project_manual_template_payload_prefers_ai_decided_collaboration(
         description = "测试项目"
         type = "mixed"
         feedback_upgrade_enabled = True
+        ui_rule_ids = ["rule-ui"]
 
     class DummyEmployee:
         id = "emp-1"
@@ -4066,6 +4491,12 @@ def test_build_project_manual_template_payload_prefers_ai_decided_collaboration(
 
     class DummyMember:
         role = "member"
+
+    class DummyRule:
+        id = "rule-ui"
+        title = "项目 UI 规则"
+        domain = "ui"
+        content = "按钮统一圆角 12px。"
 
     monkeypatch.setattr(
         projects_router,
@@ -4089,6 +4520,11 @@ def test_build_project_manual_template_payload_prefers_ai_decided_collaboration(
         "_build_employee_manual_payload",
         lambda employee_id: {"manual": f"# {employee_id} 手册\n\n- 默认按规则与工具自主判断是否协作"},
     )
+    monkeypatch.setattr(
+        projects_router,
+        "rule_store",
+        type("DummyRuleStore", (), {"get": staticmethod(lambda rule_id: DummyRule() if rule_id == "rule-ui" else None)})(),
+    )
 
     payload = projects_router._build_project_manual_template_payload("proj-1")
     manual = str(payload["manual"])
@@ -4096,10 +4532,13 @@ def test_build_project_manual_template_payload_prefers_ai_decided_collaboration(
     assert "自主判断单人主责还是多人协作" in manual
     assert "execute_project_collaboration" in manual
     assert "不要默认多员工并行" in manual
+    assert "项目级 UI 规则" in manual
+    assert "高于员工个人规则" in manual
+    assert "按钮统一圆角 12px" in manual
 
 
 def test_can_view_record_supports_private_selected_and_all_users():
-    from core.ownership import can_view_record
+    from core.ownership import can_manage_record, can_view_record
     from stores.json.employee_store import EmployeeConfig
 
     private_employee = EmployeeConfig(id="emp-private", name="私有员工", created_by="alice")
@@ -4122,6 +4561,8 @@ def test_can_view_record_supports_private_selected_and_all_users():
     assert can_view_record(selected_employee, {"sub": "bob", "role": "user"}) is True
     assert can_view_record(selected_employee, {"sub": "charlie", "role": "user"}) is False
     assert can_view_record(all_users_employee, {"sub": "charlie", "role": "user"}) is True
+    assert can_view_record(private_employee, {"sub": "root", "role": "admin"}) is True
+    assert can_manage_record(private_employee, {"sub": "root", "role": "admin"}) is True
 
 
 @pytest.mark.asyncio

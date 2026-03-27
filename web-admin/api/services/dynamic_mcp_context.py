@@ -8,6 +8,7 @@ from core.deps import employee_store, external_mcp_store, project_store
 from services.dynamic_mcp_profiles import (
     employee_rule_summary,
     list_project_member_profiles_runtime,
+    project_ui_rule_summary,
     query_project_rules_runtime,
 )
 from services.dynamic_mcp_skill_proxies import list_project_proxy_tools_runtime
@@ -43,6 +44,12 @@ def get_project_detail_runtime(project_id: str) -> dict:
     payload["active_member_count"] = sum(1 for item in members if bool(getattr(item, "enabled", True)))
     payload["user_count"] = len(user_members)
     payload["active_user_count"] = sum(1 for item in user_members if bool(getattr(item, "enabled", True)))
+    payload["ui_rule_ids"] = [
+        str(item or "").strip()
+        for item in (getattr(project, "ui_rule_ids", []) or [])
+        if str(item or "").strip()
+    ]
+    payload["ui_rule_bindings"] = project_ui_rule_summary(project_id, limit=100)
     return payload
 
 
@@ -266,6 +273,7 @@ def search_project_context_runtime(
     }
 
     if scope_value in {"all", "project"}:
+        project_ui_rules = project_ui_rule_summary(project_id, limit=limit_value)
         result["project"] = {
             "id": project_id,
             "name": str(getattr(project, "name", "") or ""),
@@ -273,6 +281,13 @@ def search_project_context_runtime(
             "workspace_path": str(getattr(project, "workspace_path", "") or ""),
             "mcp_enabled": bool(getattr(project, "mcp_enabled", True)),
             "feedback_upgrade_enabled": bool(getattr(project, "feedback_upgrade_enabled", False)),
+            "ui_rule_ids": [
+                str(item or "").strip()
+                for item in (getattr(project, "ui_rule_ids", []) or [])
+                if str(item or "").strip()
+            ],
+            "ui_rule_bindings": project_ui_rules,
+            "ui_rule_count": len(project_ui_rules),
         }
 
     if scope_value in {"all", "members"}:

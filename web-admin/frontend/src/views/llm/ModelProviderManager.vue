@@ -66,16 +66,33 @@
       <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
           <el-button
+            v-for="action in getPrimaryProviderActions(row)"
+            :key="`${row.id}-${action.key}`"
             text
-            type="success"
-            :loading="testingProviderId === row.id"
-            @click="testConnection(row, getPrimaryTestModel(row))"
+            :type="action.type"
+            :loading="action.key === 'test' && testingProviderId === row.id"
+            @click="handleProviderAction(row, action.key)"
           >
-            测试连接
+            {{ action.label }}
           </el-button>
-          <el-button text type="warning" @click="openDuplicate(row)">复制</el-button>
-          <el-button text type="primary" @click="openEdit(row)">编辑</el-button>
-          <el-button text type="danger" @click="removeProvider(row)">删除</el-button>
+          <el-dropdown
+            v-if="getOverflowProviderActions(row).length"
+            trigger="click"
+            @command="(actionKey) => handleProviderAction(row, actionKey)"
+          >
+            <el-button text type="primary" size="small">更多</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="action in getOverflowProviderActions(row)"
+                  :key="`${row.id}-${action.key}`"
+                  :command="action.key"
+                >
+                  {{ action.label }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -217,6 +234,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
 import { formatDateTime } from '@/utils/date.js'
 import { fetchDictionary } from '@/utils/dictionaries.js'
+import { canManageRecord, getOwnershipDeniedMessage } from '@/utils/ownership.js'
 import {
   buildModelTypeMetaMap,
   FALLBACK_MODEL_TYPE_OPTIONS,
@@ -497,6 +515,60 @@ function formatSharedUsers(usernames) {
     ? usernames.map((item) => String(item || '').trim()).filter(Boolean)
     : []
   return values.join(', ') || '-'
+}
+
+function canManageProvider(row) {
+  return canManageRecord(row)
+}
+
+function getProviderActions() {
+  return [
+    { key: 'test', label: '测试连接', type: 'success' },
+    { key: 'duplicate', label: '复制', type: 'warning' },
+    { key: 'edit', label: '编辑', type: 'primary', requiresManage: true },
+    { key: 'delete', label: '删除', type: 'danger', requiresManage: true },
+  ]
+}
+
+function getPrimaryProviderActions(row) {
+  return getProviderActions(row).map((item) => ({
+    ...item,
+    disabled: item.requiresManage ? !canManageProvider(row) : false,
+  })).slice(0, 3)
+}
+
+function getOverflowProviderActions(row) {
+  return getProviderActions(row).map((item) => ({
+    ...item,
+    disabled: item.requiresManage ? !canManageProvider(row) : false,
+  })).slice(3)
+}
+
+function handleProviderAction(row, actionKey) {
+  switch (actionKey) {
+    case 'test':
+      void testConnection(row, getPrimaryTestModel(row))
+      break
+    case 'duplicate':
+      openDuplicate(row)
+      break
+    case 'edit':
+      if (!canManageProvider(row)) {
+        ElMessage.warning(getOwnershipDeniedMessage(row, '编辑'))
+        return
+      }
+      openEdit(row)
+      break
+    case 'delete':
+      if (!canManageProvider(row)) {
+        ElMessage.warning(getOwnershipDeniedMessage(row, '删除'))
+        return
+      }
+      void removeProvider(row)
+      break
+    default:
+      break
+  }
 }
 
 async function removeProvider(row) {

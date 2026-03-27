@@ -15,6 +15,7 @@ from services.dynamic_mcp_context import (
 from services.dynamic_mcp_profiles import (
     employee_rule_summary,
     list_project_member_profiles_runtime,
+    project_ui_rule_summary,
     query_project_rules_runtime,
     query_rules_by_employee,
 )
@@ -458,6 +459,7 @@ def create_query_mcp():
             rule_limit=30,
         )
         rules = query_project_rules_runtime(project_id_value)
+        ui_rules = project_ui_rule_summary(project_id_value, limit=30)
         from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
 
         proxy_tools = list_project_proxy_tools_runtime(project_id_value, "")
@@ -472,6 +474,8 @@ def create_query_mcp():
             ],
             "scoped_proxy_tool_count": len(proxy_tools),
             "rule_count": len(rules),
+            "ui_rule_count": len(ui_rules),
+            "ui_rules": ui_rules,
             "project_mcp_path": f"/mcp/projects/{project_id_value}",
         }
 

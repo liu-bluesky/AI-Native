@@ -27,6 +27,7 @@
           v-if="selectedTemplateIds.length"
           plain
           type="danger"
+          :disabled="!canDeleteSelectedTemplates"
           :loading="batchDeletingTemplates"
           @click="batchDeleteTemplates"
         >
@@ -99,6 +100,11 @@
           {{ (row.style_hints || []).join(" / ") || "-" }}
         </template>
       </el-table-column>
+      <el-table-column label="创建人" width="120">
+        <template #default="{ row }">
+          {{ formatRecordOwner(row) }}
+        </template>
+      </el-table-column>
       <el-table-column label="更新时间" width="220">
         <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
       </el-table-column>
@@ -110,7 +116,12 @@
           <el-button text type="primary" @click="copyTemplateContent(row)"
             >复制</el-button
           >
-          <el-button text type="danger" @click="deleteTemplate(row)"
+          <el-button
+            text
+            type="danger"
+            :disabled="!canManageRecord(row)"
+            @click="deleteTemplate(row)"
+          >
             >删除</el-button
           >
         </template>
@@ -476,6 +487,11 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/utils/api.js";
 import { formatDateTime } from "@/utils/date.js";
+import {
+  canManageRecord,
+  formatRecordOwner,
+  getOwnershipDeniedMessage,
+} from "@/utils/ownership.js";
 import ModelProviderPickerDialog from "@/components/ModelProviderPickerDialog.vue";
 import { resolveSettingsAwarePanelPath } from "@/utils/chat-settings-route.js";
 
@@ -588,6 +604,14 @@ const filteredTemplates = computed(() => {
     return haystacks.some((value) => value.includes(keyword));
   });
 });
+const selectedTemplates = computed(() =>
+  templates.value.filter((item) => selectedTemplateIds.value.includes(item.id)),
+);
+const canDeleteSelectedTemplates = computed(
+  () =>
+    selectedTemplates.value.length > 0 &&
+    selectedTemplates.value.every((item) => canManageRecord(item)),
+);
 const modelPickerDialogTitle = computed(
   () => pendingModelAction.value?.pickerTitle || "选择 AI 来源",
 );
@@ -1090,6 +1114,10 @@ async function copyTemplateContent(template) {
 }
 
 async function deleteTemplate(row) {
+  if (!canManageRecord(row)) {
+    ElMessage.warning(getOwnershipDeniedMessage(row, "删除"));
+    return;
+  }
   await ElMessageBox.confirm(`确定删除模板「${row.name}」？`, "确认");
   try {
     await api.delete(`/agent-templates/${row.id}`);
@@ -1105,6 +1133,11 @@ async function deleteTemplate(row) {
 }
 
 async function batchDeleteTemplates() {
+  if (!canDeleteSelectedTemplates.value) {
+    const blocked = selectedTemplates.value.find((item) => !canManageRecord(item));
+    ElMessage.warning(getOwnershipDeniedMessage(blocked, "删除"));
+    return;
+  }
   const targetIds = getTemplateActionTargetIds();
   if (!targetIds.length) {
     ElMessage.warning("请先勾选要删除的模板");

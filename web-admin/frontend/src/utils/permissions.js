@@ -14,6 +14,7 @@ const PATH_PERMISSION_MAP = [
   { prefix: '/agent-templates', permission: 'menu.employees' },
   { prefix: '/employees/create', permission: 'menu.employees.create' },
   { prefix: '/employees', permission: 'menu.employees' },
+  { prefix: '/memory', permission: 'menu.employees' },
   { prefix: '/skill-resources', permission: 'menu.skills' },
   { prefix: '/skills', permission: 'menu.skills' },
   { prefix: '/rules', permission: 'menu.rules' },

@@ -165,12 +165,33 @@
         </el-table-column>
         <el-table-column label="操作" width="360" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="canReview(row)" text type="success" @click="openReview(row, 'approve')">通过</el-button>
-            <el-button v-if="canReview(row)" text type="warning" @click="openReview(row, 'edit')">编辑后通过</el-button>
-            <el-button v-if="canReview(row)" text type="danger" @click="openReview(row, 'reject')">拒绝</el-button>
-            <el-button v-if="row.status === 'approved'" text type="primary" @click="publishCandidate(row)">发布</el-button>
-            <el-button v-if="row.status === 'published'" text @click="rollbackCandidate(row)">回滚</el-button>
-            <el-button v-if="row.target_rule_id" text type="info" @click="goRuleDetail(row.target_rule_id)">规则详情</el-button>
+            <el-button
+              v-for="action in getPrimaryCandidateActions(row)"
+              :key="`${row.id}-${action.key}`"
+              text
+              :type="action.type"
+              @click="handleCandidateAction(row, action.key)"
+            >
+              {{ action.label }}
+            </el-button>
+            <el-dropdown
+              v-if="getOverflowCandidateActions(row).length"
+              trigger="click"
+              @command="(actionKey) => handleCandidateAction(row, actionKey)"
+            >
+              <el-button text type="primary" size="small">更多</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="action in getOverflowCandidateActions(row)"
+                    :key="`${row.id}-${action.key}`"
+                    :command="action.key"
+                  >
+                    {{ action.label }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -429,6 +450,54 @@ function statusTag(status) {
 
 function canReview(candidate) {
   return String(candidate?.status || '').trim().toLowerCase() === 'pending'
+}
+
+function getCandidateActions(candidate) {
+  const actions = []
+  if (canReview(candidate)) {
+    actions.push({ key: 'approve', label: '通过', type: 'success' })
+    actions.push({ key: 'edit', label: '编辑后通过', type: 'warning' })
+    actions.push({ key: 'reject', label: '拒绝', type: 'danger' })
+  }
+  if (candidate.status === 'approved') {
+    actions.push({ key: 'publish', label: '发布', type: 'primary' })
+  }
+  if (candidate.status === 'published') {
+    actions.push({ key: 'rollback', label: '回滚' })
+  }
+  if (candidate.target_rule_id) {
+    actions.push({ key: 'rule-detail', label: '规则详情', type: 'info' })
+  }
+  return actions
+}
+
+function getPrimaryCandidateActions(candidate) {
+  return getCandidateActions(candidate).slice(0, 3)
+}
+
+function getOverflowCandidateActions(candidate) {
+  return getCandidateActions(candidate).slice(3)
+}
+
+function handleCandidateAction(candidate, actionKey) {
+  switch (actionKey) {
+    case 'approve':
+    case 'edit':
+    case 'reject':
+      openReview(candidate, actionKey)
+      break
+    case 'publish':
+      void publishCandidate(candidate)
+      break
+    case 'rollback':
+      void rollbackCandidate(candidate)
+      break
+    case 'rule-detail':
+      goRuleDetail(candidate.target_rule_id)
+      break
+    default:
+      break
+  }
 }
 
 function formatCandidateFeedbackIds(candidate) {

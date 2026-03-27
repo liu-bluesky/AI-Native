@@ -1,5 +1,14 @@
 export function canManageRecord(record) {
-  return !!record?.can_manage;
+  const currentRole = String(localStorage.getItem("role") || "").trim().toLowerCase();
+  if (currentRole === "admin") {
+    return true;
+  }
+  if (typeof record?.can_manage === "boolean") {
+    return record.can_manage;
+  }
+  const currentUsername = String(localStorage.getItem("username") || "").trim();
+  const owner = String(record?.created_by || record?.owner_username || "").trim();
+  return !!currentUsername && !!owner && currentUsername === owner;
 }
 
 export function formatSharedUsers(usernames) {

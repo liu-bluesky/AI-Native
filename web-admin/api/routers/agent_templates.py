@@ -19,7 +19,7 @@ from core.deps import (
     role_store,
 )
 from core.role_permissions import resolve_role_permissions
-from core.ownership import current_username
+from core.ownership import assert_can_manage_record, current_username, ownership_payload
 from models.requests import (
     AgentTemplateBatchDeleteReq,
     AgentTemplateDeduplicateReq,
@@ -42,8 +42,8 @@ router = APIRouter(
     dependencies=[Depends(require_auth)],
 )
 
-def _serialize_agent_template(template: AgentTemplate) -> dict[str, Any]:
-    return {
+def _serialize_agent_template(template: AgentTemplate, auth_payload: dict | None = None) -> dict[str, Any]:
+    data = {
         "id": template.id,
         "name": template.name,
         "name_zh": template.name_zh,
@@ -65,6 +65,9 @@ def _serialize_agent_template(template: AgentTemplate) -> dict[str, Any]:
         "created_at": template.created_at,
         "updated_at": template.updated_at,
     }
+    if auth_payload is not None:
+        data.update(ownership_payload(template, auth_payload))
+    return data
 
 
 def _normalize_text(value: Any, *, limit: int = 4000) -> str:
@@ -1006,6 +1009,8 @@ def _build_template_model(raw: dict[str, Any], *, created_by: str) -> AgentTempl
         "updated_at": now,
     }
     if existing is not None:
+        if created_by and str(existing.created_by or "").strip() and str(existing.created_by or "").strip() != created_by:
+            raise HTTPException(403, "该模板不是你创建的，仅可使用，不能编辑或删除")
         return replace(existing, **payload)
     return AgentTemplate(
         id=agent_template_store.new_id(),
@@ -1023,7 +1028,7 @@ async def list_agent_templates(auth_payload: dict = Depends(require_auth)):
         persist=True,
     )
     templates.sort(key=lambda item: (item.updated_at, item.created_at, item.id), reverse=True)
-    return {"templates": [_serialize_agent_template(item) for item in templates]}
+    return {"templates": [_serialize_agent_template(item, auth_payload) for item in templates]}
 
 
 @router.get("/translation-models")
@@ -1061,7 +1066,7 @@ async def get_agent_template(template_id: str, auth_payload: dict = Depends(requ
         raise HTTPException(404, "Template not found")
     enriched = await _ensure_template_name_translations([template], persist=True)
     template = enriched[0] if enriched else template
-    return {"template": _serialize_agent_template(template)}
+    return {"template": _serialize_agent_template(template, auth_payload)}
 
 
 @router.post("/import-preview")
@@ -1097,7 +1102,7 @@ async def save_agent_templates(
     saved: list[dict[str, Any]] = []
     for template in models:
         agent_template_store.save(template)
-        saved.append(_serialize_agent_template(template))
+        saved.append(_serialize_agent_template(template, auth_payload))
     return {"templates": saved, "count": len(saved)}
 
 
@@ -1123,6 +1128,10 @@ async def batch_delete_agent_templates(
         raise HTTPException(400, "没有可删除的模板")
     deleted_ids: list[str] = []
     for template_id in unique_template_ids:
+        template = agent_template_store.get(template_id)
+        if template is None:
+            continue
+        assert_can_manage_record(template, auth_payload, "模板")
         if agent_template_store.delete(template_id):
             deleted_ids.append(template_id)
     return {
@@ -1145,8 +1154,10 @@ async def translate_agent_template_names(
         if _normalize_text(item, limit=80)
     }
     templates = [
-        item for item in all_templates if not selected_ids or item.id in selected_ids
+        item for item in all_templates if (not selected_ids or item.id in selected_ids)
     ]
+    for item in templates:
+        assert_can_manage_record(item, auth_payload, "模板")
     if not templates:
         raise HTTPException(400, "没有可处理的模板")
 
@@ -1187,7 +1198,7 @@ async def translate_agent_template_names(
         previous = original_map.get(template.id)
         if previous and _normalize_text(previous.name_zh, limit=160) != _normalize_text(template.name_zh, limit=160):
             updated_count += 1
-        items.append(_serialize_agent_template(template))
+        items.append(_serialize_agent_template(template, auth_payload))
 
     return {
         "source_type": normalized_source_type,
@@ -1216,6 +1227,8 @@ async def deduplicate_agent_templates(
     templates = [
         item for item in all_templates if not selected_ids or item.id in selected_ids
     ]
+    for item in templates:
+        assert_can_manage_record(item, auth_payload, "模板")
     if len(templates) < 2:
         raise HTTPException(400, "至少需要 2 个模板才能执行同类去重")
 
@@ -1264,6 +1277,10 @@ async def deduplicate_agent_templates(
     removed_count = 0
     if bool(req.apply):
         for template_id in remove_ids:
+            template = agent_template_store.get(template_id)
+            if template is None:
+                continue
+            assert_can_manage_record(template, auth_payload, "模板")
             if agent_template_store.delete(template_id):
                 removed_count += 1
 
@@ -1287,6 +1304,10 @@ async def deduplicate_agent_templates(
 @router.delete("/{template_id}")
 async def delete_agent_template(template_id: str, auth_payload: dict = Depends(require_auth)):
     ensure_permission(auth_payload, "menu.employees")
+    template = agent_template_store.get(template_id)
+    if template is None:
+        raise HTTPException(404, "Template not found")
+    assert_can_manage_record(template, auth_payload, "模板")
     if not agent_template_store.delete(template_id):
         raise HTTPException(404, "Template not found")
     return {"status": "deleted"}

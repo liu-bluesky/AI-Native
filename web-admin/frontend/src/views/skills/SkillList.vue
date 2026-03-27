@@ -105,14 +105,36 @@
       </el-table-column>
       <el-table-column label="操作" width="350" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="row.mcp_enabled" text type="success" size="small" @click="showSingleMcpConfig(row)">接入</el-button>
-          <el-button v-if="row.mcp_enabled" text type="warning" size="small" :disabled="!canManageRow(row)" @click="disableMcp(row)">关闭 MCP</el-button>
-          <el-button v-else text type="warning" size="small" :disabled="!canManageRow(row)" @click="enableMcp(row)">开启 MCP</el-button>
-          <el-button text type="info" size="small" @click="showConfigs(row)">配置</el-button>
-          <el-button text type="primary" size="small" @click="$router.push(`/skills/${row.id}`)">详情</el-button>
-          <el-button text type="primary" size="small" :disabled="!canManageRow(row)" @click="$router.push(`/skills/${row.id}/edit`)">编辑</el-button>
-          <el-button text type="success" size="small" @click="handleDownload(row.id, row.name)">下载</el-button>
-          <el-button text type="danger" size="small" :disabled="!canManageRow(row)" @click="handleDelete(row.id)">删除</el-button>
+          <el-button
+            v-for="action in getPrimarySkillActions(row)"
+            :key="`${row.id}-${action.key}`"
+            text
+            :type="action.type"
+            size="small"
+            :disabled="action.disabled"
+            @click="handleSkillAction(row, action.key)"
+          >
+            {{ action.label }}
+          </el-button>
+          <el-dropdown
+            v-if="getOverflowSkillActions(row).length"
+            trigger="click"
+            @command="(actionKey) => handleSkillAction(row, actionKey)"
+          >
+            <el-button text type="primary" size="small">更多</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="action in getOverflowSkillActions(row)"
+                  :key="`${row.id}-${action.key}`"
+                  :command="action.key"
+                  :disabled="action.disabled"
+                >
+                  {{ action.label }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -164,6 +186,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
 import {
@@ -176,6 +199,7 @@ import { buildRuntimeUrl } from '@/utils/runtime-url.js'
 
 const loading = ref(false)
 const skills = ref([])
+const router = useRouter()
 
 const showMcpConfig = ref(false)
 const mcpDialogTitle = ref('接入 MCP 服务')
@@ -225,6 +249,85 @@ function showSingleMcpConfig(skill) {
 
 function canManageRow(row) {
   return canManageRecord(row)
+}
+
+function getSkillActions(row) {
+  const actions = []
+  if (row.mcp_enabled) {
+    actions.push({ key: 'mcp-config', label: '接入', type: 'success', disabled: false })
+    actions.push({
+      key: 'disable-mcp',
+      label: '关闭 MCP',
+      type: 'warning',
+      disabled: !canManageRow(row),
+    })
+  } else {
+    actions.push({
+      key: 'enable-mcp',
+      label: '开启 MCP',
+      type: 'warning',
+      disabled: !canManageRow(row),
+    })
+  }
+  actions.push({ key: 'configs', label: '配置', type: 'info', disabled: false })
+  actions.push({ key: 'detail', label: '详情', type: 'primary', disabled: false })
+  actions.push({
+    key: 'edit',
+    label: '编辑',
+    type: 'primary',
+    disabled: !canManageRow(row),
+  })
+  actions.push({ key: 'download', label: '下载', type: 'success', disabled: false })
+  actions.push({
+    key: 'delete',
+    label: '删除',
+    type: 'danger',
+    disabled: !canManageRow(row),
+  })
+  return actions
+}
+
+function getPrimarySkillActions(row) {
+  return getSkillActions(row).slice(0, 3)
+}
+
+function getOverflowSkillActions(row) {
+  return getSkillActions(row).slice(3)
+}
+
+function handleSkillAction(row, actionKey) {
+  switch (actionKey) {
+    case 'mcp-config':
+      showSingleMcpConfig(row)
+      break
+    case 'enable-mcp':
+      if (!canManageRow(row)) return
+      void enableMcp(row)
+      break
+    case 'disable-mcp':
+      if (!canManageRow(row)) return
+      void disableMcp(row)
+      break
+    case 'configs':
+      void showConfigs(row)
+      break
+    case 'detail':
+      router.push(`/skills/${row.id}`)
+      break
+    case 'edit':
+      if (!canManageRow(row)) return
+      router.push(`/skills/${row.id}/edit`)
+      break
+    case 'download':
+      void handleDownload(row.id, row.name)
+      break
+    case 'delete':
+      if (!canManageRow(row)) return
+      void handleDelete(row.id)
+      break
+    default:
+      break
+  }
 }
 
 function proxyDeclarationLabel(row) {

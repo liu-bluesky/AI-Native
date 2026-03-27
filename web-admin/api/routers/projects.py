@@ -185,14 +185,47 @@ _PROJECT_STUDIO_EXPORT_FORMAT_LABELS = {
 _PROJECT_STUDIO_EXPORT_RESOLUTION_VALUES = {"720p", "1080p", "4K"}
 
 
-def _serialize_project(project: ProjectConfig) -> dict:
+def _project_creator_username(project_id: str, project: ProjectConfig | None = None) -> str:
+    resolved_project = project or project_store.get(project_id)
+    created_by = str(getattr(resolved_project, "created_by", "") or "").strip()
+    if created_by:
+        return created_by
+    owner_members = [
+        item
+        for item in project_store.list_user_members(project_id)
+        if bool(getattr(item, "enabled", True))
+        and str(getattr(item, "role", "") or "").strip().lower() == "owner"
+        and str(getattr(item, "username", "") or "").strip()
+    ]
+    owner_members.sort(key=lambda item: str(getattr(item, "joined_at", "") or ""))
+    return str(getattr(owner_members[0], "username", "") or "").strip() if owner_members else ""
+
+
+def _can_manage_project(project_id: str, auth_payload: dict, project: ProjectConfig | None = None) -> bool:
+    if _is_admin_like(auth_payload):
+        return True
+    username = _current_username(auth_payload)
+    creator_username = _project_creator_username(project_id, project)
+    return bool(username and creator_username and username == creator_username)
+
+
+def _serialize_project(project: ProjectConfig, auth_payload: dict | None = None) -> dict:
     data = asdict(project)
     data.pop("chat_settings", None)
     normalized_type = _normalize_project_type(getattr(project, "type", "mixed"))
+    creator_username = _project_creator_username(project.id, project)
     data["type"] = normalized_type
     data["type_label"] = _PROJECT_TYPE_LABELS.get(normalized_type, _PROJECT_TYPE_LABELS["mixed"])
     data["member_count"] = len(project_store.list_members(project.id))
     data["user_count"] = len(project_store.list_user_members(project.id))
+    data["created_by"] = creator_username
+    data["ui_rule_ids"] = _normalize_project_ui_rule_ids(getattr(project, "ui_rule_ids", []) or [])
+    data["ui_rule_bindings"] = _resolve_project_ui_rule_bindings(project)
+    if auth_payload is not None:
+        current_username = _current_username(auth_payload)
+        current_member = _get_project_user_member(project.id, current_username)
+        data["current_user_role"] = str(getattr(current_member, "role", "") or "").strip().lower()
+        data["can_manage"] = _can_manage_project(project.id, auth_payload, project)
     return data
 
 
@@ -1896,6 +1929,37 @@ def _resolve_employee_rule_bindings(employee: Any) -> list[dict[str, str]]:
     return bindings
 
 
+def _resolve_project_ui_rule_bindings(
+    project: ProjectConfig | None,
+    *,
+    include_content: bool = False,
+) -> list[dict[str, str]]:
+    if project is None:
+        return []
+    bindings: list[dict[str, str]] = []
+    for rule_id in _normalize_project_ui_rule_ids(getattr(project, "ui_rule_ids", []) or []):
+        rule = rule_store.get(rule_id)
+        if rule is None:
+            payload = {
+                "id": rule_id,
+                "title": f"{rule_id}（规则不存在）",
+                "domain": "",
+            }
+            if include_content:
+                payload["content"] = ""
+            bindings.append(payload)
+            continue
+        payload = {
+            "id": str(getattr(rule, "id", "") or ""),
+            "title": str(getattr(rule, "title", "") or ""),
+            "domain": str(getattr(rule, "domain", "") or ""),
+        }
+        if include_content:
+            payload["content"] = str(getattr(rule, "content", "") or "")
+        bindings.append(payload)
+    return bindings
+
+
 def _collect_rule_domains(rule_bindings: list[dict[str, str]]) -> list[str]:
     seen: set[str] = set()
     domains: list[str] = []
@@ -2664,6 +2728,16 @@ def _summarize_prompt_values(
     return f"{', '.join(normalized[:limit])} 等{len(normalized)}项"
 
 
+def _summarize_prompt_text(value: Any, *, limit: int = 600) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    compact = re.sub(r"\s+", " ", text)
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit].rstrip()}..."
+
+
 def _build_multi_employee_collaboration_prompt(
     selected_employees: list[dict[str, Any]] | None,
     tools: list[dict[str, Any]] | None,
@@ -2805,6 +2879,35 @@ def _build_project_chat_messages(
         f"{base_prompt}\n{workspace_info}{ai_entry_info}\n\n{tool_list_text}\n{order_hint}\n{style_hint}"
         f"{skill_resource_prompt}{multi_employee_prompt}"
     )
+    project_ui_rule_bindings = _resolve_project_ui_rule_bindings(project, include_content=True)
+    if project_ui_rule_bindings:
+        project_ui_rule_titles = [
+            str(item.get("title") or item.get("id") or "").strip()
+            for item in project_ui_rule_bindings
+            if str(item.get("title") or item.get("id") or "").strip()
+        ]
+        project_ui_rule_domains = _collect_rule_domains(project_ui_rule_bindings)
+        project_ui_rule_lines: list[str] = []
+        for item in project_ui_rule_bindings:
+            title = str(item.get("title") or item.get("id") or "").strip() or "未命名规则"
+            rule_id = str(item.get("id") or "").strip()
+            domain = str(item.get("domain") or "").strip() or "-"
+            content = _summarize_prompt_text(item.get("content"), limit=600)
+            if content:
+                project_ui_rule_lines.append(
+                    f"- {title} ({rule_id}) [domain={domain}]: {content}"
+                )
+            else:
+                project_ui_rule_lines.append(
+                    f"- {title} ({rule_id}) [domain={domain}]"
+                )
+        system_prompt += (
+            "\n当前项目已绑定 UI 规则，这些规则优先级高于员工个人规则；涉及页面、交互、视觉表达时必须先遵循项目 UI 规则。"
+            f"\nproject_ui_rule_titles={', '.join(project_ui_rule_titles) or '-'}。"
+            f"\nproject_ui_rule_domains={', '.join(project_ui_rule_domains) or '-'}。"
+            "\n项目 UI 规则正文：\n"
+            + "\n".join(project_ui_rule_lines)
+        )
     if selected_employee:
         rule_bindings = list(selected_employee.get("rule_bindings") or [])
         rule_titles = [str(item.get("title") or item.get("id") or "").strip() for item in rule_bindings]
@@ -3095,16 +3198,9 @@ def _ensure_project_access(project_id: str, auth_payload: dict) -> ProjectConfig
 
 def _ensure_project_manage_access(project_id: str, auth_payload: dict) -> ProjectConfig:
     project = _ensure_project_access(project_id, auth_payload)
-    if _is_admin_like(auth_payload):
+    if _can_manage_project(project_id, auth_payload, project):
         return project
-    username = _current_username(auth_payload)
-    member = _get_project_user_member(project_id, username)
-    if member is None:
-        raise HTTPException(403, f"Project manage access denied: {project_id}")
-    member_role = str(getattr(member, "role", "") or "").strip().lower()
-    if member_role != "owner":
-        raise HTTPException(403, f"Project manage access denied: {project_id}")
-    return project
+    raise HTTPException(403, f"Project manage access denied: {project_id}")
 
 
 def _serialize_project_user_member(member: ProjectUserMember) -> dict[str, Any]:
@@ -3648,7 +3744,7 @@ async def list_projects(auth_payload: dict = Depends(require_auth)):
             member = _get_project_user_member(item.id, username)
             if member is not None and bool(getattr(member, "enabled", True)):
                 visible_projects.append(item)
-    return {"projects": [_serialize_project(item) for item in visible_projects]}
+    return {"projects": [_serialize_project(item, auth_payload) for item in visible_projects]}
 
 
 @router.post("/workspace-directory/pick")
@@ -3692,11 +3788,14 @@ async def pick_workspace_file(
 @router.post("")
 async def create_project(req: ProjectCreateReq, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.projects")
+    creator_username = _normalize_project_username(_current_username(auth_payload))
     project = ProjectConfig(
         id=project_store.new_id(),
         name=str(req.name or "").strip(),
         description=req.description,
+        created_by=creator_username,
         type=_normalize_project_type(req.type),
+        ui_rule_ids=_normalize_project_ui_rule_ids(req.ui_rule_ids),
         mcp_instruction=_normalize_project_mcp_instruction_for_save(req.mcp_instruction),
         workspace_path=_normalize_workspace_path_for_save(req.workspace_path),
         ai_entry_file=_normalize_ai_entry_file_for_save(req.ai_entry_file),
@@ -3706,7 +3805,6 @@ async def create_project(req: ProjectCreateReq, auth_payload: dict = Depends(req
     if not project.name:
         raise HTTPException(400, "name is required")
     project_store.save(project)
-    creator_username = _normalize_project_username(_current_username(auth_payload))
     project_store.upsert_user_member(
         ProjectUserMember(
             project_id=project.id,
@@ -3717,14 +3815,14 @@ async def create_project(req: ProjectCreateReq, auth_payload: dict = Depends(req
         )
     )
     _sync_feedback_project_flag(project.id, project.feedback_upgrade_enabled)
-    return {"status": "created", "project": _serialize_project(project)}
+    return {"status": "created", "project": _serialize_project(project, auth_payload)}
 
 
 @router.get("/{project_id}")
 async def get_project(project_id: str, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.projects")
     project = _ensure_project_access(project_id, auth_payload)
-    return {"project": _serialize_project(project)}
+    return {"project": _serialize_project(project, auth_payload)}
 
 
 @router.get("/{project_id}/materials")
@@ -4643,13 +4741,25 @@ def _normalize_project_type(value: Any) -> str:
     return "mixed"
 
 
-def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
+def _normalize_project_ui_rule_ids(values: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in values or []:
+        rule_id = str(item or "").strip()
+        if not rule_id or rule_id in seen:
+            continue
+        seen.add(rule_id)
+        result.append(rule_id)
+    return result
+
+
+def _apply_project_update(project_id: str, req: ProjectUpdateReq, auth_payload: dict) -> dict:
     project = project_store.get(project_id)
     if project is None:
         raise HTTPException(404, f"Project {project_id} not found")
     updates = req.model_dump(exclude_none=True)
     if not updates:
-        return {"status": "no_change", "project": _serialize_project(project)}
+        return {"status": "no_change", "project": _serialize_project(project, auth_payload)}
     if "name" in updates:
         updates["name"] = str(updates["name"] or "").strip()
         if not updates["name"]:
@@ -4664,26 +4774,28 @@ def _apply_project_update(project_id: str, req: ProjectUpdateReq) -> dict:
         )
     if "type" in updates:
         updates["type"] = _normalize_project_type(updates.get("type"))
+    if "ui_rule_ids" in updates:
+        updates["ui_rule_ids"] = _normalize_project_ui_rule_ids(updates.get("ui_rule_ids"))
     updates["updated_at"] = _now_iso()
     updated = replace(project, **updates)
     project_store.save(updated)
     if "feedback_upgrade_enabled" in updates:
         _sync_feedback_project_flag(updated.id, bool(updated.feedback_upgrade_enabled))
-    return {"status": "updated", "project": _serialize_project(updated)}
+    return {"status": "updated", "project": _serialize_project(updated, auth_payload)}
 
 
 @router.put("/{project_id}")
 async def update_project(project_id: str, req: ProjectUpdateReq, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.projects")
     _ensure_project_manage_access(project_id, auth_payload)
-    return _apply_project_update(project_id, req)
+    return _apply_project_update(project_id, req, auth_payload)
 
 
 @router.patch("/{project_id}")
 async def patch_project(project_id: str, req: ProjectUpdateReq, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.projects")
     _ensure_project_manage_access(project_id, auth_payload)
-    return _apply_project_update(project_id, req)
+    return _apply_project_update(project_id, req, auth_payload)
 
 
 @router.delete("/{project_id}")
@@ -4705,9 +4817,7 @@ async def list_project_users(project_id: str, auth_payload: dict = Depends(requi
     _ensure_project_access(project_id, auth_payload)
     roles = {item.id: item for item in role_store.list_all()}
     project_user_members = project_store.list_user_members(project_id)
-    can_manage = _is_admin_like(auth_payload) or str(
-        getattr(_get_project_user_member(project_id, _current_username(auth_payload)), "role", "") or ""
-    ).strip().lower() == "owner"
+    can_manage = _can_manage_project(project_id, auth_payload)
     member_map = {
         str(item.username or "").strip(): item
         for item in project_user_members
@@ -4764,6 +4874,9 @@ async def remove_project_user(project_id: str, username: str, auth_payload: dict
     _ensure_permission(auth_payload, "menu.projects")
     _ensure_project_manage_access(project_id, auth_payload)
     normalized_username = _normalize_project_username(username)
+    creator_username = _project_creator_username(project_id)
+    if creator_username and normalized_username == creator_username:
+        raise HTTPException(400, "Cannot remove the project creator")
     member = project_store.get_user_member(project_id, normalized_username)
     if member is None:
         raise HTTPException(404, f"User {normalized_username} is not a member of project {project_id}")
@@ -5971,6 +6084,23 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
     for item in member_items:
         project_rule_bindings.extend(list(item["rule_bindings"] or []))
     domains_text = _format_rule_domain_summary(project_rule_bindings) if project_rule_bindings else "无"
+    project_ui_rule_bindings = _resolve_project_ui_rule_bindings(project, include_content=True)
+    project_ui_rule_lines: list[str] = []
+    for item in project_ui_rule_bindings:
+        title = str(item.get("title") or item.get("id") or "").strip() or "未命名规则"
+        rule_id = str(item.get("id") or "").strip() or "-"
+        domain = str(item.get("domain") or "").strip() or "-"
+        content = str(item.get("content") or "").strip() or "规则正文为空"
+        project_ui_rule_lines.append(
+            f"""### {title}
+- 规则 ID: `{rule_id}`
+- 领域: {domain}
+- 优先级: 高于员工个人规则
+
+{content}
+"""
+        )
+    project_ui_rules_text = "\n".join(project_ui_rule_lines) if project_ui_rule_lines else "无"
     employee_template_lines: list[str] = []
     for item in member_items:
         employee = item["employee"]
@@ -6005,10 +6135,11 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
 2. 再调用 `recall_project_memory` 检索相关记忆，优先传 `project_name="{project.name}"`。
 3. 每次有效对话都必须记录到项目记忆；当前宿主系统对项目聊天默认自动记录问答快照，如当前入口未覆盖自动记录链路，则在本轮结束后立即调用 `save_project_memory` 补记。
 4. 在决定是否需要多人协作前，先把本项目手册与相关员工手册视为协作基线：AI 需结合任务目标、规则、技能和工具，自主判断单人主责还是多人协作，不预设固定行业角色分工。
-5. 开始实现或排查前，调用 `query_project_rules` 和 `list_project_proxy_tools` 搜索匹配的规则与技能；若任务需要项目内多员工自动协作，可优先调用 `execute_project_collaboration`。
-6. 锁定匹配项后，再调用 `invoke_project_skill_tool`，必要时补 `employee_id` 消歧；若采用多人协作，先明确负责人、子任务边界和结果交接。
-7. 如需沉淀结构化结论、排查经验或关键决策，在自动记录之外显式调用 `save_project_memory` 追加一条可复用记忆。
-8. 发现规则缺口、工具异常或稳定性问题时，调用 `submit_project_feedback_bug`。
+5. 遇到页面、交互、视觉表达类任务时，先检查本项目绑定的 UI 规则；这些规则优先级高于员工个人规则。
+6. 开始实现或排查前，调用 `query_project_rules` 和 `list_project_proxy_tools` 搜索匹配的规则与技能；`query_project_rules` 返回的规则中，项目级 UI 规则应优先遵循。若任务需要项目内多员工自动协作，可优先调用 `execute_project_collaboration`。
+7. 锁定匹配项后，再调用 `invoke_project_skill_tool`，必要时补 `employee_id` 消歧；若采用多人协作，先明确负责人、子任务边界和结果交接。
+8. 如需沉淀结构化结论、排查经验或关键决策，在自动记录之外显式调用 `save_project_memory` 追加一条可复用记忆。
+9. 发现规则缺口、工具异常或稳定性问题时，调用 `submit_project_feedback_bug`。
 
 ### 记忆保存示例
 ```json
@@ -6022,6 +6153,13 @@ save_project_memory({{
 ## 项目成员与员工使用手册
 
 {employee_templates_text}
+
+## 项目级 UI 规则（优先级高于员工个人规则）
+
+- 页面、交互、视觉表达相关任务，先遵循这里的项目级 UI 规则，再参考员工个人规则。
+- 若项目级 UI 规则与员工个人规则冲突，以项目级 UI 规则为准。
+
+{project_ui_rules_text}
 
 ## 项目共享技能索引（写手册时不要只写技能名，需结合下面信息展开）
 
@@ -6037,10 +6175,10 @@ save_project_memory({{
 - **`get_project_manual`**：直接获取项目使用手册正文；也可读取 `project://<project_id>/manual` 资源。
 - **`list_project_members`**：列出项目成员，用于先确定可协作员工。
 - **`get_project_profile`**：读取项目基础配置、工作区和入口文件信息。
-- **`get_project_runtime_context`**：查看项目运行时上下文、成员、规则和技能规模。
+- **`get_project_runtime_context`**：查看项目运行时上下文、成员、项目级 UI 规则、规则和技能规模。
 - **`recall_project_memory`**：检索项目记忆，优先传 `project_name="{project.name}"`。
 - **`save_project_memory`**：手动补记项目级结论、经验和关键决策；当当前入口未自动记录或需要追加结构化沉淀时必须调用。
-- **`query_project_rules`**：按关键词查询项目规则，最终以具体规则正文为准。
+- **`query_project_rules`**：按关键词查询项目规则，返回项目级 UI 规则与成员规则；页面/交互类任务先看项目级 UI 规则，最终以具体规则正文为准。
 - **`list_project_proxy_tools`**：列出项目可调用的成员技能工具。
 - **`execute_project_collaboration`**：输入用户原始任务，由 AI 基于项目手册、员工手册、规则和工具，自主判断是否需要多人协作并生成协作步骤。
 - **`invoke_project_skill_tool`**：调用项目成员技能，必要时补 `employee_id` 消歧。
@@ -6053,7 +6191,7 @@ save_project_memory({{
 2. 记忆检索 → recall_project_memory
 3. 每次对话记录 → 默认自动记录；未覆盖入口则立刻 save_project_memory 补记
 4. 结合项目手册与员工手册，自主判断单人主责还是多人协作；多人任务优先考虑 execute_project_collaboration
-5. 先搜索匹配的规则与技能 → query_project_rules + list_project_proxy_tools
+5. 先检查项目级 UI 规则，再搜索匹配的成员规则与技能 → query_project_rules + list_project_proxy_tools
 6. 锁定匹配项后再调用技能 → execute_project_collaboration 或 invoke_project_skill_tool
 7. 结构化沉淀结论 → save_project_memory
 8. 反馈闭环 → submit_project_feedback_bug
@@ -6094,6 +6232,7 @@ save_project_memory({{
 
 ### 记忆与规则
 - 先检索记忆，再检索规则，再决定是否调用技能。
+- 项目级 UI 规则优先于员工个人规则，尤其是页面、交互、视觉表达类任务。
 - 每次有效对话都要留下项目记忆；自动记录未覆盖时，必须手动补记。
 - 结构化结论和关键决策建议额外补一条高质量记忆，便于后续复用。
 - 不要把领域名直接当作规则正文。

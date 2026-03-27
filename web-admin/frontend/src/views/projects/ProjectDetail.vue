@@ -3,7 +3,7 @@
     <div class="toolbar">
       <h3>项目详情</h3>
       <div class="toolbar-actions">
-        <el-button type="warning" @click="openEditDialog">编辑项目</el-button>
+        <el-button v-if="canManageProject" type="warning" @click="openEditDialog">编辑项目</el-button>
         <el-button v-if="canOpenProjectChat" type="primary" @click="openProjectChat"
           >AI 对话</el-button
         >
@@ -54,6 +54,35 @@
         project.mcp_instruction || "-"
       }}</el-descriptions-item>
     </el-descriptions>
+
+    <div class="block">
+      <div class="block-header">
+        <h4>UI 规则绑定</h4>
+        <el-button
+          type="primary"
+          size="small"
+          :disabled="!canManageProject"
+          @click="openUiRuleDialog"
+          >编辑绑定</el-button
+        >
+      </div>
+      <el-alert
+        title="项目聊天会优先注入这里绑定的 UI 规则，优先级高于员工个人规则。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+      <div v-if="boundUiRules.length" class="ui-rule-list">
+        <div v-for="rule in boundUiRules" :key="rule.id" class="ui-rule-card">
+          <div class="ui-rule-card__title">{{ rule.title || rule.id }}</div>
+          <div class="ui-rule-card__meta">
+            <span>{{ rule.id }}</span>
+            <span>{{ rule.domain || "未分类" }}</span>
+          </div>
+        </div>
+      </div>
+      <el-empty v-else description="当前项目未绑定 UI 规则" :image-size="60" />
+    </div>
 
     <div class="block">
       <div class="block-header">
@@ -167,6 +196,7 @@
               text
               type="danger"
               size="small"
+              :disabled="!canManageProjectUsers"
               @click="removeMember(row)"
               >移除</el-button
             >
@@ -346,6 +376,38 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="showUiRuleDialog" title="UI 规则绑定" width="620px">
+      <el-form :model="uiRuleForm" label-width="100px">
+        <el-form-item label="绑定规则">
+          <el-select
+            v-model="uiRuleForm.rule_ids"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="请选择项目级 UI 规则"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in ruleOptions"
+              :key="item.id"
+              :label="item.domain ? `${item.title} (${item.domain})` : item.title"
+              :value="item.id"
+            />
+          </el-select>
+          <div class="ui-rule-help">
+            这里只绑定项目级 UI 规范。保存后，项目聊天会优先注入这些规则。
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showUiRuleDialog = false">取消</el-button>
+        <el-button type="primary" :loading="uiRuleSaving" @click="saveUiRuleBindings"
+          >保存</el-button
+        >
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="showEditDialog" title="编辑项目" width="520px">
       <el-form :model="editForm" label-width="110px">
         <el-form-item label="项目名称" required>
@@ -486,18 +548,21 @@ const loading = ref(false);
 const saving = ref(false);
 const showAddDialog = ref(false);
 const showAddUserDialog = ref(false);
+const showUiRuleDialog = ref(false);
 const showEditDialog = ref(false);
 const showManualDialog = ref(false);
 const manualDialogTitle = ref("项目手册");
 const manualLoading = ref(false);
 const generatedManual = ref("");
 const memoryLoading = ref(false);
+const uiRuleSaving = ref(false);
 
 const project = ref({});
 const projectUsers = ref([]);
 const members = ref([]);
 const employeeOptions = ref([]);
 const userOptions = ref([]);
+const ruleOptions = ref([]);
 const projectMemories = ref([]);
 const canManageProjectUsers = ref(false);
 const memoryLimitOptions = [20, 50, 100];
@@ -541,6 +606,10 @@ const editForm = ref({
   feedback_upgrade_enabled: true,
 });
 
+const uiRuleForm = ref({
+  rule_ids: [],
+});
+
 const memberIdSet = computed(() => {
   return new Set(
     (members.value || [])
@@ -574,10 +643,22 @@ const availableUserOptions = computed(() => {
 });
 
 const canOpenProjectChat = computed(() => hasPermission("button.project.chat"));
+const canManageProject = computed(() => !!project.value?.can_manage);
+const ruleMap = computed(
+  () => new Map((ruleOptions.value || []).map((item) => [item.id, item])),
+);
 const projectMcpSseUrl = computed(() => {
   if (!project.value?.id) return "";
   return buildRuntimeUrl(`/mcp/projects/${project.value.id}/sse?key=YOUR_API_KEY`);
 });
+
+function manageBlockedMessage() {
+  const creator = String(project.value?.created_by || "").trim();
+  if (creator) {
+    return `仅项目创建者可编辑，当前创建者为 ${creator}`;
+  }
+  return "仅项目创建者可编辑";
+}
 const projectMcpHttpUrl = computed(() => {
   if (!project.value?.id) return "";
   return buildRuntimeUrl(`/mcp/projects/${project.value.id}/mcp?key=YOUR_API_KEY`);
@@ -624,6 +705,53 @@ const filteredMemoryRows = computed(() => {
   );
 });
 
+const boundUiRules = computed(() => {
+  const bindings = Array.isArray(project.value?.ui_rule_bindings)
+    ? project.value.ui_rule_bindings
+    : [];
+  if (bindings.length) {
+    return bindings.map((item) => ({
+      id: String(item.id || "").trim(),
+      title: String(item.title || item.id || "").trim(),
+      domain: String(item.domain || "").trim(),
+    }));
+  }
+  return normalizeStringList(project.value?.ui_rule_ids || []).map((ruleId) => {
+    const matched = ruleMap.value.get(ruleId);
+    return {
+      id: ruleId,
+      title: matched?.title || `${ruleId} (历史配置)`,
+      domain: matched?.domain || "",
+    };
+  });
+});
+
+function normalizeStringList(values) {
+  return Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function ensureUiRuleOptionCoverage() {
+  const next = [...(ruleOptions.value || [])];
+  const known = new Set(next.map((item) => String(item.id || "").trim()).filter(Boolean));
+  for (const item of boundUiRules.value) {
+    const ruleId = String(item.id || "").trim();
+    if (!ruleId || known.has(ruleId)) continue;
+    next.push({
+      id: ruleId,
+      title: String(item.title || ruleId).trim(),
+      domain: String(item.domain || "").trim(),
+    });
+    known.add(ruleId);
+  }
+  ruleOptions.value = next;
+}
+
 function resetAddForm() {
   addForm.value = {
     employee_ids: [],
@@ -649,12 +777,29 @@ async function fetchEmployees() {
   }
 }
 
+async function fetchRules() {
+  try {
+    const data = await api.get("/rules");
+    ruleOptions.value = (data.rules || []).map((rule) => ({
+      id: String(rule.id || "").trim(),
+      title: String(rule.title || rule.id || "").trim(),
+      domain: String(rule.domain || "").trim(),
+    }));
+  } catch {
+    ruleOptions.value = [];
+  } finally {
+    ensureUiRuleOptionCoverage();
+  }
+}
+
 async function fetchProject() {
   const data = await api.get(`/projects/${projectId}`);
   project.value = {
     ...(data.project || {}),
     type: normalizeProjectType(data.project?.type),
+    ui_rule_ids: normalizeStringList(data.project?.ui_rule_ids || []),
   };
+  ensureUiRuleOptionCoverage();
 }
 
 function normalizeProjectType(value) {
@@ -797,8 +942,12 @@ async function fetchProjectMemories() {
     const responses = await Promise.allSettled(
       targetEmployeeIds.map(async (employeeId) => {
         const params = { limit: safeLimit };
+        const currentProjectName = String(project.value?.name || "").trim();
         if (query) {
           params.query = query;
+        }
+        if (currentProjectName) {
+          params.project_name = currentProjectName;
         }
         const data = await api.get(`/memory/${employeeId}`, { params });
         return (data.memories || []).map((item) => normalizeMemory(item, employeeId));
@@ -846,11 +995,12 @@ async function resetMemoryFilters() {
 async function refresh() {
   loading.value = true;
   try {
+    await fetchProject();
     await Promise.all([
-      fetchProject(),
       fetchProjectUsers(),
       fetchMembers(),
       fetchEmployees(),
+      fetchRules(),
     ]);
     await fetchProjectMemories();
   } catch (err) {
@@ -888,6 +1038,10 @@ function openMaterialLibrary() {
 }
 
 function openAddMember() {
+  if (!canManageProjectUsers.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
   resetAddForm();
   showAddDialog.value = true;
 }
@@ -902,11 +1056,30 @@ function openEmployeeDetail(row) {
 }
 
 function openAddUserDialog() {
+  if (!canManageProjectUsers.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
   resetUserForm();
   showAddUserDialog.value = true;
 }
 
+function openUiRuleDialog() {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  uiRuleForm.value = {
+    rule_ids: normalizeStringList(project.value?.ui_rule_ids || []),
+  };
+  showUiRuleDialog.value = true;
+}
+
 function openEditDialog() {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
   editForm.value = {
     name: project.value.name || "",
     description: project.value.description || "",
@@ -952,6 +1125,11 @@ async function pickAiEntryFile(currentPath = "", workspacePath = "") {
 }
 
 async function saveEdit() {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    showEditDialog.value = false;
+    return;
+  }
   const name = String(editForm.value.name || "").trim();
   if (!name) {
     ElMessage.warning("请输入项目名称");
@@ -967,6 +1145,27 @@ async function saveEdit() {
     ElMessage.error(err?.detail || err?.message || "更新失败");
   } finally {
     saving.value = false;
+  }
+}
+
+async function saveUiRuleBindings() {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    showUiRuleDialog.value = false;
+    return;
+  }
+  uiRuleSaving.value = true;
+  try {
+    await api.put(`/projects/${projectId}`, {
+      ui_rule_ids: normalizeStringList(uiRuleForm.value.rule_ids || []),
+    });
+    await fetchProject();
+    ElMessage.success("UI 规则绑定已更新");
+    showUiRuleDialog.value = false;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存 UI 规则绑定失败");
+  } finally {
+    uiRuleSaving.value = false;
   }
 }
 
@@ -995,6 +1194,10 @@ async function copyManual() {
 }
 
 async function addMember() {
+  if (!canManageProjectUsers.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
   const selected = [
     ...new Set(
       (addForm.value.employee_ids || [])
@@ -1050,6 +1253,10 @@ async function addMember() {
 }
 
 async function addProjectUsers() {
+  if (!canManageProjectUsers.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
   const selected = [
     ...new Set(
       (userForm.value.usernames || [])
@@ -1104,6 +1311,10 @@ async function addProjectUsers() {
 }
 
 async function removeMember(row) {
+  if (!canManageProjectUsers.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
   await ElMessageBox.confirm(
     `确定移除成员 ${row.employee_name || row.employee_id}？`,
     "确认",
@@ -1120,6 +1331,10 @@ async function removeMember(row) {
 }
 
 async function removeProjectUser(row) {
+  if (!canManageProjectUsers.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
   await ElMessageBox.confirm(
     `确定移除用户 ${row.username} 的项目访问权限？`,
     "确认",
@@ -1191,6 +1406,41 @@ onMounted(refresh);
 
 .block-header h4 {
   margin: 0;
+}
+
+.ui-rule-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.ui-rule-card {
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.ui-rule-card__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.ui-rule-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.ui-rule-help {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6b7280;
 }
 
 .memory-filters {

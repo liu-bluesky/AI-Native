@@ -63,6 +63,7 @@ class PersonaSnapshot:
 class Persona:
     id: str
     name: str
+    created_by: str = ""
     tone: str = "professional"
     verbosity: str = "concise"
     language: str = "zh-CN"
@@ -100,6 +101,7 @@ def _deserialize_persona(data: dict) -> Persona:
     dc = data.get("drift_control", {})
     return Persona(
         id=data["id"], name=data["name"],
+        created_by=data.get("created_by", ""),
         tone=data.get("tone", "professional"),
         verbosity=data.get("verbosity", "concise"),
         language=data.get("language", "zh-CN"),

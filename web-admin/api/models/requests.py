@@ -219,6 +219,7 @@ class ProjectCreateReq(BaseModel):
     name: str
     description: str = ""
     type: Literal["image", "storyboard_video", "mixed"] = "mixed"
+    ui_rule_ids: list[str] = []
     mcp_instruction: str = ""
     workspace_path: str = ""
     ai_entry_file: str = ""
@@ -230,6 +231,7 @@ class ProjectUpdateReq(BaseModel):
     name: str | None = None
     description: str | None = None
     type: Literal["image", "storyboard_video", "mixed"] | None = None
+    ui_rule_ids: list[str] | None = None
     mcp_instruction: str | None = None
     workspace_path: str | None = None
     ai_entry_file: str | None = None

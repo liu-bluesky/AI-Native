@@ -43,6 +43,7 @@
         <template #default="{ row }">
           <el-switch
             :model-value="!!row.mcp_enabled"
+            :disabled="!canManageProject(row)"
             @change="(val) => patchProjectFlags(row, { mcp_enabled: !!val }, val ? '已开启项目 MCP' : '已关闭项目 MCP')"
           />
         </template>
@@ -51,16 +52,41 @@
         <template #default="{ row }">
           <el-switch
             :model-value="!!row.feedback_upgrade_enabled"
+            :disabled="!canManageProject(row)"
             @change="(val) => patchProjectFlags(row, { feedback_upgrade_enabled: !!val }, val ? '已开启反馈升级' : '已关闭反馈升级')"
           />
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="320" fixed="right">
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
-          <el-button text type="primary" size="small" @click="$router.push(`/projects/${row.id}`)">详情</el-button>
-          <el-button text type="warning" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button text type="success" size="small" @click="showMcpConfig(row)">接入</el-button>
-          <el-button text type="danger" size="small" @click="removeProject(row)">删除</el-button>
+          <el-button
+            v-for="action in getPrimaryProjectActions(row)"
+            :key="`${row.id}-${action.key}`"
+            text
+            :type="action.type"
+            size="small"
+            @click="handleProjectAction(row, action.key)"
+          >
+            {{ action.label }}
+          </el-button>
+          <el-dropdown
+            v-if="getOverflowProjectActions(row).length"
+            trigger="click"
+            @command="(actionKey) => handleProjectAction(row, actionKey)"
+          >
+            <el-button text type="primary" size="small">更多</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="action in getOverflowProjectActions(row)"
+                  :key="`${row.id}-${action.key}`"
+                  :command="action.key"
+                >
+                  {{ action.label }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -201,6 +227,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import UnifiedMcpAccessDialog from '@/components/UnifiedMcpAccessDialog.vue'
 import api from '@/utils/api.js'
@@ -211,6 +238,8 @@ import {
   toWorkspaceRelativePath,
 } from '@/utils/workspace-picker.js'
 
+const PROJECT_CREATED_EVENT = 'project-created'
+const router = useRouter()
 const loading = ref(false)
 const creating = ref(false)
 const updating = ref(false)
@@ -262,6 +291,36 @@ const editForm = ref({
 
 const showMcpDialog = ref(false)
 const currentProject = ref(null)
+const PROJECT_ACTIONS = [
+  { key: 'detail', label: '详情', type: 'primary', requiresManage: false },
+  { key: 'edit', label: '编辑', type: 'warning', requiresManage: true },
+  { key: 'access', label: '接入', type: 'success', requiresManage: true },
+  { key: 'delete', label: '删除', type: 'danger', requiresManage: true },
+]
+
+function canManageProject(project) {
+  return !!project?.can_manage
+}
+
+function manageBlockedMessage(project) {
+  const creator = String(project?.created_by || '').trim()
+  if (creator) {
+    return `仅项目创建者可编辑，当前创建者为 ${creator}`
+  }
+  return '仅项目创建者可编辑'
+}
+
+function getProjectActions(project) {
+  return PROJECT_ACTIONS.filter((item) => !item.requiresManage || canManageProject(project))
+}
+
+function getPrimaryProjectActions(project) {
+  return getProjectActions(project).slice(0, 3)
+}
+
+function getOverflowProjectActions(project) {
+  return getProjectActions(project).slice(3)
+}
 
 function openCreate() {
   createForm.value = {
@@ -293,6 +352,10 @@ async function selectCreateAiEntryFile() {
 }
 
 function openEdit(project) {
+  if (!canManageProject(project)) {
+    ElMessage.warning(manageBlockedMessage(project))
+    return
+  }
   editForm.value = {
     id: project.id,
     name: project.name || '',
@@ -305,6 +368,25 @@ function openEdit(project) {
     feedback_upgrade_enabled: project.feedback_upgrade_enabled ?? true,
   }
   showEditDialog.value = true
+}
+
+function handleProjectAction(project, actionKey) {
+  switch (String(actionKey || '').trim()) {
+    case 'detail':
+      void router.push(`/projects/${project.id}`)
+      return
+    case 'edit':
+      openEdit(project)
+      return
+    case 'access':
+      showMcpConfig(project)
+      return
+    case 'delete':
+      void removeProject(project)
+      return
+    default:
+      return
+  }
 }
 
 function normalizeProjectType(value) {
@@ -361,6 +443,12 @@ async function pickAiEntryFile(currentPath = '', workspacePath = '') {
 }
 
 async function updateProject() {
+  const currentProject = projects.value.find((item) => item.id === editForm.value.id)
+  if (!canManageProject(currentProject)) {
+    ElMessage.warning(manageBlockedMessage(currentProject))
+    showEditDialog.value = false
+    return
+  }
   const name = String(editForm.value.name || '').trim()
   if (!name) {
     ElMessage.warning('请输入项目名称')
@@ -389,6 +477,10 @@ async function updateProject() {
 }
 
 function showMcpConfig(project) {
+  if (!canManageProject(project)) {
+    ElMessage.warning(manageBlockedMessage(project))
+    return
+  }
   currentProject.value = project
   showMcpDialog.value = true
 }
@@ -416,7 +508,7 @@ async function createProject() {
   }
   creating.value = true
   try {
-    await api.post('/projects', {
+    const data = await api.post('/projects', {
       name,
       description: createForm.value.description,
       type: normalizeProjectType(createForm.value.type),
@@ -426,6 +518,17 @@ async function createProject() {
       mcp_enabled: !!createForm.value.mcp_enabled,
       feedback_upgrade_enabled: !!createForm.value.feedback_upgrade_enabled,
     })
+    const createdProjectId = String(data?.project?.id || '').trim()
+    if (createdProjectId) {
+      localStorage.setItem('project_id', createdProjectId)
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+        window.dispatchEvent(
+          new CustomEvent(PROJECT_CREATED_EVENT, {
+            detail: { projectId: createdProjectId },
+          }),
+        )
+      }
+    }
     ElMessage.success('项目创建成功')
     showCreateDialog.value = false
     await fetchProjects()
@@ -437,6 +540,10 @@ async function createProject() {
 }
 
 async function patchProjectFlags(row, payload, successMessage) {
+  if (!canManageProject(row)) {
+    ElMessage.warning(manageBlockedMessage(row))
+    return
+  }
   try {
     await api.patch(`/projects/${row.id}`, payload)
     ElMessage.success(successMessage)
@@ -447,6 +554,10 @@ async function patchProjectFlags(row, payload, successMessage) {
 }
 
 async function removeProject(row) {
+  if (!canManageProject(row)) {
+    ElMessage.warning(manageBlockedMessage(row))
+    return
+  }
   await ElMessageBox.confirm(`确定删除项目「${row.name}」？`, '确认', { type: 'warning' })
   try {
     await api.delete(`/projects/${row.id}`)

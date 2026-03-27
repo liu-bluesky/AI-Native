@@ -26,6 +26,7 @@
               @click="openSettingsCenter('chat')"
               :icon="Setting"
               circle
+              ref="chatSettingsButtonRef"
             />
           </div>
 
@@ -164,7 +165,7 @@
 
         <div class="chat-stage">
           <div class="chat-context-bar">
-            <div class="chat-context-bar__surface">
+            <div class="chat-context-bar__surface" ref="chatContextBarRef">
               <div class="chat-context-bar__copy">
                 <div class="chat-context-bar__eyebrow">AI Operating System</div>
                 <div class="chat-context-bar__title">
@@ -173,7 +174,7 @@
                 <p class="chat-context-bar__summary">
                   {{
                     hasSelectedProject
-                      ? "在同一项目里继续推进对话、规则与资产。"
+                      ? "在同一项目里继续推进前端、后端、数据库更新，以及对话、规则与资产。"
                       : "先建立判断，再展开步骤与执行。"
                   }}
                 </p>
@@ -187,6 +188,14 @@
                 </div>
               </div>
               <div class="chat-context-bar__actions">
+                <el-button
+                  size="small"
+                  class="chat-context-bar__action-button chat-context-bar__action-button--guide"
+                  @click="startChatTour(true)"
+                  ref="chatGuideButtonRef"
+                >
+                  使用引导
+                </el-button>
                 <el-button
                   v-if="hasSelectedProject"
                   size="small"
@@ -763,6 +772,7 @@
                   'is-focused': inputFocused,
                   'is-dragover': isDragging,
                 }"
+                ref="chatComposerRef"
                 @dragover.prevent="handleDragOver"
                 @dragleave.prevent="handleDragLeave"
                 @drop.prevent="handleDrop"
@@ -1250,7 +1260,7 @@
     v-loading="loading"
   >
     <div class="settings-center-shell">
-      <aside class="settings-center-sidebar">
+      <aside class="settings-center-sidebar" ref="settingsSidebarRef">
         <div class="settings-center-sidebar-card">
           <div class="settings-center-brand-panel">
             <div class="settings-center-brand">
@@ -1335,26 +1345,38 @@
       </aside>
 
       <section class="settings-center-stage">
-        <div class="settings-center-context-bar">
-          <div class="settings-center-context-bar__title">
-            {{ activeSettingsPanelItem?.label || "设置" }}
+        <div class="settings-center-context-bar" ref="settingsContextBarRef">
+          <div class="settings-center-context-bar__copy">
+            <div class="settings-center-context-bar__title">
+              {{ activeSettingsPanelItem?.label || "设置" }}
+            </div>
+            <div
+              v-if="activeSettingsPanelItem?.desc"
+              class="settings-center-context-bar__desc"
+            >
+              {{ activeSettingsPanelItem.desc }}
+            </div>
+            <div class="settings-center-context-bar__meta">
+              <span>项目：{{ currentProjectLabel }}</span>
+              <span>模式：系统对话</span>
+              <span>
+                面板：{{
+                  activeSettingsPanelItem?.kind === "route"
+                    ? "平台页面"
+                    : "对话配置"
+                }}
+              </span>
+            </div>
           </div>
-          <div
-            v-if="activeSettingsPanelItem?.desc"
-            class="settings-center-context-bar__desc"
-          >
-            {{ activeSettingsPanelItem.desc }}
-          </div>
-          <div class="settings-center-context-bar__meta">
-            <span>项目：{{ currentProjectLabel }}</span>
-            <span>模式：系统对话</span>
-            <span>
-              面板：{{
-                activeSettingsPanelItem?.kind === "route"
-                  ? "平台页面"
-                  : "对话配置"
-              }}
-            </span>
+          <div class="settings-center-context-bar__actions">
+            <el-button
+              type="primary"
+              plain
+              @click="startSettingsTour(true)"
+              ref="settingsGuideButtonRef"
+            >
+              菜单导览
+            </el-button>
           </div>
         </div>
 
@@ -1451,7 +1473,7 @@
             </aside>
 
             <div class="settings-chat-main">
-              <div class="settings-chat-main-card">
+              <div class="settings-chat-main-card" ref="settingsMainCardRef">
                 <div class="settings-summary-card">
                   <div class="settings-summary-title">影响当前回答</div>
                   <div class="settings-summary-text">
@@ -2195,6 +2217,44 @@
       </section>
     </div>
   </div>
+
+  <el-tour
+    v-model="chatTourVisible"
+    v-model:current="chatTourCurrent"
+    :show-arrow="false"
+    :mask="true"
+    :scroll-into-view-options="{ block: 'center', behavior: 'smooth' }"
+    @close="handleChatTourClose"
+    @finish="handleChatTourFinish"
+  >
+    <el-tour-step
+      v-for="(item, index) in chatTourSteps"
+      :key="`chat-tour-${index}`"
+      :target="item.target"
+      :title="item.title"
+      :description="item.description"
+      :placement="item.placement || 'bottom'"
+    />
+  </el-tour>
+
+  <el-tour
+    v-model="settingsTourVisible"
+    v-model:current="settingsTourCurrent"
+    :show-arrow="false"
+    :mask="true"
+    :scroll-into-view-options="{ block: 'center', behavior: 'smooth' }"
+    @close="handleSettingsTourClose"
+    @finish="handleSettingsTourFinish"
+  >
+    <el-tour-step
+      v-for="(item, index) in settingsTourStepsResolved"
+      :key="`settings-tour-${index}`"
+      :target="item.target"
+      :title="item.title"
+      :description="item.description"
+      :placement="item.placement || 'bottom'"
+    />
+  </el-tour>
 </template>
 
 <script setup>
@@ -2417,6 +2477,8 @@ const EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS = {
 // 开放未选择项目时的通用对话模式，复用现有 sendGlobalChatWithoutProject 逻辑。
 const ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT = true;
 const LOCAL_CONNECTOR_STORAGE_PREFIX = "project_chat.local_connector";
+const PROJECT_CREATED_EVENT = "project-created";
+const GUIDE_TOUR_STORAGE_PREFIX = "project_chat.guide_tour";
 const CHAT_PARAMETER_SECTION_CONFIG = {
   image: [
     {
@@ -2479,12 +2541,170 @@ const CHAT_PARAMETER_SECTION_CONFIG = {
     },
   ],
 };
+const SETTINGS_CENTER_ITEM_DEFS = [
+  {
+    id: "chat",
+    label: "对话设置",
+    desc: "当前项目的 AI 对话运行参数",
+    kind: "internal",
+  },
+  {
+    id: "user-settings",
+    label: "用户设置",
+    desc: "当前账号默认 AI 与个人偏好",
+    kind: "route",
+    path: "/user/settings",
+  },
+  {
+    id: "system-config",
+    label: "系统配置",
+    desc: "全局系统开关与默认项",
+    kind: "route",
+    path: "/system/config",
+    permission: "menu.system.config",
+  },
+  {
+    id: "dictionaries",
+    label: "字典管理",
+    desc: "维护模型类型等全局字典",
+    kind: "route",
+    path: "/dictionaries",
+    permission: ["menu.system.dictionaries", "menu.system.config"],
+  },
+  {
+    id: "providers",
+    label: "模型供应商",
+    desc: "管理平台模型源",
+    kind: "route",
+    path: "/llm/providers",
+    permission: "menu.llm.providers",
+  },
+  {
+    id: "projects",
+    label: "项目管理",
+    desc: "查看和维护项目列表",
+    kind: "route",
+    path: "/projects",
+    permission: "menu.projects",
+  },
+  {
+    id: "agent-templates",
+    label: "智能体模板",
+    desc: "沉淀行业模板，再创建员工",
+    kind: "route",
+    path: "/agent-templates",
+    permission: "menu.employees",
+  },
+  {
+    id: "employees",
+    label: "员工管理",
+    desc: "管理员工与能力绑定",
+    kind: "route",
+    path: "/employees",
+    permission: "menu.employees",
+  },
+  {
+    id: "skills",
+    label: "技能目录",
+    desc: "维护可复用技能",
+    kind: "route",
+    path: "/skills",
+    permission: "menu.skills",
+  },
+  {
+    id: "rules",
+    label: "规则管理",
+    desc: "管理系统规则",
+    kind: "route",
+    path: "/rules",
+    permission: "menu.rules",
+  },
+  {
+    id: "users",
+    label: "用户管理",
+    desc: "账号与权限视图",
+    kind: "route",
+    path: "/users",
+    permission: "menu.users",
+  },
+  {
+    id: "roles",
+    label: "角色管理",
+    desc: "角色和权限配置",
+    kind: "route",
+    path: "/roles",
+    permission: "menu.roles",
+  },
+  {
+    id: "api-keys",
+    label: "API Key",
+    desc: "使用控制和密钥管理",
+    kind: "route",
+    path: "/usage/keys",
+    permission: "menu.usage.keys",
+  },
+];
+const ROLE_LABEL_MAP = {
+  admin: "管理员",
+  user: "普通用户",
+};
+const SETTINGS_GUIDE_REASON_MAP = {
+  chat: "先把项目、执行员工、模型和工具预算收束到同一轮上下文里。",
+  "user-settings": "这里决定你的默认 AI 来源和个人偏好，会影响日常进入对话时的默认落点。",
+  "system-config": "适合维护平台级默认值、功能开关和全局行为边界。",
+  dictionaries: "当模型类型、字典项需要统一维护时，从这里集中处理。",
+  providers: "维护供应商与模型池，决定平台能用哪些 AI 入口。",
+  projects: "切回项目列表，确认当前上下文、成员边界和工作区归属。",
+  "agent-templates": "先沉淀标准模板，再批量复用到不同员工。",
+  employees: "管理员工角色、技能绑定和提示词结构，是把对话结论落成资产的主入口。",
+  skills:
+    "维护和补充更新技能。需要推进项目前端、后端或数据库数据时，可以先在这里补齐复用能力，再回到对话执行。",
+  rules: "把稳定做法沉淀成规则，减少后续回答漂移。",
+  users: "用于查看账号、权限和成员可见范围。",
+  roles: "集中定义角色与权限，控制谁能看到哪些入口。",
+  "api-keys": "当需要做调用控制、额度分配或密钥轮换时优先来这里。",
+};
+
+function formatRoleLabel(roleId) {
+  const normalized = String(roleId || "").trim().toLowerCase();
+  if (!normalized) return "当前用户";
+  if (ROLE_LABEL_MAP[normalized]) return ROLE_LABEL_MAP[normalized];
+  return normalized.replace(/[_-]+/g, " ");
+}
+
+function guideTourStorageKey(surface, username, roleId) {
+  return [
+    GUIDE_TOUR_STORAGE_PREFIX,
+    String(surface || "").trim() || "chat",
+    String(username || "").trim() || "anonymous",
+    String(roleId || "").trim() || "user",
+  ].join(".");
+}
 
 function resolveCurrentUsername() {
   return (
     String(localStorage.getItem("username") || "anonymous").trim() ||
     "anonymous"
   );
+}
+
+function resolveTourTarget(targetRef) {
+  const raw = targetRef?.value;
+  if (!raw) return document.body;
+  return raw.$el || raw;
+}
+
+function hasSeenGuideTour(surface, username, roleId) {
+  if (typeof window === "undefined") return true;
+  return (
+    localStorage.getItem(guideTourStorageKey(surface, username, roleId)) ===
+    "1"
+  );
+}
+
+function markGuideTourSeen(surface, username, roleId) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(guideTourStorageKey(surface, username, roleId), "1");
 }
 
 function localConnectorPreferenceStorageKey() {
@@ -2741,9 +2961,21 @@ const inlineEditingMessageId = ref("");
 const inlineEditingDraft = ref("");
 const inlineEditingBusy = ref(false);
 const highlightedMessageId = ref("");
+const chatTourVisible = ref(false);
+const chatTourCurrent = ref(0);
+const settingsTourVisible = ref(false);
+const settingsTourCurrent = ref(0);
 
 const maxUploadLimit = ref(6);
 const chatMaxTokens = ref(512);
+const chatSettingsButtonRef = ref(null);
+const chatGuideButtonRef = ref(null);
+const chatContextBarRef = ref(null);
+const chatComposerRef = ref(null);
+const settingsSidebarRef = ref(null);
+const settingsGuideButtonRef = ref(null);
+const settingsContextBarRef = ref(null);
+const settingsMainCardRef = ref(null);
 
 const hasSelectedProject = computed(() =>
   Boolean(String(selectedProjectId.value || "").trim()),
@@ -2912,6 +3144,13 @@ const currentUsernameInitial = computed(
       .slice(0, 1)
       .toUpperCase() || "?",
 );
+const currentRoleId = computed(
+  () =>
+    String(localStorage.getItem("role") || "user")
+      .trim()
+      .toLowerCase() || "user",
+);
+const currentRoleLabel = computed(() => formatRoleLabel(currentRoleId.value));
 
 async function logoutFromChat() {
   try {
@@ -2970,109 +3209,9 @@ const skillResourceDirectoryResolved = computed(() =>
   ).trim(),
 );
 const settingsCenterItems = computed(() =>
-  [
-    {
-      id: "chat",
-      label: "对话设置",
-      desc: "当前项目的 AI 对话运行参数",
-      kind: "internal",
-    },
-    {
-      id: "user-settings",
-      label: "用户设置",
-      desc: "当前账号默认 AI 与个人偏好",
-      kind: "route",
-      path: "/user/settings",
-    },
-    {
-      id: "system-config",
-      label: "系统配置",
-      desc: "全局系统开关与默认项",
-      kind: "route",
-      path: "/system/config",
-      permission: "menu.system.config",
-    },
-    {
-      id: "dictionaries",
-      label: "字典管理",
-      desc: "维护模型类型等全局字典",
-      kind: "route",
-      path: "/dictionaries",
-      permission: ["menu.system.dictionaries", "menu.system.config"],
-    },
-    {
-      id: "providers",
-      label: "模型供应商",
-      desc: "管理平台模型源",
-      kind: "route",
-      path: "/llm/providers",
-      permission: "menu.llm.providers",
-    },
-    {
-      id: "projects",
-      label: "项目管理",
-      desc: "查看和维护项目列表",
-      kind: "route",
-      path: "/projects",
-      permission: "menu.projects",
-    },
-    {
-      id: "agent-templates",
-      label: "智能体模板",
-      desc: "沉淀行业模板，再创建员工",
-      kind: "route",
-      path: "/agent-templates",
-      permission: "menu.employees",
-    },
-    {
-      id: "employees",
-      label: "员工管理",
-      desc: "管理员工与能力绑定",
-      kind: "route",
-      path: "/employees",
-      permission: "menu.employees",
-    },
-    {
-      id: "skills",
-      label: "技能目录",
-      desc: "维护可复用技能",
-      kind: "route",
-      path: "/skills",
-      permission: "menu.skills",
-    },
-    {
-      id: "rules",
-      label: "规则管理",
-      desc: "管理系统规则",
-      kind: "route",
-      path: "/rules",
-      permission: "menu.rules",
-    },
-    {
-      id: "users",
-      label: "用户管理",
-      desc: "账号与权限视图",
-      kind: "route",
-      path: "/users",
-      permission: "menu.users",
-    },
-    {
-      id: "roles",
-      label: "角色管理",
-      desc: "角色和权限配置",
-      kind: "route",
-      path: "/roles",
-      permission: "menu.roles",
-    },
-    {
-      id: "api-keys",
-      label: "API Key",
-      desc: "使用控制和密钥管理",
-      kind: "route",
-      path: "/usage/keys",
-      permission: "menu.usage.keys",
-    },
-  ].filter((item) => !item.permission || hasPermission(item.permission)),
+  SETTINGS_CENTER_ITEM_DEFS.filter(
+    (item) => !item.permission || hasPermission(item.permission),
+  ),
 );
 const settingsInternalItems = computed(() =>
   settingsCenterItems.value.filter((item) => item.kind === "internal"),
@@ -3091,6 +3230,112 @@ const activeSettingsPanelItem = computed(
 const isSettingsCenterRoute = computed(() =>
   isChatSettingsRoutePath(route.path),
 );
+const roleAccessNarrative = computed(() => {
+  if (currentRoleId.value === "admin") {
+    return "你当前处于平台治理视角，可以同时调整对话策略、全局配置、模型供应商和角色权限。";
+  }
+  if (hasPermission("menu.projects") && hasPermission("menu.employees")) {
+    return "你当前偏向项目与员工协同视角，适合先在对话里验证方案，再去项目或员工入口做结构化落地。";
+  }
+  if (hasPermission("menu.projects")) {
+    return "你当前以项目协作为主，优先关注项目上下文、对话配置和个人默认 AI。";
+  }
+  return "你当前以个人使用视角为主，设置中心只展示你实际可访问的入口，避免把平台配置暴露给无关角色。";
+});
+const settingsMenuGuideEntries = computed(() =>
+  settingsCenterItems.value.map((item) => ({
+    ...item,
+    intro:
+      SETTINGS_GUIDE_REASON_MAP[item.id] ||
+      item.desc ||
+      roleAccessNarrative.value,
+  })),
+);
+const chatTourSteps = computed(() => [
+  {
+    title: `${currentRoleLabel.value} 的使用引导`,
+    description:
+      "这是分步蒙层导览。看过一次或主动跳过后，本账号在当前角色下不会再自动弹出。",
+    target: () => resolveTourTarget(chatGuideButtonRef),
+    placement: "bottom-start",
+  },
+  {
+    title: hasSelectedProject.value
+      ? `${currentProjectLabel.value} 的主要能力入口`
+      : "先看当前对话工作台",
+    description: hasSelectedProject.value
+      ? "这里把当前项目的主入口集中在一起：继续 AI 对话、打开素材库、接入 MCP、补更新技能。要更新项目的前端、后端或数据库数据，通常就从这里进入并继续推进。"
+      : "这里是当前会话的主工作台。即使还没选项目，也可以先直接对话，再根据需要补项目、MCP 或技能资源。",
+    target: () => resolveTourTarget(chatContextBarRef),
+    placement: "bottom-start",
+  },
+  {
+    title: hasSelectedProject.value
+      ? `确认项目上下文：${currentProjectLabel.value}`
+      : hasAccessibleProjects.value
+        ? "先判断是否切到项目上下文"
+        : "当前先用通用对话",
+    description: hasSelectedProject.value
+      ? "当前项目已选中，后续提问、附件、员工和工具都会优先围绕这个项目组织。"
+      : hasAccessibleProjects.value
+        ? "如果问题依赖项目规则、成员或素材，先切到对应项目；纯泛化问题可以先直接开始。"
+        : "当前账号没有可访问项目时，也能先做通用对话，不会卡在项目选择上。",
+    target: () => resolveTourTarget(projectSwitcherRef),
+    placement: "right-start",
+  },
+  {
+    title: "直接下达任务，不要只给主题",
+    description:
+      "在输入框里优先写“目标 + 约束 + 预期结果”。如果你要更新项目前端、后端或数据库数据，直接把改动范围、接口/表、预期结果写清楚，AI 更容易一次给到可执行输出。",
+    target: () => resolveTourTarget(chatComposerRef),
+    placement: "top",
+  },
+  {
+    title: "需要收束结果时进入设置中心",
+    description:
+      "当你要调整执行员工、系统提示词、模型参数或工具预算时，从这里进入设置中心。那里会按你当前角色只展示真正可用的菜单。",
+    target: () => resolveTourTarget(chatSettingsButtonRef),
+    placement: "left",
+  },
+]);
+const settingsTourStepsResolved = computed(() => [
+  {
+    title: `${currentRoleLabel.value} 的菜单导览`,
+    description:
+      "这是按当前角色权限生成的分步导览。跳过或完成后，本账号在当前角色下不会再自动弹出。",
+    target: () => resolveTourTarget(settingsGuideButtonRef),
+    placement: "bottom-start",
+  },
+  {
+    title: "左侧只显示你真正能访问的菜单",
+    description: roleAccessNarrative.value,
+    target: () => resolveTourTarget(settingsSidebarRef),
+    placement: "right-start",
+  },
+  ...settingsMenuGuideEntries.value.map((item) => ({
+    title:
+      item.kind === "internal"
+        ? `${item.label}：当前项目会话配置`
+        : `${item.label}：菜单用途`,
+    description: item.intro,
+    target: () => resolveTourTarget(settingsSidebarRef),
+    placement: "right-start",
+  })),
+  {
+    title: "先在这里改当前对话，再去平台页面",
+    description:
+      "建议先完成当前项目对话设置，再进入其他平台菜单。改完后回到 AI 对话立即验证，最容易看出配置是否真的生效。",
+    target: () => resolveTourTarget(settingsMainCardRef),
+    placement: "left-start",
+  },
+  {
+    title: "需要重新看导览时，从这里再次打开",
+    description:
+      "导览不会反复自动打扰你；只有手动点击“菜单导览”时，才会重新播放。",
+    target: () => resolveTourTarget(settingsContextBarRef),
+    placement: "bottom",
+  },
+]);
 const selectedEmployeeSummary = computed(() => {
   const selectedCount = Array.isArray(selectedEmployeeIds.value)
     ? selectedEmployeeIds.value.length
@@ -6932,6 +7177,12 @@ function syncSettingsRouteState() {
     null;
   if (!matched) return;
   activeSettingsPanel.value = matched.id;
+  if (matched.id !== requestedPanel) {
+    const targetPath = buildChatSettingsRoute(matched.path || "/chat");
+    if (route.path !== targetPath) {
+      void router.replace(targetPath);
+    }
+  }
 }
 
 function openSettingsCenter(panelId = "chat") {
@@ -6944,6 +7195,49 @@ function openSettingsCenter(panelId = "chat") {
 
 function closeSettingsCenter() {
   void router.push(CHAT_BASE_ROUTE_PATH);
+}
+
+async function startChatTour(force = false) {
+  const username = currentUsername.value;
+  const roleId = currentRoleId.value;
+  if (!force && hasSeenGuideTour("chat", username, roleId)) return;
+  settingsTourVisible.value = false;
+  chatTourCurrent.value = 0;
+  await nextTick();
+  chatTourVisible.value = true;
+}
+
+async function startSettingsTour(force = false) {
+  const username = currentUsername.value;
+  const roleId = currentRoleId.value;
+  if (!force && hasSeenGuideTour("settings", username, roleId)) return;
+  chatTourVisible.value = false;
+  if (!isSettingsCenterRoute.value || activeSettingsPanel.value !== "chat") {
+    await router.push(buildChatSettingsRoute("/chat"));
+  }
+  settingsTourCurrent.value = 0;
+  await nextTick();
+  settingsTourVisible.value = true;
+}
+
+function handleChatTourClose() {
+  chatTourVisible.value = false;
+  markGuideTourSeen("chat", currentUsername.value, currentRoleId.value);
+}
+
+function handleChatTourFinish() {
+  chatTourVisible.value = false;
+  markGuideTourSeen("chat", currentUsername.value, currentRoleId.value);
+}
+
+function handleSettingsTourClose() {
+  settingsTourVisible.value = false;
+  markGuideTourSeen("settings", currentUsername.value, currentRoleId.value);
+}
+
+function handleSettingsTourFinish() {
+  settingsTourVisible.value = false;
+  markGuideTourSeen("settings", currentUsername.value, currentRoleId.value);
 }
 
 function handleProjectCommand(projectId) {
@@ -7200,6 +7494,20 @@ function syncProjectFromRoute() {
     return;
   }
   clearSelectedProjectState();
+}
+
+async function handleProjectCreated(event) {
+  const createdProjectId = String(event?.detail?.projectId || "").trim();
+  await fetchProjects();
+  const nextProjectId = resolveAvailableProjectId(
+    createdProjectId || localStorage.getItem("project_id") || "",
+  );
+  if (!nextProjectId) return;
+  if (nextProjectId === String(selectedProjectId.value || "").trim()) {
+    localStorage.setItem("project_id", nextProjectId);
+    return;
+  }
+  selectedProjectId.value = nextProjectId;
 }
 
 async function fetchProvidersByProject(projectId) {
@@ -9341,8 +9649,13 @@ watch(
 
 watch(
   () => isSettingsCenterRoute.value,
-  (visible) => {
-    if (!visible) return;
+  async (visible) => {
+    if (!visible) {
+      settingsTourVisible.value = false;
+      return;
+    }
+    await nextTick();
+    void startSettingsTour(false);
   },
   { immediate: true },
 );
@@ -9461,6 +9774,7 @@ watch(
 
 onMounted(async () => {
   loading.value = true;
+  window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   try {
     await Promise.all([
       fetchSystemConfig(),
@@ -9478,11 +9792,16 @@ onMounted(async () => {
   } finally {
     loading.value = false;
   }
+  await nextTick();
+  if (!isSettingsCenterRoute.value) {
+    void startChatTour(false);
+  }
   syncProjectSwitcherMenuWidth();
   window.addEventListener("resize", syncProjectSwitcherMenuWidth);
 });
 
 onUnmounted(() => {
+  window.removeEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.removeEventListener("resize", syncProjectSwitcherMenuWidth);
   if (connectorPollTimer !== null) {
     clearInterval(connectorPollTimer);
@@ -10438,6 +10757,12 @@ onUnmounted(() => {
   color: #374151 !important;
   font-weight: 600;
   box-shadow: none !important;
+  transition:
+    transform 0.22s ease,
+    box-shadow 0.22s ease,
+    border-color 0.22s ease,
+    background-position 0.32s ease,
+    color 0.22s ease;
 }
 
 .settings-summary-sync-button:hover {
@@ -10448,14 +10773,28 @@ onUnmounted(() => {
 
 .settings-summary-sync-button--hero {
   border-color: transparent !important;
-  background: linear-gradient(180deg, #0f172a, #1e293b) !important;
+  background:
+    linear-gradient(
+      135deg,
+      #020617 0%,
+      #0f172a 34%,
+      #1e293b 68%,
+      #0f766e 100%
+    ) !important;
+  background-size: 180% 180% !important;
+  background-position: 0% 50% !important;
   color: #fff !important;
   box-shadow: 0 18px 28px rgba(15, 23, 42, 0.14) !important;
 }
 
 .settings-summary-sync-button--hero:hover {
   border-color: transparent !important;
+  background-position: 100% 50% !important;
   color: #fff !important;
+  transform: translateY(-1px);
+  box-shadow:
+    0 24px 36px rgba(15, 23, 42, 0.18),
+    0 0 0 1px rgba(125, 211, 252, 0.18) !important;
 }
 
 .settings-chat-layout,
