@@ -7,7 +7,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.deps import ensure_any_permission, is_admin_like, project_store, require_auth, role_store, user_store
-from models.requests import UserCreateReq, UserPasswordUpdateReq, UserSettingsUpdateReq
+from models.requests import UserCreateReq, UserPasswordUpdateReq, UserSettingsUpdateReq, UserUpdateReq
 from core.role_permissions import has_permission
 from services.llm_provider_service import get_llm_provider_service
 from stores.json.user_store import User, hash_password
@@ -32,6 +32,31 @@ def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
         raise HTTPException(403, f"Permission denied: {permission_key}")
 
 
+def _current_username(auth_payload: dict) -> str:
+    return _sanitize_username(str(auth_payload.get("sub") or ""))
+
+
+def _ensure_self_or_permission(auth_payload: dict, target_username: str, permission_key: str) -> None:
+    if _current_username(auth_payload) == target_username:
+        return
+    _ensure_permission(auth_payload, permission_key)
+
+
+def _sanitize_password(value: str) -> str:
+    password = str(value or "")
+    if len(password) < 6:
+        raise HTTPException(400, "Password must be >= 6 chars")
+    return password
+
+
+def _sanitize_role(value: str) -> tuple[str, object]:
+    role = str(value or "user").strip().lower()
+    role_item = role_store.get(role)
+    if role_item is None:
+        raise HTTPException(400, f"Role not found: {role}")
+    return role, role_item
+
+
 @router.get("")
 async def list_users(auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.users")
@@ -42,6 +67,7 @@ async def list_users(auth_payload: dict = Depends(require_auth)):
             "username": user.username,
             "role": user.role,
             "role_name": getattr(roles.get(user.role), "name", user.role),
+            "created_by": str(getattr(user, "created_by", "") or "").strip(),
             "created_at": user.created_at,
         }
         for user in users
@@ -131,6 +157,7 @@ async def update_current_user_settings(
         password_hash=user.password_hash,
         role=user.role,
         default_ai_provider_id=provider_id,
+        created_by=user.created_by,
         created_at=user.created_at,
     )
     user_store.save(updated)
@@ -149,18 +176,15 @@ async def update_current_user_settings(
 async def create_user(req: UserCreateReq, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "button.users.create")
     username = _sanitize_username(req.username)
-    if len(req.password or "") < 6:
-        raise HTTPException(400, "Password must be >= 6 chars")
-    role = str(req.role or "user").strip().lower()
-    role_item = role_store.get(role)
-    if role_item is None:
-        raise HTTPException(400, f"Role not found: {role}")
+    password = _sanitize_password(req.password)
+    role, role_item = _sanitize_role(req.role)
     if user_store.get(username) is not None:
         raise HTTPException(409, "Username already exists")
     user = User(
         username=username,
-        password_hash=hash_password(req.password),
+        password_hash=hash_password(password),
         role=role,
+        created_by=str(auth_payload.get("sub") or "").strip(),
     )
     user_store.save(user)
     return {
@@ -174,22 +198,60 @@ async def create_user(req: UserCreateReq, auth_payload: dict = Depends(require_a
     }
 
 
+@router.put("/{username}")
+async def update_user(username: str, req: UserUpdateReq, auth_payload: dict = Depends(require_auth)):
+    normalized_username = _sanitize_username(username)
+    current_username = _current_username(auth_payload)
+    _ensure_self_or_permission(auth_payload, normalized_username, "button.users.update")
+    existing = user_store.get(normalized_username)
+    if existing is None:
+        raise HTTPException(404, "User not found")
+    requested_role = str(req.role or "").strip().lower()
+    if normalized_username == current_username:
+        if requested_role and requested_role != existing.role:
+            raise HTTPException(400, "Cannot change current login user role")
+        role, role_item = _sanitize_role(existing.role)
+    else:
+        role, role_item = _sanitize_role(req.role)
+    password_hash = existing.password_hash
+    next_password = str(req.password or "")
+    if next_password.strip():
+        password_hash = hash_password(_sanitize_password(next_password))
+    updated = User(
+        username=existing.username,
+        password_hash=password_hash,
+        role=role,
+        default_ai_provider_id=existing.default_ai_provider_id,
+        created_by=existing.created_by,
+        created_at=existing.created_at,
+    )
+    user_store.save(updated)
+    return {
+        "status": "updated",
+        "user": {
+            "username": updated.username,
+            "role": updated.role,
+            "role_name": role_item.name,
+            "created_by": str(updated.created_by or "").strip(),
+            "created_at": updated.created_at,
+        },
+    }
+
+
 @router.put("/{username}/password")
 async def update_password(username: str, req: UserPasswordUpdateReq, auth_payload: dict = Depends(require_auth)):
     normalized_username = _sanitize_username(username)
-    if len(req.password or "") < 6:
-        raise HTTPException(400, "Password must be >= 6 chars")
-    current_username = _sanitize_username(str(auth_payload.get("sub") or ""))
-    if current_username != normalized_username:
-        _ensure_permission(auth_payload, "button.users.update_password")
+    password = _sanitize_password(req.password)
+    _ensure_self_or_permission(auth_payload, normalized_username, "button.users.update_password")
     existing = user_store.get(normalized_username)
     if existing is None:
         raise HTTPException(404, "User not found")
     updated = User(
         username=existing.username,
-        password_hash=hash_password(req.password),
+        password_hash=hash_password(password),
         role=existing.role,
         default_ai_provider_id=existing.default_ai_provider_id,
+        created_by=existing.created_by,
         created_at=existing.created_at,
     )
     user_store.save(updated)

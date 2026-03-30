@@ -153,7 +153,7 @@ class LlmProviderStorePostgres:
         params: list[Any] = []
         if enabled_only:
             sql += " WHERE enabled = TRUE"
-        sql += " ORDER BY updated_at DESC"
+        sql += " ORDER BY created_at DESC, updated_at DESC"
         with self._conn.cursor() as cur:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()

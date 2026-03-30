@@ -211,6 +211,14 @@
                 :alt="row.title || row.id"
                 class="material-card__image"
               />
+              <video
+                v-else-if="resolveVideoUrl(row)"
+                :src="resolveVideoUrl(row)"
+                class="material-card__preview-video"
+                muted
+                playsinline
+                preload="metadata"
+              />
             </template>
             <div
               v-else-if="normalizeAssetType(row.asset_type, row) === 'audio'"
@@ -720,6 +728,8 @@ const filters = ref({
 });
 const form = ref(buildEmptyForm());
 const resolvingVideoDurationIds = new Set();
+const resolvingVideoCoverIds = new Set();
+const skippedVideoCoverIds = new Set();
 
 function buildEmptyForm() {
   return {
@@ -1130,6 +1140,93 @@ function extractVideoFrameBlob(file) {
   });
 }
 
+function extractVideoFrameBlobFromUrl(url) {
+  return new Promise((resolve, reject) => {
+    const sourceUrl = normalizeRenderableUrl(url)
+    if (!sourceUrl) {
+      reject(new Error('视频地址无效'))
+      return
+    }
+    const video = document.createElement('video')
+    video.preload = 'auto'
+    video.muted = true
+    video.playsInline = true
+    video.crossOrigin = 'anonymous'
+    video.src = sourceUrl
+
+    let settled = false
+    const finalize = (callback) => {
+      if (settled) return
+      settled = true
+      video.pause?.()
+      video.removeAttribute('src')
+      video.load?.()
+      callback()
+    }
+    const fail = () => finalize(() => reject(new Error('视频封面抽帧失败')))
+    const capture = () => {
+      const width = Number(video.videoWidth || 0)
+      const height = Number(video.videoHeight || 0)
+      if (!width || !height) {
+        fail()
+        return
+      }
+      const canvas = document.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      const context = canvas.getContext('2d')
+      if (!context) {
+        fail()
+        return
+      }
+      try {
+        context.drawImage(video, 0, 0, width, height)
+      } catch {
+        fail()
+        return
+      }
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            fail()
+            return
+          }
+          finalize(() => resolve(blob))
+        },
+        'image/jpeg',
+        0.9,
+      )
+    }
+    const captureAfterSeek = () => {
+      video.removeEventListener('seeked', captureAfterSeek)
+      capture()
+    }
+    video.addEventListener('error', fail, { once: true })
+    video.addEventListener(
+      'loadeddata',
+      () => {
+        const duration = Number(video.duration || 0)
+        const targetTime =
+          Number.isFinite(duration) && duration > 0.3
+            ? Math.min(0.2, Math.max(duration / 3, 0.1))
+            : 0
+        if (targetTime > 0) {
+          video.addEventListener('seeked', captureAfterSeek, { once: true })
+          try {
+            video.currentTime = targetTime
+          } catch {
+            video.removeEventListener('seeked', captureAfterSeek)
+            capture()
+          }
+          return
+        }
+        capture()
+      },
+      { once: true },
+    )
+  })
+}
+
 async function generateAutoCoverFromVideo(file) {
   const currentToken = videoCoverGenerationToken.value + 1;
   videoCoverGenerationToken.value = currentToken;
@@ -1398,6 +1495,60 @@ async function hydrateMissingVideoDurations(rows) {
   return Promise.all(
     rows.map((row) => hydrateVideoDurationForMaterial(row, currentProjectId)),
   );
+}
+
+async function persistGeneratedMaterialCover(row, currentProjectId) {
+  const materialId = String(row?.id || '').trim()
+  if (
+    !currentProjectId ||
+    !materialId ||
+    normalizeAssetType(row?.asset_type, row) !== 'video' ||
+    resolveStoredCoverPreviewUrl(row) ||
+    skippedVideoCoverIds.has(materialId) ||
+    resolvingVideoCoverIds.has(materialId)
+  ) {
+    return row
+  }
+  const videoUrl = resolveVideoUrl(row)
+  if (!videoUrl) return row
+  resolvingVideoCoverIds.add(materialId)
+  try {
+    const coverBlob = await extractVideoFrameBlobFromUrl(videoUrl)
+    const coverFile = new File([coverBlob], `${materialId}-cover.jpg`, {
+      type: 'image/jpeg',
+    })
+    const formData = new FormData()
+    formData.append('cover_file', coverFile)
+    formData.append('cover_mime_type', 'image/jpeg')
+    formData.append('cover_source', 'auto_frame')
+    const data = await api.post(
+      `/projects/${currentProjectId}/materials/${materialId}/cover`,
+      formData,
+    )
+    const nextItem = data?.item
+    if (nextItem?.id) {
+      materials.value = materials.value.map((item) =>
+        String(item?.id || '').trim() === materialId ? nextItem : item,
+      )
+      return nextItem
+    }
+    return row
+  } catch {
+    skippedVideoCoverIds.add(materialId)
+    return row
+  } finally {
+    resolvingVideoCoverIds.delete(materialId)
+  }
+}
+
+async function backfillMissingMaterialCovers(rows) {
+  const currentProjectId = String(projectId.value || '').trim()
+  if (!currentProjectId || !Array.isArray(rows) || !rows.length) {
+    return
+  }
+  await Promise.all(
+    rows.map((row) => persistGeneratedMaterialCover(row, currentProjectId)),
+  )
 }
 
 function canRenderVideoPreview(row) {
@@ -1710,7 +1861,8 @@ async function fetchMaterials() {
         asset_type: filters.value.assetType,
       },
     });
-    materials.value = await hydrateMissingVideoDurations(data.items || []);
+    const hydratedItems = await hydrateMissingVideoDurations(data.items || [])
+    materials.value = hydratedItems
     summary.value = data.summary || {
       total: 0,
       image_count: 0,
@@ -1718,6 +1870,7 @@ async function fetchMaterials() {
       video_count: 0,
       audio_count: 0,
     };
+    void backfillMissingMaterialCovers(hydratedItems)
     await autoFocusMaterialFromRoute();
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "加载素材失败");
@@ -2510,6 +2663,13 @@ onBeforeUnmount(() => {
 }
 
 .material-card__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.material-card__preview-video {
   width: 100%;
   height: 100%;
   object-fit: cover;

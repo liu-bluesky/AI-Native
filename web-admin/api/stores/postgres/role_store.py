@@ -47,6 +47,7 @@ class RoleStorePostgres:
                 "description": role.description,
                 "permissions": resolve_role_permissions(role.permissions, role_id),
                 "built_in": bool(role.built_in),
+                "created_by": str(role.created_by or "").strip(),
                 "created_at": created_at,
                 "updated_at": updated_at,
             },
@@ -77,7 +78,13 @@ class RoleStorePostgres:
     def list_all(self) -> list[RoleConfig]:
         self._ensure_defaults()
         with self._conn.cursor() as cur:
-            cur.execute("SELECT payload FROM roles ORDER BY id")
+            cur.execute(
+                """
+                SELECT payload
+                FROM roles
+                ORDER BY COALESCE(NULLIF(payload->>'created_at', '')::timestamptz, updated_at) DESC, id ASC
+                """
+            )
             rows = cur.fetchall()
         results: list[RoleConfig] = []
         for row in rows:

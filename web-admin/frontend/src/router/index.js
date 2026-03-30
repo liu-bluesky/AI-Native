@@ -65,6 +65,7 @@ const routes = [
         children: [
           { path: '', component: () => import('../views/projects/ProjectMaterialLibrary.vue') },
           { path: 'studio', component: () => import('../views/projects/ProjectShortFilmStudio.vue') },
+          { path: 'voices', component: () => import('../views/projects/ProjectVoiceLibrary.vue') },
           { path: 'works', component: () => import('../views/projects/ProjectWorksGallery.vue') },
         ],
       },

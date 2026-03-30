@@ -253,6 +253,31 @@ def normalize_dictionaries(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         return {}
 
+    def normalize_image_resolution_token(raw: object) -> str:
+        text = str(raw or "").strip()
+        if not text:
+            return ""
+        lowered = text.lower()
+        alias_map = {
+            "720p": "720x720",
+            "1080p": "1080x1080",
+            "fhd": "1080x1080",
+            "fullhd": "1080x1080",
+            "4k": "2160x2160",
+            "uhd": "2160x2160",
+            "2160p": "2160x2160",
+        }
+        if lowered in alias_map:
+            return alias_map[lowered]
+        if lowered.endswith("p") and lowered[:-1].isdigit():
+            base = lowered[:-1]
+            return f"{base}x{base}"
+        if "x" in lowered or "*" in lowered:
+            raw_width, _, raw_height = lowered.replace("*", "x").partition("x")
+            if raw_width.isdigit() and raw_height.isdigit():
+                return f"{int(raw_width)}x{int(raw_height)}"
+        return text
+
     normalized: dict[str, object] = {}
     for raw_key, raw_definition in value.items():
         dictionary_key = str(raw_key or "").strip()[:80]
@@ -265,13 +290,18 @@ def normalize_dictionaries(value: object) -> dict[str, object]:
             if not isinstance(raw_option, dict):
                 continue
             option_id = str(raw_option.get("id") or "").strip()[:80]
+            if dictionary_key == "llm_image_resolutions":
+                option_id = normalize_image_resolution_token(option_id)[:80]
             if not option_id or option_id in seen_option_ids:
                 continue
             seen_option_ids.add(option_id)
+            option_label = str(raw_option.get("label") or option_id).strip()[:120] or option_id
+            if dictionary_key == "llm_image_resolutions":
+                option_label = normalize_image_resolution_token(option_label)[:120] or option_id
             options.append(
                 {
                     "id": option_id,
-                    "label": str(raw_option.get("label") or option_id).strip()[:120] or option_id,
+                    "label": option_label,
                     "description": str(raw_option.get("description") or "").strip()[:500],
                     "chat_parameter_mode": str(raw_option.get("chat_parameter_mode") or "").strip()[:40],
                 }
@@ -279,11 +309,15 @@ def normalize_dictionaries(value: object) -> dict[str, object]:
             if len(options) >= 100:
                 break
 
+        default_value = str(raw_definition.get("default_value") or "").strip()[:80]
+        if dictionary_key == "llm_image_resolutions":
+            default_value = normalize_image_resolution_token(default_value)[:80]
+
         definition: dict[str, Any] = {
             "key": dictionary_key,
             "label": str(raw_definition.get("label") or "").strip()[:120],
             "description": str(raw_definition.get("description") or "").strip()[:500],
-            "default_value": str(raw_definition.get("default_value") or "").strip()[:80],
+            "default_value": default_value,
             "options": options,
         }
         normalized[dictionary_key] = definition
@@ -360,7 +394,10 @@ class SystemConfigStore:
         if not self._path.exists():
             return SystemConfig()
         data = json.loads(self._path.read_text(encoding="utf-8"))
-        return SystemConfig(**data)
+        config = SystemConfig(**data)
+        if asdict(config) != data:
+            self.save_global(config)
+        return config
 
     def save_global(self, config: SystemConfig) -> None:
         self._path.write_text(

@@ -37,6 +37,7 @@ class User:
     password_hash: str
     role: str = "admin"
     default_ai_provider_id: str = ""
+    created_by: str = ""
     created_at: str = field(default_factory=_now_iso)
 
 
@@ -61,6 +62,7 @@ class UserStore:
             "password_hash": user.password_hash,
             "role": user.role,
             "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
+            "created_by": str(user.created_by or "").strip(),
             "created_at": user.created_at,
         }
         self._path(user.username).write_text(
@@ -78,12 +80,13 @@ class UserStore:
 
     def list_all(self) -> list[User]:
         users: list[User] = []
-        for path in sorted(self._dir.glob("*.json")):
+        for path in self._dir.glob("*.json"):
             try:
                 data = json.loads(path.read_text())
                 users.append(self._to_user(data))
             except Exception:
                 continue
+        users.sort(key=lambda item: str(item.created_at or ""), reverse=True)
         return users
 
     def delete(self, username: str) -> bool:
@@ -99,5 +102,6 @@ class UserStore:
             password_hash=str(data.get("password_hash") or ""),
             role=str(data.get("role") or "user"),
             default_ai_provider_id=str(data.get("default_ai_provider_id") or "").strip(),
+            created_by=str(data.get("created_by") or "").strip(),
             created_at=str(data.get("created_at") or _now_iso()),
         )

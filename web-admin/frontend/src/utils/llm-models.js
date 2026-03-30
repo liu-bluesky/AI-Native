@@ -3,8 +3,25 @@ export const DEFAULT_MODEL_TYPE = 'text_generation'
 const CHAT_PARAMETER_FALLBACKS = {
   image_resolution: {
     dictionaryKey: 'llm_image_resolutions',
-    defaultValue: '1024x1024',
+    defaultValue: '1080x1080',
     valueType: 'string',
+    fallbackOptions: [
+      {
+        id: '720x720',
+        label: '720x720',
+        description: '固定尺寸基准值，后端会结合当前图片比例自动换算最终尺寸。',
+      },
+      {
+        id: '1080x1080',
+        label: '1080x1080',
+        description: '固定尺寸基准值，后端会结合当前图片比例自动换算最终尺寸。',
+      },
+      {
+        id: '2160x2160',
+        label: '2160x2160',
+        description: '固定尺寸基准值，后端会结合当前图片比例自动换算最终尺寸。',
+      },
+    ],
   },
   image_aspect_ratio: {
     dictionaryKey: 'llm_image_aspect_ratios',
@@ -102,6 +119,17 @@ export function getChatParameterDictionaryKey(parameterKey) {
 }
 
 export function getChatParameterFallbackOptions(parameterKey) {
+  const config = getChatParameterConfig(parameterKey)
+  const fallbackOptions = Array.isArray(config.fallbackOptions)
+    ? config.fallbackOptions
+    : []
+  if (fallbackOptions.length) {
+    return fallbackOptions.map((item) => ({
+      id: String(item?.id || '').trim(),
+      label: String(item?.label || item?.id || '').trim(),
+      description: String(item?.description || '').trim(),
+    })).filter((item) => item.id)
+  }
   const defaultValue = getChatParameterDefaultValue(parameterKey)
   return [
     {

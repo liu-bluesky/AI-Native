@@ -929,6 +929,8 @@ class LlmProviderService:
             return f"{base}/chat/completions"
         if base.endswith("/openai"):
             return f"{base}/chat/completions"
+        if base.endswith("/api/paas/v4"):
+            return f"{base}/chat/completions"
         return f"{base}/v1/chat/completions"
 
     @staticmethod
@@ -939,6 +941,8 @@ class LlmProviderService:
         if base.endswith("/v1"):
             return f"{base}/responses"
         if base.endswith("/openai"):
+            return f"{base}/responses"
+        if base.endswith("/api/paas/v4"):
             return f"{base}/responses"
         if base.endswith("/chat/completions"):
             return f"{base[:-len('/chat/completions')]}/responses"
@@ -953,9 +957,647 @@ class LlmProviderService:
             return f"{base}/models"
         if base.endswith("/openai"):
             return f"{base}/models"
+        if base.endswith("/api/paas/v4"):
+            return f"{base}/models"
         if base.endswith("/chat/completions"):
             return f"{base[:-len('/chat/completions')]}/models"
         return f"{base}/v1/models"
+
+    @staticmethod
+    def _build_images_generation_url(base_url: str) -> str:
+        base = str(base_url or "").strip().rstrip("/")
+        if base.endswith("/images/generations"):
+            return base
+        if base.endswith("/v1"):
+            return f"{base}/images/generations"
+        if base.endswith("/openai"):
+            return f"{base}/images/generations"
+        if base.endswith("/api/paas/v4"):
+            return f"{base}/images/generations"
+        return f"{base}/v1/images/generations"
+
+    @staticmethod
+    def _build_videos_generation_url(base_url: str) -> str:
+        base = str(base_url or "").strip().rstrip("/")
+        if base.endswith("/videos/generations"):
+            return base
+        if base.endswith("/v1"):
+            return f"{base}/videos/generations"
+        if base.endswith("/openai"):
+            return f"{base}/videos/generations"
+        if base.endswith("/api/paas/v4"):
+            return f"{base}/videos/generations"
+        return f"{base}/v1/videos/generations"
+
+    @staticmethod
+    def _build_audio_speech_url(base_url: str) -> str:
+        base = str(base_url or "").strip().rstrip("/")
+        if base.endswith("/audio/speech"):
+            return base
+        if base.endswith("/v1"):
+            return f"{base}/audio/speech"
+        if base.endswith("/openai"):
+            return f"{base}/audio/speech"
+        if base.endswith("/api/paas/v4"):
+            return f"{base}/audio/speech"
+        return f"{base}/v1/audio/speech"
+
+    @staticmethod
+    def _build_voice_list_url(base_url: str) -> str:
+        base = str(base_url or "").strip().rstrip("/")
+        if base.endswith("/voice/list"):
+            return base
+        if base.endswith("/api/paas/v4"):
+            return f"{base}/voice/list"
+        if base.endswith("/v1"):
+            return f"{base[:-len('/v1')]}/voice/list"
+        return f"{base}/voice/list"
+
+    @staticmethod
+    def _build_voice_clone_url(base_url: str) -> str:
+        base = str(base_url or "").strip().rstrip("/")
+        if base.endswith("/voice/clone"):
+            return base
+        if base.endswith("/api/paas/v4"):
+            return f"{base}/voice/clone"
+        if base.endswith("/v1"):
+            return f"{base[:-len('/v1')]}/voice/clone"
+        return f"{base}/voice/clone"
+
+    @staticmethod
+    def _build_voice_delete_url(base_url: str) -> str:
+        base = str(base_url or "").strip().rstrip("/")
+        if base.endswith("/voice/delete"):
+            return base
+        if base.endswith("/api/paas/v4"):
+            return f"{base}/voice/delete"
+        if base.endswith("/v1"):
+            return f"{base[:-len('/v1')]}/voice/delete"
+        return f"{base}/voice/delete"
+
+    @staticmethod
+    def _build_files_url(base_url: str) -> str:
+        base = str(base_url or "").strip().rstrip("/")
+        if base.endswith("/files"):
+            return base
+        if base.endswith("/api/paas/v4"):
+            return f"{base}/files"
+        if base.endswith("/v1"):
+            return f"{base[:-len('/v1')]}/files"
+        return f"{base}/files"
+
+    @staticmethod
+    def _build_async_result_url(base_url: str, request_id: str) -> str:
+        base = str(base_url or "").strip().rstrip("/")
+        normalized_request_id = str(request_id or "").strip()
+        if not base or not normalized_request_id:
+            return ""
+        if base.endswith("/async-result"):
+            return f"{base}/{normalized_request_id}"
+        if base.endswith("/v1"):
+            return f"{base[:-len('/v1')]}/async-result/{normalized_request_id}"
+        return f"{base}/async-result/{normalized_request_id}"
+
+    @staticmethod
+    def _is_bigmodel_provider(provider: dict[str, Any]) -> bool:
+        base = str(provider.get("base_url") or "").strip().lower()
+        return "bigmodel.cn" in base and "/api/paas/v4" in base
+
+    @staticmethod
+    def _looks_like_media_url(value: Any) -> bool:
+        text = str(value or "").strip()
+        return text.startswith(("http://", "https://", "data:"))
+
+    @classmethod
+    def _collect_named_values(cls, payload: Any, accepted_keys: set[str]) -> list[str]:
+        values: list[str] = []
+        seen: set[str] = set()
+
+        def visit(node: Any) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    normalized_key = str(key or "").strip().lower()
+                    if normalized_key in accepted_keys:
+                        if normalized_key == "b64_json":
+                            raw = str(value or "").strip()
+                            if raw:
+                                candidate = f"data:image/png;base64,{raw}"
+                                if candidate not in seen:
+                                    seen.add(candidate)
+                                    values.append(candidate)
+                            continue
+                        if cls._looks_like_media_url(value):
+                            candidate = str(value or "").strip()
+                            if candidate not in seen:
+                                seen.add(candidate)
+                                values.append(candidate)
+                            continue
+                    if isinstance(value, (dict, list)):
+                        visit(value)
+            elif isinstance(node, list):
+                for item in node:
+                    visit(item)
+
+        visit(payload)
+        return values
+
+    @classmethod
+    def _extract_image_artifacts_from_payload(
+        cls,
+        payload: dict[str, Any],
+        *,
+        provider_id: str,
+        model_name: str,
+    ) -> list[dict[str, Any]]:
+        image_urls = cls._collect_named_values(
+            payload,
+            {"url", "image_url", "content_url", "result_url", "b64_json"},
+        )
+        preview_urls = cls._collect_named_values(
+            payload,
+            {"preview_url", "thumbnail_url", "cover_url", "cover_image_url", "image_url", "url", "b64_json"},
+        )
+        artifacts: list[dict[str, Any]] = []
+        for index, content_url in enumerate(image_urls):
+            preview_url = preview_urls[index] if index < len(preview_urls) else content_url
+            artifacts.append(
+                {
+                    "asset_type": "image",
+                    "title": f"{model_name or provider_id} 图片 {index + 1}",
+                    "preview_url": preview_url,
+                    "content_url": content_url,
+                    "mime_type": "image/png" if content_url.startswith("data:image/") else "",
+                    "metadata": {
+                        "provider_id": provider_id,
+                        "model_name": model_name,
+                    },
+                }
+            )
+        return artifacts
+
+    @classmethod
+    def _extract_video_artifacts_from_payload(
+        cls,
+        payload: dict[str, Any],
+        *,
+        provider_id: str,
+        model_name: str,
+    ) -> list[dict[str, Any]]:
+        video_urls = cls._collect_named_values(
+            payload,
+            {"video_url", "content_url", "result_url", "url", "source_url"},
+        )
+        preview_urls = cls._collect_named_values(
+            payload,
+            {"cover_image_url", "cover_url", "thumbnail_url", "preview_url", "image_url"},
+        )
+        filtered_video_urls = [
+            item
+            for item in video_urls
+            if item.startswith("data:video/")
+            or any(item.lower().split("?", 1)[0].endswith(ext) for ext in (".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"))
+        ]
+        artifacts: list[dict[str, Any]] = []
+        for index, content_url in enumerate(filtered_video_urls):
+            preview_url = preview_urls[index] if index < len(preview_urls) else ""
+            artifacts.append(
+                {
+                    "asset_type": "video",
+                    "title": f"{model_name or provider_id} 视频 {index + 1}",
+                    "preview_url": preview_url,
+                    "content_url": content_url,
+                    "mime_type": "video/mp4",
+                    "metadata": {
+                        "provider_id": provider_id,
+                        "model_name": model_name,
+                    },
+                }
+            )
+        return artifacts
+
+    @staticmethod
+    def _extract_error_message(payload: dict[str, Any]) -> str:
+        error = payload.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("code") or "").strip()
+        if isinstance(error, str):
+            return error.strip()
+        return str(payload.get("message") or payload.get("detail") or payload.get("task_status") or "").strip()
+
+    @staticmethod
+    def _normalize_bigmodel_video_size(aspect_ratio: str) -> str:
+        normalized = str(aspect_ratio or "").strip()
+        return {
+            "16:9": "1920x1080",
+            "9:16": "1080x1920",
+            "1:1": "1024x1024",
+            "4:3": "1440x1080",
+            "3:4": "1080x1440",
+        }.get(normalized, "1920x1080")
+
+    def _poll_async_media_result(
+        self,
+        provider: dict[str, Any],
+        request_id: str,
+        *,
+        provider_id: str,
+        model_name: str,
+        asset_type: str,
+        timeout_sec: int = 180,
+        poll_interval_sec: int = 3,
+    ) -> list[dict[str, Any]]:
+        endpoint = self._build_async_result_url(str(provider.get("base_url") or ""), request_id)
+        if not endpoint:
+            raise RuntimeError("provider async result endpoint is empty")
+        headers = self._build_headers(provider)
+        deadline = time.monotonic() + max(15, timeout_sec)
+        last_payload: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            last_payload = self._request_json("GET", endpoint, headers, timeout=30)
+            artifacts = (
+                self._extract_video_artifacts_from_payload(last_payload, provider_id=provider_id, model_name=model_name)
+                if asset_type == "video"
+                else self._extract_image_artifacts_from_payload(last_payload, provider_id=provider_id, model_name=model_name)
+            )
+            if artifacts:
+                return artifacts
+            task_status = str(
+                last_payload.get("task_status")
+                or last_payload.get("status")
+                or last_payload.get("state")
+                or ""
+            ).strip().upper()
+            if task_status in {"SUCCESS", "SUCCEEDED", "FAILED", "FAILURE", "ERROR", "CANCELED", "CANCELLED"}:
+                break
+            time.sleep(max(1, poll_interval_sec))
+        error_message = self._extract_error_message(last_payload) or f"{asset_type} generation timed out"
+        raise RuntimeError(error_message)
+
+    def _generate_media_artifacts_sync(
+        self,
+        provider: dict[str, Any],
+        *,
+        provider_id: str,
+        model_name: str,
+        prompt: str,
+        image_urls: list[str] | None = None,
+        image_size: str = "",
+        video_aspect_ratio: str = "",
+        video_duration_seconds: int | None = None,
+    ) -> list[dict[str, Any]]:
+        model_config = self.get_model_config(provider, model_name) or {}
+        parameter_mode = str(model_config.get("chat_parameter_mode") or "text").strip().lower()
+        if parameter_mode == "image":
+            endpoint = self._build_images_generation_url(str(provider.get("base_url") or ""))
+            normalized_image_urls = [
+                str(item or "").strip()
+                for item in (image_urls or [])
+                if str(item or "").strip()
+            ]
+            effective_prompt = str(prompt or "").strip()
+            if normalized_image_urls:
+                effective_prompt = (
+                    f"{effective_prompt}\n\n"
+                    f"参考图输入：当前已提供 {len(normalized_image_urls)} 张角色参考图，请尽量保持同一人物形象、服装与发型一致。"
+                ).strip()
+            body = {
+                "model": model_name,
+                "prompt": effective_prompt,
+            }
+            if str(image_size or "").strip():
+                body["size"] = str(image_size or "").strip()
+            if normalized_image_urls and not self._is_bigmodel_provider(provider):
+                body["image_urls"] = normalized_image_urls
+            payload = self._request_json("POST", endpoint, self._build_headers(provider), body=body, timeout=120)
+            artifacts = self._extract_image_artifacts_from_payload(payload, provider_id=provider_id, model_name=model_name)
+            if artifacts:
+                return artifacts
+            request_id = str(payload.get("request_id") or payload.get("id") or "").strip()
+            if request_id:
+                return self._poll_async_media_result(
+                    provider,
+                    request_id,
+                    provider_id=provider_id,
+                    model_name=model_name,
+                    asset_type="image",
+                    timeout_sec=120,
+                    poll_interval_sec=2,
+                )
+            raise RuntimeError(self._extract_error_message(payload) or "image generation returned no artifact")
+
+        if parameter_mode == "video":
+            endpoint = self._build_videos_generation_url(str(provider.get("base_url") or ""))
+            body = {
+                "model": model_name,
+                "prompt": prompt,
+                "size": self._normalize_bigmodel_video_size(video_aspect_ratio),
+            }
+            if video_duration_seconds:
+                body["duration"] = int(video_duration_seconds)
+            payload = self._request_json("POST", endpoint, self._build_headers(provider), body=body, timeout=60)
+            artifacts = self._extract_video_artifacts_from_payload(payload, provider_id=provider_id, model_name=model_name)
+            if artifacts:
+                return artifacts
+            request_id = str(payload.get("request_id") or payload.get("id") or "").strip()
+            if request_id:
+                return self._poll_async_media_result(
+                    provider,
+                    request_id,
+                    provider_id=provider_id,
+                    model_name=model_name,
+                    asset_type="video",
+                    timeout_sec=240,
+                    poll_interval_sec=5,
+                )
+            raise RuntimeError(self._extract_error_message(payload) or "video generation returned no artifact")
+
+        raise ValueError(f"model {model_name} is not an image/video generation model")
+
+    async def generate_media_artifacts(
+        self,
+        provider_id: str,
+        model_name: str,
+        prompt: str,
+        *,
+        owner_username: str = "",
+        include_all: bool = False,
+        image_urls: list[str] | None = None,
+        image_size: str = "",
+        video_aspect_ratio: str = "",
+        video_duration_seconds: int | None = None,
+    ) -> list[dict[str, Any]]:
+        provider = self.get_provider_raw(
+            provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+            include_shared=True,
+        )
+        if provider is None:
+            raise LookupError(f"LLM provider {provider_id} not found")
+        if not bool(provider.get("enabled", True)):
+            raise ValueError(f"LLM provider {provider_id} is disabled")
+        chosen_model = str(model_name or "").strip() or self._pick_default_model(provider)
+        if not chosen_model:
+            raise ValueError("model_name is required")
+        return await run_in_threadpool(
+            self._generate_media_artifacts_sync,
+            provider,
+            provider_id=provider_id,
+            model_name=chosen_model,
+            prompt=str(prompt or "").strip(),
+            image_urls=[str(item or "").strip() for item in (image_urls or []) if str(item or "").strip()],
+            image_size=str(image_size or "").strip(),
+            video_aspect_ratio=str(video_aspect_ratio or "").strip(),
+            video_duration_seconds=video_duration_seconds,
+        )
+
+    def _list_audio_voices_sync(self, provider: dict[str, Any]) -> list[dict[str, Any]]:
+        if not self._is_bigmodel_provider(provider):
+            raise ValueError("当前仅支持智谱 BigModel 音色列表接口")
+        payload = self._request_json(
+            "GET",
+            self._build_voice_list_url(str(provider.get("base_url") or "")),
+            self._build_headers(provider),
+            timeout=30,
+        )
+        items = payload.get("voice_list")
+        if not isinstance(items, list):
+            return []
+        voices: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            voice_id = str(item.get("voice") or "").strip()
+            if not voice_id:
+                continue
+            voices.append(
+                {
+                    "voice": voice_id,
+                    "voice_name": str(item.get("voice_name") or voice_id).strip(),
+                    "voice_type": str(item.get("voice_type") or "").strip(),
+                    "download_url": str(item.get("download_url") or "").strip(),
+                    "create_time": str(item.get("create_time") or "").strip(),
+                }
+            )
+        return voices
+
+    def _create_audio_voice_clone_sync(
+        self,
+        provider: dict[str, Any],
+        *,
+        model_name: str,
+        voice_name: str,
+        input_text: str,
+        transcript_text: str,
+        sample_file_path: str,
+        sample_filename: str,
+        sample_mime_type: str = "",
+    ) -> dict[str, Any]:
+        if not self._is_bigmodel_provider(provider):
+            raise ValueError("当前仅支持智谱 BigModel 音色复刻接口")
+        headers = self._build_headers(provider)
+        with open(sample_file_path, "rb") as handle:
+            upload_payload = self._request_multipart_json(
+                "POST",
+                self._build_files_url(str(provider.get("base_url") or "")),
+                headers,
+                files={
+                    "file": (
+                        sample_filename,
+                        handle,
+                        sample_mime_type or "application/octet-stream",
+                    ),
+                },
+                data={"purpose": "voice-clone-input"},
+                timeout=120,
+            )
+        uploaded_file_id = str(upload_payload.get("id") or "").strip()
+        if not uploaded_file_id:
+            raise RuntimeError("音色复刻示例音频上传失败")
+        request_id = f"voice-clone-{int(time.time() * 1000)}"
+        clone_payload = self._request_json(
+            "POST",
+            self._build_voice_clone_url(str(provider.get("base_url") or "")),
+            headers,
+            body={
+                "model": model_name,
+                "voice_name": voice_name,
+                "input": input_text,
+                "file_id": uploaded_file_id,
+                "text": transcript_text,
+                "request_id": request_id,
+            },
+            timeout=120,
+        )
+        voice_id = str(clone_payload.get("voice") or "").strip()
+        if not voice_id:
+            raise RuntimeError(self._extract_error_message(clone_payload) or "音色复刻失败")
+        return {
+            **clone_payload,
+            "input_file_id": uploaded_file_id,
+            "input_file_purpose": str(upload_payload.get("purpose") or "").strip(),
+        }
+
+    def _delete_audio_voice_sync(self, provider: dict[str, Any], voice_id: str) -> dict[str, Any]:
+        if not self._is_bigmodel_provider(provider):
+            raise ValueError("当前仅支持智谱 BigModel 删除音色接口")
+        return self._request_json(
+            "POST",
+            self._build_voice_delete_url(str(provider.get("base_url") or "")),
+            self._build_headers(provider),
+            body={
+                "voice": str(voice_id or "").strip(),
+                "request_id": f"voice-delete-{int(time.time() * 1000)}",
+            },
+            timeout=45,
+        )
+
+    def _generate_audio_speech_sync(
+        self,
+        provider: dict[str, Any],
+        *,
+        model_name: str,
+        text: str,
+        voice: str,
+        response_format: str,
+        speed: float,
+    ) -> dict[str, Any]:
+        raw, content_type = self._request_bytes(
+            "POST",
+            self._build_audio_speech_url(str(provider.get("base_url") or "")),
+            self._build_headers(provider),
+            body={
+                "model": model_name,
+                "input": text,
+                "voice": voice,
+                "response_format": response_format,
+                "speed": speed,
+            },
+            timeout=120,
+        )
+        if not raw:
+            raise RuntimeError("音频生成结果为空")
+        return {
+            "audio_bytes": raw,
+            "content_type": content_type or ("audio/wav" if response_format == "wav" else "audio/pcm"),
+        }
+
+    async def list_audio_voices(
+        self,
+        provider_id: str,
+        *,
+        owner_username: str = "",
+        include_all: bool = False,
+    ) -> list[dict[str, Any]]:
+        provider = self.get_provider_raw(
+            provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+            include_shared=True,
+        )
+        if provider is None:
+            raise LookupError(f"LLM provider {provider_id} not found")
+        if not bool(provider.get("enabled", True)):
+            raise ValueError(f"LLM provider {provider_id} is disabled")
+        return await run_in_threadpool(self._list_audio_voices_sync, provider)
+
+    async def create_audio_voice_clone(
+        self,
+        provider_id: str,
+        model_name: str,
+        *,
+        voice_name: str,
+        input_text: str,
+        transcript_text: str,
+        sample_file_path: str,
+        sample_filename: str,
+        sample_mime_type: str = "",
+        owner_username: str = "",
+        include_all: bool = False,
+    ) -> dict[str, Any]:
+        provider = self.get_provider_raw(
+            provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+            include_shared=True,
+        )
+        if provider is None:
+            raise LookupError(f"LLM provider {provider_id} not found")
+        if not bool(provider.get("enabled", True)):
+            raise ValueError(f"LLM provider {provider_id} is disabled")
+        chosen_model = str(model_name or "").strip() or self._pick_default_model(provider)
+        if not chosen_model:
+            raise ValueError("model_name is required")
+        return await run_in_threadpool(
+            self._create_audio_voice_clone_sync,
+            provider,
+            model_name=chosen_model,
+            voice_name=str(voice_name or "").strip(),
+            input_text=str(input_text or "").strip(),
+            transcript_text=str(transcript_text or "").strip(),
+            sample_file_path=str(sample_file_path or "").strip(),
+            sample_filename=str(sample_filename or "").strip(),
+            sample_mime_type=str(sample_mime_type or "").strip(),
+        )
+
+    async def delete_audio_voice(
+        self,
+        provider_id: str,
+        voice_id: str,
+        *,
+        owner_username: str = "",
+        include_all: bool = False,
+    ) -> dict[str, Any]:
+        provider = self.get_provider_raw(
+            provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+            include_shared=True,
+        )
+        if provider is None:
+            raise LookupError(f"LLM provider {provider_id} not found")
+        if not bool(provider.get("enabled", True)):
+            raise ValueError(f"LLM provider {provider_id} is disabled")
+        return await run_in_threadpool(
+            self._delete_audio_voice_sync,
+            provider,
+            str(voice_id or "").strip(),
+        )
+
+    async def generate_audio_speech(
+        self,
+        provider_id: str,
+        model_name: str,
+        *,
+        text: str,
+        voice: str,
+        response_format: str = "wav",
+        speed: float = 1.0,
+        owner_username: str = "",
+        include_all: bool = False,
+    ) -> dict[str, Any]:
+        provider = self.get_provider_raw(
+            provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+            include_shared=True,
+        )
+        if provider is None:
+            raise LookupError(f"LLM provider {provider_id} not found")
+        if not bool(provider.get("enabled", True)):
+            raise ValueError(f"LLM provider {provider_id} is disabled")
+        chosen_model = str(model_name or "").strip() or self._pick_default_model(provider)
+        if not chosen_model:
+            raise ValueError("model_name is required")
+        return await run_in_threadpool(
+            self._generate_audio_speech_sync,
+            provider,
+            model_name=chosen_model,
+            text=str(text or "").strip(),
+            voice=str(voice or "").strip(),
+            response_format=str(response_format or "wav").strip() or "wav",
+            speed=max(0.5, min(float(speed or 1.0), 2.0)),
+        )
 
     @staticmethod
     def _build_headers(provider: dict[str, Any]) -> dict[str, str]:
@@ -971,6 +1613,71 @@ class LlmProviderService:
                     continue
                 headers[name] = str(value or "").strip()
         return headers
+
+    @staticmethod
+    def _request_bytes(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any] | None = None,
+        timeout: int = 60,
+    ) -> tuple[bytes, str]:
+        try:
+            with requests.Session() as session:
+                session.trust_env = False
+                with session.request(
+                    method.upper(),
+                    url,
+                    headers=headers,
+                    json=body if body is not None else None,
+                    timeout=timeout,
+                ) as resp:
+                    raw = resp.content or b""
+                    if resp.status_code >= 400:
+                        text = raw.decode("utf-8", errors="ignore")
+                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {text[:300]}")
+                    return raw, str(resp.headers.get("Content-Type") or "").strip()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"LLM request failed: {exc}") from exc
+
+    @staticmethod
+    def _request_multipart_json(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        *,
+        files: dict[str, Any],
+        data: dict[str, Any] | None = None,
+        timeout: int = 60,
+    ) -> dict[str, Any]:
+        request_headers = {
+            key: value
+            for key, value in headers.items()
+            if str(key or "").strip().lower() != "content-type"
+        }
+        try:
+            with requests.Session() as session:
+                session.trust_env = False
+                with session.request(
+                    method.upper(),
+                    url,
+                    headers=request_headers,
+                    files=files,
+                    data=data or None,
+                    timeout=timeout,
+                ) as resp:
+                    raw = resp.text or ""
+                    if resp.status_code >= 400:
+                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {raw[:300]}")
+        except requests.RequestException as exc:
+            raise RuntimeError(f"LLM request failed: {exc}") from exc
+
+        if not raw.strip():
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"LLM response is not valid JSON: {raw[:300]}") from exc
 
     @staticmethod
     def _request_json(method: str, url: str, headers: dict[str, str], body: dict[str, Any] | None = None, timeout: int = 45) -> dict[str, Any]:
@@ -1043,6 +1750,19 @@ class LlmProviderService:
 
     @staticmethod
     def _extract_content(chat_payload: dict[str, Any]) -> str:
+        def _extract_text_parts(value: Any) -> str:
+            if isinstance(value, list):
+                parts: list[str] = []
+                for item in value:
+                    if isinstance(item, dict):
+                        text = str(item.get("text") or item.get("content") or "")
+                        if text:
+                            parts.append(text)
+                    else:
+                        parts.append(str(item))
+                return "".join(parts).strip()
+            return str(value or "").strip()
+
         output_text = str(chat_payload.get("output_text") or "").strip()
         if output_text:
             return output_text
@@ -1070,19 +1790,12 @@ class LlmProviderService:
             return ""
         delta = (choices[0] or {}).get("delta") or {}
         delta_content = delta.get("content")
-        if isinstance(delta_content, list):
-            parts: list[str] = []
-            for item in delta_content:
-                if isinstance(item, dict):
-                    text = str(item.get("text") or "")
-                    if text:
-                        parts.append(text)
-                else:
-                    parts.append(str(item))
-            if parts:
-                return "".join(parts).strip()
-        if isinstance(delta_content, str) and delta_content.strip():
-            return delta_content.strip()
+        delta_text = _extract_text_parts(delta_content)
+        if delta_text:
+            return delta_text
+        reasoning_text = _extract_text_parts(delta.get("reasoning_content"))
+        if reasoning_text:
+            return reasoning_text
         message = (choices[0] or {}).get("message") or {}
         content = message.get("content")
         if isinstance(content, list):
@@ -1096,7 +1809,10 @@ class LlmProviderService:
                 else:
                     parts.append(str(item))
             return "".join(parts).strip()
-        return str(content or "").strip()
+        message_text = str(content or "").strip()
+        if message_text:
+            return message_text
+        return _extract_text_parts(message.get("reasoning_content"))
 
     @staticmethod
     def _parse_sse_content(raw: str) -> str:

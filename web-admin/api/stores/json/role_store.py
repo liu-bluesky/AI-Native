@@ -22,6 +22,7 @@ class RoleConfig:
     description: str = ""
     permissions: list[str] = field(default_factory=list)
     built_in: bool = False
+    created_by: str = ""
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -95,10 +96,11 @@ class RoleStore:
     def list_all(self) -> list[RoleConfig]:
         self._ensure_defaults()
         roles: list[RoleConfig] = []
-        for path in sorted(self._dir.glob("*.json")):
+        for path in self._dir.glob("*.json"):
             data = json.loads(path.read_text(encoding="utf-8"))
             data["permissions"] = resolve_role_permissions(data.get("permissions"), data.get("id", ""))
             roles.append(RoleConfig(**data))
+        roles.sort(key=lambda item: str(item.created_at or ""), reverse=True)
         return roles
 
     def delete(self, role_id: str) -> bool:

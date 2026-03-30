@@ -9,8 +9,13 @@ from services.dictionary_catalog import get_dictionary_default_value, list_dicti
 _CHAT_PARAMETER_CONFIG: dict[str, dict[str, Any]] = {
     "image_resolution": {
         "dictionary_key": "llm_image_resolutions",
-        "fallback_default": "1024x1024",
+        "fallback_default": "1080x1080",
         "value_type": "str",
+        "builtin_options": [
+            {"id": "720x720", "label": "720x720"},
+            {"id": "1080x1080", "label": "1080x1080"},
+            {"id": "2160x2160", "label": "2160x2160"},
+        ],
     },
     "image_aspect_ratio": {
         "dictionary_key": "llm_image_aspect_ratios",
@@ -65,12 +70,23 @@ def _coerce_int(value: Any, fallback: int) -> int:
         return fallback
 
 
+def _builtin_parameter_options(config: dict[str, Any]) -> list[dict[str, Any]]:
+    options = config.get("builtin_options")
+    if not isinstance(options, list):
+        return []
+    return [dict(item) for item in options if isinstance(item, dict)]
+
+
 def get_chat_parameter_dictionary_key(setting_key: str) -> str:
     return str(_get_parameter_config(setting_key).get("dictionary_key") or "").strip()
 
 
 def list_chat_parameter_options(setting_key: str) -> list[dict[str, Any]]:
-    return [dict(item) for item in list_dictionary_options(get_chat_parameter_dictionary_key(setting_key))]
+    config = _get_parameter_config(setting_key)
+    options = [dict(item) for item in list_dictionary_options(get_chat_parameter_dictionary_key(setting_key))]
+    if options:
+        return options
+    return _builtin_parameter_options(config)
 
 
 def get_chat_parameter_default_value(setting_key: str) -> Any:

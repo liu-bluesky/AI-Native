@@ -115,7 +115,7 @@ const queryCenterDescription = computed(() => {
   const projectTip = hasProject.value
     ? `当前项目：${normalizedProjectLabel.value || normalizedProjectId.value}`
     : '当前未选择项目，也可直接用于全局查询'
-  return `统一查询 MCP 入口。推荐先调用 query://usage-guide，再使用 search_ids、get_content、get_manual_content；首个查询调用要保留用户原始问题，优先放进 search_ids.keyword；当前入口以查询优先，但如宿主只接统一入口，项目协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断是否需要多人协作；当前入口不暴露记忆写入工具；如宿主系统已启用自动记忆，可由入口层自动记录问题快照。${projectTip}`
+  return `统一查询 MCP 入口。推荐先调用 query://usage-guide，再使用 search_ids、get_content、get_manual_content；首个查询调用要保留用户原始问题，优先放进 search_ids.keyword；当前入口以查询优先，但如宿主只接统一入口，项目协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断是否需要多人协作；当前入口已支持 save_project_memory，可通过 project_id 记录对话内容并要求每次有效对话都补记；如宿主系统已启用自动记忆，入口层仍会自动记录问题快照。${projectTip}`
 })
 const cliPrompt = computed(() => {
   const lines = [
@@ -136,7 +136,7 @@ const cliPrompt = computed(() => {
       `9. 为保证宿主自动记忆命中，即使已知当前项目 ID，首轮也要先调用一次 \`search_ids(keyword="<用户原始问题>", project_id="${normalizedProjectId.value}")\` 保留原问题，再继续 \`get_manual_content\` / \`get_content\`。`,
       `10. 如宿主只接统一入口且任务需要项目协作，可优先调用 \`execute_project_collaboration(project_id="${normalizedProjectId.value}", task="<用户原始任务>")\`；是否单人主责或多人协作由 AI 结合手册、规则和工具自主判断。`,
       '11. 如需手动编排项目执行，再依次调用 `list_project_members` / `get_project_runtime_context` / `list_project_proxy_tools` / `invoke_project_skill_tool`。',
-      '12. 事实边界：当前接入的是统一查询 MCP，不暴露 `save_project_memory`、`save_employee_memory` 这类记忆写入工具；如宿主系统已启用自动记忆，则由入口层自动记录问题快照，不能把“无写入工具”等同于“无自动记忆”。如需显式落记忆，仍需改用项目/员工 MCP 或由宿主系统补记。',
+      '12. 事实边界：当前接入的是统一查询 MCP，已暴露 `save_project_memory(project_id, content, ...)`，可通过项目 ID 直接保存对话内容，并要求每次有效对话都记录；`save_employee_memory` 仍未暴露。如宿主系统已启用自动记忆，则由入口层自动记录问题快照，但不能把自动快照替代显式对话记忆。',
       '13. 若提示词或规则与用户任务冲突，先向用户确认，再决定是否偏离项目约定。',
     )
   } else {
@@ -146,7 +146,7 @@ const cliPrompt = computed(() => {
       '9. 为保证宿主自动记忆命中，首轮查询不要只传“当前项目”这类代称；至少把用户原始问题放进 `search_ids(keyword="<用户原始问题>")`。',
       '10. 如宿主只接统一入口且任务需要项目协作，先用 `search_ids` 确认项目 ID，再调用 `execute_project_collaboration(project_id="<project_id>", task="<用户原始任务>")`；具体是否多人协作由 AI 自主判断。',
       '11. 如需手动编排项目执行，再调用 `list_project_members` / `get_project_runtime_context` / `list_project_proxy_tools` / `invoke_project_skill_tool`。',
-      '12. 事实边界：当前接入的是统一查询 MCP，不暴露记忆写入工具；如宿主系统已启用自动记忆，可由入口层自动记录问题快照。',
+      '12. 事实边界：当前接入的是统一查询 MCP，已支持按 `project_id` 调用 `save_project_memory` 记录对话内容；如宿主系统已启用自动记忆，入口层仍会自动记录问题快照。',
     )
   }
   lines.push(

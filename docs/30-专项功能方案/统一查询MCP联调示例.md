@@ -144,6 +144,31 @@ curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
 - `executed_calls`：已自动执行的安全调用
 - `skipped_calls`：未自动执行的调用及原因
 
+### 4.4 通过项目 ID 显式保存对话内容
+
+```bash
+curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "tools/call",
+    "params": {
+      "name": "save_project_memory",
+      "arguments": {
+        "project_id": "proj-d16591a6",
+        "content": "问题：统一查询 MCP 需要支持按项目写入对话内容\n结论：调用 save_project_memory(project_id, content, ...) 每次有效对话补记一次"
+      }
+    }
+  }'
+```
+
+说明：
+
+- `project_id` 必填，用于定位项目与活跃成员。
+- `content` 必填，建议保存“问题 / 结论 / 关键决策”这种结构化文本。
+- 未传 `employee_id` 时，会按项目范围写入当前活跃成员，便于后续从项目记忆统一召回。
+
 ## 5. 需要手动编排时的回退链路
 
 如果你不想让统一入口自动编排，或者要自己控制参数，建议改用：
@@ -174,7 +199,8 @@ curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
 ## 6. 使用建议
 
 - 首轮查询一定保留用户原始问题，优先放进 `search_ids.keyword`。
+- 每次有效对话结束后，调用 `save_project_memory(project_id, content, ...)` 显式补记本轮对话内容。
 - 如宿主只接统一入口，项目协作型任务优先调用 `execute_project_collaboration`。
 - 不要把 `execute_project_collaboration` 理解成固定分工路由；它只是统一编排入口，具体协作方式由 AI 结合手册、规则和工具决定。
 - 如果宿主同时支持统一 MCP 和项目 MCP，复杂执行场景仍优先直连项目 MCP。
-- 统一查询 MCP 不暴露 `save_project_memory` / `save_employee_memory`；如需显式写记忆，改用项目 MCP 或员工 MCP。
+- 统一查询 MCP 已暴露 `save_project_memory`，可通过 `project_id` 直接写入项目对话内容；`save_employee_memory` 仍不暴露。

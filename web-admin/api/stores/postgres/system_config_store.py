@@ -34,7 +34,11 @@ class SystemConfigStorePostgres:
             row = cur.fetchone()
         if row is None:
             return SystemConfig()
-        return SystemConfig(**row["payload"])
+        payload = row["payload"] if isinstance(row["payload"], dict) else {}
+        config = SystemConfig(**payload)
+        if asdict(config) != payload:
+            self.save_global(config)
+        return config
 
     def save_global(self, config: SystemConfig) -> None:
         payload = json.dumps(asdict(config), ensure_ascii=False)

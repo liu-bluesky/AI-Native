@@ -90,6 +90,13 @@ const navItems = computed(() => [
     active: route.path === "/materials/studio",
   },
   {
+    key: "voices",
+    label: "音色模块",
+    note: "创建自定义音色",
+    path: "/materials/voices",
+    active: route.path === "/materials/voices",
+  },
+  {
     key: "works",
     label: "我的作品",
     note: "结果回看与整理",

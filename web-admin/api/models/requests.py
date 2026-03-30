@@ -33,6 +33,11 @@ class UserPasswordUpdateReq(BaseModel):
     password: str
 
 
+class UserUpdateReq(BaseModel):
+    role: str
+    password: str = ""
+
+
 class UserSettingsUpdateReq(BaseModel):
     default_ai_provider_id: str = ""
 
@@ -371,6 +376,39 @@ class ProjectStudioStoryboardGenerateReq(BaseModel):
     sfx: bool = False
     styles: list[str] = Field(default_factory=list)
     elements: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ProjectStudioVoiceGenerateReq(BaseModel):
+    provider_id: str = ""
+    model_name: str = ""
+    voice: str = ""
+    text: str = ""
+    title: str = ""
+    voice_record_id: str = ""
+    response_format: Literal["wav", "pcm"] = "wav"
+    speed: float = 1.0
+
+
+class ProjectStudioCharacterReferenceGenerateReq(BaseModel):
+    provider_id: str = ""
+    model_name: str = ""
+    prompt: str = ""
+    character_id: str = ""
+    character_name: str = ""
+    reference_image_urls: list[str] = Field(default_factory=list)
+    target_view: Literal["front", "back", "left", "right"] = "front"
+    generate_all_views: bool = False
+    image_size: str = "1024x1024"
+    image_style: str = "auto"
+    image_quality: str = "high"
+
+
+class ProjectStudioVoiceUpdateReq(BaseModel):
+    name: str | None = None
+    voice_id: str | None = None
+    description: str | None = None
+    preview_text: str | None = None
+    transcript_text: str | None = None
 
 
 class ProjectMemberAddReq(BaseModel):

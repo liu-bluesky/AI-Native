@@ -33,6 +33,7 @@ class UserStorePostgres:
             password_hash=str(payload.get("password_hash") or ""),
             role=str(payload.get("role") or "user"),
             default_ai_provider_id=str(payload.get("default_ai_provider_id") or "").strip(),
+            created_by=str(payload.get("created_by") or "").strip(),
             created_at=str(payload.get("created_at") or _now_iso()),
         )
 
@@ -43,6 +44,7 @@ class UserStorePostgres:
                 "password_hash": user.password_hash,
                 "role": user.role,
                 "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
+                "created_by": str(user.created_by or "").strip(),
                 "created_at": user.created_at,
             },
             ensure_ascii=False,
@@ -74,7 +76,13 @@ class UserStorePostgres:
 
     def list_all(self) -> list[User]:
         with self._conn.cursor() as cur:
-            cur.execute("SELECT payload FROM users ORDER BY username ASC")
+            cur.execute(
+                """
+                SELECT payload
+                FROM users
+                ORDER BY COALESCE(NULLIF(payload->>'created_at', '')::timestamptz, updated_at) DESC, username ASC
+                """
+            )
             rows = cur.fetchall() or []
         return [self._to_user(row["payload"]) for row in rows]
 

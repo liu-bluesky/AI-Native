@@ -188,13 +188,10 @@ def create_employee_mcp(
         project_name = str(project_name).strip()
 
         if query:
-            memories = memory_store.recall(employee.id, query, recall_limit)
+            memories = memory_store.recall(employee.id, query, recall_limit, project_name=project_name)
         else:
-            memories = memory_store.recent(employee.id, recall_limit)
-
-        # 按 project_name 过滤记忆
-        filtered = [m for m in memories if getattr(m, "project_name", "") == project_name]
-        return [serialize_memory(mem) for mem in filtered]
+            memories = memory_store.recent(employee.id, recall_limit, project_name=project_name)
+        return [serialize_memory(mem) for mem in memories]
 
     @mcp.tool()
     def save_employee_memory(

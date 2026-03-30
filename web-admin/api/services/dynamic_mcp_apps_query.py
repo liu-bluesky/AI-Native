@@ -20,6 +20,11 @@ from services.dynamic_mcp_profiles import (
     query_rules_by_employee,
 )
 from stores.mcp_bridge import (
+    Classification,
+    Memory,
+    MemoryScope,
+    MemoryType,
+    memory_store,
     rule_store,
     serialize_rule,
     serialize_skill,
@@ -248,6 +253,22 @@ def _search_rules(keyword: str, project_id: str, employee_id: str, limit: int) -
     return matches
 
 
+def _active_project_employee_ids(project_id: str) -> list[str]:
+    employee_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for member in project_store.list_members(project_id):
+        if not bool(getattr(member, "enabled", True)):
+            continue
+        employee_id = str(getattr(member, "employee_id", "") or "").strip()
+        if not employee_id or employee_id in seen_ids:
+            continue
+        if employee_store.get(employee_id) is None:
+            continue
+        seen_ids.add(employee_id)
+        employee_ids.append(employee_id)
+    return employee_ids
+
+
 def create_query_mcp():
     mcp = _new_mcp("query-center")
 
@@ -318,14 +339,15 @@ def create_query_mcp():
             "# Unified Query MCP\n\n"
             "- 统一入口路径: /mcp/query\n"
             "- 目标: 在保留现有员工/项目/规则 MCP 的前提下，提供一个聚合查询入口，并补充最常用的项目执行代理。\n"
-            "- 推荐工具: search_ids / get_content / get_manual_content\n"
+            "- 推荐工具: search_ids / get_content / get_manual_content / save_project_memory\n"
             "- 典型用法: 先 search_ids 找到目标 ID，再用 get_content 或 get_manual_content 取正文。\n"
             "- 记忆留痕: 首次查询必须把用户原始问题放进可检索字段，优先使用 search_ids(keyword=\"<用户原始问题>\")；不要只传“当前项目”“这个规则”之类代称。\n"
+            "- 记忆留痕: 每次有效对话结束后，可调用 save_project_memory(project_id, content, ...) 按项目 ID 显式保存对话内容或结构化结论。\n"
             "- 执行代理: 本入口默认仍以查询与聚合优先；如宿主只接统一入口，项目协作型任务可优先调用 execute_project_collaboration(project_id, task, ...)。\n"
             "- 执行代理: execute_project_collaboration 是统一编排入口，但是否单人主责、是否需要多人协作以及如何拆分，仍由 AI 结合项目手册、员工手册、规则和工具自主判断，不预设固定行业分工模板。\n"
             "- 执行代理: 若需要手动编排项目执行，再继续调用 list_project_members / get_project_runtime_context / list_project_proxy_tools / invoke_project_skill_tool。\n"
             "- 注意: 本入口仍以查询与聚合优先；如宿主支持多 MCP，复杂执行场景仍优先直连对应 project MCP。\n"
-            "- 记忆说明: 本入口不暴露 save_project_memory/save_employee_memory；如宿主系统已启用自动记忆，可在入口层自动记录问题快照。"
+            "- 记忆说明: 本入口已暴露 save_project_memory，可通过 project_id 直接写入项目对话内容；save_employee_memory 仍不暴露。如宿主系统已启用自动记忆，入口层仍会自动记录问题快照。"
         )
 
     @mcp.tool()
@@ -416,6 +438,76 @@ def create_query_mcp():
             "manual": payload.get("manual") or "",
             "manual_endpoint": f"/api/projects/{project_id_value}/manual-template",
             "mcp_path": f"/mcp/projects/{project_id_value}",
+        }
+
+    @mcp.tool()
+    def save_project_memory(
+        project_id: str,
+        content: str,
+        employee_id: str = "",
+        type: str = "project-context",
+        importance: float = 0.6,
+        project_name: str = "",
+    ) -> dict:
+        """通过统一入口按 project_id 写入项目对话或结论记忆。"""
+
+        project_id_value = str(project_id or "").strip()
+        employee_id_value = str(employee_id or "").strip()
+        content_value = str(content or "").strip()
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        if not content_value:
+            return {"error": "content is required"}
+
+        project = project_store.get(project_id_value)
+        if project is None:
+            return {"error": f"Project {project_id_value} not found"}
+
+        active_employee_ids = _active_project_employee_ids(project_id_value)
+        if not active_employee_ids:
+            return {"error": f"Project {project_id_value} has no active members"}
+        if employee_id_value and employee_id_value not in active_employee_ids:
+            return {"error": f"Employee {employee_id_value} is not an active project member"}
+
+        memory_type_value = str(type or "").strip() or "project-context"
+        try:
+            memory_type = MemoryType(memory_type_value)
+        except ValueError:
+            return {"error": f"Invalid type: {memory_type_value}. Valid: {[item.value for item in MemoryType]}"}
+        try:
+            importance_value = float(importance)
+        except (TypeError, ValueError):
+            return {"error": "importance must be a number"}
+        importance_value = max(0.0, min(1.0, importance_value))
+
+        normalized_project_name = str(project_name or "").strip() or str(getattr(project, "name", "") or "").strip() or "default"
+        target_employee_ids = [employee_id_value] if employee_id_value else active_employee_ids
+        memory_ids: list[str] = []
+        for target_employee_id in target_employee_ids:
+            memory = Memory(
+                id=memory_store.new_id(),
+                employee_id=target_employee_id,
+                type=memory_type,
+                content=content_value,
+                project_name=normalized_project_name,
+                importance=importance_value,
+                scope=MemoryScope.EMPLOYEE_PRIVATE,
+                classification=Classification.INTERNAL,
+                purpose_tags=("query-mcp", "manual-write", "project-id"),
+            )
+            memory_store.save(memory)
+            memory_ids.append(memory.id)
+
+        return {
+            "status": "saved",
+            "project_id": project_id_value,
+            "project_name": normalized_project_name,
+            "employee_ids": target_employee_ids,
+            "memory_ids": memory_ids,
+            "saved_count": len(memory_ids),
+            "type": memory_type.value,
+            "importance": importance_value,
+            "project_mcp_path": f"/mcp/projects/{project_id_value}",
         }
 
     @mcp.tool()

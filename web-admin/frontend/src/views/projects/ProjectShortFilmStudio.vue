@@ -197,7 +197,7 @@
                     placeholder="选择模型源"
                   >
                     <el-option
-                      v-for="option in studioModelProviderOptions"
+                      v-for="option in artModelProviderOptions"
                       :key="option.id"
                       :label="option.name"
                       :value="option.id"
@@ -368,7 +368,7 @@
                   placeholder="选择模型源"
                 >
                   <el-option
-                    v-for="option in studioModelProviderOptions"
+                    v-for="option in storyboardModelProviderOptions"
                     :key="option.id"
                     :label="option.name"
                     :value="option.id"
@@ -1036,18 +1036,39 @@
           </div>
           <div class="studio-voice-grid studio-voice-grid--character">
             <button
-              v-for="option in characterVoicePresets"
-              :key="option.value"
               type="button"
               class="studio-voice-card"
-              :class="{
-                'is-active': characterForm.voicePreset === option.value,
-              }"
-              @click="characterForm.voicePreset = option.value"
+              :class="{ 'is-active': !characterForm.voiceRecordId && !characterForm.voicePreset }"
+              @click="clearCharacterVoiceSelection"
             >
-              <span class="studio-voice-card__title">{{ option.label }}</span>
+              <span class="studio-voice-card__title">暂不绑定</span>
+              <span class="studio-voice-card__meta">
+                分镜阶段再为单个镜头单独选择旁白音色
+              </span>
+            </button>
+            <button
+              v-for="option in characterVoiceOptions"
+              :key="option.id"
+              type="button"
+              class="studio-voice-card"
+              :class="{ 'is-active': characterForm.voiceRecordId === option.id }"
+              @click="selectCharacterVoiceOption(option)"
+            >
+              <span class="studio-voice-card__title">{{ option.name }}</span>
               <span class="studio-voice-card__meta">{{ option.hint }}</span>
             </button>
+          </div>
+          <div
+            v-if="!loadingStudioProjectVoices && !characterVoiceOptions.length"
+            class="studio-inline-note"
+          >
+            当前项目还没有可复用音色，请先在项目音色库创建，再回到这里绑定角色默认配音。
+          </div>
+          <div
+            v-else-if="characterForm.voicePreset && !characterForm.voiceRecordId"
+            class="studio-inline-note"
+          >
+            当前角色沿用了旧音色标记「{{ characterForm.voicePreset }}」，建议改绑到项目音色库里的真实音色。
           </div>
         </section>
 
@@ -1056,7 +1077,7 @@
             <div>
               <div class="studio-dialog-section__title">角色四视图参考</div>
               <div class="studio-dialog-section__desc">
-                正面、背面、左侧、右侧分别单独维护，后续分镜和生成会优先复用这里的参考。
+                正面、背面、左侧、右侧分别单独维护；先绑定至少一张参考图后，才会开放 AI 补全生成。
               </div>
             </div>
             <span class="studio-pill">
@@ -1113,6 +1134,15 @@
                     }}
                   </div>
                   <div class="studio-character-row__actions">
+                    <el-button
+                      v-if="canGenerateCharacterReferences"
+                      type="primary"
+                      plain
+                      size="small"
+                      @click="openCharacterGenerateDialog(view.value)"
+                    >
+                      AI 生成
+                    </el-button>
                     <el-button
                       plain
                       size="small"
@@ -1267,6 +1297,108 @@
     </el-dialog>
 
     <el-dialog
+      v-model="characterGenerateDialogVisible"
+      class="studio-dialog studio-dialog--upload"
+      width="min(760px, calc(100vw - 32px))"
+      destroy-on-close
+    >
+      <template #header>
+        <div class="studio-dialog-hero">
+          <div class="studio-dialog-hero__copy">
+            <div class="studio-dialog-hero__eyebrow">Generate Reference</div>
+            <div class="studio-dialog-headline">
+              AI 生成{{ activeCharacterReferenceView.label }}参考图
+            </div>
+            <div class="studio-dialog-copy">
+              基于当前已绑定的参考图补齐目标视图，勾选“角色四视图”后会一次返回
+              front / back / left / right 四张图并自动绑定。
+            </div>
+          </div>
+          <div class="studio-dialog-hero__meta">
+            <span>{{ activeCharacter?.name || "当前角色" }}</span>
+            <span>{{ characterGenerateForm.generateAllViews ? "角色四视图" : activeCharacterReferenceView.label }}</span>
+          </div>
+        </div>
+      </template>
+      <div class="studio-dialog-body">
+        <section class="studio-dialog-panel">
+          <div class="studio-form-grid">
+            <label class="studio-field">
+              <span class="studio-field__label">模型源</span>
+              <el-select
+                v-model="characterGenerateForm.providerId"
+                :loading="loadingStudioModelSources"
+                placeholder="选择图片模型源"
+              >
+                <el-option
+                  v-for="option in artModelProviderOptions"
+                  :key="option.id"
+                  :label="option.name"
+                  :value="option.id"
+                />
+              </el-select>
+            </label>
+            <label class="studio-field">
+              <span class="studio-field__label">模型</span>
+              <el-select
+                v-model="characterGenerateForm.model"
+                :loading="loadingStudioModelSources"
+                placeholder="选择图片模型"
+              >
+                <el-option
+                  v-for="option in characterGenerateModelOptions"
+                  :key="option"
+                  :label="option"
+                  :value="option"
+                />
+              </el-select>
+            </label>
+          </div>
+          <div class="studio-form-grid">
+            <label class="studio-field studio-field--wide">
+              <span class="studio-field__label">角色描述 / 提示词</span>
+              <el-input
+                v-model="characterGenerateForm.prompt"
+                type="textarea"
+                :rows="6"
+                placeholder="输入可直接用于角色生图的提示词。建议写清年龄、服装、发型、画风和人物特征。"
+              />
+            </label>
+          </div>
+          <div class="studio-toggle-row">
+            <el-checkbox v-model="characterGenerateForm.generateAllViews">
+              角色四视图
+            </el-checkbox>
+            <span class="studio-inline-note">
+              固定参数：1024x1024，1:1，自动风格，高质量。
+            </span>
+          </div>
+          <div class="studio-inline-note">
+            当前会参考已绑定的 {{ activeCharacterReferenceCount }} 张图片，尽量保持同一角色形象一致。
+          </div>
+          <div class="studio-inline-note">
+            未勾选时只生成当前{{ activeCharacterReferenceView.label }}视图；勾选后会分别生成正面、背面、左侧、右侧四张图。
+          </div>
+        </section>
+      </div>
+      <template #footer>
+        <div class="studio-dialog-footer">
+          <div class="studio-dialog-footer__hint">
+            生成结果会自动入项目素材库并回填角色参考图
+          </div>
+          <el-button @click="characterGenerateDialogVisible = false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="generatingCharacterReferences"
+            @click="submitCharacterReferenceGeneration"
+          >
+            开始生成
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="characterUploadDialogVisible"
       class="studio-dialog studio-dialog--upload"
       width="min(760px, calc(100vw - 32px))"
@@ -1399,8 +1531,27 @@
         </section>
         <div class="studio-form-grid">
           <label class="studio-field">
+            <span class="studio-field__label">模型源</span>
+            <el-select
+              v-model="voiceForm.providerId"
+              :loading="loadingStudioModelSources"
+              placeholder="选择模型源"
+            >
+              <el-option
+                v-for="option in audioModelProviderOptions"
+                :key="option.id"
+                :label="option.name"
+                :value="option.id"
+              />
+            </el-select>
+          </label>
+          <label class="studio-field">
             <span class="studio-field__label">配音模型</span>
-            <el-select v-model="voiceForm.model">
+            <el-select
+              v-model="voiceForm.model"
+              :loading="loadingStudioModelSources"
+              placeholder="选择模型"
+            >
               <el-option
                 v-for="option in voiceModelOptions"
                 :key="option"
@@ -1411,23 +1562,38 @@
           </label>
           <label class="studio-field">
             <span class="studio-field__label">音色</span>
-            <el-select v-model="voiceForm.timbre">
+            <el-select
+              v-model="voiceForm.voice"
+              :loading="loadingStudioProjectVoices"
+              placeholder="选择音色"
+            >
               <el-option
-                v-for="option in voiceTimbreOptions"
-                :key="option"
-                :label="option"
-                :value="option"
+                v-for="option in voiceSelectableOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
               />
             </el-select>
+          </label>
+        </div>
+        <div class="studio-form-grid">
+          <label class="studio-field studio-field--wide">
+            <span class="studio-field__label">旁白文本</span>
+            <el-input
+              v-model="voiceForm.text"
+              type="textarea"
+              :rows="4"
+              placeholder="输入要生成的旁白文本"
+            />
           </label>
           <label class="studio-field">
             <span class="studio-field__label">语速</span>
             <el-select v-model="voiceForm.speed">
               <el-option
                 v-for="option in voiceSpeedOptions"
-                :key="option"
-                :label="option"
-                :value="option"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
               />
             </el-select>
           </label>
@@ -1437,7 +1603,7 @@
             <div>
               <div class="studio-card__title">旁白音频</div>
               <div class="studio-card__meta">
-                上传真实旁白文件后，正式导出会优先使用该音频
+                可直接生成，也可以上传真实旁白文件；正式导出会优先使用这里绑定的音频
               </div>
             </div>
           </div>
@@ -1447,8 +1613,19 @@
               <span v-if="voiceTargetBoardVoiceMimeType">
                 {{ voiceTargetBoardVoiceMimeType }}
               </span>
+              <span v-if="selectedVoiceOption?.label">
+                {{ selectedVoiceOption.label }}
+              </span>
             </div>
             <div class="studio-inline-actions">
+              <el-button
+                size="small"
+                type="primary"
+                :loading="generatingVoiceAudio"
+                @click="generateVoiceAudio"
+              >
+                生成旁白
+              </el-button>
               <el-button
                 size="small"
                 :loading="uploadingVoiceAudio"
@@ -1813,6 +1990,7 @@ import StudioMergedPreview from "@/components/studio/StudioMergedPreview.vue";
 import StudioTimelineEditor from "@/components/studio/StudioTimelineEditor.vue";
 import ProjectMaterialFormFields from "@/components/ProjectMaterialFormFields.vue";
 import api from "@/utils/api.js";
+import { normalizeProviderModelConfigs } from "@/utils/llm-models.js";
 import {
   MATERIAL_MIME_TYPE_OPTIONS,
   readVideoDurationFromUrl,
@@ -1849,9 +2027,20 @@ const aspectRatioOptions = ["16:9", "9:16", "1:1", "3:2", "2:3"];
 const artDurationOptions = ["3秒", "5秒", "10秒"];
 const storyboardDurationOptions = ["5秒", "8秒", "10秒"];
 const qualityOptions = ["标准 (720p)", "高清 (1080p)", "超清 (4K)"];
-const voiceModelOptions = ["标准配音模型", "情感配音模型"];
-const voiceTimbreOptions = ["温柔女声", "成熟男声", "清脆童声", "中性声音"];
-const voiceSpeedOptions = ["0.8x 慢速", "1.0x 标准", "1.2x 快速"];
+const systemVoiceOptions = [
+  { value: "tongtong", label: "通通", hint: "明亮女声" },
+  { value: "xiaochen", label: "小辰", hint: "自然女声" },
+  { value: "chuichui", label: "吹吹", hint: "轻快童声" },
+  { value: "jam", label: "Jam", hint: "温和男声" },
+  { value: "kazi", label: "卡兹", hint: "沉稳男声" },
+  { value: "douji", label: "豆吉", hint: "亲和中性" },
+  { value: "luodo", label: "洛朵", hint: "叙事感女声" },
+];
+const voiceSpeedOptions = [
+  { value: 0.8, label: "0.8x 慢速" },
+  { value: 1, label: "1.0x 标准" },
+  { value: 1.2, label: "1.2x 快速" },
+];
 const exportFormatOptions = [
   { value: "mp4-h264", label: "MP4 (H.264)" },
   { value: "mp4-h265", label: "MP4 (H.265)" },
@@ -1862,11 +2051,6 @@ const characterViews = [
   { value: "back", label: "背面" },
   { value: "left", label: "左侧" },
   { value: "right", label: "右侧" },
-];
-const characterVoicePresets = [
-  { value: "温柔女声", label: "温柔女声", hint: "适合少女角色" },
-  { value: "成熟男声", label: "成熟男声", hint: "适合中年角色" },
-  { value: "清脆童声", label: "清脆童声", hint: "适合儿童角色" },
 ];
 const styleLabels = [
   "水墨",
@@ -1922,44 +2106,230 @@ function studioExportTimestamp() {
 function normalizeStudioModelProviders(items) {
   return (Array.isArray(items) ? items : [])
     .map((item) => {
-      const models = Array.isArray(item?.models)
-        ? item.models.map((model) => String(model || "").trim()).filter(Boolean)
-        : [];
-      const defaultModel = String(item?.default_model || "").trim();
-      const nextModels =
-        defaultModel && !models.includes(defaultModel)
-          ? [defaultModel, ...models]
-          : models;
+      const modelConfigs = normalizeProviderModelConfigs(item)
+        .map((model) => ({
+          name: String(model?.name || "").trim(),
+          modelType: String(model?.model_type || "").trim(),
+        }))
+        .filter((model) => model.name);
+      const models = modelConfigs.map((model) => model.name);
+      const defaultModel =
+        String(item?.default_model || "").trim() || modelConfigs[0]?.name || "";
       return {
         id: String(item?.id || "").trim(),
         name: String(item?.name || item?.id || "未命名模型源").trim(),
-        models: nextModels,
-        defaultModel: defaultModel || nextModels[0] || "",
+        modelConfigs,
+        models,
+        defaultModel,
         isDefault: item?.is_default === true,
       };
     })
     .filter((item) => item.id && item.models.length);
 }
 
-function resolveStudioProvider(providerId) {
+function filterStudioModelProvidersByType(items, allowedModelTypes) {
+  const allowedTypes = new Set(
+    (Array.isArray(allowedModelTypes) ? allowedModelTypes : [allowedModelTypes])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean),
+  );
+  if (!allowedTypes.size) {
+    return Array.isArray(items) ? items : [];
+  }
+  return (Array.isArray(items) ? items : [])
+    .map((provider) => {
+      const modelConfigs = (
+        Array.isArray(provider?.modelConfigs) ? provider.modelConfigs : []
+      ).filter((item) => allowedTypes.has(String(item?.modelType || "").trim()));
+      if (!modelConfigs.length) {
+        return null;
+      }
+      const models = modelConfigs.map((item) => item.name);
+      const defaultModel =
+        modelConfigs.find(
+          (item) => item.name === String(provider?.defaultModel || "").trim(),
+        )?.name ||
+        modelConfigs[0]?.name ||
+        "";
+      return {
+        ...provider,
+        modelConfigs,
+        models,
+        defaultModel,
+      };
+    })
+    .filter(Boolean);
+}
+
+function resolveStudioProvider(providerId, providerOptions = studioModelProviderOptions.value) {
   const normalizedProviderId = String(providerId || "").trim();
   return (
-    studioModelProviderOptions.value.find((item) => item.id === normalizedProviderId) ||
-    studioModelProviderOptions.value.find((item) => item.isDefault) ||
-    studioModelProviderOptions.value[0] ||
+    providerOptions.find((item) => item.id === normalizedProviderId) ||
+    providerOptions.find((item) => item.isDefault) ||
+    providerOptions[0] ||
     null
   );
 }
 
-function resolveStudioProviderModels(providerId) {
-  return resolveStudioProvider(providerId)?.models || [];
+function resolveStudioProviderModels(
+  providerId,
+  providerOptions = studioModelProviderOptions.value,
+) {
+  return resolveStudioProvider(providerId, providerOptions)?.models || [];
 }
 
-function syncStudioModelSelection(target) {
+function normalizeStudioProjectVoices(items) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => {
+      const sampleAudio =
+        item?.sample_audio && typeof item.sample_audio === "object"
+          ? item.sample_audio
+          : {};
+      const voiceId = String(item?.voice_id || "").trim();
+      if (!voiceId) return null;
+      return {
+        id: String(item?.id || "").trim(),
+        name: String(item?.name || item?.provider_voice_name || voiceId).trim(),
+        voiceId,
+        providerId: String(item?.provider_id || "").trim(),
+        modelName: String(item?.model_name || "").trim(),
+        description: String(item?.description || "").trim(),
+        previewText: String(item?.preview_text || "").trim(),
+        sampleAudio,
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildEmptyCharacterVoiceSelection() {
+  return {
+    voicePreset: "",
+    voiceRecordId: "",
+    voiceId: "",
+    providerId: "",
+    modelName: "",
+    voiceLabel: "",
+  };
+}
+
+function readCharacterVoiceSelection(source) {
+  const container = source && typeof source === "object" ? source : {};
+  const characterVoice =
+    container.characterVoice && typeof container.characterVoice === "object"
+      ? container.characterVoice
+      : container;
+  return {
+    voicePreset: String(container.voicePreset || characterVoice.voicePreset || "").trim(),
+    voiceRecordId: String(
+      characterVoice.voiceRecordId || characterVoice.voice_record_id || "",
+    ).trim(),
+    voiceId: String(
+      characterVoice.voiceId || characterVoice.voice_id || characterVoice.voice || "",
+    ).trim(),
+    providerId: String(
+      characterVoice.providerId || characterVoice.provider_id || "",
+    ).trim(),
+    modelName: String(
+      characterVoice.modelName || characterVoice.model_name || characterVoice.model || "",
+    ).trim(),
+    voiceLabel: String(
+      characterVoice.voiceLabel || characterVoice.voice_label || "",
+    ).trim(),
+  };
+}
+
+function resolveStudioProjectVoiceMatch(selection) {
+  const normalized = readCharacterVoiceSelection(selection);
+  if (normalized.voiceRecordId) {
+    const exact = studioProjectVoices.value.find(
+      (item) => item.id === normalized.voiceRecordId,
+    );
+    if (exact) return exact;
+  }
+  if (normalized.providerId && normalized.voiceId) {
+    const exact = studioProjectVoices.value.find(
+      (item) =>
+        item.providerId === normalized.providerId &&
+        item.voiceId === normalized.voiceId,
+    );
+    if (exact) return exact;
+  }
+  const legacyLabel = normalized.voiceLabel || normalized.voicePreset;
+  if (!legacyLabel) return null;
+  return (
+    studioProjectVoices.value.find(
+      (item) => String(item.name || "").trim() === legacyLabel,
+    ) || null
+  );
+}
+
+function normalizeCharacterVoiceSelection(selection) {
+  const normalized = {
+    ...buildEmptyCharacterVoiceSelection(),
+    ...readCharacterVoiceSelection(selection),
+  };
+  const matchedVoice = resolveStudioProjectVoiceMatch(normalized);
+  if (matchedVoice) {
+    return {
+      voicePreset: matchedVoice.name,
+      voiceRecordId: matchedVoice.id,
+      voiceId: matchedVoice.voiceId,
+      providerId: matchedVoice.providerId,
+      modelName: matchedVoice.modelName,
+      voiceLabel: matchedVoice.name,
+    };
+  }
+  const fallbackLabel = normalized.voiceLabel || normalized.voicePreset;
+  return {
+    ...normalized,
+    voicePreset: fallbackLabel,
+    voiceLabel: fallbackLabel,
+  };
+}
+
+function serializeCharacterVoiceSelection(selection) {
+  const normalized = normalizeCharacterVoiceSelection(selection);
+  return {
+    voicePreset: normalized.voicePreset,
+    characterVoice: normalized.voiceRecordId
+      ? {
+          voiceRecordId: normalized.voiceRecordId,
+          voiceId: normalized.voiceId,
+          providerId: normalized.providerId,
+          modelName: normalized.modelName,
+          voiceLabel: normalized.voiceLabel,
+        }
+      : {},
+  };
+}
+
+function hasCharacterVoiceSelection(selection) {
+  const normalized = normalizeCharacterVoiceSelection(selection);
+  return Boolean(normalized.voiceRecordId || normalized.voicePreset);
+}
+
+function resolveVoiceSpeedValue(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return voiceSpeedOptions[1]?.value || 1;
+  }
+  return Math.max(0.5, Math.min(2, numeric));
+}
+
+function filterVoiceGenerationModels(items) {
+  const values = (Array.isArray(items) ? items : []).map((item) =>
+    String(item || "").trim(),
+  ).filter(Boolean);
+  const nonCloneModels = values.filter((item) => !/clone/i.test(item));
+  return nonCloneModels.length ? nonCloneModels : values;
+}
+
+function syncStudioModelSelection(target, providerOptions = studioModelProviderOptions.value) {
   if (!target || typeof target !== "object") return;
-  const provider = resolveStudioProvider(target.providerId);
+  const provider = resolveStudioProvider(target.providerId, providerOptions);
   if (!provider) {
     target.providerId = "";
+    target.model = "";
     return;
   }
   target.providerId = provider.id;
@@ -2260,6 +2630,15 @@ function buildCharacterUploadForm() {
   };
 }
 
+function buildCharacterGenerateForm() {
+  return {
+    providerId: "",
+    model: "",
+    prompt: "",
+    generateAllViews: false,
+  };
+}
+
 const projectId = computed(() => String(route.query.project_id || "").trim());
 const requestedStudioDraftJobId = computed(() =>
   String(route.query.draft_job_id || "").trim(),
@@ -2287,7 +2666,9 @@ const chapters = ref([]);
 const previewChapterId = ref("");
 const chapterPreviewVisible = ref(false);
 const studioModelProviders = ref([]);
+const studioProjectVoices = ref([]);
 const loadingStudioModelSources = ref(false);
+const loadingStudioProjectVoices = ref(false);
 
 const artSettings = reactive({
   kind: "role",
@@ -2304,7 +2685,7 @@ const extracting = ref(false);
 const activeCharacterId = ref("");
 const characterDialogVisible = ref(false);
 const characterForm = reactive({
-  voicePreset: characterVoicePresets[0].value,
+  ...buildEmptyCharacterVoiceSelection(),
   referenceViews: {},
 });
 const characterReferenceMaterials = ref([]);
@@ -2312,11 +2693,14 @@ const loadingCharacterReferenceMaterials = ref(false);
 const characterMaterialDialogVisible = ref(false);
 const characterReferenceViewKey = ref(characterViews[0].value);
 const characterMaterialSearch = ref("");
+const characterGenerateDialogVisible = ref(false);
+const generatingCharacterReferences = ref(false);
 const characterUploadDialogVisible = ref(false);
 const characterUploadFileInputRef = ref(null);
 const characterUploadFileName = ref("");
 const characterUploadSelectedFile = ref(null);
 const uploadingCharacterMaterial = ref(false);
+const characterGenerateForm = reactive(buildCharacterGenerateForm());
 const characterUploadForm = reactive(buildCharacterUploadForm());
 
 const storyboardSettings = reactive({
@@ -2337,10 +2721,13 @@ const voiceDialogVisible = ref(false);
 const voiceTargetId = ref("");
 const voiceFileInputRef = ref(null);
 const uploadingVoiceAudio = ref(false);
+const generatingVoiceAudio = ref(false);
 const voiceForm = reactive({
-  model: voiceModelOptions[1],
-  timbre: voiceTimbreOptions[0],
-  speed: voiceSpeedOptions[1],
+  providerId: "",
+  model: "",
+  voice: systemVoiceOptions[0].value,
+  text: "",
+  speed: voiceSpeedOptions[1].value,
 });
 
 const timelineClips = ref([]);
@@ -2419,12 +2806,86 @@ const studioModelProviderOptions = computed(() =>
     (item) => String(item.id || "").trim(),
   ),
 );
+const artModelProviderOptions = computed(() =>
+  filterStudioModelProvidersByType(studioModelProviderOptions.value, "image_generation"),
+);
+const storyboardModelProviderOptions = computed(() =>
+  filterStudioModelProvidersByType(studioModelProviderOptions.value, "video_generation"),
+);
+const audioModelProviderOptions = computed(() =>
+  filterStudioModelProvidersByType(studioModelProviderOptions.value, "audio_generation"),
+);
 const artModelOptions = computed(() =>
-  resolveStudioProviderModels(artSettings.providerId),
+  resolveStudioProviderModels(artSettings.providerId, artModelProviderOptions.value),
+);
+const characterGenerateModelOptions = computed(() =>
+  resolveStudioProviderModels(
+    characterGenerateForm.providerId,
+    artModelProviderOptions.value,
+  ),
 );
 const storyboardModelOptions = computed(() =>
-  resolveStudioProviderModels(storyboardSettings.providerId),
+  resolveStudioProviderModels(
+    storyboardSettings.providerId,
+    storyboardModelProviderOptions.value,
+  ),
 );
+const voiceModelOptions = computed(() =>
+  filterVoiceGenerationModels(
+    resolveStudioProviderModels(voiceForm.providerId, audioModelProviderOptions.value),
+  ),
+);
+const availableProjectVoiceOptions = computed(() =>
+  studioProjectVoices.value
+    .filter((item) => item.providerId === String(voiceForm.providerId || "").trim())
+    .map((item) => ({
+      value: item.voiceId,
+      label: item.name,
+      hint: item.description || "项目自定义音色",
+      sourceType: "project",
+      voiceRecordId: item.id,
+      providerId: item.providerId,
+      modelName: item.modelName,
+    })),
+);
+const characterVoiceOptions = computed(() =>
+  studioProjectVoices.value.map((item) => ({
+    id: item.id,
+    name: item.name,
+    voiceId: item.voiceId,
+    providerId: item.providerId,
+    modelName: item.modelName,
+    hint:
+      item.description ||
+      [String(item.providerId || "").trim(), String(item.modelName || "").trim()]
+        .filter(Boolean)
+        .join(" · ") ||
+      "项目音色库",
+  })),
+);
+const currentVoiceProvider = computed(
+  () =>
+    audioModelProviderOptions.value.find(
+      (item) => item.id === String(voiceForm.providerId || "").trim(),
+    ) || null,
+);
+const currentProviderSupportsSystemVoices = computed(() =>
+  Boolean(
+    currentVoiceProvider.value?.models?.some((item) =>
+      /^glm-tts/i.test(String(item || "").trim()),
+    ),
+  ),
+);
+const voiceSelectableOptions = computed(() => [
+  ...availableProjectVoiceOptions.value,
+  ...(currentProviderSupportsSystemVoices.value
+    ? systemVoiceOptions.map((item) => ({
+        ...item,
+        sourceType: "system",
+        voiceRecordId: "",
+      }))
+    : []),
+]);
 const detectedElementCount = computed(
   () => elements.value.filter((item) => item.status !== "pending").length,
 );
@@ -2461,10 +2922,7 @@ const activeElementKindLabel = computed(
 const configuredRoleCount = computed(
   () =>
     elements.value.filter(
-      (item) =>
-        item.kind === "role" &&
-        item.metadata &&
-        String(item.metadata.voicePreset || "").trim(),
+      (item) => item.kind === "role" && hasCharacterVoiceSelection(item.metadata),
     ).length,
 );
 const currentChapterStoryboards = computed(() =>
@@ -2546,6 +3004,12 @@ const voiceTargetBoardVoiceDisplayName = computed(
 const voiceTargetBoardVoiceMimeType = computed(() =>
   resolveStoryboardVoiceMimeType(voiceTargetBoard.value),
 );
+const selectedVoiceOption = computed(
+  () =>
+    voiceSelectableOptions.value.find(
+      (item) => item.value === String(voiceForm.voice || "").trim(),
+    ) || null,
+);
 const availableHistoryStoryboards = computed(() => {
   const timelineIds = new Set(
     timelineClips.value
@@ -2623,6 +3087,24 @@ const activeCharacterReferenceCount = computed(
       (item) =>
         item && typeof item === "object" && String(item.assetId || "").trim(),
     ).length,
+);
+const activeCharacterReferenceSourceUrls = computed(() => {
+  const urls = [];
+  const seen = new Set();
+  for (const item of Object.values(characterForm.referenceViews || {})) {
+    const normalized = normalizeCharacterReferenceItem(item);
+    if (!normalized) continue;
+    for (const candidate of [normalized.contentUrl, normalized.previewUrl]) {
+      const resolved = String(candidate || "").trim();
+      if (!resolved || seen.has(resolved)) continue;
+      seen.add(resolved);
+      urls.push(resolved);
+    }
+  }
+  return urls;
+});
+const canGenerateCharacterReferences = computed(
+  () => activeCharacterReferenceSourceUrls.value.length > 0,
 );
 const activeCharacterReferenceView = computed(
   () =>
@@ -3048,6 +3530,7 @@ function cloneStudioDraftValue(value, fallback) {
 }
 
 function buildStudioDraftSnapshot() {
+  const characterVoiceSelection = normalizeCharacterVoiceSelection(characterForm);
   const snapshot = {
     version: 1,
     projectId: String(projectId.value || "").trim(),
@@ -3062,7 +3545,7 @@ function buildStudioDraftSnapshot() {
     extractionResults: cloneStudioDraftValue(extractionResults.value, []),
     characterForm: cloneStudioDraftValue(
       {
-        voicePreset: characterForm.voicePreset,
+        ...characterVoiceSelection,
         referenceViews: characterForm.referenceViews,
       },
       {},
@@ -3182,12 +3665,10 @@ function applyStudioDraft(snapshot, { announce = false } = {}) {
       ? cloneStudioDraftValue(normalizedSnapshot.extractionResults, [])
       : [];
 
-    characterForm.voicePreset =
-      characterVoicePresets.find(
-        (item) =>
-          item.value ===
-          String(normalizedSnapshot.characterForm?.voicePreset || "").trim(),
-      )?.value || characterVoicePresets[0].value;
+    Object.assign(
+      characterForm,
+      normalizeCharacterVoiceSelection(normalizedSnapshot.characterForm || {}),
+    );
     characterForm.referenceViews = cloneStudioDraftValue(
       normalizedSnapshot.characterForm?.referenceViews || {},
       {},
@@ -4034,6 +4515,36 @@ function resetCharacterUploadForm(viewValue) {
   });
 }
 
+function buildDefaultCharacterReferencePrompt(viewValue) {
+  const characterName =
+    String(activeCharacter.value?.name || "角色").trim() || "角色";
+  const styleHint = selectedStyleLabels.value.length
+    ? `，${selectedStyleLabels.value.join("、")}风格`
+    : "";
+  return `${characterName}${styleHint}，单人角色参考图，人物完整，服装和发型清晰，适合短片制作设定。`;
+}
+
+function resetCharacterGenerateForm(viewValue) {
+  Object.assign(characterGenerateForm, buildCharacterGenerateForm(), {
+    providerId: String(artSettings.providerId || "").trim(),
+    model: String(artSettings.model || "").trim(),
+    prompt: buildDefaultCharacterReferencePrompt(viewValue),
+  });
+  syncStudioModelSelection(characterGenerateForm, artModelProviderOptions.value);
+}
+
+function openCharacterGenerateDialog(viewValue) {
+  if (!canGenerateCharacterReferences.value) {
+    ElMessage.warning("请先上传或绑定至少一张角色参考图");
+    return;
+  }
+  characterReferenceViewKey.value = viewValue;
+  characterMaterialDialogVisible.value = false;
+  characterUploadDialogVisible.value = false;
+  resetCharacterGenerateForm(viewValue);
+  characterGenerateDialogVisible.value = true;
+}
+
 function openCharacterMaterialPicker(viewValue) {
   characterReferenceViewKey.value = viewValue;
   characterMaterialDialogVisible.value = true;
@@ -4043,6 +4554,7 @@ function openCharacterMaterialPicker(viewValue) {
 function openCharacterUploadDialog(viewValue) {
   characterReferenceViewKey.value = viewValue;
   characterMaterialDialogVisible.value = false;
+  characterGenerateDialogVisible.value = false;
   resetCharacterUploadForm(viewValue);
   characterUploadDialogVisible.value = true;
 }
@@ -4071,6 +4583,14 @@ function applyCharacterReference(viewValue, material, options = {}) {
   characterMaterialDialogVisible.value = false;
   if (!options.silent) {
     ElMessage.success(`${getCharacterViewLabel(viewValue)}参考图已更新`);
+  }
+}
+
+function applyGeneratedCharacterReferences(items) {
+  for (const entry of Array.isArray(items) ? items : []) {
+    const viewValue = String(entry?.view || "").trim();
+    if (!viewValue || !entry?.item) continue;
+    applyCharacterReference(viewValue, entry.item, { silent: true });
   }
 }
 
@@ -4107,14 +4627,53 @@ async function fetchStudioModelSources() {
   try {
     const data = await api.get(`/projects/${currentProjectId}/studio/model-sources`);
     studioModelProviders.value = normalizeStudioModelProviders(data?.providers || []);
-    syncStudioModelSelection(artSettings);
-    syncStudioModelSelection(storyboardSettings);
+    syncStudioModelSelection(artSettings, artModelProviderOptions.value);
+    syncStudioModelSelection(
+      storyboardSettings,
+      storyboardModelProviderOptions.value,
+    );
   } catch (err) {
     studioModelProviders.value = [];
     ElMessage.error(err?.detail || err?.message || "加载短片模型列表失败");
   } finally {
     loadingStudioModelSources.value = false;
   }
+}
+
+async function fetchStudioProjectVoices() {
+  const currentProjectId = String(projectId.value || "").trim();
+  if (!currentProjectId) {
+    studioProjectVoices.value = [];
+    return;
+  }
+  loadingStudioProjectVoices.value = true;
+  try {
+    const data = await api.get(`/projects/${currentProjectId}/studio/voices`);
+    studioProjectVoices.value = normalizeStudioProjectVoices(data?.items || []);
+  } catch (err) {
+    studioProjectVoices.value = [];
+    ElMessage.error(err?.detail || err?.message || "加载项目音色失败");
+  } finally {
+    loadingStudioProjectVoices.value = false;
+  }
+}
+
+function clearCharacterVoiceSelection() {
+  Object.assign(characterForm, buildEmptyCharacterVoiceSelection());
+}
+
+function selectCharacterVoiceOption(option) {
+  Object.assign(
+    characterForm,
+    normalizeCharacterVoiceSelection({
+      voiceRecordId: option?.id,
+      voiceId: option?.voiceId,
+      providerId: option?.providerId,
+      modelName: option?.modelName,
+      voiceLabel: option?.name,
+      voicePreset: option?.name,
+    }),
+  );
 }
 
 function triggerCharacterUploadFilePicker() {
@@ -4222,6 +4781,62 @@ async function submitCharacterUpload() {
   }
 }
 
+async function submitCharacterReferenceGeneration() {
+  const currentProjectId = String(projectId.value || "").trim();
+  if (!currentProjectId) {
+    ElMessage.warning("缺少项目 ID");
+    return;
+  }
+  if (!activeCharacterReferenceSourceUrls.value.length) {
+    ElMessage.warning("请先上传或绑定至少一张角色参考图");
+    return;
+  }
+  if (!String(characterGenerateForm.providerId || "").trim() || !String(characterGenerateForm.model || "").trim()) {
+    ElMessage.warning("请先选择图片模型");
+    return;
+  }
+  if (!String(characterGenerateForm.prompt || "").trim()) {
+    ElMessage.warning("请先填写角色提示词");
+    return;
+  }
+  generatingCharacterReferences.value = true;
+  try {
+    const data = await api.post(
+      `/projects/${currentProjectId}/studio/character-references/generate`,
+      {
+        provider_id: String(characterGenerateForm.providerId || "").trim(),
+        model_name: String(characterGenerateForm.model || "").trim(),
+        prompt: String(characterGenerateForm.prompt || "").trim(),
+        character_id: String(activeCharacterId.value || "").trim(),
+        character_name: String(activeCharacter.value?.name || "").trim(),
+        reference_image_urls: activeCharacterReferenceSourceUrls.value,
+        target_view: characterReferenceViewKey.value,
+        generate_all_views: Boolean(characterGenerateForm.generateAllViews),
+        image_size: "1024x1024",
+        image_style: "auto",
+        image_quality: "high",
+      },
+    );
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (!items.length) {
+      ElMessage.warning("模型没有返回可用参考图");
+      return;
+    }
+    applyGeneratedCharacterReferences(items);
+    characterGenerateDialogVisible.value = false;
+    await fetchCharacterReferenceMaterials();
+    ElMessage.success(
+      characterGenerateForm.generateAllViews
+        ? "角色四视图已生成并绑定"
+        : `${activeCharacterReferenceView.value.label}参考图已生成并绑定`,
+    );
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "生成角色参考图失败");
+  } finally {
+    generatingCharacterReferences.value = false;
+  }
+}
+
 async function removeElement(element) {
   const targetId = String(element?.id || "").trim();
   if (!targetId) return;
@@ -4250,9 +4865,10 @@ async function removeElement(element) {
 
 async function openCharacterConfig(element) {
   activeCharacterId.value = element.id;
-  characterForm.voicePreset =
-    String(element.metadata?.voicePreset || "").trim() ||
-    characterVoicePresets[0].value;
+  Object.assign(
+    characterForm,
+    normalizeCharacterVoiceSelection(element.metadata || {}),
+  );
   characterForm.referenceViews = cloneCharacterReferenceViews(
     element.metadata?.referenceViews,
   );
@@ -4266,9 +4882,10 @@ function saveCharacterConfig() {
     (item) => item.id === activeCharacterId.value,
   );
   if (!target) return;
+  const characterVoiceSelection = serializeCharacterVoiceSelection(characterForm);
   target.metadata = {
     ...(target.metadata || {}),
-    voicePreset: characterForm.voicePreset,
+    ...characterVoiceSelection,
     referenceViews: cloneCharacterReferenceViews(characterForm.referenceViews),
   };
   characterDialogVisible.value = false;
@@ -4360,8 +4977,80 @@ function isStoryboardDurationLocked(board) {
   return Boolean(board) && board.durationLocked !== false;
 }
 
+function resolveStoryboardVoiceNarrationText(board) {
+  if (!board) return "";
+  const stored = String(board?.metadata?.voiceConfig?.text || "").trim();
+  if (stored) return stored;
+  return String(board.title || "").trim();
+}
+
+function syncVoiceModelSelection() {
+  const provider =
+    audioModelProviderOptions.value.find(
+      (item) => item.id === String(voiceForm.providerId || "").trim(),
+    ) ||
+    audioModelProviderOptions.value[0] ||
+    null;
+  if (!provider) {
+    voiceForm.providerId = "";
+    voiceForm.model = "";
+    voiceForm.voice = systemVoiceOptions[0]?.value || "";
+    return;
+  }
+  voiceForm.providerId = provider.id;
+  voiceForm.model = provider.models.includes(String(voiceForm.model || "").trim())
+    ? String(voiceForm.model || "").trim()
+    : provider.defaultModel || provider.models[0] || "";
+  const currentVoice = String(voiceForm.voice || "").trim();
+  if (voiceSelectableOptions.value.some((item) => item.value === currentVoice)) return;
+  voiceForm.voice = voiceSelectableOptions.value[0]?.value || systemVoiceOptions[0]?.value || "";
+}
+
+function resolveStoryboardCharacterVoice(board) {
+  const haystack = `${String(board?.title || "").trim()} ${String(board?.summary || "").trim()}`.toLowerCase();
+  const configuredRoles = elements.value
+    .filter((item) => item.kind === "role")
+    .map((item) => ({
+      name: String(item?.name || "").trim(),
+      voice: normalizeCharacterVoiceSelection(item?.metadata || {}),
+    }))
+    .filter((item) => item.name && item.voice.voiceId);
+  if (!configuredRoles.length) return null;
+  if (haystack) {
+    const matchedRoles = configuredRoles.filter((item) =>
+      haystack.includes(item.name.toLowerCase()),
+    );
+    if (matchedRoles.length === 1) {
+      return matchedRoles[0].voice;
+    }
+  }
+  return configuredRoles.length === 1 ? configuredRoles[0].voice : null;
+}
+
 function openVoiceDialog(board) {
+  const storedVoiceConfig =
+    board?.metadata?.voiceConfig && typeof board.metadata.voiceConfig === "object"
+      ? board.metadata.voiceConfig
+      : {};
+  const storedVoice = normalizeCharacterVoiceSelection(storedVoiceConfig);
+  const fallbackVoice = storedVoice.voiceId ? null : resolveStoryboardCharacterVoice(board);
+  const resolvedVoice = storedVoice.voiceId ? storedVoice : fallbackVoice;
+  const storedProviderId = resolvedVoice?.providerId || "";
+  const storedModel = resolvedVoice?.modelName || String(storedVoiceConfig?.model || "").trim();
+  if (storedProviderId) {
+    voiceForm.providerId = storedProviderId;
+  }
+  if (storedModel) {
+    voiceForm.model = storedModel;
+  }
+  syncVoiceModelSelection();
   voiceTargetId.value = board.id;
+  voiceForm.text = resolveStoryboardVoiceNarrationText(board);
+  voiceForm.speed = resolveVoiceSpeedValue(board?.metadata?.voiceConfig?.speed);
+  const nextVoice = resolvedVoice?.voiceId || String(storedVoiceConfig?.voice || "").trim();
+  if (nextVoice) {
+    voiceForm.voice = nextVoice;
+  }
   voiceDialogVisible.value = true;
 }
 
@@ -4371,7 +5060,7 @@ function confirmVoiceGeneration() {
   );
   if (!target) return;
   if (!resolveStoryboardVoiceResolvedUrl(target)) {
-    ElMessage.warning("请先上传旁白音频");
+    ElMessage.warning("请先生成或上传旁白音频");
     return;
   }
   target.hasVoice = true;
@@ -4381,6 +5070,89 @@ function confirmVoiceGeneration() {
   voiceDialogVisible.value = false;
   syncTimelineFromSelection();
   ElMessage.success(`分镜「${target.title}」旁白已保存`);
+}
+
+async function generateVoiceAudio() {
+  const target = voiceTargetBoard.value;
+  const currentProjectId = String(projectId.value || "").trim();
+  if (!target || !currentProjectId) {
+    ElMessage.warning("缺少项目上下文");
+    return;
+  }
+  if (!String(voiceForm.providerId || "").trim() || !String(voiceForm.model || "").trim()) {
+    ElMessage.warning("请先选择配音模型源");
+    return;
+  }
+  if (!String(voiceForm.voice || "").trim()) {
+    ElMessage.warning("请选择音色");
+    return;
+  }
+  if (!String(voiceForm.text || "").trim()) {
+    ElMessage.warning("请填写旁白文本");
+    return;
+  }
+  generatingVoiceAudio.value = true;
+  try {
+    const selectedProjectVoiceRecordId =
+      selectedVoiceOption.value?.sourceType === "project"
+        ? String(selectedVoiceOption.value.voiceRecordId || "").trim()
+        : "";
+    const data = await api.post(`/projects/${currentProjectId}/studio/voiceovers/generate`, {
+      provider_id: String(voiceForm.providerId || "").trim(),
+      model_name: String(voiceForm.model || "").trim(),
+      voice: String(voiceForm.voice || "").trim(),
+      text: String(voiceForm.text || "").trim(),
+      title: `${String(target.title || "分镜").trim()} 旁白`,
+      voice_record_id: selectedProjectVoiceRecordId,
+      response_format: "wav",
+      speed: resolveVoiceSpeedValue(voiceForm.speed),
+    });
+    const item = data.item || {};
+    if (data?.voice_item && typeof data.voice_item === "object") {
+      const normalizedVoice = normalizeStudioProjectVoices([data.voice_item])[0];
+      if (normalizedVoice) {
+        const voiceIndex = studioProjectVoices.value.findIndex(
+          (entry) => entry.id === normalizedVoice.id,
+        );
+        if (voiceIndex >= 0) {
+          studioProjectVoices.value.splice(voiceIndex, 1, normalizedVoice);
+        } else {
+          studioProjectVoices.value.unshift(normalizedVoice);
+        }
+      }
+    }
+    target.metadata = {
+      ...(target.metadata || {}),
+      voiceConfig: {
+        providerId: String(voiceForm.providerId || "").trim(),
+        model: String(voiceForm.model || "").trim(),
+        voice: String(voiceForm.voice || "").trim(),
+        voiceRecordId: selectedProjectVoiceRecordId,
+        voiceLabel: selectedVoiceOption.value?.label || String(voiceForm.voice || "").trim(),
+        text: String(voiceForm.text || "").trim(),
+        speed: resolveVoiceSpeedValue(voiceForm.speed),
+      },
+      voiceAudio: {
+        title: String(item.title || `${String(target.title || "分镜").trim()} 旁白`).trim(),
+        content_url: String(item.content_url || "").trim(),
+        mime_type: String(item.mime_type || "").trim(),
+        original_filename: String(item.original_filename || "").trim(),
+        storage_path: String(item.storage_path || "").trim(),
+        source_type: "tts_generation",
+      },
+    };
+    target.hasVoice = true;
+    target.selected = true;
+    target.status = "ready";
+    target.updatedAt = new Date().toISOString();
+    syncTimelineFromSelection();
+    ElMessage.success("旁白已生成，可直接保存");
+    void persistStudioDraftSilently();
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "生成旁白失败");
+  } finally {
+    generatingVoiceAudio.value = false;
+  }
 }
 
 function regenerateStoryboard(storyboardId) {
@@ -4728,6 +5500,7 @@ function clearStoryboardVoiceAudio(board) {
   board.metadata = {
     ...(board.metadata || {}),
     voiceAudio: {},
+    voiceConfig: {},
   };
 }
 
@@ -4769,6 +5542,18 @@ async function handleVoiceFileChange(event) {
     const item = data.item || {};
     target.metadata = {
       ...(target.metadata || {}),
+      voiceConfig: {
+        providerId: String(voiceForm.providerId || "").trim(),
+        model: String(voiceForm.model || "").trim(),
+        voice: String(voiceForm.voice || "").trim(),
+        voiceRecordId:
+          selectedVoiceOption.value?.sourceType === "project"
+            ? String(selectedVoiceOption.value.voiceRecordId || "").trim()
+            : "",
+        voiceLabel: selectedVoiceOption.value?.label || String(voiceForm.voice || "").trim(),
+        text: String(voiceForm.text || "").trim(),
+        speed: resolveVoiceSpeedValue(voiceForm.speed),
+      },
       voiceAudio: {
         title: String(item.title || deriveAudioDisplayName(file.name, "旁白")).trim(),
         content_url: String(item.content_url || "").trim(),
@@ -5328,6 +6113,7 @@ function handleScriptFileChange(event) {
 watch(characterDialogVisible, (visible) => {
   if (visible) return;
   characterMaterialDialogVisible.value = false;
+  characterGenerateDialogVisible.value = false;
   characterUploadDialogVisible.value = false;
   clearCharacterUploadSelection();
 });
@@ -5335,14 +6121,31 @@ watch(characterDialogVisible, (visible) => {
 watch(
   () => artSettings.providerId,
   () => {
-    syncStudioModelSelection(artSettings);
+    syncStudioModelSelection(artSettings, artModelProviderOptions.value);
+  },
+);
+
+watch(
+  () => characterGenerateForm.providerId,
+  () => {
+    syncStudioModelSelection(characterGenerateForm, artModelProviderOptions.value);
   },
 );
 
 watch(
   () => storyboardSettings.providerId,
   () => {
-    syncStudioModelSelection(storyboardSettings);
+    syncStudioModelSelection(
+      storyboardSettings,
+      storyboardModelProviderOptions.value,
+    );
+  },
+);
+
+watch(
+  () => voiceForm.providerId,
+  () => {
+    syncVoiceModelSelection();
   },
 );
 
@@ -5422,6 +6225,11 @@ watch(
     extractionResults: extractionResults.value,
     characterForm: {
       voicePreset: characterForm.voicePreset,
+      voiceRecordId: characterForm.voiceRecordId,
+      voiceId: characterForm.voiceId,
+      providerId: characterForm.providerId,
+      modelName: characterForm.modelName,
+      voiceLabel: characterForm.voiceLabel,
       referenceViews: characterForm.referenceViews,
     },
     storyboardSettings: {
@@ -5462,6 +6270,8 @@ watch(
 onMounted(async () => {
   splitScriptIntoChapters();
   await fetchStudioModelSources();
+  await fetchStudioProjectVoices();
+  syncVoiceModelSelection();
   pendingStudioDraft.value = readStudioDraft();
   if (!pendingStudioDraft.value) {
     studioDraftAutosaveReady.value = true;

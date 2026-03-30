@@ -253,8 +253,19 @@
       class="floating-contact-entry"
       @click="toggleContactPopover"
     >
-      <span class="floating-contact-entry__dot" aria-hidden="true" />
-      <span>进群交流</span>
+      <span class="floating-contact-entry__signal" aria-hidden="true">
+        <span class="floating-contact-entry__dot" />
+      </span>
+      <span class="floating-contact-entry__content">
+        <span class="floating-contact-entry__label">进群交流</span>
+        <span class="floating-contact-entry__hint">有人接住，直接进群</span>
+      </span>
+      <span class="floating-contact-entry__arrow" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M7 12h10" />
+          <path d="m13 8 4 4-4 4" />
+        </svg>
+      </span>
       <span v-if="hasMultipleChannels" class="floating-contact-entry__badge">
         {{ publicContactChannels.length }}
       </span>
@@ -268,6 +279,7 @@
           @click.self="closeContactPopover"
         >
           <div class="contact-popover-panel">
+            <div class="contact-popover-panel__ambient" aria-hidden="true" />
             <button type="button" class="contact-popover__close" @click="closeContactPopover">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M18 6L6 18M6 6l12 12" />
@@ -275,9 +287,9 @@
             </button>
 
             <div class="contact-popover__header">
-              <div class="contact-popover__eyebrow">Tech Circle</div>
-              <h3 class="contact-popover__title">直接进群</h3>
-              <p class="contact-popover__text">答疑与交流，一步到位。</p>
+              <div class="contact-popover__eyebrow">Live Channel</div>
+              <h3 class="contact-popover__title">有人接住，直接进群。</h3>
+              <p class="contact-popover__text">{{ activeContactDescription }}</p>
             </div>
 
             <div v-if="hasMultipleChannels" class="contact-popover__switcher">
@@ -294,38 +306,40 @@
             </div>
 
             <div class="contact-popover__surface">
-              <div v-if="activeContactChannel.qr_image_url" class="contact-popover__qr">
-                <img
-                  :src="activeContactChannel.qr_image_url"
-                  :alt="activeContactChannel.title"
-                  loading="lazy"
-                />
+              <div v-if="activeContactChannel.qr_image_url" class="contact-popover__qr-shell">
+                <div class="contact-popover__qr">
+                  <img
+                    :src="activeContactChannel.qr_image_url"
+                    :alt="activeContactChannel.title"
+                    loading="lazy"
+                  />
+                </div>
               </div>
 
-              <div class="contact-popover__meta">
-                <span class="contact-popover__name">{{ activeContactChannel.title }}</span>
-                <span v-if="activeContactChannel.qq_group_number" class="contact-popover__number">
-                  {{ activeContactChannel.qq_group_number }}
-                </span>
-              </div>
+              <div class="contact-popover__body">
+                <div class="contact-popover__meta">
+                  <span class="contact-popover__name">{{ activeContactChannel.title }}</span>
+                  <span v-if="activeContactChannel.qq_group_number" class="contact-popover__number">
+                    群号 {{ activeContactChannel.qq_group_number }}
+                  </span>
+                </div>
 
-              <div class="contact-popover__actions">
-                <el-button
-                  v-if="activeContactChannel.join_link"
-                  type="primary"
-                  class="site-nav__primary contact-popover__primary"
-                  @click="openChannelJoinLink(activeContactChannel)"
-                >
-                  打开加群链接
-                </el-button>
-                <el-button
-                  v-else-if="activeContactChannel.qq_group_number"
-                  type="primary"
-                  class="site-nav__primary contact-popover__primary"
-                  @click="copyContactChannel(activeContactChannel)"
-                >
-                  {{ copiedContactChannelId === activeContactChannel.id ? '已复制' : '复制群号' }}
-                </el-button>
+                <p class="contact-popover__guide">{{ activeContactGuide }}</p>
+
+                <div class="contact-popover__actions">
+                  <el-button
+                    v-if="activeContactChannel.join_link || activeContactChannel.qq_group_number"
+                    type="primary"
+                    class="site-nav__primary contact-popover__primary"
+                    @click="
+                      activeContactChannel.join_link
+                        ? openChannelJoinLink(activeContactChannel)
+                        : copyContactChannel(activeContactChannel)
+                    "
+                  >
+                    {{ activeContactActionText }}
+                  </el-button>
+                </div>
               </div>
             </div>
           </div>
@@ -364,6 +378,30 @@ const activeContactChannel = computed(() => {
   const channels = publicContactChannels.value
   if (!channels.length) return null
   return channels.find((c) => c.id === selectedContactChannelId.value) || channels[0]
+})
+
+const activeContactDescription = computed(() => {
+  const description = String(activeContactChannel.value?.description || '').trim()
+  return description || '答疑、反馈、协作，进群就能继续。'
+})
+
+const activeContactGuide = computed(() => {
+  const guide = String(activeContactChannel.value?.guide_text || '').trim()
+  return guide || '扫码或复制群号，直接加入。'
+})
+
+const activeContactActionText = computed(() => {
+  const channel = activeContactChannel.value
+  if (!channel) {
+    return '进入交流群'
+  }
+  if (channel.join_link) {
+    return String(channel.button_text || '').trim() || '打开加群链接'
+  }
+  if (channel.qq_group_number) {
+    return copiedContactChannelId.value === channel.id ? '已复制群号' : String(channel.button_text || '').trim() || '复制群号'
+  }
+  return '查看群信息'
 })
 
 const navItems = [
@@ -1113,25 +1151,90 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+.floating-contact-entry__signal {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(103, 232, 249, 0.28), rgba(103, 232, 249, 0) 72%),
+    rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.floating-contact-entry__signal::after {
+  content: '';
+  position: absolute;
+  inset: 7px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
 .floating-contact-entry__dot {
-  width: 8px;
-  height: 8px;
+  position: relative;
+  z-index: 1;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
-  background: var(--page-accent-soft);
-  box-shadow: 0 0 0 6px rgba(56, 189, 248, 0.14);
+  background: #67e8f9;
+  box-shadow:
+    0 0 0 6px rgba(103, 232, 249, 0.12),
+    0 0 18px rgba(103, 232, 249, 0.4);
   animation: signalDotPulse 8s ease-in-out infinite;
+}
+
+.floating-contact-entry__content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.floating-contact-entry__label {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0.01em;
+}
+
+.floating-contact-entry__hint {
+  color: rgba(226, 232, 240, 0.74);
+  font-size: 12px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.floating-contact-entry__arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(248, 250, 252, 0.9);
+}
+
+.floating-contact-entry__arrow svg {
+  width: 16px;
+  height: 16px;
 }
 
 .floating-contact-entry__badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
   border-radius: 999px;
-  background: var(--page-accent-soft);
-  color: #fff;
+  background: rgba(103, 232, 249, 0.18);
+  color: #f8fafc;
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
@@ -1146,8 +1249,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: linear-gradient(135deg, rgba(15, 23, 42, 0.32), rgba(15, 23, 42, 0.24));
-  backdrop-filter: blur(12px);
+  background: rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(10px);
   animation: overlayFadeIn 0.2s ease;
 }
 
@@ -1163,17 +1266,29 @@ onBeforeUnmount(() => {
 .contact-popover-panel {
   position: relative;
   width: 100%;
-  max-width: 360px;
-  border-radius: 28px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
-  box-shadow:
-    0 28px 72px rgba(56, 189, 248, 0.16),
-    0 12px 32px rgba(56, 189, 248, 0.12),
-    0 4px 16px rgba(56, 189, 248, 0.08);
-  backdrop-filter: blur(24px);
-  padding: 28px;
-  border: 1px solid rgba(56, 189, 248, 0.12);
+  max-width: 440px;
+  overflow: hidden;
+  border-radius: 30px;
+  background:
+    radial-gradient(circle at top right, rgba(103, 232, 249, 0.16), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.88));
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(20px);
+  padding: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.86);
   animation: popoverSlideUp 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.contact-popover-panel__ambient {
+  position: absolute;
+  inset: -20% auto auto 62%;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(103, 232, 249, 0.24), rgba(103, 232, 249, 0) 72%);
+  filter: blur(12px);
+  opacity: 0.72;
+  pointer-events: none;
 }
 
 @keyframes popoverSlideUp {
@@ -1189,16 +1304,16 @@ onBeforeUnmount(() => {
 
 .contact-popover__close {
   position: absolute;
-  top: 16px;
-  right: 16px;
+  top: 18px;
+  right: 18px;
   width: 36px;
   height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 50%;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(248, 250, 252, 0.8));
+  background: rgba(255, 255, 255, 0.7);
   color: var(--page-text-muted);
   cursor: pointer;
   transition:
@@ -1206,15 +1321,15 @@ onBeforeUnmount(() => {
     color var(--page-transition),
     border-color var(--page-transition),
     transform var(--page-transition);
-  box-shadow: 0 4px 12px rgba(56, 189, 248, 0.08);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
 }
 
 .contact-popover__close:hover {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
+  background: rgba(255, 255, 255, 0.92);
   color: var(--page-text);
-  border-color: rgba(56, 189, 248, 0.32);
-  transform: scale(1.08);
-  box-shadow: 0 6px 16px rgba(56, 189, 248, 0.12);
+  border-color: rgba(15, 23, 42, 0.14);
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
 }
 
 .contact-popover__close:active {
@@ -1227,12 +1342,14 @@ onBeforeUnmount(() => {
 }
 
 .contact-popover__header {
-  padding-right: 40px;
-  text-align: center;
+  position: relative;
+  z-index: 1;
+  padding-right: 44px;
+  text-align: left;
 }
 
 .contact-popover__eyebrow {
-  color: var(--page-accent-soft);
+  color: var(--page-text-soft);
   font-size: 12px;
   line-height: 1;
   letter-spacing: 0.16em;
@@ -1241,34 +1358,33 @@ onBeforeUnmount(() => {
 }
 
 .contact-popover__title {
+  max-width: 10em;
   margin: 12px 0 0;
   font-family: 'Avenir Next', 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  font-size: 26px;
-  line-height: 1.1;
-  letter-spacing: -0.04em;
+  font-size: 30px;
+  line-height: 0.98;
+  letter-spacing: -0.05em;
   color: var(--page-text);
-  background: linear-gradient(135deg, var(--page-text), #334155);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
 }
 
 .contact-popover__text {
   margin: 10px 0 0;
   color: var(--page-text-muted);
   font-size: 15px;
-  line-height: 1.6;
-  font-weight: 500;
+  line-height: 1.7;
+  max-width: 22em;
 }
 
 .contact-popover__switcher {
+  position: relative;
+  z-index: 1;
   display: flex;
   gap: 8px;
-  margin-top: 20px;
+  margin-top: 22px;
   padding: 6px;
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(56, 189, 248, 0.08), rgba(56, 189, 248, 0.04));
-  border: 1px solid rgba(56, 189, 248, 0.12);
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .contact-popover__switcher-item {
@@ -1295,11 +1411,9 @@ onBeforeUnmount(() => {
 }
 
 .contact-popover__switcher-item.is-active {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  background: rgba(255, 255, 255, 0.96);
   color: var(--page-text);
-  box-shadow:
-    0 4px 16px rgba(56, 189, 248, 0.12),
-    0 2px 8px rgba(56, 189, 248, 0.08);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
   transform: translateY(-1px);
 }
 
@@ -1310,61 +1424,33 @@ onBeforeUnmount(() => {
 }
 
 .contact-popover__surface {
-  margin-top: 24px;
+  position: relative;
+  z-index: 1;
+  margin-top: 22px;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0;
+  gap: 20px;
   padding: 24px;
   border-radius: 24px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.88));
-  border: 1px solid rgba(56, 189, 248, 0.12);
-  box-shadow: 0 8px 24px rgba(56, 189, 248, 0.08);
-  position: relative;
-  overflow: hidden;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
 }
 
-.contact-popover__surface::before {
-  content: '';
-  position: absolute;
-  top: -50%;
-  left: -50%;
-  width: 200%;
-  height: 200%;
-  background: radial-gradient(circle, rgba(56, 189, 248, 0.08) 0%, transparent 70%);
-  animation: surfaceGlow 6s ease-in-out infinite;
-}
-
-@keyframes surfaceGlow {
-  0%, 100% {
-    transform: scale(1);
-    opacity: 0.6;
-  }
-  50% {
-    transform: scale(1.1);
-    opacity: 0.8;
-  }
+.contact-popover__qr-shell {
+  flex: 0 0 auto;
+  width: 152px;
+  padding: 10px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
 }
 
 .contact-popover__qr {
-  width: 150px;
-  padding: 10px;
-  border-radius: 20px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
-  box-shadow:
-    0 8px 24px rgba(56, 189, 248, 0.12),
-    0 4px 12px rgba(56, 189, 248, 0.08);
-  border: 1px solid rgba(56, 189, 248, 0.16);
-  position: relative;
-  z-index: 1;
-  transition: transform var(--page-transition);
-}
-
-.contact-popover__qr:hover {
-  transform: scale(1.02);
-  box-shadow:
-    0 12px 32px rgba(56, 189, 248, 0.16),
-    0 6px 16px rgba(56, 189, 248, 0.12);
+  width: 100%;
+  border-radius: 16px;
+  overflow: hidden;
 }
 
 .contact-popover__qr img {
@@ -1373,49 +1459,59 @@ onBeforeUnmount(() => {
   border-radius: 16px;
 }
 
+.contact-popover__body {
+  flex: 1;
+  min-width: 0;
+}
+
 .contact-popover__meta {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  margin-top: 20px;
-  gap: 6px;
-  position: relative;
-  z-index: 1;
+  gap: 8px;
 }
 
 .contact-popover__name {
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 600;
   color: var(--page-text);
-  line-height: 1.3;
-  background: linear-gradient(135deg, var(--page-text), #334155);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  line-height: 1.25;
 }
 
 .contact-popover__number {
   font-family: 'JetBrains Mono', 'SFMono-Regular', monospace;
-  font-size: 20px;
-  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  font-size: 14px;
+  font-weight: 600;
   letter-spacing: 0.04em;
-  color: var(--page-accent-soft);
+  color: #0369a1;
   overflow-wrap: anywhere;
-  text-shadow: 0 2px 8px rgba(56, 189, 248, 0.3);
+}
+
+.contact-popover__guide {
+  margin: 14px 0 0;
+  color: var(--page-text-muted);
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 .contact-popover__actions {
-  margin-top: 20px;
+  margin-top: 18px;
   width: 100%;
-  position: relative;
-  z-index: 1;
 }
 
 .contact-popover__primary {
   width: 100%;
-  min-height: 48px;
+  min-height: 50px;
   border-radius: 999px !important;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   position: relative;
   overflow: hidden;
@@ -2118,42 +2214,44 @@ onBeforeUnmount(() => {
   z-index: 12;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  min-height: 56px;
-  padding: 0 20px;
-  border: 1px solid rgba(56, 189, 248, 0.2);
+  gap: 12px;
+  min-height: 64px;
+  padding: 0 18px 0 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: var(--page-radius-pill);
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.88));
-  color: var(--page-text);
+  background:
+    linear-gradient(135deg, rgba(30, 41, 59, 0.96), rgba(15, 23, 42, 0.92)),
+    rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
   box-shadow:
-    0 16px 36px rgba(56, 189, 248, 0.12),
-    0 8px 16px rgba(56, 189, 248, 0.08);
-  backdrop-filter: blur(20px);
+    0 24px 48px rgba(15, 23, 42, 0.18),
+    0 10px 22px rgba(15, 23, 42, 0.1);
+  backdrop-filter: blur(18px);
   cursor: pointer;
   transition:
     transform var(--page-transition),
     border-color var(--page-transition),
     background-color var(--page-transition),
     box-shadow var(--page-transition);
-  font-weight: 600;
-  font-size: 15px;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 .floating-contact-entry:hover {
   transform: translate3d(0, -3px, 0);
-  border-color: rgba(56, 189, 248, 0.4);
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
+  border-color: rgba(103, 232, 249, 0.22);
+  background:
+    linear-gradient(135deg, rgba(30, 41, 59, 0.98), rgba(15, 23, 42, 0.96)),
+    rgba(15, 23, 42, 0.96);
   box-shadow:
-    0 20px 48px rgba(56, 189, 248, 0.16),
-    0 12px 24px rgba(56, 189, 248, 0.12);
+    0 28px 54px rgba(15, 23, 42, 0.22),
+    0 14px 28px rgba(15, 23, 42, 0.12);
 }
 
 .floating-contact-entry:active {
   transform: translate3d(0, -1px, 0);
   box-shadow:
-    0 12px 28px rgba(56, 189, 248, 0.1),
-    0 6px 12px rgba(56, 189, 248, 0.08);
+    0 16px 32px rgba(15, 23, 42, 0.16),
+    0 8px 16px rgba(15, 23, 42, 0.1);
 }
 
 .hero-node.is-visible:hover {
@@ -2377,9 +2475,21 @@ onBeforeUnmount(() => {
   .floating-contact-entry {
     right: 14px;
     bottom: 14px;
-    min-height: 52px;
-    padding: 0 18px;
+    min-height: 58px;
+    padding: 0 14px 0 12px;
+  }
+
+  .floating-contact-entry__signal {
+    width: 34px;
+    height: 34px;
+  }
+
+  .floating-contact-entry__label {
     font-size: 14px;
+  }
+
+  .floating-contact-entry__hint {
+    font-size: 11px;
   }
 
   .contact-popover-panel {
@@ -2402,16 +2512,27 @@ onBeforeUnmount(() => {
   }
 
   .contact-popover__surface {
+    flex-direction: column;
+    align-items: stretch;
     padding: 20px;
     border-radius: 20px;
   }
 
-  .contact-popover__qr {
+  .contact-popover__qr-shell {
     width: 140px;
+    margin: 0 auto;
+  }
+
+  .contact-popover__qr {
+    width: 100%;
+  }
+
+  .contact-popover__body {
+    width: 100%;
   }
 
   .contact-popover__number {
-    font-size: 18px;
+    font-size: 13px;
   }
 
   .contact-popover__primary {

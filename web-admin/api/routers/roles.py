@@ -70,6 +70,7 @@ async def create_role(req: RoleCreateReq, auth_payload: dict = Depends(require_a
         description=str(req.description or "").strip(),
         permissions=resolve_role_permissions(req.permissions, role_id),
         built_in=False,
+        created_by=str(auth_payload.get("sub") or "").strip(),
     )
     role_store.save(role)
     return {"status": "created", "role": asdict(role_store.get(role_id))}

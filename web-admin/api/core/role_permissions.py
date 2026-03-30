@@ -24,6 +24,7 @@ BUTTON_PERMISSION_ITEMS = [
     {"key": "button.employees.update", "label": "员工管理-编辑员工"},
     {"key": "button.employees.delete", "label": "员工管理-删除员工"},
     {"key": "button.users.create", "label": "用户管理-新增用户"},
+    {"key": "button.users.update", "label": "用户管理-编辑账户"},
     {"key": "button.users.update_password", "label": "用户管理-重置密码"},
     {"key": "button.users.delete", "label": "用户管理-删除用户"},
     {"key": "button.roles.create", "label": "角色管理-新增角色"},

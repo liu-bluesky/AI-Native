@@ -179,44 +179,59 @@ class MemoryStore:
         self._db.commit()
         return cur.rowcount > 0
 
+    @staticmethod
+    def _normalized_project_name(project_name: str = "") -> str:
+        return str(project_name or "").strip()
+
     def recall(self, employee_id: str, query: str = "",
-               limit: int = 10) -> list[Memory]:
+               limit: int = 10, project_name: str = "") -> list[Memory]:
+        normalized_project_name = self._normalized_project_name(project_name)
         if query:
-            rows = self._db.execute(
-                """SELECT * FROM memories WHERE employee_id = ?
-                   AND content LIKE ? ORDER BY importance DESC LIMIT ?""",
-                (employee_id, f"%{query}%", limit),
-            ).fetchall()
+            sql = """SELECT * FROM memories WHERE employee_id = ?
+                   AND content LIKE ?"""
+            params: list[object] = [employee_id, f"%{query}%"]
         else:
-            rows = self._db.execute(
-                """SELECT * FROM memories WHERE employee_id = ?
-                   ORDER BY importance DESC LIMIT ?""",
-                (employee_id, limit),
-            ).fetchall()
+            sql = """SELECT * FROM memories WHERE employee_id = ?"""
+            params = [employee_id]
+        if normalized_project_name:
+            sql += " AND project_name = ?"
+            params.append(normalized_project_name)
+        sql += " ORDER BY importance DESC LIMIT ?"
+        params.append(limit)
+        rows = self._db.execute(sql, tuple(params)).fetchall()
         # 更新访问计数
         for row in rows:
             self._db.execute(
                 """UPDATE memories SET access_count = access_count + 1,
                    last_accessed = ? WHERE id = ?""",
                 (_now_iso(), row["id"]),
-            )
+        )
         self._db.commit()
         return [_row_to_memory(r) for r in rows]
 
-    def recent(self, employee_id: str, limit: int = 10) -> list[Memory]:
-        rows = self._db.execute(
-            """SELECT * FROM memories WHERE employee_id = ?
-               ORDER BY created_at DESC LIMIT ?""",
-            (employee_id, limit),
-        ).fetchall()
+    def recent(self, employee_id: str, limit: int = 10, project_name: str = "") -> list[Memory]:
+        normalized_project_name = self._normalized_project_name(project_name)
+        sql = """SELECT * FROM memories WHERE employee_id = ?"""
+        params: list[object] = [employee_id]
+        if normalized_project_name:
+            sql += " AND project_name = ?"
+            params.append(normalized_project_name)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._db.execute(sql, tuple(params)).fetchall()
         return [_row_to_memory(r) for r in rows]
 
-    def important(self, employee_id: str, limit: int = 10) -> list[Memory]:
-        rows = self._db.execute(
-            """SELECT * FROM memories WHERE employee_id = ?
-               AND importance >= 0.7 ORDER BY importance DESC LIMIT ?""",
-            (employee_id, limit),
-        ).fetchall()
+    def important(self, employee_id: str, limit: int = 10, project_name: str = "") -> list[Memory]:
+        normalized_project_name = self._normalized_project_name(project_name)
+        sql = """SELECT * FROM memories WHERE employee_id = ?
+               AND importance >= 0.7"""
+        params: list[object] = [employee_id]
+        if normalized_project_name:
+            sql += " AND project_name = ?"
+            params.append(normalized_project_name)
+        sql += " ORDER BY importance DESC LIMIT ?"
+        params.append(limit)
+        rows = self._db.execute(sql, tuple(params)).fetchall()
         return [_row_to_memory(r) for r in rows]
 
     def compress(self, employee_id: str, keep_top: int = 50) -> int:
@@ -241,23 +256,32 @@ class MemoryStore:
         self._db.commit()
         return cur.rowcount > 0
 
-    def count(self, employee_id: str) -> int:
-        row = self._db.execute(
-            "SELECT COUNT(*) as cnt FROM memories WHERE employee_id = ?",
-            (employee_id,),
-        ).fetchone()
+    def count(self, employee_id: str, project_name: str = "") -> int:
+        normalized_project_name = self._normalized_project_name(project_name)
+        sql = "SELECT COUNT(*) as cnt FROM memories WHERE employee_id = ?"
+        params: list[object] = [employee_id]
+        if normalized_project_name:
+            sql += " AND project_name = ?"
+            params.append(normalized_project_name)
+        row = self._db.execute(sql, tuple(params)).fetchone()
         return row["cnt"] if row else 0
 
     def list_by_employee(self, employee_id: str,
-                         mem_type: Optional[MemoryType] = None) -> list[Memory]:
+                         mem_type: Optional[MemoryType] = None,
+                         project_name: str = "") -> list[Memory]:
+        normalized_project_name = self._normalized_project_name(project_name)
         if mem_type:
-            rows = self._db.execute(
-                "SELECT * FROM memories WHERE employee_id = ? AND type = ?",
-                (employee_id, mem_type.value),
-            ).fetchall()
+            sql = "SELECT * FROM memories WHERE employee_id = ? AND type = ?"
+            params: list[object] = [employee_id, mem_type.value]
         else:
-            rows = self._db.execute(
-                "SELECT * FROM memories WHERE employee_id = ?",
-                (employee_id,),
-            ).fetchall()
+            sql = "SELECT * FROM memories WHERE employee_id = ?"
+            params = [employee_id]
+        if normalized_project_name:
+            sql += " AND project_name = ?"
+            params.append(normalized_project_name)
+        rows = self._db.execute(sql, tuple(params)).fetchall()
+        return [_row_to_memory(r) for r in rows]
+
+    def list_all(self) -> list[Memory]:
+        rows = self._db.execute("SELECT * FROM memories").fetchall()
         return [_row_to_memory(r) for r in rows]

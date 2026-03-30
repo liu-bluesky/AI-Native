@@ -1,18 +1,70 @@
 <template>
-  <div v-loading="loading">
-    <div class="toolbar">
-      <h3>模型供应商管理</h3>
-      <el-button type="primary" @click="openCreate">新增供应商</el-button>
-    </div>
+  <div v-loading="loading" class="settings-page">
+    <section class="settings-hero">
+      <div class="settings-hero__copy">
+        <div class="settings-hero__eyebrow">Model Access</div>
+        <h1 class="settings-hero__title">模型供应商管理</h1>
+        <p class="settings-hero__summary">
+          管理可用模型入口、共享范围和连通性配置，列表默认按最新创建优先展示。
+        </p>
+        <div class="settings-hero__meta">
+          <span>总供应商 {{ providers.length }}</span>
+          <span>当前筛选 {{ filteredProviders.length }}</span>
+        </div>
+      </div>
+      <div class="settings-hero__actions">
+        <el-button :loading="importingPresets" @click="importMainstreamPresets">导入主流模板</el-button>
+        <el-button @click="fetchProviders">刷新</el-button>
+        <el-button type="primary" @click="openCreate">新增供应商</el-button>
+      </div>
+    </section>
 
-    <el-table :data="providers" stripe>
+    <section class="filter-panel">
+      <div class="filter-panel__grid">
+        <el-input
+          v-model="filters.query"
+          clearable
+          placeholder="搜索名称、地址、创建人或模型"
+        />
+        <el-select v-model="filters.providerType" clearable placeholder="供应商类型">
+          <el-option label="全部类型" value="" />
+          <el-option
+            v-for="item in providerTypeOptions"
+            :key="item"
+            :label="item"
+            :value="item"
+          />
+        </el-select>
+        <el-select v-model="filters.sort" placeholder="排序方式">
+          <el-option label="最新创建" value="created_desc" />
+          <el-option label="最早创建" value="created_asc" />
+          <el-option label="名称 A-Z" value="name_asc" />
+        </el-select>
+        <el-select v-model="pageSize" placeholder="每页条数">
+          <el-option :value="10" label="10 条/页" />
+          <el-option :value="20" label="20 条/页" />
+          <el-option :value="50" label="50 条/页" />
+        </el-select>
+      </div>
+    </section>
+
+    <section class="table-panel">
+      <div class="table-panel__head">
+        <div>
+          <div class="table-panel__eyebrow">Provider Matrix</div>
+          <div class="table-panel__title">供应商列表</div>
+        </div>
+        <div class="table-panel__meta">共 {{ filteredProviders.length }} 条</div>
+      </div>
+
+      <el-table :data="pagedProviders" stripe>
       <el-table-column type="expand">
         <template #default="{ row }">
           <el-descriptions :column="2" border size="small" class="expand-desc">
             <el-descriptions-item label="连接状态">
               <el-tag :type="connectionTagType(row.id)" size="small">{{ connectionTagText(row.id) }}</el-tag>
             </el-descriptions-item>
-            <el-descriptions-item label="最近测试时间">{{ formatDateTime(getConnectionMeta(row.id, 'tested_at')) }}</el-descriptions-item>
+            <el-descriptions-item label="最近测试时间">{{ formatDateTime(getConnectionMeta(row.id, 'tested_at'), { withSeconds: true }) }}</el-descriptions-item>
             <el-descriptions-item label="测试模型">{{ getConnectionMeta(row.id, 'model_tested') || '-' }}</el-descriptions-item>
             <el-descriptions-item label="延迟(ms)">{{ getConnectionMeta(row.id, 'latency_ms') || '-' }}</el-descriptions-item>
             <el-descriptions-item label="返回信息" :span="2">
@@ -60,8 +112,11 @@
           <el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="创建时间" min-width="220">
+        <template #default="{ row }">{{ formatDateTime(row.created_at, { withSeconds: true }) }}</template>
+      </el-table-column>
       <el-table-column label="更新时间" min-width="220">
-        <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
+        <template #default="{ row }">{{ formatDateTime(row.updated_at, { withSeconds: true }) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
@@ -95,11 +150,48 @@
           </el-dropdown>
         </template>
       </el-table-column>
-    </el-table>
-    <el-empty v-if="!loading && !providers.length" description="暂无模型供应商" :image-size="60" />
+      </el-table>
+
+      <div v-if="filteredProviders.length" class="table-panel__pagination">
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          background
+          layout="total, prev, pager, next, sizes"
+          :total="filteredProviders.length"
+          :page-sizes="[10, 20, 50]"
+        />
+      </div>
+
+      <el-empty v-if="!loading && !filteredProviders.length" description="暂无模型供应商" :image-size="60" />
+    </section>
 
     <el-dialog v-model="showDialog" :title="dialogTitle()" width="860px">
       <el-form :model="form" label-width="120px">
+        <el-form-item label="主流模板">
+          <div class="provider-preset-panel">
+            <div class="provider-preset-row">
+              <el-tag
+                v-for="preset in PROVIDER_PRESETS"
+                :key="preset.key"
+                class="provider-preset-tag"
+                :type="appliedPresetKey === preset.key ? 'success' : 'info'"
+                effect="plain"
+                @click="applyProviderPreset(preset)"
+              >
+                {{ preset.label }}
+              </el-tag>
+            </div>
+            <div v-if="activePresetMeta" class="provider-preset-note">
+              <div>{{ activePresetMeta.note }}</div>
+              <div>Base URL：{{ activePresetMeta.base_url }}</div>
+              <div>示例模型：{{ activePresetMeta.model_configs.map((item) => item.name).join('、') }}</div>
+            </div>
+            <div v-else class="provider-preset-note">
+              点击上方模板可自动填充主流供应商的类型、Base URL 和示例模型；模型名可按实际账号权限调整。
+            </div>
+          </div>
+        </el-form-item>
         <el-form-item label="供应商名称" required>
           <el-input v-model="form.name" placeholder="例如：OpenAI 主账号" />
         </el-form-item>
@@ -229,10 +321,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
-import { formatDateTime } from '@/utils/date.js'
+import { formatDateTime, parseDateTime } from '@/utils/date.js'
 import { fetchDictionary } from '@/utils/dictionaries.js'
 import { canManageRecord, getOwnershipDeniedMessage } from '@/utils/ownership.js'
 import {
@@ -244,6 +336,7 @@ import {
 
 const loading = ref(false)
 const saving = ref(false)
+const importingPresets = ref(false)
 const providers = ref([])
 const shareUserOptions = ref([])
 const modelTypeOptions = ref(FALLBACK_MODEL_TYPE_OPTIONS)
@@ -252,7 +345,15 @@ const editingId = ref('')
 const dialogMode = ref('create')
 const testingProviderId = ref('')
 const testingModelName = ref('')
+const currentPage = ref(1)
+const pageSize = ref(10)
+const appliedPresetKey = ref('')
 const connectionResultByProvider = reactive({})
+const filters = reactive({
+  query: '',
+  providerType: '',
+  sort: 'created_desc',
+})
 const form = reactive({
   name: '',
   provider_type: 'openai-compatible',
@@ -267,6 +368,166 @@ const form = reactive({
 
 const modelTypeMetaMap = computed(() => buildModelTypeMetaMap(modelTypeOptions.value))
 const normalizedFormModelConfigs = computed(() => normalizeProviderModelConfigs({ model_configs: form.model_configs }, modelTypeOptions.value))
+const providerTypeOptions = computed(() =>
+  Array.from(
+    new Set(
+      (providers.value || [])
+        .map((item) => String(item?.provider_type || '').trim())
+        .filter(Boolean),
+    ),
+  ),
+)
+
+function normalizeTimestamp(value) {
+  return parseDateTime(value)?.getTime() || 0
+}
+
+const filteredProviders = computed(() => {
+  const keyword = String(filters.query || '').trim().toLowerCase()
+  const providerType = String(filters.providerType || '').trim()
+  const list = (providers.value || []).filter((item) => {
+    const matchesKeyword =
+      !keyword ||
+      String(item?.name || '').toLowerCase().includes(keyword) ||
+      String(item?.base_url || '').toLowerCase().includes(keyword) ||
+      String(item?.owner_username || '').toLowerCase().includes(keyword) ||
+      formatProviderModels(item).toLowerCase().includes(keyword)
+    const matchesProviderType = !providerType || String(item?.provider_type || '').trim() === providerType
+    return matchesKeyword && matchesProviderType
+  })
+  return list.sort((left, right) => {
+    if (filters.sort === 'created_asc') {
+      return normalizeTimestamp(left?.created_at) - normalizeTimestamp(right?.created_at)
+    }
+    if (filters.sort === 'name_asc') {
+      return String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-CN')
+    }
+    return normalizeTimestamp(right?.created_at) - normalizeTimestamp(left?.created_at)
+  })
+})
+
+const pagedProviders = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredProviders.value.slice(start, start + pageSize.value)
+})
+
+watch(
+  () => [filters.query, filters.providerType, filters.sort, pageSize.value],
+  () => {
+    currentPage.value = 1
+  },
+)
+
+const PROVIDER_PRESETS = [
+  {
+    key: 'openai',
+    label: 'OpenAI',
+    name: 'OpenAI',
+    provider_type: 'openai-compatible',
+    base_url: 'https://api.openai.com/v1',
+    note: '官方标准 OpenAI 兼容入口，适合作为通用基准供应商。',
+    model_configs: [
+      { name: 'gpt-4.1', model_type: 'multimodal_chat' },
+      { name: 'gpt-4o-mini', model_type: 'multimodal_chat' },
+    ],
+    default_model: 'gpt-4.1',
+  },
+  {
+    key: 'deepseek',
+    label: 'DeepSeek',
+    name: 'DeepSeek',
+    provider_type: 'openai-compatible',
+    base_url: 'https://api.deepseek.com',
+    note: 'DeepSeek 官方 OpenAI 兼容入口，适合通用对话与推理模型。',
+    model_configs: [
+      { name: 'deepseek-chat', model_type: 'text_generation' },
+      { name: 'deepseek-reasoner', model_type: 'text_generation' },
+    ],
+    default_model: 'deepseek-chat',
+  },
+  {
+    key: 'gemini',
+    label: 'Gemini',
+    name: 'Google Gemini',
+    provider_type: 'openai-compatible',
+    base_url: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    note: 'Google Gemini 的 OpenAI 兼容入口，适合图文理解与通用对话。',
+    model_configs: [
+      { name: 'gemini-2.5-flash', model_type: 'multimodal_chat' },
+      { name: 'gemini-2.5-pro', model_type: 'multimodal_chat' },
+    ],
+    default_model: 'gemini-2.5-flash',
+  },
+  {
+    key: 'zhipu',
+    label: '智谱 GLM',
+    name: '智谱 GLM',
+    provider_type: 'openai-compatible',
+    base_url: 'https://open.bigmodel.cn/api/paas/v4',
+    note: '智谱 OpenAI 兼容入口，已适配 /api/paas/v4，并可用于 TTS 与音色复刻场景。',
+    model_configs: [
+      { name: 'glm-5', model_type: 'text_generation' },
+      { name: 'glm-4.5-air', model_type: 'text_generation' },
+      { name: 'glm-tts', model_type: 'audio_generation' },
+      { name: 'glm-tts-clone', model_type: 'audio_generation' },
+    ],
+    default_model: 'glm-5',
+  },
+  {
+    key: 'dashscope',
+    label: '阿里百炼',
+    name: '阿里云百炼',
+    provider_type: 'openai-compatible',
+    base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    note: 'DashScope OpenAI 兼容入口，适合 Qwen 系列模型接入。',
+    model_configs: [
+      { name: 'qwen-plus', model_type: 'text_generation' },
+      { name: 'qwen-max', model_type: 'text_generation' },
+    ],
+    default_model: 'qwen-plus',
+  },
+  {
+    key: 'openrouter',
+    label: 'OpenRouter',
+    name: 'OpenRouter',
+    provider_type: 'openai-compatible',
+    base_url: 'https://openrouter.ai/api/v1',
+    note: '聚合路由入口，适合统一接入多家模型；如需归因统计可额外补请求头。',
+    model_configs: [
+      { name: 'openai/gpt-4o-mini', model_type: 'multimodal_chat' },
+      { name: 'deepseek/deepseek-chat', model_type: 'text_generation' },
+    ],
+    default_model: 'openai/gpt-4o-mini',
+  },
+  {
+    key: 'moonshot',
+    label: 'Moonshot',
+    name: 'Moonshot AI',
+    provider_type: 'openai-compatible',
+    base_url: 'https://api.moonshot.cn/v1',
+    note: 'Moonshot/Kimi 官方兼容入口，适合中文长文本与通用对话。',
+    model_configs: [
+      { name: 'kimi-latest', model_type: 'text_generation' },
+      { name: 'moonshot-v1-8k', model_type: 'text_generation' },
+    ],
+    default_model: 'kimi-latest',
+  },
+  {
+    key: 'siliconflow',
+    label: 'SiliconFlow',
+    name: 'SiliconFlow',
+    provider_type: 'openai-compatible',
+    base_url: 'https://api.siliconflow.cn/v1',
+    note: 'SiliconFlow 聚合入口，适合快速试用开源与商用模型。',
+    model_configs: [
+      { name: 'Qwen/Qwen3-32B', model_type: 'text_generation' },
+      { name: 'deepseek-ai/DeepSeek-V3', model_type: 'text_generation' },
+    ],
+    default_model: 'Qwen/Qwen3-32B',
+  },
+]
+
+const activePresetMeta = computed(() => PROVIDER_PRESETS.find((item) => item.key === appliedPresetKey.value) || null)
 
 let modelConfigSeed = 0
 
@@ -290,6 +551,7 @@ function resetForm() {
   form.enabled = true
   form.extra_headers_text = ''
   form.shared_usernames = []
+  appliedPresetKey.value = ''
 }
 
 function buildDuplicateName(name) {
@@ -311,6 +573,33 @@ function populateForm(row, { duplicate = false } = {}) {
   const headers = row?.extra_headers && typeof row.extra_headers === 'object' ? row.extra_headers : {}
   form.extra_headers_text = Object.keys(headers).length ? JSON.stringify(headers, null, 2) : ''
   form.shared_usernames = Array.isArray(row?.shared_usernames) ? row.shared_usernames.map((item) => String(item || '').trim()).filter(Boolean) : []
+  appliedPresetKey.value = matchPresetKey({
+    name: form.name,
+    provider_type: form.provider_type,
+    base_url: form.base_url,
+  })
+  syncDefaultModelSelection()
+}
+
+function matchPresetKey(row) {
+  const normalizedBaseUrl = String(row?.base_url || '').trim().replace(/\/+$/, '')
+  const normalizedType = String(row?.provider_type || '').trim()
+  return PROVIDER_PRESETS.find(
+    (item) => item.provider_type === normalizedType && item.base_url === normalizedBaseUrl,
+  )?.key || ''
+}
+
+function applyProviderPreset(preset) {
+  if (!preset || typeof preset !== 'object') return
+  form.name = String(preset.name || '')
+  form.provider_type = String(preset.provider_type || 'openai-compatible')
+  form.base_url = String(preset.base_url || '')
+  form.model_configs = Array.isArray(preset.model_configs) && preset.model_configs.length
+    ? preset.model_configs.map((item) => createModelConfig(item.name, item.model_type))
+    : [createModelConfig()]
+  form.default_model = String(preset.default_model || preset.model_configs?.[0]?.name || '')
+  form.extra_headers_text = preset.extra_headers ? JSON.stringify(preset.extra_headers, null, 2) : ''
+  appliedPresetKey.value = String(preset.key || '')
   syncDefaultModelSelection()
 }
 
@@ -405,9 +694,10 @@ async function fetchProviders() {
   loading.value = true
   try {
     const data = await api.get('/llm/providers')
-    providers.value = data.providers || []
+    providers.value = Array.isArray(data?.providers) ? data.providers : []
   } catch (e) {
     ElMessage.error(e.detail || '加载模型供应商失败')
+    providers.value = []
   } finally {
     loading.value = false
   }
@@ -507,6 +797,67 @@ async function submitForm() {
     ElMessage.error(e.detail || '保存失败')
   } finally {
     saving.value = false
+  }
+}
+
+function buildPresetPayload(preset) {
+  const modelConfigs = Array.isArray(preset?.model_configs) ? preset.model_configs : []
+  return {
+    name: String(preset?.name || '').trim(),
+    provider_type: String(preset?.provider_type || 'openai-compatible').trim(),
+    base_url: String(preset?.base_url || '').trim(),
+    model_configs: modelConfigs.map((item) => ({
+      name: String(item?.name || '').trim(),
+      model_type: String(item?.model_type || modelTypeOptions.value[0]?.id || 'text_generation').trim(),
+    })),
+    default_model: String(preset?.default_model || modelConfigs[0]?.name || '').trim(),
+    enabled: false,
+    extra_headers: preset?.extra_headers && typeof preset.extra_headers === 'object' ? preset.extra_headers : {},
+    shared_usernames: [],
+    api_key: '',
+  }
+}
+
+async function importMainstreamPresets() {
+  try {
+    await ElMessageBox.confirm(
+      '将批量创建主流供应商模板，默认处于禁用状态。导入后请补充 API Key、按需调整模型并手动启用。',
+      '导入主流模板',
+      { type: 'info' },
+    )
+  } catch {
+    return
+  }
+
+  importingPresets.value = true
+  try {
+    const existingKeys = new Set(
+      (Array.isArray(providers.value) ? providers.value : []).map(
+        (item) => `${String(item?.name || '').trim()}@@${String(item?.base_url || '').trim().replace(/\/+$/, '')}`,
+      ),
+    )
+    let createdCount = 0
+    let skippedCount = 0
+    for (const preset of PROVIDER_PRESETS) {
+      const dedupeKey = `${preset.name}@@${preset.base_url}`
+      if (existingKeys.has(dedupeKey)) {
+        skippedCount += 1
+        continue
+      }
+      await api.post('/llm/providers', buildPresetPayload(preset))
+      existingKeys.add(dedupeKey)
+      createdCount += 1
+    }
+    await fetchProviders()
+    if (!createdCount) {
+      ElMessage.info(`主流模板已存在，已跳过 ${skippedCount} 条`)
+      return
+    }
+    ElMessage.success(`已导入 ${createdCount} 条主流模板${skippedCount ? `，跳过 ${skippedCount} 条重复项` : ''}`)
+  } catch (e) {
+    ElMessage.error(e?.detail || '导入主流模板失败')
+  } finally {
+    importingPresets.value = false
   }
 }
 
@@ -663,15 +1014,97 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
+.settings-page {
+  display: grid;
+  gap: 18px;
 }
 
-.toolbar h3 {
+.settings-hero,
+.filter-panel,
+.table-panel {
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(18px);
+}
+
+.settings-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px 26px;
+}
+
+.settings-hero__copy {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-hero__eyebrow,
+.table-panel__eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.settings-hero__title,
+.table-panel__title {
   margin: 0;
+  font-size: 28px;
+  color: #0f172a;
+}
+
+.settings-hero__summary {
+  margin: 0;
+  max-width: 620px;
+  color: #475569;
+  line-height: 1.7;
+}
+
+.settings-hero__meta,
+.table-panel__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.settings-hero__actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.filter-panel {
+  padding: 18px 20px;
+}
+
+.filter-panel__grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.table-panel {
+  padding: 20px;
+}
+
+.table-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.table-panel__pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
 }
 
 .expand-desc {
@@ -701,6 +1134,28 @@ onMounted(async () => {
   display: grid;
   gap: 10px;
   width: 100%;
+}
+
+.provider-preset-panel {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+.provider-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.provider-preset-tag {
+  cursor: pointer;
+}
+
+.provider-preset-note {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 .model-config-row {
@@ -737,5 +1192,23 @@ onMounted(async () => {
 .model-option-line__meta {
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+
+@media (max-width: 960px) {
+  .settings-hero,
+  .table-panel__head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .filter-panel__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .filter-panel__grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

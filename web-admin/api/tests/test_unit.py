@@ -679,6 +679,10 @@ def test_project_studio_model_sources_and_generation_routes(tmp_path, monkeypatc
                     "id": "provider-studio",
                     "name": "Studio Provider",
                     "models": ["gpt-4.1", "gpt-4o-mini"],
+                    "model_configs": [
+                        {"name": "gpt-4.1", "model_type": "image_generation"},
+                        {"name": "gpt-4o-mini", "model_type": "video_generation"},
+                    ],
                     "default_model": "gpt-4.1",
                     "enabled": True,
                     "is_default": True,
@@ -732,6 +736,10 @@ def test_project_studio_model_sources_and_generation_routes(tmp_path, monkeypatc
     assert sources_payload["default_provider_id"] == "provider-studio"
     assert sources_payload["default_model_name"] == "gpt-4.1"
     assert sources_payload["providers"][0]["models"] == ["gpt-4.1", "gpt-4o-mini"]
+    assert sources_payload["providers"][0]["model_configs"] == [
+        {"name": "gpt-4.1", "model_type": "image_generation"},
+        {"name": "gpt-4o-mini", "model_type": "video_generation"},
+    ]
 
     extraction_response = client.post(
         "/api/projects/proj-studio-models/studio/extractions",
@@ -2007,6 +2015,57 @@ async def test_conversation_manager_logic():
     assert "assistant:" in summary
 
 
+class _FakeConversationRedis:
+    def __init__(self):
+        self.values: dict[str, str] = {}
+        self.lists: dict[str, list[str]] = {}
+        self.expire_calls: list[tuple[str, int]] = []
+
+    async def set(self, key, value, ex=None):
+        self.values[key] = value
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def rpush(self, key, value):
+        self.lists.setdefault(key, []).append(value)
+
+    async def expire(self, key, ttl):
+        self.expire_calls.append((key, ttl))
+
+    async def lrange(self, key, start, end):
+        return list(self.lists.get(key, []))
+
+    async def delete(self, key):
+        self.values.pop(key, None)
+        self.lists.pop(key, None)
+
+
+@pytest.mark.asyncio
+async def test_conversation_manager_append_refreshes_session_meta():
+    from services.conversation_manager import ConversationManager
+
+    redis_mock = _FakeConversationRedis()
+    manager = ConversationManager(redis_mock)
+
+    session_id = await manager.create_session("proj-1", "emp-1")
+    meta_key = f"session:{session_id}:meta"
+    initial_meta = json.loads(redis_mock.values[meta_key])
+
+    await manager.append_message(session_id, {"role": "user", "content": "你好"})
+
+    updated_meta = json.loads(redis_mock.values[meta_key])
+    context = await manager.get_context(session_id, 4000)
+    refreshed_meta = json.loads(redis_mock.values[meta_key])
+
+    assert updated_meta["message_count"] == 1
+    assert updated_meta["last_active_at"] != initial_meta["last_active_at"]
+    assert refreshed_meta["message_count"] == 1
+    assert refreshed_meta["last_active_at"] != updated_meta["last_active_at"]
+    assert context == [{"role": "user", "content": "你好"}]
+    assert (f"session:{session_id}:messages", manager._session_ttl) in redis_mock.expire_calls
+
+
 def test_usage_key_delete_compatibility_allows_legacy_owners():
     from routers.usage import _can_delete_key_record
 
@@ -2263,8 +2322,8 @@ def test_dictionary_catalog_includes_llm_chat_parameter_dictionaries():
     video_duration = get_dictionary_definition("llm_video_duration_seconds")
 
     assert image_resolution is not None
-    assert image_resolution["default_value"] == "1024x1024"
-    assert any(item["id"] == "1536x1024" for item in image_resolution["options"])
+    assert image_resolution["default_value"] == "1080x1080"
+    assert any(item["id"] == "2160x2160" for item in image_resolution["options"])
     assert any(item["route"] == "/projects/chat" for item in image_resolution["usage_refs"])
 
     assert video_duration is not None
@@ -2489,13 +2548,19 @@ def test_llm_chat_parameter_catalog_applies_dictionary_overrides(monkeypatch):
     import services.llm_chat_parameter_catalog as catalog
 
     dictionary_defaults = {
-        "llm_image_resolutions": "2048x2048",
+        "llm_image_resolutions": "720x720",
+        "llm_image_styles": "illustration",
         "llm_video_duration_seconds": "12",
     }
     dictionary_options = {
         "llm_image_resolutions": [
-            {"id": "1024x1024", "label": "标准"},
-            {"id": "2048x2048", "label": "超清"},
+            {"id": "720x720", "label": "720x720"},
+            {"id": "1080x1080", "label": "1080x1080"},
+            {"id": "2160x2160", "label": "2160x2160"},
+        ],
+        "llm_image_styles": [
+            {"id": "auto", "label": "自动"},
+            {"id": "illustration", "label": "插画"},
         ],
         "llm_video_duration_seconds": [
             {"id": "5", "label": "5 秒"},
@@ -2514,11 +2579,89 @@ def test_llm_chat_parameter_catalog_applies_dictionary_overrides(monkeypatch):
         lambda dictionary_key: dictionary_options.get(dictionary_key, []),
     )
 
-    assert catalog.get_chat_parameter_default_value("image_resolution") == "2048x2048"
-    assert catalog.normalize_chat_parameter_value("image_resolution", "bad-value") == "2048x2048"
+    assert catalog.get_chat_parameter_default_value("image_resolution") == "720x720"
+    assert catalog.normalize_chat_parameter_value("image_resolution", "720x720") == "720x720"
+    assert catalog.normalize_chat_parameter_value("image_resolution", "bad-value") == "720x720"
+    assert catalog.get_chat_parameter_default_value("image_style") == "illustration"
+    assert catalog.normalize_chat_parameter_value("image_style", "bad-value") == "illustration"
     assert catalog.get_chat_parameter_default_value("video_duration_seconds") == 12
     assert catalog.normalize_chat_parameter_value("video_duration_seconds", "12") == 12
     assert catalog.normalize_chat_parameter_value("video_duration_seconds", "999") == 12
+
+
+def test_project_chat_image_resolution_converts_to_concrete_size():
+    from routers import projects as projects_router
+
+    assert projects_router._resolve_project_chat_image_size("720x720", "16:9") == "720x406"
+    assert projects_router._resolve_project_chat_image_size("1080x1080", "9:16") == "608x1080"
+    assert projects_router._resolve_project_chat_image_size("2160x2160", "1:1") == "2160x2160"
+    assert projects_router._resolve_project_chat_image_size("1280x720", "1:1") == "1280x720"
+    assert projects_router._resolve_project_chat_image_size("2160p", "16:9") == "3840x2160"
+    assert projects_router._resolve_project_chat_image_size("1536x1024", "3:4") == "1536x1024"
+
+
+def test_normalize_dictionaries_migrates_legacy_image_resolution_values():
+    from stores.json.system_config_store import normalize_dictionaries
+
+    normalized = normalize_dictionaries(
+        {
+            "llm_image_resolutions": {
+                "key": "llm_image_resolutions",
+                "label": "图片分辨率",
+                "default_value": "1080p",
+                "options": [
+                    {"id": "720p", "label": "720p"},
+                    {"id": "1080p", "label": "1080p"},
+                    {"id": "4K", "label": "4K"},
+                ],
+            }
+        }
+    )
+
+    image_resolution = normalized["llm_image_resolutions"]
+    assert image_resolution["default_value"] == "1080x1080"
+    assert [item["id"] for item in image_resolution["options"]] == [
+        "720x720",
+        "1080x1080",
+        "2160x2160",
+    ]
+
+
+def test_json_system_config_store_persists_migrated_dictionaries(tmp_path):
+    from stores.json.system_config_store import SystemConfigStore
+
+    data_dir = tmp_path / "api-data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    system_config_path = data_dir / "system-config.json"
+    system_config_path.write_text(
+        json.dumps(
+            {
+                "id": "global",
+                "dictionaries": {
+                    "llm_image_resolutions": {
+                        "key": "llm_image_resolutions",
+                        "label": "图片分辨率",
+                        "default_value": "1080p",
+                        "options": [
+                            {"id": "720p", "label": "720p"},
+                            {"id": "1080p", "label": "1080p"},
+                            {"id": "4K", "label": "4K"},
+                        ],
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    store = SystemConfigStore(data_dir)
+    config = store.get_global()
+    persisted = json.loads(system_config_path.read_text(encoding="utf-8"))
+
+    assert config.dictionaries["llm_image_resolutions"]["default_value"] == "1080x1080"
+    assert persisted["dictionaries"]["llm_image_resolutions"]["default_value"] == "1080x1080"
+    assert persisted["dictionaries"]["llm_image_resolutions"]["options"][2]["id"] == "2160x2160"
 
 
 def test_dictionary_routes_support_custom_dictionary_crud(tmp_path, monkeypatch):
@@ -2846,6 +2989,37 @@ def test_save_auto_query_memory_writes_to_active_project_members(tmp_path, monke
         "user-question",
         "mcp:tools/call:get_manual_content",
     )
+
+
+def test_memory_store_recall_filters_project_before_limit(tmp_path):
+    from stores import mcp_bridge as bridge
+
+    store = bridge._memory_mod.MemoryStore(tmp_path / "memories.db")
+    for index in range(120):
+        store.save(
+            bridge.Memory(
+                id=f"mem-other-{index}",
+                employee_id="emp-1",
+                type=bridge.MemoryType.PROJECT_CONTEXT,
+                content="query hit from other project",
+                project_name="其他项目",
+                importance=1.0 - (index * 0.001),
+            )
+        )
+    store.save(
+        bridge.Memory(
+            id="mem-target",
+            employee_id="emp-1",
+            type=bridge.MemoryType.PROJECT_CONTEXT,
+            content="query hit from target project",
+            project_name="目标项目",
+            importance=0.1,
+        )
+    )
+
+    recalled = store.recall("emp-1", "query hit", 100, project_name="目标项目")
+
+    assert [item.id for item in recalled] == ["mem-target"]
 
 
 class _FakeMemoryStore:
@@ -3461,6 +3635,7 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
 
 def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     from services import dynamic_mcp_apps_query as query_mcp_svc
+    from stores.mcp_bridge import Classification, MemoryScope, MemoryType
 
     registered_tools: dict[str, object] = {}
     registered_resources: dict[str, object] = {}
@@ -3488,7 +3663,25 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     monkeypatch.setattr(
         query_mcp_svc,
         "project_store",
-        type("DummyProjectStore", (), {"get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None)})(),
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})()
+                    ]
+                    if project_id == "proj-1"
+                    else []
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "employee_store",
+        type("DummyEmployeeStore", (), {"get": staticmethod(lambda employee_id: object() if employee_id == "emp-1" else None)})(),
     )
     monkeypatch.setattr(
         query_mcp_svc,
@@ -3509,9 +3702,23 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
         if project_id == "proj-1"
         else [],
     )
+    saved_memories = []
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+            },
+        )(),
+    )
 
     query_mcp_svc.create_query_mcp()
 
+    assert "save_project_memory" in registered_tools
     assert "list_project_members" in registered_tools
     assert "get_project_runtime_context" in registered_tools
     assert "list_project_proxy_tools" in registered_tools
@@ -3522,6 +3729,7 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert "execute_project_collaboration" in query_usage_guide
     assert "统一编排入口" in query_usage_guide
     assert "不预设固定行业分工模板" in query_usage_guide
+    assert "save_project_memory" in query_usage_guide
 
     import sys
     import types
@@ -3545,6 +3753,10 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     original_runtime_module = sys.modules.get("services.dynamic_mcp_runtime")
     sys.modules["services.dynamic_mcp_runtime"] = runtime_module
     try:
+        save_result = registered_tools["save_project_memory"](
+            "proj-1",
+            "问题：统一入口要补项目级记忆写入\n结论：新增 save_project_memory",
+        )
         members = registered_tools["list_project_members"]("proj-1")
         context = registered_tools["get_project_runtime_context"]("proj-1")
         tools = registered_tools["list_project_proxy_tools"]("proj-1", "emp-1")
@@ -3571,6 +3783,17 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert members["project_id"] == "proj-1"
     assert members["total"] == 1
     assert members["items"][0]["employee_id"] == "emp-1"
+
+    assert save_result["status"] == "saved"
+    assert save_result["project_id"] == "proj-1"
+    assert save_result["employee_ids"] == ["emp-1"]
+    assert save_result["saved_count"] == 1
+    assert saved_memories[0].employee_id == "emp-1"
+    assert saved_memories[0].project_name == "项目一"
+    assert saved_memories[0].type == MemoryType.PROJECT_CONTEXT
+    assert saved_memories[0].scope == MemoryScope.EMPLOYEE_PRIVATE
+    assert saved_memories[0].classification == Classification.INTERNAL
+    assert saved_memories[0].purpose_tags == ("query-mcp", "manual-write", "project-id")
 
     assert context["project_id"] == "proj-1"
     assert context["member_count"] == 1
@@ -4774,6 +4997,86 @@ async def test_list_skills_includes_private_skill_shared_via_employee(tmp_path, 
 
     assert skill_ids == {"skill-1"}
     assert result["skills"][0]["shared_via_employees"][0]["id"] == "emp-1"
+
+
+def _build_user_account_test_client(tmp_path, monkeypatch, auth_payload):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+    from stores.json.user_store import User, hash_password
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in ("user_store", "role_store"):
+        getattr(store_factory, proxy_name)._instance = None
+
+    store_factory.user_store.save(User(username="alice", password_hash=hash_password("alice-old"), role="user"))
+    store_factory.user_store.save(User(username="bob", password_hash=hash_password("bob-old"), role="user"))
+    store_factory.user_store.save(User(username="admin", password_hash=hash_password("admin-old"), role="admin"))
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: auth_payload
+    return TestClient(app), store_factory.user_store
+
+
+def test_user_can_update_own_account_without_user_update_permission(tmp_path, monkeypatch):
+    from stores.json.user_store import verify_password
+
+    client, user_store = _build_user_account_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "alice", "role": "user"},
+    )
+
+    response = client.put(
+        "/api/users/alice",
+        json={"role": "user", "password": "alice-new-password"},
+    )
+
+    assert response.status_code == 200
+    updated = user_store.get("alice")
+    assert updated is not None
+    assert updated.role == "user"
+    assert verify_password("alice-new-password", updated.password_hash)
+
+
+def test_user_cannot_update_other_account_without_user_update_permission(tmp_path, monkeypatch):
+    client, _user_store = _build_user_account_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "alice", "role": "user"},
+    )
+
+    response = client.put(
+        "/api/users/bob",
+        json={"role": "user", "password": "bob-new-password"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Permission denied: button.users.update"
+
+
+def test_admin_can_update_other_account(tmp_path, monkeypatch):
+    from stores.json.user_store import verify_password
+
+    client, user_store = _build_user_account_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+
+    response = client.put(
+        "/api/users/bob",
+        json={"role": "user", "password": "bob-new-password"},
+    )
+
+    assert response.status_code == 200
+    updated = user_store.get("bob")
+    assert updated is not None
+    assert verify_password("bob-new-password", updated.password_hash)
 
 
 if __name__ == "__main__":

@@ -114,6 +114,52 @@
         <div class="settings-note">
           仅可选择你当前有权限使用且已启用的模型供应商；这些供应商可以是你自己创建的，也可以是他人共享给你的。
         </div>
+
+        <div class="settings-section-divider"></div>
+
+        <div class="settings-panel__head settings-panel__head--compact">
+          <div class="settings-panel__eyebrow">Security</div>
+          <h3>登录密码</h3>
+          <p>普通用户只修改自己的登录密码；角色和其他账号权限仍由超级管理员统一维护。</p>
+        </div>
+
+        <el-form
+          ref="passwordFormRef"
+          :model="passwordForm"
+          :rules="passwordRules"
+          label-position="top"
+          class="settings-form"
+        >
+          <el-form-item label="新密码" prop="password">
+            <el-input
+              v-model="passwordForm.password"
+              type="password"
+              show-password
+              placeholder="至少 6 位"
+              class="settings-input"
+            />
+          </el-form-item>
+          <el-form-item label="确认新密码" prop="confirmPassword">
+            <el-input
+              v-model="passwordForm.confirmPassword"
+              type="password"
+              show-password
+              placeholder="再次输入新密码"
+              class="settings-input"
+            />
+          </el-form-item>
+        </el-form>
+
+        <div class="security-actions">
+          <el-button class="settings-context__button" @click="resetPasswordForm">清空</el-button>
+          <el-button
+            class="settings-context__button settings-context__button--primary"
+            :loading="passwordSaving"
+            @click="updatePassword"
+          >
+            更新密码
+          </el-button>
+        </div>
       </article>
     </section>
   </div>
@@ -127,12 +173,18 @@ import { formatDateTime } from "@/utils/date.js";
 
 const loading = ref(false);
 const saving = ref(false);
+const passwordSaving = ref(false);
 const providers = ref([]);
+const passwordFormRef = ref(null);
 const form = reactive({
   username: "",
   role: "",
   created_at: "",
   default_ai_provider_id: "",
+});
+const passwordForm = reactive({
+  password: "",
+  confirmPassword: "",
 });
 
 const usernameInitial = computed(
@@ -179,6 +231,32 @@ const selectedProvider = computed(() =>
   ) || null,
 );
 
+const validateConfirmPassword = (_rule, value, callback) => {
+  if (!String(value || "").trim()) {
+    callback(new Error("请再次输入新密码"));
+    return;
+  }
+  if (String(value) !== String(passwordForm.password || "")) {
+    callback(new Error("两次输入的密码不一致"));
+    return;
+  }
+  callback();
+};
+
+const passwordRules = {
+  password: [
+    { required: true, message: "请输入新密码", trigger: "blur" },
+    { min: 6, message: "密码至少 6 位", trigger: "blur" },
+  ],
+  confirmPassword: [{ validator: validateConfirmPassword, trigger: "blur" }],
+};
+
+function resetPasswordForm() {
+  passwordForm.password = "";
+  passwordForm.confirmPassword = "";
+  passwordFormRef.value?.clearValidate?.();
+}
+
 async function fetchSettings() {
   loading.value = true;
   try {
@@ -211,6 +289,22 @@ async function saveSettings() {
     ElMessage.error(err?.detail || err?.message || "保存用户设置失败");
   } finally {
     saving.value = false;
+  }
+}
+
+async function updatePassword() {
+  await passwordFormRef.value?.validate?.();
+  passwordSaving.value = true;
+  try {
+    await api.put(`/users/${encodeURIComponent(form.username)}/password`, {
+      password: String(passwordForm.password || ""),
+    });
+    ElMessage.success("登录密码已更新");
+    resetPasswordForm();
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "更新登录密码失败");
+  } finally {
+    passwordSaving.value = false;
   }
 }
 
@@ -561,6 +655,42 @@ onMounted(fetchSettings);
   line-height: 1.7;
 }
 
+.settings-section-divider {
+  width: 100%;
+  max-width: 720px;
+  height: 1px;
+  margin: 26px 0 24px;
+  background: linear-gradient(90deg, rgba(15, 23, 42, 0.08), rgba(15, 23, 42, 0));
+}
+
+.settings-panel__head--compact h3 {
+  font-size: 22px;
+}
+
+.settings-input {
+  width: min(520px, 100%);
+}
+
+.settings-input :deep(.el-input__wrapper) {
+  min-height: 46px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+}
+
+.settings-input :deep(.el-input__wrapper.is-focus) {
+  box-shadow:
+    inset 0 0 0 1px rgba(56, 189, 248, 0.22),
+    0 0 0 4px rgba(103, 232, 249, 0.12);
+}
+
+.security-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
 @media (max-width: 1120px) {
   .settings-context {
     flex-direction: column;
@@ -619,6 +749,11 @@ onMounted(fetchSettings);
   }
 
   .settings-context__actions {
+    align-items: stretch;
+  }
+
+  .security-actions {
+    flex-direction: column;
     align-items: stretch;
   }
 }

@@ -819,70 +819,6 @@
                   @toggle="toggleComposerAssist"
                 />
 
-                <div
-                  v-if="currentModelParameterSections.length"
-                  class="chat-parameter-ribbon"
-                >
-                  <div class="chat-parameter-ribbon__title">
-                    {{
-                      currentModelParameterMode === "image"
-                        ? "图片生成预设"
-                        : "视频生成预设"
-                    }}
-                  </div>
-                  <div class="chat-parameter-ribbon__items">
-                    <div
-                      v-for="section in currentModelParameterSections"
-                      :key="`composer-${section.key}`"
-                      class="chat-parameter-ribbon__item"
-                    >
-                      <div class="chat-parameter-ribbon__label">
-                        {{ section.label }}
-                      </div>
-                      <div
-                        v-if="section.helper"
-                        class="chat-parameter-ribbon__helper"
-                      >
-                        {{ section.helper }}
-                      </div>
-                      <el-segmented
-                        v-if="
-                          currentModelParameterMode !== 'image' &&
-                          section.useSegmented
-                        "
-                        :model-value="section.modelValue"
-                        :options="
-                          section.options.map((item) => ({
-                            label: item.label,
-                            value: item.value,
-                          }))
-                        "
-                        class="chat-parameter-ribbon__control"
-                        @change="
-                          (value) =>
-                            setCurrentModelParameterValue(section.key, value)
-                        "
-                      />
-                      <el-select
-                        v-else
-                        :model-value="section.modelValue"
-                        class="chat-parameter-ribbon__control"
-                        @change="
-                          (value) =>
-                            setCurrentModelParameterValue(section.key, value)
-                        "
-                      >
-                        <el-option
-                          v-for="option in section.options"
-                          :key="`${section.key}-${option.id}`"
-                          :label="option.label"
-                          :value="option.value"
-                        />
-                      </el-select>
-                    </div>
-                  </div>
-                </div>
-
                 <div class="input-footer">
                   <div class="footer-left">
                     <el-select
@@ -959,6 +895,121 @@
                         ></el-button>
                       </el-tooltip>
                     </el-upload>
+                    <el-popover
+                      v-if="shouldShowMediaParameterTrigger"
+                      v-model:visible="mediaParameterPopoverVisible"
+                      trigger="click"
+                      placement="top-start"
+                      :width="currentModelParameterMode === 'image' ? 460 : 420"
+                      :teleported="false"
+                    >
+                      <template #reference>
+                        <el-button
+                          class="chat-media-parameter-trigger"
+                          text
+                          :disabled="chatLoading"
+                        >
+                          <el-icon class="chat-media-parameter-trigger__icon">
+                            <component :is="currentMediaParameterTriggerIcon" />
+                          </el-icon>
+                          <span class="chat-media-parameter-trigger__label">
+                            {{ currentMediaParameterTriggerLabel }}
+                          </span>
+                        </el-button>
+                      </template>
+
+                      <div class="chat-media-parameter-panel">
+                        <div class="chat-media-parameter-panel__head">
+                          <div class="chat-media-parameter-panel__eyebrow">
+                            {{ currentMediaParameterTriggerLabel }}
+                          </div>
+                          <div class="chat-media-parameter-panel__title">
+                            {{ currentMediaParameterPanelTitle }}
+                          </div>
+                          <div class="chat-media-parameter-panel__summary">
+                            {{ currentModelSummary }}
+                          </div>
+                        </div>
+
+                        <div class="chat-media-parameter-panel__sections">
+                          <section
+                            v-for="section in currentModelParameterSections"
+                            :key="`popover-${section.key}`"
+                            class="chat-media-parameter-section"
+                          >
+                            <div class="chat-media-parameter-section__label">
+                              {{ section.label }}
+                            </div>
+                            <div
+                              v-if="section.helper"
+                              class="chat-media-parameter-section__helper"
+                            >
+                              {{ section.helper }}
+                            </div>
+                            <div
+                              class="chat-media-parameter-section__options"
+                              :class="{
+                                'is-aspect': section.key === 'image_aspect_ratio' || section.key === 'video_aspect_ratio',
+                                'is-resolution': section.key === 'image_resolution',
+                              }"
+                            >
+                              <button
+                                v-for="option in section.options"
+                                :key="`${section.key}-${option.id}`"
+                                type="button"
+                                class="chat-media-parameter-option"
+                                :class="{
+                                  'is-active': option.value === section.modelValue,
+                                  'is-resolution': section.key === 'image_resolution',
+                                }"
+                                @click="setCurrentModelParameterValue(section.key, option.value)"
+                              >
+                                <span class="chat-media-parameter-option__label">
+                                  {{ option.label }}
+                                </span>
+                              </button>
+                            </div>
+                          </section>
+                        </div>
+
+                        <section
+                          v-if="shouldShowImageFourViewsOption"
+                          class="chat-media-parameter-section chat-media-parameter-section--toggle"
+                        >
+                          <div class="chat-media-parameter-section__label">
+                            四视图
+                          </div>
+                          <div class="chat-media-parameter-section__helper">
+                            勾选后会自动要求输出同一角色的正面、背面、左侧、右侧四视图。
+                          </div>
+                          <button
+                            type="button"
+                            class="chat-media-toggle-card"
+                            :class="{
+                              'is-active': imageGenerateFourViewsEnabled,
+                            }"
+                            @click="toggleImageGenerateFourViews"
+                          >
+                            <div class="chat-media-toggle-card__content">
+                              <span class="chat-media-toggle-card__title">
+                                自动生成四视图
+                              </span>
+                              <span class="chat-media-toggle-card__description">
+                                适合角色设定图和素材前置统一。
+                              </span>
+                            </div>
+                            <span
+                              class="chat-media-toggle-card__indicator"
+                              :class="{
+                                'is-active': imageGenerateFourViewsEnabled,
+                              }"
+                            >
+                              {{ imageGenerateFourViewsEnabled ? "已开启" : "未开启" }}
+                            </span>
+                          </button>
+                        </section>
+                      </div>
+                    </el-popover>
                   </div>
                   <div class="footer-right">
                     <span class="hint-text">{{ composerHintText }}</span>
@@ -2460,8 +2511,9 @@ const CHAT_SETTINGS_DEFAULTS = {
   tool_retry_count: 0,
   answer_style: "concise",
   prefer_conclusion_first: true,
-  image_resolution: "1024x1024",
+  image_resolution: "1080x1080",
   image_aspect_ratio: "1:1",
+  image_generate_four_views: false,
   image_style: "auto",
   image_quality: "high",
   video_aspect_ratio: "16:9",
@@ -2482,18 +2534,17 @@ const GUIDE_TOUR_STORAGE_PREFIX = "project_chat.guide_tour";
 const CHAT_PARAMETER_SECTION_CONFIG = {
   image: [
     {
-      key: "image_resolution",
-      label: "图片分辨率",
-      helper: "决定输出尺寸和横竖版倾向。",
-      control: "segmented",
-      maxSegmentedOptions: 4,
-    },
-    {
       key: "image_aspect_ratio",
       label: "图片比例",
-      helper: "控制画面构图比例。",
+      helper: "先确定画面构图比例，再选择对应输出尺寸。",
       control: "segmented",
       maxSegmentedOptions: 5,
+    },
+    {
+      key: "image_resolution",
+      label: "图片分辨率",
+      helper: "在比例确定后，再选择固定尺寸档位，后端会自动换算最终输出尺寸。",
+      control: "select",
     },
     {
       key: "image_style",
@@ -3408,6 +3459,45 @@ const currentModelParameterMode = computed(
     String(currentModelTypeMeta.value?.chat_parameter_mode || "text").trim() ||
     "text",
 );
+const mediaParameterPopoverVisible = ref(false);
+const shouldShowMediaParameterTrigger = computed(
+  () =>
+    (currentModelParameterMode.value === "image" ||
+      currentModelParameterMode.value === "video") &&
+    currentModelParameterSections.value.length > 0,
+);
+const currentMediaParameterTriggerLabel = computed(() =>
+  currentModelParameterMode.value === "video" ? "视频生成" : "图片生成",
+);
+const currentMediaParameterPanelTitle = computed(() =>
+  currentModelParameterMode.value === "video"
+    ? "选择视频生成参数"
+    : "选择图片生成参数",
+);
+const currentMediaParameterTriggerIcon = computed(() =>
+  currentModelParameterMode.value === "video" ? CollectionTag : Picture,
+);
+const shouldShowImageFourViewsOption = computed(
+  () => currentModelParameterMode.value === "image",
+);
+
+function coerceBooleanSetting(value, fallback = false) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  if (typeof value === "boolean") return value;
+  const normalizedValue = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalizedValue)) return true;
+  if (["false", "0", "no", "off"].includes(normalizedValue)) return false;
+  return Boolean(value);
+}
+
+const imageGenerateFourViewsEnabled = computed(() =>
+  coerceBooleanSetting(
+    projectChatSettings.value?.image_generate_four_views,
+    false,
+  ),
+);
 
 function getChatParameterDictionaryEntry(parameterKey) {
   return chatParameterOptions.value?.[parameterKey] || {};
@@ -3465,6 +3555,13 @@ function setCurrentModelParameterValue(parameterKey, value) {
   };
 }
 
+function toggleImageGenerateFourViews() {
+  projectChatSettings.value = {
+    ...projectChatSettings.value,
+    image_generate_four_views: !imageGenerateFourViewsEnabled.value,
+  };
+}
+
 function describeChatParameterValue(parameterKey, value) {
   return formatChatParameterValueLabel(
     parameterKey,
@@ -3475,15 +3572,25 @@ function describeChatParameterValue(parameterKey, value) {
 
 function buildModelGenerationInstruction() {
   if (currentModelParameterMode.value === "image") {
-    return [
+    const instructionLines = [
       "当前模型类型：图片生成。",
       "请按以下预设执行本轮生成：",
-      `- 图片分辨率：${describeChatParameterValue("image_resolution", projectChatSettings.value.image_resolution)}`,
       `- 图片比例：${describeChatParameterValue("image_aspect_ratio", projectChatSettings.value.image_aspect_ratio)}`,
+      `- 图片分辨率：${describeChatParameterValue("image_resolution", projectChatSettings.value.image_resolution)}`,
       `- 图片风格：${describeChatParameterValue("image_style", projectChatSettings.value.image_style)}`,
       `- 图片质量：${describeChatParameterValue("image_quality", projectChatSettings.value.image_quality)}`,
       "- 如果模型支持直接生成图片，请直接返回图片结果；如果当前模型只支持文本，请输出可直接用于图片生成的高质量提示词。",
-    ].join("\n");
+    ];
+    if (imageGenerateFourViewsEnabled.value) {
+      instructionLines.push(
+        "- 四视图：开启，自动生成同一角色的正面、背面、左侧、右侧四视图。",
+      );
+      instructionLines.push(
+        "- 输出要求：四张独立视图，保持角色服装、发型、年龄感、五官和整体设定一致，不要多人，不要多头，不要四宫格拼接，不要杂乱排版。",
+      );
+      instructionLines.push("- 不要文字、水印、边框、logo。");
+    }
+    return instructionLines.join("\n");
   }
   if (currentModelParameterMode.value === "video") {
     return [
@@ -3506,6 +3613,13 @@ function appendModelGenerationInstruction(prompt) {
     .filter(Boolean)
     .join("\n");
 }
+
+watch(currentModelParameterMode, (nextMode) => {
+  if (nextMode !== "image" && nextMode !== "video") {
+    mediaParameterPopoverVisible.value = false;
+  }
+});
+
 const activeChatSessionTitle = computed(() => {
   const sessionId = String(currentChatSessionId.value || "").trim();
   if (!sessionId) return "新对话";
@@ -4571,6 +4685,10 @@ function normalizeProjectChatSettings(raw) {
     selected_employee_ids: selectedEmployeeIds,
     employee_coordination_mode:
       coordinationMode === "manual" ? "manual" : "auto",
+    image_generate_four_views: coerceBooleanSetting(
+      source.image_generate_four_views,
+      CHAT_SETTINGS_DEFAULTS.image_generate_four_views,
+    ),
     enabled_project_tool_names: normalizeStringList(
       source.enabled_project_tool_names ||
         CHAT_SETTINGS_DEFAULTS.enabled_project_tool_names,
@@ -13979,6 +14097,222 @@ onUnmounted(() => {
   color: #71717a;
   width: 34px;
   height: 34px;
+}
+
+.chat-media-parameter-trigger {
+  width: auto !important;
+  min-width: 0;
+  padding: 0 12px !important;
+  border-radius: 999px !important;
+  border: 1px solid rgba(15, 23, 42, 0.06) !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+  color: #374151 !important;
+  gap: 6px;
+}
+
+.chat-media-parameter-trigger:hover {
+  border-color: rgba(56, 189, 248, 0.22) !important;
+  background: rgba(240, 249, 255, 0.96) !important;
+  color: #0f172a !important;
+}
+
+.chat-media-parameter-trigger__icon {
+  font-size: 14px;
+}
+
+.chat-media-parameter-trigger__label {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.chat-media-parameter-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.chat-media-parameter-panel__head {
+  display: grid;
+  gap: 4px;
+}
+
+.chat-media-parameter-panel__eyebrow {
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #7c8aa0;
+}
+
+.chat-media-parameter-panel__title {
+  color: #0f172a;
+  font-size: 18px;
+  line-height: 1.2;
+  font-weight: 600;
+}
+
+.chat-media-parameter-panel__summary {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.chat-media-parameter-panel__sections {
+  display: grid;
+  gap: 14px;
+}
+
+.chat-media-parameter-section {
+  display: grid;
+  gap: 8px;
+}
+
+.chat-media-parameter-section--toggle {
+  margin-top: 2px;
+  padding-top: 2px;
+}
+
+.chat-media-parameter-section__label {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.chat-media-parameter-section__helper {
+  color: #7c8aa0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chat-media-parameter-section__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-media-parameter-section__options.is-aspect {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.chat-media-parameter-section__options.is-resolution {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.chat-media-parameter-option {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.9);
+  color: #475569;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.chat-media-parameter-option:hover {
+  border-color: rgba(56, 189, 248, 0.22);
+  background: rgba(255, 255, 255, 0.96);
+  color: #0f172a;
+  transform: translateY(-1px);
+}
+
+.chat-media-parameter-option.is-active {
+  border-color: rgba(56, 189, 248, 0.24);
+  background: rgba(240, 249, 255, 0.96);
+  color: #0f172a;
+  box-shadow: 0 10px 24px rgba(56, 189, 248, 0.12);
+}
+
+.chat-media-parameter-option.is-resolution {
+  min-height: 44px;
+  justify-content: center;
+}
+
+.chat-media-parameter-option__label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  text-align: center;
+}
+
+.chat-media-toggle-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.9);
+  color: #0f172a;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.chat-media-toggle-card:hover {
+  border-color: rgba(56, 189, 248, 0.22);
+  background: rgba(255, 255, 255, 0.96);
+  transform: translateY(-1px);
+}
+
+.chat-media-toggle-card.is-active {
+  border-color: rgba(56, 189, 248, 0.24);
+  background: rgba(240, 249, 255, 0.96);
+  box-shadow: 0 10px 24px rgba(56, 189, 248, 0.12);
+}
+
+.chat-media-toggle-card__content {
+  display: grid;
+  gap: 4px;
+}
+
+.chat-media-toggle-card__title {
+  font-size: 13px;
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.chat-media-toggle-card__description {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chat-media-toggle-card__indicator {
+  flex-shrink: 0;
+  min-width: 64px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  text-align: center;
+}
+
+.chat-media-toggle-card__indicator.is-active {
+  background: linear-gradient(180deg, #0f172a, #1e293b);
+  color: #ffffff;
 }
 
 .chat-model-select {

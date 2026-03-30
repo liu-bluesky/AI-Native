@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from uuid import uuid4
 import json
@@ -43,8 +43,8 @@ class ConversationManager:
         return session_id
 
     async def get_context(self, session_id: str, max_tokens: int) -> list[dict]:
-        meta_key = f"session:{session_id}:meta"
-        if not await self._redis.exists(meta_key):
+        session = await self._load_session(session_id)
+        if session is None:
             return []
         messages = await self._load_messages(session_id)
 
@@ -52,6 +52,7 @@ class ConversationManager:
         if len(messages) > self._compression_threshold:
             messages = await self._compress_history(session_id, messages)
 
+        await self._touch_session(session_id)
         return messages[-self._max_messages:]
 
     async def _compress_history(self, session_id: str, messages: list[dict]) -> list[dict]:
@@ -72,6 +73,7 @@ class ConversationManager:
         for msg in compressed:
             await self._redis.rpush(key, json.dumps(msg, ensure_ascii=False))
         await self._redis.expire(key, self._session_ttl)
+        await self._touch_session(session_id, compressed=True)
 
         return compressed
 
@@ -89,21 +91,50 @@ class ConversationManager:
         key = f"session:{session_id}:messages"
         await self._redis.rpush(key, json.dumps(message, ensure_ascii=False))
         await self._redis.expire(key, self._session_ttl)
+        await self._touch_session(session_id, message_delta=1)
 
     async def _save_session(self, session: ConversationSession) -> None:
         key = f"session:{session.id}:meta"
-        await self._redis.set(key, json.dumps({
-            "id": session.id,
-            "project_id": session.project_id,
-            "employee_id": session.employee_id,
-            "status": session.status,
-            "created_at": session.created_at,
-            "last_active_at": session.last_active_at,
-            "message_count": session.message_count,
-            "compressed_at": session.compressed_at
-        }), ex=self._session_ttl)
+        await self._redis.set(key, json.dumps(asdict(session)), ex=self._session_ttl)
 
     async def _load_messages(self, session_id: str) -> list[dict]:
         key = f"session:{session_id}:messages"
         raw_messages = await self._redis.lrange(key, 0, -1)
         return [json.loads(m) for m in raw_messages]
+
+    async def _load_session(self, session_id: str) -> ConversationSession | None:
+        key = f"session:{session_id}:meta"
+        raw = await self._redis.get(key)
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        data = json.loads(raw)
+        return ConversationSession(
+            id=str(data.get("id") or session_id),
+            project_id=str(data.get("project_id") or ""),
+            employee_id=str(data.get("employee_id") or ""),
+            status=str(data.get("status") or "active"),
+            created_at=str(data.get("created_at") or _now_iso()),
+            last_active_at=str(data.get("last_active_at") or data.get("created_at") or _now_iso()),
+            message_count=max(0, int(data.get("message_count") or 0)),
+            compressed_at=str(data.get("compressed_at") or "") or None,
+        )
+
+    async def _touch_session(
+        self,
+        session_id: str,
+        *,
+        message_delta: int = 0,
+        compressed: bool = False,
+    ) -> None:
+        session = await self._load_session(session_id)
+        if session is None:
+            return
+        updated = replace(
+            session,
+            last_active_at=_now_iso(),
+            message_count=max(0, int(session.message_count or 0)) + max(0, int(message_delta or 0)),
+            compressed_at=_now_iso() if compressed else session.compressed_at,
+        )
+        await self._save_session(updated)

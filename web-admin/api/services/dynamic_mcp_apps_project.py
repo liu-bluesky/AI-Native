@@ -396,13 +396,19 @@ def create_project_mcp(
         memories = []
         for eid in targets:
             if query:
-                employee_mems = memory_store.recall(eid, query, recall_limit)
+                employee_mems = memory_store.recall(
+                    eid,
+                    query,
+                    recall_limit,
+                    project_name=normalized_project_name,
+                )
             else:
-                employee_mems = memory_store.recent(eid, recall_limit)
-            for memory in employee_mems:
-                if str(getattr(memory, "project_name", "")) != normalized_project_name:
-                    continue
-                memories.append(memory)
+                employee_mems = memory_store.recent(
+                    eid,
+                    recall_limit,
+                    project_name=normalized_project_name,
+                )
+            memories.extend(employee_mems)
         memories = sorted(memories, key=lambda item: str(getattr(item, "created_at", "")), reverse=True)
         return [serialize_memory(item) for item in memories[:max_limit]]
 

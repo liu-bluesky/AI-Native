@@ -42,6 +42,7 @@ from services.llm_chat_parameter_catalog import (
     normalize_chat_parameter_value,
 )
 from services.llm_model_type_catalog import DEFAULT_MODEL_TYPE
+from services.project_voice_service import get_project_voice_service
 from models.requests import (
     ProjectAiEntryFileUpdateReq,
     ProjectChatHistoryTruncateReq,
@@ -56,10 +57,13 @@ from models.requests import (
     StudioClipTransformReq,
     StudioTimelinePayloadReq,
     ProjectStudioDraftSaveReq,
+    ProjectStudioCharacterReferenceGenerateReq,
     ProjectStudioExtractionRunReq,
     ProjectStudioExportCreateReq,
     ProjectStudioExportUpdateReq,
     ProjectStudioStoryboardGenerateReq,
+    ProjectStudioVoiceGenerateReq,
+    ProjectStudioVoiceUpdateReq,
     ProjectMemberAddReq,
     ProjectUserAddReq,
     ProjectUpdateReq,
@@ -122,8 +126,9 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "tool_retry_count": 0,
     "answer_style": "concise",
     "prefer_conclusion_first": True,
-    "image_resolution": "1024x1024",
+    "image_resolution": "1080x1080",
     "image_aspect_ratio": "1:1",
+    "image_generate_four_views": False,
     "image_style": "auto",
     "image_quality": "high",
     "video_aspect_ratio": "16:9",
@@ -183,6 +188,21 @@ _PROJECT_STUDIO_EXPORT_FORMAT_LABELS = {
     "mp4-h265": "MP4 (H.265)",
 }
 _PROJECT_STUDIO_EXPORT_RESOLUTION_VALUES = {"720p", "1080p", "4K"}
+_PROJECT_CHAT_IMAGE_RESOLUTION_LONG_EDGE = {
+    "720p": 1280,
+    "1080p": 1920,
+    "4K": 3840,
+    "720x720": 720,
+    "1080x1080": 1080,
+    "2160x2160": 2160,
+}
+_PROJECT_STUDIO_CHARACTER_VIEWS = ("front", "back", "left", "right")
+_PROJECT_STUDIO_CHARACTER_VIEW_LABELS = {
+    "front": "正面",
+    "back": "背面",
+    "left": "左侧",
+    "right": "右侧",
+}
 
 
 def _project_creator_username(project_id: str, project: ProjectConfig | None = None) -> str:
@@ -321,6 +341,63 @@ def _normalize_studio_audio_volume(value: Any, field_name: str, *, default: floa
     return max(0.0, min(1.5, normalized_volume))
 
 
+def _resolve_project_chat_image_size(image_resolution: Any, image_aspect_ratio: Any) -> str:
+    normalized_resolution = str(image_resolution or "").strip()
+    normalized_resolution_key = normalized_resolution.lower()
+    explicit_size_match = re.fullmatch(r"(\d{2,5})\s*(?:x|\*)\s*(\d{2,5})", normalized_resolution_key)
+    if explicit_size_match:
+        explicit_width = max(1, int(explicit_size_match.group(1)))
+        explicit_height = max(1, int(explicit_size_match.group(2)))
+        if explicit_width != explicit_height:
+            if explicit_width % 2:
+                explicit_width += 1
+            if explicit_height % 2:
+                explicit_height += 1
+            return f"{explicit_width}x{explicit_height}"
+        long_edge = max(explicit_width, explicit_height)
+    else:
+        long_edge = _PROJECT_CHAT_IMAGE_RESOLUTION_LONG_EDGE.get(normalized_resolution)
+        if long_edge is None:
+            long_edge = _PROJECT_CHAT_IMAGE_RESOLUTION_LONG_EDGE.get(normalized_resolution.upper())
+        if long_edge is None:
+            shorthand_map = {
+                "hd": 1280,
+                "fhd": 1920,
+                "fullhd": 1920,
+                "uhd": 3840,
+                "4k": 3840,
+            }
+            long_edge = shorthand_map.get(normalized_resolution_key)
+        if long_edge is None:
+            match = re.fullmatch(r"(\d{3,4})\s*p", normalized_resolution_key)
+            if match:
+                short_edge = max(1, int(match.group(1)))
+                long_edge = max(2, round((short_edge * 16) / 9))
+    if not long_edge:
+        return normalized_resolution
+    normalized_ratio = str(image_aspect_ratio or "").strip() or "1:1"
+    raw_width, _, raw_height = normalized_ratio.partition(":")
+    try:
+        ratio_width = max(1, int(raw_width))
+    except (TypeError, ValueError):
+        ratio_width = 1
+    try:
+        ratio_height = max(1, int(raw_height))
+    except (TypeError, ValueError):
+        ratio_height = 1
+    if ratio_width >= ratio_height:
+        width = long_edge
+        height = max(1, round((long_edge * ratio_height) / ratio_width))
+    else:
+        width = max(1, round((long_edge * ratio_width) / ratio_height))
+        height = long_edge
+    if width % 2:
+        width += 1
+    if height % 2:
+        height += 1
+    return f"{width}x{height}"
+
+
 def _pick_studio_audio_mixer_value(payload: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         if key in payload and payload.get(key) not in (None, ""):
@@ -344,6 +421,21 @@ def _list_studio_model_providers(auth_payload: dict) -> list[dict[str, Any]]:
 def _serialize_studio_model_provider(provider: dict[str, Any]) -> dict[str, Any]:
     provider_id = _normalize_material_text(provider.get("id"), limit=120)
     provider_name = _normalize_material_text(provider.get("name"), limit=120) or provider_id
+    raw_model_configs = provider.get("model_configs")
+    model_configs = []
+    if isinstance(raw_model_configs, list):
+        for item in raw_model_configs:
+            if not isinstance(item, dict):
+                continue
+            name = _normalize_material_text(item.get("name") or item.get("model_name"), limit=160)
+            if not name:
+                continue
+            model_configs.append(
+                {
+                    "name": name,
+                    "model_type": _normalize_material_text(item.get("model_type"), limit=80) or DEFAULT_MODEL_TYPE,
+                }
+            )
     raw_models = provider.get("models")
     models = []
     if isinstance(raw_models, list):
@@ -352,13 +444,21 @@ def _serialize_studio_model_provider(provider: dict[str, Any]) -> dict[str, Any]
             for item in raw_models
             if _normalize_material_text(item, limit=160)
         ]
+    if not models and model_configs:
+        models = [str(item.get("name") or "").strip() for item in model_configs if str(item.get("name") or "").strip()]
     default_model = _normalize_material_text(provider.get("default_model"), limit=160)
     if default_model and default_model not in models:
         models = [default_model, *models]
+    if default_model and not any(str(item.get("name") or "").strip() == default_model for item in model_configs):
+        model_configs = [
+            {"name": default_model, "model_type": DEFAULT_MODEL_TYPE},
+            *model_configs,
+        ]
     return {
         "id": provider_id,
         "name": provider_name,
         "models": models,
+        "model_configs": model_configs,
         "default_model": default_model or (models[0] if models else ""),
         "is_default": bool(provider.get("is_default")),
     }
@@ -1074,6 +1174,22 @@ def _normalize_material_url(value: Any, *, limit: int = 20000) -> str:
     return normalized
 
 
+def _normalize_material_url_list(value: Any, *, item_limit: int = 8) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    urls: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        normalized = _normalize_material_url(item)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        urls.append(normalized)
+        if len(urls) >= item_limit:
+            break
+    return urls
+
+
 def _normalize_material_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -1224,6 +1340,91 @@ def _build_studio_audio_file_url(project_id: str, audio_id: str) -> str:
     normalized_project_id = str(project_id or "").strip()
     normalized_audio_id = str(audio_id or "").strip()
     return f"/api/projects/{normalized_project_id}/studio/audio/{normalized_audio_id}/file"
+
+
+def _build_studio_voice_sample_file_url(project_id: str, voice_id: str) -> str:
+    normalized_project_id = str(project_id or "").strip()
+    normalized_voice_id = str(voice_id or "").strip()
+    return f"/api/projects/{normalized_project_id}/studio/voices/{normalized_voice_id}/sample/file"
+
+
+def _normalize_studio_character_view(value: Any) -> str:
+    normalized = _normalize_material_text(value, limit=40).lower() or "front"
+    if normalized in _PROJECT_STUDIO_CHARACTER_VIEWS:
+        return normalized
+    raise HTTPException(
+        400,
+        f"target_view must be one of {list(_PROJECT_STUDIO_CHARACTER_VIEWS)}",
+    )
+
+
+def _studio_character_view_label(view: str) -> str:
+    return _PROJECT_STUDIO_CHARACTER_VIEW_LABELS.get(view, "参考图")
+
+
+def _build_studio_character_reference_prompt(
+    *,
+    prompt: str,
+    character_name: str,
+    view: str,
+    image_style: str,
+    image_quality: str,
+    has_reference_images: bool,
+) -> str:
+    view_label = _studio_character_view_label(view)
+    normalized_prompt = _normalize_material_text(prompt, limit=6000)
+    normalized_name = _normalize_material_text(character_name, limit=120) or "角色"
+    normalized_style = _normalize_material_text(image_style, limit=80) or "auto"
+    normalized_quality = _normalize_material_text(image_quality, limit=80) or "high"
+    return (
+        f"{normalized_prompt}\n\n"
+        "补充要求：\n"
+        f"- 当前角色名称：{normalized_name}\n"
+        f"- 只生成单张{view_label}视角角色参考图，不要四宫格，不要多视图拼接。\n"
+        f"- {'已提供角色参考图，请严格延续同一人物形象与服装细节。' if has_reference_images else '当前没有可用参考图，请仅基于提示词生成。'}\n"
+        "- 画面里只保留同一个角色，不要多人，不要多头，不要肢体错位。\n"
+        "- 保持角色服装、发型、年龄感、五官和整体设定一致。\n"
+        "- 不要文字、水印、边框、logo。\n"
+        f"- 风格偏好：{normalized_style}\n"
+        f"- 质量要求：{normalized_quality}\n"
+    ).strip()
+
+
+def _save_studio_generated_image_asset(
+    *,
+    project_id: str,
+    auth_payload: dict,
+    artifact: dict[str, Any],
+    title: str,
+    summary: str,
+    structured_content: dict[str, Any],
+    metadata: dict[str, Any],
+) -> ProjectMaterialAsset:
+    preview_url = _normalize_material_url(artifact.get("preview_url"))
+    content_url = _normalize_material_url(artifact.get("content_url")) or preview_url
+    asset = ProjectMaterialAsset(
+        id=project_material_store.new_id(),
+        project_id=project_id,
+        asset_type="image",
+        group_type=_infer_material_group_type("image"),
+        title=_normalize_material_text(title, limit=120) or "AI 角色参考图",
+        summary=_normalize_material_text(summary, limit=1000),
+        source_type="ai_generated",
+        source_username=_normalize_material_text(auth_payload.get("sub"), limit=120),
+        created_by=_normalize_material_text(auth_payload.get("sub"), limit=120),
+        preview_url=preview_url or content_url,
+        content_url=content_url or preview_url,
+        mime_type=_normalize_material_text(
+            artifact.get("mime_type")
+            or _guess_material_artifact_mime_type(content_url or preview_url, asset_type="image"),
+            limit=120,
+        ),
+        status="ready",
+        structured_content=_normalize_material_mapping(structured_content),
+        metadata=_normalize_material_mapping(metadata),
+    )
+    project_material_store.save(asset)
+    return asset
 
 
 def _resolve_studio_audio_storage_path(project_id: str, audio_id: str, file_name: str) -> Path | None:
@@ -1635,6 +1836,107 @@ def _collect_chat_artifact_urls(
     return urls
 
 
+def _build_generated_media_answer(artifacts: list[dict[str, Any]] | None) -> str:
+    normalized_artifacts = _normalize_chat_media_artifacts(artifacts)
+    image_count = sum(
+        1 for item in normalized_artifacts if str(item.get("asset_type") or "").strip().lower() == "image"
+    )
+    video_count = sum(
+        1 for item in normalized_artifacts if str(item.get("asset_type") or "").strip().lower() == "video"
+    )
+    if image_count and video_count:
+        return f"已生成 {image_count} 张图片和 {video_count} 个视频，请查看下方结果。"
+    if image_count:
+        return f"已生成 {image_count} 张图片，请查看下方结果。"
+    if video_count:
+        return f"已生成 {video_count} 个视频，请查看下方结果。"
+    return "模型未返回有效媒体结果。"
+
+
+def _resolve_provider_model_parameter_mode(
+    llm_service: Any,
+    *,
+    provider_mode: str,
+    selected_provider: dict[str, Any],
+    model_name: str,
+) -> str:
+    if str(provider_mode or "").strip().lower() != "provider":
+        return "text"
+    model_config = llm_service.get_model_config(selected_provider, model_name) or {}
+    parameter_mode = str(model_config.get("chat_parameter_mode") or "text").strip().lower()
+    return parameter_mode if parameter_mode in {"image", "video"} else "text"
+
+
+async def _generate_project_chat_media_done_payload(
+    *,
+    llm_service: Any,
+    auth_payload: dict,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    assistant_message_id: str,
+    effective_user_message: str,
+    selected_employee_ids: list[str],
+    provider_id: str,
+    model_name: str,
+    runtime_settings: dict[str, Any],
+    memory_source: str,
+) -> dict[str, Any]:
+    artifacts = _normalize_chat_media_artifacts(
+        await llm_service.generate_media_artifacts(
+            provider_id,
+            model_name,
+            effective_user_message,
+            owner_username=username,
+            include_all=is_admin_like(auth_payload),
+            image_size=_resolve_project_chat_image_size(
+                runtime_settings.get("image_resolution"),
+                runtime_settings.get("image_aspect_ratio"),
+            ),
+            video_aspect_ratio=str(runtime_settings.get("video_aspect_ratio") or "").strip(),
+            video_duration_seconds=int(runtime_settings.get("video_duration_seconds") or 0) or None,
+        )
+    )
+    if not artifacts:
+        raise RuntimeError("模型未返回有效媒体结果")
+    _save_chat_media_artifacts_to_materials(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        source_message_id=assistant_message_id,
+        artifacts=artifacts,
+    )
+    images = _collect_chat_artifact_urls(artifacts, asset_type="image")
+    videos = _collect_chat_artifact_urls(artifacts, asset_type="video")
+    content = _build_generated_media_answer(artifacts)
+    _append_chat_record(
+        project_id=project_id,
+        username=username,
+        role="assistant",
+        content=content,
+        message_id=assistant_message_id,
+        chat_session_id=chat_session_id,
+        images=images,
+        videos=videos,
+    )
+    _save_project_chat_memory_snapshot(
+        project_id=project_id,
+        user_message=effective_user_message,
+        answer=content,
+        selected_employee_ids=selected_employee_ids,
+        source=memory_source,
+    )
+    return {
+        "type": "done",
+        "content": content,
+        "provider_id": provider_id,
+        "model_name": model_name,
+        "artifacts": artifacts,
+        "images": images,
+        "videos": videos,
+    }
+
+
 def _save_chat_media_artifacts_to_materials(
     *,
     project_id: str,
@@ -1825,6 +2127,10 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     settings["image_aspect_ratio"] = normalize_chat_parameter_value(
         "image_aspect_ratio",
         source.get("image_aspect_ratio", settings["image_aspect_ratio"]),
+    )
+    settings["image_generate_four_views"] = _coerce_bool(
+        source.get("image_generate_four_views"),
+        settings["image_generate_four_views"],
     )
     settings["image_style"] = normalize_chat_parameter_value(
         "image_style",
@@ -4076,6 +4382,306 @@ async def get_project_studio_audio_file(
     )
 
 
+@router.get("/{project_id}/studio/voices")
+async def list_project_studio_voices(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    voice_service = get_project_voice_service()
+    return {
+        "project_id": project_id,
+        "items": voice_service.list_project_voices(project_id),
+    }
+
+
+@router.post("/{project_id}/studio/voices")
+async def create_project_studio_voice(
+    project_id: str,
+    mode: str = Form("clone"),
+    provider_id: str = Form(""),
+    model_name: str = Form(""),
+    name: str = Form(""),
+    voice_id: str = Form(""),
+    transcript_text: str = Form(""),
+    preview_text: str = Form(""),
+    description: str = Form(""),
+    sample_file: UploadFile | None = File(None),
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    normalized_project_id = _normalize_material_text(project_id, limit=120)
+    normalized_provider_id = _normalize_material_text(provider_id, limit=120)
+    normalized_model_name = _normalize_material_text(model_name, limit=160)
+    normalized_name = _normalize_material_text(name, limit=120)
+    normalized_mode = _normalize_material_text(mode, limit=40).lower() or "clone"
+    normalized_voice_id = _normalize_material_text(voice_id, limit=200)
+    normalized_transcript = _normalize_material_text(transcript_text, limit=4000)
+    normalized_preview = _normalize_material_text(preview_text, limit=500) or "你好，这是一段用于校准音色的试听文本。"
+    normalized_description = _normalize_material_text(description, limit=500)
+    if not normalized_provider_id:
+        raise HTTPException(400, "provider_id is required")
+    if not normalized_model_name:
+        raise HTTPException(400, "model_name is required")
+    if not normalized_name:
+        raise HTTPException(400, "name is required")
+    voice_service = get_project_voice_service()
+    voice_id = voice_service.new_voice_id()
+    clone_payload = {}
+    sample_audio = {}
+    if normalized_mode == "manual":
+        if not normalized_voice_id:
+            raise HTTPException(400, "voice_id is required for manual mode")
+    else:
+        if sample_file is None:
+            raise HTTPException(400, "sample_file is required for clone mode")
+        if not normalized_transcript:
+            raise HTTPException(400, "transcript_text is required")
+        original_filename = Path(str(sample_file.filename or "").strip()).name
+        normalized_mime_type = _normalize_material_text(
+            _infer_material_upload_mime_type(sample_file),
+            limit=120,
+        )
+        _validate_studio_audio_upload_type(normalized_mime_type)
+        safe_filename = _sanitize_material_filename(original_filename, f"{voice_id}.bin")
+        relative_path = Path(normalized_project_id) / "studio-voice-samples" / voice_id / safe_filename
+        absolute_path = _project_material_file_root() / relative_path
+        try:
+            file_size_bytes = await _write_material_upload_file(sample_file, absolute_path)
+        finally:
+            await sample_file.close()
+        from services.llm_provider_service import get_llm_provider_service
+
+        llm_service = get_llm_provider_service()
+        try:
+            clone_payload = await llm_service.create_audio_voice_clone(
+                normalized_provider_id,
+                normalized_model_name,
+                voice_name=normalized_name,
+                input_text=normalized_preview,
+                transcript_text=normalized_transcript,
+                sample_file_path=str(absolute_path),
+                sample_filename=safe_filename,
+                sample_mime_type=normalized_mime_type,
+                owner_username=str(auth_payload.get("sub") or "").strip(),
+                include_all=is_admin_like(auth_payload),
+            )
+        except Exception:
+            absolute_path.unlink(missing_ok=True)
+            raise
+        normalized_voice_id = _normalize_material_text(clone_payload.get("voice"), limit=200)
+        sample_audio = {
+            "title": normalized_name,
+            "content_url": _build_studio_voice_sample_file_url(project_id, voice_id),
+            "mime_type": normalized_mime_type,
+            "original_filename": _normalize_material_text(original_filename, limit=240),
+            "storage_path": relative_path.as_posix(),
+            "source_type": "upload",
+            "file_size_bytes": file_size_bytes,
+        }
+    item = voice_service.create_project_voice(
+        {
+            "id": voice_id,
+            "project_id": normalized_project_id,
+            "provider_id": normalized_provider_id,
+            "model_name": normalized_model_name,
+            "voice_id": normalized_voice_id,
+            "name": normalized_name,
+            "description": normalized_description,
+            "preview_text": normalized_preview,
+            "transcript_text": normalized_transcript,
+            "provider_voice_name": normalized_name,
+            "provider_payload": clone_payload,
+            "source_type": "manual_binding" if normalized_mode == "manual" else "custom_clone",
+            "sample_audio": sample_audio,
+            "created_by": _normalize_material_text(auth_payload.get("sub"), limit=120),
+        }
+    )
+    return {"status": "created", "item": item}
+
+
+@router.get("/{project_id}/studio/voices/{voice_id}/sample/file")
+async def get_project_studio_voice_sample_file(
+    project_id: str,
+    voice_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    voice_service = get_project_voice_service()
+    voice = voice_service.get_project_voice(project_id, voice_id)
+    if voice is None:
+        raise HTTPException(404, "Studio voice not found")
+    sample_audio = voice.get("sample_audio") if isinstance(voice.get("sample_audio"), dict) else {}
+    storage_path = _normalize_material_text(sample_audio.get("storage_path"), limit=500)
+    absolute_path = _resolve_material_storage_path(storage_path)
+    if absolute_path is None or not absolute_path.exists() or not absolute_path.is_file():
+        raise HTTPException(404, "Studio voice sample not found")
+    filename = _normalize_material_text(sample_audio.get("original_filename"), limit=240) or absolute_path.name
+    mime_type = _normalize_material_text(sample_audio.get("mime_type"), limit=120)
+    return FileResponse(
+        absolute_path,
+        media_type=mime_type or None,
+        filename=filename,
+        headers={"Content-Disposition": _build_inline_content_disposition(filename, filename)},
+    )
+
+
+@router.patch("/{project_id}/studio/voices/{voice_id}")
+async def update_project_studio_voice(
+    project_id: str,
+    voice_id: str,
+    req: ProjectStudioVoiceUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    voice_service = get_project_voice_service()
+    try:
+        item = voice_service.update_project_voice(
+            project_id,
+            voice_id,
+            req.model_dump(exclude_unset=True),
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"status": "updated", "item": item}
+
+
+@router.delete("/{project_id}/studio/voices/{voice_id}")
+async def delete_project_studio_voice(
+    project_id: str,
+    voice_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    voice_service = get_project_voice_service()
+    voice = voice_service.get_project_voice(project_id, voice_id)
+    if voice is None:
+        raise HTTPException(404, "Studio voice not found")
+    provider_delete_error = ""
+    source_type = _normalize_material_text(voice.get("source_type"), limit=40)
+    provider_id = _normalize_material_text(voice.get("provider_id"), limit=120)
+    provider_voice_id = _normalize_material_text(voice.get("voice_id"), limit=200)
+    if source_type != "manual_binding" and provider_id and provider_voice_id:
+        from services.llm_provider_service import get_llm_provider_service
+
+        llm_service = get_llm_provider_service()
+        try:
+            await llm_service.delete_audio_voice(
+                provider_id,
+                provider_voice_id,
+                owner_username=str(auth_payload.get("sub") or "").strip(),
+                include_all=is_admin_like(auth_payload),
+            )
+        except Exception as exc:
+            provider_delete_error = str(exc)
+    removed = voice_service.delete_project_voice(project_id, voice_id)
+    sample_audio = removed.get("sample_audio") if isinstance(removed.get("sample_audio"), dict) else {}
+    sample_storage_path = _normalize_material_text(sample_audio.get("storage_path"), limit=500)
+    sample_absolute_path = _resolve_material_storage_path(sample_storage_path)
+    preview_audio = removed.get("preview_audio") if isinstance(removed.get("preview_audio"), dict) else {}
+    preview_storage_path = _normalize_material_text(preview_audio.get("storage_path"), limit=500)
+    _delete_material_storage_path(preview_storage_path)
+    if sample_absolute_path is not None:
+        parent = sample_absolute_path.parent
+        if parent.exists() and parent.is_dir():
+            shutil.rmtree(parent, ignore_errors=True)
+    return {
+        "status": "deleted",
+        "voice_id": voice_id,
+        "provider_delete_error": provider_delete_error,
+    }
+
+
+@router.post("/{project_id}/studio/voiceovers/generate")
+async def generate_project_studio_voiceover(
+    project_id: str,
+    req: ProjectStudioVoiceGenerateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    normalized_provider_id = _normalize_material_text(req.provider_id, limit=120)
+    normalized_model_name = _normalize_material_text(req.model_name, limit=160)
+    normalized_voice = _normalize_material_text(req.voice, limit=200)
+    normalized_text = _normalize_material_text(req.text, limit=4000)
+    normalized_title = _normalize_material_text(req.title, limit=120) or "旁白"
+    normalized_voice_record_id = _normalize_material_text(req.voice_record_id, limit=120)
+    if not normalized_provider_id:
+        raise HTTPException(400, "provider_id is required")
+    if not normalized_model_name:
+        raise HTTPException(400, "model_name is required")
+    if not normalized_voice:
+        raise HTTPException(400, "voice is required")
+    if not normalized_text:
+        raise HTTPException(400, "text is required")
+    voice_service = get_project_voice_service()
+    current_voice = None
+    if normalized_voice_record_id:
+        current_voice = voice_service.get_project_voice(project_id, normalized_voice_record_id)
+        if current_voice is None:
+            raise HTTPException(404, "project voice not found")
+        existing_preview = (
+            current_voice.get("preview_audio")
+            if isinstance(current_voice.get("preview_audio"), dict)
+            else {}
+        )
+        existing_preview_storage_path = _normalize_material_text(
+            existing_preview.get("storage_path"),
+            limit=500,
+        )
+        if existing_preview_storage_path:
+            _delete_material_storage_path(existing_preview_storage_path)
+    from services.llm_provider_service import get_llm_provider_service
+
+    llm_service = get_llm_provider_service()
+    payload = await llm_service.generate_audio_speech(
+        normalized_provider_id,
+        normalized_model_name,
+        text=normalized_text,
+        voice=normalized_voice,
+        response_format=_normalize_material_text(req.response_format, limit=20) or "wav",
+        speed=req.speed,
+        owner_username=str(auth_payload.get("sub") or "").strip(),
+        include_all=is_admin_like(auth_payload),
+    )
+    audio_id = project_studio_export_store.new_id().replace("studio-export-", "studio-audio-", 1)
+    extension = "wav" if str(req.response_format or "wav").strip().lower() == "wav" else "pcm"
+    safe_filename = _sanitize_material_filename(f"{audio_id}.{extension}", f"{audio_id}.{extension}")
+    relative_path = Path(project_id) / "studio-audio" / audio_id / safe_filename
+    absolute_path = _project_material_file_root() / relative_path
+    absolute_path.parent.mkdir(parents=True, exist_ok=True)
+    absolute_path.write_bytes(payload.get("audio_bytes") or b"")
+    item = {
+        "id": audio_id,
+        "title": normalized_title,
+        "content_url": _build_studio_audio_file_url(project_id, audio_id),
+        "mime_type": _normalize_material_text(payload.get("content_type"), limit=120)
+        or ("audio/wav" if extension == "wav" else "audio/pcm"),
+        "original_filename": safe_filename,
+        "storage_path": relative_path.as_posix(),
+        "source_type": "tts_generation",
+        "provider_id": normalized_provider_id,
+        "model_name": normalized_model_name,
+        "voice": normalized_voice,
+        "text": normalized_text,
+    }
+    voice_item = None
+    if current_voice is not None:
+        voice_item = voice_service.update_project_voice(
+            project_id,
+            normalized_voice_record_id,
+            {"preview_audio": item},
+        )
+    return {"status": "created", "item": item, "voice_item": voice_item}
+
+
 @router.get("/{project_id}/studio/model-sources")
 async def list_project_studio_model_sources(
     project_id: str,
@@ -4095,6 +4701,114 @@ async def list_project_studio_model_sources(
         "providers": providers,
         "default_provider_id": _normalize_material_text((default_provider or {}).get("id"), limit=120),
         "default_model_name": _normalize_material_text((default_provider or {}).get("default_model"), limit=160),
+    }
+
+
+@router.post("/{project_id}/studio/character-references/generate")
+async def generate_project_studio_character_references(
+    project_id: str,
+    req: ProjectStudioCharacterReferenceGenerateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    normalized_provider_id = _normalize_material_text(req.provider_id, limit=120)
+    normalized_model_name = _normalize_material_text(req.model_name, limit=160)
+    normalized_prompt = _normalize_material_text(req.prompt, limit=6000)
+    normalized_character_id = _normalize_material_text(req.character_id, limit=120)
+    normalized_character_name = _normalize_material_text(req.character_name, limit=120) or "角色"
+    normalized_reference_image_urls = _normalize_material_url_list(
+        req.reference_image_urls,
+        item_limit=len(_PROJECT_STUDIO_CHARACTER_VIEWS),
+    )
+    normalized_image_size = _normalize_material_text(req.image_size, limit=40) or "1024x1024"
+    normalized_image_style = _normalize_material_text(req.image_style, limit=80) or "auto"
+    normalized_image_quality = _normalize_material_text(req.image_quality, limit=80) or "high"
+    if not normalized_provider_id or not normalized_model_name:
+        raise HTTPException(400, "provider_id and model_name are required")
+    if not normalized_prompt:
+        raise HTTPException(400, "prompt is required")
+    if not normalized_reference_image_urls:
+        raise HTTPException(400, "请先提供至少一张角色参考图")
+    target_view = _normalize_studio_character_view(req.target_view)
+    requested_views = list(_PROJECT_STUDIO_CHARACTER_VIEWS if req.generate_all_views else (target_view,))
+
+    from services.llm_provider_service import get_llm_provider_service
+
+    llm_service = get_llm_provider_service()
+    items: list[dict[str, Any]] = []
+    for view in requested_views:
+        prompt = _build_studio_character_reference_prompt(
+            prompt=normalized_prompt,
+            character_name=normalized_character_name,
+            view=view,
+            image_style=normalized_image_style,
+            image_quality=normalized_image_quality,
+            has_reference_images=bool(normalized_reference_image_urls),
+        )
+        try:
+            artifacts = _normalize_chat_media_artifacts(
+                await llm_service.generate_media_artifacts(
+                    normalized_provider_id,
+                    normalized_model_name,
+                    prompt,
+                    owner_username=str(auth_payload.get("sub") or "").strip(),
+                    include_all=is_admin_like(auth_payload),
+                    image_size=normalized_image_size,
+                    image_urls=normalized_reference_image_urls,
+                )
+            )
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(502, f"生成角色参考图失败: {exc}") from exc
+        image_artifacts = [
+            item for item in artifacts if _normalize_material_asset_type(item.get("asset_type") or "image") == "image"
+        ]
+        if not image_artifacts:
+            raise HTTPException(502, f"{_studio_character_view_label(view)}视图未返回有效图片")
+        primary_artifact = image_artifacts[0]
+        asset = _save_studio_generated_image_asset(
+            project_id=project_id,
+            auth_payload=auth_payload,
+            artifact=primary_artifact,
+            title=f"{normalized_character_name}-{_studio_character_view_label(view)}参考图",
+            summary=f"{normalized_character_name}{_studio_character_view_label(view)}统一角色形象参考",
+            structured_content={
+                "character_id": normalized_character_id,
+                "character_name": normalized_character_name,
+                "view": view,
+                "view_label": _studio_character_view_label(view),
+                "reference_image_count": len(normalized_reference_image_urls),
+            },
+            metadata={
+                **_normalize_material_mapping(primary_artifact.get("metadata")),
+                "source": "studio-character-reference-generate",
+                "character_id": normalized_character_id,
+                "character_name": normalized_character_name,
+                "view": view,
+                "view_label": _studio_character_view_label(view),
+                "prompt": normalized_prompt,
+                "image_size": normalized_image_size,
+                "image_style": normalized_image_style,
+                "image_quality": normalized_image_quality,
+                "reference_image_urls": normalized_reference_image_urls,
+            },
+        )
+        items.append(
+            {
+                "view": view,
+                "view_label": _studio_character_view_label(view),
+                "item": _serialize_project_material_asset(asset),
+            }
+        )
+    return {
+        "project_id": project_id,
+        "character_id": normalized_character_id,
+        "character_name": normalized_character_name,
+        "items": items,
     }
 
 
@@ -5376,6 +6090,61 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             model_name = str(runtime_settings.get("model_name") or "").strip() or str(selected_provider.get("default_model") or "")
             if not model_name:
                 raise ValueError("model_name is required")
+            from services.llm_provider_service import get_llm_provider_service
+
+            llm_service = get_llm_provider_service()
+            model_parameter_mode = _resolve_provider_model_parameter_mode(
+                llm_service,
+                provider_mode=provider_mode,
+                selected_provider=selected_provider,
+                model_name=model_name,
+            )
+            if model_parameter_mode in {"image", "video"}:
+                await websocket.send_json(
+                    {
+                        "type": "start",
+                        "request_id": request_id,
+                        "project_id": project_id,
+                        "provider_id": provider_id,
+                        "model_name": model_name,
+                        "chat_mode": "system",
+                        "employee_id": employee_id_val,
+                        "employee_name": str((selected_employee or {}).get("name") or ""),
+                        "employee_ids": selected_employee_ids,
+                        "tools_enabled": False,
+                        "effective_tools": [],
+                        "effective_tool_total": 0,
+                    }
+                )
+                try:
+                    done_payload = await _generate_project_chat_media_done_payload(
+                        llm_service=llm_service,
+                        auth_payload=auth_payload,
+                        project_id=project_id,
+                        username=username,
+                        chat_session_id=chat_session_id,
+                        assistant_message_id=assistant_message_id,
+                        effective_user_message=effective_user_message,
+                        selected_employee_ids=selected_employee_ids,
+                        provider_id=provider_id,
+                        model_name=model_name,
+                        runtime_settings=runtime_settings,
+                        memory_source="project-chat-ws-media",
+                    )
+                    done_payload["request_id"] = request_id
+                    await websocket.send_json(done_payload)
+                except Exception as exc:
+                    _append_chat_record(
+                        project_id=project_id,
+                        username=username,
+                        role="assistant",
+                        content=f"对话失败：{str(exc)}",
+                        message_id=assistant_message_id,
+                        chat_session_id=chat_session_id,
+                    )
+                    await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
+                return
+
             max_tokens = _resolve_chat_max_tokens(runtime_settings.get("max_tokens"))
             temperature = float(runtime_settings.get("temperature") if runtime_settings.get("temperature") is not None else 0.1)
             temperature = max(0.0, min(temperature, 2.0))
@@ -5421,7 +6190,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 skill_resource_directory=req.skill_resource_directory,
                 employee_coordination_mode=str(runtime_settings.get("employee_coordination_mode") or "auto"),
             )
-            
+
         except Exception as exc:
             await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
             return
@@ -5439,12 +6208,9 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         })
 
         try:
-            from services.llm_provider_service import get_llm_provider_service
-
             final_answer = ""
             stream_error = ""
             assistant_artifacts: list[dict[str, Any]] = []
-            llm_service = get_llm_provider_service()
 
             if provider_mode == "local_connector":
                 connector = _resolve_accessible_local_connector_for_llm(
@@ -5820,6 +6586,67 @@ async def stream_project_chat(
     if not model_name:
         raise HTTPException(400, "model_name is required")
 
+    llm_service = get_llm_provider_service()
+    model_parameter_mode = _resolve_provider_model_parameter_mode(
+        llm_service,
+        provider_mode=provider_mode,
+        selected_provider=selected_provider,
+        model_name=model_name,
+    )
+    if model_parameter_mode in {"image", "video"}:
+        async def media_event_stream() -> AsyncIterator[str]:
+            yield _sse_payload(
+                "message",
+                {
+                    "type": "start",
+                    "project_id": project_id,
+                    "provider_id": provider_id,
+                    "model_name": model_name,
+                    "employee_id": str((selected_employee or {}).get("id") or ""),
+                    "employee_name": str((selected_employee or {}).get("name") or ""),
+                    "employee_ids": selected_employee_ids,
+                    "tools_enabled": False,
+                    "effective_tools": [],
+                    "effective_tool_total": 0,
+                },
+            )
+            try:
+                done_payload = await _generate_project_chat_media_done_payload(
+                    llm_service=llm_service,
+                    auth_payload=auth_payload,
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                    assistant_message_id=assistant_message_id,
+                    effective_user_message=effective_user_message,
+                    selected_employee_ids=selected_employee_ids,
+                    provider_id=provider_id,
+                    model_name=model_name,
+                    runtime_settings=runtime_settings,
+                    memory_source="project-chat-sse-media",
+                )
+                yield _sse_payload("message", done_payload)
+            except Exception as exc:
+                _append_chat_record(
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content=f"对话失败：{str(exc)}",
+                    message_id=assistant_message_id,
+                    chat_session_id=chat_session_id,
+                )
+                yield _sse_payload("message", {"type": "error", "message": str(exc)})
+
+        return StreamingResponse(
+            media_event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     max_tokens = _resolve_chat_max_tokens(runtime_settings.get("max_tokens"))
     temperature = float(runtime_settings.get("temperature") if runtime_settings.get("temperature") is not None else 0.1)
     temperature = max(0.0, min(temperature, 2.0))
@@ -5854,7 +6681,6 @@ async def stream_project_chat(
         tools.extend(local_connector_tools)
     effective_tools, effective_tool_total = _summarize_effective_tools(tools)
 
-    llm_service = get_llm_provider_service()
     messages = _build_project_chat_messages(
         project,
         effective_user_message,

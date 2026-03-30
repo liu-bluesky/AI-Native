@@ -356,17 +356,29 @@ class PgMemoryStore(_PgStoreBase):
             cur.execute("DELETE FROM memories WHERE id = %s", (memory_id,))
             return cur.rowcount > 0
 
-    def list_by_employee(self, employee_id: str, mem_type: Optional[Any] = None) -> list[Any]:
+    @staticmethod
+    def _normalized_project_name(project_name: str = "") -> str:
+        return str(project_name or "").strip()
+
+    def list_by_employee(
+        self,
+        employee_id: str,
+        mem_type: Optional[Any] = None,
+        project_name: str = "",
+    ) -> list[Any]:
         with self._conn.cursor() as cur:
             cur.execute("SELECT payload FROM memories WHERE employee_id = %s", (employee_id,))
             rows = cur.fetchall()
         mems = [self._deserialize_memory(r["payload"]) for r in rows]
         if mem_type:
             mems = [m for m in mems if m.type == mem_type]
+        normalized_project_name = self._normalized_project_name(project_name)
+        if normalized_project_name:
+            mems = [m for m in mems if str(getattr(m, "project_name", "")) == normalized_project_name]
         return mems
 
-    def recall(self, employee_id: str, query: str = "", limit: int = 10) -> list[Any]:
-        mems = self.list_by_employee(employee_id)
+    def recall(self, employee_id: str, query: str = "", limit: int = 10, project_name: str = "") -> list[Any]:
+        mems = self.list_by_employee(employee_id, project_name=project_name)
         if query:
             q = query.lower()
             mems = [m for m in mems if q in m.content.lower()]
@@ -376,12 +388,12 @@ class PgMemoryStore(_PgStoreBase):
             self.save(updated)
         return mems
 
-    def recent(self, employee_id: str, limit: int = 10) -> list[Any]:
-        mems = self.list_by_employee(employee_id)
+    def recent(self, employee_id: str, limit: int = 10, project_name: str = "") -> list[Any]:
+        mems = self.list_by_employee(employee_id, project_name=project_name)
         return sorted(mems, key=lambda m: m.created_at, reverse=True)[:limit]
 
-    def important(self, employee_id: str, limit: int = 10) -> list[Any]:
-        mems = [m for m in self.list_by_employee(employee_id) if m.importance >= 0.7]
+    def important(self, employee_id: str, limit: int = 10, project_name: str = "") -> list[Any]:
+        mems = [m for m in self.list_by_employee(employee_id, project_name=project_name) if m.importance >= 0.7]
         return sorted(mems, key=lambda m: m.importance, reverse=True)[:limit]
 
     def compress(self, employee_id: str, keep_top: int = 50) -> int:
@@ -406,7 +418,10 @@ class PgMemoryStore(_PgStoreBase):
         self.save(updated)
         return True
 
-    def count(self, employee_id: str) -> int:
+    def count(self, employee_id: str, project_name: str = "") -> int:
+        normalized_project_name = self._normalized_project_name(project_name)
+        if normalized_project_name:
+            return len(self.list_by_employee(employee_id, project_name=normalized_project_name))
         with self._conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) AS cnt FROM memories WHERE employee_id = %s", (employee_id,))
             row = cur.fetchone()

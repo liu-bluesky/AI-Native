@@ -3,18 +3,107 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import sys
 
 from mcp.server.fastmcp import FastMCP
+from store import MemoryStore as LocalMemoryStore
 
-from store import (
-    MemoryStore, Memory, MemoryType, MemoryScope,
-    Classification, serialize_memory, _now_iso,
-)
+LEGACY_DB_PATH = Path(__file__).parent / "memories.db"
+DB_PATH = Path(__file__).parent / "knowledge" / "memories.db"
 
-DB_PATH = Path(__file__).parent / "memories.db"
+
+def _prepare_sqlite_memory_db() -> None:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not DB_PATH.exists() and LEGACY_DB_PATH.exists():
+        shutil.copy2(LEGACY_DB_PATH, DB_PATH)
+
+
+def _load_memory_runtime():
+    api_dir = Path(__file__).resolve().parents[1] / "web-admin" / "api"
+    if api_dir.is_dir():
+        api_dir_str = str(api_dir)
+        if api_dir_str not in sys.path:
+            sys.path.insert(0, api_dir_str)
+        try:
+            from core.config import get_settings
+            from stores.mcp_bridge import (
+                Classification,
+                Memory,
+                MemoryScope,
+                MemoryType,
+                memory_store,
+                serialize_memory,
+            )
+        except Exception as exc:  # pragma: no cover - startup failure should be explicit
+            raise RuntimeError(f"Failed to load unified memory store from {api_dir}") from exc
+
+        settings = get_settings()
+        if settings.core_store_backend == "json":
+            _prepare_sqlite_memory_db()
+        return {
+            "store": memory_store,
+            "Memory": Memory,
+            "MemoryType": MemoryType,
+            "MemoryScope": MemoryScope,
+            "Classification": Classification,
+            "serialize_memory": serialize_memory,
+            "store_backend": f"bridge-{settings.core_store_backend}",
+        }
+
+    _prepare_sqlite_memory_db()
+    from store import (
+        Classification,
+        Memory,
+        MemoryScope,
+        MemoryStore,
+        MemoryType,
+        serialize_memory,
+    )
+
+    return {
+        "store": MemoryStore(DB_PATH),
+        "Memory": Memory,
+        "MemoryType": MemoryType,
+        "MemoryScope": MemoryScope,
+        "Classification": Classification,
+        "serialize_memory": serialize_memory,
+        "store_backend": "local-json",
+    }
+
+
+def _sync_sqlite_memories_into_store(target_store, source_db_path: Path) -> int:
+    if not source_db_path.exists():
+        return 0
+    source_store = LocalMemoryStore(source_db_path)
+    imported = 0
+    for memory in source_store.list_all():
+        existing = None
+        try:
+            existing = target_store.get(memory.id)
+        except Exception:
+            existing = None
+        if existing is not None:
+            continue
+        target_store.save(memory)
+        imported += 1
+    return imported
+
+
+_RUNTIME = _load_memory_runtime()
+store = _RUNTIME["store"]
+Memory = _RUNTIME["Memory"]
+MemoryType = _RUNTIME["MemoryType"]
+MemoryScope = _RUNTIME["MemoryScope"]
+Classification = _RUNTIME["Classification"]
+serialize_memory = _RUNTIME["serialize_memory"]
+STORE_BACKEND = _RUNTIME["store_backend"]
+BOOTSTRAP_IMPORTED_COUNT = 0
+if STORE_BACKEND == "bridge-postgres":
+    _prepare_sqlite_memory_db()
+    BOOTSTRAP_IMPORTED_COUNT = _sync_sqlite_memories_into_store(store, DB_PATH)
 
 mcp = FastMCP("memory-service")
-store = MemoryStore(DB_PATH)
 
 _IDENTITY_TYPES = {
     MemoryType.LONG_TERM_GOAL, MemoryType.TABOO,
@@ -179,7 +268,10 @@ def identity_signals(employee_id: str) -> str:
 def isolation_policy(employee_id: str) -> str:
     """隔离策略"""
     count = store.count(employee_id)
-    return f"员工 {employee_id} | 记忆总数: {count} | 隔离模式: tenant_per_employee"
+    return (
+        f"员工 {employee_id} | 记忆总数: {count} | 隔离模式: tenant_per_employee"
+        f" | backend: {STORE_BACKEND} | bootstrap_imported: {BOOTSTRAP_IMPORTED_COUNT}"
+    )
 
 
 # ── Entry Point ──
