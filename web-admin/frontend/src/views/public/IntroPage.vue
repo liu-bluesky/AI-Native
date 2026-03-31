@@ -19,7 +19,7 @@
           :key="item.id"
           type="button"
           class="site-nav__anchor"
-          @click="scrollToSection(item.id)"
+          @click="handleNavItemClick(item)"
         >
           {{ item.label }}
         </button>
@@ -407,6 +407,7 @@ const activeContactActionText = computed(() => {
 const navItems = [
   { id: 'principles', label: '能力' },
   { id: 'market', label: '市场' },
+  { id: 'updates', label: '更新日志', path: '/updates' },
   { id: 'workflow', label: '流程' },
 ]
 
@@ -570,6 +571,15 @@ function scrollToSection(id) {
     behavior: 'smooth',
     block: 'start',
   })
+}
+
+function handleNavItemClick(item) {
+  const path = String(item?.path || '').trim()
+  if (path) {
+    router.push(path)
+    return
+  }
+  scrollToSection(item?.id)
 }
 
 function handlePrimaryAction() {

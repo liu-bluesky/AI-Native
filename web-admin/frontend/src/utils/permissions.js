@@ -19,6 +19,7 @@ const PATH_PERMISSION_MAP = [
   { prefix: '/skills', permission: 'menu.skills' },
   { prefix: '/rules', permission: 'menu.rules' },
   { prefix: '/system/config', permission: 'menu.system.config' },
+  { prefix: '/changelog-entries', permission: 'menu.system.changelog' },
   { prefix: '/dictionaries', permission: ['menu.system.dictionaries', 'menu.system.config'] },
   { prefix: '/llm/providers', permission: 'menu.llm.providers' },
   { prefix: '/usage/keys', permission: 'menu.usage.keys' },
@@ -29,7 +30,11 @@ const LEGACY_USER_PERMISSION_KEYS = new Set([
   'menu.projects',
   'menu.employees',
   'menu.employees.create',
+  'menu.system.changelog',
   'button.project.chat',
+  'button.changelog.create',
+  'button.changelog.update',
+  'button.changelog.delete',
   'button.employees.update',
   'button.employees.delete',
 ])
@@ -45,6 +50,7 @@ const FALLBACK_PATHS = [
   '/skills',
   '/rules',
   '/system/config',
+  '/changelog-entries',
   '/dictionaries',
   '/usage/keys',
 ]

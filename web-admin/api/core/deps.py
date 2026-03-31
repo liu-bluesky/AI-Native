@@ -8,6 +8,7 @@ from core.auth import decode_token
 from core.role_permissions import has_permission as role_has_permission, resolve_role_permissions
 from stores.factory import (
     agent_template_store,
+    changelog_entry_store,
     employee_store,
     external_mcp_store,
     local_connector_store,

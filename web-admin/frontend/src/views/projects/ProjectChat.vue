@@ -2615,6 +2615,14 @@ const SETTINGS_CENTER_ITEM_DEFS = [
     permission: "menu.system.config",
   },
   {
+    id: "changelog-entries",
+    label: "更新日志",
+    desc: "维护官网更新日志条目",
+    kind: "route",
+    path: "/changelog-entries",
+    permission: "menu.system.changelog",
+  },
+  {
     id: "dictionaries",
     label: "字典管理",
     desc: "维护模型类型等全局字典",

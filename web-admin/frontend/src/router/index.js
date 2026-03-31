@@ -8,6 +8,7 @@ const routes = [
   { path: '/init', component: () => import('../views/auth/InitPage.vue') },
   { path: '/intro', component: () => import('../views/public/IntroPage.vue') },
   { path: '/market', component: () => import('../views/public/MarketPage.vue') },
+  { path: '/updates', component: () => import('../views/public/ChangelogPage.vue') },
   { path: '/login', component: () => import('../views/auth/LoginPage.vue') },
   { path: '/register', component: () => import('../views/auth/RegisterPage.vue') },
   {
@@ -24,6 +25,7 @@ const routes = [
           { path: 'chat', component: SettingsCenterChatStub },
           { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
           { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
+          { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
           { path: 'dictionaries', component: () => import('../views/system/DictionaryManager.vue') },
           { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
           { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
@@ -70,6 +72,7 @@ const routes = [
         ],
       },
       { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
+      { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
       { path: 'dictionaries', component: () => import('../views/system/DictionaryManager.vue') },
       { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
       { path: 'agent-templates', component: () => import('../views/agent-templates/AgentTemplateList.vue') },
@@ -109,7 +112,7 @@ const router = createRouter({
   routes,
 })
 
-const PUBLIC_PATHS = new Set(['/init', '/intro', '/market', '/login', '/register'])
+const PUBLIC_PATHS = new Set(['/init', '/intro', '/market', '/updates', '/login', '/register'])
 router.beforeEach((to, from) => {
   const normalizedPath = String(to.path || '').trim() || '/'
   if (normalizedPath === '/') {

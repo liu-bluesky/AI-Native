@@ -48,7 +48,7 @@ api.interceptors.response.use(
     if (err.response?.status === 401) {
       clearAuthSession()
       const currentPath = String(window.location.hash || '#/intro').replace(/^#/, '') || '/intro'
-      const publicPaths = new Set(['/intro', '/market', '/login', '/register'])
+      const publicPaths = new Set(['/intro', '/market', '/updates', '/login', '/register'])
       if (!publicPaths.has(currentPath)) {
         window.location.hash = '#/login'
       }

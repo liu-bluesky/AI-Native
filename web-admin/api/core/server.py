@@ -13,6 +13,7 @@ from core.db_migrations import run_postgres_migrations
 from core.deps import project_material_store, project_store, project_studio_export_store
 from routers import (
     agent_templates,
+    changelog_entries,
     init_auth,
     market,
     system_config,
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
         init_auth,
         market,
         agent_templates,
+        changelog_entries,
         system_config,
         projects,
         employees,

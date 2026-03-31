@@ -55,6 +55,26 @@ class RoleUpdateReq(BaseModel):
     permissions: list[str] | None = None
 
 
+class ChangelogEntryCreateReq(BaseModel):
+    version: str = ""
+    title: str = ""
+    summary: str = ""
+    content: str = ""
+    release_date: str = ""
+    published: bool = False
+    sort_order: int = 100
+
+
+class ChangelogEntryUpdateReq(BaseModel):
+    version: str | None = None
+    title: str | None = None
+    summary: str | None = None
+    content: str | None = None
+    release_date: str | None = None
+    published: bool | None = None
+    sort_order: int | None = None
+
+
 class EmployeeCreateReq(BaseModel):
     name: str
     description: str = ""
@@ -572,6 +592,7 @@ class SystemConfigUpdateReq(BaseModel):
     chat_upload_max_limit: int | None = None
     chat_max_tokens: int | None = None
     default_chat_system_prompt: str | None = None
+    public_changelog: str | None = None
     employee_auto_rule_generation_enabled: bool | None = None
     employee_auto_rule_generation_source_filters: list[str] | None = None
     employee_auto_rule_generation_max_count: int | None = None
