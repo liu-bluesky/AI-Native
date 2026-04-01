@@ -1,6 +1,7 @@
 """模拟测试（无需 Redis）"""
 
 import asyncio
+from contextvars import ContextVar
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -2343,6 +2344,18 @@ def test_permission_catalog_includes_dictionary_management():
     assert any(item["key"] == "menu.system.dictionaries" for item in menu_items)
 
 
+def test_permission_catalog_includes_work_session_management():
+    from core.role_permissions import permission_catalog
+
+    catalog = permission_catalog()
+    menu_items = next(
+        (group["items"] for group in catalog["groups"] if group["group"] == "menu"),
+        [],
+    )
+
+    assert any(item["key"] == "menu.system.work_sessions" for item in menu_items)
+
+
 def test_project_manage_access_prefers_creator_over_later_owner(monkeypatch):
     from fastapi import HTTPException
     from routers import projects as projects_router
@@ -3874,6 +3887,1475 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert collaboration_result["tool_name"] == "execute_project_collaboration"
     assert collaboration_result["task"] == "完成页面协作"
     assert collaboration_result["selected_employee_ids"] == ["emp-1"]
+
+
+def test_query_mcp_proxy_app_handles_sse_and_streamable_routes(monkeypatch):
+    from fastapi import FastAPI, Request
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+
+    captured_connections = []
+    captured_memories = []
+    api_key_ctx: ContextVar[str] = ContextVar("query_test_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_test_developer", default="")
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def record_event(scope_id, api_key, developer_name, event_type, client_ip=""):
+            captured_connections.append(
+                {
+                    "scope_id": scope_id,
+                    "api_key": api_key,
+                    "developer_name": developer_name,
+                    "event_type": event_type,
+                    "client_ip": client_ip,
+                }
+            )
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["GET", "POST"])
+    async def echo(request: Request, full_path: str):
+        body = await request.body()
+        return {
+            "path": request.scope["path"],
+            "method": request.method,
+            "full_path": full_path,
+            "api_key": api_key_ctx.get(""),
+            "developer_name": developer_ctx.get(""),
+            "body": body.decode("utf-8"),
+        }
+
+    proxy_app = QueryMcpProxyApp(
+        usage_store=DummyUsageStore(),
+        current_api_key_ctx=api_key_ctx,
+        current_developer_name_ctx=developer_ctx,
+        session_keys={},
+        query_app=downstream,
+        save_auto_query_memory=lambda questions, source, project_id="", employee_id="", project_name="": captured_memories.append(
+            {
+                "questions": questions,
+                "source": source,
+                "project_id": project_id,
+                "employee_id": employee_id,
+                "project_name": project_name,
+            }
+        ),
+        replace_path_suffix=replace_path_suffix,
+    )
+
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.create_tracking_send", lambda send, **kwargs: send)
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.create_tracking_receive", lambda receive, **kwargs: receive)
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    app = FastAPI()
+    app.mount("/mcp/query", proxy_app)
+    client = TestClient(app)
+
+    missing_key = client.get("/mcp/query/sse")
+    sse_get = client.get("/mcp/query/sse?key=valid-key")
+    sse_post = client.post(
+        "/mcp/query/sse?key=valid-key",
+        json={"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "search_ids"}},
+    )
+    streamable_post = client.post(
+        "/mcp/query/mcp?key=valid-key",
+        json={"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "search_ids"}},
+    )
+
+    assert missing_key.status_code == 401
+
+    assert sse_get.status_code == 200
+    assert sse_get.json()["method"] == "GET"
+    assert sse_get.json()["path"].endswith("/sse")
+    assert sse_get.json()["api_key"] == "valid-key"
+    assert sse_get.json()["developer_name"] == "tester"
+
+    assert sse_post.status_code == 200
+    assert sse_post.json()["method"] == "POST"
+    assert sse_post.json()["path"].endswith("/mcp")
+    assert sse_post.json()["api_key"] == "valid-key"
+
+    assert streamable_post.status_code == 200
+    assert streamable_post.json()["path"].endswith("/mcp")
+    assert streamable_post.json()["developer_name"] == "tester"
+
+    assert captured_connections == [
+        {
+            "scope_id": "mcp:query",
+            "api_key": "valid-key",
+            "developer_name": "tester",
+            "event_type": "connection",
+            "client_ip": "127.0.0.1",
+        }
+    ]
+    assert captured_memories == []
+
+
+def test_query_mcp_mount_handles_real_jsonrpc_over_http_and_sse_bridge(monkeypatch):
+    from core.server import create_app
+    from services import dynamic_mcp_runtime as runtime
+
+    captured_memories = []
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    def extract_sse_payload(response_text: str) -> dict:
+        for line in response_text.splitlines():
+            if line.startswith("data: "):
+                return json.loads(line[len("data: "):])
+        raise AssertionError(f"Missing SSE data line: {response_text}")
+
+    monkeypatch.setattr(runtime.query_mcp_proxy_app, "_usage_store", DummyUsageStore())
+    monkeypatch.setattr(runtime.query_mcp_proxy_app, "_current_api_key_ctx", ContextVar("query_mount_api", default=""))
+    monkeypatch.setattr(runtime.query_mcp_proxy_app, "_current_developer_name_ctx", ContextVar("query_mount_dev", default=""))
+    monkeypatch.setattr(
+        runtime.query_mcp_proxy_app,
+        "_save_auto_query_memory",
+        lambda *args, **kwargs: captured_memories.append({"args": args, "kwargs": kwargs}),
+    )
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "analyze_task",
+            "arguments": {
+                "raw_request": "继续升级 /mcp/query/sse，并补一条 create_app 集成测试",
+            },
+        },
+    }
+    headers = {"Accept": "application/json, text/event-stream"}
+
+    def post_jsonrpc(path: str, *, request_headers: dict[str, str] | None = None):
+        monkeypatch.setattr(runtime.query_mcp_proxy_app, "_query_app", runtime._create_query_mcp())
+        app = create_app()
+        with TestClient(app) as client:
+            return client.post(path, headers=request_headers, json=payload)
+
+    missing_accept = post_jsonrpc("/mcp/query/mcp?key=valid-key")
+    http_response = post_jsonrpc("/mcp/query/mcp?key=valid-key", request_headers=headers)
+    sse_bridge_response = post_jsonrpc("/mcp/query/sse?key=valid-key", request_headers=headers)
+
+    assert missing_accept.status_code == 406
+    assert "text/event-stream" in missing_accept.text
+
+    assert http_response.status_code == 200
+    assert http_response.headers["content-type"].startswith("text/event-stream")
+    http_rpc = extract_sse_payload(http_response.text)
+    http_result = json.loads(http_rpc["result"]["content"][0]["text"])
+
+    assert http_rpc["jsonrpc"] == "2.0"
+    assert http_rpc["id"] == 1
+    assert http_result["raw_request"] == "继续升级 /mcp/query/sse，并补一条 create_app 集成测试"
+    assert "/mcp/query/sse" in http_result["mentioned_paths"]
+    assert "mcp-upgrade" in http_result["task_types"]
+    assert http_result["analysis_mode"] == "heuristic"
+
+    assert sse_bridge_response.status_code == 200
+    assert sse_bridge_response.headers["content-type"].startswith("text/event-stream")
+    sse_rpc = extract_sse_payload(sse_bridge_response.text)
+    sse_result = json.loads(sse_rpc["result"]["content"][0]["text"])
+
+    assert sse_rpc["jsonrpc"] == "2.0"
+    assert sse_rpc["id"] == 1
+    assert sse_result == http_result
+    assert captured_memories == []
+
+
+def test_query_mcp_mount_lists_tools_and_reads_resources(monkeypatch):
+    from core.server import create_app
+    from services import dynamic_mcp_runtime as runtime
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    def extract_sse_payload(response_text: str) -> dict:
+        for line in response_text.splitlines():
+            if line.startswith("data: "):
+                return json.loads(line[len("data: "):])
+        raise AssertionError(f"Missing SSE data line: {response_text}")
+
+    def post_jsonrpc(payload: dict):
+        monkeypatch.setattr(runtime.query_mcp_proxy_app, "_usage_store", DummyUsageStore())
+        monkeypatch.setattr(runtime.query_mcp_proxy_app, "_current_api_key_ctx", ContextVar("query_meta_api", default=""))
+        monkeypatch.setattr(runtime.query_mcp_proxy_app, "_current_developer_name_ctx", ContextVar("query_meta_dev", default=""))
+        monkeypatch.setattr(runtime.query_mcp_proxy_app, "_save_auto_query_memory", lambda *args, **kwargs: None)
+        monkeypatch.setattr(runtime.query_mcp_proxy_app, "_query_app", runtime._create_query_mcp())
+        app = create_app()
+        with TestClient(app) as client:
+            return client.post(
+                "/mcp/query/mcp?key=valid-key",
+                headers={"Accept": "application/json, text/event-stream"},
+                json=payload,
+            )
+
+    tools_response = post_jsonrpc({"jsonrpc": "2.0", "id": 11, "method": "tools/list", "params": {}})
+    resources_response = post_jsonrpc({"jsonrpc": "2.0", "id": 12, "method": "resources/list", "params": {}})
+    usage_read_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "resources/read",
+            "params": {"uri": "query://usage-guide"},
+        }
+    )
+    codex_read_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "resources/read",
+            "params": {"uri": "query://client-profile/codex"},
+        }
+    )
+
+    assert tools_response.status_code == 200
+    tools_rpc = extract_sse_payload(tools_response.text)
+    tools = tools_rpc["result"]["tools"]
+    tool_names = {item["name"] for item in tools}
+    assert "analyze_task" in tool_names
+    assert "resolve_relevant_context" in tool_names
+    assert "generate_execution_plan" in tool_names
+    assert "build_delivery_report" in tool_names
+    assert "generate_release_note_entry" in tool_names
+
+    assert resources_response.status_code == 200
+    resources_rpc = extract_sse_payload(resources_response.text)
+    resources = resources_rpc["result"]["resources"]
+    resource_uris = {item["uri"] for item in resources}
+    assert "query://usage-guide" in resource_uris
+    assert "query://client-profile/claude-code" in resource_uris
+    assert "query://client-profile/codex" in resource_uris
+    assert "query://client-profile/generic-cli" in resource_uris
+
+    assert usage_read_response.status_code == 200
+    usage_rpc = extract_sse_payload(usage_read_response.text)
+    usage_contents = usage_rpc["result"]["contents"]
+    assert usage_contents[0]["uri"] == "query://usage-guide"
+    assert "Recommended tools" not in usage_contents[0]["text"]
+    assert "analyze_task" in usage_contents[0]["text"]
+    assert "execute_project_collaboration" in usage_contents[0]["text"]
+
+    assert codex_read_response.status_code == 200
+    codex_rpc = extract_sse_payload(codex_read_response.text)
+    codex_contents = codex_rpc["result"]["contents"]
+    assert codex_contents[0]["uri"] == "query://client-profile/codex"
+    assert "Codex" in codex_contents[0]["text"]
+    assert "build_delivery_report" in codex_contents[0]["text"]
+
+
+def _extract_query_mcp_sse_payload(response_text: str) -> dict:
+    for line in response_text.splitlines():
+        if line.startswith("data: "):
+            return json.loads(line[len("data: "):])
+    raise AssertionError(f"Missing SSE data line: {response_text}")
+
+
+def _extract_query_mcp_tool_result(response_text: str) -> dict:
+    rpc = _extract_query_mcp_sse_payload(response_text)
+    return json.loads(rpc["result"]["content"][0]["text"])
+
+
+def _configure_query_mcp_standard_project_chain_env(monkeypatch):
+    import sys
+    import types
+
+    from core.server import create_app
+    from routers import projects as projects_router
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services import dynamic_mcp_runtime as runtime
+
+    class DummyProject:
+        id = "proj-1"
+        name = "项目一"
+        description = "统一查询 MCP 标准链路测试项目"
+
+    class DummyEmployee:
+        id = "emp-1"
+        name = "员工一"
+        description = "负责 query MCP 升级"
+        goal = "补齐联调测试"
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None),
+                "list_all": staticmethod(lambda: [DummyProject()]),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})()
+                    ]
+                    if project_id == "proj-1"
+                    else []
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: DummyEmployee() if employee_id == "emp-1" else None),
+                "list_all": staticmethod(lambda: [DummyEmployee()]),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "get_project_detail_runtime",
+        lambda project_id: {
+            "id": "proj-1",
+            "name": "项目一",
+            "description": "统一查询 MCP 标准链路测试项目",
+            "workspace_path": "/workspace/demo",
+            "chat_settings": {
+                "connector_workspace_path": "/workspace/demo",
+                "connector_sandbox_mode": "workspace-write",
+                "high_risk_tool_confirm": True,
+            },
+        }
+        if project_id == "proj-1"
+        else {"error": f"Project {project_id} not found"},
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "list_project_member_profiles_runtime",
+        lambda project_id, include_disabled=False, include_missing=False, rule_limit=30: [
+            {
+                "employee_id": "emp-1",
+                "name": "员工一",
+                "description": "负责 query MCP 升级",
+                "goal": "补齐联调测试",
+                "skill_names": ["query-mcp", "python"],
+            }
+        ]
+        if project_id == "proj-1"
+        else [],
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "query_project_rules_runtime",
+        lambda project_id, keyword="", employee_id="": [
+            {
+                "id": "rule-mcp",
+                "title": "统一查询 MCP 规则",
+                "domain": "mcp",
+                "content": "先保留用户原始问题，再读取项目手册并生成执行计划。",
+            }
+        ]
+        if project_id == "proj-1"
+        else [],
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_ui_rule_summary",
+        lambda project_id, limit=30: [
+            {"id": "rule-ui", "title": "项目 UI 规则", "domain": "ui"}
+        ]
+        if project_id == "proj-1"
+        else [],
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "_build_project_manual_template_payload",
+        lambda project_id: {
+            "manual": "# 项目一 使用手册\n\n- 先读取项目手册\n- 再执行 resolve_relevant_context 与 generate_execution_plan"
+        }
+        if project_id == "proj-1"
+        else {"manual": ""},
+    )
+
+    runtime_module = types.SimpleNamespace(
+        list_project_proxy_tools_runtime=lambda project_id, employee_id="": [
+            {
+                "tool_name": "skill_query__upgrade_mcp",
+                "employee_id": "emp-1",
+                "employee_name": "员工一",
+                "entry_name": "upgrade_query_mcp",
+                "description": "升级 /mcp/query/sse 标准链路。",
+            }
+        ]
+        if project_id == "proj-1"
+        else [],
+        invoke_project_skill_tool_runtime=lambda **kwargs: {
+            "tool_name": kwargs["tool_name"],
+            "employee_id": kwargs["employee_id"] or "emp-1",
+            "status": "ok",
+        },
+        execute_project_collaboration_runtime=lambda **kwargs: {
+            "tool_name": "execute_project_collaboration",
+            "task": kwargs["task"],
+            "selected_employee_ids": kwargs["employee_ids"] or ["emp-1"],
+            "selected_members": [{"employee_id": "emp-1", "name": "员工一"}],
+            "candidate_tools": [{"tool_name": "skill_query__upgrade_mcp", "employee_id": "emp-1"}],
+            "plan_steps": [
+                {"step": "读取项目手册", "tool": "get_manual_content"},
+                {"step": "聚合相关上下文", "tool": "resolve_relevant_context"},
+                {"step": "生成执行计划", "tool": "generate_execution_plan"},
+            ],
+            "status": "ok",
+        },
+    )
+    collaboration_module = types.SimpleNamespace(
+        execute_project_collaboration_runtime=lambda **kwargs: {
+            "selected_employee_ids": kwargs["employee_ids"] or ["emp-1"],
+            "selected_members": [{"employee_id": "emp-1", "name": "员工一"}],
+            "candidate_tools": [{"tool_name": "skill_query__upgrade_mcp", "employee_id": "emp-1"}],
+            "plan_steps": [
+                {"step": "读取项目手册", "tool": "get_manual_content"},
+                {"step": "聚合相关上下文", "tool": "resolve_relevant_context"},
+                {"step": "生成执行计划", "tool": "generate_execution_plan"},
+            ],
+        }
+    )
+    monkeypatch.setitem(sys.modules, "services.dynamic_mcp_runtime", runtime_module)
+    monkeypatch.setitem(sys.modules, "services.dynamic_mcp_collaboration", collaboration_module)
+
+    def post_jsonrpc(payload: dict, path: str = "/mcp/query/mcp?key=valid-key"):
+        monkeypatch.setattr(runtime.query_mcp_proxy_app, "_usage_store", DummyUsageStore())
+        monkeypatch.setattr(runtime.query_mcp_proxy_app, "_current_api_key_ctx", ContextVar("query_chain_api", default=""))
+        monkeypatch.setattr(runtime.query_mcp_proxy_app, "_current_developer_name_ctx", ContextVar("query_chain_dev", default=""))
+        monkeypatch.setattr(runtime.query_mcp_proxy_app, "_save_auto_query_memory", lambda *args, **kwargs: None)
+        monkeypatch.setattr(runtime.query_mcp_proxy_app, "_query_app", runtime._create_query_mcp())
+        app = create_app()
+        with TestClient(app) as client:
+            return client.post(
+                path,
+                headers={"Accept": "application/json, text/event-stream"},
+                json=payload,
+            )
+
+    return post_jsonrpc
+
+
+def _configure_query_mcp_memory_chain_env(monkeypatch):
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+
+    saved_memories = []
+    saved_work_session_events = []
+
+    class DummyMemoryStore:
+        def new_id(self):
+            return f"mem-{len(saved_memories) + 1}"
+
+        def save(self, memory):
+            saved_memories.append(memory)
+
+        def recall(self, employee_id, query, limit, project_name=""):
+            matches = [
+                item
+                for item in saved_memories
+                if item.employee_id == employee_id
+                and (not project_name or item.project_name == project_name)
+                and query in item.content
+            ]
+            return list(reversed(matches))[:limit]
+
+        def recent(self, employee_id, limit, project_name=""):
+            matches = [
+                item
+                for item in saved_memories
+                if item.employee_id == employee_id
+                and (not project_name or item.project_name == project_name)
+            ]
+            return list(reversed(matches))[:limit]
+
+    class DummyWorkSessionStore:
+        def new_id(self):
+            return f"wse-{len(saved_work_session_events) + 1}"
+
+        def save(self, event):
+            saved_work_session_events.append(event)
+
+        def list_events(self, *, project_id="", employee_id="", session_id="", query="", limit=200):
+            matches = []
+            keyword = str(query or "").strip().lower()
+            for item in reversed(saved_work_session_events):
+                if project_id and item.project_id != project_id:
+                    continue
+                if employee_id and item.employee_id != employee_id:
+                    continue
+                if session_id and item.session_id != session_id:
+                    continue
+                if keyword:
+                    haystack = "\n".join(
+                        [
+                            str(item.project_name or ""),
+                            str(item.session_id or ""),
+                            str(item.event_type or ""),
+                            str(item.phase or ""),
+                            str(item.step or ""),
+                            str(item.status or ""),
+                            str(item.goal or ""),
+                            str(item.content or ""),
+                            *list(item.facts or []),
+                            *list(item.changed_files or []),
+                            *list(item.verification or []),
+                            *list(item.risks or []),
+                            *list(item.next_steps or []),
+                        ]
+                    ).lower()
+                    if keyword not in haystack:
+                        continue
+                matches.append(item)
+                if len(matches) >= limit:
+                    break
+            return matches
+
+    monkeypatch.setattr(query_mcp_svc, "memory_store", DummyMemoryStore())
+    monkeypatch.setattr(query_mcp_svc, "work_session_store", DummyWorkSessionStore())
+    return _configure_query_mcp_standard_project_chain_env(monkeypatch), saved_memories, saved_work_session_events
+
+
+def test_query_mcp_mount_runs_standard_project_chain(monkeypatch):
+    post_jsonrpc = _configure_query_mcp_standard_project_chain_env(monkeypatch)
+
+    search_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "tools/call",
+            "params": {
+                "name": "search_ids",
+                "arguments": {
+                    "keyword": "项目一",
+                    "limit": 10,
+                },
+            },
+        }
+    )
+    search_result = _extract_query_mcp_tool_result(search_response.text)
+    project_id = search_result["projects"][0]["id"]
+
+    manual_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {
+                "name": "get_manual_content",
+                "arguments": {
+                    "project_id": project_id,
+                },
+            },
+        }
+    )
+    context_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "tools/call",
+            "params": {
+                "name": "resolve_relevant_context",
+                "arguments": {
+                    "task": "继续升级项目一 的 query MCP 标准链路",
+                    "project_id": project_id,
+                },
+            },
+        }
+    )
+    plan_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "tools/call",
+            "params": {
+                "name": "generate_execution_plan",
+                "arguments": {
+                    "task": "继续升级项目一 的 query MCP 标准链路",
+                    "project_id": project_id,
+                },
+            },
+        }
+    )
+    collaboration_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 25,
+            "method": "tools/call",
+            "params": {
+                "name": "execute_project_collaboration",
+                "arguments": {
+                    "project_id": project_id,
+                    "task": "继续升级项目一 的 query MCP 标准链路",
+                    "auto_execute": False,
+                    "max_employees": 3,
+                    "max_tool_calls": 6,
+                },
+            },
+        }
+    )
+
+    manual_result = _extract_query_mcp_tool_result(manual_response.text)
+    context_result = _extract_query_mcp_tool_result(context_response.text)
+    plan_result = _extract_query_mcp_tool_result(plan_response.text)
+    collaboration_result = _extract_query_mcp_tool_result(collaboration_response.text)
+
+    assert search_response.status_code == 200
+    assert search_result["projects"][0]["id"] == "proj-1"
+    assert search_result["projects"][0]["name"] == "项目一"
+
+    assert manual_response.status_code == 200
+    assert manual_result["entity_type"] == "project"
+    assert manual_result["entity_id"] == "proj-1"
+    assert "项目一 使用手册" in manual_result["manual"]
+
+    assert context_response.status_code == 200
+    assert context_result["project"]["summary"]["name"] == "项目一"
+    assert context_result["matched_members"][0]["employee_id"] == "emp-1"
+    assert context_result["matched_rules"][0]["id"] == "rule-mcp"
+    assert context_result["matched_tools"][0]["tool_name"] == "skill_query__upgrade_mcp"
+
+    assert plan_response.status_code == 200
+    assert plan_result["planning_mode"] == "project-collaboration-runtime"
+    assert plan_result["selected_employee_ids"] == ["emp-1"]
+    assert plan_result["plan_step_count"] == 3
+    assert [item["tool"] for item in plan_result["plan_steps"]] == [
+        "get_manual_content",
+        "resolve_relevant_context",
+        "generate_execution_plan",
+    ]
+
+    assert collaboration_response.status_code == 200
+    assert collaboration_result["project_id"] == "proj-1"
+    assert collaboration_result["project_name"] == "项目一"
+    assert collaboration_result["tool_name"] == "execute_project_collaboration"
+    assert collaboration_result["selected_employee_ids"] == ["emp-1"]
+    assert collaboration_result["candidate_tools"][0]["tool_name"] == "skill_query__upgrade_mcp"
+    assert collaboration_result["plan_steps"][0]["tool"] == "get_manual_content"
+
+
+def test_query_mcp_sse_bridge_runs_standard_project_chain_and_collaboration(monkeypatch):
+    post_jsonrpc = _configure_query_mcp_standard_project_chain_env(monkeypatch)
+    sse_path = "/mcp/query/sse?key=valid-key"
+
+    search_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "tools/call",
+            "params": {
+                "name": "search_ids",
+                "arguments": {
+                    "keyword": "项目一",
+                    "limit": 10,
+                },
+            },
+        },
+        path=sse_path,
+    )
+    search_result = _extract_query_mcp_tool_result(search_response.text)
+    project_id = search_result["projects"][0]["id"]
+
+    manual_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 32,
+            "method": "tools/call",
+            "params": {
+                "name": "get_manual_content",
+                "arguments": {
+                    "project_id": project_id,
+                },
+            },
+        },
+        path=sse_path,
+    )
+    context_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 33,
+            "method": "tools/call",
+            "params": {
+                "name": "resolve_relevant_context",
+                "arguments": {
+                    "task": "继续升级项目一 的 query MCP 标准链路",
+                    "project_id": project_id,
+                },
+            },
+        },
+        path=sse_path,
+    )
+    plan_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 34,
+            "method": "tools/call",
+            "params": {
+                "name": "generate_execution_plan",
+                "arguments": {
+                    "task": "继续升级项目一 的 query MCP 标准链路",
+                    "project_id": project_id,
+                },
+            },
+        },
+        path=sse_path,
+    )
+    collaboration_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 35,
+            "method": "tools/call",
+            "params": {
+                "name": "execute_project_collaboration",
+                "arguments": {
+                    "project_id": project_id,
+                    "task": "继续升级项目一 的 query MCP 标准链路",
+                    "auto_execute": False,
+                    "max_employees": 3,
+                    "max_tool_calls": 6,
+                },
+            },
+        },
+        path=sse_path,
+    )
+
+    manual_result = _extract_query_mcp_tool_result(manual_response.text)
+    context_result = _extract_query_mcp_tool_result(context_response.text)
+    plan_result = _extract_query_mcp_tool_result(plan_response.text)
+    collaboration_result = _extract_query_mcp_tool_result(collaboration_response.text)
+
+    assert search_response.status_code == 200
+    assert search_result["projects"][0]["id"] == "proj-1"
+
+    assert manual_response.status_code == 200
+    assert manual_result["entity_type"] == "project"
+    assert "项目一 使用手册" in manual_result["manual"]
+
+    assert context_response.status_code == 200
+    assert context_result["matched_tools"][0]["tool_name"] == "skill_query__upgrade_mcp"
+
+    assert plan_response.status_code == 200
+    assert plan_result["planning_mode"] == "project-collaboration-runtime"
+    assert plan_result["selected_employee_ids"] == ["emp-1"]
+
+    assert collaboration_response.status_code == 200
+    assert collaboration_result["project_id"] == "proj-1"
+    assert collaboration_result["selected_members"][0]["employee_id"] == "emp-1"
+    assert collaboration_result["plan_steps"][1]["tool"] == "resolve_relevant_context"
+
+
+def test_query_mcp_mount_runs_memory_chain(monkeypatch):
+    from stores.mcp_bridge import MemoryType
+
+    post_jsonrpc, saved_memories, saved_work_session_events = _configure_query_mcp_memory_chain_env(monkeypatch)
+
+    save_project_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "tools/call",
+            "params": {
+                "name": "save_project_memory",
+                "arguments": {
+                    "project_id": "proj-1",
+                    "content": "问题：需要补统一查询 MCP 记忆链路\n结论：先打通挂载级验证",
+                    "employee_id": "emp-1",
+                },
+            },
+        }
+    )
+    facts_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "tools/call",
+            "params": {
+                "name": "save_work_facts",
+                "arguments": {
+                    "project_id": "proj-1",
+                    "employee_id": "emp-1",
+                    "session_id": "sess-1",
+                    "phase": "Phase 3",
+                    "step": "Step 1",
+                    "status": "in_progress",
+                    "facts": ["已补 query MCP 挂载级记忆测试", "已更新联调文档"],
+                    "changed_files": ["web-admin/api/tests/test_unit.py"],
+                    "verification": ["pytest mounted memory chain"],
+                    "next_steps": ["写入会话事件并恢复检查点"],
+                },
+            },
+        }
+    )
+    event_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 43,
+            "method": "tools/call",
+            "params": {
+                "name": "append_session_event",
+                "arguments": {
+                    "project_id": "proj-1",
+                    "employee_id": "emp-1",
+                    "session_id": "sess-1",
+                    "event_type": "verification",
+                    "content": "已运行 mounted memory chain test",
+                    "phase": "Phase 3",
+                    "step": "Step 2",
+                    "status": "completed",
+                    "verification": ["mounted memory chain test"],
+                    "risks": ["仍需 SSE bridge 回归"],
+                },
+            },
+        }
+    )
+    resume_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 44,
+            "method": "tools/call",
+            "params": {
+                "name": "resume_work_session",
+                "arguments": {
+                    "project_id": "proj-1",
+                    "employee_id": "emp-1",
+                    "session_id": "sess-1",
+                },
+            },
+        }
+    )
+    checkpoint_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 45,
+            "method": "tools/call",
+            "params": {
+                "name": "summarize_checkpoint",
+                "arguments": {
+                    "project_id": "proj-1",
+                    "employee_id": "emp-1",
+                    "session_id": "sess-1",
+                },
+            },
+        }
+    )
+
+    save_project_result = _extract_query_mcp_tool_result(save_project_response.text)
+    facts_result = _extract_query_mcp_tool_result(facts_response.text)
+    event_result = _extract_query_mcp_tool_result(event_response.text)
+    resume_result = _extract_query_mcp_tool_result(resume_response.text)
+    checkpoint_result = _extract_query_mcp_tool_result(checkpoint_response.text)
+
+    assert save_project_response.status_code == 200
+    assert save_project_result["status"] == "saved"
+    assert save_project_result["type"] == MemoryType.PROJECT_CONTEXT.value
+    assert save_project_result["employee_ids"] == ["emp-1"]
+
+    assert facts_response.status_code == 200
+    assert facts_result["status"] == "saved"
+    assert facts_result["type"] == MemoryType.LEARNED_PATTERN.value
+
+    assert event_response.status_code == 200
+    assert event_result["status"] == "saved"
+    assert event_result["type"] == MemoryType.KEY_EVENT.value
+
+    assert len(saved_memories) == 3
+    assert saved_memories[0].project_name == "项目一"
+    assert saved_memories[1].purpose_tags == ("query-mcp", "work-facts", "phase3", "session:sess-1", "phase:phase-3", "step:step-1")
+    assert saved_memories[2].purpose_tags == ("query-mcp", "session-event", "verification", "phase3", "session:sess-1", "phase:phase-3", "step:step-2")
+    assert len(saved_work_session_events) == 2
+    assert saved_work_session_events[0].session_id == "sess-1"
+    assert saved_work_session_events[1].event_type == "verification"
+
+    assert resume_response.status_code == 200
+    assert resume_result["project_id"] == "proj-1"
+    assert resume_result["project_name"] == "项目一"
+    assert resume_result["session_id"] == "sess-1"
+    assert resume_result["total"] == 2
+    assert resume_result["phases"] == ["Phase 3"]
+    assert resume_result["steps"] == ["Step 2", "Step 1"]
+    assert resume_result["latest_status"] == "completed"
+    assert resume_result["items"][0]["trajectory"]["event_type"] == "verification"
+    assert resume_result["items"][1]["trajectory"]["facts"][0] == "已补 query MCP 挂载级记忆测试"
+    assert "Step 2" in resume_result["checkpoint_summary"]
+
+    assert checkpoint_response.status_code == 200
+    assert checkpoint_result["project_id"] == "proj-1"
+    assert checkpoint_result["fact_count"] == 1
+    assert checkpoint_result["event_count"] == 1
+    assert checkpoint_result["phases"] == ["Phase 3"]
+    assert checkpoint_result["changed_files"][0] == "web-admin/api/tests/test_unit.py"
+    assert checkpoint_result["verification"][0] == "mounted memory chain test"
+    assert checkpoint_result["risks"][0] == "仍需 SSE bridge 回归"
+    assert checkpoint_result["events"][0]["type"] == MemoryType.KEY_EVENT.value
+    assert "项目：项目一" in checkpoint_result["summary"]
+
+
+def test_query_mcp_sse_bridge_runs_memory_chain(monkeypatch):
+    from stores.mcp_bridge import MemoryType
+
+    post_jsonrpc, _saved_memories, _saved_work_session_events = _configure_query_mcp_memory_chain_env(monkeypatch)
+    sse_path = "/mcp/query/sse?key=valid-key"
+
+    facts_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "tools/call",
+            "params": {
+                "name": "save_work_facts",
+                "arguments": {
+                    "project_id": "proj-1",
+                    "employee_id": "emp-1",
+                    "facts": ["SSE bridge 已打通记忆事实写入"],
+                },
+            },
+        },
+        path=sse_path,
+    )
+    event_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 52,
+            "method": "tools/call",
+            "params": {
+                "name": "append_session_event",
+                "arguments": {
+                    "project_id": "proj-1",
+                    "employee_id": "emp-1",
+                    "session_id": "sess-sse",
+                    "event_type": "handoff",
+                    "content": "SSE bridge 已写入会话事件",
+                },
+            },
+        },
+        path=sse_path,
+    )
+    checkpoint_response = post_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 53,
+            "method": "tools/call",
+            "params": {
+                "name": "summarize_checkpoint",
+                "arguments": {
+                    "project_id": "proj-1",
+                    "employee_id": "emp-1",
+                    "session_id": "sess-sse",
+                },
+            },
+        },
+        path=sse_path,
+    )
+
+    facts_result = _extract_query_mcp_tool_result(facts_response.text)
+    event_result = _extract_query_mcp_tool_result(event_response.text)
+    checkpoint_result = _extract_query_mcp_tool_result(checkpoint_response.text)
+
+    assert facts_response.status_code == 200
+    assert facts_result["type"] == MemoryType.LEARNED_PATTERN.value
+
+    assert event_response.status_code == 200
+    assert event_result["type"] == MemoryType.KEY_EVENT.value
+
+    assert checkpoint_response.status_code == 200
+    assert checkpoint_result["project_id"] == "proj-1"
+    assert checkpoint_result["session_id"] == "sess-sse"
+    assert checkpoint_result["event_count"] == 1
+    assert checkpoint_result["events"][0]["type"] == MemoryType.KEY_EVENT.value
+
+
+def _setup_query_mcp_agent_capability_env(monkeypatch):
+    import sys
+    import types
+
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+
+    registered_tools: dict[str, object] = {}
+    registered_resources: dict[str, object] = {}
+    saved_memories = []
+    saved_work_session_events = []
+
+    class FakeMcp:
+        def tool(self, name=None, description=None):
+            def decorator(fn):
+                registered_tools[name or fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri, **_kwargs):
+            def decorator(fn):
+                registered_resources[uri] = fn
+                return fn
+
+            return decorator
+
+    class DummyProject:
+        id = "proj-1"
+        name = "项目一"
+        description = "统一查询 MCP 升级验证项目"
+
+    class DummyEmployee:
+        id = "emp-1"
+        name = "员工一"
+        description = "负责统一查询 MCP 升级"
+        goal = "补工具、补测试、补文档"
+
+    class DummyMemoryStore:
+        def new_id(self):
+            return f"mem-{len(saved_memories) + 1}"
+
+        def save(self, memory):
+            saved_memories.append(memory)
+
+        def recall(self, employee_id, query, limit, project_name=""):
+            matches = [
+                item
+                for item in saved_memories
+                if item.employee_id == employee_id
+                and (not project_name or item.project_name == project_name)
+                and query in item.content
+            ]
+            return list(reversed(matches))[:limit]
+
+        def recent(self, employee_id, limit, project_name=""):
+            matches = [
+                item
+                for item in saved_memories
+                if item.employee_id == employee_id
+                and (not project_name or item.project_name == project_name)
+            ]
+            return list(reversed(matches))[:limit]
+
+    class DummyWorkSessionStore:
+        def new_id(self):
+            return f"wse-{len(saved_work_session_events) + 1}"
+
+        def save(self, event):
+            saved_work_session_events.append(event)
+
+        def list_events(self, *, project_id="", employee_id="", session_id="", query="", limit=200):
+            matches = []
+            keyword = str(query or "").strip().lower()
+            for item in reversed(saved_work_session_events):
+                if project_id and item.project_id != project_id:
+                    continue
+                if employee_id and item.employee_id != employee_id:
+                    continue
+                if session_id and item.session_id != session_id:
+                    continue
+                if keyword:
+                    haystack = "\n".join(
+                        [
+                            str(item.project_name or ""),
+                            str(item.session_id or ""),
+                            str(item.event_type or ""),
+                            str(item.phase or ""),
+                            str(item.step or ""),
+                            str(item.status or ""),
+                            str(item.goal or ""),
+                            str(item.content or ""),
+                            *list(item.facts or []),
+                            *list(item.changed_files or []),
+                            *list(item.verification or []),
+                            *list(item.risks or []),
+                            *list(item.next_steps or []),
+                        ]
+                    ).lower()
+                    if keyword not in haystack:
+                        continue
+                matches.append(item)
+                if len(matches) >= limit:
+                    break
+            return matches
+
+    monkeypatch.setattr(query_mcp_svc, "_new_mcp", lambda _service_name: FakeMcp())
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None),
+                "list_all": staticmethod(lambda: [DummyProject()]),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})()
+                    ]
+                    if project_id == "proj-1"
+                    else []
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: DummyEmployee() if employee_id == "emp-1" else None),
+                "list_all": staticmethod(lambda: [DummyEmployee()]),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "get_project_detail_runtime",
+        lambda project_id: {
+            "id": "proj-1",
+            "name": "项目一",
+            "workspace_path": "/workspace/demo",
+            "description": "统一查询 MCP 升级验证项目",
+            "chat_settings": {
+                "connector_workspace_path": "/workspace/demo",
+                "connector_sandbox_mode": "workspace-write",
+                "high_risk_tool_confirm": True,
+            },
+        }
+        if project_id == "proj-1"
+        else {"error": f"Project {project_id} not found"},
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "get_project_employee_detail_runtime",
+        lambda project_id, employee_id: {
+            "project_id": project_id,
+            "employee_id": employee_id,
+            "role": "member",
+        },
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "list_project_member_profiles_runtime",
+        lambda project_id, include_disabled=False, include_missing=False, rule_limit=30: [
+            {
+                "employee_id": "emp-1",
+                "name": "员工一",
+                "description": "负责统一查询 MCP 升级与测试补齐",
+                "goal": "补工具、补测试、补文档",
+                "skill_names": ["query-mcp", "python"],
+            }
+        ]
+        if project_id == "proj-1"
+        else [],
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "query_project_rules_runtime",
+        lambda project_id, keyword="", employee_id="": [
+            {
+                "id": "rule-mcp",
+                "title": "统一查询 MCP 升级规则",
+                "domain": "mcp",
+                "content": "通过 /mcp/query/sse 升级工具、资源和验证链路。",
+            }
+        ]
+        if project_id == "proj-1"
+        else [],
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_ui_rule_summary",
+        lambda project_id, limit=30: [
+            {"id": "rule-ui", "title": "项目 UI 规则", "domain": "ui"}
+        ]
+        if project_id == "proj-1"
+        else [],
+    )
+    monkeypatch.setattr(query_mcp_svc, "memory_store", DummyMemoryStore())
+    monkeypatch.setattr(query_mcp_svc, "work_session_store", DummyWorkSessionStore())
+
+    runtime_module = types.SimpleNamespace(
+        list_project_proxy_tools_runtime=lambda project_id, employee_id="": [
+            {
+                "tool_name": "skill_query__upgrade_mcp",
+                "employee_id": "emp-1",
+                "employee_name": "员工一",
+                "entry_name": "upgrade_query_mcp",
+                "description": "升级 /mcp/query/sse 统一查询 MCP 工具与测试。",
+            }
+        ]
+        if project_id == "proj-1"
+        else [],
+        invoke_project_skill_tool_runtime=lambda **kwargs: {
+            "tool_name": kwargs["tool_name"],
+            "employee_id": kwargs["employee_id"] or "emp-1",
+            "status": "ok",
+        },
+        execute_project_collaboration_runtime=lambda **kwargs: {
+            "tool_name": "execute_project_collaboration",
+            "task": kwargs["task"],
+            "selected_employee_ids": kwargs["employee_ids"] or ["emp-1"],
+            "selected_members": [{"employee_id": "emp-1", "name": "员工一"}],
+            "candidate_tools": [{"tool_name": "skill_query__upgrade_mcp", "employee_id": "emp-1"}],
+            "plan_steps": [
+                {"step": "分析任务", "tool": "analyze_task"},
+                {"step": "聚合上下文", "tool": "resolve_relevant_context"},
+                {"step": "执行验证", "tool": "build_delivery_report"},
+            ],
+            "status": "ok",
+        },
+    )
+    collaboration_module = types.SimpleNamespace(
+        execute_project_collaboration_runtime=lambda **kwargs: {
+            "selected_employee_ids": kwargs["employee_ids"] or ["emp-1"],
+            "selected_members": [{"employee_id": "emp-1", "name": "员工一"}],
+            "candidate_tools": [{"tool_name": "skill_query__upgrade_mcp", "employee_id": "emp-1"}],
+            "plan_steps": [
+                {"step": "分析任务", "tool": "analyze_task"},
+                {"step": "聚合上下文", "tool": "resolve_relevant_context"},
+                {"step": "执行验证", "tool": "build_delivery_report"},
+            ],
+        }
+    )
+    monkeypatch.setitem(sys.modules, "services.dynamic_mcp_runtime", runtime_module)
+    monkeypatch.setitem(sys.modules, "services.dynamic_mcp_collaboration", collaboration_module)
+
+    query_mcp_svc.create_query_mcp()
+    return registered_tools, registered_resources, saved_memories, saved_work_session_events
+
+
+def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeypatch):
+    registered_tools, registered_resources, _saved_memories, _saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    assert "analyze_task" in registered_tools
+    assert "resolve_relevant_context" in registered_tools
+    assert "generate_execution_plan" in registered_tools
+    assert "classify_command_risk" in registered_tools
+    assert "check_workspace_scope" in registered_tools
+    assert "resolve_execution_mode" in registered_tools
+    assert "check_operation_policy" in registered_tools
+    assert "build_delivery_report" in registered_tools
+    assert "generate_release_note_entry" in registered_tools
+
+    assert "query://client-profile/claude-code" in registered_resources
+    assert "query://client-profile/codex" in registered_resources
+    assert "query://client-profile/generic-cli" in registered_resources
+
+    usage_guide = registered_resources["query://usage-guide"]()
+    claude_profile = registered_resources["query://client-profile/claude-code"]()
+    codex_profile = registered_resources["query://client-profile/codex"]()
+    generic_profile = registered_resources["query://client-profile/generic-cli"]()
+
+    assert "build_delivery_report" in usage_guide
+    assert "generate_release_note_entry" in usage_guide
+    assert "check_operation_policy" in usage_guide
+    assert "save_work_facts" in claude_profile
+    assert "build_delivery_report" in codex_profile
+    assert "analyze_task" in generic_profile
+
+    analysis = registered_tools["analyze_task"](
+        "继续升级 /mcp/query/sse，必须补测试并更新 docs/总结文档.md",
+        project_id="proj-1",
+    )
+    context = registered_tools["resolve_relevant_context"](
+        "升级 /mcp/query/sse 的 query MCP 工具与测试",
+        project_id="proj-1",
+    )
+    plan = registered_tools["generate_execution_plan"](
+        "升级 /mcp/query/sse 的 query MCP 工具与测试",
+        project_id="proj-1",
+    )
+    risk = registered_tools["classify_command_risk"](
+        command="git push origin feature/mcp-upgrade",
+        tool_name="local_connector_run_command",
+        project_id="proj-1",
+    )
+    scope = registered_tools["check_workspace_scope"](
+        "/workspace/demo/docs/总结文档.md",
+        project_id="proj-1",
+    )
+    mode = registered_tools["resolve_execution_mode"](
+        project_id="proj-1",
+        command="sed -n '1,20p' docs/总结文档.md",
+    )
+    policy = registered_tools["check_operation_policy"](
+        project_id="proj-1",
+        tool_name="unknown_tool",
+        path="/workspace/demo/docs/总结文档.md",
+    )
+    delivery_report = registered_tools["build_delivery_report"](
+        title="统一查询 MCP 升级",
+        project_id="proj-1",
+        summary="已补齐 query MCP 能力单测",
+        changed_files=[
+            "web-admin/api/tests/test_unit.py",
+            "docs/总结文档.md",
+        ],
+        verification=["uv run pytest web-admin/api/tests/test_unit.py -k query_mcp"],
+        risks=["仍需真实 SSE 联调"],
+        next_steps=["继续补真实链路验证"],
+    )
+    release_note = registered_tools["generate_release_note_entry"](
+        version="v0.2.0",
+        release_date="2026-04-01",
+        key_changes=[
+            "新增 query MCP Phase 1-4 能力单测",
+            "补充交付报告与更新日志条目生成能力验证",
+        ],
+        project_id="proj-1",
+    )
+
+    assert analysis["project_id"] == "proj-1"
+    assert "mcp-upgrade" in analysis["task_types"]
+    assert "/mcp/query/sse" in analysis["mentioned_paths"]
+    assert any("必须补测试并更新 docs/总结文档.md" in item for item in analysis["constraints"])
+    assert "统一查询 MCP 新工具或资源能力" in analysis["deliverables"]
+
+    assert context["project"]["summary"]["name"] == "项目一"
+    assert context["matched_members"][0]["employee_id"] == "emp-1"
+    assert context["matched_rules"][0]["id"] == "rule-mcp"
+    assert context["matched_tools"][0]["tool_name"] == "skill_query__upgrade_mcp"
+
+    assert plan["planning_mode"] == "project-collaboration-runtime"
+    assert plan["selected_employee_ids"] == ["emp-1"]
+    assert plan["plan_step_count"] == 3
+
+    assert risk["risk_level"] == "high"
+    assert risk["requires_confirmation"] is True
+    assert "high_risk_command" in risk["indicators"]
+
+    assert scope["allowed"] is True
+    assert scope["within_workspace"] is True
+    assert scope["reason"] == "inside_workspace"
+
+    assert mode["mode"] == "local_connector"
+    assert mode["sandbox_mode"] == "workspace-write"
+
+    assert policy["allowed"] is False
+    assert "tool_not_in_project_scope" in policy["policy_reasons"]
+    assert policy["workspace_scope"]["within_workspace"] is True
+
+    assert delivery_report["project_name"] == "项目一"
+    assert "web-admin/api/tests/test_unit.py" in delivery_report["report_markdown"]
+    assert "uv run pytest web-admin/api/tests/test_unit.py -k query_mcp" in delivery_report["report_markdown"]
+
+    assert release_note["project_name"] == "项目一"
+    assert "2026-04-01" in release_note["entry_markdown"]
+    assert "新增 query MCP Phase 1-4 能力单测" in release_note["entry_markdown"]
+
+
+def test_query_mcp_work_session_tools_roundtrip(monkeypatch):
+    from stores.mcp_bridge import MemoryType
+
+    registered_tools, _registered_resources, saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    save_result = registered_tools["save_work_facts"](
+        "proj-1",
+        facts=["已补 query MCP 单测", "已更新 docs/总结文档.md"],
+        employee_id="emp-1",
+        session_id="sess-1",
+        phase="Phase 3",
+        step="Step 1",
+        status="in_progress",
+        goal="把记忆升级成可恢复执行轨迹",
+        changed_files=[
+            "web-admin/api/services/dynamic_mcp_apps_query.py",
+            "web-admin/api/tests/test_unit.py",
+        ],
+        verification=["python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py"],
+        risks=["仍需 mounted JSON-RPC 回归"],
+        next_steps=["补挂载级与 SSE bridge 测试"],
+    )
+    event_result = registered_tools["append_session_event"](
+        "proj-1",
+        session_id="sess-1",
+        event_type="verification",
+        content="已运行 query MCP 定向测试",
+        employee_id="emp-1",
+        phase="Phase 3",
+        step="Step 2",
+        status="completed",
+        changed_files=["web-admin/api/tests/test_unit.py"],
+        verification=["uv run pytest web-admin/api/tests/test_unit.py -k query_mcp"],
+        next_steps=["更新 docs/总结文档.md"],
+    )
+    registered_tools["append_session_event"](
+        "proj-1",
+        session_id="sess-2",
+        event_type="notes",
+        content="其他会话内容",
+        employee_id="emp-1",
+    )
+    resumed = registered_tools["resume_work_session"](
+        "proj-1",
+        session_id="sess-1",
+        employee_id="emp-1",
+    )
+    checkpoint = registered_tools["summarize_checkpoint"](
+        "proj-1",
+        session_id="sess-1",
+        employee_id="emp-1",
+    )
+
+    assert save_result["status"] == "saved"
+    assert save_result["saved_count"] == 1
+    assert save_result["type"] == MemoryType.LEARNED_PATTERN.value
+
+    assert event_result["status"] == "saved"
+    assert event_result["saved_count"] == 1
+    assert event_result["type"] == MemoryType.KEY_EVENT.value
+
+    assert len(saved_memories) == 3
+    assert saved_memories[0].purpose_tags == ("query-mcp", "work-facts", "phase3", "session:sess-1", "phase:phase-3", "step:step-1")
+    assert saved_memories[1].purpose_tags == ("query-mcp", "session-event", "verification", "phase3", "session:sess-1", "phase:phase-3", "step:step-2")
+    assert saved_memories[2].purpose_tags == ("query-mcp", "session-event", "notes", "phase3", "session:sess-2")
+    assert len(saved_work_session_events) == 3
+    assert saved_work_session_events[0].source_kind == "work-facts"
+    assert saved_work_session_events[1].event_type == "verification"
+    assert saved_work_session_events[2].session_id == "sess-2"
+
+    assert resumed["project_id"] == "proj-1"
+    assert resumed["session_id"] == "sess-1"
+    assert resumed["total"] == 2
+    assert resumed["phases"] == ["Phase 3"]
+    assert resumed["steps"] == ["Step 2", "Step 1"]
+    assert resumed["changed_files"][0] == "web-admin/api/tests/test_unit.py"
+    assert resumed["items"][0]["trajectory"]["event_type"] == "verification"
+    assert resumed["items"][1]["trajectory"]["facts"][0] == "已补 query MCP 单测"
+    assert resumed["timeline"][0]["status"] == "completed"
+    assert "Step 2" in resumed["checkpoint_summary"]
+
+    assert checkpoint["project_name"] == "项目一"
+    assert checkpoint["session_id"] == "sess-1"
+    assert checkpoint["fact_count"] == 1
+    assert checkpoint["event_count"] == 1
+    assert checkpoint["phases"] == ["Phase 3"]
+    assert checkpoint["steps"] == ["Step 2", "Step 1"]
+    assert checkpoint["latest_status"] == "completed"
+    assert checkpoint["verification"][0] == "uv run pytest web-admin/api/tests/test_unit.py -k query_mcp"
+    assert checkpoint["risks"][0] == "仍需 mounted JSON-RPC 回归"
+    assert checkpoint["next_steps"][0] == "更新 docs/总结文档.md"
+    assert checkpoint["events"][0]["type"] == MemoryType.KEY_EVENT.value
+    assert checkpoint["facts"][0]["trajectory"]["goal"] == "把记忆升级成可恢复执行轨迹"
+    assert "项目：项目一" in checkpoint["summary"]
 
 
 def test_query_project_rules_runtime_includes_project_ui_rules(monkeypatch):

@@ -235,6 +235,21 @@ def _create_usage_store() -> Any:
     raise RuntimeError(f"Unsupported USAGE_STORE_BACKEND: {settings.usage_store_backend}")
 
 
+def _create_work_session_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import WorkSessionStore
+
+        return WorkSessionStore(_data_dir())
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.work_session_store import WorkSessionStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return WorkSessionStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 user_store = _StoreProxy(_create_user_store)
 changelog_entry_store = _StoreProxy(_create_changelog_entry_store)
 role_store = _StoreProxy(_create_role_store)
@@ -248,6 +263,7 @@ system_config_store = _StoreProxy(_create_system_config_store)
 usage_store = _StoreProxy(_create_usage_store)
 external_mcp_store = _StoreProxy(_create_external_mcp_store)
 local_connector_store = _StoreProxy(_create_local_connector_store)
+work_session_store = _StoreProxy(_create_work_session_store)
 
 
 __all__ = [
@@ -264,4 +280,5 @@ __all__ = [
     "usage_store",
     "external_mcp_store",
     "local_connector_store",
+    "work_session_store",
 ]

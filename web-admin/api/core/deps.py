@@ -20,6 +20,7 @@ from stores.factory import (
     system_config_store,
     usage_store,
     user_store,
+    work_session_store,
 )
 
 

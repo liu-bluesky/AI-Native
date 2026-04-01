@@ -13,6 +13,7 @@ from stores.json.role_store import RoleStore
 from stores.json.system_config_store import SystemConfigStore
 from stores.json.usage_store import UsageStore
 from stores.json.user_store import UserStore
+from stores.json.work_session_store import WorkSessionStore
 
 __all__ = [
     "ChangelogEntryStore",
@@ -28,4 +29,5 @@ __all__ = [
     "SystemConfigStore",
     "UsageStore",
     "UserStore",
+    "WorkSessionStore",
 ]

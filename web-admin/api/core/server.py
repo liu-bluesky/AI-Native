@@ -33,6 +33,7 @@ from routers import (
     roles,
     mcp_modules,
     dictionaries,
+    work_sessions,
 )
 from services.dynamic_mcp_runtime import (
     employee_mcp_proxy_app,
@@ -99,6 +100,7 @@ def create_app() -> FastAPI:
         roles,
         mcp_modules,
         dictionaries,
+        work_sessions,
     ):
         app.include_router(r.router)
         public_router = getattr(r, "public_router", None)

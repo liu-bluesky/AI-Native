@@ -2623,6 +2623,14 @@ const SETTINGS_CENTER_ITEM_DEFS = [
     permission: "menu.system.changelog",
   },
   {
+    id: "work-sessions",
+    label: "工作轨迹",
+    desc: "查看 query MCP 的会话轨迹与检查点",
+    kind: "route",
+    path: "/work-sessions",
+    permission: "menu.system.work_sessions",
+  },
+  {
     id: "dictionaries",
     label: "字典管理",
     desc: "维护模型类型等全局字典",

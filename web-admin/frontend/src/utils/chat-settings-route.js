@@ -5,6 +5,7 @@ const SETTINGS_PANEL_TARGETS = [
   { panel: "user-settings", prefixes: ["/user/settings"] },
   { panel: "system-config", prefixes: ["/system/config"] },
   { panel: "changelog-entries", prefixes: ["/changelog-entries"] },
+  { panel: "work-sessions", prefixes: ["/work-sessions"] },
   { panel: "dictionaries", prefixes: ["/dictionaries"] },
   { panel: "providers", prefixes: ["/llm/providers"] },
   { panel: "projects", prefixes: ["/projects"] },

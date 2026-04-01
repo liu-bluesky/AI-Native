@@ -41,6 +41,7 @@ export API_KEY="<YOUR_API_KEY>"
 
 ```bash
 curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -69,6 +70,7 @@ curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
 
 ```bash
 curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -92,6 +94,7 @@ curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
 
 ```bash
 curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -111,14 +114,78 @@ curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
 - 把返回的 `manual` 当作当前会话规则使用。
 - 未读取项目手册前，不要直接回答当前项目相关问题。
 
-### 4.3 从统一入口发起项目协作编排
+### 4.3 聚合当前任务最相关的上下文
 
 ```bash
 curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
     "id": 4,
+    "method": "tools/call",
+    "params": {
+      "name": "resolve_relevant_context",
+      "arguments": {
+        "task": "请完成一个新的前端页面需求，先梳理规则，再由 AI 自主判断是否需要协作并输出实现方案",
+        "project_id": "proj-d16591a6",
+        "limit": 5
+      }
+    }
+  }'
+```
+
+建议重点看：
+
+- `project.summary`
+- `matched_members`
+- `matched_rules`
+- `matched_tools`
+
+### 4.4 生成执行步骤骨架
+
+```bash
+curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "tools/call",
+    "params": {
+      "name": "generate_execution_plan",
+      "arguments": {
+        "task": "请完成一个新的前端页面需求，先梳理规则，再由 AI 自主判断是否需要协作并输出实现方案",
+        "project_id": "proj-d16591a6",
+        "max_steps": 6
+      }
+    }
+  }'
+```
+
+建议重点看：
+
+- `planning_mode`
+- `selected_employee_ids`
+- `selected_members`
+- `candidate_tools`
+- `plan_steps`
+
+如果你的宿主或 CLI 只暴露 SSE 配置，也可以把同样的 JSON-RPC body 直接 `POST` 到：
+
+- `POST /mcp/query/sse?key=$API_KEY`
+
+当前统一入口会自动桥接到 streamable-http transport，返回体仍是 `text/event-stream`。
+
+### 4.5 从统一入口发起项目协作编排
+
+```bash
+curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 6,
     "method": "tools/call",
     "params": {
       "name": "execute_project_collaboration",
@@ -144,14 +211,15 @@ curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
 - `executed_calls`：已自动执行的安全调用
 - `skipped_calls`：未自动执行的调用及原因
 
-### 4.4 通过项目 ID 显式保存对话内容
+### 4.6 通过项目 ID 显式保存对话内容
 
 ```bash
 curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
-    "id": 5,
+    "id": 7,
     "method": "tools/call",
     "params": {
       "name": "save_project_memory",
@@ -160,8 +228,194 @@ curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
         "content": "问题：统一查询 MCP 需要支持按项目写入对话内容\n结论：调用 save_project_memory(project_id, content, ...) 每次有效对话补记一次"
       }
     }
+}'
+```
+
+### 4.7 保存工作事实
+
+```bash
+curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 8,
+    "method": "tools/call",
+    "params": {
+      "name": "save_work_facts",
+      "arguments": {
+        "project_id": "proj-d16591a6",
+        "employee_id": "emp-9f0b6c4d",
+        "session_id": "sess-demo-001",
+        "phase": "Phase 3",
+        "step": "Step 1",
+        "status": "in_progress",
+        "goal": "把 query MCP 记忆升级为结构化执行轨迹",
+        "facts": [
+          "已完成 query MCP 挂载级联调测试",
+          "已确认 SSE bridge 可直接承载 JSON-RPC body"
+        ],
+        "changed_files": [
+          "web-admin/api/services/dynamic_mcp_apps_query.py",
+          "web-admin/api/tests/test_unit.py"
+        ],
+        "verification": [
+          "python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py"
+        ],
+        "risks": [
+          "仍需真实 API Key 联调"
+        ],
+        "next_steps": [
+          "追加 verification 事件并生成 checkpoint"
+        ]
+      }
+    }
   }'
 ```
+
+### 4.8 追加会话事件
+
+```bash
+curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "tools/call",
+    "params": {
+      "name": "append_session_event",
+      "arguments": {
+        "project_id": "proj-d16591a6",
+        "employee_id": "emp-9f0b6c4d",
+        "session_id": "sess-demo-001",
+        "event_type": "verification",
+        "content": "已完成标准链路和记忆链路联调",
+        "phase": "Phase 3",
+        "step": "Step 2",
+        "status": "completed",
+        "verification": [
+          "uv run pytest web-admin/api/tests/test_unit.py -k query_mcp"
+        ],
+        "next_steps": [
+          "更新 docs/总结文档.md 并保存项目记忆"
+        ]
+      }
+    }
+  }'
+```
+
+### 4.9 恢复工作轨迹与检查点
+
+```bash
+curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 10,
+    "method": "tools/call",
+    "params": {
+      "name": "resume_work_session",
+      "arguments": {
+        "project_id": "proj-d16591a6",
+        "employee_id": "emp-9f0b6c4d",
+        "session_id": "sess-demo-001"
+      }
+    }
+}'
+```
+
+返回结果重点字段：
+
+- `items[].trajectory`：每条记忆解析出的结构化轨迹
+- `phases`：当前会话涉及的阶段列表
+- `steps`：当前会话涉及的步骤列表
+- `changed_files`：聚合出的相关文件
+- `verification`：聚合出的验证动作
+- `risks`：当前遗留风险
+- `next_steps`：下一步建议
+- `latest_status`：最近轨迹状态
+- `timeline`：按时间排序的轻量执行时间线
+
+补充说明：
+
+- 当前轨迹会同时写入项目记忆和独立 `work_session_store`。
+- 后台也可以直接查看：
+  - `GET /api/work-sessions`
+  - `GET /api/work-sessions/{session_id}`
+  - 页面 `/work-sessions`
+
+```bash
+curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 11,
+    "method": "tools/call",
+    "params": {
+      "name": "summarize_checkpoint",
+      "arguments": {
+        "project_id": "proj-d16591a6",
+        "employee_id": "emp-9f0b6c4d",
+        "session_id": "sess-demo-001"
+      }
+    }
+  }'
+```
+
+也可以先做“元数据探活”，确认真实入口已经把工具和资源暴露出来：
+
+```bash
+curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 100,
+    "method": "tools/list",
+    "params": {}
+  }'
+```
+
+```bash
+curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 101,
+    "method": "resources/list",
+    "params": {}
+  }'
+```
+
+```bash
+curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 102,
+    "method": "resources/read",
+    "params": {
+      "uri": "query://usage-guide"
+    }
+  }'
+```
+
+建议至少确认以下资源已经可读：
+
+- `query://usage-guide`
+- `query://client-profile/claude-code`
+- `query://client-profile/codex`
+- `query://client-profile/generic-cli`
+
+补充说明：
+
+- `POST /mcp/query/mcp` 和 `POST /mcp/query/sse` 做 JSON-RPC 调用时，客户端需要显式带上 `Accept: application/json, text/event-stream`。
+- 若缺少该请求头，streamable-http transport 会返回 `406 Not Acceptable`，这不是业务错误，而是协议协商未满足。
 
 说明：
 
@@ -182,6 +436,7 @@ curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
 
 ```bash
 curl -sS -X POST "$BASE_URL/mcp/query/mcp?key=$API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
