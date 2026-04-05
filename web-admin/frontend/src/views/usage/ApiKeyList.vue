@@ -78,7 +78,7 @@
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
           background
-          layout="total, prev, pager, next, sizes"
+          layout="total, prev, pager, next, jumper, sizes"
           :total="filteredKeys.length"
           :page-sizes="[10, 20, 50]"
         />

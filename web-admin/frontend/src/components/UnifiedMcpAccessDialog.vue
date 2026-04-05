@@ -8,63 +8,29 @@
     @close="handleClose"
   >
     <div class="unified-mcp-access">
-      <div class="unified-mcp-access__guide">
-        <div class="unified-mcp-access__guide-title">统一查询入口</div>
-        <div class="unified-mcp-access__guide-item">
-          <span class="unified-mcp-access__guide-label">推荐工具</span>
-          <code>search_ids</code>
-          <span>→</span>
-          <code>get_content</code>
-          <span>→</span>
-          <code>get_manual_content</code>
-        </div>
-        <div class="unified-mcp-access__guide-item">
-          <span class="unified-mcp-access__guide-label">Usage Guide</span>
-          <code>query://usage-guide</code>
-        </div>
-        <div v-if="hasProject" class="unified-mcp-access__guide-item">
-          <span class="unified-mcp-access__guide-label">MCP 使用规则提示词</span>
-          <span>
-            可直接调用
-            <code>get_manual_content</code>
-            并传
-            <code>project_id={{ normalizedProjectId }}</code>
-            获取，无需写入项目文件
-          </span>
-        </div>
-        <div class="unified-mcp-access__guide-item">
-          <span class="unified-mcp-access__guide-label">当前项目</span>
-          <span v-if="hasProject">
-            <code>{{ normalizedProjectId }}</code>
-            ，建议调用时带上
-            <code>project_id</code>
-          </span>
-          <span v-else>当前未选择项目，也可直接用于全局查询</span>
-        </div>
-        <div class="unified-mcp-access__guide-item">
-          <span class="unified-mcp-access__guide-label">CLI 入口文件</span>
-          <span>下方“提示词”可直接放入 Codex / Claude / Gemini CLI 的入口文件，帮助 AI 理解这组 MCP 的调用顺序与边界。</span>
-        </div>
-      </div>
-
-      <el-tabs v-model="activeTab">
+      <el-tabs v-model="activeTab" class="unified-mcp-access__tabs">
         <el-tab-pane label="SSE" name="sse">
+          <div class="unified-mcp-access__tab-tip">推荐直接接入 SSE 地址，复制后即可使用。</div>
           <div class="unified-mcp-access__code-wrap">
             <pre class="unified-mcp-access__code"><code>{{ sseConfig }}</code></pre>
           </div>
         </el-tab-pane>
         <el-tab-pane label="HTTP" name="http">
+          <div class="unified-mcp-access__tab-tip">适合原生支持 Streamable HTTP 的 MCP 客户端。</div>
           <div class="unified-mcp-access__code-wrap">
             <pre class="unified-mcp-access__code"><code>{{ httpConfig }}</code></pre>
           </div>
         </el-tab-pane>
-        <el-tab-pane label="提示词" name="prompt">
-          <div class="unified-mcp-access__prompt-tip">
-            适合粘贴到 <code>ENTRY.md</code>、<code>CLAUDE.md</code>、<code>GEMINI.md</code> 等 CLI 入口文件。
+        <el-tab-pane label="CLI" name="cli">
+          <div class="unified-mcp-access__prompt-card">
+            适合放进 CLI 入口文件。点击下方可展开预览，复制按钮会复制完整提示词。
           </div>
-          <div class="unified-mcp-access__code-wrap">
-            <pre class="unified-mcp-access__code"><code>{{ cliPrompt }}</code></pre>
-          </div>
+          <details class="unified-mcp-access__details">
+            <summary>展开完整提示词预览</summary>
+            <div class="unified-mcp-access__code-wrap unified-mcp-access__code-wrap--prompt">
+              <pre class="unified-mcp-access__code"><code>{{ cliPrompt }}</code></pre>
+            </div>
+          </details>
         </el-tab-pane>
       </el-tabs>
     </div>
@@ -92,13 +58,17 @@ const props = defineProps({
   },
   width: {
     type: String,
-    default: '620px',
+    default: '720px',
   },
   projectId: {
     type: String,
     default: '',
   },
   projectLabel: {
+    type: String,
+    default: '',
+  },
+  chatSessionId: {
     type: String,
     default: '',
   },
@@ -110,55 +80,70 @@ const activeTab = ref('sse')
 
 const normalizedProjectId = computed(() => String(props.projectId || '').trim())
 const normalizedProjectLabel = computed(() => String(props.projectLabel || '').trim())
+const normalizedChatSessionId = computed(() => String(props.chatSessionId || '').trim())
 const hasProject = computed(() => Boolean(normalizedProjectId.value))
+const hasChatSession = computed(() => Boolean(normalizedChatSessionId.value))
+const sessionIdFormatHint = computed(() =>
+  hasProject.value
+    ? `ws_${normalizedProjectId.value}_<employee_id|team>_<YYYYMMDDTHHMMSS>_<rand4>`
+    : 'ws_<project_id>_<employee_id|team>_<YYYYMMDDTHHMMSS>_<rand4>',
+)
+const runtimeQueryString = computed(() => {
+  const params = new URLSearchParams({ key: 'YOUR_API_KEY' })
+  if (normalizedProjectId.value) {
+    params.set('project_id', normalizedProjectId.value)
+  }
+  if (normalizedChatSessionId.value) {
+    params.set('chat_session_id', normalizedChatSessionId.value)
+  }
+  return params.toString()
+})
+const sseRuntimeUrl = computed(() => buildRuntimeUrl(`/mcp/query/sse?${runtimeQueryString.value}`))
+const httpRuntimeUrl = computed(() => buildRuntimeUrl(`/mcp/query/mcp?${runtimeQueryString.value}`))
 const queryCenterDescription = computed(() => {
-  const projectTip = hasProject.value
-    ? `当前项目：${normalizedProjectLabel.value || normalizedProjectId.value}`
-    : '当前未选择项目，也可直接用于全局查询'
-  return `统一查询 MCP 入口。推荐先调用 query://usage-guide，再使用 analyze_task、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan；执行前可进一步调用 classify_command_risk、check_workspace_scope、resolve_execution_mode、check_operation_policy；长任务过程中可调用 save_work_facts、append_session_event、resume_work_session、summarize_checkpoint；交付时可调用 build_delivery_report、generate_release_note_entry；也可读取 query://client-profile/claude-code、query://client-profile/codex 获取客户端画像。首个查询调用要保留用户原始问题，优先放进 search_ids.keyword；当前入口以查询优先，但如宿主只接统一入口，项目协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断是否需要多人协作；当前入口已支持 save_project_memory，可通过 project_id 记录对话内容并要求每次有效对话都补记；如宿主系统已启用自动记忆，入口层仍会自动记录问题快照。${projectTip}`
+  return '统一查询 MCP 入口，提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹和交付报告能力。注意：description 只是接入说明；真正绑定靠 URL 参数提供的默认上下文，以及 MCP 方法 bind_project_context 写入当前会话绑定。'
 })
 const cliPrompt = computed(() => {
   const lines = [
-    '你已接入统一查询 MCP，可用来查询项目、员工、规则与对应正文。',
+    '你已接入统一查询 MCP，可用于查询项目、员工、规则，并补充任务分析、执行规划、工作轨迹与交付能力。',
     '',
-    '执行约定：',
-    '1. 首先读取 `query://usage-guide`，理解统一查询入口的范围、推荐工具与限制。',
-    '2. 每次开始查询时，先把“用户原始问题”原文保留到首个可检索工具参数里，优先使用 `search_ids(keyword="<用户原始问题>")`；不要只写“当前项目”“这个规则”“项目手册”这类代称。',
-    '3. 需要定位对象时，优先调用 `search_ids`；拿到 ID 后再调用 `get_content` 或 `get_manual_content`。',
-    '4. 不要跳过 ID 定位直接臆造项目、员工、规则 ID。',
-    '5. `get_content` 用于拿结构化上下文；`get_manual_content` 用于拿正文级规则/手册提示词。',
-    '6. `analyze_task` 用于先做任务结构化理解；`resolve_relevant_context` 用于聚合相关成员、规则和工具；`generate_execution_plan` 用于生成执行步骤骨架。',
-    '7. 执行前可调用 `classify_command_risk`、`check_workspace_scope`、`resolve_execution_mode`、`check_operation_policy` 做风险和策略判断。',
-    '8. 长任务过程中可调用 `save_work_facts`、`append_session_event`、`resume_work_session`、`summarize_checkpoint` 保存和恢复工作轨迹。',
-    '9. 交付阶段可调用 `build_delivery_report`、`generate_release_note_entry`；客户端适配可读取 `query://client-profile/claude-code`、`query://client-profile/codex`。',
-    '10. 如无必要，不要把统一查询 MCP 当作通用执行型工具；它主要负责查询、聚合、分析和读取内容。',
+    '最少执行规则：',
+    '1. 先读取 `query://usage-guide`；当前是 Codex / Claude 这类代码 CLI 时，再补读对应的 `query://client-profile/...`。',
+    '2. `description`、项目说明、“当前项目”这类文字都不参与真正绑定；真正生效的是 URL 里的 `project_id` / `chat_session_id` 默认上下文，以及首轮 `bind_project_context(...)` 写入的 MCP 会话绑定。',
+    '3. 若接入地址缺少 `project_id`，或需要续接任务树但缺少 `chat_session_id`，首轮立即调用 `bind_project_context(project_id="<项目ID>", chat_session_id="<聊天会话ID>", root_goal="<用户原始问题>")`；不要只依赖 description 里的项目说明。',
+    '4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 `project_id + chat_session_id`，`bind_project_context(...)` 也会先建立 detached 任务树；后续所有工具继续显式复用同一个 `chat_session_id`。',
+    '5. 首轮查询必须把用户原始问题原文放进 `search_ids(keyword="<用户原始问题>")`；不要只写“当前项目”“这个规则”“项目手册”这类代称。',
+    '6. 需要规则或项目上下文时，先 `get_manual_content`，再按需调用 `get_content`；不要跳过 ID 定位直接臆造项目、员工、规则 ID。',
+    '7. 实现型需求必须遵守任务树闭环：先 `analyze_task -> resolve_relevant_context -> generate_execution_plan`，再 `get_current_task_tree` 确认节点；执行中用 `update_task_node_status` 回写状态，完成时必须 `complete_task_node_with_verification` 填写验证结果。',
+    '8. 只有所有计划节点完成且验证结果齐全后，当前需求才算结束；中途不得提前写“最终结论”。',
+    '9. 查询型问题（谁 / 哪些 / 多少 / 从哪里）保持单检索节点，不要误拆成实现步骤；检索完成后应让任务树归档。',
+    '10. 多轮任务先 `start_work_session`；后续复用同一个 `chat_session_id` / `session_id`，并用 `save_work_facts`、`append_session_event`、`resume_work_session`、`summarize_checkpoint` 维护轨迹。',
+    '11. `save_project_memory` 只在补充稳定结论或关键决策时使用；不要在同一需求的每个中间步骤重复补记。',
+    '12. 若用户在“已完成”后发现错误，必须重新起一轮修复计划并继续回写轨迹与验证，不得直接覆盖上一轮结论。',
+    '13. 回答必须基于 MCP 查询结果，并尽量保留项目 / 员工 / 规则 ID 方便追溯。',
   ]
   if (hasProject.value) {
     lines.push(
-      `11. 当前默认项目是 \`${normalizedProjectId.value}\`（${normalizedProjectLabel.value || normalizedProjectId.value}），涉及项目上下文时优先显式传 \`project_id=${normalizedProjectId.value}\`。`,
-      `12. 第一次处理当前项目相关请求前，必须先调用 \`get_manual_content(project_id="${normalizedProjectId.value}")\`，并把返回手册视为本会话的有效规则；未读取前不要直接回答当前项目问题。`,
-      `13. 为保证宿主自动记忆命中，即使已知当前项目 ID，首轮也要先调用一次 \`search_ids(keyword="<用户原始问题>", project_id="${normalizedProjectId.value}")\` 保留原问题，再继续 \`get_manual_content\` / \`get_content\`。`,
-      `14. 建议链路：\`analyze_task -> get_manual_content -> resolve_relevant_context -> generate_execution_plan\`；执行前可补 \`check_operation_policy(project_id="${normalizedProjectId.value}", ...)\`；长任务中可补 \`save_work_facts\` / \`append_session_event\`，恢复时用 \`resume_work_session\` / \`summarize_checkpoint\`；结束时可补 \`build_delivery_report\` / \`generate_release_note_entry\`。`,
-      '15. 如需手动编排项目执行，再依次调用 `list_project_members` / `get_project_runtime_context` / `list_project_proxy_tools` / `invoke_project_skill_tool`。',
-      '16. 事实边界：当前接入的是统一查询 MCP，已暴露 `save_project_memory(project_id, content, ...)`，可通过项目 ID 直接保存对话内容，并要求每次有效对话都记录；`save_employee_memory` 仍未暴露。如宿主系统已启用自动记忆，则由入口层自动记录问题快照，但不能把自动快照替代显式对话记忆。',
-      '17. 若提示词或规则与用户任务冲突，先向用户确认，再决定是否偏离项目约定。',
+      `14. 当前默认项目是 \`${normalizedProjectId.value}\`（${normalizedProjectLabel.value || normalizedProjectId.value}）；涉及当前项目时优先显式传 \`project_id=${normalizedProjectId.value}\`。`,
+      `15. 第一次处理当前项目相关请求时，先执行 \`bind_project_context(project_id="${normalizedProjectId.value}", chat_session_id="<聊天会话ID>", root_goal="<用户原始问题>")\` 或确认 URL 已带上稳定上下文，再执行 \`search_ids(keyword="<用户原始问题>", project_id="${normalizedProjectId.value}")\`。`,
+      hasChatSession.value
+        ? `16. 当前接入地址已自动附带 \`chat_session_id=${normalizedChatSessionId.value}\`；本轮任务树、项目记忆和工作轨迹都应继续复用这条会话线索，但首轮仍建议显式调用一次 \`bind_project_context(...)\` 固化绑定。`
+        : '16. 若当前是新开的 CLI 会话且 URL 未附带 `chat_session_id`，先生成新的 `chat_session_id` 并调用 `bind_project_context(...)`；同一窗口内不要再次更换。',
+      `17. 如暂不方便先调用 \`start_work_session\`，工作轨迹 \`session_id\` 至少按 \`${sessionIdFormatHint.value}\` 规则生成并全程复用。`,
     )
   } else {
     lines.push(
-      '11. 当前未预设默认项目；如果任务明显属于某个项目，先调用 `search_ids` 定位项目 ID，再继续查询。',
-      '12. 第一次处理某个项目相关请求前，先调用 `get_manual_content(project_id="<project_id>")`，并把返回手册视为当前会话规则。',
-      '13. 为保证宿主自动记忆命中，首轮查询不要只传“当前项目”这类代称；至少把用户原始问题放进 `search_ids(keyword="<用户原始问题>")`。',
-      '14. 建议链路：`analyze_task -> search_ids -> get_manual_content -> resolve_relevant_context -> generate_execution_plan -> check_operation_policy`；长任务中再补 `save_work_facts` / `append_session_event`；结束时补 `build_delivery_report`。',
-      '15. 如宿主只接统一入口且任务需要项目协作，先用 `search_ids` 确认项目 ID，再调用 `execute_project_collaboration(project_id="<project_id>", task="<用户原始任务>")`；具体是否多人协作由 AI 自主判断。',
-      '16. 如需手动编排项目执行，再调用 `list_project_members` / `get_project_runtime_context` / `list_project_proxy_tools` / `invoke_project_skill_tool`。',
-      '17. 事实边界：当前接入的是统一查询 MCP，已支持按 `project_id` 调用 `save_project_memory` 记录对话内容；如宿主系统已启用自动记忆，入口层仍会自动记录问题快照。',
+      '14. 当前未预设默认项目；如果任务明显属于某个项目，先用 `search_ids` 定位项目 ID，再调用 `bind_project_context(project_id="<project_id>", chat_session_id="<聊天会话ID>", root_goal="<用户原始问题>")`。',
+      '15. 如果需要统一查询 MCP 自动续接任务树，但当前地址没有 `project_id` / `chat_session_id`，第一步就先调用 `bind_project_context(...)`，不要依赖 description 或宿主注释。',
+      `16. 若当前是新开的 CLI 会话且 URL 未附带 \`chat_session_id\`，先生成新的 \`chat_session_id\`；工作轨迹 \`session_id\` 则按 \`${sessionIdFormatHint.value}\` 规则生成并全程复用。`,
+      '17. 如宿主只接统一入口且任务需要项目协作，先用 `search_ids` 确认项目 ID，再调用 `execute_project_collaboration(project_id="<project_id>", task="<用户原始任务>")`；具体是否多人协作由 AI 自主判断。',
     )
   }
   lines.push(
     '',
-    '回答与执行要求：',
+    '回答要求：',
     '- 先基于 MCP 查询结果回答，不要把猜测写成事实。',
-    '- 若信息来自 MCP，尽量在回答里保留对应的项目/员工/规则标识，方便追溯。',
+    '- 若信息来自 MCP，尽量保留对应的项目 / 员工 / 规则标识，方便追溯。',
     '- 若入口文件或宿主系统还有额外约束，优先遵守宿主入口文件约定。',
   )
   return lines.join('\n')
@@ -169,7 +154,7 @@ const sseConfig = computed(() =>
       mcpServers: {
         'query-center': {
           type: 'sse',
-          url: buildRuntimeUrl('/mcp/query/sse?key=YOUR_API_KEY'),
+          url: sseRuntimeUrl.value,
           description: queryCenterDescription.value,
         },
       },
@@ -183,12 +168,8 @@ const httpConfig = computed(() =>
     {
       mcpServers: {
         'query-center': {
-          command: 'npx',
-          args: [
-            '-y',
-            '@modelcontextprotocol/inspector',
-            buildRuntimeUrl('/mcp/query/mcp?key=YOUR_API_KEY'),
-          ],
+          type: 'streamable-http',
+          url: httpRuntimeUrl.value,
           description: queryCenterDescription.value,
         },
       },
@@ -197,7 +178,7 @@ const httpConfig = computed(() =>
     2,
   ),
 )
-const copyButtonText = computed(() => (activeTab.value === 'prompt' ? '复制提示词' : '复制当前配置'))
+const copyButtonText = computed(() => (activeTab.value === 'cli' ? '复制提示词' : '复制当前配置'))
 
 watch(
   () => props.modelValue,
@@ -219,12 +200,12 @@ async function copyCurrentContent() {
   const content =
     activeTab.value === 'http'
       ? httpConfig.value
-      : activeTab.value === 'prompt'
+      : activeTab.value === 'cli'
         ? cliPrompt.value
         : sseConfig.value
   try {
     await navigator.clipboard.writeText(content)
-    ElMessage.success(activeTab.value === 'prompt' ? '提示词已复制' : '配置已复制')
+    ElMessage.success(activeTab.value === 'cli' ? '提示词已复制' : '配置已复制')
   } catch {
     ElMessage.error('复制失败')
   }
@@ -234,38 +215,11 @@ async function copyCurrentContent() {
 <style scoped>
 .unified-mcp-access {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
-.unified-mcp-access__guide {
-  padding: 12px 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f8fafc;
-}
-
-.unified-mcp-access__guide-title {
-  margin-bottom: 10px;
-  color: #111827;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.unified-mcp-access__guide-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  min-height: 28px;
-  color: #374151;
-  font-size: 13px;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-.unified-mcp-access__guide-label {
-  width: 88px;
-  flex-shrink: 0;
-  color: #6b7280;
+.unified-mcp-access__tabs {
+  margin-top: -8px;
 }
 
 .unified-mcp-access__code-wrap {
@@ -276,11 +230,40 @@ async function copyCurrentContent() {
   background: #0f172a;
 }
 
-.unified-mcp-access__prompt-tip {
+.unified-mcp-access__code-wrap--prompt {
+  margin-top: 12px;
+}
+
+.unified-mcp-access__tab-tip,
+.unified-mcp-access__prompt-card {
   margin-bottom: 10px;
-  color: #6b7280;
+  padding: 12px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #f8fafc;
+  color: #64748b;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.unified-mcp-access__details {
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.unified-mcp-access__details summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.unified-mcp-access__details summary::-webkit-details-marker {
+  display: none;
 }
 
 .unified-mcp-access__code {
@@ -290,5 +273,11 @@ async function copyCurrentContent() {
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+@media (max-width: 760px) {
+  .unified-mcp-access__code-wrap {
+    max-height: 320px;
+  }
 }
 </style>

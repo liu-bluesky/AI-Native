@@ -1,5 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { getFallbackPath, hasPermission, pathPermission } from '@/utils/permissions.js'
+import { getFallbackPath, hasPermission, isSuperAdmin, pathPermission } from '@/utils/permissions.js'
 import { isChatSettingsRoutePath, resolveSettingsAwarePath } from '@/utils/chat-settings-route.js'
 
 const SettingsCenterChatStub = { render: () => null }
@@ -27,6 +27,8 @@ const routes = [
           { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
           { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
           { path: 'work-sessions', component: () => import('../views/system/WorkSessionManager.vue') },
+          { path: 'online-users', component: () => import('../views/system/OnlineUserManager.vue'), meta: { superAdminOnly: true } },
+          { path: 'mcp-monitor', component: () => import('../views/system/McpMonitorManager.vue'), meta: { superAdminOnly: true } },
           { path: 'dictionaries', component: () => import('../views/system/DictionaryManager.vue') },
           { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
           { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
@@ -75,6 +77,8 @@ const routes = [
       { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
       { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
       { path: 'work-sessions', component: () => import('../views/system/WorkSessionManager.vue') },
+      { path: 'online-users', component: () => import('../views/system/OnlineUserManager.vue'), meta: { superAdminOnly: true } },
+      { path: 'mcp-monitor', component: () => import('../views/system/McpMonitorManager.vue'), meta: { superAdminOnly: true } },
       { path: 'dictionaries', component: () => import('../views/system/DictionaryManager.vue') },
       { path: 'employees', component: () => import('../views/employees/EmployeeList.vue') },
       { path: 'agent-templates', component: () => import('../views/agent-templates/AgentTemplateList.vue') },
@@ -153,6 +157,14 @@ router.beforeEach((to, from) => {
     const fallback = getFallbackPath()
     if (fallback === to.path) {
       return '/login'
+    }
+    return fallback
+  }
+
+  if (to.matched.some((record) => record.meta?.superAdminOnly) && !isSuperAdmin()) {
+    const fallback = getFallbackPath()
+    if (fallback === to.path) {
+      return '/ai/chat'
     }
     return fallback
   }

@@ -88,7 +88,7 @@
     <div class="pagination-wrap" v-if="pagination.total > 0">
       <el-pagination
         background
-        layout="total, prev, pager, next"
+        layout="total, prev, pager, next, jumper"
         :total="pagination.total"
         :page-size="pagination.limit"
         :current-page="currentPage"

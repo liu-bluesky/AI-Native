@@ -58,6 +58,10 @@ const FALLBACK_PATHS = [
   '/usage/keys',
 ]
 
+export function isSuperAdmin() {
+  return String(localStorage.getItem('role') || 'user').trim().toLowerCase() === 'admin'
+}
+
 function parsePermissionArray(rawValue) {
   if (!rawValue) return []
   try {

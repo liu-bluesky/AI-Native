@@ -9,7 +9,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from core.deps import employee_store, project_store
+from core.deps import employee_store, project_store, usage_store
 from services.dynamic_mcp_external_tools import (
     invoke_external_mcp_tool_runtime,
     list_project_external_tools_runtime,
@@ -20,8 +20,11 @@ from services.dynamic_mcp_context import (
 )
 from services.dynamic_mcp_collaboration import (
     COLLABORATION_TOOL_NAME,
+    attach_task_tree_context,
     collaboration_tool_descriptor,
+    ensure_project_execution_task_tree,
     execute_project_collaboration_runtime,
+    extract_execution_task_text,
     invoke_project_builtin_tool,
     parse_object_args,
 )
@@ -68,6 +71,8 @@ def create_project_mcp(
     *,
     current_api_key_ctx,
     current_developer_name_ctx,
+    current_key_owner_username_ctx=None,
+    current_mcp_session_id_ctx=None,
     project_root: Path,
     recall_limit: int,
 ):
@@ -84,6 +89,27 @@ def create_project_mcp(
     def _feedback_actor() -> str:
         actor = current_developer_name_ctx.get("").strip()
         return actor or "unknown"
+
+    def _resolve_task_tree_context() -> tuple[str, str]:
+        username = ""
+        if current_key_owner_username_ctx is not None:
+            username = current_key_owner_username_ctx.get("").strip()
+        if not username:
+            api_key = current_api_key_ctx.get("").strip()
+            if api_key:
+                get_key = getattr(usage_store, "get_key", None)
+                if callable(get_key):
+                    try:
+                        record = get_key(api_key) or {}
+                        username = str(getattr(record, "get", lambda *_: "")("created_by", "") or "").strip()
+                    except Exception:
+                        username = ""
+        if not username:
+            username = current_developer_name_ctx.get("").strip()
+        chat_session_id = ""
+        if current_mcp_session_id_ctx is not None:
+            chat_session_id = current_mcp_session_id_ctx.get("").strip()
+        return username, chat_session_id
 
     def _member_employee_ids() -> set[str]:
         return {employee.id for _member, employee in _list_member_pairs()}
@@ -128,6 +154,9 @@ def create_project_mcp(
         manual_resource = f"project://{project.id}/manual"
         display_path, ai_entry_excerpt = _read_ai_entry_excerpt(project)
         mcp_instruction = _resolve_mcp_instruction(project)
+        chat_settings = getattr(project, "chat_settings", {}) or {}
+        task_tree_enabled = bool(chat_settings.get("task_tree_enabled", True))
+        task_tree_auto_generate = bool(chat_settings.get("task_tree_auto_generate", True))
         proxy_tool_count = len(scoped_proxy_specs)
         external_tool_count = len(external_tool_specs)
         ui_rule_bindings = project_ui_rule_summary(project.id, limit=20)
@@ -147,14 +176,19 @@ def create_project_mcp(
             "3. 调用 get_project_profile，确认项目基础配置、工作区与入口文件配置。",
             "4. 调用 get_project_runtime_context，快速了解成员数量、项目级 UI 规则、规则规模和代理工具规模。",
             f"5. 如需选人，先调用 list_project_members；如需选工具，先调用 list_project_proxy_tools 或读取 project://{project.id}/proxy-tools。",
-            "6. 规则检索用 query_project_rules；其中项目级 UI 规则优先于员工个人规则。协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断单人主责或多人协作；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
+            "6. 如需历史经验或续跑线索，只在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时调用 recall_project_memory；同一任务轮进入执行后不要重复 recall。",
+            "7. 规则检索用 query_project_rules；其中项目级 UI 规则优先于员工个人规则。协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断单人主责或多人协作；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
             "",
             "## 调用建议",
             "- 页面、交互、视觉相关任务先检查项目级 UI 规则，其优先级高于员工个人规则。",
+            "- 记忆检索采用按需触发；不要把 recall_project_memory 当成每个计划节点的固定前置动作。",
             "- 当 tool_name 可能重名时，给 invoke_project_skill_tool 同时传 employee_id 做消歧。",
             "- 在直接调用技能脚本前，先读取项目规则和成员信息，避免工具选错。",
             "- execute_project_collaboration 是统一协作入口，但不内置固定行业分工模板；若单个成员足以闭环，可保持单人主责。",
             "- 外部 MCP 工具的参数以远端工具 schema 为准，先用 list_external_mcp_tools 查看。",
+            "- 若需要统一入口自动生成或续接任务树，必须保证当前会话已绑定稳定的 chat_session_id；缺失时先走 bind_project_context。",
+            "- 项目记忆、工作轨迹和任务树应复用同一条 chat_session_id / session_id；沉淀记忆后应能回看该轮规划和验证，不允许彼此脱节。",
+            "- /ai/chat 页面只展示仍在进行中的任务树；已完成或已归档任务树只作为历史记录查看，不继续占用当前会话视图。",
             "",
             "## 当前项目能力概览",
             f"- 项目级 UI 规则数: {len(ui_rule_bindings)}",
@@ -162,6 +196,24 @@ def create_project_mcp(
             f"- 项目成员技能代理工具数: {proxy_tool_count}",
             f"- 外部 MCP 工具数: {external_tool_count}",
         ]
+        if task_tree_enabled:
+            guide_lines.extend(
+                [
+                    f"- 任务树工作流: 已启用（{'自动生成' if task_tree_auto_generate else '需手动生成'}）",
+                    "",
+                    "## 任务树工作流",
+                    "- 当前项目聊天启用结构化任务树后，建议先读取 `get_current_task_tree`，确认当前节点和节点 ID。",
+                    "- 任务树节点必须直接对应用户目标下的工作步骤，不得把 `search_project_context`、`query_project_rules`、`search_ids`、`get_manual_content`、`resolve_relevant_context`、`generate_execution_plan` 这类内部检索/规划工具直接当成节点标题。",
+                    "- 候选代理工具、脚本路径和类似 `Auto inferred proxy entry from scripts/...` 的描述，只能作为内部工具信息，不得直接展示为任务树节点。",
+                    "- 通过当前 project MCP 或统一查询 MCP 发起的项目执行，只要命中有效项目任务并带上当前 MCP session，也会自动绑定到同一任务树会话。",
+                    "- 如当前入口没有显式携带 `chat_session_id`，必须先绑定当前会话；否则不要假设任务树会自动出现在正确的聊天窗口里。",
+                    "- 任务树与项目记忆必须绑定到同一条聊天会话；需要沉淀结论时，记忆详情应能回看本轮任务规划、节点状态和验证结果。",
+                    "- 开始执行节点时，先调用 `update_task_node_status` 标记为 `in_progress` 或 `verifying`。",
+                    "- 完成节点时，必须调用 `complete_task_node_with_verification` 填写验证结果；未验证不得标记为 `done`。",
+                    "- 若本轮已有执行进展但没有回写任务树，系统会把节点保留在继续执行或验证中，而不是直接自动推荐完成。",
+                    "- `/ai/chat` 只展示当前仍在进行中的任务树；已完成任务树应归档到项目历史，不继续在当前聊天主区域展示。",
+                ]
+            )
         if display_path:
             guide_lines.extend(
                 [
@@ -198,6 +250,7 @@ def create_project_mcp(
                 "get_project_profile",
                 "get_project_runtime_context",
                 "list_project_members or list_project_proxy_tools",
+                "get_current_task_tree / update_task_node_status / complete_task_node_with_verification",
                 "query_project_rules / invoke_project_skill_tool / invoke_external_mcp_tool",
             ],
             "guide_markdown": "\n".join(guide_lines),
@@ -513,22 +566,7 @@ def create_project_mcp(
     @mcp.tool()
     def list_project_proxy_tools() -> list[dict]:
         """列出项目成员可执行技能脚本代理工具"""
-        tools = []
-        for tool_name, spec in sorted(scoped_proxy_specs.items()):
-            tools.append(
-                {
-                    "tool_name": tool_name,
-                    "employee_id": spec["employee_id"],
-                    "base_tool_name": spec["base_tool_name"],
-                    "skill_name": spec["skill_name"],
-                    "skill_id": spec["skill_id"],
-                    "entry_name": spec["entry_name"],
-                    "script_type": spec["script_type"],
-                    "description": spec["description"],
-                }
-            )
-        tools.append(collaboration_tool_descriptor())
-        return tools
+        return list_project_proxy_tools_runtime(project_id, "")
 
     @mcp.tool()
     def list_external_mcp_tools() -> list[dict]:
@@ -587,31 +625,57 @@ def create_project_mcp(
         project_id: str,
         tool_name: str,
         employee_id: str = "",
+        username: str = "",
+        chat_session_id: str = "",
         args: dict | None = None,
         args_json: str = "{}",
         timeout_sec: int = 30,
     ) -> dict:
+        resolved_username = str(username or "").strip()
+        resolved_chat_session_id = str(chat_session_id or "").strip()
+        if not resolved_username or not resolved_chat_session_id:
+            fallback_username, fallback_chat_session_id = _resolve_task_tree_context()
+            resolved_username = resolved_username or fallback_username
+            resolved_chat_session_id = resolved_chat_session_id or fallback_chat_session_id
         builtin_result = invoke_project_builtin_tool(
             project_id,
             tool_name,
             employee_id,
+            username=resolved_username,
+            chat_session_id=resolved_chat_session_id,
             args=args,
             args_json=args_json,
         )
         if builtin_result is not None:
             return builtin_result
+        task_tree_payload = ensure_project_execution_task_tree(
+            project_id=project_id,
+            username=resolved_username,
+            chat_session_id=resolved_chat_session_id,
+            root_goal=extract_execution_task_text(
+                tool_name,
+                args=args,
+                args_json=args_json,
+            ),
+        )
         if any(str(item.get("tool_name") or "").strip() == str(tool_name or "").strip() for item in external_tool_specs):
-            return invoke_external_mcp_tool_runtime(
+            result = invoke_external_mcp_tool_runtime(
                 project_id=project_id,
                 tool_name=tool_name,
                 args=args,
                 args_json=args_json,
                 timeout_sec=timeout_sec,
             )
+            return attach_task_tree_context(
+                result,
+                task_tree_payload=task_tree_payload,
+                username=resolved_username,
+                chat_session_id=resolved_chat_session_id,
+            )
         spec, err = _resolve_project_tool_spec(tool_name, employee_id)
         if spec is None:
             return {"error": err}
-        return _execute_skill_proxy(
+        result = _execute_skill_proxy(
             spec,
             project_root=project_root,
             current_api_key=current_api_key_ctx.get(""),
@@ -619,6 +683,12 @@ def create_project_mcp(
             args_json=args_json,
             timeout_sec=timeout_sec,
             employee_id=spec["employee_id"],
+        )
+        return attach_task_tree_context(
+            result,
+            task_tree_payload=task_tree_payload,
+            username=resolved_username,
+            chat_session_id=resolved_chat_session_id,
         )
 
     @mcp.tool()
@@ -634,9 +704,12 @@ def create_project_mcp(
             payload, err = parse_object_args(args=args, args_json=args_json)
             if payload is None:
                 return {"error": err}
+            resolved_username, resolved_chat_session_id = _resolve_task_tree_context()
             return execute_project_collaboration_runtime(
                 project_id=project_id,
                 task=str(payload.get("task") or "").strip(),
+                username=resolved_username,
+                chat_session_id=resolved_chat_session_id,
                 employee_ids=payload.get("employee_ids") or [],
                 max_employees=payload.get("max_employees", 3),
                 max_tool_calls=payload.get("max_tool_calls", 6),
@@ -665,9 +738,12 @@ def create_project_mcp(
         timeout_sec: int = 30,
     ) -> dict:
         """输入用户任务，自动选取项目成员并执行协作编排。"""
+        resolved_username, resolved_chat_session_id = _resolve_task_tree_context()
         return execute_project_collaboration_runtime(
             project_id=project_id,
             task=task,
+            username=resolved_username,
+            chat_session_id=resolved_chat_session_id,
             employee_ids=employee_ids or [],
             max_employees=max_employees,
             max_tool_calls=max_tool_calls,
@@ -680,7 +756,18 @@ def create_project_mcp(
     for tool_name, spec in sorted(scoped_proxy_specs.items()):
         def _make_proxy_tool(spec_item: dict, tool_name_value: str):
             def _proxy_tool(args: dict | None = None, args_json: str = "{}", timeout_sec: int = 30) -> dict:
-                return _execute_skill_proxy(
+                resolved_username, resolved_chat_session_id = _resolve_task_tree_context()
+                task_tree_payload = ensure_project_execution_task_tree(
+                    project_id=project_id,
+                    username=resolved_username,
+                    chat_session_id=resolved_chat_session_id,
+                    root_goal=extract_execution_task_text(
+                        tool_name_value,
+                        args=args,
+                        args_json=args_json,
+                    ),
+                )
+                result = _execute_skill_proxy(
                     spec_item,
                     project_root=project_root,
                     current_api_key=current_api_key_ctx.get(""),
@@ -688,6 +775,12 @@ def create_project_mcp(
                     args_json=args_json,
                     timeout_sec=timeout_sec,
                     employee_id=spec_item["employee_id"],
+                )
+                return attach_task_tree_context(
+                    result,
+                    task_tree_payload=task_tree_payload,
+                    username=resolved_username,
+                    chat_session_id=resolved_chat_session_id,
                 )
             _proxy_tool.__name__ = f"project_proxy_{tool_name_value}"
             return _proxy_tool
@@ -708,12 +801,30 @@ def create_project_mcp(
 
         def _make_external_proxy(tool_name_value: str):
             def _proxy_tool(arguments: dict | None = None, timeout_sec: int = 30) -> dict:
-                return invoke_external_mcp_tool_runtime(
+                resolved_username, resolved_chat_session_id = _resolve_task_tree_context()
+                serialized_args = json.dumps(arguments or {}, ensure_ascii=False)
+                task_tree_payload = ensure_project_execution_task_tree(
+                    project_id=project_id,
+                    username=resolved_username,
+                    chat_session_id=resolved_chat_session_id,
+                    root_goal=extract_execution_task_text(
+                        tool_name_value,
+                        args=arguments,
+                        args_json=serialized_args,
+                    ),
+                )
+                result = invoke_external_mcp_tool_runtime(
                     project_id=project_id,
                     tool_name=tool_name_value,
                     args=arguments,
-                    args_json=json.dumps(arguments or {}, ensure_ascii=False),
+                    args_json=serialized_args,
                     timeout_sec=timeout_sec,
+                )
+                return attach_task_tree_context(
+                    result,
+                    task_tree_payload=task_tree_payload,
+                    username=resolved_username,
+                    chat_session_id=resolved_chat_session_id,
                 )
 
             _proxy_tool.__name__ = f"project_external_{tool_name_value}"

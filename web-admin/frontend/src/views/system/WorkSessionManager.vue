@@ -56,7 +56,7 @@
         <div class="table-panel__meta">共 {{ filteredSessions.length }} 条</div>
       </div>
 
-      <el-table :data="pagedSessions" stripe @row-click="openSession">
+      <el-table class="session-table" :data="pagedSessions" stripe @row-click="openSession">
         <el-table-column label="Session ID" min-width="180">
           <template #default="{ row }">{{ row.session_id || '-' }}</template>
         </el-table-column>
@@ -71,10 +71,22 @@
         <el-table-column label="阶段 / 步骤" min-width="220">
           <template #default="{ row }">
             <div class="tag-group">
-              <el-tag v-for="item in row.phases || []" :key="`phase-${row.session_id}-${item}`" size="small" effect="plain">
+              <el-tag
+                v-for="item in row.phases || []"
+                :key="`phase-${row.session_id}-${item}`"
+                class="session-chip session-chip--phase"
+                size="small"
+                effect="plain"
+              >
                 {{ item }}
               </el-tag>
-              <el-tag v-for="item in (row.steps || []).slice(0, 2)" :key="`step-${row.session_id}-${item}`" size="small" type="info">
+              <el-tag
+                v-for="item in (row.steps || []).slice(0, 2)"
+                :key="`step-${row.session_id}-${item}`"
+                class="session-chip session-chip--step"
+                size="small"
+                type="info"
+              >
                 {{ item }}
               </el-tag>
             </div>
@@ -82,7 +94,7 @@
         </el-table-column>
         <el-table-column label="状态" width="120">
           <template #default="{ row }">
-            <el-tag :type="statusTagType(row.latest_status)" size="small">
+            <el-tag class="session-chip session-chip--status" :type="statusTagType(row.latest_status)" size="small">
               {{ row.latest_status || 'unknown' }}
             </el-tag>
           </template>
@@ -95,7 +107,7 @@
         </el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
-            <el-button text type="primary" @click.stop="openSession(row)">查看</el-button>
+            <el-button class="session-table__action" text type="primary" @click.stop="openSession(row)">查看</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -105,7 +117,7 @@
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
           background
-          layout="total, prev, pager, next, sizes"
+          layout="total, prev, pager, next, jumper, sizes"
           :total="filteredSessions.length"
           :page-sizes="[10, 20, 50]"
         />
@@ -114,107 +126,18 @@
       <el-empty v-if="!loading && !filteredSessions.length" description="暂无工作轨迹" />
     </section>
 
-    <el-drawer v-model="detailVisible" :title="detailTitle" size="720px">
+    <el-drawer
+      v-model="detailVisible"
+      class="session-detail-drawer"
+      :title="detailTitle"
+      size="min(680px, 90vw)"
+    >
       <template v-if="detailLoading">
         <div class="detail-loading">正在加载会话详情...</div>
       </template>
 
       <template v-else-if="activeSession">
-        <section class="detail-panel">
-          <div class="detail-metrics">
-            <div class="detail-metric">
-              <span class="detail-metric__label">Session</span>
-              <strong>{{ activeSession.session_id || '-' }}</strong>
-            </div>
-            <div class="detail-metric">
-              <span class="detail-metric__label">项目</span>
-              <strong>{{ activeSession.project_name || activeSession.project_id || '-' }}</strong>
-            </div>
-            <div class="detail-metric">
-              <span class="detail-metric__label">状态</span>
-              <strong>{{ activeSession.latest_status || '-' }}</strong>
-            </div>
-            <div class="detail-metric">
-              <span class="detail-metric__label">事件数</span>
-              <strong>{{ activeSession.event_count || 0 }}</strong>
-            </div>
-          </div>
-
-          <div class="detail-section">
-            <div class="detail-section__title">聚合字段</div>
-            <div class="detail-chip-grid">
-              <div class="detail-chip-box">
-                <div class="detail-chip-box__label">阶段</div>
-                <div class="tag-group">
-                  <el-tag v-for="item in activeSession.phases || []" :key="`active-phase-${item}`" size="small" effect="plain">
-                    {{ item }}
-                  </el-tag>
-                </div>
-              </div>
-              <div class="detail-chip-box">
-                <div class="detail-chip-box__label">步骤</div>
-                <div class="tag-group">
-                  <el-tag v-for="item in activeSession.steps || []" :key="`active-step-${item}`" size="small" type="info">
-                    {{ item }}
-                  </el-tag>
-                </div>
-              </div>
-            </div>
-            <div class="detail-list-grid">
-              <div class="detail-list-box">
-                <div class="detail-list-box__label">相关文件</div>
-                <ul>
-                  <li v-for="item in activeSession.changed_files || []" :key="`file-${item}`">{{ item }}</li>
-                </ul>
-              </div>
-              <div class="detail-list-box">
-                <div class="detail-list-box__label">验证</div>
-                <ul>
-                  <li v-for="item in activeSession.verification || []" :key="`verify-${item}`">{{ item }}</li>
-                </ul>
-              </div>
-              <div class="detail-list-box">
-                <div class="detail-list-box__label">风险</div>
-                <ul>
-                  <li v-for="item in activeSession.risks || []" :key="`risk-${item}`">{{ item }}</li>
-                </ul>
-              </div>
-              <div class="detail-list-box">
-                <div class="detail-list-box__label">下一步</div>
-                <ul>
-                  <li v-for="item in activeSession.next_steps || []" :key="`next-${item}`">{{ item }}</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-
-          <div class="detail-section">
-            <div class="detail-section__title">事件时间线</div>
-            <div class="timeline-list">
-              <article v-for="item in sessionEvents" :key="item.id" class="timeline-item">
-                <div class="timeline-item__head">
-                  <div>
-                    <div class="timeline-item__title">
-                      {{ item.phase || '未标注阶段' }}
-                      <span v-if="item.step">/ {{ item.step }}</span>
-                    </div>
-                    <div class="timeline-item__meta">
-                      <span>{{ item.event_type || item.source_kind || '-' }}</span>
-                      <span>{{ item.status || '-' }}</span>
-                      <span>{{ formatDateTime(item.created_at) }}</span>
-                    </div>
-                  </div>
-                  <el-tag size="small" :type="statusTagType(item.status)">{{ item.status || 'unknown' }}</el-tag>
-                </div>
-                <p v-if="item.goal" class="timeline-item__text">{{ item.goal }}</p>
-                <p v-if="item.content" class="timeline-item__text">{{ item.content }}</p>
-                <ul v-if="item.facts?.length" class="timeline-item__list">
-                  <li v-for="fact in item.facts" :key="`${item.id}-${fact}`">{{ fact }}</li>
-                </ul>
-              </article>
-            </div>
-          </div>
-        </section>
+        <WorkSessionDetailPanel :session="activeSession" :events="sessionEvents" />
       </template>
     </el-drawer>
   </div>
@@ -224,8 +147,8 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
+import WorkSessionDetailPanel from '@/components/WorkSessionDetailPanel.vue'
 import api from '@/utils/api.js'
-import { formatDateTime } from '@/utils/date.js'
 
 const loading = ref(false)
 const detailLoading = ref(false)
@@ -368,7 +291,7 @@ onMounted(() => {
 <style scoped>
 .settings-page {
   display: grid;
-  gap: 20px;
+  gap: 16px;
 }
 
 .settings-hero,
@@ -385,7 +308,7 @@ onMounted(() => {
 .settings-hero,
 .filter-panel,
 .table-panel {
-  padding: 24px;
+  padding: 22px;
 }
 
 .settings-hero {
@@ -395,11 +318,7 @@ onMounted(() => {
 }
 
 .settings-hero__eyebrow,
-.table-panel__eyebrow,
-.detail-section__title,
-.detail-metric__label,
-.detail-chip-box__label,
-.detail-list-box__label {
+.table-panel__eyebrow {
   font-size: 12px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -415,10 +334,10 @@ onMounted(() => {
 }
 
 .settings-hero__summary {
-  margin: 14px 0 0;
-  max-width: 720px;
+  margin: 12px 0 0;
+  max-width: 680px;
   color: #475569;
-  line-height: 1.7;
+  line-height: 1.6;
 }
 
 .settings-hero__meta {
@@ -438,14 +357,14 @@ onMounted(() => {
 .filter-panel__grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  gap: 12px;
 }
 
 .table-panel__head {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 
 .table-panel__meta {
@@ -455,108 +374,102 @@ onMounted(() => {
 .table-panel__pagination {
   display: flex;
   justify-content: flex-end;
-  margin-top: 18px;
+  margin-top: 14px;
+}
+
+.session-table :deep(.el-table__header th.el-table__cell) {
+  padding: 9px 0;
+  background: rgba(248, 250, 252, 0.76);
+}
+
+.session-table :deep(.el-table__header .cell) {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #64748b;
+}
+
+.session-table :deep(.el-table__body td.el-table__cell) {
+  padding: 10px 0;
+}
+
+.session-table :deep(.el-table__body .cell) {
+  line-height: 1.45;
+}
+
+.session-table :deep(.el-table__row) {
+  cursor: pointer;
+}
+
+.session-main {
+  display: grid;
+  gap: 2px;
 }
 
 .session-main__title {
   font-weight: 600;
+  font-size: 13px;
+  line-height: 1.35;
   color: #0f172a;
 }
 
 .session-main__sub {
-  margin-top: 4px;
   color: #64748b;
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .tag-group {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 
-.detail-panel {
-  display: grid;
-  gap: 18px;
-  padding: 8px;
+.tag-group :deep(.el-tag),
+.session-chip {
+  --el-tag-border-radius: 999px;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 20px;
 }
 
-.detail-metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+.session-chip--phase {
+  background: rgba(255, 255, 255, 0.58);
 }
 
-.detail-metric,
-.detail-chip-box,
-.detail-list-box,
-.timeline-item {
-  padding: 16px;
-  border-radius: 20px;
-  background: rgba(248, 250, 252, 0.96);
-  border: 1px solid rgba(226, 232, 240, 0.9);
+.session-chip--step {
+  background: rgba(240, 249, 255, 0.86);
 }
 
-.detail-metric strong {
-  display: block;
-  margin-top: 8px;
-  color: #0f172a;
-  word-break: break-word;
+.session-chip--status {
+  min-width: 64px;
+  justify-content: center;
 }
 
-.detail-section {
-  display: grid;
-  gap: 12px;
+.session-table__action {
+  padding: 4px 0;
+  font-size: 12px;
 }
 
-.detail-chip-grid,
-.detail-list-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+.session-detail-drawer :deep(.el-drawer__header) {
+  margin-bottom: 0;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.76);
 }
 
-.detail-list-box ul,
-.timeline-item__list {
-  margin: 10px 0 0;
-  padding-left: 18px;
-  color: #475569;
-}
-
-.timeline-list {
-  display: grid;
-  gap: 12px;
-}
-
-.timeline-item__head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.timeline-item__title {
+.session-detail-drawer :deep(.el-drawer__title) {
+  font-size: 15px;
   font-weight: 600;
   color: #0f172a;
 }
 
-.timeline-item__meta {
-  display: flex;
-  gap: 10px;
-  margin-top: 6px;
-  color: #64748b;
-  font-size: 12px;
-  flex-wrap: wrap;
-}
-
-.timeline-item__text {
-  margin: 12px 0 0;
-  color: #475569;
-  line-height: 1.7;
-  white-space: pre-wrap;
+.session-detail-drawer :deep(.el-drawer__body) {
+  padding: 16px 18px 18px;
 }
 
 .detail-loading {
-  padding: 24px 0;
+  padding: 18px 2px 12px;
   color: #64748b;
 }
 
@@ -566,11 +479,14 @@ onMounted(() => {
     flex-direction: column;
   }
 
-  .filter-panel__grid,
-  .detail-metrics,
-  .detail-chip-grid,
-  .detail-list-grid {
+  .filter-panel__grid {
     grid-template-columns: 1fr;
+  }
+
+  .settings-hero,
+  .filter-panel,
+  .table-panel {
+    padding: 18px;
   }
 }
 </style>

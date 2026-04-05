@@ -10,6 +10,8 @@ class ToolExecutor:
         project_id: str,
         employee_id: str,
         *,
+        username: str = "",
+        chat_session_id: str = "",
         timeout_sec: int | None = None,
         max_retries: int = 0,
         allowed_tool_names: list[str] | None = None,
@@ -19,6 +21,8 @@ class ToolExecutor:
     ):
         self._project_id = project_id
         self._employee_id = employee_id
+        self._username = str(username or "").strip()
+        self._chat_session_id = str(chat_session_id or "").strip()
         settings = get_settings()
         base_timeout = int(settings.tool_timeout)
         if timeout_sec is not None:
@@ -86,6 +90,8 @@ class ToolExecutor:
             project_id=self._project_id,
             tool_name=tool_name,
             employee_id=self._employee_id,
+            username=self._username,
+            chat_session_id=self._chat_session_id,
             args=args,
             args_json=json.dumps(args),
             timeout_sec=self._timeout

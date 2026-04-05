@@ -377,6 +377,12 @@ class PgMemoryStore(_PgStoreBase):
             mems = [m for m in mems if str(getattr(m, "project_name", "")) == normalized_project_name]
         return mems
 
+    def list_all(self) -> list[Any]:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT payload FROM memories ORDER BY created_at DESC, id DESC")
+            rows = cur.fetchall()
+        return [self._deserialize_memory(r["payload"]) for r in rows]
+
     def recall(self, employee_id: str, query: str = "", limit: int = 10, project_name: str = "") -> list[Any]:
         mems = self.list_by_employee(employee_id, project_name=project_name)
         if query:

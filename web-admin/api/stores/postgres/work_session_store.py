@@ -78,12 +78,18 @@ class WorkSessionStorePostgres:
         project_id: str = "",
         employee_id: str = "",
         session_id: str = "",
+        task_tree_session_id: str = "",
+        task_tree_chat_session_id: str = "",
+        task_node_id: str = "",
         query: str = "",
         limit: int = 200,
     ) -> list[WorkSessionEvent]:
         normalized_project_id = str(project_id or "").strip()
         normalized_employee_id = str(employee_id or "").strip()
         normalized_session_id = str(session_id or "").strip()
+        normalized_task_tree_session_id = str(task_tree_session_id or "").strip()
+        normalized_task_tree_chat_session_id = str(task_tree_chat_session_id or "").strip()
+        normalized_task_node_id = str(task_node_id or "").strip()
         keyword = str(query or "").strip().lower()
         try:
             limit_value = max(1, min(int(limit or 200), 500))
@@ -97,12 +103,25 @@ class WorkSessionStorePostgres:
                 continue
             if normalized_session_id and item.session_id != normalized_session_id:
                 continue
+            if normalized_task_tree_session_id and item.task_tree_session_id != normalized_task_tree_session_id:
+                continue
+            if (
+                normalized_task_tree_chat_session_id
+                and item.task_tree_chat_session_id != normalized_task_tree_chat_session_id
+            ):
+                continue
+            if normalized_task_node_id and item.task_node_id != normalized_task_node_id:
+                continue
             if keyword:
                 haystack = "\n".join(
                     [
                         item.project_name,
                         item.employee_id,
                         item.session_id,
+                        item.task_tree_session_id,
+                        item.task_tree_chat_session_id,
+                        item.task_node_id,
+                        item.task_node_title,
                         item.source_kind,
                         item.event_type,
                         item.phase,

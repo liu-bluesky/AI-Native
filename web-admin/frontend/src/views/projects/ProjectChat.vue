@@ -201,6 +201,15 @@
                   size="small"
                   plain
                   class="chat-context-bar__action-button"
+                  @click="openCurrentProjectDetail"
+                >
+                  项目详情
+                </el-button>
+                <el-button
+                  v-if="hasSelectedProject"
+                  size="small"
+                  plain
+                  class="chat-context-bar__action-button"
                   @click="openCurrentMaterialLibrary"
                 >
                   素材库
@@ -409,6 +418,17 @@
                             >
                           </div>
                           <div
+                            v-if="messageStatusNotes(item).length"
+                            class="message-status-notes"
+                          >
+                            <div
+                              v-for="(note, noteIdx) in messageStatusNotes(item)"
+                              :key="`status-${noteIdx}`"
+                              class="message-status-note"
+                              v-html="formatContent(note)"
+                            ></div>
+                          </div>
+                          <div
                             class="message-text"
                             v-html="
                               formatContent(item.content) ||
@@ -418,16 +438,28 @@
                             "
                           ></div>
                         </template>
-                        <div
-                          v-else
-                          class="message-text"
-                          v-html="
-                            formatContent(item.content) ||
-                            (chatLoading && idx === messages.length - 1
-                              ? '思考中...'
-                              : '')
-                          "
-                        ></div>
+                        <template v-else>
+                          <div
+                            v-if="messageStatusNotes(item).length"
+                            class="message-status-notes"
+                          >
+                            <div
+                              v-for="(note, noteIdx) in messageStatusNotes(item)"
+                              :key="`status-${noteIdx}`"
+                              class="message-status-note"
+                              v-html="formatContent(note)"
+                            ></div>
+                          </div>
+                          <div
+                            class="message-text"
+                            v-html="
+                              formatContent(item.content) ||
+                              (chatLoading && idx === messages.length - 1
+                                ? '思考中...'
+                                : '')
+                            "
+                          ></div>
+                        </template>
                         <!-- Images -->
                         <div
                           v-if="extractImages(item).length"
@@ -573,6 +605,59 @@
                                 ).text
                               }}
                             </div>
+                          </div>
+                        </div>
+                        <div
+                          v-if="item.taskTreeAudit"
+                          class="message-task-tree-audit"
+                          :class="`is-${item.taskTreeAudit.status || 'attention'}`"
+                        >
+                          <div class="message-task-tree-audit__head">
+                            <div class="message-task-tree-audit__title">
+                              任务推进校验
+                            </div>
+                            <el-button
+                              text
+                              size="small"
+                              @click="openTaskTreePanel"
+                            >
+                              查看任务树
+                            </el-button>
+                          </div>
+                          <div class="message-task-tree-audit__text">
+                            {{ item.taskTreeAudit.message }}
+                          </div>
+                          <div class="message-task-tree-audit__meta">
+                            当前节点：
+                            {{
+                              item.taskTreeAudit.current_node?.title || "未识别"
+                            }}
+                            <template
+                              v-if="item.taskTreeAudit.suggested_status"
+                            >
+                              · 建议状态
+                              {{
+                                item.taskTreeAudit.suggested_status
+                              }}
+                            </template>
+                            <template
+                              v-if="item.taskTreeAudit.auto_updated"
+                            >
+                              · 已自动保留
+                            </template>
+                          </div>
+                          <div
+                            v-if="item.taskTreeAudit.executed_tool_names?.length"
+                            class="message-task-tree-audit__tags"
+                          >
+                            <el-tag
+                              v-for="toolName in item.taskTreeAudit.executed_tool_names"
+                              :key="`task-audit-${toolName}`"
+                              size="small"
+                              effect="plain"
+                            >
+                              {{ toolName }}
+                            </el-tag>
                           </div>
                         </div>
                         <div
@@ -949,8 +1034,11 @@
                             <div
                               class="chat-media-parameter-section__options"
                               :class="{
-                                'is-aspect': section.key === 'image_aspect_ratio' || section.key === 'video_aspect_ratio',
-                                'is-resolution': section.key === 'image_resolution',
+                                'is-aspect':
+                                  section.key === 'image_aspect_ratio' ||
+                                  section.key === 'video_aspect_ratio',
+                                'is-resolution':
+                                  section.key === 'image_resolution',
                               }"
                             >
                               <button
@@ -959,12 +1047,21 @@
                                 type="button"
                                 class="chat-media-parameter-option"
                                 :class="{
-                                  'is-active': option.value === section.modelValue,
-                                  'is-resolution': section.key === 'image_resolution',
+                                  'is-active':
+                                    option.value === section.modelValue,
+                                  'is-resolution':
+                                    section.key === 'image_resolution',
                                 }"
-                                @click="setCurrentModelParameterValue(section.key, option.value)"
+                                @click="
+                                  setCurrentModelParameterValue(
+                                    section.key,
+                                    option.value,
+                                  )
+                                "
                               >
-                                <span class="chat-media-parameter-option__label">
+                                <span
+                                  class="chat-media-parameter-option__label"
+                                >
                                   {{ option.label }}
                                 </span>
                               </button>
@@ -1004,7 +1101,11 @@
                                 'is-active': imageGenerateFourViewsEnabled,
                               }"
                             >
-                              {{ imageGenerateFourViewsEnabled ? "已开启" : "未开启" }}
+                              {{
+                                imageGenerateFourViewsEnabled
+                                  ? "已开启"
+                                  : "未开启"
+                              }}
                             </span>
                           </button>
                         </section>
@@ -1043,6 +1144,233 @@
               </div>
             </div>
           </div>
+
+          <el-drawer
+            v-model="taskTreePanelVisible"
+            size="min(560px, calc(100vw - 24px))"
+            title="当前执行任务"
+            class="task-tree-drawer"
+          >
+            <div v-loading="taskTreeLoading" class="task-tree-panel">
+              <div class="task-tree-panel__hero">
+                <div>
+                  <div class="task-tree-panel__eyebrow">
+                    {{ taskTreeIsReadonly ? "Task Snapshot" : "Task Flow" }}
+                  </div>
+                  <div class="task-tree-panel__title">
+                    {{ displayedChatTaskTree?.root_goal || "当前会话还没有任务树" }}
+                  </div>
+                  <div class="task-tree-panel__meta">
+                    <span>状态 {{ displayedChatTaskTree?.status || "pending" }}</span>
+                    <span>进度 {{ taskTreeProgressLabel }}</span>
+                    <span v-if="displayedChatTaskTree?.stats?.leaf_total">
+                      已完成 {{ displayedChatTaskTree?.stats?.done_leaf_total || 0 }} / {{ displayedChatTaskTree?.stats?.leaf_total || 0 }}
+                    </span>
+                    <span v-if="taskTreeIsReadonly">只读快照</span>
+                  </div>
+                </div>
+                <div v-if="hasChatTaskTree && !taskTreeIsReadonly" class="task-tree-panel__actions">
+                  <el-button
+                    text
+                    type="danger"
+                    :icon="Delete"
+                    :disabled="taskTreeSaving"
+                    @click="deleteCurrentTaskTree"
+                  >
+                    删除任务推进
+                  </el-button>
+                </div>
+              </div>
+
+              <div v-if="hasChatTaskTree" class="task-tree-panel__body">
+                <div class="task-tree-panel__outline">
+                  <div class="task-tree-panel__section-head">
+                    <div>
+                      <div class="task-tree-panel__section-eyebrow">Task Nodes</div>
+                      <div class="task-tree-panel__section-title">执行路径</div>
+                    </div>
+                    <div class="task-tree-panel__section-meta">
+                      {{ displayedChatTaskTree?.stats?.leaf_total || 0 }} 个执行节点
+                    </div>
+                  </div>
+                  <el-tree
+                    :data="taskTreeTreeData"
+                    node-key="id"
+                    default-expand-all
+                    highlight-current
+                    :expand-on-click-node="false"
+                    :current-node-key="selectedTaskTreeNodeId"
+                    class="task-tree-panel__tree"
+                    @node-click="handleTaskTreeNodeClick"
+                  >
+                    <template #default="{ data }">
+                      <div class="task-tree-node">
+                        <div class="task-tree-node__copy">
+                          <span class="task-tree-node__title" :title="data.title">
+                            {{ data.title }}
+                          </span>
+                          <span
+                            v-if="isTaskTreeNodeCurrent(data)"
+                            class="task-tree-node__current"
+                          >
+                            当前
+                          </span>
+                        </div>
+                        <el-tag
+                          size="small"
+                          effect="plain"
+                          class="task-tree-node__status"
+                          :type="data.status === 'done' ? 'success' : data.status === 'blocked' ? 'danger' : data.status === 'verifying' ? 'warning' : data.status === 'in_progress' ? '' : 'info'"
+                        >
+                          {{ formatTaskTreeStatusLabel(data.status) }}
+                        </el-tag>
+                      </div>
+                    </template>
+                  </el-tree>
+                </div>
+
+                <div v-if="taskTreeSelectedNode" class="task-tree-editor">
+                  <div class="task-tree-editor__head">
+                    <div>
+                      <div class="task-tree-editor__eyebrow">需求详情</div>
+                      <div class="task-tree-editor__title">{{ taskTreeSelectedNode.title }}</div>
+                    </div>
+                    <div class="task-tree-editor__meta">
+                      <span class="task-tree-editor__pill">
+                        {{ formatTaskTreeStatusLabel(taskTreeSelectedNode.status) }}
+                      </span>
+                      <span
+                        v-if="isTaskTreeNodeCurrent(taskTreeSelectedNode)"
+                        class="task-tree-editor__pill task-tree-editor__pill--current"
+                      >
+                        当前节点
+                      </span>
+                      <span
+                        v-if="taskTreeSelectedNodeChildCount"
+                        class="task-tree-editor__pill"
+                      >
+                        {{ taskTreeSelectedNodeChildCount }} 个子节点
+                      </span>
+                    </div>
+                  </div>
+                  <p v-if="taskTreeSelectedNode.description" class="task-tree-editor__desc">
+                    {{ taskTreeSelectedNode.description }}
+                  </p>
+                  <div
+                    v-if="taskTreeSelectedNode.done_definition"
+                    class="task-tree-editor__section"
+                  >
+                    <div class="task-tree-editor__section-label">完成条件</div>
+                    <p>{{ taskTreeSelectedNode.done_definition }}</p>
+                  </div>
+                  <div
+                    v-if="taskTreeSelectedNode.verification_items?.length"
+                    class="task-tree-editor__section"
+                  >
+                    <div class="task-tree-editor__section-label">验证要求</div>
+                    <div class="task-tree-editor__checks">
+                      <div
+                        v-for="item in taskTreeSelectedNode.verification_items"
+                        :key="`${taskTreeSelectedNode.id}-${item}`"
+                        class="task-tree-editor__check"
+                      >
+                        <el-icon><CircleCheck /></el-icon>
+                        <span>{{ item }}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <template v-if="taskTreeIsReadonly">
+                    <div
+                      v-if="taskTreeSelectedNode.verification_result"
+                      class="task-tree-editor__section task-tree-editor__section--result"
+                    >
+                      <div class="task-tree-editor__section-label">验证结果</div>
+                      <p>{{ taskTreeSelectedNode.verification_result }}</p>
+                    </div>
+                    <div
+                      v-if="taskTreeSelectedNode.summary_for_model"
+                      class="task-tree-editor__section"
+                    >
+                      <div class="task-tree-editor__section-label">节点摘要</div>
+                      <p>{{ taskTreeSelectedNode.summary_for_model }}</p>
+                    </div>
+                    <p
+                      v-if="
+                        !taskTreeSelectedNode.verification_result &&
+                        !taskTreeSelectedNode.summary_for_model
+                      "
+                      class="task-tree-editor__empty"
+                    >
+                      这个节点还没有补充验证结论。
+                    </p>
+                  </template>
+                  <template v-else>
+                    <div class="task-tree-editor__field">
+                      <div class="task-tree-editor__field-label">节点状态</div>
+                      <el-select v-model="taskTreeStatusDraft" class="task-tree-editor__select">
+                        <el-option
+                          v-for="option in taskTreeStatusOptions"
+                          :key="option.value"
+                          :label="option.label"
+                          :value="option.value"
+                        />
+                      </el-select>
+                    </div>
+                    <div class="task-tree-editor__field">
+                      <div class="task-tree-editor__field-label">验证结果</div>
+                      <el-input
+                        v-model="taskTreeVerificationDraft"
+                        type="textarea"
+                        :rows="4"
+                        :placeholder="taskTreeVerificationPlaceholder"
+                      />
+                    </div>
+                    <div class="task-tree-editor__hint">
+                      {{ taskTreeSaveHint }}
+                    </div>
+                    <div class="task-tree-editor__field">
+                      <div class="task-tree-editor__field-label">节点摘要</div>
+                      <el-input
+                        v-model="taskTreeSummaryDraft"
+                        type="textarea"
+                        :rows="3"
+                        placeholder="给模型的当前节点摘要，可填写已完成范围、剩余风险或下一步。"
+                      />
+                    </div>
+                    <div class="task-tree-editor__actions">
+                      <el-button
+                        text
+                        :icon="List"
+                        @click="saveTaskTreeNode({ setCurrentOnly: true })"
+                      >
+                        设为当前
+                      </el-button>
+                      <el-button
+                        type="primary"
+                        :loading="taskTreeSaving"
+                        @click="saveTaskTreeNode()"
+                      >
+                        保存节点状态
+                      </el-button>
+                    </div>
+                  </template>
+                </div>
+                <div v-else class="task-tree-editor task-tree-editor--empty">
+                  <div class="task-tree-editor__eyebrow">需求详情</div>
+                  <div class="task-tree-editor__title">选择一个节点</div>
+                  <p class="task-tree-editor__empty">
+                    左侧只保留执行路径，点击节点后再看当前目标、验证要求和结果。
+                  </p>
+                </div>
+              </div>
+
+              <el-empty
+                v-else
+                description="发送首条任务消息后，系统会自动生成结构化执行树。"
+                :image-size="72"
+              />
+            </div>
+          </el-drawer>
         </div>
       </div>
     </div>
@@ -1053,6 +1381,7 @@
     title="统一 MCP 接入"
     :project-id="selectedProjectId"
     :project-label="currentProjectLabel"
+    :chat-session-id="currentChatSessionId"
   />
 
   <el-dialog
@@ -1566,7 +1895,7 @@
                           collapse-tags-tooltip
                           filterable
                           clearable
-                          placeholder="默认全选（项目内全部员工）"
+                          placeholder="留空表示自动分配员工"
                           class="full-width"
                           :disabled="!selectedProjectId"
                         >
@@ -1631,7 +1960,9 @@
                           </span>
                         </template>
                         <el-select
-                          v-model="projectChatSettings.employee_coordination_mode"
+                          v-model="
+                            projectChatSettings.employee_coordination_mode
+                          "
                           class="full-width"
                           :disabled="!selectedProjectId"
                         >
@@ -2318,7 +2649,8 @@ import ProjectMaterialSaveDialog from "@/components/ProjectMaterialSaveDialog.vu
 import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
 import api from "@/utils/api.js";
 import { createProjectChatWsClient } from "@/utils/ws-chat.js";
-import { clearPermissionArray, hasPermission } from "@/utils/permissions.js";
+import { hasPermission, isSuperAdmin } from "@/utils/permissions.js";
+import { clearAuthSession } from "@/utils/auth-storage.js";
 import { fetchDictionary } from "@/utils/dictionaries.js";
 import {
   Delete,
@@ -2333,6 +2665,8 @@ import {
   VideoPause,
   Setting,
   InfoFilled,
+  CircleCheck,
+  List,
 } from "@element-plus/icons-vue";
 import { marked } from "marked";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
@@ -2511,6 +2845,8 @@ const CHAT_SETTINGS_DEFAULTS = {
   tool_retry_count: 0,
   answer_style: "concise",
   prefer_conclusion_first: true,
+  task_tree_enabled: true,
+  task_tree_auto_generate: true,
   image_resolution: "1080x1080",
   image_aspect_ratio: "1:1",
   image_generate_four_views: false,
@@ -2631,6 +2967,22 @@ const SETTINGS_CENTER_ITEM_DEFS = [
     permission: "menu.system.work_sessions",
   },
   {
+    id: "online-users",
+    label: "在线用户",
+    desc: "查看当前仍在线的账号与最近访问位置",
+    kind: "route",
+    path: "/online-users",
+    adminOnly: true,
+  },
+  {
+    id: "mcp-monitor",
+    label: "MCP 监控",
+    desc: "查看系统提供的 MCP 入口正在被谁接入和使用",
+    kind: "route",
+    path: "/mcp-monitor",
+    adminOnly: true,
+  },
+  {
     id: "dictionaries",
     label: "字典管理",
     desc: "维护模型类型等全局字典",
@@ -2717,13 +3069,18 @@ const ROLE_LABEL_MAP = {
 };
 const SETTINGS_GUIDE_REASON_MAP = {
   chat: "先把项目、执行员工、模型和工具预算收束到同一轮上下文里。",
-  "user-settings": "这里决定你的默认 AI 来源和个人偏好，会影响日常进入对话时的默认落点。",
+  "user-settings":
+    "这里决定你的默认 AI 来源和个人偏好，会影响日常进入对话时的默认落点。",
   "system-config": "适合维护平台级默认值、功能开关和全局行为边界。",
+  "online-users": "只向超级管理员展示当前在线账号，便于判断后台活跃状态。",
+  "mcp-monitor":
+    "只向超级管理员展示系统 MCP 运行态，便于判断项目、员工、技能、规则和统一查询入口的在线使用情况。",
   dictionaries: "当模型类型、字典项需要统一维护时，从这里集中处理。",
   providers: "维护供应商与模型池，决定平台能用哪些 AI 入口。",
   projects: "切回项目列表，确认当前上下文、成员边界和工作区归属。",
   "agent-templates": "先沉淀标准模板，再批量复用到不同员工。",
-  employees: "管理员工角色、技能绑定和提示词结构，是把对话结论落成资产的主入口。",
+  employees:
+    "管理员工角色、技能绑定和提示词结构，是把对话结论落成资产的主入口。",
   skills:
     "维护和补充更新技能。需要推进项目前端、后端或数据库数据时，可以先在这里补齐复用能力，再回到对话执行。",
   rules: "把稳定做法沉淀成规则，减少后续回答漂移。",
@@ -2733,7 +3090,9 @@ const SETTINGS_GUIDE_REASON_MAP = {
 };
 
 function formatRoleLabel(roleId) {
-  const normalized = String(roleId || "").trim().toLowerCase();
+  const normalized = String(roleId || "")
+    .trim()
+    .toLowerCase();
   if (!normalized) return "当前用户";
   if (ROLE_LABEL_MAP[normalized]) return ROLE_LABEL_MAP[normalized];
   return normalized.replace(/[_-]+/g, " ");
@@ -2764,8 +3123,7 @@ function resolveTourTarget(targetRef) {
 function hasSeenGuideTour(surface, username, roleId) {
   if (typeof window === "undefined") return true;
   return (
-    localStorage.getItem(guideTourStorageKey(surface, username, roleId)) ===
-    "1"
+    localStorage.getItem(guideTourStorageKey(surface, username, roleId)) === "1"
   );
 }
 
@@ -2993,6 +3351,14 @@ const activeComposerAssist = ref("");
 const externalMcpTotal = ref(0);
 const agentStatusExpanded = ref(false);
 const currentChatSessionId = ref("");
+const chatTaskTree = ref(null);
+const taskTreePanelVisible = ref(false);
+const taskTreeLoading = ref(false);
+const taskTreeSaving = ref(false);
+const selectedTaskTreeNodeId = ref("");
+const taskTreeStatusDraft = ref("pending");
+const taskTreeVerificationDraft = ref("");
+const taskTreeSummaryDraft = ref("");
 const creatingChatSession = ref(false);
 const deletingChatSessionId = ref("");
 const downloadingDesktopArtifactKey = ref("");
@@ -3218,6 +3584,82 @@ const currentRoleId = computed(
       .toLowerCase() || "user",
 );
 const currentRoleLabel = computed(() => formatRoleLabel(currentRoleId.value));
+const displayedChatTaskTree = computed(() => {
+  const payload =
+    chatTaskTree.value && typeof chatTaskTree.value === "object"
+      ? chatTaskTree.value
+      : null;
+  return payload;
+});
+const hasChatTaskTree = computed(() =>
+  Boolean(String(displayedChatTaskTree.value?.id || "").trim()),
+);
+const taskTreeIsReadonly = computed(() => {
+  const payload = displayedChatTaskTree.value;
+  if (!payload) return false;
+  const lifecycle = String(payload.lifecycle_status || "").trim().toLowerCase();
+  const status = String(payload.status || "").trim().toLowerCase();
+  return Boolean(payload.is_archived || lifecycle === "archived" || status === "done");
+});
+const taskTreeTreeData = computed(() =>
+  Array.isArray(displayedChatTaskTree.value?.tree) ? displayedChatTaskTree.value.tree : [],
+);
+const taskTreeProgressLabel = computed(() => {
+  if (!hasChatTaskTree.value) return "未拆解";
+  return `${Number(displayedChatTaskTree.value?.progress_percent || 0)}%`;
+});
+const taskTreeSelectedNode = computed(() => {
+  const nodeId = String(selectedTaskTreeNodeId.value || "").trim();
+  if (!nodeId) return null;
+  return (
+    (Array.isArray(displayedChatTaskTree.value?.nodes)
+      ? displayedChatTaskTree.value.nodes.find(
+          (item) => String(item?.id || "").trim() === nodeId,
+        )
+      : null) || null
+  );
+});
+const taskTreeSelectedNodeChildCount = computed(
+  () =>
+    getTaskTreeChildNodes(String(taskTreeSelectedNode.value?.id || "").trim())
+      .length,
+);
+const taskTreeVerificationPlaceholder = computed(() =>
+  taskTreeSelectedNodeChildCount.value
+    ? "填写父节点的整体验证结论。只有全部子任务完成后，父节点才能标记完成。"
+    : "填写叶子节点的验证结果，例如测试、截图、日志或人工确认结论。"
+);
+const taskTreeSaveHint = computed(() => {
+  const node = taskTreeSelectedNode.value;
+  if (!node) return "请先选择一个任务节点。";
+  if (taskTreeSelectedNodeChildCount.value) {
+    return `当前选中的是父节点「${node.title}」。请先完成全部子任务，再补充整体验证结论。`;
+  }
+  return `当前选中的是叶子节点「${node.title}」。标记完成前必须填写验证结果。`;
+});
+const taskTreeStatusOptions = [
+  { value: "pending", label: "待开始" },
+  { value: "in_progress", label: "进行中" },
+  { value: "blocked", label: "阻塞" },
+  { value: "verifying", label: "验证中" },
+  { value: "done", label: "已完成" },
+];
+
+function formatTaskTreeStatusLabel(status) {
+  const normalized = String(status || "").trim();
+  const matched = taskTreeStatusOptions.find(
+    (option) => option.value === normalized,
+  );
+  return matched?.label || normalized || "待开始";
+}
+
+function isTaskTreeNodeCurrent(node) {
+  const currentNodeId = String(
+    displayedChatTaskTree.value?.current_node_id || "",
+  ).trim();
+  if (!currentNodeId) return false;
+  return currentNodeId === String(node?.id || "").trim();
+}
 
 async function logoutFromChat() {
   try {
@@ -3229,10 +3671,7 @@ async function logoutFromChat() {
   } catch {
     return;
   }
-  localStorage.removeItem("token");
-  localStorage.removeItem("username");
-  localStorage.removeItem("role");
-  clearPermissionArray();
+  clearAuthSession();
   router.replace("/login");
 }
 
@@ -3277,7 +3716,9 @@ const skillResourceDirectoryResolved = computed(() =>
 );
 const settingsCenterItems = computed(() =>
   SETTINGS_CENTER_ITEM_DEFS.filter(
-    (item) => !item.permission || hasPermission(item.permission),
+    (item) =>
+      (!item.permission || hasPermission(item.permission)) &&
+      (!item.adminOnly || isSuperAdmin()),
   ),
 );
 const settingsInternalItems = computed(() =>
@@ -3411,7 +3852,7 @@ const selectedEmployeeSummary = computed(() => {
     ? projectEmployees.value.length
     : 0;
   if (!total) return "暂无员工";
-  if (!selectedCount) return `全部员工 (${total})`;
+  if (!selectedCount) return `自动分配 (${total} 名可用员工)`;
   if (selectedCount === 1) {
     const selectedId = String(selectedEmployeeIds.value[0] || "").trim();
     const matched = (projectEmployees.value || []).find(
@@ -4705,6 +5146,14 @@ function normalizeProjectChatSettings(raw) {
       source.image_generate_four_views,
       CHAT_SETTINGS_DEFAULTS.image_generate_four_views,
     ),
+    task_tree_enabled: coerceBooleanSetting(
+      source.task_tree_enabled,
+      CHAT_SETTINGS_DEFAULTS.task_tree_enabled,
+    ),
+    task_tree_auto_generate: coerceBooleanSetting(
+      source.task_tree_auto_generate,
+      CHAT_SETTINGS_DEFAULTS.task_tree_auto_generate,
+    ),
     enabled_project_tool_names: normalizeStringList(
       source.enabled_project_tool_names ||
         CHAT_SETTINGS_DEFAULTS.enabled_project_tool_names,
@@ -4717,6 +5166,147 @@ function normalizeProjectChatSettings(raw) {
       40,
     ),
   };
+}
+
+function normalizeChatSelectedEmployeeIds(
+  selectedIds,
+  availableEmployeeIds = [],
+) {
+  const available = normalizeStringList(availableEmployeeIds || [], 200);
+  const validSelected = normalizeStringList(selectedIds || [], 200).filter(
+    (id) => !available.length || available.includes(id),
+  );
+  if (!validSelected.length || !available.length) {
+    return validSelected;
+  }
+  return validSelected.length >= available.length ? [] : validSelected;
+}
+
+function normalizeTaskTreePayload(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const nodes = Array.isArray(raw.nodes) ? raw.nodes : [];
+  const tree = Array.isArray(raw.tree) ? raw.tree : [];
+  const currentNodeId = String(raw.current_node_id || "").trim();
+  return {
+    ...raw,
+    id: String(raw.id || "").trim(),
+    chat_session_id: String(raw.chat_session_id || "").trim(),
+    title: String(raw.title || "").trim(),
+    root_goal: String(raw.root_goal || "").trim(),
+    status:
+      String(raw.status || "pending")
+        .trim()
+        .toLowerCase() || "pending",
+    current_node_id: currentNodeId,
+    progress_percent: Number(raw.progress_percent || 0),
+    nodes,
+    tree,
+    current_node:
+      raw.current_node && typeof raw.current_node === "object"
+        ? raw.current_node
+        : nodes.find(
+            (item) => String(item?.id || "").trim() === currentNodeId,
+          ) || null,
+    stats: raw.stats && typeof raw.stats === "object" ? raw.stats : {},
+    model_context_summary: String(raw.model_context_summary || "").trim(),
+  };
+}
+
+function normalizeTaskTreeAuditPayload(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const message = String(raw.message || "").trim();
+  if (!message) return null;
+  return {
+    status: String(raw.status || "attention").trim().toLowerCase(),
+    code: String(raw.code || "").trim(),
+    message,
+    auto_updated: Boolean(raw.auto_updated),
+    suggested_status: String(raw.suggested_status || "")
+      .trim()
+      .toLowerCase(),
+    completion_signal_detected: Boolean(raw.completion_signal_detected),
+    verification_signal_detected: Boolean(raw.verification_signal_detected),
+    executed_tool_names: Array.isArray(raw.executed_tool_names)
+      ? raw.executed_tool_names
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+      : [],
+    current_node:
+      raw.current_node && typeof raw.current_node === "object"
+        ? raw.current_node
+        : null,
+  };
+}
+
+function resolveTaskTreeEventPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload ?? null;
+  }
+  if (payload.task_tree && typeof payload.task_tree === "object") {
+    return payload.task_tree;
+  }
+  if (payload.history_task_tree && typeof payload.history_task_tree === "object") {
+    return payload.history_task_tree;
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(payload, "task_tree") ||
+    Object.prototype.hasOwnProperty.call(payload, "history_task_tree")
+  ) {
+    return null;
+  }
+  return payload;
+}
+
+function applyTaskTreePayload(payload) {
+  const normalized = normalizeTaskTreePayload(payload);
+  chatTaskTree.value = normalized;
+  if (!normalized) {
+    selectedTaskTreeNodeId.value = "";
+    taskTreeStatusDraft.value = "pending";
+    taskTreeVerificationDraft.value = "";
+    taskTreeSummaryDraft.value = "";
+    return;
+  }
+  const nextNodeId =
+    String(selectedTaskTreeNodeId.value || "").trim() ||
+    String(normalized.current_node_id || "").trim() ||
+    String(normalized.nodes?.[0]?.id || "").trim();
+  const targetNode =
+    normalized.nodes.find(
+      (item) => String(item?.id || "").trim() === nextNodeId,
+    ) ||
+    normalized.current_node ||
+    normalized.nodes?.[0] ||
+    null;
+  selectedTaskTreeNodeId.value = String(targetNode?.id || "").trim();
+  taskTreeStatusDraft.value = String(targetNode?.status || "pending").trim();
+  taskTreeVerificationDraft.value = String(
+    targetNode?.verification_result || "",
+  ).trim();
+  taskTreeSummaryDraft.value = String(
+    targetNode?.summary_for_model || "",
+  ).trim();
+}
+
+function syncTaskTreeDrafts(node) {
+  const targetNode =
+    node && typeof node === "object" ? node : taskTreeSelectedNode.value;
+  selectedTaskTreeNodeId.value = String(targetNode?.id || "").trim();
+  taskTreeStatusDraft.value = String(targetNode?.status || "pending").trim();
+  taskTreeVerificationDraft.value = String(
+    targetNode?.verification_result || "",
+  ).trim();
+  taskTreeSummaryDraft.value = String(
+    targetNode?.summary_for_model || "",
+  ).trim();
+}
+
+function getTaskTreeChildNodes(nodeId) {
+  const normalizedNodeId = String(nodeId || "").trim();
+  if (!normalizedNodeId || !Array.isArray(displayedChatTaskTree.value?.nodes)) return [];
+  return displayedChatTaskTree.value.nodes.filter(
+    (item) => String(item?.parent_id || "").trim() === normalizedNodeId,
+  );
 }
 
 function normalizeDictionaryBackedChatSettings(raw) {
@@ -4959,15 +5549,20 @@ function appendAssistantStatusNote(row, text) {
   if (!row) return;
   const note = String(text || "").trim();
   if (!note) return;
-  const current = String(row.content || "").trim();
-  if (!current) {
-    row.content = note;
+  const notes = Array.isArray(row.statusNotes) ? row.statusNotes.slice() : [];
+  if (notes.includes(note)) {
     return;
   }
-  if (current.endsWith(note)) {
-    return;
-  }
-  row.content = `${current}\n\n${note}`;
+  notes.push(note);
+  row.statusNotes = notes;
+}
+
+function messageStatusNotes(row) {
+  return Array.isArray(row?.statusNotes)
+    ? row.statusNotes
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    : [];
 }
 
 function appendTerminalLog(row, text) {
@@ -6746,6 +7341,52 @@ function openCurrentMaterialLibrary() {
   void router.push({ path: "/materials", query: { project_id: projectId } });
 }
 
+function openCurrentProjectDetail() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  void router.push(`/ai/chat/settings/projects/${encodeURIComponent(projectId)}`);
+}
+
+async function deleteCurrentTaskTree() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!projectId || !chatSessionId) {
+    ElMessage.warning("当前没有可删除的任务推进");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "删除后只会清空当前会话的任务推进，不会删除聊天记录。是否继续？",
+      "删除任务推进",
+      {
+        confirmButtonText: "删除",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+  } catch {
+    return;
+  }
+  taskTreeSaving.value = true;
+  try {
+    await api.delete(
+      `/projects/${encodeURIComponent(projectId)}/chat/task-tree`,
+      {
+        params: { chat_session_id: chatSessionId },
+      },
+    );
+    applyTaskTreePayload(null);
+    ElMessage.success("当前会话的任务推进已删除");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "删除任务推进失败");
+  } finally {
+    taskTreeSaving.value = false;
+  }
+}
+
 function openUnifiedMcpDialog() {
   unifiedMcpDialogVisible.value = true;
 }
@@ -7667,6 +8308,8 @@ async function fetchProvidersByProject(projectId) {
     aiEntryFileDraft.value = "";
     chatSessions.value = [];
     currentChatSessionId.value = "";
+    applyTaskTreePayload(null);
+    taskTreePanelVisible.value = false;
     autoSaveState.value = "idle";
     autoSaveUpdatedAt.value = "";
     lastAutoSavedFingerprint = "";
@@ -7746,14 +8389,10 @@ async function fetchProvidersByProject(projectId) {
     const allEmployeeIds = projectEmployees.value
       .map((item) => String(item?.id || "").trim())
       .filter(Boolean);
-    const savedEmployeeIds = normalizeStringList(
+    selectedEmployeeIds.value = normalizeChatSelectedEmployeeIds(
       settings.selected_employee_ids || [],
+      allEmployeeIds,
     );
-    const validSavedEmployeeIds = savedEmployeeIds.filter((id) =>
-      allEmployeeIds.includes(id),
-    );
-    selectedEmployeeIds.value =
-      validSavedEmployeeIds.length > 0 ? validSavedEmployeeIds : allEmployeeIds;
 
     defaultProviderId.value = String(data.default_provider_id || "");
     defaultModelName.value = String(data.default_model_name || "");
@@ -7786,6 +8425,9 @@ async function fetchProvidersByProject(projectId) {
     chatMaxTokens.value = Number(
       settings.max_tokens ?? CHAT_SETTINGS_DEFAULTS.max_tokens,
     );
+    await fetchChatTaskTree(projectId, currentChatSessionId.value, {
+      silent: true,
+    });
     hydrated = true;
   } finally {
     projectSettingsHydrating.value = false;
@@ -7893,7 +8535,10 @@ async function handleQuickCreateEmployee(payload) {
 }
 
 function buildProjectChatSettingsPayload() {
-  const employeeIds = normalizeStringList(selectedEmployeeIds.value || []);
+  const employeeIds = normalizeChatSelectedEmployeeIds(
+    selectedEmployeeIds.value || [],
+    (projectEmployees.value || []).map((item) => String(item?.id || "").trim()),
+  );
   return applyLocalConnectorRuntimeSettings({
     ...projectChatSettings.value,
     chat_mode: "system",
@@ -8004,11 +8649,119 @@ function mapHistoryMessage(item) {
     terminalLog: [],
     processExpanded: false,
     audit: null,
+    taskTreeAudit: null,
+    statusNotes: [],
     images: images,
     videos: videos,
     attachments,
     time: String(item?.created_at || ""),
   };
+}
+
+async function fetchChatTaskTree(
+  projectId,
+  chatSessionId = currentChatSessionId.value,
+  options = {},
+) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId) {
+    applyTaskTreePayload(null);
+    return null;
+  }
+  taskTreeLoading.value = true;
+  try {
+    const params = {};
+    if (normalizedChatSessionId) {
+      params.chat_session_id = normalizedChatSessionId;
+    }
+    const data = await api.get(
+      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/task-tree`,
+      { params },
+    );
+    const payload = normalizeTaskTreePayload(data?.task_tree);
+    applyTaskTreePayload(payload);
+    return payload;
+  } catch (err) {
+    applyTaskTreePayload(null);
+    if (!options.silent) {
+      ElMessage.error(err?.detail || err?.message || "加载任务树失败");
+    }
+    return null;
+  } finally {
+    taskTreeLoading.value = false;
+  }
+}
+
+async function openTaskTreePanel() {
+  taskTreePanelVisible.value = true;
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!projectId || !chatSessionId) {
+    applyTaskTreePayload(null);
+    return;
+  }
+  await fetchChatTaskTree(projectId, chatSessionId, { silent: true });
+}
+
+async function saveTaskTreeNode({ setCurrentOnly = false } = {}) {
+  if (taskTreeIsReadonly.value) {
+    ElMessage.info("已归档任务树仅支持查看，不支持继续修改");
+    return;
+  }
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  const nodeId = String(selectedTaskTreeNodeId.value || "").trim();
+  const targetNode = taskTreeSelectedNode.value;
+  if (!projectId || !chatSessionId || !nodeId) {
+    ElMessage.warning("请先选择一个任务节点");
+    return;
+  }
+  const nextStatus = String(taskTreeStatusDraft.value || "pending").trim();
+  const verificationResult = String(taskTreeVerificationDraft.value || "").trim();
+  if (!setCurrentOnly && nextStatus === "done") {
+    const childNodes = getTaskTreeChildNodes(nodeId);
+    if (childNodes.length && childNodes.some((item) => String(item?.status || "").trim() !== "done")) {
+      ElMessage.warning("父节点下还有未完成的子任务，不能直接标记完成");
+      return;
+    }
+    if (!verificationResult) {
+      ElMessage.warning(
+        childNodes.length
+          ? "父节点完成前必须填写整体验证结果"
+          : "叶子节点完成前必须填写验证结果",
+      );
+      return;
+    }
+  }
+  taskTreeSaving.value = true;
+  try {
+    const payload = {
+      chat_session_id: chatSessionId,
+      is_current: true,
+    };
+    if (!setCurrentOnly) {
+      payload.status = nextStatus;
+      payload.verification_result = verificationResult;
+      payload.summary_for_model = String(
+        taskTreeSummaryDraft.value || "",
+      ).trim();
+    }
+    const data = await api.patch(
+      `/projects/${encodeURIComponent(projectId)}/chat/task-tree/nodes/${encodeURIComponent(nodeId)}`,
+      payload,
+    );
+    applyTaskTreePayload(resolveTaskTreeEventPayload(data));
+    ElMessage.success(setCurrentOnly ? "已切换当前执行节点" : "任务节点已更新");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "更新任务节点失败");
+  } finally {
+    taskTreeSaving.value = false;
+  }
+}
+
+function handleTaskTreeNodeClick(node) {
+  syncTaskTreeDrafts(node);
 }
 
 async function fetchChatSessions(projectId, preferredSessionId = "") {
@@ -8055,6 +8808,7 @@ async function fetchChatHistory(
   if (!projectId) {
     messages.value = [];
     chatHistoryLoadedCount.value = 0;
+    applyTaskTreePayload(null);
     return;
   }
   const normalizedSessionId = String(chatSessionId || "").trim();
@@ -8062,6 +8816,7 @@ async function fetchChatHistory(
   if (!normalizedSessionId) {
     messages.value = [];
     chatHistoryLoadedCount.value = 0;
+    applyTaskTreePayload(null);
     return;
   }
   const append = options.append === true;
@@ -8088,6 +8843,7 @@ async function fetchChatHistory(
     messages.value = append ? [...historyRows, ...messages.value] : historyRows;
     chatHistoryLoadedCount.value = messages.value.length;
     rememberChatSession(projectId, normalizedSessionId);
+    await fetchChatTaskTree(projectId, normalizedSessionId, { silent: true });
     if (append) {
       nextTick(() => {
         if (!messagesContainer.value) return;
@@ -8195,6 +8951,7 @@ async function createChatSession(options = {}) {
       rememberChatSession(projectId, session.id);
       messages.value = [];
       chatHistoryLoadedCount.value = 0;
+      applyTaskTreePayload(null);
       scrollToBottom();
     }
     return session;
@@ -8600,6 +9357,15 @@ async function handleSocketMessage(eventData) {
   }
   if (eventType === "start") {
     terminalPanelStatus.value = "running";
+    if (
+      eventData &&
+      (
+        Object.prototype.hasOwnProperty.call(eventData, "task_tree") ||
+        Object.prototype.hasOwnProperty.call(eventData, "history_task_tree")
+      )
+    ) {
+      applyTaskTreePayload(resolveTaskTreeEventPayload(eventData));
+    }
     row.displayMode =
       String(eventData?.chat_mode || "").trim() === "external_agent"
         ? "terminal"
@@ -8713,9 +9479,12 @@ async function handleSocketMessage(eventData) {
       ...(row.audit && typeof row.audit === "object" ? row.audit : {}),
       file_review_status: approved ? "approved" : "rejected",
     });
-    row.content = approved
-      ? `${row.content || ""}\n> ✅ 文件变更已审查通过`.trim()
-      : `${row.content || ""}\n> ❌ 文件变更未通过审查`.trim();
+    appendAssistantStatusNote(
+      row,
+      approved
+        ? "> ✅ 文件变更已审查通过"
+        : "> ❌ 文件变更未通过审查",
+    );
     scrollToBottom();
     return;
   }
@@ -8815,6 +9584,12 @@ async function handleSocketMessage(eventData) {
       pending.mcpApprovalCancelled = true;
       pending.lastToolName = toolName;
     }
+    if (
+      eventData &&
+      Object.prototype.hasOwnProperty.call(eventData, "task_tree")
+    ) {
+      applyTaskTreePayload(eventData.task_tree);
+    }
     if (approvalPending) {
       appendAssistantStatusNote(row, `> ⏳ 工具调用等待审批：\`${toolName}\``);
     } else if (success) {
@@ -8846,6 +9621,21 @@ async function handleSocketMessage(eventData) {
       ) {
         row.content = doneContent;
       }
+    }
+    if (
+      eventData &&
+      (
+        Object.prototype.hasOwnProperty.call(eventData, "task_tree") ||
+        Object.prototype.hasOwnProperty.call(eventData, "history_task_tree")
+      )
+    ) {
+      applyTaskTreePayload(resolveTaskTreeEventPayload(eventData));
+    }
+    row.taskTreeAudit = normalizeTaskTreeAuditPayload(
+      eventData?.task_tree_audit,
+    );
+    if (row.taskTreeAudit) {
+      appendAssistantStatusNote(row, `> ⚠️ ${row.taskTreeAudit.message}`);
     }
     if (pending?.mcpApprovalCancelled) {
       const handedOff = await handoffExternalAgentRequestToTerminal(
@@ -9295,6 +10085,7 @@ async function generateEmployeeDraftWithoutProject() {
     terminalLog: [],
     processExpanded: false,
     audit: null,
+    taskTreeAudit: null,
     time: nowText(),
   };
 
@@ -9589,6 +10380,8 @@ async function doSend() {
     terminalLog: [],
     processExpanded: false,
     audit: null,
+    taskTreeAudit: null,
+    statusNotes: [],
     time: nowText(),
   };
 
@@ -10907,14 +11700,13 @@ onUnmounted(() => {
 
 .settings-summary-sync-button--hero {
   border-color: transparent !important;
-  background:
-    linear-gradient(
-      135deg,
-      #020617 0%,
-      #0f172a 34%,
-      #1e293b 68%,
-      #0f766e 100%
-    ) !important;
+  background: linear-gradient(
+    135deg,
+    #020617 0%,
+    #0f172a 34%,
+    #1e293b 68%,
+    #0f766e 100%
+  ) !important;
   background-size: 180% 180% !important;
   background-position: 0% 50% !important;
   color: #fff !important;
@@ -10935,7 +11727,11 @@ onUnmounted(() => {
 .settings-center-context-bar,
 .settings-center-inline-page {
   width: min(100%, var(--settings-center-max-width));
-  margin: 0 auto;
+}
+
+.settings-center-inline-page {
+  width: 100%;
+  max-width: none;
 }
 
 .settings-chat-layout {
@@ -11339,6 +12135,12 @@ onUnmounted(() => {
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
 }
 
+.chat-sidebar-project-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
 .message-list-inner {
   display: flex;
   flex-direction: column;
@@ -11410,6 +12212,7 @@ onUnmounted(() => {
 }
 
 .message-row.is-ai .message-bubble > .message-text,
+.message-row.is-ai .message-bubble > .message-status-notes,
 .message-row.is-ai .message-bubble > .message-process,
 .message-row.is-ai .message-bubble > .message-audit,
 .message-row.is-ai .message-bubble > .message-employee-draft,
@@ -11468,6 +12271,23 @@ onUnmounted(() => {
 
 .message-text {
   word-break: break-word;
+}
+
+.message-status-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.message-status-note {
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: rgba(248, 250, 252, 0.92);
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .message-inline-editor {
@@ -11705,6 +12525,47 @@ onUnmounted(() => {
   border-radius: 16px;
   background: #f9fafb;
   border: 1px solid rgba(229, 231, 235, 0.95);
+}
+
+.message-task-tree-audit {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: #fffaf0;
+  border: 1px solid rgba(245, 158, 11, 0.24);
+}
+
+.message-task-tree-audit.is-attention {
+  background: #fffaf0;
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.message-task-tree-audit__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.message-task-tree-audit__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.message-task-tree-audit__text,
+.message-task-tree-audit__meta {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #78350f;
+}
+
+.message-task-tree-audit__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .message-tool-summary {
@@ -14109,6 +14970,271 @@ onUnmounted(() => {
   gap: 8px;
 }
 
+.task-tree-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.task-tree-panel__hero,
+.task-tree-panel__outline,
+.task-tree-editor {
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(18px);
+}
+
+.task-tree-panel__hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px;
+}
+
+.task-tree-panel__eyebrow,
+.task-tree-panel__section-eyebrow,
+.task-tree-editor__eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(71, 85, 105, 0.82);
+}
+
+.task-tree-panel__title,
+.task-tree-panel__section-title,
+.task-tree-editor__title {
+  margin-top: 8px;
+  font-size: 20px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.task-tree-panel__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: rgba(51, 65, 85, 0.84);
+}
+
+.task-tree-panel__outline,
+.task-tree-editor {
+  padding: 18px;
+}
+
+.task-tree-panel__outline {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.task-tree-panel__section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.task-tree-panel__section-meta {
+  color: #7c8aa0;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.task-tree-panel__tree {
+  background: transparent;
+  max-height: min(52vh, 420px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.task-tree-panel__outline :deep(.el-tree-node__content) {
+  height: auto;
+  min-height: 34px;
+  padding: 4px 0;
+  border-radius: 14px;
+}
+
+.task-tree-panel__outline :deep(.el-tree-node__content:hover) {
+  background: rgba(240, 249, 255, 0.8);
+}
+
+.task-tree-panel__outline :deep(.el-tree-node.is-current > .el-tree-node__content) {
+  background: rgba(240, 249, 255, 0.96);
+}
+
+.task-tree-editor__desc {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: rgba(51, 65, 85, 0.86);
+}
+
+.task-tree-panel__body {
+  display: grid;
+  grid-template-columns: minmax(0, 240px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.task-tree-node {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.task-tree-node__copy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.task-tree-node__title {
+  display: block;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #0f172a;
+}
+
+.task-tree-node__current {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(240, 249, 255, 0.96);
+  font-size: 11px;
+  color: #0f766e;
+  white-space: nowrap;
+}
+
+.task-tree-node__status {
+  flex-shrink: 0;
+}
+
+.task-tree-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.task-tree-editor__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-tree-editor__meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.task-tree-editor__pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(241, 245, 249, 0.92);
+  color: #475569;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.task-tree-editor__pill--current {
+  background: rgba(240, 249, 255, 0.96);
+  color: #0f766e;
+}
+
+.task-tree-editor__section {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.88);
+}
+
+.task-tree-editor__section--result {
+  background: rgba(236, 253, 245, 0.72);
+}
+
+.task-tree-editor__section-label,
+.task-tree-editor__field-label {
+  margin-bottom: 8px;
+  color: #7c8aa0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.task-tree-editor__section p,
+.task-tree-editor__empty {
+  margin: 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.task-tree-editor__checks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-tree-editor__check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: rgba(51, 65, 85, 0.88);
+}
+
+.task-tree-editor__field {
+  display: flex;
+  flex-direction: column;
+}
+
+.task-tree-editor__select {
+  width: 180px;
+}
+
+.task-tree-editor__hint {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(240, 249, 255, 0.86);
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.task-tree-editor__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-tree-editor--empty {
+  justify-content: center;
+  min-height: 240px;
+}
+
 .footer-left :deep(.el-button) {
   color: #71717a;
   width: 34px;
@@ -14383,6 +15509,7 @@ onUnmounted(() => {
 }
 
 .message-row.is-ai .message-bubble > .message-text,
+.message-row.is-ai .message-bubble > .message-status-notes,
 .message-row.is-ai .message-bubble > .message-process,
 .message-row.is-ai .message-bubble > .message-audit,
 .message-row.is-ai .message-bubble > .message-employee-draft,
@@ -15413,6 +16540,31 @@ onUnmounted(() => {
 
   .settings-chat-sidebar-card__actions {
     justify-content: flex-start;
+  }
+
+  .task-tree-panel__hero,
+  .task-tree-panel__section-head,
+  .task-tree-editor__head {
+    flex-direction: column;
+  }
+
+  .task-tree-panel__body {
+    grid-template-columns: 1fr;
+  }
+
+  .task-tree-panel__section-meta,
+  .task-tree-editor__meta {
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .task-tree-editor__select {
+    width: 100%;
+  }
+
+  .task-tree-editor__actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 </style>

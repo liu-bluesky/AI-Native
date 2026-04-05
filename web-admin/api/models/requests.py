@@ -42,6 +42,10 @@ class UserSettingsUpdateReq(BaseModel):
     default_ai_provider_id: str = ""
 
 
+class OnlineUserHeartbeatReq(BaseModel):
+    current_path: str = ""
+
+
 class RoleCreateReq(BaseModel):
     id: str
     name: str
@@ -479,6 +483,8 @@ class ProjectChatReq(BaseModel):
     tool_retry_count: int | None = None
     answer_style: str | None = None
     prefer_conclusion_first: bool | None = None
+    task_tree_enabled: bool | None = None
+    task_tree_auto_generate: bool | None = None
 
 
 class ProjectChatHistoryTruncateReq(BaseModel):
@@ -489,6 +495,21 @@ class ProjectChatHistoryTruncateReq(BaseModel):
 
 class ProjectChatSettingsUpdateReq(BaseModel):
     settings: dict[str, Any]
+
+
+class ProjectChatTaskTreeGenerateReq(BaseModel):
+    chat_session_id: str = ""
+    message: str = ""
+    max_steps: int | None = None
+    force: bool = False
+
+
+class ProjectChatTaskNodeUpdateReq(BaseModel):
+    chat_session_id: str = ""
+    status: str | None = None
+    verification_result: str | None = None
+    summary_for_model: str | None = None
+    is_current: bool | None = None
 
 
 class DictionaryOptionReq(BaseModel):

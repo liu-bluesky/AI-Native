@@ -41,6 +41,14 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _clamp_timeout_sec(timeout_sec: object) -> int:
+    try:
+        value = int(timeout_sec)
+    except (TypeError, ValueError):
+        value = 8
+    return max(3, min(value, 20))
+
+
 def _probe_http_endpoint(url: str, timeout_sec: int) -> dict:
     headers = {
         "Accept": "application/json, text/event-stream;q=0.9, */*;q=0.8",
@@ -116,6 +124,38 @@ def _serialize_module(module: ExternalMcpModule) -> dict:
     return asdict(module)
 
 
+def run_external_mcp_connection_test(
+    endpoint_http: str | None,
+    endpoint_sse: str | None,
+    timeout_sec: object = 8,
+) -> dict:
+    normalized_http = _ensure_url_http_scheme(endpoint_http, "endpoint_http")
+    normalized_sse = _ensure_url_http_scheme(endpoint_sse, "endpoint_sse")
+    _ensure_endpoint_valid(normalized_http, normalized_sse)
+
+    clamped_timeout_sec = _clamp_timeout_sec(timeout_sec)
+
+    results = []
+    if normalized_http:
+        results.append(_probe_http_endpoint(normalized_http, clamped_timeout_sec))
+    if normalized_sse:
+        results.append(_probe_sse_endpoint(normalized_sse, clamped_timeout_sec))
+
+    ok = any(bool(item.get("ok")) for item in results)
+    success_count = sum(1 for item in results if bool(item.get("ok")))
+    summary = f"已测试 {len(results)} 个端点，成功 {success_count} 个"
+    if ok:
+        summary = f"连接测试通过：{summary}"
+    else:
+        summary = f"连接测试未通过：{summary}"
+    return {
+        "ok": ok,
+        "summary": summary,
+        "tested_at": _utc_now_iso(),
+        "results": results,
+    }
+
+
 @router.get("")
 async def list_external_mcp_modules(
     project_id: str = Query("", description="项目 ID（为空表示查询全局 + 所有项目）"),
@@ -162,35 +202,11 @@ async def create_external_mcp_module(req: ExternalMcpModuleCreateReq):
 
 @router.post("/test")
 async def test_external_mcp_module(req: ExternalMcpModuleTestReq):
-    endpoint_http = _ensure_url_http_scheme(req.endpoint_http, "endpoint_http")
-    endpoint_sse = _ensure_url_http_scheme(req.endpoint_sse, "endpoint_sse")
-    _ensure_endpoint_valid(endpoint_http, endpoint_sse)
-
-    try:
-        timeout_sec = int(req.timeout_sec)
-    except (TypeError, ValueError):
-        timeout_sec = 8
-    timeout_sec = max(3, min(timeout_sec, 20))
-
-    results = []
-    if endpoint_http:
-        results.append(_probe_http_endpoint(endpoint_http, timeout_sec))
-    if endpoint_sse:
-        results.append(_probe_sse_endpoint(endpoint_sse, timeout_sec))
-
-    ok = any(bool(item.get("ok")) for item in results)
-    success_count = sum(1 for item in results if bool(item.get("ok")))
-    summary = f"已测试 {len(results)} 个端点，成功 {success_count} 个"
-    if ok:
-        summary = f"连接测试通过：{summary}"
-    else:
-        summary = f"连接测试未通过：{summary}"
-    return {
-        "ok": ok,
-        "summary": summary,
-        "tested_at": _utc_now_iso(),
-        "results": results,
-    }
+    return run_external_mcp_connection_test(
+        req.endpoint_http,
+        req.endpoint_sse,
+        req.timeout_sec,
+    )
 
 
 @router.patch("/{module_id}")

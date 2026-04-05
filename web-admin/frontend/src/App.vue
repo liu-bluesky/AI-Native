@@ -3,14 +3,48 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import api from './utils/api.js'
 import { syncCurrentUser } from './utils/auth.js'
-import { clearAuthSession, getStoredToken } from './utils/auth-storage.js'
+import { authStateVersion, clearAuthSession, getStoredToken } from './utils/auth-storage.js'
 
 const router = useRouter()
+const ONLINE_HEARTBEAT_INTERVAL_MS = 60 * 1000
+let onlineHeartbeatTimer = null
+let onlineHeartbeatPending = false
+
+function stopOnlineHeartbeat() {
+  if (onlineHeartbeatTimer !== null) {
+    window.clearInterval(onlineHeartbeatTimer)
+    onlineHeartbeatTimer = null
+  }
+}
+
+async function sendOnlineHeartbeat() {
+  if (!getStoredToken() || onlineHeartbeatPending) return
+  onlineHeartbeatPending = true
+  try {
+    await api.post('/system/online-users/heartbeat', {
+      current_path: router.currentRoute.value.fullPath || router.currentRoute.value.path || '',
+    })
+  } catch (err) {
+    if (Number(err?.status || 0) !== 401) {
+      console.debug('online heartbeat failed', err)
+    }
+  } finally {
+    onlineHeartbeatPending = false
+  }
+}
+
+function startOnlineHeartbeat() {
+  stopOnlineHeartbeat()
+  void sendOnlineHeartbeat()
+  onlineHeartbeatTimer = window.setInterval(() => {
+    void sendOnlineHeartbeat()
+  }, ONLINE_HEARTBEAT_INTERVAL_MS)
+}
 
 onMounted(async () => {
   await router.isReady()
@@ -34,8 +68,10 @@ onMounted(async () => {
     if (token) {
       try {
         await syncCurrentUser()
+        startOnlineHeartbeat()
       } catch {
         clearAuthSession()
+        stopOnlineHeartbeat()
         if (!publicPaths.has(currentPath)) {
           router.replace('/login')
         }
@@ -43,9 +79,34 @@ onMounted(async () => {
       }
     }
   } catch {
+    stopOnlineHeartbeat()
     if (!initBypassPaths.has(currentPath)) {
       router.replace('/login')
     }
   }
+})
+
+watch(
+  () => authStateVersion.value,
+  () => {
+    if (!getStoredToken()) {
+      stopOnlineHeartbeat()
+      return
+    }
+    startOnlineHeartbeat()
+  },
+)
+
+watch(
+  () => router.currentRoute.value.fullPath,
+  () => {
+    if (getStoredToken()) {
+      void sendOnlineHeartbeat()
+    }
+  },
+)
+
+onBeforeUnmount(() => {
+  stopOnlineHeartbeat()
 })
 </script>

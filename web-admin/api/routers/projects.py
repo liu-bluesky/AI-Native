@@ -26,8 +26,8 @@ from core.redis_client import get_redis_client
 
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
 from core.auth import decode_token
-from core.config import get_api_data_dir, get_project_root
-from core.deps import employee_store, external_mcp_store, is_admin_like, local_connector_store, project_chat_store, project_material_store, project_studio_export_store, project_store, require_auth, role_store, system_config_store, user_store
+from core.config import get_api_data_dir, get_project_root, get_settings
+from core.deps import employee_store, external_mcp_store, is_admin_like, local_connector_store, project_chat_store, project_chat_task_store, project_material_store, project_studio_export_store, project_store, require_auth, role_store, system_config_store, user_store, work_session_store
 from services.feedback_service import get_feedback_service
 from services.local_connector_service import (
     LocalConnectorLlmAdapter,
@@ -43,11 +43,25 @@ from services.llm_chat_parameter_catalog import (
 )
 from services.llm_model_type_catalog import DEFAULT_MODEL_TYPE
 from services.project_voice_service import get_project_voice_service
+from services.project_chat_task_tree import (
+    audit_task_tree_round,
+    archive_task_tree,
+    ensure_task_tree,
+    get_latest_task_tree_for_user,
+    get_task_tree_by_session_id,
+    get_task_tree,
+    get_task_tree_for_chat_session,
+    list_project_task_tree_summaries,
+    serialize_task_tree,
+    update_task_node,
+)
 from models.requests import (
     ProjectAiEntryFileUpdateReq,
     ProjectChatHistoryTruncateReq,
     ProjectChatReq,
     ProjectChatSettingsUpdateReq,
+    ProjectChatTaskNodeUpdateReq,
+    ProjectChatTaskTreeGenerateReq,
     ProjectCreateReq,
     ProjectMaterialAssetCreateReq,
     ProjectMaterialAssetUpdateReq,
@@ -75,7 +89,7 @@ from stores.json.project_material_store import ProjectMaterialAsset
 from stores.json.project_studio_export_store import ProjectStudioExportJob
 from stores.json.project_store import ProjectConfig, ProjectMember, ProjectUserMember, _now_iso
 from core.role_permissions import has_permission, resolve_role_permissions
-from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType, memory_store, rule_store, skill_store
+from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType, memory_store, rule_store, serialize_memory, skill_store
 
 router = APIRouter(prefix="/api/projects", dependencies=[Depends(require_auth)])
 
@@ -126,6 +140,8 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "tool_retry_count": 0,
     "answer_style": "concise",
     "prefer_conclusion_first": True,
+    "task_tree_enabled": True,
+    "task_tree_auto_generate": True,
     "image_resolution": "1080x1080",
     "image_aspect_ratio": "1:1",
     "image_generate_four_views": False,
@@ -1919,22 +1935,26 @@ async def _generate_project_chat_media_done_payload(
         images=images,
         videos=videos,
     )
+    done_payload = _build_project_chat_done_payload(
+        content=content,
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        provider_id=provider_id,
+        model_name=model_name,
+        artifacts=artifacts,
+        successful_tool_names=["generate_media_artifacts"],
+    )
     _save_project_chat_memory_snapshot(
         project_id=project_id,
         user_message=effective_user_message,
         answer=content,
+        chat_session_id=chat_session_id,
+        task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
         selected_employee_ids=selected_employee_ids,
         source=memory_source,
     )
-    return {
-        "type": "done",
-        "content": content,
-        "provider_id": provider_id,
-        "model_name": model_name,
-        "artifacts": artifacts,
-        "images": images,
-        "videos": videos,
-    }
+    return done_payload
 
 
 def _save_chat_media_artifacts_to_materials(
@@ -2120,6 +2140,11 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     style = str(source.get("answer_style", settings["answer_style"]) or "").strip().lower()
     settings["answer_style"] = style if style in {"concise", "balanced", "detailed"} else settings["answer_style"]
     settings["prefer_conclusion_first"] = _coerce_bool(source.get("prefer_conclusion_first"), settings["prefer_conclusion_first"])
+    settings["task_tree_enabled"] = _coerce_bool(source.get("task_tree_enabled"), settings["task_tree_enabled"])
+    settings["task_tree_auto_generate"] = _coerce_bool(
+        source.get("task_tree_auto_generate"),
+        settings["task_tree_auto_generate"],
+    )
     settings["image_resolution"] = normalize_chat_parameter_value(
         "image_resolution",
         source.get("image_resolution", settings["image_resolution"]),
@@ -2656,6 +2681,12 @@ def _project_tool_display_name(tool_name: str) -> str:
         return "获取项目完整详情"
     if normalized == "get_project_employee_detail":
         return "获取员工完整详情"
+    if normalized == "get_current_task_tree":
+        return "读取当前任务树"
+    if normalized == "update_task_node_status":
+        return "更新任务节点状态"
+    if normalized == "complete_task_node_with_verification":
+        return "完成任务节点并写入验证"
     return normalized
 
 
@@ -2962,6 +2993,8 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
         "tool_retry_count": req.tool_retry_count,
         "answer_style": req.answer_style,
         "prefer_conclusion_first": req.prefer_conclusion_first,
+        "task_tree_enabled": getattr(req, "task_tree_enabled", None),
+        "task_tree_auto_generate": getattr(req, "task_tree_auto_generate", None),
     }
     for key, value in override.items():
         if key in req.model_fields_set and value is not None:
@@ -3131,6 +3164,7 @@ def _build_project_chat_messages(
     workspace_path: str = "",
     skill_resource_directory: str = "",
     employee_coordination_mode: str = "auto",
+    task_tree_prompt: str = "",
 ) -> list[dict[str, Any]]:
     workspace_info = ""
     effective_workspace_path = str(workspace_path or project.workspace_path or "").strip()
@@ -3185,6 +3219,8 @@ def _build_project_chat_messages(
         f"{base_prompt}\n{workspace_info}{ai_entry_info}\n\n{tool_list_text}\n{order_hint}\n{style_hint}"
         f"{skill_resource_prompt}{multi_employee_prompt}"
     )
+    if task_tree_prompt:
+        system_prompt += f"\n\n{task_tree_prompt}"
     project_ui_rule_bindings = _resolve_project_ui_rule_bindings(project, include_content=True)
     if project_ui_rule_bindings:
         project_ui_rule_titles = [
@@ -3252,6 +3288,109 @@ def _build_project_chat_messages(
     else:
         messages.append({"role": "user", "content": user_message})
     return messages
+
+
+def _resolve_project_chat_task_tree_context(
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    runtime_settings: dict[str, Any],
+    effective_user_message: str,
+) -> dict[str, Any] | None:
+    normalized_chat_session_id = _require_project_chat_session_id(chat_session_id)
+    if not bool(runtime_settings.get("task_tree_enabled", True)):
+        payload = serialize_task_tree(
+            get_task_tree_for_chat_session(
+                project_id,
+                username,
+                normalized_chat_session_id,
+            )
+        )
+    elif bool(runtime_settings.get("task_tree_auto_generate", True)) and str(
+        effective_user_message or ""
+    ).strip():
+        session = ensure_task_tree(
+            project_id=project_id,
+            username=username,
+            chat_session_id=normalized_chat_session_id,
+            root_goal=effective_user_message,
+        )
+        payload = serialize_task_tree(session)
+    else:
+        session = get_task_tree(project_id, username, normalized_chat_session_id)
+        payload = serialize_task_tree(session)
+    if payload is None:
+        raise ValueError("task tree must be available before answering")
+    return payload
+
+
+def _require_project_chat_session_id(chat_session_id: str) -> str:
+    normalized_chat_session_id = str(chat_session_id or "").strip()
+    if not normalized_chat_session_id:
+        raise ValueError("chat_session_id is required for project chat")
+    return normalized_chat_session_id
+
+
+def _attach_task_tree_audit_to_done_payload(
+    payload: dict[str, Any],
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    content: str,
+    successful_tool_names: list[str] | None = None,
+    task_tree_tool_used: bool = False,
+) -> dict[str, Any]:
+    task_tree_audit = audit_task_tree_round(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        assistant_content=content,
+        successful_tool_names=successful_tool_names,
+        task_tree_tool_used=task_tree_tool_used,
+    )
+    if isinstance(task_tree_audit, dict):
+        payload["task_tree_audit"] = task_tree_audit
+        if "task_tree" in task_tree_audit:
+            payload["task_tree"] = task_tree_audit.get("task_tree")
+        history_task_tree_payload = task_tree_audit.get("history_task_tree")
+        if isinstance(history_task_tree_payload, dict):
+            payload["history_task_tree"] = history_task_tree_payload
+    return payload
+
+
+def _build_project_chat_done_payload(
+    *,
+    content: str,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    provider_id: str = "",
+    model_name: str = "",
+    artifacts: list[dict[str, Any]] | None = None,
+    successful_tool_names: list[str] | None = None,
+    task_tree_tool_used: bool = False,
+) -> dict[str, Any]:
+    normalized_artifacts = _normalize_chat_media_artifacts(artifacts)
+    payload: dict[str, Any] = {
+        "type": "done",
+        "content": content,
+        "provider_id": provider_id,
+        "model_name": model_name,
+    }
+    if normalized_artifacts:
+        payload["artifacts"] = normalized_artifacts
+        payload["images"] = _collect_chat_artifact_urls(normalized_artifacts, asset_type="image")
+        payload["videos"] = _collect_chat_artifact_urls(normalized_artifacts, asset_type="video")
+    return _attach_task_tree_audit_to_done_payload(
+        payload,
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        content=content,
+        successful_tool_names=successful_tool_names,
+        task_tree_tool_used=task_tree_tool_used,
+    )
 
 
 def _build_global_chat_messages(
@@ -3509,6 +3648,286 @@ def _ensure_project_manage_access(project_id: str, auth_payload: dict) -> Projec
     raise HTTPException(403, f"Project manage access denied: {project_id}")
 
 
+def _normalize_project_record_token(value: Any, *, limit: int = 4000) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _normalize_project_record_tags(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(
+        str(item or "").strip().lower()
+        for item in value
+        if str(item or "").strip()
+    )
+
+
+def _project_memory_matches_project(memory: Any, project: ProjectConfig) -> bool:
+    project_tokens = {
+        str(project.id or "").strip().lower(),
+        str(project.name or "").strip().lower(),
+    }
+    memory_project_name = _normalize_project_record_token(getattr(memory, "project_name", ""), limit=160).lower()
+    return bool(memory_project_name) and memory_project_name in project_tokens
+
+
+def _is_project_trajectory_memory(memory: Any) -> bool:
+    purpose_tags = set(_normalize_project_record_tags(getattr(memory, "purpose_tags", ())))
+    if "work-facts" in purpose_tags or "session-event" in purpose_tags:
+        return True
+    content = _normalize_project_record_token(getattr(memory, "content", ""), limit=200).lstrip()
+    return content.startswith("[工作事实]") or content.startswith("[会话事件]")
+
+
+def _project_memory_sort_key(memory: Any, *, query: str = "") -> tuple[Any, ...]:
+    created_at = _normalize_project_record_token(getattr(memory, "created_at", ""), limit=40)
+    if str(query or "").strip():
+        return (float(getattr(memory, "importance", 0.0) or 0.0), created_at)
+    return (created_at,)
+
+
+def _project_active_member_ids(project_id: str) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for member in project_store.list_members(project_id):
+        if not bool(getattr(member, "enabled", True)):
+            continue
+        employee_id = _normalize_project_record_token(getattr(member, "employee_id", ""), limit=80)
+        if not employee_id or employee_id in seen:
+            continue
+        seen.add(employee_id)
+        result.append(employee_id)
+    return result
+
+
+def _collect_project_related_memories(
+    project: ProjectConfig,
+    *,
+    employee_id: str = "",
+    query: str = "",
+) -> tuple[list[Any], list[Any]]:
+    normalized_employee_id = _normalize_project_record_token(employee_id, limit=80)
+    query_text = _normalize_project_record_token(query, limit=200).lower()
+    target_employee_ids = _project_active_member_ids(project.id)
+    if normalized_employee_id:
+        if normalized_employee_id not in target_employee_ids:
+            return [], []
+        target_employee_ids = [normalized_employee_id]
+
+    deduped: dict[str, Any] = {}
+    for current_employee_id in target_employee_ids:
+        for memory in memory_store.list_by_employee(current_employee_id) or []:
+            if not _project_memory_matches_project(memory, project):
+                continue
+            content = _normalize_project_record_token(getattr(memory, "content", ""))
+            if query_text and query_text not in content.lower():
+                continue
+            memory_id = _normalize_project_record_token(getattr(memory, "id", ""), limit=80)
+            dedupe_key = memory_id or json.dumps(
+                [
+                    current_employee_id,
+                    _normalize_project_record_token(getattr(memory, "project_name", ""), limit=160),
+                    _normalize_project_record_token(getattr(memory, "created_at", ""), limit=40),
+                    content,
+                ],
+                ensure_ascii=False,
+            )
+            if dedupe_key not in deduped:
+                deduped[dedupe_key] = memory
+
+    items = list(deduped.values())
+    items.sort(key=lambda item: _project_memory_sort_key(item, query=query_text), reverse=True)
+    memories = [item for item in items if not _is_project_trajectory_memory(item)]
+    trajectories = [item for item in items if _is_project_trajectory_memory(item)]
+    return memories, trajectories
+
+
+def _project_employee_name_map(project_id: str) -> dict[str, str]:
+    employee_names: dict[str, str] = {}
+    for member in project_store.list_members(project_id):
+        if not bool(getattr(member, "enabled", True)):
+            continue
+        employee_id = _normalize_project_record_token(getattr(member, "employee_id", ""), limit=80)
+        if not employee_id:
+            continue
+        employee = employee_store.get(employee_id)
+        employee_names[employee_id] = _normalize_project_record_token(
+            getattr(employee, "name", ""),
+            limit=120,
+        ) or employee_id
+    return employee_names
+
+
+def _summarize_project_work_session(events: list[Any]) -> dict[str, Any]:
+    if not events:
+        return {}
+    ordered = sorted(
+        events,
+        key=lambda item: (
+            _normalize_project_record_token(getattr(item, "created_at", ""), limit=40),
+            _normalize_project_record_token(getattr(item, "id", ""), limit=80),
+        ),
+        reverse=True,
+    )
+    latest = ordered[0]
+    phases: list[str] = []
+    steps: list[str] = []
+    changed_files: list[str] = []
+    verification: list[str] = []
+    risks: list[str] = []
+    next_steps: list[str] = []
+    event_types: list[str] = []
+    task_tree_session_ids: list[str] = []
+    task_node_titles: list[str] = []
+    for item in ordered:
+        phase = _normalize_project_record_token(getattr(item, "phase", ""), limit=120)
+        step = _normalize_project_record_token(getattr(item, "step", ""), limit=200)
+        event_type = _normalize_project_record_token(getattr(item, "event_type", ""), limit=80)
+        task_tree_session_id = _normalize_project_record_token(
+            getattr(item, "task_tree_session_id", ""),
+            limit=80,
+        )
+        task_node_title = _normalize_project_record_token(
+            getattr(item, "task_node_title", ""),
+            limit=200,
+        )
+        if phase and phase not in phases:
+            phases.append(phase)
+        if step and step not in steps:
+            steps.append(step)
+        if event_type and event_type not in event_types:
+            event_types.append(event_type)
+        if task_tree_session_id and task_tree_session_id not in task_tree_session_ids:
+            task_tree_session_ids.append(task_tree_session_id)
+        if task_node_title and task_node_title not in task_node_titles:
+            task_node_titles.append(task_node_title)
+        for source, target in (
+            (getattr(item, "changed_files", []) or [], changed_files),
+            (getattr(item, "verification", []) or [], verification),
+            (getattr(item, "risks", []) or [], risks),
+            (getattr(item, "next_steps", []) or [], next_steps),
+        ):
+            for value in source:
+                normalized = _normalize_project_record_token(value, limit=500)
+                if normalized and normalized not in target:
+                    target.append(normalized)
+    return {
+        "session_id": _normalize_project_record_token(getattr(latest, "session_id", ""), limit=120),
+        "project_id": _normalize_project_record_token(getattr(latest, "project_id", ""), limit=80),
+        "project_name": _normalize_project_record_token(getattr(latest, "project_name", ""), limit=120),
+        "employee_id": _normalize_project_record_token(getattr(latest, "employee_id", ""), limit=80),
+        "latest_status": _normalize_project_record_token(getattr(latest, "status", ""), limit=80),
+        "latest_event_type": _normalize_project_record_token(getattr(latest, "event_type", ""), limit=80),
+        "goal": _normalize_project_record_token(getattr(latest, "goal", ""), limit=400),
+        "task_tree_session_id": _normalize_project_record_token(
+            getattr(latest, "task_tree_session_id", ""),
+            limit=80,
+        ),
+        "task_tree_chat_session_id": _normalize_project_record_token(
+            getattr(latest, "task_tree_chat_session_id", ""),
+            limit=80,
+        ),
+        "task_node_id": _normalize_project_record_token(getattr(latest, "task_node_id", ""), limit=80),
+        "task_node_title": _normalize_project_record_token(
+            getattr(latest, "task_node_title", ""),
+            limit=200,
+        ),
+        "phases": phases,
+        "steps": steps,
+        "event_types": event_types,
+        "task_tree_session_ids": task_tree_session_ids,
+        "task_node_titles": task_node_titles,
+        "changed_files": changed_files,
+        "verification": verification,
+        "risks": risks,
+        "next_steps": next_steps,
+        "event_count": len(ordered),
+        "updated_at": _normalize_project_record_token(getattr(latest, "updated_at", ""), limit=40),
+        "created_at": _normalize_project_record_token(getattr(ordered[-1], "created_at", ""), limit=40),
+    }
+
+
+def _serialize_project_work_session_summary(summary: dict[str, Any], employee_names: dict[str, str]) -> dict[str, Any]:
+    payload = dict(summary or {})
+    employee_id = _normalize_project_record_token(payload.get("employee_id"), limit=80)
+    payload["employee_id"] = employee_id
+    payload["employee_name"] = employee_names.get(employee_id, employee_id) if employee_id else "团队协作"
+    return payload
+
+
+def _serialize_project_work_session_event(item: Any, employee_names: dict[str, str]) -> dict[str, Any]:
+    employee_id = _normalize_project_record_token(getattr(item, "employee_id", ""), limit=80)
+    return {
+        **asdict(item),
+        "employee_name": employee_names.get(employee_id, employee_id) if employee_id else "团队协作",
+    }
+
+
+def _extract_project_memory_section(content: Any, label: str) -> str:
+    text = _normalize_project_record_token(content)
+    if not text or not label:
+        return ""
+    pattern = rf"\[{re.escape(str(label).strip())}\]\s*([^\n]+)"
+    matched = re.search(pattern, text)
+    if not matched:
+        return ""
+    return _normalize_project_record_token(matched.group(1), limit=400)
+
+
+def _parse_project_memory_binding(content: Any) -> dict[str, str]:
+    text = _normalize_project_record_token(content)
+    if not text:
+        return {}
+    result = {
+        "chat_session_id": _extract_project_memory_section(text, "关联会话"),
+    }
+    matched = re.search(r"\[执行轨迹JSON\]\s*([^\n]+)", text)
+    if matched:
+        try:
+            payload = json.loads(str(matched.group(1) or "").strip())
+        except json.JSONDecodeError:
+            payload = {}
+        if isinstance(payload, dict):
+            current_node = payload.get("current_node") if isinstance(payload.get("current_node"), dict) else {}
+            result.update(
+                {
+                    "chat_session_id": _normalize_project_record_token(
+                        payload.get("chat_session_id") or result.get("chat_session_id"),
+                        limit=120,
+                    ),
+                    "task_tree_session_id": _normalize_project_record_token(
+                        payload.get("task_tree_session_id") or payload.get("id"),
+                        limit=80,
+                    ),
+                    "task_tree_chat_session_id": _normalize_project_record_token(
+                        payload.get("task_tree_chat_session_id")
+                        or payload.get("source_chat_session_id")
+                        or payload.get("chat_session_id"),
+                        limit=80,
+                    ),
+                    "task_node_id": _normalize_project_record_token(
+                        payload.get("task_node_id") or current_node.get("id"),
+                        limit=80,
+                    ),
+                    "task_node_title": _normalize_project_record_token(
+                        payload.get("task_node_title") or current_node.get("title"),
+                        limit=200,
+                    ),
+                    "root_goal": _normalize_project_record_token(
+                        payload.get("root_goal") or payload.get("title"),
+                        limit=400,
+                    ),
+                }
+            )
+    return {key: value for key, value in result.items() if value}
+
+
+def _serialize_project_memory_record(item: Any) -> dict[str, Any]:
+    payload = serialize_memory(item)
+    payload.update(_parse_project_memory_binding(getattr(item, "content", "")))
+    return payload
+
+
 def _serialize_project_user_member(member: ProjectUserMember) -> dict[str, Any]:
     user = user_store.get(member.username)
     return {
@@ -3556,27 +3975,42 @@ def _append_chat_record(
 def _resolve_project_memory_target_employee_ids(
     project_id: str,
     selected_employee_ids: list[str] | None = None,
-) -> list[str]:
+) -> tuple[list[str], MemoryScope]:
+    active_member_ids: list[str] = []
+    active_member_seen: set[str] = set()
+    for member in project_store.list_members(project_id):
+        if not bool(getattr(member, "enabled", True)):
+            continue
+        employee_id = str(getattr(member, "employee_id", "") or "").strip()
+        if not employee_id or employee_id in active_member_seen:
+            continue
+        if employee_store.get(employee_id) is None:
+            continue
+        active_member_seen.add(employee_id)
+        active_member_ids.append(employee_id)
+
     preferred = [
         str(item or "").strip()
         for item in (selected_employee_ids or [])
         if str(item or "").strip()
     ]
-    member_ids = [
-        str(getattr(member, "employee_id", "") or "").strip()
-        for member in project_store.list_members(project_id)
-    ]
-    ordered_ids = preferred + member_ids
     result: list[str] = []
     seen: set[str] = set()
-    for employee_id in ordered_ids:
+    for employee_id in preferred:
         if not employee_id or employee_id in seen:
             continue
         if employee_store.get(employee_id) is None:
             continue
         seen.add(employee_id)
         result.append(employee_id)
-    return result
+    if result:
+        if len(result) == 1:
+            return result, MemoryScope.EMPLOYEE_PRIVATE
+        return [result[0]], MemoryScope.TEAM_SHARED
+
+    if active_member_ids:
+        return [active_member_ids[0]], MemoryScope.TEAM_SHARED
+    return [], MemoryScope.TEAM_SHARED
 
 
 def _save_project_chat_memory_snapshot(
@@ -3584,6 +4018,8 @@ def _save_project_chat_memory_snapshot(
     project_id: str,
     user_message: str,
     answer: str,
+    chat_session_id: str = "",
+    task_tree_payload: dict[str, Any] | None = None,
     selected_employee_ids: list[str] | None = None,
     source: str = "project-chat",
 ) -> None:
@@ -3599,13 +4035,207 @@ def _save_project_chat_memory_snapshot(
     if conclusion.startswith("对话失败："):
         return
 
-    target_ids = _resolve_project_memory_target_employee_ids(project_id, selected_employee_ids)
+    normalized_chat_session_id = str(chat_session_id or "").strip()
+    target_ids, memory_scope = _resolve_project_memory_target_employee_ids(project_id, selected_employee_ids)
     if not target_ids:
         return
 
+    def _normalize_task_tree_status(payload: dict[str, Any] | None) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        session_status = str(payload.get("status") or "").strip().lower()
+        current_node = payload.get("current_node") if isinstance(payload.get("current_node"), dict) else {}
+        current_status = str(current_node.get("status") or "").strip().lower()
+        return current_status or session_status
+
+    def _is_task_tree_completed(payload: dict[str, Any] | None) -> bool:
+        if not isinstance(payload, dict):
+            return True
+        status = str(payload.get("status") or "").strip().lower()
+        if not status:
+            return True
+        if bool(payload.get("is_archived")) and status == "done":
+            return True
+        if status == "done":
+            try:
+                progress_percent = int(payload.get("progress_percent", 0) or 0)
+            except (TypeError, ValueError):
+                progress_percent = 0
+            return progress_percent >= 100
+        return False
+
+    def _project_chat_stage_label(payload: dict[str, Any] | None) -> str:
+        status = _normalize_task_tree_status(payload)
+        if status == "pending":
+            return "计划中"
+        if status in {"in_progress", "started"}:
+            return "执行中"
+        if status == "verifying":
+            return "待验证"
+        if status in {"blocked", "failed"}:
+            return "已阻塞"
+        if _is_task_tree_completed(payload):
+            return "已完成"
+        return "执行中"
+
+    def _render_task_tree_plan_outline(payload: dict[str, Any] | None) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
+        lines: list[str] = []
+        for node in nodes:
+            if int(node.get("level", 0) or 0) <= 0:
+                continue
+            title = str(node.get("title") or "").strip()
+            if not title:
+                continue
+            status = str(node.get("status") or "pending").strip() or "pending"
+            verification_result = str(node.get("verification_result") or "").strip()
+            line = f"- [{status}] {title}"
+            if verification_result:
+                line = f"{line} | 验证: {verification_result}"
+            lines.append(line)
+        return "\n".join(lines[:12])
+
+    def _render_task_tree_verification_summary(payload: dict[str, Any] | None) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
+        items: list[str] = []
+        for node in nodes:
+            verification_result = str(node.get("verification_result") or "").strip()
+            if not verification_result:
+                continue
+            title = str(node.get("title") or "").strip() or "任务节点"
+            items.append(f"{title}: {verification_result}")
+        return "\n".join(items[:12])
+
+    def _memory_record_exists(
+        employee_id: str,
+        *,
+        project_name: str,
+        chat_session_id: str,
+        workflow_tag: str,
+        task_tree_session_id: str = "",
+        question: str = "",
+    ) -> bool:
+        list_by_employee = getattr(memory_store, "list_by_employee", None)
+        recent = getattr(memory_store, "recent", None)
+        if callable(recent):
+            try:
+                candidates = list(recent(employee_id, 200) or [])
+            except Exception:
+                candidates = []
+        elif callable(list_by_employee):
+            try:
+                candidates = list(list_by_employee(employee_id) or [])
+            except Exception:
+                candidates = []
+        else:
+                candidates = []
+        normalized_project_name = str(project_name or "").strip()
+        normalized_chat_tag = f"chat-session:{chat_session_id}" if chat_session_id else ""
+        normalized_task_tree_session_id = str(task_tree_session_id or "").strip()
+        normalized_question = str(question or "").strip()
+        for memory in candidates:
+            if str(getattr(memory, "project_name", "") or "").strip() != normalized_project_name:
+                continue
+            tags = {
+                str(item or "").strip()
+                for item in (getattr(memory, "purpose_tags", ()) or [])
+                if str(item or "").strip()
+            }
+            if workflow_tag not in tags:
+                continue
+            binding = _parse_project_memory_binding(getattr(memory, "content", ""))
+            memory_task_tree_session_id = str(binding.get("task_tree_session_id") or "").strip()
+            if normalized_task_tree_session_id:
+                if (
+                    memory_task_tree_session_id == normalized_task_tree_session_id
+                    or f"task-tree-session:{normalized_task_tree_session_id}" in tags
+                ):
+                    return True
+                continue
+            if normalized_question:
+                memory_question = _extract_project_memory_section(getattr(memory, "content", ""), "用户问题")
+                memory_root_goal = str(binding.get("root_goal") or "").strip()
+                if normalized_chat_tag and normalized_chat_tag not in tags:
+                    continue
+                if memory_question == normalized_question or memory_root_goal == normalized_question:
+                    return True
+                continue
+            if normalized_chat_tag and normalized_chat_tag not in tags:
+                continue
+            return True
+        return False
+
+    def _extract_task_tree_binding(payload: dict[str, Any] | None) -> dict[str, str]:
+        if not isinstance(payload, dict):
+            return {}
+        current_node = payload.get("current_node") if isinstance(payload.get("current_node"), dict) else {}
+        result = {
+            "chat_session_id": normalized_chat_session_id,
+            "task_tree_session_id": str(payload.get("id") or "").strip(),
+            "task_tree_chat_session_id": str(
+                payload.get("source_chat_session_id") or payload.get("chat_session_id") or ""
+            ).strip(),
+            "task_node_id": str(current_node.get("id") or "").strip(),
+            "task_node_title": str(current_node.get("title") or "").strip(),
+            "root_goal": str(payload.get("root_goal") or payload.get("title") or "").strip(),
+        }
+        return {key: value for key, value in result.items() if value}
+
     project_name = str(getattr(project, "name", "") or project_id).strip() or "default"
-    content = f"[用户问题] {question[:1200]}\n[最终结论] {conclusion[:2800]}"
+    task_tree_completed = _is_task_tree_completed(task_tree_payload)
+    workflow_tag = "workflow:final-summary" if task_tree_completed else "workflow:requirement-record"
+    stage_label = _project_chat_stage_label(task_tree_payload)
+    plan_outline = _render_task_tree_plan_outline(task_tree_payload)
+    verification_summary = _render_task_tree_verification_summary(task_tree_payload)
+    if task_tree_completed:
+        content_lines = [
+            f"[用户问题] {question[:1200]}",
+            f"[处理过程] {_build_project_chat_memory_process_summary(conclusion)}",
+            f"[解决方案] {conclusion[:1600]}",
+            f"[最终结论] {conclusion[:2800]}",
+            f"[解决状态] {_derive_project_chat_memory_solve_status(conclusion)}",
+        ]
+        if verification_summary:
+            content_lines.append(f"[验证结果] {verification_summary[:2400]}")
+    else:
+        content_lines = [
+            f"[用户问题] {question[:1200]}",
+            (
+                "[处理过程] 已生成执行计划，当前只记录需求与计划状态。"
+                f" 当前阶段：{stage_label}；必须按任务树逐项执行、逐项验证，全部完成前不生成最终结论。"
+            ),
+            f"[解决状态] {stage_label}",
+            "[完成条件] 只有所有计划项完成并写入验证结果后，当前需求才算结束。",
+        ]
+        if plan_outline:
+            content_lines.append(f"[任务计划]\n{plan_outline}")
+    if normalized_chat_session_id:
+        content_lines.append(f"[关联会话] {normalized_chat_session_id}")
+    task_tree_binding = _extract_task_tree_binding(task_tree_payload)
+    if task_tree_binding:
+        content_lines.append(
+            "[执行轨迹JSON] " + json.dumps(task_tree_binding, ensure_ascii=False, sort_keys=True)
+        )
+    content = "\n".join(content_lines)
+    purpose_tags = ["auto-capture", "project-chat", source, workflow_tag]
+    if normalized_chat_session_id:
+        purpose_tags.append(f"chat-session:{normalized_chat_session_id}")
+    if task_tree_binding.get("task_tree_session_id"):
+        purpose_tags.append(f"task-tree-session:{task_tree_binding['task_tree_session_id']}")
     for employee_id in target_ids:
+        if _memory_record_exists(
+            employee_id,
+            project_name=project_name,
+            chat_session_id=normalized_chat_session_id,
+            workflow_tag=workflow_tag,
+            task_tree_session_id=task_tree_binding.get("task_tree_session_id", ""),
+            question=question,
+        ):
+            continue
         try:
             memory_store.save(
                 Memory(
@@ -3615,13 +4245,45 @@ def _save_project_chat_memory_snapshot(
                     content=content,
                     project_name=project_name,
                     importance=0.6,
-                    scope=MemoryScope.EMPLOYEE_PRIVATE,
+                    scope=memory_scope,
                     classification=Classification.INTERNAL,
-                    purpose_tags=("auto-capture", "project-chat", source),
+                    purpose_tags=tuple(purpose_tags),
                 )
             )
         except Exception:
             continue
+
+
+def _build_project_chat_memory_process_summary(answer: str) -> str:
+    normalized_answer = str(answer or "").strip()
+    if not normalized_answer:
+        return "已在当前会话完成处理，可结合关联任务树查看执行节点与验证结果。"
+    if len(normalized_answer) <= 160:
+        return "已在当前会话完成问题处理并给出结论，可结合关联任务树回看执行节点与验证结果。"
+    return "已在当前会话完成分析并给出处理建议，可结合关联任务树回看执行节点与验证结果。"
+
+
+def _derive_project_chat_memory_solve_status(answer: str) -> str:
+    normalized_answer = str(answer or "").strip()
+    if not normalized_answer:
+        return "待确认"
+    unresolved_markers = ("未解决", "无法解决", "无法完成", "当前无法", "处理失败", "已阻塞", "阻塞")
+    if any(marker in normalized_answer for marker in unresolved_markers):
+        return "未解决"
+    pending_markers = (
+        "待确认",
+        "待补充",
+        "需要补充",
+        "请补充",
+        "请提供",
+        "需提供",
+        "需要进一步",
+        "需要确认",
+        "需确认",
+    )
+    if any(marker in normalized_answer for marker in pending_markers):
+        return "待确认"
+    return "已给出方案"
 
 
 @router.post("/chat/global")
@@ -5763,6 +6425,303 @@ async def update_project_chat_settings(project_id: str, req: ProjectChatSettings
     return {"status": "updated", "project_id": project_id, "settings": persisted_settings}
 
 
+@router.get("/{project_id}/chat/task-tree")
+async def get_project_chat_task_tree(
+    project_id: str,
+    session_id: str = "",
+    chat_session_id: str = "",
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    normalized_session_id = str(session_id or "").strip()
+    normalized_chat_session_id = str(chat_session_id or "").strip()
+    if normalized_session_id:
+        session = get_task_tree_by_session_id(
+            project_id,
+            username,
+            normalized_session_id,
+        )
+    elif normalized_chat_session_id:
+        session = get_task_tree_for_chat_session(
+            project_id,
+            username,
+            normalized_chat_session_id,
+        )
+    else:
+        session = get_latest_task_tree_for_user(project_id, username)
+    payload = serialize_task_tree(
+        session
+    )
+    return {"task_tree": payload}
+
+
+@router.delete("/{project_id}/chat/task-tree")
+async def delete_project_chat_task_tree(
+    project_id: str,
+    chat_session_id: str = "",
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    normalized_chat_session_id = str(chat_session_id or "").strip()
+    if not normalized_chat_session_id:
+        raise HTTPException(400, "chat_session_id is required")
+    removed = int(
+        project_chat_task_store.delete(
+            project_id,
+            username,
+            normalized_chat_session_id,
+        )
+        or 0
+    )
+    return {
+        "status": "deleted",
+        "project_id": project_id,
+        "chat_session_id": normalized_chat_session_id,
+        "removed_count": removed,
+    }
+
+
+@router.get("/{project_id}/chat/task-tree/sessions")
+async def list_project_chat_task_tree_sessions(
+    project_id: str,
+    limit: int = 100,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    settings = get_settings()
+    safe_limit = max(1, min(int(limit or 100), 300))
+    return {
+        "items": list_project_task_tree_summaries(project_id, safe_limit),
+        "storage_backend": str(settings.core_store_backend or "").strip() or "json",
+        "project_id": project_id,
+    }
+
+
+@router.get("/{project_id}/memories")
+async def list_project_memories(
+    project_id: str,
+    employee_id: str = Query("", max_length=80),
+    query: str = Query("", max_length=200),
+    limit: int = Query(50, ge=1, le=200),
+    auth_payload: dict = Depends(require_auth),
+):
+    project = _ensure_project_access(project_id, auth_payload)
+    safe_limit = max(1, min(int(limit or 50), 200))
+    memories, _trajectory_memories = _collect_project_related_memories(
+        project,
+        employee_id=employee_id,
+        query=query,
+    )
+    return {
+        "items": [_serialize_project_memory_record(item) for item in memories[:safe_limit]],
+        "project_id": project.id,
+        "project_name": project.name,
+    }
+
+
+@router.get("/{project_id}/work-sessions")
+async def list_project_work_sessions(
+    project_id: str,
+    employee_id: str = Query("", max_length=80),
+    task_tree_session_id: str = Query("", max_length=80),
+    task_tree_chat_session_id: str = Query("", max_length=80),
+    task_node_id: str = Query("", max_length=80),
+    query: str = Query("", max_length=200),
+    limit: int = Query(50, ge=1, le=200),
+    auth_payload: dict = Depends(require_auth),
+):
+    project = _ensure_project_access(project_id, auth_payload)
+    safe_limit = max(1, min(int(limit or 50), 200))
+    employee_names = _project_employee_name_map(project.id)
+    events = work_session_store.list_events(
+        project_id=project.id,
+        employee_id=str(employee_id or "").strip(),
+        task_tree_session_id=str(task_tree_session_id or "").strip(),
+        task_tree_chat_session_id=str(task_tree_chat_session_id or "").strip(),
+        task_node_id=str(task_node_id or "").strip(),
+        query=str(query or "").strip(),
+        limit=max(safe_limit * 8, safe_limit),
+    )
+    grouped: dict[str, list[Any]] = {}
+    for item in events:
+        session_id = str(getattr(item, "session_id", "") or "").strip()
+        if not session_id:
+            continue
+        grouped.setdefault(session_id, []).append(item)
+    sessions = [
+        _serialize_project_work_session_summary(_summarize_project_work_session(items), employee_names)
+        for items in grouped.values()
+        if items
+    ]
+    sessions.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return {
+        "items": sessions[:safe_limit],
+        "project_id": project.id,
+        "project_name": project.name,
+}
+
+
+@router.get("/{project_id}/work-session-events")
+async def list_project_work_session_events(
+    project_id: str,
+    employee_id: str = Query("", max_length=80),
+    session_id: str = Query("", max_length=120),
+    task_tree_session_id: str = Query("", max_length=80),
+    task_tree_chat_session_id: str = Query("", max_length=80),
+    task_node_id: str = Query("", max_length=80),
+    query: str = Query("", max_length=200),
+    limit: int = Query(200, ge=1, le=500),
+    auth_payload: dict = Depends(require_auth),
+):
+    project = _ensure_project_access(project_id, auth_payload)
+    safe_limit = max(1, min(int(limit or 200), 500))
+    employee_names = _project_employee_name_map(project.id)
+    events = work_session_store.list_events(
+        project_id=project.id,
+        employee_id=str(employee_id or "").strip(),
+        session_id=str(session_id or "").strip(),
+        task_tree_session_id=str(task_tree_session_id or "").strip(),
+        task_tree_chat_session_id=str(task_tree_chat_session_id or "").strip(),
+        task_node_id=str(task_node_id or "").strip(),
+        query=str(query or "").strip(),
+        limit=safe_limit,
+    )
+    ordered = sorted(
+        events,
+        key=lambda item: (str(getattr(item, "created_at", "") or ""), str(getattr(item, "id", "") or "")),
+        reverse=True,
+    )
+    return {
+        "items": [_serialize_project_work_session_event(item, employee_names) for item in ordered],
+        "project_id": project.id,
+        "project_name": project.name,
+    }
+
+
+@router.get("/{project_id}/work-sessions/{session_id}")
+async def get_project_work_session_detail(
+    project_id: str,
+    session_id: str,
+    employee_id: str = Query("", max_length=80),
+    task_tree_session_id: str = Query("", max_length=80),
+    task_tree_chat_session_id: str = Query("", max_length=80),
+    task_node_id: str = Query("", max_length=80),
+    limit: int = Query(200, ge=1, le=500),
+    auth_payload: dict = Depends(require_auth),
+):
+    project = _ensure_project_access(project_id, auth_payload)
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_session_id:
+        raise HTTPException(400, "session_id is required")
+    safe_limit = max(1, min(int(limit or 200), 500))
+    employee_names = _project_employee_name_map(project.id)
+    events = work_session_store.list_events(
+        project_id=project.id,
+        employee_id=str(employee_id or "").strip(),
+        session_id=normalized_session_id,
+        task_tree_session_id=str(task_tree_session_id or "").strip(),
+        task_tree_chat_session_id=str(task_tree_chat_session_id or "").strip(),
+        task_node_id=str(task_node_id or "").strip(),
+        limit=safe_limit,
+    )
+    if not events:
+        raise HTTPException(404, "Work session not found")
+    ordered = sorted(
+        events,
+        key=lambda item: (str(getattr(item, "created_at", "") or ""), str(getattr(item, "id", "") or "")),
+        reverse=True,
+    )
+    return {
+        "session": _serialize_project_work_session_summary(
+            _summarize_project_work_session(ordered),
+            employee_names,
+        ),
+        "items": [_serialize_project_work_session_event(item, employee_names) for item in ordered],
+        "project_id": project.id,
+    }
+
+
+@router.post("/{project_id}/chat/task-tree/generate")
+async def generate_project_chat_task_tree(
+    project_id: str,
+    req: ProjectChatTaskTreeGenerateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    chat_session_id = str(req.chat_session_id or "").strip()
+    if not chat_session_id:
+        raise HTTPException(400, "chat_session_id is required")
+    message = str(req.message or "").strip()
+    if not message:
+        raise HTTPException(400, "message is required")
+    try:
+        max_steps = max(1, min(int(req.max_steps or 6), 10))
+    except (TypeError, ValueError):
+        max_steps = 6
+    session = ensure_task_tree(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        root_goal=message,
+        force=bool(req.force),
+        max_steps=max_steps,
+    )
+    return {
+        "status": "generated",
+        "task_tree": serialize_task_tree(session),
+    }
+
+
+@router.patch("/{project_id}/chat/task-tree/nodes/{node_id}")
+async def patch_project_chat_task_tree_node(
+    project_id: str,
+    node_id: str,
+    req: ProjectChatTaskNodeUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    chat_session_id = str(req.chat_session_id or "").strip()
+    if not chat_session_id:
+        raise HTTPException(400, "chat_session_id is required")
+    try:
+        session = update_task_node(
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+            node_id=node_id,
+            status=req.status,
+            verification_result=req.verification_result,
+            summary_for_model=req.summary_for_model,
+            is_current=req.is_current,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    task_tree_payload = serialize_task_tree(session)
+    history_task_tree = None
+    if str(getattr(session, "status", "") or "").strip().lower() == "done":
+        archived_session = archive_task_tree(
+            session,
+            reason="completed_task_closed",
+            delete_current=True,
+        )
+        history_task_tree = serialize_task_tree(archived_session)
+        task_tree_payload = None
+    return {
+        "status": "updated",
+        "task_tree": task_tree_payload,
+        "history_task_tree": history_task_tree,
+    }
+
+
 @router.patch("/{project_id}/chat/ai-entry-file")
 async def update_project_chat_ai_entry_file(
     project_id: str,
@@ -5811,11 +6770,14 @@ async def clear_project_chat_history(
     _ensure_permission(auth_payload, "menu.ai.chat")
     _ensure_project_access(project_id, auth_payload)
     username = _current_username(auth_payload)
+    normalized_chat_session_id = str(chat_session_id or "").strip()
     removed = project_chat_store.clear_messages(
         project_id,
         username,
-        str(chat_session_id or "").strip(),
+        normalized_chat_session_id,
     )
+    if normalized_chat_session_id:
+        project_chat_task_store.delete(project_id, username, normalized_chat_session_id)
     return {"status": "cleared", "removed_count": int(removed)}
 
 
@@ -5926,7 +6888,11 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             return
 
         effective_user_message = user_message
-        chat_session_id = str(req.chat_session_id or "").strip()
+        try:
+            chat_session_id = _require_project_chat_session_id(req.chat_session_id)
+        except ValueError as exc:
+            await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
+            return
         if not effective_user_message and attachment_names:
             effective_user_message = f"我上传了附件：{', '.join(attachment_names)}。请先给我处理建议。"
         elif not effective_user_message and normalized_images:
@@ -5955,6 +6921,16 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
 
             enabled_tool_names = list(runtime_settings.get("enabled_project_tool_names") or [])
             explicit_tool_filter = bool(enabled_tool_names)
+            task_tree_payload = _resolve_project_chat_task_tree_context(
+                project_id,
+                username,
+                chat_session_id,
+                runtime_settings,
+                effective_user_message,
+            )
+            task_tree_prompt = str(
+                (task_tree_payload or {}).get("model_context_summary") or ""
+            ).strip()
             if _is_project_meta_query(effective_user_message):
                 direct_answer = _build_project_meta_reply(project, selected_employee, candidates)
                 await websocket.send_json(
@@ -5967,16 +6943,21 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "employee_id": employee_id_val,
                         "employee_name": str((selected_employee or {}).get("name") or ""),
                         "tools_enabled": False,
+                        "task_tree": task_tree_payload,
                     }
                 )
+                direct_done_payload = _build_project_chat_done_payload(
+                    content=direct_answer,
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                    provider_id="",
+                    model_name="direct-project-meta",
+                    successful_tool_names=["direct-project-meta"],
+                )
+                direct_done_payload["request_id"] = request_id
                 await websocket.send_json(
-                    {
-                        "type": "done",
-                        "request_id": request_id,
-                        "content": direct_answer,
-                        "provider_id": "",
-                        "model_name": "direct-project-meta",
-                    }
+                    direct_done_payload
                 )
                 _append_chat_record(
                     project_id=project_id,
@@ -5990,6 +6971,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     project_id=project_id,
                     user_message=effective_user_message,
                     answer=direct_answer,
+                    chat_session_id=chat_session_id,
+                    task_tree_payload=direct_done_payload.get("history_task_tree") or direct_done_payload.get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
                     source="project-chat-ws-direct-meta",
                 )
@@ -6014,16 +6997,21 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "employee_id": employee_id_val,
                         "employee_name": str((selected_employee or {}).get("name") or ""),
                         "tools_enabled": False,
+                        "task_tree": task_tree_payload,
                     }
                 )
+                direct_done_payload = _build_project_chat_done_payload(
+                    content=direct_answer,
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                    provider_id="",
+                    model_name="direct-tool-probe",
+                    successful_tool_names=["direct-tool-probe"],
+                )
+                direct_done_payload["request_id"] = request_id
                 await websocket.send_json(
-                    {
-                        "type": "done",
-                        "request_id": request_id,
-                        "content": direct_answer,
-                        "provider_id": "",
-                        "model_name": "direct-tool-probe",
-                    }
+                    direct_done_payload
                 )
                 _append_chat_record(
                     project_id=project_id,
@@ -6037,6 +7025,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     project_id=project_id,
                     user_message=effective_user_message,
                     answer=direct_answer,
+                    chat_session_id=chat_session_id,
+                    task_tree_payload=direct_done_payload.get("history_task_tree") or direct_done_payload.get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
                     source="project-chat-ws-direct-tool-probe",
                 )
@@ -6054,16 +7044,21 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "employee_id": employee_id_val,
                         "employee_name": str((selected_employee or {}).get("name") or ""),
                         "tools_enabled": False,
+                        "task_tree": task_tree_payload,
                     }
                 )
+                direct_done_payload = _build_project_chat_done_payload(
+                    content=direct_answer,
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                    provider_id="",
+                    model_name="direct-mcp-modules",
+                    successful_tool_names=["direct-mcp-modules"],
+                )
+                direct_done_payload["request_id"] = request_id
                 await websocket.send_json(
-                    {
-                        "type": "done",
-                        "request_id": request_id,
-                        "content": direct_answer,
-                        "provider_id": "",
-                        "model_name": "direct-mcp-modules",
-                    }
+                    direct_done_payload
                 )
                 _append_chat_record(
                     project_id=project_id,
@@ -6077,6 +7072,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     project_id=project_id,
                     user_message=effective_user_message,
                     answer=direct_answer,
+                    chat_session_id=chat_session_id,
+                    task_tree_payload=direct_done_payload.get("history_task_tree") or direct_done_payload.get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
                     source="project-chat-ws-direct-mcp-modules",
                 )
@@ -6114,6 +7111,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         "tools_enabled": False,
                         "effective_tools": [],
                         "effective_tool_total": 0,
+                        "task_tree": task_tree_payload,
                     }
                 )
                 try:
@@ -6189,6 +7187,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 workspace_path=effective_workspace_path,
                 skill_resource_directory=req.skill_resource_directory,
                 employee_coordination_mode=str(runtime_settings.get("employee_coordination_mode") or "auto"),
+                task_tree_prompt=task_tree_prompt,
             )
 
         except Exception as exc:
@@ -6205,12 +7204,14 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             "tools_enabled": bool(tools),
             "effective_tools": effective_tools,
             "effective_tool_total": effective_tool_total,
+            "task_tree": task_tree_payload,
         })
 
         try:
             final_answer = ""
             stream_error = ""
             assistant_artifacts: list[dict[str, Any]] = []
+            last_done_payload: dict[str, Any] | None = None
 
             if provider_mode == "local_connector":
                 connector = _resolve_accessible_local_connector_for_llm(
@@ -6248,6 +7249,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 max_tokens=max_tokens,
                 project_id=project_id,
                 employee_id=employee_id_val,
+                username=username,
+                chat_session_id=chat_session_id,
                 cancel_event=cancel_event,
                 messages=messages,
                 local_connector=selected_local_connector,
@@ -6287,6 +7290,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     outgoing["images"] = _collect_chat_artifact_urls(assistant_artifacts, asset_type="image")
                     outgoing["videos"] = _collect_chat_artifact_urls(assistant_artifacts, asset_type="video")
                     final_answer = str(outgoing.get("content") or "")
+                    last_done_payload = dict(outgoing)
                 if event_type == "error":
                     stream_error = str(outgoing.get("message") or "未知错误")
                 outgoing["request_id"] = request_id
@@ -6327,6 +7331,9 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     project_id=project_id,
                     user_message=effective_user_message,
                     answer=final_answer or persisted_answer,
+                    chat_session_id=chat_session_id,
+                    task_tree_payload=(last_done_payload or {}).get("history_task_tree")
+                    or (last_done_payload or {}).get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
                     source="project-chat-ws",
                 )
@@ -6394,7 +7401,10 @@ async def stream_project_chat(
         raise HTTPException(400, "message is required")
 
     effective_user_message = user_message
-    chat_session_id = str(req.chat_session_id or "").strip()
+    try:
+        chat_session_id = _require_project_chat_session_id(req.chat_session_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if not effective_user_message and attachment_names:
         effective_user_message = f"我上传了附件：{', '.join(attachment_names)}。请先给我处理建议。"
     elif not effective_user_message and normalized_images:
@@ -6426,10 +7436,32 @@ async def stream_project_chat(
     employee_id_val = selected_employee_ids[0] if len(selected_employee_ids) == 1 else ""
     enabled_tool_names = list(runtime_settings.get("enabled_project_tool_names") or [])
     explicit_tool_filter = bool(enabled_tool_names)
+    try:
+        task_tree_payload = _resolve_project_chat_task_tree_context(
+            project_id,
+            username,
+            chat_session_id,
+            runtime_settings,
+            effective_user_message,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    task_tree_prompt = str(
+        (task_tree_payload or {}).get("model_context_summary") or ""
+    ).strip()
     if _is_project_meta_query(effective_user_message):
         answer = _build_project_meta_reply(project, selected_employee, candidates)
 
         async def direct_event_stream() -> AsyncIterator[str]:
+            done_payload = _build_project_chat_done_payload(
+                content=answer,
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                provider_id="",
+                model_name="direct-project-meta",
+                successful_tool_names=["direct-project-meta"],
+            )
             yield _sse_payload(
                 "message",
                 {
@@ -6440,14 +7472,12 @@ async def stream_project_chat(
                     "employee_id": employee_id_val,
                     "employee_name": str((selected_employee or {}).get("name") or ""),
                     "tools_enabled": False,
+                    "task_tree": task_tree_payload,
                 },
             )
             for part in _chunk_text(answer):
                 yield _sse_payload("message", {"type": "delta", "content": part})
-            yield _sse_payload(
-                "message",
-                {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-project-meta"},
-            )
+            yield _sse_payload("message", done_payload)
             _append_chat_record(
                 project_id=project_id,
                 username=username,
@@ -6460,6 +7490,8 @@ async def stream_project_chat(
                 project_id=project_id,
                 user_message=effective_user_message,
                 answer=answer,
+                chat_session_id=chat_session_id,
+                task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
                 selected_employee_ids=selected_employee_ids,
                 source="project-chat-sse-direct-meta",
             )
@@ -6485,6 +7517,15 @@ async def stream_project_chat(
         )
 
         async def direct_tool_event_stream() -> AsyncIterator[str]:
+            done_payload = _build_project_chat_done_payload(
+                content=answer,
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                provider_id="",
+                model_name="direct-tool-probe",
+                successful_tool_names=["direct-tool-probe"],
+            )
             yield _sse_payload(
                 "message",
                 {
@@ -6495,14 +7536,12 @@ async def stream_project_chat(
                     "employee_id": employee_id_val,
                     "employee_name": str((selected_employee or {}).get("name") or ""),
                     "tools_enabled": False,
+                    "task_tree": task_tree_payload,
                 },
             )
             for part in _chunk_text(answer):
                 yield _sse_payload("message", {"type": "delta", "content": part})
-            yield _sse_payload(
-                "message",
-                {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-tool-probe"},
-            )
+            yield _sse_payload("message", done_payload)
             _append_chat_record(
                 project_id=project_id,
                 username=username,
@@ -6515,6 +7554,8 @@ async def stream_project_chat(
                 project_id=project_id,
                 user_message=effective_user_message,
                 answer=answer,
+                chat_session_id=chat_session_id,
+                task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
                 selected_employee_ids=selected_employee_ids,
                 source="project-chat-sse-direct-tool-probe",
             )
@@ -6533,6 +7574,15 @@ async def stream_project_chat(
         answer = _build_mcp_modules_reply(project_id)
 
         async def direct_mcp_event_stream() -> AsyncIterator[str]:
+            done_payload = _build_project_chat_done_payload(
+                content=answer,
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                provider_id="",
+                model_name="direct-mcp-modules",
+                successful_tool_names=["direct-mcp-modules"],
+            )
             yield _sse_payload(
                 "message",
                 {
@@ -6543,14 +7593,12 @@ async def stream_project_chat(
                     "employee_id": employee_id_val,
                     "employee_name": str((selected_employee or {}).get("name") or ""),
                     "tools_enabled": False,
+                    "task_tree": task_tree_payload,
                 },
             )
             for part in _chunk_text(answer):
                 yield _sse_payload("message", {"type": "delta", "content": part})
-            yield _sse_payload(
-                "message",
-                {"type": "done", "content": answer, "provider_id": "", "model_name": "direct-mcp-modules"},
-            )
+            yield _sse_payload("message", done_payload)
             _append_chat_record(
                 project_id=project_id,
                 username=username,
@@ -6563,6 +7611,8 @@ async def stream_project_chat(
                 project_id=project_id,
                 user_message=effective_user_message,
                 answer=answer,
+                chat_session_id=chat_session_id,
+                task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
                 selected_employee_ids=selected_employee_ids,
                 source="project-chat-sse-direct-mcp-modules",
             )
@@ -6608,6 +7658,7 @@ async def stream_project_chat(
                     "tools_enabled": False,
                     "effective_tools": [],
                     "effective_tool_total": 0,
+                    "task_tree": task_tree_payload,
                 },
             )
             try:
@@ -6696,6 +7747,7 @@ async def stream_project_chat(
         workspace_path=effective_workspace_path,
         skill_resource_directory=req.skill_resource_directory,
         employee_coordination_mode=str(runtime_settings.get("employee_coordination_mode") or "auto"),
+        task_tree_prompt=task_tree_prompt,
     )
 
     async def event_stream() -> AsyncIterator[str]:
@@ -6712,6 +7764,7 @@ async def stream_project_chat(
                 "tools_enabled": bool(tools),
                 "effective_tools": effective_tools,
                 "effective_tool_total": effective_tool_total,
+                "task_tree": task_tree_payload,
             },
         )
         try:
@@ -6745,6 +7798,7 @@ async def stream_project_chat(
             final_answer = ""
             stream_error = ""
             assistant_artifacts: list[dict[str, Any]] = []
+            last_done_payload: dict[str, Any] | None = None
             cancel_event = asyncio.Event()
             async for chunk_data in orchestrator.run(
                 session_id=session_id,
@@ -6756,6 +7810,8 @@ async def stream_project_chat(
                 max_tokens=max_tokens,
                 project_id=project_id,
                 employee_id=employee_id_val,
+                username=username,
+                chat_session_id=chat_session_id,
                 cancel_event=cancel_event,
                 messages=messages,
                 local_connector=selected_local_connector,
@@ -6795,6 +7851,7 @@ async def stream_project_chat(
                     outgoing["images"] = _collect_chat_artifact_urls(assistant_artifacts, asset_type="image")
                     outgoing["videos"] = _collect_chat_artifact_urls(assistant_artifacts, asset_type="video")
                     final_answer = str(outgoing.get("content") or "")
+                    last_done_payload = dict(outgoing)
                 if event_type == "error":
                     stream_error = str(outgoing.get("message") or "未知错误")
                 yield _sse_payload("message", outgoing)
@@ -6837,6 +7894,9 @@ async def stream_project_chat(
                     project_id=project_id,
                     user_message=effective_user_message,
                     answer=final_answer or persisted_answer,
+                    chat_session_id=chat_session_id,
+                    task_tree_payload=(last_done_payload or {}).get("history_task_tree")
+                    or (last_done_payload or {}).get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
                     source="project-chat-sse",
                 )
@@ -6943,6 +8003,32 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
 """
         )
     employee_templates_text = "\n".join(employee_template_lines) if employee_template_lines else "无成员"
+    chat_settings = getattr(project, "chat_settings", {}) or {}
+    task_tree_enabled = bool(chat_settings.get("task_tree_enabled", True))
+    task_tree_auto_generate = bool(chat_settings.get("task_tree_auto_generate", True))
+    task_tree_manual_section = ""
+    task_tree_workflow_line = ""
+    if task_tree_enabled:
+        task_tree_manual_section = f"""
+## 任务树工作流
+
+- 当前项目聊天已启用结构化任务树，作用域默认按 `project_id + username + chat_session_id` 隔离。
+- {"发送首条任务消息后会自动生成任务树。" if task_tree_auto_generate else "当前项目未开启自动生成任务树，需要先显式生成任务树。"}
+- 若当前入口没有显式携带 `chat_session_id`，必须先绑定当前会话；不要假设没有会话标识也能把任务树挂到正确聊天上。
+- 任务树必须与项目记忆、工作轨迹绑定到同一条聊天会话；后续查看记忆详情时，应能回看该轮规划、执行节点和验证结果。
+- 任务树节点必须直接对应用户目标下的工作步骤，不得把 `search_project_context`、`query_project_rules`、`search_ids`、`get_manual_content`、`resolve_relevant_context`、`generate_execution_plan` 这类内部检索/规划工具直接当成节点标题。
+- 候选代理工具、脚本路径和类似 `Auto inferred proxy entry from scripts/...` 的描述，只能作为内部工具信息，不得直接展示为任务树节点。
+- 开始执行节点时，先调用 `get_current_task_tree` 确认当前节点与节点 ID，再调用 `update_task_node_status` 标记为 `in_progress` 或 `verifying`。
+- 完成节点时，必须调用 `complete_task_node_with_verification` 写入验证结果；未写验证结果前，不得把节点标记为 `done`。
+- 若当前需求只是“谁 / 哪些 / 多少 / 从哪里”等查询型问题，任务树应尽量保持为单个检索回答节点，不要误拆成实现或协作开发步骤。
+- 父节点完成前，必须确保全部子节点完成，并补齐父节点自己的整体验证结论。
+- 当整棵任务树全部完成后，系统会自动把本次任务归档到项目历史里，并清空当前聊天上的活动任务树。
+- 同一个聊天里出现下一条新需求时，系统会基于新的需求重新生成一棵活动任务树；历史归档记录仍可在项目详情的任务推进列表查看。
+- 若本轮已经产生执行进展，但没有回写任务树，系统会保留节点在 `in_progress` 或 `verifying`，不会直接自动推荐完成。
+- 查询型问题若已完成检索并给出明确答案，系统会自动补齐验证并归档，避免任务树停留在 `0%` 或 `67%`。
+- `/ai/chat` 页面只展示当前仍在进行中的任务树；已完成或已归档任务树不应继续作为当前任务显示。
+"""
+        task_tree_workflow_line = "\n5. 如当前项目聊天已启用任务树，进入实现前先读取 `get_current_task_tree`；每完成一步都要写回节点状态与验证结果，未验证不得标记完成。"
 
     manual = f"""# {project.name} 项目使用手册
 
@@ -6958,10 +8044,11 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
 
 ### 强制执行流程
 1. 收到用户提问后，先调用 `get_project_runtime_context` 或 `list_project_members` 了解成员和能力范围。
-2. 再调用 `recall_project_memory` 检索相关记忆，优先传 `project_name="{project.name}"`。
-3. 每次有效对话都必须记录到项目记忆；当前宿主系统对项目聊天默认自动记录问答快照，如当前入口未覆盖自动记录链路，则在本轮结束后立即调用 `save_project_memory` 补记。
+2. 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，调用 `recall_project_memory` 检索相关记忆，优先传 `project_name="{project.name}"`。
+3. 优先复用宿主系统的自动记忆快照；如当前入口未覆盖自动记录链路，或本轮需要额外沉淀稳定结论/关键决策，再调用一次 `save_project_memory` 补记。不要在同一需求的每个中间步骤重复写入项目记忆。
+3.1 若本轮对话存在任务树或执行规划，记忆与工作轨迹必须复用同一条 `chat_session_id` / `session_id`，确保后续能从记忆详情回看规划、节点状态和验证结果。
 4. 在决定是否需要多人协作前，先把本项目手册与相关员工手册视为协作基线：AI 需结合任务目标、规则、技能和工具，自主判断单人主责还是多人协作，不预设固定行业角色分工。
-5. 遇到页面、交互、视觉表达类任务时，先检查本项目绑定的 UI 规则；这些规则优先级高于员工个人规则。
+5. 遇到页面、交互、视觉表达类任务时，先检查本项目绑定的 UI 规则；这些规则优先级高于员工个人规则。{task_tree_workflow_line}
 6. 开始实现或排查前，调用 `query_project_rules` 和 `list_project_proxy_tools` 搜索匹配的规则与技能；`query_project_rules` 返回的规则中，项目级 UI 规则应优先遵循。若任务需要项目内多员工自动协作，可优先调用 `execute_project_collaboration`。
 7. 锁定匹配项后，再调用 `invoke_project_skill_tool`，必要时补 `employee_id` 消歧；若采用多人协作，先明确负责人、子任务边界和结果交接。
 8. 如需沉淀结构化结论、排查经验或关键决策，在自动记录之外显式调用 `save_project_memory` 追加一条可复用记忆。
@@ -6975,6 +8062,8 @@ save_project_memory({{
   "project_name": "{project.name}"
 }})
 ```
+
+{task_tree_manual_section}
 
 ## 项目成员与员工使用手册
 
@@ -7002,8 +8091,8 @@ save_project_memory({{
 - **`list_project_members`**：列出项目成员，用于先确定可协作员工。
 - **`get_project_profile`**：读取项目基础配置、工作区和入口文件信息。
 - **`get_project_runtime_context`**：查看项目运行时上下文、成员、项目级 UI 规则、规则和技能规模。
-- **`recall_project_memory`**：检索项目记忆，优先传 `project_name="{project.name}"`。
-- **`save_project_memory`**：手动补记项目级结论、经验和关键决策；当当前入口未自动记录或需要追加结构化沉淀时必须调用。
+- **`recall_project_memory`**：按需检索项目记忆，优先传 `project_name="{project.name}"`；仅在新需求开始、续跑恢复、修复旧问题或明显需要历史经验时调用。
+- **`save_project_memory`**：手动补记项目级结论、经验和关键决策；当当前入口未自动记录，或需要追加一条稳定结论/关键决策时再调用。不要在同一需求的每个中间步骤重复补记。若本轮存在任务树，应确保记忆与当前聊天会话绑定，后续可从记忆详情反查规划。
 - **`query_project_rules`**：按关键词查询项目规则，返回项目级 UI 规则与成员规则；页面/交互类任务先看项目级 UI 规则，最终以具体规则正文为准。
 - **`list_project_proxy_tools`**：列出项目可调用的成员技能工具。
 - **`execute_project_collaboration`**：输入用户原始任务，由 AI 基于项目手册、员工手册、规则和工具，自主判断是否需要多人协作并生成协作步骤。
@@ -7014,12 +8103,12 @@ save_project_memory({{
 
 ```text
 1. 获取项目上下文 / 成员信息 → get_project_runtime_context 或 list_project_members
-2. 记忆检索 → recall_project_memory
-3. 每次对话记录 → 默认自动记录；未覆盖入口则立刻 save_project_memory 补记
+2. 按需记忆检索 → recall_project_memory
+3. 每次对话记录 → 默认自动记录；未覆盖入口或需要额外沉淀稳定结论时，再调用一次 save_project_memory 补记，并确保与当前 chat_session_id / session_id 绑定
 4. 结合项目手册与员工手册，自主判断单人主责还是多人协作；多人任务优先考虑 execute_project_collaboration
 5. 先检查项目级 UI 规则，再搜索匹配的成员规则与技能 → query_project_rules + list_project_proxy_tools
 6. 锁定匹配项后再调用技能 → execute_project_collaboration 或 invoke_project_skill_tool
-7. 结构化沉淀结论 → save_project_memory
+7. 结构化沉淀稳定结论/关键决策 → save_project_memory
 8. 反馈闭环 → submit_project_feedback_bug
 ```
 
@@ -7057,14 +8146,17 @@ save_project_memory({{
 - 需要多人协作时，先明确主负责人、辅助成员、交接边界和汇总责任。
 
 ### 记忆与规则
-- 先检索记忆，再检索规则，再决定是否调用技能。
+- 记忆检索只在新需求开始、续跑恢复、修复旧问题或明显需要历史经验时触发；不要把 recall 当成每轮固定前置步骤。
+- 同一任务轮若已生成任务树并进入执行，后续优先依赖当前会话、任务树和工作轨迹，不要重复检索同一批项目记忆。
 - 项目级 UI 规则优先于员工个人规则，尤其是页面、交互、视觉表达类任务。
 - 每次有效对话都要留下项目记忆；自动记录未覆盖时，必须手动补记。
 - 结构化结论和关键决策建议额外补一条高质量记忆，便于后续复用。
+- 若本轮存在任务树，记忆详情必须能回看该轮规划、节点状态和验证结果；不要把任务树和记忆拆成两条互相无法追溯的记录。
+- `/ai/chat` 只展示当前进行中的任务树；查看历史任务应去项目历史或记忆详情，不应继续占据当前聊天任务区域。
 - 不要把领域名直接当作规则正文。
 
 ### 事实边界
-- 当前宿主系统已实现项目聊天自动记忆快照；若当前入口未接入该链路，仍需显式调用 `save_project_memory`。
+- 当前宿主系统已实现项目聊天自动记忆快照；若当前入口未接入该链路，仍需显式调用 `save_project_memory`。若已接入自动快照，不要再为同一需求的每个中间步骤重复补记。
 - 不得臆造不存在的 `skill_id`、`tool_name`、`rule_id` 或规则正文。
 - 面向接入方 AI 平台时，默认按 MCP 显式调用描述。
 """

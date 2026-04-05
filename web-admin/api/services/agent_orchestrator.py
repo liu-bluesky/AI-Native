@@ -5,6 +5,7 @@ import re
 import time
 from typing import Any, AsyncGenerator
 from services.conversation_manager import ConversationManager
+from services.project_chat_task_tree import audit_task_tree_round
 from services.tool_executor import ToolExecutor
 from core.observability import logger, metrics
 
@@ -17,6 +18,11 @@ _VIDEO_URL_PATTERN = re.compile(
     r"^https?://.+\.(?:mp4|mov|m4v|webm|avi|mkv)(?:[?#].*)?$",
     re.IGNORECASE,
 )
+_TASK_TREE_TOOL_NAMES = {
+    "get_current_task_tree",
+    "update_task_node_status",
+    "complete_task_node_with_verification",
+}
 
 
 def _is_image_url(value: Any) -> bool:
@@ -117,6 +123,60 @@ def _preview_tool_result(result: Any, *, limit: int = 600) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}..."
+
+
+def _extract_task_tree_payload(tool_name: str, result: Any) -> dict[str, Any] | None:
+    normalized_tool_name = str(tool_name or "").strip()
+    if normalized_tool_name not in _TASK_TREE_TOOL_NAMES:
+        return None
+    if not isinstance(result, dict):
+        return None
+    if isinstance(result.get("tree"), list) and str(result.get("chat_session_id") or "").strip():
+        return result
+    if isinstance(result.get("task_tree"), dict):
+        payload = result.get("task_tree")
+        if isinstance(payload, dict) and str(payload.get("chat_session_id") or "").strip():
+            return payload
+    if isinstance(result.get("history_task_tree"), dict):
+        payload = result.get("history_task_tree")
+        if isinstance(payload, dict) and str(payload.get("chat_session_id") or "").strip():
+            return payload
+    return None
+
+
+def _build_done_payload(
+    *,
+    content: str,
+    artifacts: list[dict[str, Any]],
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    successful_tool_names: list[str],
+    task_tree_tool_used: bool,
+) -> dict[str, Any]:
+    payload = {
+        "type": "done",
+        "content": content,
+        "artifacts": artifacts,
+        "images": _collect_artifact_urls(artifacts, asset_type="image"),
+        "videos": _collect_artifact_urls(artifacts, asset_type="video"),
+    }
+    task_tree_audit = audit_task_tree_round(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        assistant_content=content,
+        successful_tool_names=successful_tool_names,
+        task_tree_tool_used=task_tree_tool_used,
+    )
+    if isinstance(task_tree_audit, dict):
+        payload["task_tree_audit"] = task_tree_audit
+        if "task_tree" in task_tree_audit:
+            payload["task_tree"] = task_tree_audit.get("task_tree")
+        history_task_tree_payload = task_tree_audit.get("history_task_tree")
+        if isinstance(history_task_tree_payload, dict):
+            payload["history_task_tree"] = history_task_tree_payload
+    return payload
 
 
 def _artifact_asset_type(item: dict[str, Any]) -> str:
@@ -431,6 +491,8 @@ class AgentOrchestrator:
         project_id: str,
         employee_id: str,
         cancel_event: asyncio.Event,
+        username: str = "",
+        chat_session_id: str = "",
         messages: list[dict] | None = None,
         local_connector: Any | None = None,
         local_connector_workspace_path: str = "",
@@ -452,6 +514,8 @@ class AgentOrchestrator:
             tool_executor = ToolExecutor(
                 project_id,
                 employee_id,
+                username=username,
+                chat_session_id=chat_session_id,
                 timeout_sec=self._tool_timeout_sec,
                 max_retries=self._tool_retry_count,
                 local_connector=local_connector,
@@ -465,16 +529,20 @@ class AgentOrchestrator:
             last_tool_signature = ""
             repeated_tool_signature_rounds = 0
             collected_artifacts: list[dict[str, Any]] = []
+            successful_tool_names: list[str] = []
+            task_tree_tool_used = False
 
             while loop_count < self._max_loops:
                 if cancel_event.is_set():
-                    yield {
-                        "type": "done",
-                        "content": "[已停止]",
-                        "artifacts": collected_artifacts,
-                        "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
-                        "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
-                    }
+                    yield _build_done_payload(
+                        content="[已停止]",
+                        artifacts=collected_artifacts,
+                        project_id=project_id,
+                        username=username,
+                        chat_session_id=chat_session_id,
+                        successful_tool_names=successful_tool_names,
+                        task_tree_tool_used=task_tree_tool_used,
+                    )
                     completed = True
                     break
 
@@ -551,13 +619,15 @@ class AgentOrchestrator:
                             max_tokens=max_tokens,
                             default_message="工具调用已达到预算上限，已停止生成。请补充更明确的参数后重试。",
                         )
-                        yield {
-                            "type": "done",
-                            "content": fallback,
-                            "artifacts": collected_artifacts,
-                            "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
-                            "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
-                        }
+                        yield _build_done_payload(
+                            content=fallback,
+                            artifacts=collected_artifacts,
+                            project_id=project_id,
+                            username=username,
+                            chat_session_id=chat_session_id,
+                            successful_tool_names=successful_tool_names,
+                            task_tree_tool_used=task_tree_tool_used,
+                        )
                         await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                         await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})
                         duration = time.time() - start_time
@@ -584,13 +654,15 @@ class AgentOrchestrator:
                             max_tokens=max_tokens,
                             default_message="检测到重复工具调用且未产出正文，已停止生成。请调整问题或补充参数后重试。",
                         )
-                        yield {
-                            "type": "done",
-                            "content": fallback,
-                            "artifacts": collected_artifacts,
-                            "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
-                            "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
-                        }
+                        yield _build_done_payload(
+                            content=fallback,
+                            artifacts=collected_artifacts,
+                            project_id=project_id,
+                            username=username,
+                            chat_session_id=chat_session_id,
+                            successful_tool_names=successful_tool_names,
+                            task_tree_tool_used=task_tree_tool_used,
+                        )
                         await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                         await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})
                         duration = time.time() - start_time
@@ -629,12 +701,17 @@ class AgentOrchestrator:
                             result = {"error": str(result)}
                         tool_name = tc["function"]["name"]
                         success = "error" not in result
+                        if success:
+                            successful_tool_names.append(str(tool_name or "").strip())
+                            if str(tool_name or "").strip() in _TASK_TREE_TOOL_NAMES:
+                                task_tree_tool_used = True
                         metrics.inc_counter("tool_call", {"tool": tool_name, "status": "success" if success else "error"})
                         yield {
                             "type": "tool_result",
                             "tool_name": tool_name,
                             "status": "success" if success else "error",
                             "output_preview": _preview_tool_result(result),
+                            "task_tree": _extract_task_tree_payload(tool_name, result),
                         }
                         artifacts = _extract_media_artifacts(
                             result,
@@ -661,13 +738,15 @@ class AgentOrchestrator:
                             max_tokens=max_tokens,
                             default_message="工具调用连续多轮未产出正文，已停止生成。请补充更明确的参数后重试。",
                         )
-                        yield {
-                            "type": "done",
-                            "content": fallback,
-                            "artifacts": collected_artifacts,
-                            "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
-                            "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
-                        }
+                        yield _build_done_payload(
+                            content=fallback,
+                            artifacts=collected_artifacts,
+                            project_id=project_id,
+                            username=username,
+                            chat_session_id=chat_session_id,
+                            successful_tool_names=successful_tool_names,
+                            task_tree_tool_used=task_tree_tool_used,
+                        )
                         await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                         await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})
                         duration = time.time() - start_time
@@ -678,13 +757,15 @@ class AgentOrchestrator:
                         break
                     continue
 
-                yield {
-                    "type": "done",
-                    "content": response_content,
-                    "artifacts": collected_artifacts,
-                    "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
-                    "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
-                }
+                yield _build_done_payload(
+                    content=response_content,
+                    artifacts=collected_artifacts,
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                    successful_tool_names=successful_tool_names,
+                    task_tree_tool_used=task_tree_tool_used,
+                )
                 await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                 await self._conv.append_message(session_id, {"role": "assistant", "content": response_content})
 
@@ -696,13 +777,15 @@ class AgentOrchestrator:
                 break
             if not completed:
                 fallback = "达到最大处理轮次，已停止生成。"
-                yield {
-                    "type": "done",
-                    "content": fallback,
-                    "artifacts": collected_artifacts,
-                    "images": _collect_artifact_urls(collected_artifacts, asset_type="image"),
-                    "videos": _collect_artifact_urls(collected_artifacts, asset_type="video"),
-                }
+                yield _build_done_payload(
+                    content=fallback,
+                    artifacts=collected_artifacts,
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                    successful_tool_names=successful_tool_names,
+                    task_tree_tool_used=task_tree_tool_used,
+                )
                 await self._conv.append_message(session_id, {"role": "user", "content": user_message})
                 await self._conv.append_message(session_id, {"role": "assistant", "content": fallback})
                 duration = time.time() - start_time

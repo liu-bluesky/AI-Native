@@ -16,6 +16,7 @@
       <div class="settings-hero__actions">
         <el-button v-if="canViewRoles" plain @click="$router.push('/roles')">角色管理</el-button>
         <el-button @click="fetchUsers">刷新</el-button>
+        <el-button plain :disabled="!filteredUsers.length" @click="exportUsers">导出</el-button>
         <el-button v-if="canCreateUser" type="primary" @click="openCreateDialog">新增用户</el-button>
       </div>
     </section>
@@ -107,7 +108,7 @@
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
           background
-          layout="total, prev, pager, next, sizes"
+          layout="total, prev, pager, next, jumper, sizes"
           :total="filteredUsers.length"
           :page-sizes="[10, 20, 50]"
         />
@@ -315,6 +316,43 @@ function normalizeTimestamp(value) {
   return parseDateTime(value)?.getTime() || 0
 }
 
+function escapeCsvCell(value) {
+  const text = String(value ?? '')
+  if (/[",\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`
+  }
+  return text
+}
+
+function buildUserExportFilename() {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return `users-${timestamp}.csv`
+}
+
+function buildUserExportCsv(list) {
+  const headers = ['账号', '角色ID', '角色名称', '创建人', '创建时间']
+  const rows = list.map((item) => [
+    item?.username || '',
+    item?.role || '',
+    item?.role_name || item?.role || '',
+    item?.created_by || '',
+    formatDateTime(item?.created_at, { withSeconds: true }) || '',
+  ])
+  return [headers, ...rows]
+    .map((row) => row.map((cell) => escapeCsvCell(cell)).join(','))
+    .join('\n')
+}
+
+function downloadTextFile(content, filename, mimeType = 'text/plain;charset=utf-8;') {
+  const blob = new Blob([`\uFEFF${content}`], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
 const filteredUsers = computed(() => {
   const keyword = String(filters.query || '').trim().toLowerCase()
   const role = String(filters.role || '').trim()
@@ -464,6 +502,20 @@ async function deleteUser(row) {
     await fetchUsers()
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || '删除用户失败')
+  }
+}
+
+function exportUsers() {
+  if (!filteredUsers.value.length) {
+    ElMessage.warning('暂无可导出的用户')
+    return
+  }
+  try {
+    const content = buildUserExportCsv(filteredUsers.value)
+    downloadTextFile(content, buildUserExportFilename(), 'text/csv;charset=utf-8;')
+    ElMessage.success(`已导出 ${filteredUsers.value.length} 条用户记录`)
+  } catch (err) {
+    ElMessage.error(err?.message || '导出用户失败')
   }
 }
 

@@ -4,6 +4,7 @@ import asyncio
 from contextvars import ContextVar
 import json
 from pathlib import Path
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -2536,6 +2537,185 @@ def test_project_routes_include_created_by_for_create_list_and_detail(tmp_path, 
     assert detail_response.json()["project"]["created_by"] == "alice"
 
 
+def test_project_memory_route_excludes_work_trajectory_records(tmp_path, monkeypatch):
+    from core.deps import employee_store
+    from routers import projects as projects_router
+    from stores.json.employee_store import EmployeeConfig
+    from stores.json.project_store import ProjectConfig, ProjectMember
+    from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+    project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    project_store.upsert_member(ProjectMember(project_id="proj-1", employee_id="emp-1", enabled=True))
+    employee_store.save(EmployeeConfig(id="emp-1", name="员工一"))
+
+    memories_by_employee = {
+        "emp-1": [
+            Memory(
+                id="mem-keep",
+                employee_id="emp-1",
+                type=MemoryType.KEY_EVENT,
+                content=(
+                    "[用户问题] 调整记忆详情\n"
+                    "[最终结论] 已完成\n"
+                    "[关联会话] chat-123\n"
+                    "[执行轨迹JSON] "
+                    "{\"chat_session_id\":\"chat-123\",\"root_goal\":\"调整记忆详情\",\"task_node_id\":\"node-1\","
+                    "\"task_node_title\":\"修复详情页\",\"task_tree_chat_session_id\":\"chat-123\","
+                    "\"task_tree_session_id\":\"task-tree-123\"}"
+                ),
+                project_name="项目一",
+                importance=0.8,
+                scope=MemoryScope.TEAM_SHARED,
+                classification=Classification.INTERNAL,
+                purpose_tags=("query-mcp", "manual-write"),
+                created_at="2026-04-03T06:00:00+00:00",
+            ),
+            Memory(
+                id="mem-trajectory",
+                employee_id="emp-1",
+                type=MemoryType.LEARNED_PATTERN,
+                content="[工作事实] 已补充工作轨迹",
+                project_name="项目一",
+                importance=0.7,
+                scope=MemoryScope.TEAM_SHARED,
+                classification=Classification.INTERNAL,
+                purpose_tags=("work-facts", "chat-session:chat-1"),
+                created_at="2026-04-03T06:01:00+00:00",
+            ),
+        ]
+    }
+
+    class FakeMemoryStore:
+        @staticmethod
+        def list_by_employee(employee_id):
+            return list(memories_by_employee.get(employee_id, ()))
+
+    monkeypatch.setattr(projects_router, "memory_store", FakeMemoryStore())
+
+    response = client.get("/api/projects/proj-1/memories")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["project_id"] == "proj-1"
+    assert [item["id"] for item in payload["items"]] == ["mem-keep"]
+    assert payload["items"][0]["chat_session_id"] == "chat-123"
+    assert payload["items"][0]["task_tree_session_id"] == "task-tree-123"
+    assert payload["items"][0]["task_tree_chat_session_id"] == "chat-123"
+    assert payload["items"][0]["task_node_id"] == "node-1"
+    assert payload["items"][0]["task_node_title"] == "修复详情页"
+    assert payload["items"][0]["root_goal"] == "调整记忆详情"
+
+
+def test_project_work_session_routes_list_and_detail(tmp_path, monkeypatch):
+    from core.deps import employee_store
+    from routers import projects as projects_router
+    from stores.json.employee_store import EmployeeConfig
+    from stores.json.project_store import ProjectConfig, ProjectMember
+    from stores.json.work_session_store import WorkSessionEvent
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+    project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    project_store.upsert_member(ProjectMember(project_id="proj-1", employee_id="emp-1", enabled=True))
+    employee_store.save(EmployeeConfig(id="emp-1", name="员工一"))
+
+    events = [
+        WorkSessionEvent(
+            id="wse-1",
+            project_id="proj-1",
+            project_name="项目一",
+            employee_id="emp-1",
+            session_id="ws-1",
+            source_kind="work-facts",
+            event_type="implementation",
+            phase="实现",
+            step="拆分项目记忆与工作轨迹",
+            status="in_progress",
+            goal="拆清项目详情页的数据来源",
+            facts=["已新增项目级聚合接口"],
+            changed_files=["web-admin/api/routers/projects.py"],
+            verification=["python -m py_compile"],
+            created_at="2026-04-03T06:00:00+00:00",
+            updated_at="2026-04-03T06:00:00+00:00",
+        ),
+        WorkSessionEvent(
+            id="wse-2",
+            project_id="proj-1",
+            project_name="项目一",
+            employee_id="emp-1",
+            session_id="ws-1",
+            source_kind="session-event",
+            event_type="verification",
+            phase="验证",
+            step="跑回归",
+            status="completed",
+            content="接口与前端已联通",
+            verification=["uv run pytest test_unit.py -k project_work_session_routes"],
+            next_steps=["补前端构建验证"],
+            created_at="2026-04-03T06:05:00+00:00",
+            updated_at="2026-04-03T06:05:00+00:00",
+        ),
+    ]
+
+    class FakeWorkSessionStore:
+        @staticmethod
+        def list_events(project_id="", employee_id="", session_id="", query="", limit=200):
+            keyword = str(query or "").strip().lower()
+            filtered = []
+            for item in events:
+                if project_id and item.project_id != project_id:
+                    continue
+                if employee_id and item.employee_id != employee_id:
+                    continue
+                if session_id and item.session_id != session_id:
+                    continue
+                if keyword:
+                    haystack = "\n".join(
+                        [
+                            item.project_name,
+                            item.phase,
+                            item.step,
+                            item.goal,
+                            item.content,
+                            *item.verification,
+                            *item.changed_files,
+                        ]
+                    ).lower()
+                    if keyword not in haystack:
+                        continue
+                filtered.append(item)
+            filtered.sort(key=lambda entry: (entry.created_at, entry.id), reverse=True)
+            return filtered[:limit]
+
+    monkeypatch.setattr(projects_router, "work_session_store", FakeWorkSessionStore())
+
+    list_response = client.get("/api/projects/proj-1/work-sessions")
+    assert list_response.status_code == 200
+    list_payload = list_response.json()
+    assert len(list_payload["items"]) == 1
+    assert list_payload["items"][0]["session_id"] == "ws-1"
+    assert list_payload["items"][0]["employee_name"] == "员工一"
+    assert list_payload["items"][0]["latest_status"] == "completed"
+    assert list_payload["items"][0]["verification"] == [
+        "uv run pytest test_unit.py -k project_work_session_routes",
+        "python -m py_compile",
+    ]
+
+    detail_response = client.get("/api/projects/proj-1/work-sessions/ws-1")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["session"]["session_id"] == "ws-1"
+    assert detail_payload["session"]["employee_name"] == "员工一"
+    assert detail_payload["items"][0]["event_type"] == "verification"
+    assert detail_payload["items"][1]["facts"] == ["已新增项目级聚合接口"]
+
 def test_dictionary_catalog_applies_system_override(monkeypatch):
     import services.dictionary_catalog as catalog
 
@@ -3022,7 +3202,32 @@ def test_extract_user_questions_from_lookup_only_query_payload_skips_fallback():
     assert context["project_id"] == "proj-1"
 
 
-def test_save_auto_query_memory_writes_to_active_project_members(tmp_path, monkeypatch):
+def test_extract_user_questions_from_rpc_payload_skips_internal_progress_tools():
+    from services.dynamic_mcp_audit import extract_user_questions_from_rpc_payload
+
+    payload = {
+        "method": "tools/call",
+        "params": {
+            "name": "append_session_event",
+            "arguments": {
+                "project_id": "proj-1",
+                "chat_session_id": "chat-123",
+                "content": "已完成构建验证",
+                "title": "构建验证",
+            },
+        },
+    }
+
+    method_name, tool_name, questions, context = extract_user_questions_from_rpc_payload(payload)
+
+    assert method_name == "tools/call"
+    assert tool_name == "append_session_event"
+    assert questions == []
+    assert context["project_id"] == "proj-1"
+    assert context["chat_session_id"] == "chat-123"
+
+
+def test_save_auto_query_memory_writes_single_team_shared_project_record(tmp_path, monkeypatch):
     from services import dynamic_mcp_audit as audit_svc
     from stores.json.employee_store import EmployeeConfig, EmployeeStore
     from stores.json.project_store import ProjectConfig, ProjectMember, ProjectStore
@@ -3050,17 +3255,140 @@ def test_save_auto_query_memory_writes_to_active_project_members(tmp_path, monke
         ["查询项目手册 proj-1"],
         "mcp:tools/call:get_manual_content",
         project_id="proj-1",
+        chat_session_id="chat-123",
     )
 
     assert len(saved_memories) == 1
     assert saved_memories[0].employee_id == "emp-1"
     assert saved_memories[0].project_name == "项目一"
+    assert saved_memories[0].scope.value == "team-shared"
+    assert "[关联会话] chat-123" in saved_memories[0].content
     assert saved_memories[0].purpose_tags == (
         "auto-capture",
         "user-question",
         "mcp:tools/call:get_manual_content",
+        "chat-session:chat-123",
     )
 
+
+def test_save_auto_query_result_memory_writes_structured_shared_record(tmp_path, monkeypatch):
+    from services import dynamic_mcp_audit as audit_svc
+    from stores.json.employee_store import EmployeeConfig, EmployeeStore
+    from stores.json.project_store import ProjectConfig, ProjectMember, ProjectStore
+
+    data_dir = tmp_path / "data"
+    employee_store = EmployeeStore(data_dir)
+    project_store = ProjectStore(data_dir)
+    employee_store.save(EmployeeConfig(id="emp-1", name="员工一", created_by="tester"))
+    project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    project_store.upsert_member(ProjectMember(project_id="proj-1", employee_id="emp-1", enabled=True))
+
+    saved_memories = []
+    memory_store = MagicMock()
+    memory_store.recent.side_effect = lambda employee_id, limit: []
+    memory_store.new_id.side_effect = ["mem-1"]
+    memory_store.save.side_effect = saved_memories.append
+
+    monkeypatch.setattr(audit_svc, "employee_store", employee_store)
+    monkeypatch.setattr(audit_svc, "project_store", project_store)
+    monkeypatch.setattr(audit_svc, "memory_store", memory_store)
+
+    audit_svc.save_auto_query_result_memory(
+        "当前项目几个员工",
+        "通过项目成员列表查询当前项目的有效成员，并汇总人数与成员名称后返回。",
+        "已获取项目成员列表，共 3 名。",
+        "mcp:tools/call:list_project_members",
+        project_id="proj-1",
+        chat_session_id="chat-123",
+    )
+
+    assert len(saved_memories) == 1
+    saved_memory = saved_memories[0]
+    assert saved_memory.employee_id == "emp-1"
+    assert saved_memory.project_name == "项目一"
+    assert saved_memory.scope.value == "team-shared"
+    assert "[用户问题] 当前项目几个员工" in saved_memory.content
+    assert "[解决方案] 通过项目成员列表查询当前项目的有效成员，并汇总人数与成员名称后返回。" in saved_memory.content
+    assert "[最终结论] 已获取项目成员列表，共 3 名。" in saved_memory.content
+    assert "[关联会话] chat-123" in saved_memory.content
+    assert saved_memory.purpose_tags == (
+        "auto-capture",
+        "query-result",
+        "mcp:tools/call:list_project_members",
+        "workflow:final-summary",
+        "chat-session:chat-123",
+    )
+
+
+def test_save_auto_query_result_memory_in_progress_stores_requirement_record(tmp_path, monkeypatch):
+    from services import dynamic_mcp_audit as audit_svc
+    from stores.json.employee_store import EmployeeConfig, EmployeeStore
+    from stores.json.project_store import ProjectConfig, ProjectMember, ProjectStore
+
+    data_dir = tmp_path / "data"
+    employee_store = EmployeeStore(data_dir)
+    project_store = ProjectStore(data_dir)
+    employee_store.save(EmployeeConfig(id="emp-1", name="员工一", created_by="tester"))
+    project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    project_store.upsert_member(ProjectMember(project_id="proj-1", employee_id="emp-1", enabled=True))
+
+    saved_memories = []
+    memory_store = MagicMock()
+    memory_store.recent.side_effect = lambda employee_id, limit: []
+    memory_store.new_id.side_effect = ["mem-1"]
+    memory_store.save.side_effect = saved_memories.append
+
+    monkeypatch.setattr(audit_svc, "employee_store", employee_store)
+    monkeypatch.setattr(audit_svc, "project_store", project_store)
+    monkeypatch.setattr(audit_svc, "memory_store", memory_store)
+
+    audit_svc.save_auto_query_result_memory(
+        "修复 /mcp/query/sse 的项目记忆闭环",
+        "通过统一查询 MCP 查询上下文并逐步推进任务树。",
+        "已定位到自动结果记忆会提前写最终结论。",
+        "mcp:tools/call:execute_project_collaboration",
+        project_id="proj-1",
+        chat_session_id="chat-456",
+        task_tree_payload={
+            "id": "task-tree-456",
+            "chat_session_id": "chat-456",
+            "source_chat_session_id": "chat-456",
+            "root_goal": "修复 /mcp/query/sse 的项目记忆闭环",
+            "status": "in_progress",
+            "progress_percent": 50,
+            "current_node": {
+                "id": "node-2",
+                "title": "改写自动结果记忆",
+                "status": "in_progress",
+            },
+            "nodes": [
+                {"id": "root", "level": 0, "title": "修复 /mcp/query/sse 的项目记忆闭环", "status": "in_progress"},
+                {"id": "node-1", "level": 1, "title": "梳理统一查询入口", "status": "done", "verification_result": "已确认代理链路"},
+                {"id": "node-2", "level": 1, "title": "改写自动结果记忆", "status": "in_progress", "verification_result": ""},
+            ],
+            "stats": {"leaf_total": 2, "done_leaf_total": 1},
+        },
+    )
+
+    assert len(saved_memories) == 1
+    saved_memory = saved_memories[0]
+    assert "[用户问题] 修复 /mcp/query/sse 的项目记忆闭环" in saved_memory.content
+    assert "[任务计划]" in saved_memory.content
+    assert "[解决方案]" not in saved_memory.content
+    assert "[最终结论]" not in saved_memory.content
+    assert "[完成条件] 只有所有计划项完成并写入验证结果后，当前需求才算结束。" in saved_memory.content
+    assert "workflow:requirement-record" in saved_memory.purpose_tags
+    assert "task-tree-session:task-tree-456" in saved_memory.purpose_tags
+    matched = re.search(r"\[执行轨迹JSON\]\s*([^\n]+)", saved_memory.content)
+    assert matched
+    assert json.loads(matched.group(1)) == {
+        "chat_session_id": "chat-456",
+        "root_goal": "修复 /mcp/query/sse 的项目记忆闭环",
+        "task_node_id": "node-2",
+        "task_node_title": "改写自动结果记忆",
+        "task_tree_chat_session_id": "chat-456",
+        "task_tree_session_id": "task-tree-456",
+    }
 
 def test_memory_store_recall_filters_project_before_limit(tmp_path):
     from stores import mcp_bridge as bridge
@@ -3091,6 +3419,1716 @@ def test_memory_store_recall_filters_project_before_limit(tmp_path):
     recalled = store.recall("emp-1", "query hit", 100, project_name="目标项目")
 
     assert [item.id for item in recalled] == ["mem-target"]
+
+
+def test_save_project_memory_entries_defaults_to_single_team_shared_record(monkeypatch):
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from stores.mcp_bridge import MemoryScope, MemoryType
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+            },
+        )(),
+    )
+    monkeypatch.setattr(query_mcp_svc, "_active_project_employee_ids", lambda project_id: ["emp-1", "emp-2", "emp-3"])
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+            },
+        )(),
+    )
+
+    result = query_mcp_svc._save_project_memory_entries(
+        project_id="proj-1",
+        content="问题：提交代码到远程仓库\n结论：远程大文件阻塞",
+        memory_type=MemoryType.KEY_EVENT,
+        purpose_tags=("query-mcp", "manual-write", "project-id"),
+    )
+
+    assert result["status"] == "saved"
+    assert result["saved_count"] == 1
+    assert result["employee_ids"] == ["emp-1"]
+    assert result["scope"] == MemoryScope.TEAM_SHARED.value
+    assert saved_memories[0].employee_id == "emp-1"
+    assert saved_memories[0].scope == MemoryScope.TEAM_SHARED
+    assert saved_memories[0].type == MemoryType.KEY_EVENT
+
+
+def test_save_project_chat_memory_snapshot_defaults_to_single_team_shared_record(monkeypatch):
+    from routers import projects as projects_router
+    from stores.mcp_bridge import MemoryScope
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                        type("DummyMember", (), {"employee_id": "emp-2", "enabled": True})(),
+                        type("DummyMember", (), {"employee_id": "emp-3", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id in {"emp-1", "emp-2", "emp-3"} else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="为什么每次都全员写记忆？",
+        answer="因为默认空选人被扩成了项目全员。",
+        chat_session_id="chat-123",
+        selected_employee_ids=[],
+        source="project-chat-test",
+    )
+
+    assert len(saved_memories) == 1
+    assert saved_memories[0].employee_id == "emp-1"
+    assert saved_memories[0].scope == MemoryScope.TEAM_SHARED
+    assert saved_memories[0].purpose_tags == (
+        "auto-capture",
+        "project-chat",
+        "project-chat-test",
+        "workflow:final-summary",
+        "chat-session:chat-123",
+    )
+    assert "[处理过程]" in saved_memories[0].content
+    assert "[解决方案] 因为默认空选人被扩成了项目全员。" in saved_memories[0].content
+    assert "[解决状态] 已给出方案" in saved_memories[0].content
+    assert "[关联会话] chat-123" in saved_memories[0].content
+
+
+def test_save_project_chat_memory_snapshot_with_multiple_selected_employees_stays_single_team_shared(monkeypatch):
+    from routers import projects as projects_router
+    from stores.mcp_bridge import MemoryScope
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                        type("DummyMember", (), {"employee_id": "emp-2", "enabled": True})(),
+                        type("DummyMember", (), {"employee_id": "emp-3", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id in {"emp-1", "emp-2", "emp-3"} else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="多人协作时不要给每个员工各写一条重复记忆。",
+        answer="多人场景现在只保留一条团队共享记录，由首个选中员工作为锚点存储。",
+        selected_employee_ids=["emp-2", "emp-3"],
+        source="project-chat-test",
+    )
+
+    assert len(saved_memories) == 1
+    assert saved_memories[0].employee_id == "emp-2"
+    assert saved_memories[0].scope == MemoryScope.TEAM_SHARED
+
+
+def test_save_project_chat_memory_snapshot_persists_task_tree_binding(monkeypatch):
+    from routers import projects as projects_router
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id == "emp-1" else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="你好项目里面有几个员工",
+        answer="当前项目共有 3 名员工。",
+        chat_session_id="chat-123",
+        task_tree_payload={
+            "id": "task-tree-123",
+            "chat_session_id": "chat-123",
+            "source_chat_session_id": "chat-123",
+            "root_goal": "你好项目里面有几个员工",
+            "current_node": {
+                "id": "node-1",
+                "title": "返回员工数量",
+            },
+        },
+        selected_employee_ids=["emp-1"],
+        source="project-chat-test",
+    )
+
+    assert len(saved_memories) == 1
+    saved_memory = saved_memories[0]
+    assert "task-tree-session:task-tree-123" in saved_memory.purpose_tags
+    matched = re.search(r"\[执行轨迹JSON\]\s*([^\n]+)", saved_memory.content)
+    assert matched
+    binding = json.loads(matched.group(1))
+    assert binding == {
+        "chat_session_id": "chat-123",
+        "root_goal": "你好项目里面有几个员工",
+        "task_node_id": "node-1",
+        "task_node_title": "返回员工数量",
+        "task_tree_chat_session_id": "chat-123",
+        "task_tree_session_id": "task-tree-123",
+    }
+
+
+def test_save_project_chat_memory_snapshot_in_progress_stores_requirement_record(monkeypatch):
+    from routers import projects as projects_router
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id == "emp-1" else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+                "recent": staticmethod(lambda employee_id, limit: []),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="修复项目详情页记忆工作流",
+        answer="先拆清当前工作流，再逐步修改。",
+        chat_session_id="chat-123",
+        task_tree_payload={
+            "id": "task-tree-123",
+            "chat_session_id": "chat-123",
+            "source_chat_session_id": "chat-123",
+            "root_goal": "修复项目详情页记忆工作流",
+            "status": "in_progress",
+            "progress_percent": 33,
+            "current_node": {
+                "id": "node-1",
+                "title": "梳理现有工作流",
+                "status": "in_progress",
+            },
+            "nodes": [
+                {"id": "root", "level": 0, "title": "修复项目详情页记忆工作流", "status": "in_progress"},
+                {"id": "node-1", "level": 1, "title": "梳理现有工作流", "status": "in_progress", "verification_result": ""},
+                {"id": "node-2", "level": 1, "title": "改写自动记忆语义", "status": "pending", "verification_result": ""},
+            ],
+        },
+        selected_employee_ids=["emp-1"],
+        source="project-chat-test",
+    )
+
+    assert len(saved_memories) == 1
+    saved_memory = saved_memories[0]
+    assert "workflow:requirement-record" in saved_memory.purpose_tags
+    assert "[任务计划]" in saved_memory.content
+    assert "[解决方案]" not in saved_memory.content
+    assert "[最终结论]" not in saved_memory.content
+    assert "[完成条件] 只有所有计划项完成并写入验证结果后，当前需求才算结束。" in saved_memory.content
+
+
+def test_save_project_chat_memory_snapshot_completed_stores_final_summary(monkeypatch):
+    from routers import projects as projects_router
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id == "emp-1" else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+                "recent": staticmethod(lambda employee_id, limit: []),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="修复项目详情页记忆工作流",
+        answer="已改成执行中只保留需求记录，全部完成并验证后才生成最终结论。",
+        chat_session_id="chat-123",
+        task_tree_payload={
+            "id": "task-tree-123",
+            "chat_session_id": "chat-123",
+            "source_chat_session_id": "chat-123",
+            "root_goal": "修复项目详情页记忆工作流",
+            "status": "done",
+            "is_archived": True,
+            "progress_percent": 100,
+            "current_node": None,
+            "nodes": [
+                {"id": "root", "level": 0, "title": "修复项目详情页记忆工作流", "status": "done", "verification_result": "整体回归通过"},
+                {"id": "node-1", "level": 1, "title": "梳理现有工作流", "status": "done", "verification_result": "已核对写入侧与展示侧链路"},
+                {"id": "node-2", "level": 1, "title": "改写自动记忆语义", "status": "done", "verification_result": "相关 pytest 与 build 通过"},
+            ],
+        },
+        selected_employee_ids=["emp-1"],
+        source="project-chat-test",
+    )
+
+    assert len(saved_memories) == 1
+    saved_memory = saved_memories[0]
+    assert "workflow:final-summary" in saved_memory.purpose_tags
+    assert "[解决方案] 已改成执行中只保留需求记录，全部完成并验证后才生成最终结论。" in saved_memory.content
+    assert "[最终结论] 已改成执行中只保留需求记录，全部完成并验证后才生成最终结论。" in saved_memory.content
+    assert "[验证结果]" in saved_memory.content
+
+
+def test_save_project_chat_memory_snapshot_allows_multiple_requirement_records_in_same_chat_session(monkeypatch):
+    from routers import projects as projects_router
+    from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType
+
+    saved_memories = []
+    existing_memory = Memory(
+        id="mem-existing",
+        employee_id="emp-1",
+        type=MemoryType.PROJECT_CONTEXT,
+        content=(
+            "[用户问题] 先前的问题\n"
+            "[处理过程] 已生成执行计划，当前只记录需求与计划状态。\n"
+            "[解决状态] 执行中\n"
+            "[完成条件] 只有所有计划项完成并写入验证结果后，当前需求才算结束。\n"
+            "[关联会话] chat-123\n"
+            "[执行轨迹JSON] "
+            "{\"chat_session_id\":\"chat-123\",\"task_tree_session_id\":\"task-tree-old\","
+            "\"task_tree_chat_session_id\":\"chat-123\",\"root_goal\":\"先前的问题\"}"
+        ),
+        project_name="项目一",
+        importance=0.6,
+        scope=MemoryScope.TEAM_SHARED,
+        classification=Classification.INTERNAL,
+        purpose_tags=(
+            "auto-capture",
+            "project-chat",
+            "project-chat-test",
+            "workflow:requirement-record",
+            "chat-session:chat-123",
+            "task-tree-session:task-tree-old",
+        ),
+    )
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id == "emp-1" else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+                "recent": staticmethod(lambda employee_id, limit: [existing_memory]),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="当前这个新问题应该单独显示",
+        answer="先记录需求，再按计划推进。",
+        chat_session_id="chat-123",
+        task_tree_payload={
+            "id": "task-tree-new",
+            "chat_session_id": "chat-123",
+            "source_chat_session_id": "chat-123",
+            "root_goal": "当前这个新问题应该单独显示",
+            "status": "in_progress",
+            "current_node": {
+                "id": "node-2",
+                "title": "梳理新问题",
+                "status": "in_progress",
+            },
+        },
+        selected_employee_ids=["emp-1"],
+        source="project-chat-test",
+    )
+
+    assert len(saved_memories) == 1
+    assert "task-tree-session:task-tree-new" in saved_memories[0].purpose_tags
+    assert "[用户问题] 当前这个新问题应该单独显示" in saved_memories[0].content
+
+
+def test_save_project_chat_memory_snapshot_single_selected_employee_stays_private(monkeypatch):
+    from routers import projects as projects_router
+    from stores.mcp_bridge import MemoryScope
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                        type("DummyMember", (), {"employee_id": "emp-2", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id in {"emp-1", "emp-2"} else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="单员工执行时保留明确归属。",
+        answer="现在只写到 emp-2 的私有记忆。",
+        selected_employee_ids=["emp-2"],
+        source="project-chat-test",
+    )
+
+    assert len(saved_memories) == 1
+    assert saved_memories[0].employee_id == "emp-2"
+    assert saved_memories[0].scope == MemoryScope.EMPLOYEE_PRIVATE
+
+
+def test_save_project_chat_memory_snapshot_all_members_selected_stays_team_shared(monkeypatch):
+    from routers import projects as projects_router
+    from stores.mcp_bridge import MemoryScope
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(
+                    lambda project_id: type(
+                        "DummyProject",
+                        (),
+                        {"id": project_id, "name": "项目一"},
+                    )()
+                ),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type(
+                            "DummyMember",
+                            (),
+                            {"employee_id": "emp-1", "enabled": True},
+                        )(),
+                        type(
+                            "DummyMember",
+                            (),
+                            {"employee_id": "emp-2", "enabled": True},
+                        )(),
+                        type(
+                            "DummyMember",
+                            (),
+                            {"employee_id": "emp-3", "enabled": True},
+                        )(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(
+                    lambda employee_id: object()
+                    if employee_id in {"emp-1", "emp-2", "emp-3"}
+                    else None
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="不要把同一条问题写进所有员工私有记忆。",
+        answer="当 selected_employee_ids 覆盖项目全员时，应退回团队共享记录。",
+        selected_employee_ids=["emp-1", "emp-2", "emp-3"],
+        source="project-chat-test",
+    )
+
+    assert len(saved_memories) == 1
+    assert saved_memories[0].employee_id == "emp-1"
+    assert saved_memories[0].scope == MemoryScope.TEAM_SHARED
+
+
+def test_serialize_project_work_session_summary_without_employee_uses_team_label():
+    from routers import projects as projects_router
+
+    payload = projects_router._serialize_project_work_session_summary(
+        {
+            "session_id": "sess-1",
+            "employee_id": "",
+            "latest_status": "in_progress",
+        },
+        {},
+    )
+
+    assert payload["employee_id"] == ""
+    assert payload["employee_name"] == "团队协作"
+
+
+def test_query_mcp_save_project_memory_without_employee_id_stays_single_shared(monkeypatch):
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from stores.mcp_bridge import MemoryScope, MemoryType
+
+    registered_tools = {}
+    registered_resources = {}
+
+    class DummyMCP:
+        def tool(self, *args, **kwargs):
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+            return decorator
+
+        def resource(self, uri: str, *args, **kwargs):
+            def decorator(fn):
+                registered_resources[uri] = fn
+                return fn
+            return decorator
+
+    saved_memories = []
+
+    monkeypatch.setattr(query_mcp_svc, "FastMCP", lambda *args, **kwargs: DummyMCP())
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_all": staticmethod(lambda: []),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                        type("DummyMember", (), {"employee_id": "emp-2", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id in {"emp-1", "emp-2"} else None),
+                "list_all": staticmethod(lambda: []),
+            },
+        )(),
+    )
+    monkeypatch.setattr(query_mcp_svc, "list_project_member_profiles_runtime", lambda *args, **kwargs: [])
+    monkeypatch.setattr(query_mcp_svc, "query_project_rules_runtime", lambda *args, **kwargs: [])
+    monkeypatch.setattr(query_mcp_svc, "project_ui_rule_summary", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+            },
+        )(),
+    )
+
+    query_mcp_svc.create_query_mcp()
+
+    result = registered_tools["save_project_memory"](
+        "proj-1",
+        "问题：项目级记忆不该扇出到所有员工\n结论：统一入口应只写一条共享记忆",
+    )
+
+    assert result["status"] == "saved"
+    assert result["saved_count"] == 1
+    assert result["employee_ids"] == ["emp-1"]
+    assert result["scope"] == MemoryScope.TEAM_SHARED.value
+    assert saved_memories[0].employee_id == "emp-1"
+    assert saved_memories[0].scope == MemoryScope.TEAM_SHARED
+    assert saved_memories[0].type == MemoryType.PROJECT_CONTEXT
+
+
+def test_query_mcp_bind_project_context_stores_session_context_and_task_tree(monkeypatch):
+    import services.project_chat_task_tree as task_tree_svc
+    from contextvars import ContextVar
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+
+    registered_tools = {}
+    registered_resources = {}
+    session_contexts = {}
+    ensure_calls = []
+
+    class DummyMCP:
+        def tool(self, *args, **kwargs):
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri: str, *args, **kwargs):
+            def decorator(fn):
+                registered_resources[uri] = fn
+                return fn
+
+            return decorator
+
+    monkeypatch.setattr(query_mcp_svc, "FastMCP", lambda *args, **kwargs: DummyMCP())
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_all": staticmethod(lambda: []),
+                "list_members": staticmethod(lambda project_id: []),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "_resolve_relevant_context_payload",
+        lambda task, project_id="", employee_id="", limit=5: {
+            "task": task,
+            "project_id": project_id,
+            "employee_id": employee_id,
+            "limit": limit,
+            "matched_projects": [],
+            "matched_employees": [],
+            "matched_rules": [],
+            "matched_members": [],
+            "matched_tools": [],
+        },
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "_generate_execution_plan_payload",
+        lambda task, project_id="", employee_id="", max_steps=6: {
+            "task": task,
+            "project_id": project_id,
+            "employee_id": employee_id,
+            "plan_steps": [{"step": "先统一检索项目上下文"}],
+            "plan_step_count": 1,
+            "max_steps": max_steps,
+        },
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "ensure_task_tree",
+        lambda **kwargs: ensure_calls.append(kwargs) or kwargs,
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "serialize_task_tree",
+        lambda session: {
+            "root_goal": session["root_goal"],
+            "chat_session_id": session["chat_session_id"],
+        },
+    )
+
+    username_ctx = ContextVar("query_user", default="")
+    session_ctx = ContextVar("query_session", default="")
+    username_ctx.set("admin")
+    session_ctx.set("transport-123")
+
+    query_mcp_svc.create_query_mcp(
+        current_key_owner_username_ctx=username_ctx,
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+
+    result = registered_tools["bind_project_context"](
+        "proj-1",
+        chat_session_id="chat-123",
+        root_goal="修复 CLI 对话任务树",
+    )
+
+    assert result["status"] == "bound"
+    assert result["chat_session_id"] == "chat-123"
+    assert result["task_tree"]["root_goal"] == "修复 CLI 对话任务树"
+    assert session_contexts["transport-123"]["project_id"] == "proj-1"
+    assert session_contexts["transport-123"]["chat_session_id"] == "chat-123"
+    assert ensure_calls[0]["username"] == "admin"
+    assert ensure_calls[0]["chat_session_id"] == "chat-123"
+
+
+def test_query_mcp_bind_project_context_without_active_session_creates_detached_task_tree(monkeypatch):
+    import services.project_chat_task_tree as task_tree_svc
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+
+    registered_tools = {}
+    ensure_calls = []
+
+    class DummyMCP:
+        def tool(self, *args, **kwargs):
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri: str, *args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    monkeypatch.setattr(query_mcp_svc, "FastMCP", lambda *args, **kwargs: DummyMCP())
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_all": staticmethod(lambda: []),
+                "list_members": staticmethod(lambda project_id: []),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "ensure_task_tree",
+        lambda **kwargs: ensure_calls.append(kwargs) or kwargs,
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "serialize_task_tree",
+        lambda session: {
+            "root_goal": session["root_goal"],
+            "chat_session_id": session["chat_session_id"],
+        },
+    )
+
+    query_mcp_svc.create_query_mcp()
+
+    result = registered_tools["bind_project_context"](
+        "proj-1",
+        chat_session_id="chat-123",
+        root_goal="修复 CLI 对话任务树",
+    )
+
+    assert result["status"] == "bound_detached"
+    assert result["binding_mode"] == "detached"
+    assert result["chat_session_id"] == "chat-123"
+    assert result["task_tree"]["root_goal"] == "修复 CLI 对话任务树"
+    assert ensure_calls[0]["username"] == "mcp-user"
+    assert ensure_calls[0]["chat_session_id"] == "chat-123"
+
+
+def test_query_mcp_search_ids_does_not_bootstrap_task_tree_from_active_session(monkeypatch):
+    import services.project_chat_task_tree as task_tree_svc
+    from contextvars import ContextVar
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+
+    registered_tools = {}
+    ensure_calls = []
+    session_contexts = {}
+
+    class DummyMCP:
+        def tool(self, *args, **kwargs):
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri: str, *args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    monkeypatch.setattr(query_mcp_svc, "FastMCP", lambda *args, **kwargs: DummyMCP())
+    monkeypatch.setattr(
+        task_tree_svc,
+        "ensure_task_tree",
+        lambda **kwargs: ensure_calls.append(kwargs) or kwargs,
+    )
+    username_ctx = ContextVar("query_user_search_ids", default="")
+    session_ctx = ContextVar("query_session_search_ids", default="")
+    username_ctx.set("admin")
+    session_ctx.set("transport-456")
+
+    query_mcp_svc.create_query_mcp(
+        current_key_owner_username_ctx=username_ctx,
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+
+    result = registered_tools["search_ids"](
+        "当前项目员工都有谁",
+        project_id="proj-1",
+    )
+
+    assert "task_tree" not in result
+    assert session_contexts == {}
+    assert ensure_calls == []
+
+
+def test_query_mcp_save_project_memory_audits_lookup_task_tree(monkeypatch):
+    import services.project_chat_task_tree as task_tree_svc
+    from contextvars import ContextVar
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from stores.mcp_bridge import MemoryType
+
+    registered_tools = {}
+    save_calls = []
+    lookup_calls = []
+
+    class DummyMCP:
+        def tool(self, *args, **kwargs):
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri: str, *args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    monkeypatch.setattr(query_mcp_svc, "FastMCP", lambda *args, **kwargs: DummyMCP())
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_all": staticmethod(lambda: []),
+                "list_members": staticmethod(lambda project_id: []),
+            },
+        )(),
+    )
+    monkeypatch.setattr(query_mcp_svc, "_active_project_employee_ids", lambda project_id: ["emp-1"])
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "_save_project_memory_entries",
+        lambda **kwargs: save_calls.append(kwargs) or {
+            "status": "saved",
+            "project_id": kwargs["project_id"],
+            "type": kwargs["memory_type"].value if isinstance(kwargs["memory_type"], MemoryType) else str(kwargs["memory_type"]),
+        },
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "get_task_tree_for_chat_session",
+        lambda project_id, username, chat_session_id: lookup_calls.append(
+            {
+                "project_id": project_id,
+                "username": username,
+                "chat_session_id": chat_session_id,
+            }
+        )
+        or {
+            "project_id": project_id,
+            "username": username,
+            "chat_session_id": chat_session_id,
+            "root_goal": "当前项目员工都有谁",
+        },
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "serialize_task_tree",
+        lambda session: {
+            "id": "task-tree-lookup",
+            "root_goal": session["root_goal"],
+            "chat_session_id": session["chat_session_id"],
+            "source_chat_session_id": session["chat_session_id"],
+            "project_id": session["project_id"],
+        },
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "audit_task_tree_round",
+        lambda **kwargs: {
+            "code": "lookup_query_auto_completed",
+            "chat_session_id": kwargs["chat_session_id"],
+            "project_id": kwargs["project_id"],
+        },
+    )
+
+    username_ctx = ContextVar("query_user_save_memory", default="")
+    session_ctx = ContextVar("query_session_save_memory", default="")
+    username_ctx.set("admin")
+    session_ctx.set("transport-789")
+    session_contexts = {
+        "transport-789": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "employee_id": "",
+            "chat_session_id": "chat-789",
+        }
+    }
+
+    query_mcp_svc.create_query_mcp(
+        current_key_owner_username_ctx=username_ctx,
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+
+    result = registered_tools["save_project_memory"](
+        project_id="proj-1",
+        content="问题：当前项目员工都有谁\n结论：共有 3 名成员。",
+        type="key-event",
+    )
+
+    assert result["status"] == "saved"
+    assert result["task_tree"]["root_goal"] == "当前项目员工都有谁"
+    assert result["task_tree"]["chat_session_id"] == "chat-789"
+    assert result["task_tree_audit"]["code"] == "lookup_query_auto_completed"
+    assert result["task_tree_audit"]["chat_session_id"] == "chat-789"
+    assert result["task_tree_audit"]["project_id"] == "proj-1"
+    assert lookup_calls == [
+        {
+            "project_id": "proj-1",
+            "username": "admin",
+            "chat_session_id": "chat-789",
+        }
+    ]
+    assert "[关联会话] chat-789" in save_calls[0]["content"]
+    matched = re.search(r"\[执行轨迹JSON\]\s*([^\n]+)", save_calls[0]["content"])
+    assert matched
+    assert json.loads(matched.group(1)) == {
+        "chat_session_id": "chat-789",
+        "root_goal": "当前项目员工都有谁",
+        "task_tree_chat_session_id": "chat-789",
+        "task_tree_session_id": "task-tree-lookup",
+    }
+    assert "chat-session:chat-789" in save_calls[0]["purpose_tags"]
+    assert "task-tree-session:task-tree-lookup" in save_calls[0]["purpose_tags"]
+
+
+def test_query_mcp_work_session_tools_sync_task_tree_progress(monkeypatch):
+    import services.project_chat_task_tree as task_tree_svc
+    from contextvars import ContextVar
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from stores.mcp_bridge import MemoryType
+
+    registered_tools = {}
+    save_calls = []
+    update_calls = []
+
+    class DummyMCP:
+        def tool(self, *args, **kwargs):
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri: str, *args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    monkeypatch.setattr(query_mcp_svc, "FastMCP", lambda *args, **kwargs: DummyMCP())
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_all": staticmethod(lambda: []),
+                "list_members": staticmethod(lambda project_id: []),
+            },
+        )(),
+    )
+    monkeypatch.setattr(query_mcp_svc, "_active_project_employee_ids", lambda project_id: ["emp-1"])
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "_save_project_memory_entries",
+        lambda **kwargs: save_calls.append(kwargs) or {
+            "status": "saved",
+            "project_id": kwargs["project_id"],
+            "type": kwargs["memory_type"].value if isinstance(kwargs["memory_type"], MemoryType) else str(kwargs["memory_type"]),
+        },
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "_save_work_session_event_record",
+        lambda **kwargs: {"status": "saved", "event_id": "wse-1"},
+    )
+
+    session_state = {
+        "id": "task-tree-1",
+        "project_id": "proj-1",
+        "chat_session_id": "chat-456",
+        "root_goal": "修复任务树展示与进度同步问题",
+        "current_node_id": "node-impl",
+        "nodes": [
+            {
+                "id": "node-root",
+                "parent_id": "",
+                "stage_key": "goal",
+                "title": "修复任务树展示与进度同步问题",
+                "status": "in_progress",
+                "verification_result": "",
+                "sort_order": 0,
+                "level": 0,
+            },
+            {
+                "id": "node-analysis",
+                "parent_id": "node-root",
+                "stage_key": "analysis",
+                "title": "定位当前问题",
+                "status": "done",
+                "verification_result": "已确认触发条件和影响范围。",
+                "sort_order": 1,
+                "level": 1,
+            },
+            {
+                "id": "node-impl",
+                "parent_id": "node-root",
+                "stage_key": "implementation",
+                "title": "修复核心问题",
+                "status": "pending",
+                "verification_result": "",
+                "sort_order": 2,
+                "level": 1,
+            },
+            {
+                "id": "node-verify",
+                "parent_id": "node-root",
+                "stage_key": "verification",
+                "title": "验证结果并完成本轮收尾",
+                "status": "pending",
+                "verification_result": "",
+                "sort_order": 3,
+                "level": 1,
+            },
+        ],
+    }
+
+    def recompute_state():
+        leaf_nodes = [node for node in session_state["nodes"] if node["parent_id"]]
+        done_leaf_nodes = [node for node in leaf_nodes if node["status"] == "done"]
+        session_state["progress_percent"] = int(round((len(done_leaf_nodes) / max(len(leaf_nodes), 1)) * 100))
+        root_node = next(node for node in session_state["nodes"] if not node["parent_id"])
+        if root_node["status"] == "done":
+            pass
+        elif any(node["status"] in {"in_progress", "verifying", "done"} for node in leaf_nodes):
+            root_node["status"] = "in_progress"
+        else:
+            root_node["status"] = "pending"
+        current = next((node for node in session_state["nodes"] if node["id"] == session_state["current_node_id"]), None)
+        if current is None or current["status"] == "done":
+            next_node = next((node for node in leaf_nodes if node["status"] != "done"), root_node)
+            session_state["current_node_id"] = next_node["id"]
+
+    recompute_state()
+
+    def fake_get_task_tree_for_chat_session(project_id, username, chat_session_id):
+        _ = (project_id, username, chat_session_id)
+        recompute_state()
+        current_node = next(node for node in session_state["nodes"] if node["id"] == session_state["current_node_id"])
+        return {
+            **session_state,
+            "status": next(node for node in session_state["nodes"] if node["id"] == "node-root")["status"],
+            "current_node": dict(current_node),
+        }
+
+    def fake_ensure_task_tree(**kwargs):
+        _ = kwargs
+        recompute_state()
+        current_node = next(node for node in session_state["nodes"] if node["id"] == session_state["current_node_id"])
+        return {
+            **session_state,
+            "status": next(node for node in session_state["nodes"] if node["id"] == "node-root")["status"],
+            "current_node": dict(current_node),
+        }
+
+    def fake_update_task_node(**kwargs):
+        update_calls.append(kwargs)
+        target = next(node for node in session_state["nodes"] if node["id"] == kwargs["node_id"])
+        if kwargs.get("status"):
+            target["status"] = kwargs["status"]
+        if kwargs.get("verification_result") is not None:
+            target["verification_result"] = kwargs["verification_result"]
+        if kwargs.get("summary_for_model") is not None:
+            target["summary_for_model"] = kwargs["summary_for_model"]
+        if kwargs.get("is_current") is True:
+            session_state["current_node_id"] = target["id"]
+        elif kwargs.get("is_current") is False and session_state["current_node_id"] == target["id"]:
+            session_state["current_node_id"] = ""
+        recompute_state()
+        current_node = next(node for node in session_state["nodes"] if node["id"] == session_state["current_node_id"])
+        return {
+            **session_state,
+            "status": next(node for node in session_state["nodes"] if node["id"] == "node-root")["status"],
+            "current_node": dict(current_node),
+        }
+
+    monkeypatch.setattr(task_tree_svc, "ensure_task_tree", fake_ensure_task_tree)
+    monkeypatch.setattr(task_tree_svc, "get_task_tree_for_chat_session", fake_get_task_tree_for_chat_session)
+    monkeypatch.setattr(task_tree_svc, "update_task_node", fake_update_task_node)
+    monkeypatch.setattr(task_tree_svc, "serialize_task_tree", lambda session: dict(session) if isinstance(session, dict) else None)
+
+    username_ctx = ContextVar("query_user_work_facts", default="")
+    session_ctx = ContextVar("query_session_work_facts", default="")
+    username_ctx.set("admin")
+    session_ctx.set("transport-456")
+    session_contexts = {
+        "transport-456": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "employee_id": "",
+            "chat_session_id": "chat-456",
+        }
+    }
+
+    query_mcp_svc.create_query_mcp(
+        current_key_owner_username_ctx=username_ctx,
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+
+    save_result = registered_tools["save_work_facts"](
+        "proj-1",
+        facts=["已定位任务树展示层编号问题"],
+        employee_id="emp-1",
+        session_id="ws-1",
+        phase="implementation",
+        step="修复核心问题",
+        status="in_progress",
+        goal="修复任务树展示与进度同步问题",
+        verification=["静态检查通过"],
+    )
+    event_result = registered_tools["append_session_event"](
+        "proj-1",
+        session_id="ws-1",
+        event_type="verification",
+        content="已完成任务树同步修复",
+        employee_id="emp-1",
+        phase="verification",
+        step="验证结果并完成本轮收尾",
+        status="completed",
+        verification=["npm run build 通过"],
+    )
+
+    assert save_result["status"] == "saved"
+    assert save_result["task_tree"]["chat_session_id"] == "chat-456"
+    assert save_result["task_tree"]["current_node"]["status"] == "in_progress"
+    assert save_result["trajectory"]["task_tree_session_id"] == "task-tree-1"
+    assert save_result["trajectory"]["task_node_id"] == "node-impl"
+    assert save_result["trajectory"]["task_node_title"] == "修复核心问题"
+    assert event_result["status"] == "saved"
+    assert event_result["task_tree"]["progress_percent"] == 100
+    assert event_result["task_tree"]["status"] == "done"
+    assert event_result["task_tree"]["current_node"]["id"] == "node-root"
+    assert event_result["trajectory"]["task_tree_session_id"] == "task-tree-1"
+    assert event_result["trajectory"]["task_node_id"] == "node-verify"
+    assert update_calls[0]["status"] == "in_progress"
+    assert update_calls[0]["node_id"] == "node-impl"
+    assert update_calls[1]["status"] == "done"
+    assert update_calls[1]["node_id"] == "node-impl"
+    assert "静态检查通过" in update_calls[1]["verification_result"]
+    assert update_calls[2]["status"] == "done"
+    assert update_calls[2]["node_id"] == "node-verify"
+    assert "npm run build 通过" in update_calls[2]["verification_result"]
+    assert update_calls[3]["status"] == "done"
+    assert update_calls[3]["node_id"] == "node-root"
+    assert save_calls[0]["content"].endswith("[关联会话] chat-456")
+    assert save_calls[1]["content"].endswith("[关联会话] chat-456")
+
+
+def test_query_mcp_phase_switch_auto_completes_previous_node_without_explicit_verification(monkeypatch):
+    import services.project_chat_task_tree as task_tree_svc
+    from contextvars import ContextVar
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from stores.mcp_bridge import MemoryType
+
+    registered_tools = {}
+    update_calls = []
+
+    class DummyMCP:
+        def tool(self, *args, **kwargs):
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri: str, *args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    monkeypatch.setattr(query_mcp_svc, "FastMCP", lambda *args, **kwargs: DummyMCP())
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_all": staticmethod(lambda: []),
+                "list_members": staticmethod(lambda project_id: []),
+            },
+        )(),
+    )
+    monkeypatch.setattr(query_mcp_svc, "_active_project_employee_ids", lambda project_id: ["emp-1"])
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "_save_project_memory_entries",
+        lambda **kwargs: {
+            "status": "saved",
+            "project_id": kwargs["project_id"],
+            "type": kwargs["memory_type"].value if isinstance(kwargs["memory_type"], MemoryType) else str(kwargs["memory_type"]),
+        },
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "_save_work_session_event_record",
+        lambda **kwargs: {"status": "saved", "event_id": "wse-1"},
+    )
+
+    session_state = {
+        "id": "task-tree-2",
+        "project_id": "proj-1",
+        "chat_session_id": "chat-789",
+        "root_goal": "修复切步骤时任务树不收口的问题",
+        "current_node_id": "node-analysis",
+        "nodes": [
+            {
+                "id": "node-root",
+                "parent_id": "",
+                "stage_key": "goal",
+                "title": "修复切步骤时任务树不收口的问题",
+                "status": "in_progress",
+                "verification_result": "",
+                "sort_order": 0,
+                "level": 0,
+            },
+            {
+                "id": "node-analysis",
+                "parent_id": "node-root",
+                "stage_key": "analysis",
+                "title": "定位当前问题",
+                "status": "in_progress",
+                "verification_result": "",
+                "summary_for_model": "",
+                "sort_order": 1,
+                "level": 1,
+            },
+            {
+                "id": "node-impl",
+                "parent_id": "node-root",
+                "stage_key": "implementation",
+                "title": "修复核心问题",
+                "status": "pending",
+                "verification_result": "",
+                "summary_for_model": "",
+                "sort_order": 2,
+                "level": 1,
+            },
+            {
+                "id": "node-verify",
+                "parent_id": "node-root",
+                "stage_key": "verification",
+                "title": "验证结果并完成本轮收尾",
+                "status": "pending",
+                "verification_result": "",
+                "summary_for_model": "",
+                "sort_order": 3,
+                "level": 1,
+            },
+        ],
+    }
+
+    def recompute_state():
+        leaf_nodes = [node for node in session_state["nodes"] if node["parent_id"]]
+        done_leaf_nodes = [node for node in leaf_nodes if node["status"] == "done"]
+        session_state["progress_percent"] = int(round((len(done_leaf_nodes) / max(len(leaf_nodes), 1)) * 100))
+        root_node = next(node for node in session_state["nodes"] if not node["parent_id"])
+        if root_node["status"] == "done":
+            pass
+        elif any(node["status"] in {"in_progress", "verifying", "done"} for node in leaf_nodes):
+            root_node["status"] = "in_progress"
+        else:
+            root_node["status"] = "pending"
+        current = next((node for node in session_state["nodes"] if node["id"] == session_state["current_node_id"]), None)
+        if current is None or current["status"] == "done":
+            next_node = next((node for node in leaf_nodes if node["status"] != "done"), root_node)
+            session_state["current_node_id"] = next_node["id"]
+
+    recompute_state()
+
+    def fake_get_task_tree_for_chat_session(project_id, username, chat_session_id):
+        _ = (project_id, username, chat_session_id)
+        recompute_state()
+        current_node = next(node for node in session_state["nodes"] if node["id"] == session_state["current_node_id"])
+        return {
+            **session_state,
+            "status": next(node for node in session_state["nodes"] if node["id"] == "node-root")["status"],
+            "current_node": dict(current_node),
+        }
+
+    def fake_ensure_task_tree(**kwargs):
+        _ = kwargs
+        recompute_state()
+        current_node = next(node for node in session_state["nodes"] if node["id"] == session_state["current_node_id"])
+        return {
+            **session_state,
+            "status": next(node for node in session_state["nodes"] if node["id"] == "node-root")["status"],
+            "current_node": dict(current_node),
+        }
+
+    def fake_update_task_node(**kwargs):
+        update_calls.append(kwargs)
+        target = next(node for node in session_state["nodes"] if node["id"] == kwargs["node_id"])
+        if kwargs.get("status"):
+            target["status"] = kwargs["status"]
+        if kwargs.get("verification_result") is not None:
+            target["verification_result"] = kwargs["verification_result"]
+        if kwargs.get("summary_for_model") is not None:
+            target["summary_for_model"] = kwargs["summary_for_model"]
+        if kwargs.get("is_current") is True:
+            session_state["current_node_id"] = target["id"]
+        elif kwargs.get("is_current") is False and session_state["current_node_id"] == target["id"]:
+            session_state["current_node_id"] = ""
+        recompute_state()
+        current_node = next(node for node in session_state["nodes"] if node["id"] == session_state["current_node_id"])
+        return {
+            **session_state,
+            "status": next(node for node in session_state["nodes"] if node["id"] == "node-root")["status"],
+            "current_node": dict(current_node),
+        }
+
+    monkeypatch.setattr(task_tree_svc, "ensure_task_tree", fake_ensure_task_tree)
+    monkeypatch.setattr(task_tree_svc, "get_task_tree_for_chat_session", fake_get_task_tree_for_chat_session)
+    monkeypatch.setattr(task_tree_svc, "update_task_node", fake_update_task_node)
+    monkeypatch.setattr(task_tree_svc, "serialize_task_tree", lambda session: dict(session) if isinstance(session, dict) else None)
+
+    username_ctx = ContextVar("query_user_work_facts_phase_switch", default="")
+    session_ctx = ContextVar("query_session_work_facts_phase_switch", default="")
+    username_ctx.set("admin")
+    session_ctx.set("transport-789")
+    session_contexts = {
+        "transport-789": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "employee_id": "",
+            "chat_session_id": "chat-789",
+        }
+    }
+
+    query_mcp_svc.create_query_mcp(
+        current_key_owner_username_ctx=username_ctx,
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+
+    result = registered_tools["save_work_facts"](
+        "proj-1",
+        facts=["开始进入修复阶段"],
+        employee_id="emp-1",
+        session_id="ws-2",
+        phase="implementation",
+        step="修复核心问题",
+        status="in_progress",
+        goal="修复切步骤时任务树不收口的问题",
+    )
+
+    assert result["status"] == "saved"
+    assert result["trajectory"]["task_node_id"] == "node-impl"
+    assert update_calls[0]["node_id"] == "node-analysis"
+    assert update_calls[0]["status"] == "done"
+    assert "已进入“修复核心问题”" in update_calls[0]["verification_result"]
+    assert update_calls[1]["node_id"] == "node-impl"
+    assert update_calls[1]["status"] == "in_progress"
+
+
+def test_query_mcp_planning_tools_attach_task_tree(monkeypatch):
+    import services.project_chat_task_tree as task_tree_svc
+    from contextvars import ContextVar
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+
+    registered_tools = {}
+    ensure_calls = []
+    session_contexts = {
+        "transport-321": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "employee_id": "",
+            "chat_session_id": "chat-321",
+        }
+    }
+
+    class DummyMCP:
+        def tool(self, *args, **kwargs):
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri: str, *args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    monkeypatch.setattr(query_mcp_svc, "FastMCP", lambda *args, **kwargs: DummyMCP())
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_all": staticmethod(lambda: []),
+                "list_members": staticmethod(lambda project_id: []),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "_resolve_relevant_context_payload",
+        lambda task, project_id="", employee_id="", limit=5: {
+            "task": task,
+            "project_id": project_id,
+            "employee_id": employee_id,
+            "limit": limit,
+            "matched_projects": [],
+            "matched_employees": [],
+            "matched_rules": [],
+            "matched_members": [],
+            "matched_tools": [],
+        },
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "_generate_execution_plan_payload",
+        lambda task, project_id="", employee_id="", max_steps=6: {
+            "task": task,
+            "project_id": project_id,
+            "employee_id": employee_id,
+            "plan_steps": [{"step": "先统一检索项目上下文"}],
+            "plan_step_count": 1,
+            "max_steps": max_steps,
+        },
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "ensure_task_tree",
+        lambda **kwargs: ensure_calls.append(kwargs) or kwargs,
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "serialize_task_tree",
+        lambda session: {
+            "root_goal": session["root_goal"],
+            "chat_session_id": session["chat_session_id"],
+            "project_id": session["project_id"],
+            "max_steps": session.get("max_steps", 6),
+            "forced": bool(session.get("force")),
+        },
+    )
+
+    username_ctx = ContextVar("query_user_planning_tools", default="")
+    session_ctx = ContextVar("query_session_planning_tools", default="")
+    username_ctx.set("admin")
+    session_ctx.set("transport-321")
+
+    query_mcp_svc.create_query_mcp(
+        current_key_owner_username_ctx=username_ctx,
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+
+    analyze_result = registered_tools["analyze_task"](
+        "根据项目 UI 规则优化记忆详情弹框内容",
+        project_id="proj-1",
+    )
+    context_result = registered_tools["resolve_relevant_context"](
+        "根据项目 UI 规则优化记忆详情弹框内容",
+        project_id="proj-1",
+    )
+    plan_result = registered_tools["generate_execution_plan"](
+        "根据项目 UI 规则优化记忆详情弹框内容",
+        project_id="proj-1",
+        max_steps=8,
+    )
+
+    assert analyze_result["task_tree"]["root_goal"] == "根据项目 UI 规则优化记忆详情弹框内容"
+    assert analyze_result["task_tree"]["chat_session_id"] == "chat-321"
+    assert context_result["task_tree"]["project_id"] == "proj-1"
+    assert plan_result["task_tree"]["max_steps"] == 8
+    assert plan_result["task_tree"]["forced"] is True
+    assert ensure_calls == [
+        {
+            "project_id": "proj-1",
+            "username": "admin",
+            "chat_session_id": "chat-321",
+            "root_goal": "根据项目 UI 规则优化记忆详情弹框内容",
+        },
+        {
+            "project_id": "proj-1",
+            "username": "admin",
+            "chat_session_id": "chat-321",
+            "root_goal": "根据项目 UI 规则优化记忆详情弹框内容",
+        },
+        {
+            "project_id": "proj-1",
+            "username": "admin",
+            "chat_session_id": "chat-321",
+            "root_goal": "根据项目 UI 规则优化记忆详情弹框内容",
+            "max_steps": 8,
+            "force": True,
+        },
+    ]
 
 
 class _FakeMemoryStore:
@@ -3565,6 +5603,217 @@ def test_project_collaboration_runtime_prefers_external_executor_and_stops_after
     assert len(external_call["args"]["selected_members"]) == 2
 
 
+def test_project_collaboration_runtime_syncs_task_tree_during_execution(monkeypatch):
+    from copy import deepcopy
+    from services import dynamic_mcp_collaboration as collab_svc
+
+    class DummyProject:
+        id = "proj-1"
+        name = "项目一"
+
+    monkeypatch.setattr(
+        collab_svc,
+        "project_store",
+        type("DummyProjectStore", (), {"get": staticmethod(lambda project_id: DummyProject() if project_id == "proj-1" else None)})(),
+    )
+    monkeypatch.setattr(
+        collab_svc,
+        "list_project_member_profiles_runtime",
+        lambda project_id, include_disabled=False, include_missing=False, rule_limit=30: [
+            {
+                "employee_id": "emp-ui",
+                "id": "emp-ui",
+                "name": "前端开发",
+                "goal": "负责页面实现",
+                "skill_names": ["vue", "ui"],
+                "rule_bindings": [{"id": "rule-ui", "title": "UI 规范", "domain": "ui"}],
+            },
+            {
+                "employee_id": "emp-api",
+                "id": "emp-api",
+                "name": "后端开发",
+                "goal": "负责接口实现",
+                "skill_names": ["python", "api"],
+                "rule_bindings": [{"id": "rule-api", "title": "接口规范", "domain": "api"}],
+            },
+        ] if project_id == "proj-1" else [],
+    )
+    monkeypatch.setattr(
+        collab_svc,
+        "list_project_proxy_tools_runtime",
+        lambda project_id, employee_id="": [
+            {
+                "tool_name": "emp_ui__skill_vue__page",
+                "employee_id": "emp-ui",
+                "skill_name": "Vue",
+                "description": "实现前端页面",
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {"task": {"type": "string"}},
+                    "required": ["task"],
+                },
+            }
+        ] if project_id == "proj-1" else [],
+    )
+    monkeypatch.setattr(
+        collab_svc,
+        "list_project_external_tools_runtime",
+        lambda project_id: [
+            {
+                "tool_name": "external__coder__execute_task",
+                "module_name": "coder",
+                "remote_tool_name": "execute_task",
+                "description": "代码 Agent，接收任务后自动执行仓库修改",
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string"},
+                        "project_name": {"type": "string"},
+                        "employee_ids": {"type": "array"},
+                        "selected_members": {"type": "array"},
+                    },
+                    "required": ["task", "project_name", "employee_ids"],
+                },
+            }
+        ] if project_id == "proj-1" else [],
+    )
+
+    step_titles = [
+        "先统一检索项目上下文、成员、规则和 MCP 能力。",
+        "先检索 前端开发 相关规则，避免协作执行偏离约束。",
+        "先检索 后端开发 相关规则，避免协作执行偏离约束。",
+        "代码 Agent，接收任务后自动执行仓库修改",
+    ]
+    state = {
+        "task_tree": {
+            "id": "tts-1",
+            "project_id": "proj-1",
+            "username": "tester",
+            "chat_session_id": "chat-1",
+            "status": "pending",
+            "progress_percent": 0,
+            "current_node_id": "node-1",
+            "current_node": None,
+            "nodes": [
+                {
+                    "id": "root-1",
+                    "parent_id": "",
+                    "level": 0,
+                    "sort_order": 0,
+                    "title": "请修复前端页面样式并同步调整接口交互",
+                    "status": "pending",
+                    "verification_result": "",
+                },
+                *[
+                    {
+                        "id": f"node-{index}",
+                        "parent_id": "root-1",
+                        "level": 1,
+                        "sort_order": index,
+                        "title": title,
+                        "status": "pending",
+                        "verification_result": "",
+                    }
+                    for index, title in enumerate(step_titles, start=1)
+                ],
+            ],
+        },
+        "history_task_tree": None,
+    }
+    event_order: list[tuple[str, str]] = []
+
+    def refresh_current_tree():
+        task_tree = state["task_tree"]
+        if task_tree is None:
+            return None
+        nodes = task_tree["nodes"]
+        children = [item for item in nodes if item["level"] > 0]
+        done_count = len([item for item in children if item["status"] == "done"])
+        task_tree["progress_percent"] = int(round((done_count / max(len(children), 1)) * 100))
+        root = nodes[0]
+        if children and all(item["status"] == "done" for item in children) and root["verification_result"]:
+            root["status"] = "done"
+            task_tree["status"] = "done"
+            task_tree["current_node_id"] = ""
+            task_tree["current_node"] = None
+        elif any(item["status"] == "blocked" for item in children):
+            task_tree["status"] = "blocked"
+        elif any(item["status"] in {"in_progress", "verifying"} for item in children):
+            task_tree["status"] = "in_progress"
+        else:
+            task_tree["status"] = "pending"
+        if task_tree["status"] != "done":
+            current = next((item for item in children if item["status"] != "done"), None)
+            task_tree["current_node_id"] = current["id"] if current else ""
+            task_tree["current_node"] = current
+        return task_tree
+
+    refresh_current_tree()
+
+    monkeypatch.setattr(
+        collab_svc,
+        "ensure_project_execution_task_tree",
+        lambda **kwargs: deepcopy(refresh_current_tree()),
+    )
+
+    def fake_update_task_tree_node_tool_payload(**kwargs):
+        event_order.append(("start", kwargs["node_id"]))
+        for node in state["task_tree"]["nodes"]:
+            if node["id"] == kwargs["node_id"]:
+                node["status"] = kwargs["status"]
+                break
+        return deepcopy(refresh_current_tree())
+
+    def fake_complete_task_tree_node_tool_payload(**kwargs):
+        event_order.append(("complete", kwargs["node_id"]))
+        for node in state["task_tree"]["nodes"]:
+            if node["id"] == kwargs["node_id"]:
+                node["status"] = "done"
+                node["verification_result"] = kwargs["verification_result"]
+                break
+        current_tree = refresh_current_tree()
+        if kwargs["node_id"] == "root-1":
+            archived = deepcopy(current_tree)
+            state["history_task_tree"] = archived
+            state["task_tree"] = None
+            return {
+                "task_tree": None,
+                "history_task_tree": archived,
+            }
+        return deepcopy(current_tree)
+
+    monkeypatch.setattr(collab_svc, "update_task_tree_node_tool_payload", fake_update_task_tree_node_tool_payload)
+    monkeypatch.setattr(collab_svc, "complete_task_tree_node_tool_payload", fake_complete_task_tree_node_tool_payload)
+
+    def fake_invoke(**kwargs):
+        event_order.append(("invoke", kwargs["tool_name"]))
+        return {"status": "ok", "tool_name": kwargs["tool_name"]}
+
+    result = collab_svc.execute_project_collaboration_runtime(
+        "proj-1",
+        "请修复前端页面样式并同步调整接口交互",
+        username="tester",
+        chat_session_id="chat-1",
+        max_tool_calls=8,
+        invoke_tool=fake_invoke,
+    )
+
+    assert result["execution_halt_reason"] == "external_executor_completed"
+    assert result["task_tree"] is None
+    assert result["history_task_tree"]["status"] == "done"
+    assert result["history_task_tree"]["progress_percent"] == 100
+    assert event_order[:6] == [
+        ("start", "node-1"),
+        ("invoke", "search_project_context"),
+        ("complete", "node-1"),
+        ("start", "node-2"),
+        ("invoke", "query_project_rules"),
+        ("complete", "node-2"),
+    ]
+    assert ("complete", "node-4") in event_order
+    assert event_order[-1] == ("complete", "root-1")
+
+
 def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monkeypatch, tmp_path):
     from services import dynamic_mcp_apps_project as project_mcp_svc
 
@@ -3801,6 +6050,8 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert "统一编排入口" in query_usage_guide
     assert "不预设固定行业分工模板" in query_usage_guide
     assert "save_project_memory" in query_usage_guide
+    assert "任务树节点必须直接描述面向用户目标的工作步骤" in query_usage_guide
+    assert "Auto inferred proxy entry from scripts/..." in query_usage_guide
 
     import sys
     import types
@@ -3862,7 +6113,7 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert saved_memories[0].employee_id == "emp-1"
     assert saved_memories[0].project_name == "项目一"
     assert saved_memories[0].type == MemoryType.PROJECT_CONTEXT
-    assert saved_memories[0].scope == MemoryScope.EMPLOYEE_PRIVATE
+    assert saved_memories[0].scope == MemoryScope.TEAM_SHARED
     assert saved_memories[0].classification == Classification.INTERNAL
     assert saved_memories[0].purpose_tags == ("query-mcp", "manual-write", "project-id")
 
@@ -3935,14 +6186,16 @@ def test_query_mcp_proxy_app_handles_sse_and_streamable_routes(monkeypatch):
         current_api_key_ctx=api_key_ctx,
         current_developer_name_ctx=developer_ctx,
         session_keys={},
+        session_contexts={},
         query_app=downstream,
-        save_auto_query_memory=lambda questions, source, project_id="", employee_id="", project_name="": captured_memories.append(
+        save_auto_query_memory=lambda questions, source, project_id="", employee_id="", project_name="", chat_session_id="": captured_memories.append(
             {
                 "questions": questions,
                 "source": source,
                 "project_id": project_id,
                 "employee_id": employee_id,
                 "project_name": project_name,
+                "chat_session_id": chat_session_id,
             }
         ),
         replace_path_suffix=replace_path_suffix,
@@ -3994,6 +6247,870 @@ def test_query_mcp_proxy_app_handles_sse_and_streamable_routes(monkeypatch):
         }
     ]
     assert captured_memories == []
+
+
+def test_query_mcp_proxy_app_restores_chat_session_id_for_followup_messages(monkeypatch):
+    from fastapi import FastAPI, Request, Response
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+
+    api_key_ctx: ContextVar[str] = ContextVar("query_ctx_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_ctx_developer", default="")
+    task_tree_session_ctx: ContextVar[str] = ContextVar("query_ctx_task_tree_session", default="")
+    session_keys: dict[str, tuple[str, str]] = {}
+    session_contexts: dict[str, dict[str, str]] = {}
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def get_key(api_key: str):
+            if api_key == "valid-key":
+                return {"created_by": "owner-tester"}
+            return None
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["GET", "POST"])
+    async def echo(request: Request, full_path: str):
+        if request.method == "GET":
+            return Response(
+                content="event: endpoint\ndata: /mcp/query/messages/?session_id=transport-123\n\n",
+                media_type="text/event-stream",
+            )
+        payload = await request.json()
+        return {
+            "path": request.scope["path"],
+            "full_path": full_path,
+            "query_string": request.scope.get("query_string", b"").decode("utf-8"),
+            "task_tree_session_id": task_tree_session_ctx.get(""),
+            "api_key": api_key_ctx.get(""),
+            "developer_name": developer_ctx.get(""),
+            "payload": payload,
+        }
+
+    proxy_app = QueryMcpProxyApp(
+        usage_store=DummyUsageStore(),
+        current_api_key_ctx=api_key_ctx,
+        current_developer_name_ctx=developer_ctx,
+        current_mcp_session_id_ctx=task_tree_session_ctx,
+        session_keys=session_keys,
+        session_contexts=session_contexts,
+        query_app=downstream,
+        save_auto_query_memory=lambda *args, **kwargs: None,
+        replace_path_suffix=replace_path_suffix,
+    )
+
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    app = FastAPI()
+    app.mount("/mcp/query", proxy_app)
+    client = TestClient(app)
+
+    sse_response = client.get(
+        "/mcp/query/sse?key=valid-key&project_id=proj-1&chat_session_id=chat-123"
+    )
+    assert sse_response.status_code == 200
+    assert session_keys["transport-123"] == ("valid-key", "tester")
+    assert session_contexts["transport-123"]["project_id"] == "proj-1"
+    assert session_contexts["transport-123"]["chat_session_id"] == "chat-123"
+
+    followup = client.post(
+        "/mcp/query/messages?session_id=transport-123",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "invoke_project_skill_tool",
+                "arguments": {
+                    "project_id": "proj-1",
+                    "tool_name": "search_project_context",
+                },
+            },
+        },
+    )
+    assert followup.status_code == 200
+    assert followup.json()["task_tree_session_id"] == "chat-123"
+    assert followup.json()["api_key"] == "valid-key"
+    assert followup.json()["developer_name"] == "tester"
+
+
+def test_query_mcp_proxy_app_bootstraps_task_tree_from_unified_query(monkeypatch):
+    from fastapi import FastAPI, Request
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+
+    captured_task_tree_calls = []
+    api_key_ctx: ContextVar[str] = ContextVar("query_bootstrap_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_bootstrap_developer", default="")
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def get_key(api_key: str):
+            if api_key == "valid-key":
+                return {"created_by": "owner-tester"}
+            return None
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["POST"])
+    async def echo(request: Request, full_path: str):
+        payload = await request.json()
+        return {"full_path": full_path, "payload": payload}
+
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
+    )
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    proxy_app = QueryMcpProxyApp(
+        usage_store=DummyUsageStore(),
+        current_api_key_ctx=api_key_ctx,
+        current_developer_name_ctx=developer_ctx,
+        session_keys={},
+        session_contexts={},
+        query_app=downstream,
+        save_auto_query_memory=lambda *args, **kwargs: None,
+        replace_path_suffix=replace_path_suffix,
+    )
+
+    app = FastAPI()
+    app.mount("/mcp/query", proxy_app)
+    client = TestClient(app)
+
+    response = client.post(
+        "/mcp/query/mcp?key=valid-key&project_id=proj-1&chat_session_id=chat-123",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "search_ids",
+                "arguments": {"keyword": "修复统一查询 MCP 的任务树自动推进"},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured_task_tree_calls == [
+        {
+            "project_id": "proj-1",
+            "username": "owner-tester",
+            "chat_session_id": "chat-123",
+            "root_goal": "修复统一查询 MCP 的任务树自动推进",
+        }
+    ]
+
+
+def test_query_mcp_proxy_app_bootstraps_task_tree_for_direct_cli_without_chat_session_id(monkeypatch):
+    from fastapi import FastAPI, Request
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+
+    captured_task_tree_calls = []
+    api_key_ctx: ContextVar[str] = ContextVar("query_direct_cli_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_direct_cli_developer", default="")
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def get_key(api_key: str):
+            if api_key == "valid-key":
+                return {"created_by": "owner-tester"}
+            return None
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["POST"])
+    async def echo(request: Request, full_path: str):
+        payload = await request.json()
+        return {"full_path": full_path, "payload": payload}
+
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
+    )
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    proxy_app = QueryMcpProxyApp(
+        usage_store=DummyUsageStore(),
+        current_api_key_ctx=api_key_ctx,
+        current_developer_name_ctx=developer_ctx,
+        session_keys={},
+        session_contexts={},
+        query_app=downstream,
+        save_auto_query_memory=lambda *args, **kwargs: None,
+        replace_path_suffix=replace_path_suffix,
+    )
+
+    app = FastAPI()
+    app.mount("/mcp/query", proxy_app)
+    client = TestClient(app)
+
+    response = client.post(
+        "/mcp/query/mcp?key=valid-key&project_id=proj-1",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "search_ids",
+                "arguments": {"keyword": "direct cli 也要自动创建任务树"},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(captured_task_tree_calls) == 1
+    assert captured_task_tree_calls[0]["project_id"] == "proj-1"
+    assert captured_task_tree_calls[0]["username"] == "owner-tester"
+    assert captured_task_tree_calls[0]["root_goal"] == "direct cli 也要自动创建任务树"
+    assert str(captured_task_tree_calls[0]["chat_session_id"]).startswith("query-cli.proj-1.owner-tester.")
+
+
+def test_query_mcp_proxy_app_direct_cli_reuses_stable_chat_session(monkeypatch):
+    from fastapi import FastAPI, Request
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+
+    captured_task_tree_calls = []
+    api_key_ctx: ContextVar[str] = ContextVar("query_direct_cli_new_session_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_direct_cli_new_session_developer", default="")
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def get_key(api_key: str):
+            if api_key == "valid-key":
+                return {"created_by": "owner-tester"}
+            return None
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["POST"])
+    async def echo(request: Request, full_path: str):
+        payload = await request.json()
+        return {"full_path": full_path, "payload": payload}
+
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
+    )
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    proxy_app = QueryMcpProxyApp(
+        usage_store=DummyUsageStore(),
+        current_api_key_ctx=api_key_ctx,
+        current_developer_name_ctx=developer_ctx,
+        session_keys={},
+        session_contexts={},
+        query_app=downstream,
+        save_auto_query_memory=lambda *args, **kwargs: None,
+        replace_path_suffix=replace_path_suffix,
+    )
+
+    app = FastAPI()
+    app.mount("/mcp/query", proxy_app)
+    client = TestClient(app)
+
+    for keyword in ("第一次 CLI 任务", "第二次 CLI 任务"):
+        response = client.post(
+            "/mcp/query/mcp?key=valid-key&project_id=proj-1",
+            json={
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {
+                    "name": "search_ids",
+                    "arguments": {"keyword": keyword},
+                },
+            },
+        )
+        assert response.status_code == 200
+
+    assert len(captured_task_tree_calls) == 2
+    assert captured_task_tree_calls[0]["root_goal"] == "第一次 CLI 任务"
+    assert captured_task_tree_calls[1]["root_goal"] == "第二次 CLI 任务"
+    assert str(captured_task_tree_calls[0]["chat_session_id"]).startswith("query-cli.proj-1.owner-tester.")
+    assert str(captured_task_tree_calls[1]["chat_session_id"]).startswith("query-cli.proj-1.owner-tester.")
+    assert captured_task_tree_calls[0]["chat_session_id"] == captured_task_tree_calls[1]["chat_session_id"]
+
+
+def test_query_mcp_proxy_app_direct_cli_internal_progress_tools_reuse_existing_chat_without_new_memory(monkeypatch):
+    from contextvars import ContextVar
+    from fastapi import FastAPI, Request
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+
+    captured_task_tree_calls = []
+    captured_memories = []
+    api_key_ctx: ContextVar[str] = ContextVar("query_direct_cli_progress_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_direct_cli_progress_developer", default="")
+    task_tree_session_ctx: ContextVar[str] = ContextVar("query_direct_cli_progress_session", default="")
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def get_key(api_key: str):
+            if api_key == "valid-key":
+                return {"created_by": "owner-tester"}
+            return None
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["POST"])
+    async def echo(request: Request, full_path: str):
+        payload = await request.json()
+        return {
+            "full_path": full_path,
+            "payload": payload,
+            "task_tree_session_id": task_tree_session_ctx.get(""),
+        }
+
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
+    )
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    proxy_app = QueryMcpProxyApp(
+        usage_store=DummyUsageStore(),
+        current_api_key_ctx=api_key_ctx,
+        current_developer_name_ctx=developer_ctx,
+        current_mcp_session_id_ctx=task_tree_session_ctx,
+        session_keys={},
+        session_contexts={},
+        query_app=downstream,
+        save_auto_query_memory=lambda *args, **kwargs: captured_memories.append(
+            {"args": args, "kwargs": kwargs}
+        ),
+        replace_path_suffix=replace_path_suffix,
+    )
+
+    app = FastAPI()
+    app.mount("/mcp/query", proxy_app)
+    client = TestClient(app)
+
+    first = client.post(
+        "/mcp/query/mcp?key=valid-key&project_id=proj-1",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "search_ids",
+                "arguments": {"keyword": "修复任务树和记忆绑定"},
+            },
+        },
+    )
+    assert first.status_code == 200
+    first_chat_session_id = first.json()["task_tree_session_id"]
+
+    second = client.post(
+        "/mcp/query/mcp?key=valid-key&project_id=proj-1",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "append_session_event",
+                "arguments": {
+                    "project_id": "proj-1",
+                    "content": "已完成构建验证",
+                    "title": "构建验证",
+                },
+            },
+        },
+    )
+    assert second.status_code == 200
+
+    assert len(captured_task_tree_calls) == 1
+    assert len(captured_memories) == 1
+    assert second.json()["task_tree_session_id"] == first_chat_session_id
+
+
+def test_query_mcp_proxy_app_audits_task_tree_from_successful_tool_response(monkeypatch):
+    from contextvars import ContextVar
+    from fastapi import FastAPI, Request, Response
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+
+    captured_audit_calls = []
+    captured_result_memories = []
+    captured_ensure_calls = []
+    api_key_ctx: ContextVar[str] = ContextVar("query_direct_cli_audit_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_direct_cli_audit_developer", default="")
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def get_key(api_key: str):
+            if api_key == "valid-key":
+                return {"created_by": "owner-tester"}
+            return None
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["POST"])
+    async def tool_result(request: Request, full_path: str):
+        _ = full_path
+        await request.json()
+        rpc_body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "keyword": "当前项目员工都有谁",
+                                    "project_id": "proj-1",
+                                    "employees": [
+                                        {"id": "emp-1", "name": "前端架构与跨端攻坚专家"},
+                                        {"id": "emp-2", "name": "多语言后端开发工程师"},
+                                    ],
+                                    "projects": [],
+                                    "rules": [],
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ]
+                },
+            },
+            ensure_ascii=False,
+        )
+        return Response(
+            content=f"event: message\ndata: {rpc_body}\n\n",
+            media_type="text/event-stream",
+        )
+
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.audit_task_tree_round",
+        lambda **kwargs: captured_audit_calls.append(kwargs) or {"code": "lookup_query_auto_completed"},
+    )
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.save_auto_query_result_memory",
+        lambda question, solution, conclusion, source, **kwargs: captured_result_memories.append(
+            {
+                "question": question,
+                "solution": solution,
+                "conclusion": conclusion,
+                "source": source,
+                **kwargs,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        lambda **kwargs: captured_ensure_calls.append(kwargs) or kwargs,
+    )
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    proxy_app = QueryMcpProxyApp(
+        usage_store=DummyUsageStore(),
+        current_api_key_ctx=api_key_ctx,
+        current_developer_name_ctx=developer_ctx,
+        session_keys={},
+        session_contexts={},
+        query_app=downstream,
+        save_auto_query_memory=lambda *args, **kwargs: None,
+        replace_path_suffix=replace_path_suffix,
+    )
+
+    app = FastAPI()
+    app.mount("/mcp/query", proxy_app)
+    client = TestClient(app)
+
+    response = client.post(
+        "/mcp/query/mcp?key=valid-key&project_id=proj-1",
+        headers={"Accept": "application/json, text/event-stream"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "search_ids",
+                "arguments": {"keyword": "当前项目员工都有谁"},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(captured_audit_calls) == 1
+    assert captured_audit_calls[0]["project_id"] == "proj-1"
+    assert captured_audit_calls[0]["username"] == "owner-tester"
+    assert captured_audit_calls[0]["successful_tool_names"] == ["search_ids"]
+    assert "前端架构与跨端攻坚专家" in captured_audit_calls[0]["assistant_content"]
+    assert captured_result_memories == []
+    assert captured_ensure_calls == []
+
+
+def test_query_mcp_proxy_app_bootstraps_task_tree_from_transport_session(monkeypatch):
+    from fastapi import FastAPI, Request, Response
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+
+    captured_task_tree_calls = []
+    api_key_ctx: ContextVar[str] = ContextVar("query_transport_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_transport_developer", default="")
+    session_keys: dict[str, tuple[str, str]] = {}
+    session_contexts: dict[str, dict[str, str]] = {}
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def get_key(api_key: str):
+            if api_key == "valid-key":
+                return {"created_by": "owner-tester"}
+            return None
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["GET", "POST"])
+    async def echo(request: Request, full_path: str):
+        if request.method == "GET":
+            return Response(
+                content="event: endpoint\ndata: /mcp/query/messages/?session_id=transport-xyz\n\n",
+                media_type="text/event-stream",
+            )
+        payload = await request.json()
+        return {"full_path": full_path, "payload": payload}
+
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
+    )
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    proxy_app = QueryMcpProxyApp(
+        usage_store=DummyUsageStore(),
+        current_api_key_ctx=api_key_ctx,
+        current_developer_name_ctx=developer_ctx,
+        session_keys=session_keys,
+        session_contexts=session_contexts,
+        query_app=downstream,
+        save_auto_query_memory=lambda *args, **kwargs: None,
+        replace_path_suffix=replace_path_suffix,
+    )
+
+    app = FastAPI()
+    app.mount("/mcp/query", proxy_app)
+    client = TestClient(app)
+
+    sse_response = client.get("/mcp/query/sse?key=valid-key&project_id=proj-1")
+    assert sse_response.status_code == 200
+    assert session_keys["transport-xyz"] == ("valid-key", "tester")
+
+    followup = client.post(
+        "/mcp/query/messages?session_id=transport-xyz",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "search_ids",
+                "arguments": {"keyword": "通过 transport session 自动创建任务树"},
+            },
+        },
+    )
+
+    assert followup.status_code == 200
+    assert captured_task_tree_calls == [
+        {
+            "project_id": "proj-1",
+            "username": "owner-tester",
+            "chat_session_id": "transport-xyz",
+            "root_goal": "通过 transport session 自动创建任务树",
+        }
+    ]
+
+
+def test_query_mcp_proxy_app_passes_task_tree_payload_to_auto_result_memory(monkeypatch):
+    from contextvars import ContextVar
+    from fastapi import FastAPI, Request, Response
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+
+    captured_result_memories = []
+    api_key_ctx: ContextVar[str] = ContextVar("query_result_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_result_developer", default="")
+    session_contexts = {
+        "transport-1": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "employee_id": "",
+            "chat_session_id": "chat-123",
+        }
+    }
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def get_key(api_key: str):
+            if api_key == "valid-key":
+                return {"created_by": "owner-tester"}
+            return None
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["POST"])
+    async def emit_tool_result(request: Request, full_path: str):
+        await request.body()
+        rpc_body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "items": [
+                                        {"employee_id": "emp-1", "name": "员工一"},
+                                        {"employee_id": "emp-2", "name": "员工二"},
+                                    ]
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ]
+                },
+            },
+            ensure_ascii=False,
+        )
+        return Response(
+            content=f"event: message\ndata: {rpc_body}\n\n",
+            media_type="text/event-stream",
+        )
+
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.audit_task_tree_round",
+        lambda **kwargs: {
+            "code": "task_tree_updated",
+            "task_tree": {
+                "id": "task-tree-123",
+                "chat_session_id": "chat-123",
+                "source_chat_session_id": "chat-123",
+                "root_goal": "修复 /mcp/query/sse 自动结果记忆",
+                "status": "in_progress",
+                "progress_percent": 50,
+                "current_node": {
+                    "id": "node-2",
+                    "title": "改写自动结果记忆",
+                    "status": "in_progress",
+                },
+                "nodes": [
+                    {"id": "root", "level": 0, "title": "修复 /mcp/query/sse 自动结果记忆", "status": "in_progress"},
+                    {"id": "node-1", "level": 1, "title": "梳理统一查询入口", "status": "done", "verification_result": "已核对代理链路"},
+                    {"id": "node-2", "level": 1, "title": "改写自动结果记忆", "status": "in_progress", "verification_result": ""},
+                ],
+                "stats": {"leaf_total": 2, "done_leaf_total": 1},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.save_auto_query_result_memory",
+        lambda question, solution, conclusion, source, **kwargs: captured_result_memories.append(
+            {
+                "question": question,
+                "solution": solution,
+                "conclusion": conclusion,
+                "source": source,
+                **kwargs,
+            }
+        ),
+    )
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    proxy_app = QueryMcpProxyApp(
+        usage_store=DummyUsageStore(),
+        current_api_key_ctx=api_key_ctx,
+        current_developer_name_ctx=developer_ctx,
+        session_keys={"transport-1": ("valid-key", "tester")},
+        session_contexts=session_contexts,
+        query_app=downstream,
+        save_auto_query_memory=lambda *args, **kwargs: None,
+        replace_path_suffix=replace_path_suffix,
+    )
+
+    app = FastAPI()
+    app.mount("/mcp/query", proxy_app)
+    client = TestClient(app)
+
+    response = client.post(
+        "/mcp/query/messages?session_id=transport-1",
+        headers={"Accept": "application/json, text/event-stream"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "list_project_members",
+                "arguments": {
+                    "project_id": "proj-1",
+                },
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "修复 /mcp/query/sse 自动结果记忆"}],
+                    }
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(captured_result_memories) == 1
+    assert captured_result_memories[0]["project_id"] == "proj-1"
+    assert captured_result_memories[0]["chat_session_id"] == "chat-123"
+    assert captured_result_memories[0]["question"] == "修复 /mcp/query/sse 自动结果记忆"
+    assert captured_result_memories[0]["task_tree_payload"]["id"] == "task-tree-123"
+    assert captured_result_memories[0]["task_tree_payload"]["current_node"]["id"] == "node-2"
+
+
+def test_query_mcp_proxy_app_sse_bridge_generates_fallback_task_tree_session(monkeypatch):
+    from contextvars import ContextVar
+    from fastapi import FastAPI, Request
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+
+    captured_task_tree_calls = []
+    api_key_ctx: ContextVar[str] = ContextVar("query_sse_bridge_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_sse_bridge_developer", default="")
+    task_tree_session_ctx: ContextVar[str] = ContextVar(
+        "query_sse_bridge_task_tree_session",
+        default="",
+    )
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def get_key(api_key: str):
+            if api_key == "valid-key":
+                return {"created_by": "owner-tester"}
+            return None
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["POST"])
+    async def echo(request: Request, full_path: str):
+        payload = await request.json()
+        return {
+            "full_path": full_path,
+            "payload": payload,
+            "task_tree_session_id": task_tree_session_ctx.get(""),
+        }
+
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
+    )
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    proxy_app = QueryMcpProxyApp(
+        usage_store=DummyUsageStore(),
+        current_api_key_ctx=api_key_ctx,
+        current_developer_name_ctx=developer_ctx,
+        current_mcp_session_id_ctx=task_tree_session_ctx,
+        session_keys={},
+        session_contexts={},
+        query_app=downstream,
+        save_auto_query_memory=lambda *args, **kwargs: None,
+        replace_path_suffix=replace_path_suffix,
+    )
+
+    app = FastAPI()
+    app.mount("/mcp/query", proxy_app)
+    client = TestClient(app)
+
+    response = client.post(
+        "/mcp/query/sse?key=valid-key",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "search_ids",
+                "arguments": {
+                    "keyword": "sse bridge 也要自动创建任务树",
+                    "project_id": "proj-1",
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    generated_chat_session_id = str(response.json()["task_tree_session_id"])
+    assert generated_chat_session_id.startswith("query-cli.proj-1.owner-tester.")
+    assert captured_task_tree_calls == [
+        {
+            "project_id": "proj-1",
+            "username": "owner-tester",
+            "chat_session_id": generated_chat_session_id,
+            "root_goal": "sse bridge 也要自动创建任务树",
+        }
+    ]
 
 
 def test_query_mcp_mount_handles_real_jsonrpc_over_http_and_sse_bridge(monkeypatch):
@@ -4130,6 +7247,7 @@ def test_query_mcp_mount_lists_tools_and_reads_resources(monkeypatch):
     tools_rpc = extract_sse_payload(tools_response.text)
     tools = tools_rpc["result"]["tools"]
     tool_names = {item["name"] for item in tools}
+    assert "bind_project_context" in tool_names
     assert "analyze_task" in tool_names
     assert "resolve_relevant_context" in tool_names
     assert "generate_execution_plan" in tool_names
@@ -4150,6 +7268,7 @@ def test_query_mcp_mount_lists_tools_and_reads_resources(monkeypatch):
     usage_contents = usage_rpc["result"]["contents"]
     assert usage_contents[0]["uri"] == "query://usage-guide"
     assert "Recommended tools" not in usage_contents[0]["text"]
+    assert "bind_project_context" in usage_contents[0]["text"]
     assert "analyze_task" in usage_contents[0]["text"]
     assert "execute_project_collaboration" in usage_contents[0]["text"]
 
@@ -4158,6 +7277,8 @@ def test_query_mcp_mount_lists_tools_and_reads_resources(monkeypatch):
     codex_contents = codex_rpc["result"]["contents"]
     assert codex_contents[0]["uri"] == "query://client-profile/codex"
     assert "Codex" in codex_contents[0]["text"]
+    assert "search_ids" in codex_contents[0]["text"]
+    assert "get_manual_content" in codex_contents[0]["text"]
     assert "build_delivery_report" in codex_contents[0]["text"]
 
 
@@ -4400,7 +7521,18 @@ def _configure_query_mcp_memory_chain_env(monkeypatch):
         def save(self, event):
             saved_work_session_events.append(event)
 
-        def list_events(self, *, project_id="", employee_id="", session_id="", query="", limit=200):
+        def list_events(
+            self,
+            *,
+            project_id="",
+            employee_id="",
+            session_id="",
+            task_tree_session_id="",
+            task_tree_chat_session_id="",
+            task_node_id="",
+            query="",
+            limit=200,
+        ):
             matches = []
             keyword = str(query or "").strip().lower()
             for item in reversed(saved_work_session_events):
@@ -4410,11 +7542,24 @@ def _configure_query_mcp_memory_chain_env(monkeypatch):
                     continue
                 if session_id and item.session_id != session_id:
                     continue
+                if task_tree_session_id and getattr(item, "task_tree_session_id", "") != task_tree_session_id:
+                    continue
+                if (
+                    task_tree_chat_session_id
+                    and getattr(item, "task_tree_chat_session_id", "") != task_tree_chat_session_id
+                ):
+                    continue
+                if task_node_id and getattr(item, "task_node_id", "") != task_node_id:
+                    continue
                 if keyword:
                     haystack = "\n".join(
                         [
                             str(item.project_name or ""),
                             str(item.session_id or ""),
+                            str(getattr(item, "task_tree_session_id", "") or ""),
+                            str(getattr(item, "task_tree_chat_session_id", "") or ""),
+                            str(getattr(item, "task_node_id", "") or ""),
+                            str(getattr(item, "task_node_title", "") or ""),
                             str(item.event_type or ""),
                             str(item.phase or ""),
                             str(item.step or ""),
@@ -4817,7 +7962,7 @@ def test_query_mcp_mount_runs_memory_chain(monkeypatch):
 def test_query_mcp_sse_bridge_runs_memory_chain(monkeypatch):
     from stores.mcp_bridge import MemoryType
 
-    post_jsonrpc, _saved_memories, _saved_work_session_events = _configure_query_mcp_memory_chain_env(monkeypatch)
+    post_jsonrpc, _saved_memories, saved_work_session_events = _configure_query_mcp_memory_chain_env(monkeypatch)
     sse_path = "/mcp/query/sse?key=valid-key"
 
     facts_response = post_jsonrpc(
@@ -4877,6 +8022,8 @@ def test_query_mcp_sse_bridge_runs_memory_chain(monkeypatch):
 
     assert facts_response.status_code == 200
     assert facts_result["type"] == MemoryType.LEARNED_PATTERN.value
+    assert facts_result["session_id"].startswith("ws_proj-1_emp-1_")
+    assert facts_result["work_session_event"]["status"] == "saved"
 
     assert event_response.status_code == 200
     assert event_result["type"] == MemoryType.KEY_EVENT.value
@@ -4886,6 +8033,7 @@ def test_query_mcp_sse_bridge_runs_memory_chain(monkeypatch):
     assert checkpoint_result["session_id"] == "sess-sse"
     assert checkpoint_result["event_count"] == 1
     assert checkpoint_result["events"][0]["type"] == MemoryType.KEY_EVENT.value
+    assert len(saved_work_session_events) == 2
 
 
 def _setup_query_mcp_agent_capability_env(monkeypatch):
@@ -5152,6 +8300,7 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "check_workspace_scope" in registered_tools
     assert "resolve_execution_mode" in registered_tools
     assert "check_operation_policy" in registered_tools
+    assert "start_work_session" in registered_tools
     assert "build_delivery_report" in registered_tools
     assert "generate_release_note_entry" in registered_tools
 
@@ -5167,9 +8316,16 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "build_delivery_report" in usage_guide
     assert "generate_release_note_entry" in usage_guide
     assert "check_operation_policy" in usage_guide
+    assert "start_work_session" in usage_guide
+    assert "任务树节点必须直接描述面向用户目标的工作步骤" in usage_guide
     assert "save_work_facts" in claude_profile
+    assert "任务树节点必须描述面向用户目标的真实工作步骤" in claude_profile
+    assert "search_ids" in codex_profile
+    assert "get_manual_content" in codex_profile
     assert "build_delivery_report" in codex_profile
+    assert "Auto inferred proxy entry from scripts/..." in codex_profile
     assert "analyze_task" in generic_profile
+    assert "节点必须直接对应用户目标" in generic_profile
 
     analysis = registered_tools["analyze_task"](
         "继续升级 /mcp/query/sse，必须补测试并更新 docs/总结文档.md",
@@ -5267,11 +8423,21 @@ def test_query_mcp_work_session_tools_roundtrip(monkeypatch):
 
     registered_tools, _registered_resources, saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
 
+    started = registered_tools["start_work_session"](
+        "proj-1",
+        employee_id="emp-1",
+        title="统一查询 MCP 轨迹升级",
+        goal="把记忆升级成可恢复执行轨迹",
+        phase="Phase 3",
+        step="Step 0",
+    )
+    session_id = started["session_id"]
+
     save_result = registered_tools["save_work_facts"](
         "proj-1",
         facts=["已补 query MCP 单测", "已更新 docs/总结文档.md"],
         employee_id="emp-1",
-        session_id="sess-1",
+        session_id=session_id,
         phase="Phase 3",
         step="Step 1",
         status="in_progress",
@@ -5286,7 +8452,7 @@ def test_query_mcp_work_session_tools_roundtrip(monkeypatch):
     )
     event_result = registered_tools["append_session_event"](
         "proj-1",
-        session_id="sess-1",
+        session_id=session_id,
         event_type="verification",
         content="已运行 query MCP 定向测试",
         employee_id="emp-1",
@@ -5306,56 +8472,192 @@ def test_query_mcp_work_session_tools_roundtrip(monkeypatch):
     )
     resumed = registered_tools["resume_work_session"](
         "proj-1",
-        session_id="sess-1",
+        session_id=session_id,
         employee_id="emp-1",
     )
     checkpoint = registered_tools["summarize_checkpoint"](
         "proj-1",
-        session_id="sess-1",
+        session_id=session_id,
         employee_id="emp-1",
     )
+
+    assert started["status"] == "started"
+    assert started["project_id"] == "proj-1"
+    assert started["employee_id"] == "emp-1"
+    assert session_id.startswith("ws_proj-1_emp-1_")
+    assert started["trajectory"]["event_type"] == "start"
+    assert started["work_session_event"]["status"] == "saved"
+    assert started["recommended_next_tool"] == "save_work_facts"
 
     assert save_result["status"] == "saved"
     assert save_result["saved_count"] == 1
     assert save_result["type"] == MemoryType.LEARNED_PATTERN.value
+    assert save_result["session_id"] == session_id
+    assert save_result["work_session_event"]["status"] == "saved"
 
     assert event_result["status"] == "saved"
     assert event_result["saved_count"] == 1
     assert event_result["type"] == MemoryType.KEY_EVENT.value
 
     assert len(saved_memories) == 3
-    assert saved_memories[0].purpose_tags == ("query-mcp", "work-facts", "phase3", "session:sess-1", "phase:phase-3", "step:step-1")
-    assert saved_memories[1].purpose_tags == ("query-mcp", "session-event", "verification", "phase3", "session:sess-1", "phase:phase-3", "step:step-2")
+    first_session_tag = next(tag for tag in saved_memories[0].purpose_tags if tag.startswith("session:"))
+    second_session_tag = next(tag for tag in saved_memories[1].purpose_tags if tag.startswith("session:"))
+    assert first_session_tag.startswith("session:ws-proj-1-emp-1-")
+    assert second_session_tag == first_session_tag
+    assert saved_memories[0].purpose_tags[:3] == ("query-mcp", "work-facts", "phase3")
+    assert saved_memories[0].purpose_tags[-2:] == ("phase:phase-3", "step:step-1")
+    assert saved_memories[1].purpose_tags[:4] == ("query-mcp", "session-event", "verification", "phase3")
+    assert saved_memories[1].purpose_tags[-2:] == ("phase:phase-3", "step:step-2")
     assert saved_memories[2].purpose_tags == ("query-mcp", "session-event", "notes", "phase3", "session:sess-2")
-    assert len(saved_work_session_events) == 3
-    assert saved_work_session_events[0].source_kind == "work-facts"
-    assert saved_work_session_events[1].event_type == "verification"
-    assert saved_work_session_events[2].session_id == "sess-2"
+    assert len(saved_work_session_events) == 4
+    assert saved_work_session_events[0].source_kind == "session-start"
+    assert saved_work_session_events[0].event_type == "start"
+    assert saved_work_session_events[1].source_kind == "work-facts"
+    assert saved_work_session_events[2].event_type == "verification"
+    assert saved_work_session_events[3].session_id == "sess-2"
 
     assert resumed["project_id"] == "proj-1"
-    assert resumed["session_id"] == "sess-1"
-    assert resumed["total"] == 2
+    assert resumed["session_id"] == session_id
+    assert resumed["total"] == 3
     assert resumed["phases"] == ["Phase 3"]
-    assert resumed["steps"] == ["Step 2", "Step 1"]
+    assert resumed["steps"] == ["Step 2", "Step 1", "Step 0"]
     assert resumed["changed_files"][0] == "web-admin/api/tests/test_unit.py"
     assert resumed["items"][0]["trajectory"]["event_type"] == "verification"
     assert resumed["items"][1]["trajectory"]["facts"][0] == "已补 query MCP 单测"
+    assert resumed["items"][2]["trajectory"]["event_type"] == "start"
     assert resumed["timeline"][0]["status"] == "completed"
     assert "Step 2" in resumed["checkpoint_summary"]
 
     assert checkpoint["project_name"] == "项目一"
-    assert checkpoint["session_id"] == "sess-1"
+    assert checkpoint["session_id"] == session_id
     assert checkpoint["fact_count"] == 1
-    assert checkpoint["event_count"] == 1
+    assert checkpoint["event_count"] == 2
     assert checkpoint["phases"] == ["Phase 3"]
-    assert checkpoint["steps"] == ["Step 2", "Step 1"]
+    assert checkpoint["steps"] == ["Step 2", "Step 1", "Step 0"]
     assert checkpoint["latest_status"] == "completed"
     assert checkpoint["verification"][0] == "uv run pytest web-admin/api/tests/test_unit.py -k query_mcp"
     assert checkpoint["risks"][0] == "仍需 mounted JSON-RPC 回归"
     assert checkpoint["next_steps"][0] == "更新 docs/总结文档.md"
     assert checkpoint["events"][0]["type"] == MemoryType.KEY_EVENT.value
+    assert checkpoint["events"][1]["trajectory"]["event_type"] == "start"
     assert checkpoint["facts"][0]["trajectory"]["goal"] == "把记忆升级成可恢复执行轨迹"
     assert "项目：项目一" in checkpoint["summary"]
+
+
+def test_query_mcp_save_work_facts_autogenerates_session_id(monkeypatch):
+    from stores.mcp_bridge import MemoryType
+    import services.project_chat_task_tree as task_tree_svc
+
+    registered_tools, _registered_resources, saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+    task_tree_state = {}
+
+    def fake_ensure_task_tree(**kwargs):
+      session = task_tree_state.get(kwargs["chat_session_id"])
+      if session is None:
+          session = {
+              "id": "tts-1",
+              "root_goal": kwargs["root_goal"],
+              "chat_session_id": kwargs["chat_session_id"],
+              "source_chat_session_id": kwargs["chat_session_id"],
+              "current_node": {
+                  "id": "ttn-1",
+                  "title": "计划节点",
+                  "status": "pending",
+              },
+          }
+          task_tree_state[kwargs["chat_session_id"]] = session
+      return session
+
+    def fake_get_task_tree_for_chat_session(project_id, username, chat_session_id):
+        _ = (project_id, username)
+        return task_tree_state.get(chat_session_id)
+
+    def fake_update_task_node(project_id, username, chat_session_id, node_id, status="", verification_result="", summary_for_model="", **kwargs):
+        _ = (project_id, username, node_id, kwargs)
+        session = task_tree_state[chat_session_id]
+        session["current_node"] = {
+            **session.get("current_node", {}),
+            "id": session.get("current_node", {}).get("id", "ttn-1"),
+            "title": session.get("current_node", {}).get("title", "计划节点"),
+            "status": status or session.get("current_node", {}).get("status", "pending"),
+            "verification_result": verification_result,
+            "summary_for_model": summary_for_model,
+        }
+        return session
+
+    monkeypatch.setattr(task_tree_svc, "ensure_task_tree", fake_ensure_task_tree)
+    monkeypatch.setattr(task_tree_svc, "get_task_tree_for_chat_session", fake_get_task_tree_for_chat_session)
+    monkeypatch.setattr(task_tree_svc, "update_task_node", fake_update_task_node)
+    monkeypatch.setattr(task_tree_svc, "serialize_task_tree", lambda session: dict(session))
+
+    result = registered_tools["save_work_facts"](
+        "proj-1",
+        facts=["未显式传 session_id 也要建立正式工作轨迹"],
+        employee_id="emp-1",
+        phase="Phase 4",
+        step="Step 1",
+        status="in_progress",
+    )
+
+    assert result["status"] == "saved"
+    assert result["type"] == MemoryType.LEARNED_PATTERN.value
+    assert result["session_id"].startswith("ws_proj-1_emp-1_")
+    assert result["chat_session_id"] == result["session_id"]
+    assert result["trajectory"]["session_id"] == result["session_id"]
+    assert result["trajectory"]["task_tree_chat_session_id"] == result["session_id"]
+    assert result["work_session_event"]["status"] == "saved"
+    assert result["task_tree"]["chat_session_id"] == result["session_id"]
+    assert len(saved_memories) == 1
+    assert len(saved_work_session_events) == 1
+    assert saved_work_session_events[0].session_id == result["session_id"]
+    assert saved_work_session_events[0].task_tree_chat_session_id == result["session_id"]
+
+
+def test_query_mcp_work_session_tools_accept_string_list_fields(monkeypatch):
+    registered_tools, _registered_resources, _saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    started = registered_tools["start_work_session"](
+        "proj-1",
+        employee_id="emp-1",
+        goal="修复统一 MCP 轨迹字段单字符串报错",
+    )
+    session_id = started["session_id"]
+
+    save_result = registered_tools["save_work_facts"](
+        "proj-1",
+        facts="已定位 save_work_facts 的列表字段 schema 过严",
+        employee_id="emp-1",
+        session_id=session_id,
+        changed_files="web-admin/api/services/dynamic_mcp_apps_query.py",
+        verification="python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py",
+        next_steps="补回归测试",
+    )
+    event_result = registered_tools["append_session_event"](
+        "proj-1",
+        session_id=session_id,
+        event_type="verification",
+        content="已兼容单字符串输入",
+        employee_id="emp-1",
+        changed_files="web-admin/api/tests/test_unit.py",
+        verification="uv run pytest web-admin/api/tests/test_unit.py -k string_list_fields",
+        next_steps="检查 query sse 真实调用",
+    )
+    report = registered_tools["build_delivery_report"](
+        title="统一 MCP 列表字段兼容",
+        project_id="proj-1",
+        summary="已兼容字符串形式的 changed_files / verification / next_steps",
+        changed_files="web-admin/api/services/dynamic_mcp_apps_query.py",
+        verification="python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py",
+        next_steps="补充 transport 层回归",
+    )
+
+    assert save_result["status"] == "saved"
+    assert event_result["status"] == "saved"
+    assert "web-admin/api/services/dynamic_mcp_apps_query.py" in report["report_markdown"]
+    assert "python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py" in report["report_markdown"]
+    assert saved_work_session_events[1].changed_files == ["web-admin/api/services/dynamic_mcp_apps_query.py"]
+    assert saved_work_session_events[1].verification == ["python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py"]
+    assert saved_work_session_events[2].next_steps == ["检查 query sse 真实调用"]
 
 
 def test_query_project_rules_runtime_includes_project_ui_rules(monkeypatch):

@@ -6,6 +6,8 @@ const SETTINGS_PANEL_TARGETS = [
   { panel: "system-config", prefixes: ["/system/config"] },
   { panel: "changelog-entries", prefixes: ["/changelog-entries"] },
   { panel: "work-sessions", prefixes: ["/work-sessions"] },
+  { panel: "online-users", prefixes: ["/online-users"] },
+  { panel: "mcp-monitor", prefixes: ["/mcp-monitor"] },
   { panel: "dictionaries", prefixes: ["/dictionaries"] },
   { panel: "providers", prefixes: ["/llm/providers"] },
   { panel: "projects", prefixes: ["/projects"] },

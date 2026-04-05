@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 import json
 import os
 import re
+import uuid
 
 from mcp.server.fastmcp import FastMCP
 
@@ -125,6 +127,7 @@ _SYSTEM_PATH_PREFIXES = (
     "~/.ssh",
 )
 _QUERY_TOOL_NAMES = {
+    "bind_project_context",
     "search_ids",
     "get_content",
     "get_manual_content",
@@ -141,6 +144,7 @@ _QUERY_TOOL_NAMES = {
     "check_workspace_scope",
     "resolve_execution_mode",
     "check_operation_policy",
+    "start_work_session",
     "save_work_facts",
     "append_session_event",
     "resume_work_session",
@@ -383,8 +387,17 @@ def _active_project_employee_ids(project_id: str) -> list[str]:
     return employee_ids
 
 
-def _normalize_text(value: object) -> str:
-    return str(value or "").strip()
+def _normalize_text(value: object, limit: int | None = None) -> str:
+    text = str(value or "").strip()
+    if limit is None:
+        return text
+    try:
+        safe_limit = int(limit)
+    except (TypeError, ValueError):
+        return text
+    if safe_limit <= 0:
+        return ""
+    return text[:safe_limit]
 
 
 def _normalize_text_lower(value: object) -> str:
@@ -1097,7 +1110,14 @@ def _save_project_memory_entries(
     if employee_id_value and employee_id_value not in active_employee_ids:
         return {"error": f"Employee {employee_id_value} is not an active project member"}
     normalized_project_name = _resolve_project_name(project_id_value, project_name)
-    target_employee_ids = [employee_id_value] if employee_id_value else active_employee_ids
+    if employee_id_value:
+        target_employee_ids = [employee_id_value]
+        memory_scope = MemoryScope.EMPLOYEE_PRIVATE
+    else:
+        # Project-level memory should be saved once as a shared entry instead of fan-out
+        # duplicates under every active member.
+        target_employee_ids = [active_employee_ids[0]]
+        memory_scope = MemoryScope.TEAM_SHARED
     memory_ids: list[str] = []
     importance_value = max(0.0, min(float(importance), 1.0))
     for target_employee_id in target_employee_ids:
@@ -1108,7 +1128,7 @@ def _save_project_memory_entries(
             content=content_value,
             project_name=normalized_project_name,
             importance=importance_value,
-            scope=MemoryScope.EMPLOYEE_PRIVATE,
+            scope=memory_scope,
             classification=Classification.INTERNAL,
             purpose_tags=purpose_tags,
         )
@@ -1122,14 +1142,25 @@ def _save_project_memory_entries(
         "memory_ids": memory_ids,
         "saved_count": len(memory_ids),
         "type": memory_type.value,
+        "scope": memory_scope.value,
         "importance": importance_value,
         "project_mcp_path": f"/mcp/projects/{project_id_value}",
     }
 
 
-def _parse_fact_lines(content: str = "", facts: list[str] | None = None) -> list[str]:
+def _iter_text_values(values: list[str] | str | None = None) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        return [values]
+    if isinstance(values, (list, tuple, set)):
+        return [str(item or "") for item in values]
+    return [str(values or "")]
+
+
+def _parse_fact_lines(content: str = "", facts: list[str] | str | None = None) -> list[str]:
     items: list[str] = []
-    for item in facts or []:
+    for item in _iter_text_values(facts):
         normalized = _normalize_text(item)
         if normalized and normalized not in items:
             items.append(normalized)
@@ -1152,6 +1183,10 @@ def _structured_trajectory_payload(
     *,
     kind: str,
     session_id: str = "",
+    task_tree_session_id: str = "",
+    task_tree_chat_session_id: str = "",
+    task_node_id: str = "",
+    task_node_title: str = "",
     event_type: str = "",
     phase: str = "",
     step: str = "",
@@ -1167,6 +1202,10 @@ def _structured_trajectory_payload(
     payload = {
         "kind": _normalize_text(kind),
         "session_id": _normalize_text(session_id),
+        "task_tree_session_id": _normalize_text(task_tree_session_id),
+        "task_tree_chat_session_id": _normalize_text(task_tree_chat_session_id),
+        "task_node_id": _normalize_text(task_node_id),
+        "task_node_title": _normalize_text(task_node_title),
         "event_type": _normalize_text(event_type),
         "phase": _normalize_text(phase),
         "step": _normalize_text(step),
@@ -1180,6 +1219,15 @@ def _structured_trajectory_payload(
         "content": _normalize_text(content),
     }
     return {key: value for key, value in payload.items() if value not in ("", [], None)}
+
+
+def _generate_work_session_id(*, project_id: str, employee_id: str = "") -> str:
+    project_token = re.sub(r"[^a-zA-Z0-9_-]+", "-", _normalize_text(project_id)).strip("-")[:40] or "project"
+    owner_source = _normalize_text(employee_id) or "team"
+    owner_token = re.sub(r"[^a-zA-Z0-9_-]+", "-", owner_source).strip("-")[:40] or "team"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    suffix = uuid.uuid4().hex[:4]
+    return f"ws_{project_token}_{owner_token}_{timestamp}_{suffix}"
 
 
 def _save_work_session_event_record(
@@ -1200,6 +1248,10 @@ def _save_work_session_event_record(
             project_name=_resolve_project_name(project_id_value, project_name),
             employee_id=_normalize_text(employee_id),
             session_id=session_id_value,
+            task_tree_session_id=_normalize_text(trajectory.get("task_tree_session_id")),
+            task_tree_chat_session_id=_normalize_text(trajectory.get("task_tree_chat_session_id")),
+            task_node_id=_normalize_text(trajectory.get("task_node_id")),
+            task_node_title=_normalize_text(trajectory.get("task_node_title")),
             source_kind=_normalize_text(trajectory.get("kind")),
             event_type=_normalize_text(trajectory.get("event_type")),
             phase=_normalize_text(trajectory.get("phase")),
@@ -1228,6 +1280,10 @@ def _work_session_event_to_item(event: WorkSessionEvent) -> dict:
     trajectory = {
         "kind": _normalize_text(event.source_kind),
         "session_id": _normalize_text(event.session_id),
+        "task_tree_session_id": _normalize_text(event.task_tree_session_id),
+        "task_tree_chat_session_id": _normalize_text(event.task_tree_chat_session_id),
+        "task_node_id": _normalize_text(event.task_node_id),
+        "task_node_title": _normalize_text(event.task_node_title),
         "event_type": _normalize_text(event.event_type),
         "phase": _normalize_text(event.phase),
         "step": _normalize_text(event.step),
@@ -1255,8 +1311,13 @@ def _work_session_event_to_item(event: WorkSessionEvent) -> dict:
     return {
         "id": _normalize_text(event.id),
         "employee_id": _normalize_text(event.employee_id),
+        "project_id": _normalize_text(event.project_id),
         "project_name": _normalize_text(event.project_name),
         "type": memory_type,
+        "task_tree_session_id": _normalize_text(event.task_tree_session_id),
+        "task_tree_chat_session_id": _normalize_text(event.task_tree_chat_session_id),
+        "task_node_id": _normalize_text(event.task_node_id),
+        "task_node_title": _normalize_text(event.task_node_title),
         "content": content,
         "created_at": _normalize_text(event.created_at),
         "updated_at": _normalize_text(event.updated_at),
@@ -1606,8 +1667,13 @@ def _client_profile_text(client_name: str) -> str:
         title = "Claude Code"
         focus = [
             "- 定位: 适合需要较强代码修改、命令执行和长任务续跑的开发型 CLI。",
-            "- 推荐链路: query://usage-guide -> analyze_task -> search_ids/get_manual_content -> resolve_relevant_context -> generate_execution_plan -> check_operation_policy。",
-            "- 长任务建议: 每完成一个子阶段调用 save_work_facts 或 append_session_event，恢复时调用 resume_work_session / summarize_checkpoint。",
+            "- 推荐链路: query://usage-guide -> analyze_task -> search_ids/get_manual_content -> resolve_relevant_context -> generate_execution_plan -> check_operation_policy -> start_work_session。",
+            "- 接入约束: `description` 只用于说明，不参与项目绑定；要续接任务树，优先让 URL 带上 `project_id` 和 `chat_session_id`，缺失时首轮调用 `bind_project_context(...)`。",
+            "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall。",
+            "- 任务树约束: 任务树节点必须描述面向用户目标的真实工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 或候选代理工具名直接写成节点。",
+            "- 工作流约束: 用户提需求后先规划，再执行；执行中只更新任务树、工作事实和会话事件，不要提前输出最终结论。",
+            "- 工作流约束: 必须做到“完成一个节点、补一次验证、再进入下一步”；只有整棵任务树完成并写入验证结果后，当前需求才算结束。",
+            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id；每完成一个子阶段调用 save_work_facts 或 append_session_event，恢复时调用 resume_work_session / summarize_checkpoint。",
             "- 适合自动化的能力: 任务分析、相关上下文聚合、执行步骤骨架、风险分类、工作轨迹恢复。",
             "- 需要谨慎的能力: 高风险命令、工作区外路径、破坏性命令，优先先调用 check_operation_policy。",
         ]
@@ -1615,8 +1681,16 @@ def _client_profile_text(client_name: str) -> str:
         title = "Codex"
         focus = [
             "- 定位: 适合以代码任务拆解、补丁实现和结构化交付为主的开发型 CLI。",
-            "- 推荐链路: query://usage-guide -> analyze_task -> resolve_relevant_context -> generate_execution_plan -> build_delivery_report。",
-            "- 长任务建议: 关键决策写入 save_work_facts，关键执行节点写入 append_session_event。",
+            "- 推荐链路: query://usage-guide -> query://client-profile/codex -> search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan -> check_operation_policy -> start_work_session -> build_delivery_report。",
+            "- 接入约束: `description`、项目说明和“当前项目”文字不会自动绑定任务树；URL 或首轮工具参数里必须显式出现 `project_id`，需要续接时再补 `chat_session_id` 或 `bind_project_context(...)`。",
+            "- 接入约束: 如果当前 CLI 没有活跃 MCP session，只要显式传了 `project_id + chat_session_id`，`bind_project_context(...)` 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 `chat_session_id`。",
+            "- 查询约束: 首轮先把用户原始问题写进 `search_ids(keyword=\"<用户原始问题>\")`；项目型问题再读取 `get_manual_content(project_id=...)`，不要只写“当前项目”这类代称。",
+            "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall_project_memory / recall_employee_memory。",
+            "- 任务树约束: 查询型问题保持单检索节点；实现型任务节点才写成分析、实现、验证这类面向目标的步骤。不要把内部检索工具、规则查询工具、候选代理工具或 `Auto inferred proxy entry from scripts/...` 这类描述直接当成节点。",
+            "- 工作流约束: 用户提需求后先生成计划并挂到任务树，再按计划逐项推进；执行中不要把阶段性结果写成最终结论。",
+            "- 工作流约束: 每完成一个计划项就立刻补验证结果，再处理下一个；只有所有计划项完成后，才能生成最终总结或补稳定结论记忆。",
+            "- 收尾要求: 若宿主未启用自动记忆，或本轮需要额外沉淀稳定结论/关键决策，再调用一次 save_project_memory(project_id, content, ...)；不要在同一需求的每个中间步骤重复补记。",
+            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id；关键决策写入 save_work_facts，关键执行节点写入 append_session_event，并始终复用同一个 `chat_session_id` / `session_id`。",
             "- 适合自动化的能力: 结构化任务分析、项目规则聚合、交付报告、更新日志条目生成。",
             "- 需要谨慎的能力: 任何真实执行前先补 classify_command_risk / check_operation_policy。",
         ]
@@ -1624,17 +1698,21 @@ def _client_profile_text(client_name: str) -> str:
         title = "Generic CLI"
         focus = [
             "- 定位: 适合通用 MCP 宿主或尚未针对当前系统定制的 CLI 客户端。",
-            "- 推荐链路: query://usage-guide -> search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context。",
+            "- 推荐链路: query://usage-guide -> search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> start_work_session。",
+            "- 接入约束: `type=sse` 的客户端有些会直接使用 `POST /mcp/query/sse` 作为 JSON-RPC bridge；这时如果 URL 没有 `project_id` / `chat_session_id`，首轮必须调用 `bind_project_context(...)` 或在工具参数里显式传 `project_id`。",
+            "- 记忆约束: 不要把 recall 当成每轮固定前置步骤；只有新需求、续跑恢复、修复旧问题或明显需要历史经验时才查记忆。",
+            "- 任务树约束: 若宿主会展示任务树，节点必须直接对应用户目标，不要把内部检索工具、规划工具或候选代理工具直接展示成节点。",
+            "- 工作流约束: 先计划、再执行、逐项验证；未完成前只保留需求记录和过程状态，不要提前输出最终结论。",
             "- 最小可用目标: 先跑通查询、分析、规划，再逐步接入策略判断和恢复能力。",
             "- 建议优先工具: analyze_task、resolve_relevant_context、generate_execution_plan、check_operation_policy。",
-            "- 长任务建议: 使用 save_work_facts 和 summarize_checkpoint 做轻量恢复。",
+            "- 长任务建议: 新会话优先调用 start_work_session；使用 save_work_facts 和 summarize_checkpoint 做轻量恢复。",
         ]
     return "\n".join([f"# {title} Client Profile", "", *focus])
 
 
-def _coerce_list_text(values: list[str] | None = None, fallback: str = "") -> list[str]:
+def _coerce_list_text(values: list[str] | str | None = None, fallback: str = "") -> list[str]:
     items: list[str] = []
-    for item in values or []:
+    for item in _iter_text_values(values):
         normalized = _normalize_text(item)
         if normalized and normalized not in items:
             items.append(normalized)
@@ -1651,11 +1729,11 @@ def _build_delivery_report_payload(
     title: str = "",
     project_id: str = "",
     summary: str = "",
-    completed_items: list[str] | None = None,
-    changed_files: list[str] | None = None,
-    verification: list[str] | None = None,
-    risks: list[str] | None = None,
-    next_steps: list[str] | None = None,
+    completed_items: list[str] | str | None = None,
+    changed_files: list[str] | str | None = None,
+    verification: list[str] | str | None = None,
+    risks: list[str] | str | None = None,
+    next_steps: list[str] | str | None = None,
 ) -> dict:
     project_id_value = _normalize_text(project_id)
     project_name_value = _resolve_project_name(project_id_value, "")
@@ -1728,8 +1806,567 @@ def _generate_release_note_entry_payload(
     }
 
 
-def create_query_mcp():
+def create_query_mcp(
+    *,
+    current_key_owner_username_ctx=None,
+    current_mcp_session_id_ctx=None,
+    session_contexts: dict[str, dict[str, str]] | None = None,
+):
     mcp = _new_mcp("query-center")
+
+    def _current_query_session_context() -> dict[str, str]:
+        session_binding_key = ""
+        if current_mcp_session_id_ctx is not None:
+            session_binding_key = str(current_mcp_session_id_ctx.get("") or "").strip()
+        if not (session_contexts is not None and session_binding_key):
+            return {}
+        return dict(session_contexts.get(session_binding_key) or {})
+
+    def _extract_memory_section(content: str, label: str) -> str:
+        text = str(content or "")
+        label_value = str(label or "").strip()
+        if not label_value:
+            return ""
+        bracket_label = re.escape(label_value)
+        bracket_match = re.search(
+            rf"(?:^|\n)\[{bracket_label}\]\s*([\s\S]*?)(?=\n\[[^\n]+\]|$)",
+            text,
+        )
+        if bracket_match:
+            return _normalize_text(bracket_match.group(1), 1200)
+        plain_match = re.search(
+            rf"(?:^|\n){bracket_label}[:：]\s*([\s\S]*?)(?=\n(?:\[[^\n]+\]|[^\n\[\]:：]{{1,24}}[:：])|$)",
+            text,
+        )
+        return _normalize_text(plain_match.group(1), 1200) if plain_match else ""
+
+    def _derive_memory_root_goal(content: str) -> str:
+        text = _normalize_text(content, 4000)
+        if not text:
+            return ""
+        for label in ("用户问题", "问题原文", "问题摘要", "问题", "需求", "目标"):
+            section_value = _extract_memory_section(text, label)
+            if section_value:
+                return _normalize_text(section_value, 1000)
+        first_line = next(
+            (line.strip() for line in text.splitlines() if str(line or "").strip()),
+            "",
+        )
+        return _normalize_text(first_line, 1000)
+
+    def _append_memory_chat_session(content: str, chat_session_id: str) -> str:
+        content_value = _normalize_text(content, 4000)
+        chat_session_id_value = _normalize_text(chat_session_id, 120)
+        if not content_value or not chat_session_id_value:
+            return content_value
+        if _extract_memory_section(content_value, "关联会话"):
+            return content_value
+        return f"{content_value}\n[关联会话] {chat_session_id_value}"
+
+    def _append_memory_task_tree_binding(content: str, task_tree_payload: dict | None, chat_session_id: str = "") -> str:
+        content_value = _normalize_text(content, 4000)
+        if not content_value or not isinstance(task_tree_payload, dict):
+            return content_value
+        if any(str(line or "").strip().startswith("[执行轨迹JSON]") for line in content_value.splitlines()):
+            return content_value
+        current_node = (
+            task_tree_payload.get("current_node")
+            if isinstance(task_tree_payload.get("current_node"), dict)
+            else {}
+        )
+        binding = {
+            "chat_session_id": _normalize_text(chat_session_id, 120),
+            "task_tree_session_id": _normalize_text(task_tree_payload.get("id"), 80),
+            "task_tree_chat_session_id": _normalize_text(
+                task_tree_payload.get("source_chat_session_id") or task_tree_payload.get("chat_session_id"),
+                80,
+            ),
+            "task_node_id": _normalize_text(current_node.get("id"), 80),
+            "task_node_title": _normalize_text(current_node.get("title"), 200),
+            "root_goal": _normalize_text(task_tree_payload.get("root_goal") or task_tree_payload.get("title"), 400),
+        }
+        binding = {key: value for key, value in binding.items() if value}
+        if not binding:
+            return content_value
+        return f"{content_value}\n[执行轨迹JSON] {json.dumps(binding, ensure_ascii=False, sort_keys=True)}"
+
+    def _ensure_query_task_tree(
+        *,
+        root_goal: str,
+        project_id: str = "",
+        chat_session_id: str = "",
+        max_steps: int | None = None,
+        force: bool = False,
+    ) -> dict | None:
+        root_goal_value = _normalize_text(root_goal, 1000)
+        if not root_goal_value:
+            return None
+        session_binding_key = ""
+        if current_mcp_session_id_ctx is not None:
+            session_binding_key = str(current_mcp_session_id_ctx.get("") or "").strip()
+        bound_context = _current_query_session_context()
+        project_id_value = _normalize_text(project_id, 120) or _normalize_text(
+            bound_context.get("project_id"),
+            120,
+        )
+        if not project_id_value:
+            return None
+        username, fallback_chat_session_id = _resolve_task_tree_context()
+        chat_session_id_value = _normalize_text(chat_session_id, 120) or _normalize_text(
+            bound_context.get("chat_session_id"),
+            120,
+        )
+        if not chat_session_id_value:
+            chat_session_id_value = _normalize_text(fallback_chat_session_id, 120)
+        if not chat_session_id_value:
+            return None
+        if not username:
+            username = "mcp-user"
+        from services.project_chat_task_tree import ensure_task_tree, serialize_task_tree
+
+        ensure_kwargs = {
+            "project_id": project_id_value,
+            "username": username,
+            "chat_session_id": chat_session_id_value,
+            "root_goal": root_goal_value,
+        }
+        if max_steps is not None:
+            ensure_kwargs["max_steps"] = max(1, min(int(max_steps or 6), 10))
+        if force:
+            ensure_kwargs["force"] = True
+        session = ensure_task_tree(**ensure_kwargs)
+        if session_contexts is not None and session_binding_key:
+            project_name_value = _resolve_project_name(
+                project_id_value,
+                str(bound_context.get("project_name") or "").strip(),
+            )
+            session_contexts[session_binding_key] = {
+                "project_id": project_id_value,
+                "project_name": project_name_value,
+                "employee_id": str(bound_context.get("employee_id") or "").strip(),
+                "chat_session_id": chat_session_id_value,
+            }
+        return serialize_task_tree(session)
+
+    def _resolve_task_tree_context() -> tuple[str, str]:
+        username = ""
+        if current_key_owner_username_ctx is not None:
+            username = current_key_owner_username_ctx.get("").strip()
+        if not username:
+            username = "mcp-user"
+        chat_session_id = ""
+        if current_mcp_session_id_ctx is not None:
+            chat_session_id = current_mcp_session_id_ctx.get("").strip()
+        return username, chat_session_id
+
+    def _resolve_query_chat_session_id(explicit_chat_session_id: str = "") -> str:
+        bound_context = _current_query_session_context()
+        _, fallback_chat_session_id = _resolve_task_tree_context()
+        return _normalize_text(explicit_chat_session_id, 120) or _normalize_text(
+            bound_context.get("chat_session_id"),
+            120,
+        ) or _normalize_text(fallback_chat_session_id, 120)
+
+    def _select_query_task_tree_node(
+        payload: dict[str, Any] | None,
+        *,
+        phase: str = "",
+        step: str = "",
+    ) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        current_node = payload.get("current_node") if isinstance(payload.get("current_node"), dict) else {}
+        nodes = payload.get("nodes") if isinstance(payload.get("nodes"), list) else []
+        candidate_nodes = [
+            item for item in nodes
+            if isinstance(item, dict) and _normalize_text(item.get("id"), 80) and _normalize_text(item.get("parent_id"), 80)
+        ]
+        if not candidate_nodes:
+            return current_node if current_node else {}
+
+        normalized_phase = _normalize_text(phase, 80).lower()
+        normalized_step = _normalize_text(step, 200).lower()
+        current_node_id = _normalize_text(current_node.get("id"), 80)
+        if not normalized_phase and not normalized_step:
+            return current_node if current_node else candidate_nodes[0]
+
+        def step_match_score(node: dict[str, Any]) -> int:
+            if not normalized_step:
+                return 0
+            texts = [
+                _normalize_text(node.get("title"), 200).lower(),
+                _normalize_text(node.get("objective"), 400).lower(),
+                _normalize_text(node.get("description"), 500).lower(),
+                _normalize_text(node.get("summary_for_model"), 500).lower(),
+            ]
+            if any(text == normalized_step for text in texts if text):
+                return 3
+            if any(normalized_step in text for text in texts if text):
+                return 2
+            if any(text and text in normalized_step for text in texts):
+                return 1
+            return 0
+
+        def phase_match_score(node: dict[str, Any]) -> int:
+            if not normalized_phase:
+                return 0
+            stage_key = _normalize_text(node.get("stage_key"), 80).lower()
+            if stage_key == normalized_phase:
+                return 3
+            texts = [
+                _normalize_text(node.get("title"), 200).lower(),
+                _normalize_text(node.get("description"), 500).lower(),
+            ]
+            if any(normalized_phase in text for text in texts if text):
+                return 1
+            return 0
+
+        ranked = sorted(
+            candidate_nodes,
+            key=lambda node: (
+                step_match_score(node),
+                phase_match_score(node),
+                1 if _normalize_status(node.get("status")) != "done" else 0,
+                1 if _normalize_text(node.get("id"), 80) == current_node_id else 0,
+                -int(node.get("level") or 0),
+                -int(node.get("sort_order") or 0),
+            ),
+            reverse=True,
+        )
+        best = ranked[0] if ranked else {}
+        if (step_match_score(best) > 0) or (phase_match_score(best) > 0):
+            return best
+        return current_node if current_node else best
+
+    def _resolve_query_task_tree_binding(
+        *,
+        project_id: str,
+        chat_session_id: str = "",
+        phase: str = "",
+        step: str = "",
+    ) -> dict[str, str]:
+        project_id_value = _normalize_text(project_id, 120)
+        username, fallback_chat_session_id = _resolve_task_tree_context()
+        chat_session_id_value = _resolve_query_chat_session_id(chat_session_id) or _normalize_text(
+            fallback_chat_session_id,
+            120,
+        )
+        if not (project_id_value and username and chat_session_id_value):
+            return {}
+        try:
+            from services.project_chat_task_tree import get_task_tree_for_chat_session, serialize_task_tree
+
+            session = get_task_tree_for_chat_session(
+                project_id_value,
+                username,
+                chat_session_id_value,
+            )
+            payload = serialize_task_tree(session) if session is not None else None
+        except Exception:  # pragma: no cover - defensive fallback
+            payload = None
+        if not isinstance(payload, dict):
+            return {}
+        selected_node = _select_query_task_tree_node(
+            payload,
+            phase=phase,
+            step=step,
+        )
+        return {
+            "task_tree_session_id": _normalize_text(payload.get("id"), 80),
+            "task_tree_chat_session_id": _normalize_text(
+                payload.get("source_chat_session_id") or payload.get("chat_session_id"),
+                80,
+            ),
+            "task_node_id": _normalize_text(selected_node.get("id"), 80),
+            "task_node_title": _normalize_text(selected_node.get("title"), 200),
+        }
+
+    def _synthesize_task_tree_summary(content: str, step: str = "", goal: str = "") -> str:
+        first_line = next(
+            (line.strip() for line in str(content or "").splitlines() if str(line or "").strip()),
+            "",
+        )
+        for candidate in (
+            _normalize_text(first_line, 200),
+            _normalize_text(step, 200),
+            _normalize_text(goal, 200),
+        ):
+            if candidate:
+                return _normalize_text(candidate, 1000)
+        return ""
+
+    def _coerce_task_tree_sync_status(status: str) -> str:
+        normalized = _normalize_text(status, 40).lower()
+        if normalized in {"done", "completed", "complete", "finished", "resolved", "fixed"}:
+            return "done"
+        if normalized in {"verifying", "verified", "checking", "validation"}:
+            return "verifying"
+        if normalized in {"in_progress", "in-progress", "started", "working", "processing", "running"}:
+            return "in_progress"
+        if normalized in {"blocked", "failed", "error"}:
+            return "blocked"
+        return ""
+
+    def _normalize_status(status: object) -> str:
+        normalized = _normalize_text(status, 40).lower()
+        if normalized in {"pending", "in_progress", "verifying", "blocked", "done"}:
+            return normalized
+        return _coerce_task_tree_sync_status(normalized) or "pending"
+
+    def _synthesize_transition_verification(
+        current_node: dict[str, Any],
+        *,
+        next_node: dict[str, Any] | None = None,
+        next_step: str = "",
+        next_phase: str = "",
+    ) -> str:
+        current_title = _normalize_text(current_node.get("title"), 200)
+        current_summary = _normalize_text(
+            current_node.get("verification_result")
+            or current_node.get("summary_for_model")
+            or current_node.get("latest_outcome")
+            or current_node.get("objective")
+            or current_node.get("description"),
+            1000,
+        )
+        if current_summary:
+            return _normalize_text(current_summary, 2000)
+        next_title = _normalize_text((next_node or {}).get("title"), 200) or _normalize_text(next_step, 200)
+        next_phase_value = _normalize_text(next_phase, 80)
+        if current_title and next_title:
+            return _normalize_text(
+                f"系统收口：已进入“{next_title}”，视为“{current_title}”已完成。",
+                2000,
+            )
+        if current_title and next_phase_value:
+            return _normalize_text(
+                f"系统收口：已进入 {next_phase_value} 阶段，视为“{current_title}”已完成。",
+                2000,
+            )
+        if current_title:
+            return _normalize_text(f"系统收口：{current_title} 已完成。", 2000)
+        return _normalize_text("系统收口：当前步骤已完成。", 2000)
+
+    def _sync_query_task_tree_from_structured_progress(
+        *,
+        project_id: str,
+        status: str = "",
+        content: str = "",
+        phase: str = "",
+        step: str = "",
+        goal: str = "",
+        verification: list[str] | None = None,
+        chat_session_id: str = "",
+    ) -> dict | None:
+        normalized_project_id = _normalize_text(project_id, 120)
+        normalized_status = _coerce_task_tree_sync_status(status)
+        username, _fallback_chat_session_id = _resolve_task_tree_context()
+        normalized_chat_session_id = _resolve_query_chat_session_id(chat_session_id)
+        if not (normalized_project_id and normalized_status and username and normalized_chat_session_id):
+            return None
+        from services.project_chat_task_tree import get_task_tree_for_chat_session, update_task_node, serialize_task_tree
+
+        session = get_task_tree_for_chat_session(
+            normalized_project_id,
+            username,
+            normalized_chat_session_id,
+        )
+        if session is None:
+            return None
+        serialized = serialize_task_tree(session) or {}
+        current_node = serialized.get("current_node") if isinstance(serialized.get("current_node"), dict) else {}
+        target_node = _select_query_task_tree_node(
+            serialized,
+            phase=phase,
+            step=step,
+        )
+        node_id = _normalize_text(target_node.get("id"), 80)
+        if not node_id:
+            return serialized or None
+
+        verification_items = _coerce_list_text(verification)
+        verification_result = "；".join(verification_items)[:2000]
+        summary_for_model = _synthesize_task_tree_summary(content, step=step, goal=goal)
+
+        def finalize_root_if_ready(updated_session):
+            serialized_session = serialize_task_tree(updated_session) or {}
+            nodes = serialized_session.get("nodes") if isinstance(serialized_session.get("nodes"), list) else []
+            if not nodes:
+                return updated_session
+            parent_ids = {
+                _normalize_text(node.get("parent_id"), 80)
+                for node in nodes
+                if _normalize_text(node.get("parent_id"), 80)
+            }
+            leaf_nodes = [
+                node for node in nodes
+                if _normalize_text(node.get("id"), 80)
+                and _normalize_text(node.get("parent_id"), 80)
+                and _normalize_text(node.get("id"), 80) not in parent_ids
+            ]
+            if not leaf_nodes or any(_normalize_status(node.get("status")) != "done" for node in leaf_nodes):
+                return updated_session
+            root_node = next(
+                (node for node in nodes if not _normalize_text(node.get("parent_id"), 80)),
+                None,
+            )
+            if root_node is None or _normalize_status(root_node.get("status")) == "done":
+                return updated_session
+            root_summary = _normalize_text(
+                summary_for_model,
+                1000,
+            ) or f"整体验证完成：{_normalize_text(serialized_session.get('root_goal') or serialized_session.get('title'), 200)}"
+            root_verification = _normalize_text(
+                verification_result,
+                2000,
+            ) or root_summary
+            return update_task_node(
+                project_id=normalized_project_id,
+                username=username,
+                chat_session_id=normalized_chat_session_id,
+                node_id=_normalize_text(root_node.get("id"), 80),
+                status="done",
+                verification_result=root_verification,
+                summary_for_model=root_summary,
+                allow_direct_completion=True,
+            )
+
+        try:
+            current_node_id = _normalize_text(current_node.get("id"), 80)
+            target_is_new_phase = current_node_id and current_node_id != node_id
+            current_verification_result = _normalize_text(current_node.get("verification_result"), 2000)
+            if target_is_new_phase and _normalize_status(current_node.get("status")) != "done":
+                transition_verification = current_verification_result or _synthesize_transition_verification(
+                    current_node,
+                    next_node=target_node,
+                    next_step=step,
+                    next_phase=phase,
+                )
+                transition_summary = _normalize_text(
+                    current_node.get("summary_for_model"),
+                    1000,
+                ) or _normalize_text(transition_verification, 1000)
+                session = update_task_node(
+                    project_id=normalized_project_id,
+                    username=username,
+                    chat_session_id=normalized_chat_session_id,
+                    node_id=current_node_id,
+                    status="done",
+                    verification_result=transition_verification,
+                    summary_for_model=transition_summary,
+                    is_current=False,
+                    allow_direct_completion=True,
+                )
+            if normalized_status == "done":
+                if not verification_result:
+                    normalized_status = "verifying"
+                else:
+                    session = update_task_node(
+                        project_id=normalized_project_id,
+                        username=username,
+                        chat_session_id=normalized_chat_session_id,
+                        node_id=node_id,
+                        status="done",
+                        verification_result=verification_result,
+                        summary_for_model=summary_for_model,
+                        is_current=True,
+                        allow_direct_completion=True,
+                    )
+                    session = finalize_root_if_ready(session)
+                    return serialize_task_tree(session)
+            session = update_task_node(
+                project_id=normalized_project_id,
+                username=username,
+                chat_session_id=normalized_chat_session_id,
+                node_id=node_id,
+                status=normalized_status,
+                verification_result=verification_result,
+                summary_for_model=summary_for_model,
+                is_current=True,
+                allow_direct_completion=True,
+            )
+            return serialize_task_tree(session)
+        except ValueError:
+            fallback_session = get_task_tree_for_chat_session(
+                normalized_project_id,
+                username,
+                normalized_chat_session_id,
+            )
+            return serialize_task_tree(fallback_session) if fallback_session is not None else None
+
+    def _audit_query_task_tree(
+        *,
+        project_id: str,
+        assistant_content: str,
+        successful_tool_names: list[str] | None = None,
+        chat_session_id: str = "",
+    ) -> dict | None:
+        project_id_value = _normalize_text(project_id, 120)
+        assistant_content_value = _normalize_text(assistant_content, 4000)
+        if not (project_id_value and assistant_content_value):
+            return None
+        username, _fallback_chat_session_id = _resolve_task_tree_context()
+        chat_session_id_value = _resolve_query_chat_session_id(chat_session_id)
+        if not (username and chat_session_id_value):
+            return None
+        from services.project_chat_task_tree import audit_task_tree_round
+
+        return audit_task_tree_round(
+            project_id=project_id_value,
+            username=username,
+            chat_session_id=chat_session_id_value,
+            assistant_content=assistant_content_value,
+            successful_tool_names=successful_tool_names or ["save_project_memory"],
+        )
+
+    def _get_existing_query_task_tree(
+        *,
+        project_id: str,
+        chat_session_id: str = "",
+    ) -> dict | None:
+        project_id_value = _normalize_text(project_id, 120)
+        if not project_id_value:
+            return None
+        bound_context = _current_query_session_context()
+        username, fallback_chat_session_id = _resolve_task_tree_context()
+        chat_session_id_value = _normalize_text(chat_session_id, 120) or _normalize_text(
+            bound_context.get("chat_session_id"),
+            120,
+        )
+        if not chat_session_id_value:
+            chat_session_id_value = _normalize_text(fallback_chat_session_id, 120)
+        if not (username and chat_session_id_value):
+            return None
+        from services.project_chat_task_tree import get_task_tree_for_chat_session, serialize_task_tree
+
+        session = get_task_tree_for_chat_session(
+            project_id_value,
+            username,
+            chat_session_id_value,
+        )
+        if session is None:
+            return None
+        return serialize_task_tree(session)
+
+    def _attach_query_task_tree(
+        payload: dict,
+        *,
+        root_goal: str,
+        project_id: str = "",
+        chat_session_id: str = "",
+        max_steps: int | None = None,
+        force: bool = False,
+    ) -> dict:
+        task_tree_payload = _ensure_query_task_tree(
+            root_goal=root_goal,
+            project_id=project_id,
+            chat_session_id=chat_session_id,
+            max_steps=max_steps,
+            force=force,
+        )
+        if task_tree_payload is not None:
+            payload["task_tree"] = task_tree_payload
+        return payload
 
     def _get_content_payload(
         project_id: str = "",
@@ -1797,20 +2434,63 @@ def create_query_mcp():
         return (
             "# Unified Query MCP\n\n"
             "- 统一入口路径: /mcp/query\n"
-            "- 目标: 在保留现有员工/项目/规则 MCP 的前提下，提供一个聚合查询入口，并补充最常用的项目执行代理与高层智能体分析能力。\n"
-            "- 推荐工具: search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / build_delivery_report / generate_release_note_entry / save_project_memory\n"
-            "- 典型用法: 先 search_ids 找到目标 ID，再用 get_content 或 get_manual_content 取正文。\n"
-            "- 高层能力: analyze_task 用于任务结构化理解；resolve_relevant_context 用于聚合相关项目成员/规则/工具；generate_execution_plan 用于输出执行步骤骨架。\n"
-            "- 策略能力: classify_command_risk 用于风险等级判断；check_workspace_scope 用于校验路径是否在工作区内；resolve_execution_mode 用于判断该走 local connector 还是项目工具；check_operation_policy 用于输出允许/拦截/需确认结论。\n"
-            "- 恢复能力: save_work_facts 和 append_session_event 支持附带 session_id、phase、step、changed_files、verification、risks、next_steps 等结构化轨迹字段；resume_work_session / summarize_checkpoint 会聚合这些字段，直接输出阶段、步骤、文件、验证、风险和下一步。\n"
-            "- 交付能力: build_delivery_report 用于结构化汇总本轮交付；generate_release_note_entry 用于生成更新日志条目；可读取 query://client-profile/claude-code 或 query://client-profile/codex 作为客户端接入画像。\n"
-            "- 记忆留痕: 首次查询必须把用户原始问题放进可检索字段，优先使用 search_ids(keyword=\"<用户原始问题>\")；不要只传“当前项目”“这个规则”之类代称。\n"
-            "- 记忆留痕: 每次有效对话结束后，可调用 save_project_memory(project_id, content, ...) 按项目 ID 显式保存对话内容或结构化结论。\n"
-            "- 执行代理: 本入口默认仍以查询与聚合优先；如宿主只接统一入口，项目协作型任务可优先调用 execute_project_collaboration(project_id, task, ...)。\n"
-            "- 执行代理: execute_project_collaboration 是统一编排入口，但是否单人主责、是否需要多人协作以及如何拆分，仍由 AI 结合项目手册、员工手册、规则和工具自主判断，不预设固定行业分工模板。\n"
-            "- 执行代理: 若需要手动编排项目执行，再继续调用 list_project_members / get_project_runtime_context / list_project_proxy_tools / invoke_project_skill_tool。\n"
-            "- 注意: 本入口仍以查询与聚合优先；如宿主支持多 MCP，复杂执行场景仍优先直连对应 project MCP。\n"
-            "- 记忆说明: 本入口已暴露 save_project_memory，可通过 project_id 直接写入项目对话内容；save_employee_memory 仍不暴露。如宿主系统已启用自动记忆，入口层仍会自动记录问题快照。"
+            "- 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹和交付报告能力。\n"
+            "- 推荐工具: bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / build_delivery_report / generate_release_note_entry / save_project_memory\n"
+            "\n"
+            "## 最少执行规则\n"
+            "1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。\n"
+            "2. MCP 配置里的 description、项目说明、\"当前项目\" 这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文，以及 bind_project_context(...) 写入的 MCP 会话绑定。\n"
+            "3. 若接入地址缺少 project_id，或需要续接任务树但缺少 chat_session_id，首轮立即调用 bind_project_context(project_id, chat_session_id?, root_goal?)；不要只依赖 description 里的项目说明。\n"
+            "4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。\n"
+            "5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。\n"
+            "6. 首轮查询必须把用户原始问题原文放进 search_ids(keyword=\"<用户原始问题>\")；不要只写“当前项目”“这个规则”“项目手册”这类代称。\n"
+            "7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。\n"
+            "7.1 记忆检索不是每轮固定步骤；仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，再调用 recall_project_memory 或 recall_employee_memory。\n"
+            "7.2 同一任务轮若已生成任务树并进入执行，后续默认依赖当前会话、任务树和工作轨迹，不要重复检索同一批项目记忆。\n"
+            "8. 实现型需求必须遵守任务树闭环：先 analyze_task -> resolve_relevant_context -> generate_execution_plan，再 get_current_task_tree 确认节点；执行中用 update_task_node_status 回写状态，完成时必须 complete_task_node_with_verification 填写验证结果。\n"
+            "9. 只有所有计划节点完成且验证结果齐全后，当前需求才算结束；执行中不得提前写“最终结论”。\n"
+            "10. 查询型问题（谁 / 哪些 / 多少 / 从哪里）保持单检索节点，不要误拆成实现步骤；检索完成后应让任务树归档。\n"
+            "11. 如用户在“已完成”后发现问题，必须重新起一轮修复计划，并继续回写轨迹与验证；不得直接覆盖上一轮结论。\n"
+            "\n"
+            "## 任务树与绑定约束\n"
+            "- 任务树与记忆必须使用同一条聊天会话线索；记录项目记忆、工作事实或会话事件时，应复用当前 chat_session_id / session_id，不得把任务树和记忆拆成两条无关轨迹。\n"
+            "- 同一条用户提问在统一查询 MCP 下只允许沉淀 1 条项目级问题记忆，并绑定 1 棵任务树；start_work_session / save_work_facts / append_session_event 等续跑工具不得再生成新的“用户问题”记忆或新的任务树。\n"
+            "- 当前 /ai/chat 页面只展示仍在进行中的任务树；已完成或已归档任务树属于历史记录，不应继续作为当前会话任务展示。\n"
+            "- 需要沉淀对话结论时，除最终答案外，还应保证后续可从记忆详情回看该轮规划、执行节点和验证结果。\n"
+            "- 任务树节点必须直接描述面向用户目标的真实工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 等内部检索/规划工具直接当成节点标题。\n"
+            "- 候选代理工具、脚本路径和类似“Auto inferred proxy entry from scripts/... ”的描述，只能作为内部工具信息，不得直接展示为任务树节点。\n"
+            "\n"
+            "## 高层能力\n"
+            "- analyze_task: 对用户原始任务做结构化理解。\n"
+            "- resolve_relevant_context: 聚合相关项目成员、规则、工具和上下文。\n"
+            "- generate_execution_plan: 输出执行步骤骨架，用于生成真正的任务计划。\n"
+            "- get_current_task_tree / update_task_node_status / complete_task_node_with_verification: 用于读取、推进和验证任务树节点。\n"
+            "\n"
+            "## 策略与执行能力\n"
+            "- classify_command_risk: 判断命令风险等级。\n"
+            "- check_workspace_scope: 校验路径是否位于工作区内。\n"
+            "- resolve_execution_mode: 判断该走 local connector、项目工具还是仅保留查询。\n"
+            "- check_operation_policy: 输出允许 / 拦截 / 需确认结论。\n"
+            "- execute_project_collaboration: 统一项目协作编排入口，但是否单人主责、是否需要多人协作以及如何拆分，仍由 AI 结合项目手册、员工手册、规则和工具自主判断，不预设固定行业分工模板。\n"
+            "- 若需要手动编排项目执行，再继续调用 list_project_members / get_project_runtime_context / list_project_proxy_tools / invoke_project_skill_tool。\n"
+            "\n"
+            "## 工作轨迹与恢复\n"
+            "- 多轮任务先 start_work_session；后续复用同一个 chat_session_id / session_id，并用 save_work_facts、append_session_event、resume_work_session、summarize_checkpoint 维护轨迹。\n"
+            "- start_work_session 可返回服务端生成的 session_id；save_work_facts 和 append_session_event 支持附带 session_id、phase、step、changed_files、verification、risks、next_steps 等结构化轨迹字段；resume_work_session / summarize_checkpoint 会聚合这些字段，直接输出阶段、步骤、文件、验证、风险和下一步。\n"
+            "- 每个新聊天窗口的首轮有效对话，如用户未显式提供 session_id，应优先调用 start_work_session 获取服务端 session_id，再在本窗口后续所有 save_work_facts / append_session_event / resume_work_session / summarize_checkpoint 中复用同一个值；如果未先调用，save_work_facts 也会自动补生成一个。\n"
+            "- start_work_session 会立即写入一条 started 事件建立正式工作轨迹；首次拿到 session_id 后，仍建议尽快调用一次 save_work_facts 补充任务摘要、阶段和文件信息。若既不调用 start_work_session，也不写 save_work_facts / append_session_event，而只写 save_project_memory，会出现“有项目记忆但无正式工作轨迹”的情况。\n"
+            "- 缺少活跃 MCP session 的 CLI / bridge 场景下，也必须显式传入并持续复用同一个 chat_session_id；否则容易出现“轨迹已写入，但当前主视图没有挂到任务树”的错觉。\n"
+            "\n"
+            "## 记忆与交付\n"
+            "- recall_project_memory / recall_employee_memory 只在新需求开始、续跑恢复、修复旧问题或明显需要历史经验时使用；不要把记忆检索当成每个计划节点的固定前置动作。\n"
+            "- 同一任务轮若已生成任务树并进入执行，后续优先依赖当前会话、任务树和工作轨迹；除非用户明确要求沿用历史方案或当前上下文明显不足，否则不要重复 recall。\n"
+            "- save_project_memory 只在补充稳定结论或关键决策时使用；不要在同一需求的每个中间步骤重复补记。如宿主已启用自动记忆快照，仅在入口未覆盖自动记忆或需要补一条稳定结论时再额外保存。\n"
+            "- build_delivery_report 用于结构化汇总本轮交付；generate_release_note_entry 用于生成更新日志条目。\n"
+            "- 可读取 query://client-profile/claude-code 或 query://client-profile/codex 作为客户端接入画像。\n"
+            "\n"
+            "## 说明\n"
+            "- 本入口仍以查询与聚合优先；如宿主支持多 MCP，复杂执行场景仍优先直连对应 project MCP。\n"
+            "- 本入口已暴露 save_project_memory，可通过 project_id 直接写入项目对话内容；save_employee_memory 仍不暴露。如宿主系统已启用自动记忆，入口层仍会自动记录问题快照。"
         )
 
     @mcp.resource("query://client-profile/claude-code")
@@ -1824,6 +2504,86 @@ def create_query_mcp():
     @mcp.resource("query://client-profile/generic-cli")
     def query_client_profile_generic_cli() -> str:
         return _client_profile_text("generic-cli")
+
+    @mcp.tool()
+    def bind_project_context(
+        project_id: str,
+        project_name: str = "",
+        chat_session_id: str = "",
+        root_goal: str = "",
+    ) -> dict:
+        """绑定当前统一查询 MCP 会话到指定项目/聊天，并可选立即创建任务树。"""
+
+        project_id_value = _normalize_text(project_id, 120)
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        project = project_store.get(project_id_value)
+        if project is None:
+            return {"error": f"Project {project_id_value} not found"}
+
+        normalized_project_name = _normalize_text(project_name, 160) or str(
+            getattr(project, "name", "") or ""
+        ).strip()
+        session_binding_key = ""
+        if current_mcp_session_id_ctx is not None:
+            session_binding_key = str(current_mcp_session_id_ctx.get("") or "").strip()
+        normalized_chat_session_id = _normalize_text(chat_session_id, 120) or session_binding_key
+        root_goal_value = _normalize_text(root_goal, 1000)
+
+        if not session_binding_key or session_contexts is None:
+            if not normalized_chat_session_id:
+                return {
+                    "error": "Current MCP session is missing; provide chat_session_id explicitly for detached binding",
+                }
+            payload = {
+                "status": "bound_detached",
+                "project_id": project_id_value,
+                "project_name": normalized_project_name,
+                "session_id": session_binding_key,
+                "chat_session_id": normalized_chat_session_id,
+                "binding_mode": "detached",
+                "warning": "Active MCP session is unavailable; continue by explicitly reusing project_id and chat_session_id in subsequent calls.",
+            }
+            if root_goal_value:
+                from services.project_chat_task_tree import ensure_task_tree, serialize_task_tree
+
+                username, _ = _resolve_task_tree_context()
+                session = ensure_task_tree(
+                    project_id=project_id_value,
+                    username=username,
+                    chat_session_id=normalized_chat_session_id,
+                    root_goal=root_goal_value,
+                )
+                payload["task_tree"] = serialize_task_tree(session)
+            return payload
+
+        session_contexts[session_binding_key] = {
+            "project_id": project_id_value,
+            "project_name": normalized_project_name,
+            "employee_id": str((session_contexts.get(session_binding_key) or {}).get("employee_id") or "").strip(),
+            "chat_session_id": normalized_chat_session_id,
+        }
+
+        payload = {
+            "status": "bound",
+            "project_id": project_id_value,
+            "project_name": normalized_project_name,
+            "session_id": session_binding_key,
+            "chat_session_id": normalized_chat_session_id,
+        }
+
+        if root_goal_value:
+            from services.project_chat_task_tree import ensure_task_tree, serialize_task_tree
+
+            username, _ = _resolve_task_tree_context()
+            session = ensure_task_tree(
+                project_id=project_id_value,
+                username=username,
+                chat_session_id=normalized_chat_session_id,
+                root_goal=root_goal_value,
+            )
+            payload["task_tree"] = serialize_task_tree(session)
+        return payload
 
     @mcp.tool()
     def get_content(
@@ -1853,10 +2613,14 @@ def create_query_mcp():
         raw_request_value = _normalize_text(raw_request)
         if not raw_request_value:
             return {"error": "raw_request is required"}
-        return _analyze_task_payload(
-            raw_request_value,
+        return _attach_query_task_tree(
+            _analyze_task_payload(
+                raw_request_value,
+                project_id=project_id,
+                employee_id=employee_id,
+            ),
+            root_goal=raw_request_value,
             project_id=project_id,
-            employee_id=employee_id,
         )
 
     @mcp.tool()
@@ -1880,7 +2644,7 @@ def create_query_mcp():
         except (TypeError, ValueError):
             limit_value = 10
         limit_value = max(1, min(limit_value, 50))
-        return {
+        result = {
             "keyword": keyword_value,
             "project_id": project_id_value,
             "employee_id": employee_id_value,
@@ -1893,6 +2657,7 @@ def create_query_mcp():
                 limit_value,
             ),
         }
+        return result
 
     @mcp.tool()
     def resolve_relevant_context(
@@ -1906,11 +2671,15 @@ def create_query_mcp():
         task_value = _normalize_text(task)
         if not task_value:
             return {"error": "task is required"}
-        return _resolve_relevant_context_payload(
-            task_value,
+        return _attach_query_task_tree(
+            _resolve_relevant_context_payload(
+                task_value,
+                project_id=project_id,
+                employee_id=employee_id,
+                limit=limit,
+            ),
+            root_goal=task_value,
             project_id=project_id,
-            employee_id=employee_id,
-            limit=limit,
         )
 
     @mcp.tool()
@@ -1925,11 +2694,17 @@ def create_query_mcp():
         task_value = _normalize_text(task)
         if not task_value:
             return {"error": "task is required"}
-        return _generate_execution_plan_payload(
-            task_value,
+        return _attach_query_task_tree(
+            _generate_execution_plan_payload(
+                task_value,
+                project_id=project_id,
+                employee_id=employee_id,
+                max_steps=max_steps,
+            ),
+            root_goal=task_value,
             project_id=project_id,
-            employee_id=employee_id,
             max_steps=max_steps,
+            force=True,
         )
 
     @mcp.tool()
@@ -2020,31 +2795,133 @@ def create_query_mcp():
         )
 
     @mcp.tool()
+    def start_work_session(
+        project_id: str,
+        employee_id: str = "",
+        project_name: str = "",
+        title: str = "",
+        goal: str = "",
+        chat_session_id: str = "",
+        phase: str = "",
+        step: str = "",
+        status: str = "started",
+    ) -> dict:
+        """启动一条新的工作会话，并返回服务端生成的 session_id。"""
+
+        project_id_value = _normalize_text(project_id)
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        active_employee_ids = _active_project_employee_ids(project_id_value)
+        if not active_employee_ids:
+            return {"error": f"Project {project_id_value} has no active members"}
+        employee_id_value = _normalize_text(employee_id)
+        if employee_id_value and employee_id_value not in active_employee_ids:
+            return {"error": f"Employee {employee_id_value} is not an active project member"}
+        session_id_value = _generate_work_session_id(
+            project_id=project_id_value,
+            employee_id=employee_id_value,
+        )
+        project_name_value = _resolve_project_name(project_id_value, project_name)
+        chat_session_id_value = _resolve_query_chat_session_id(chat_session_id) or session_id_value
+        task_tree_payload = _ensure_query_task_tree(
+            root_goal=_normalize_text(goal) or _normalize_text(title) or _normalize_text(step),
+            project_id=project_id_value,
+            chat_session_id=chat_session_id_value,
+        )
+        task_tree_binding = _resolve_query_task_tree_binding(
+            project_id=project_id_value,
+            chat_session_id=chat_session_id_value,
+            phase=phase,
+            step=step,
+        )
+        trajectory = _structured_trajectory_payload(
+            kind="session-start",
+            session_id=session_id_value,
+            task_tree_session_id=task_tree_binding.get("task_tree_session_id", ""),
+            task_tree_chat_session_id=task_tree_binding.get("task_tree_chat_session_id", ""),
+            task_node_id=task_tree_binding.get("task_node_id", ""),
+            task_node_title=task_tree_binding.get("task_node_title", ""),
+            event_type="start",
+            phase=phase,
+            step=step,
+            status=status or "started",
+            goal=goal,
+            content=_normalize_text(title) or "Work session started",
+        )
+        work_session_event = _save_work_session_event_record(
+            project_id=project_id_value,
+            project_name=project_name_value,
+            employee_id=employee_id_value,
+            trajectory=trajectory,
+        )
+        result = {
+            "status": "started",
+            "project_id": project_id_value,
+            "project_name": project_name_value,
+            "employee_id": employee_id_value,
+            "session_id": session_id_value,
+            "chat_session_id": chat_session_id_value,
+            "title": _normalize_text(title),
+            "goal": _normalize_text(goal),
+            "phase": _normalize_text(phase),
+            "step": _normalize_text(step),
+            "initial_status": _normalize_text(status) or "started",
+            "trajectory": trajectory,
+            "work_session_event": work_session_event,
+            "recommended_next_tool": "save_work_facts",
+            "message": "Use this session_id for subsequent save_work_facts, append_session_event, resume_work_session and summarize_checkpoint calls.",
+        }
+        if task_tree_payload is not None:
+            result["task_tree"] = task_tree_payload
+        return result
+
+    @mcp.tool()
     def save_work_facts(
         project_id: str,
-        facts: list[str] | None = None,
+        facts: list[str] | str | None = None,
         content: str = "",
         employee_id: str = "",
         importance: float = 0.7,
         project_name: str = "",
         session_id: str = "",
+        chat_session_id: str = "",
         phase: str = "",
         step: str = "",
         status: str = "",
         goal: str = "",
-        changed_files: list[str] | None = None,
-        verification: list[str] | None = None,
-        risks: list[str] | None = None,
-        next_steps: list[str] | None = None,
+        changed_files: list[str] | str | None = None,
+        verification: list[str] | str | None = None,
+        risks: list[str] | str | None = None,
+        next_steps: list[str] | str | None = None,
     ) -> dict:
         """保存工作事实，供后续恢复、检查点摘要和长期任务续跑使用。"""
 
         fact_items = _parse_fact_lines(content=content, facts=facts)
         if not fact_items:
             return {"error": "Provide at least one fact in facts or content"}
+        session_id_value = _normalize_text(session_id) or _generate_work_session_id(
+            project_id=project_id,
+            employee_id=employee_id,
+        )
+        chat_session_id_value = _resolve_query_chat_session_id(chat_session_id) or session_id_value
+        _ensure_query_task_tree(
+            root_goal=_normalize_text(goal) or _normalize_text(step) or fact_items[0],
+            project_id=project_id,
+            chat_session_id=chat_session_id_value,
+        )
+        task_tree_binding = _resolve_query_task_tree_binding(
+            project_id=project_id,
+            chat_session_id=chat_session_id_value,
+            phase=phase,
+            step=step,
+        )
         trajectory = _structured_trajectory_payload(
             kind="work-facts",
-            session_id=session_id,
+            session_id=session_id_value,
+            task_tree_session_id=task_tree_binding.get("task_tree_session_id", ""),
+            task_tree_chat_session_id=task_tree_binding.get("task_tree_chat_session_id", ""),
+            task_node_id=task_tree_binding.get("task_node_id", ""),
+            task_node_title=task_tree_binding.get("task_node_title", ""),
             phase=phase,
             step=step,
             status=status,
@@ -2059,21 +2936,24 @@ def create_query_mcp():
             fact_items=fact_items,
             trajectory=trajectory,
         )
+        rendered_with_session = _append_memory_chat_session(rendered, chat_session_id_value)
         result = _save_project_memory_entries(
             project_id=project_id,
             employee_id=employee_id,
-            content=rendered,
+            content=rendered_with_session,
             memory_type=MemoryType.LEARNED_PATTERN,
             importance=importance,
             project_name=project_name,
             purpose_tags=_trajectory_purpose_tags(
                 base_tags=("query-mcp", "work-facts", "phase3"),
-                session_id=session_id,
+                session_id=session_id_value,
                 phase=phase,
                 step=step,
             ),
         )
         if not result.get("error"):
+            result["session_id"] = session_id_value
+            result["chat_session_id"] = chat_session_id_value
             result["trajectory"] = trajectory
             result["work_session_event"] = _save_work_session_event_record(
                 project_id=project_id,
@@ -2081,6 +2961,23 @@ def create_query_mcp():
                 employee_id=employee_id,
                 trajectory=trajectory,
             )
+            task_tree_payload = _sync_query_task_tree_from_structured_progress(
+                project_id=project_id,
+                status=status,
+                content=rendered_with_session,
+                phase=phase,
+                step=step,
+                goal=goal,
+                verification=verification,
+                chat_session_id=chat_session_id_value,
+            )
+            if task_tree_payload is None:
+                task_tree_payload = _get_existing_query_task_tree(
+                    project_id=project_id,
+                    chat_session_id=chat_session_id_value,
+                )
+            if task_tree_payload is not None:
+                result["task_tree"] = task_tree_payload
         return result
 
     @mcp.tool()
@@ -2092,14 +2989,15 @@ def create_query_mcp():
         employee_id: str = "",
         importance: float = 0.55,
         project_name: str = "",
+        chat_session_id: str = "",
         phase: str = "",
         step: str = "",
         status: str = "",
         goal: str = "",
-        changed_files: list[str] | None = None,
-        verification: list[str] | None = None,
-        risks: list[str] | None = None,
-        next_steps: list[str] | None = None,
+        changed_files: list[str] | str | None = None,
+        verification: list[str] | str | None = None,
+        risks: list[str] | str | None = None,
+        next_steps: list[str] | str | None = None,
     ) -> dict:
         """向项目范围追加一条会话事件，用于恢复最近执行轨迹。"""
 
@@ -2112,9 +3010,25 @@ def create_query_mcp():
             return {"error": "event_type is required"}
         if not content_value:
             return {"error": "content is required"}
+        chat_session_id_value = _resolve_query_chat_session_id(chat_session_id) or session_id_value
+        _ensure_query_task_tree(
+            root_goal=_normalize_text(goal) or _normalize_text(step) or content_value,
+            project_id=project_id,
+            chat_session_id=chat_session_id_value,
+        )
+        task_tree_binding = _resolve_query_task_tree_binding(
+            project_id=project_id,
+            chat_session_id=chat_session_id_value,
+            phase=phase,
+            step=step,
+        )
         trajectory = _structured_trajectory_payload(
             kind="session-event",
             session_id=session_id_value,
+            task_tree_session_id=task_tree_binding.get("task_tree_session_id", ""),
+            task_tree_chat_session_id=task_tree_binding.get("task_tree_chat_session_id", ""),
+            task_node_id=task_tree_binding.get("task_node_id", ""),
+            task_node_title=task_tree_binding.get("task_node_title", ""),
             event_type=event_type_value,
             phase=phase,
             step=step,
@@ -2132,10 +3046,11 @@ def create_query_mcp():
             content=content_value,
             trajectory=trajectory,
         )
+        rendered_with_session = _append_memory_chat_session(rendered, chat_session_id_value)
         result = _save_project_memory_entries(
             project_id=project_id,
             employee_id=employee_id,
-            content=rendered,
+            content=rendered_with_session,
             memory_type=MemoryType.KEY_EVENT,
             importance=importance,
             project_name=project_name,
@@ -2147,6 +3062,7 @@ def create_query_mcp():
             ),
         )
         if not result.get("error"):
+            result["chat_session_id"] = chat_session_id_value
             result["trajectory"] = trajectory
             result["work_session_event"] = _save_work_session_event_record(
                 project_id=project_id,
@@ -2154,6 +3070,23 @@ def create_query_mcp():
                 employee_id=employee_id,
                 trajectory=trajectory,
             )
+            task_tree_payload = _sync_query_task_tree_from_structured_progress(
+                project_id=project_id,
+                status=status,
+                content=rendered_with_session,
+                phase=phase,
+                step=step,
+                goal=goal,
+                verification=verification,
+                chat_session_id=chat_session_id_value,
+            )
+            if task_tree_payload is None:
+                task_tree_payload = _get_existing_query_task_tree(
+                    project_id=project_id,
+                    chat_session_id=chat_session_id_value,
+                )
+            if task_tree_payload is not None:
+                result["task_tree"] = task_tree_payload
         return result
 
     @mcp.tool()
@@ -2280,11 +3213,11 @@ def create_query_mcp():
         title: str = "",
         project_id: str = "",
         summary: str = "",
-        completed_items: list[str] | None = None,
-        changed_files: list[str] | None = None,
-        verification: list[str] | None = None,
-        risks: list[str] | None = None,
-        next_steps: list[str] | None = None,
+        completed_items: list[str] | str | None = None,
+        changed_files: list[str] | str | None = None,
+        verification: list[str] | str | None = None,
+        risks: list[str] | str | None = None,
+        next_steps: list[str] | str | None = None,
     ) -> dict:
         """生成结构化交付报告，供 CLI 直接输出或写入文档。"""
 
@@ -2390,36 +3323,45 @@ def create_query_mcp():
         except (TypeError, ValueError):
             return {"error": "importance must be a number"}
         importance_value = max(0.0, min(1.0, importance_value))
-
-        normalized_project_name = str(project_name or "").strip() or str(getattr(project, "name", "") or "").strip() or "default"
-        target_employee_ids = [employee_id_value] if employee_id_value else active_employee_ids
-        memory_ids: list[str] = []
-        for target_employee_id in target_employee_ids:
-            memory = Memory(
-                id=memory_store.new_id(),
-                employee_id=target_employee_id,
-                type=memory_type,
-                content=content_value,
-                project_name=normalized_project_name,
-                importance=importance_value,
-                scope=MemoryScope.EMPLOYEE_PRIVATE,
-                classification=Classification.INTERNAL,
-                purpose_tags=("query-mcp", "manual-write", "project-id"),
-            )
-            memory_store.save(memory)
-            memory_ids.append(memory.id)
-
-        return {
-            "status": "saved",
-            "project_id": project_id_value,
-            "project_name": normalized_project_name,
-            "employee_ids": target_employee_ids,
-            "memory_ids": memory_ids,
-            "saved_count": len(memory_ids),
-            "type": memory_type.value,
-            "importance": importance_value,
-            "project_mcp_path": f"/mcp/projects/{project_id_value}",
-        }
+        chat_session_id_value = _resolve_query_chat_session_id()
+        content_with_session = _append_memory_chat_session(
+            content_value,
+            chat_session_id_value,
+        )
+        task_tree_payload = _get_existing_query_task_tree(
+            project_id=project_id_value,
+            chat_session_id=chat_session_id_value,
+        )
+        content_with_binding = _append_memory_task_tree_binding(
+            content_with_session,
+            task_tree_payload,
+            chat_session_id=chat_session_id_value,
+        )
+        purpose_tags = ["query-mcp", "manual-write", "project-id"]
+        if chat_session_id_value:
+            purpose_tags.append(f"chat-session:{chat_session_id_value}")
+        if isinstance(task_tree_payload, dict) and str(task_tree_payload.get("id") or "").strip():
+            purpose_tags.append(f"task-tree-session:{str(task_tree_payload.get('id') or '').strip()}")
+        result = _save_project_memory_entries(
+            project_id=project_id_value,
+            content=content_with_binding,
+            employee_id=employee_id_value,
+            memory_type=memory_type,
+            importance=importance_value,
+            project_name=project_name,
+            purpose_tags=tuple(purpose_tags),
+        )
+        if task_tree_payload is not None and isinstance(result, dict):
+            result["task_tree"] = task_tree_payload
+        task_tree_audit = _audit_query_task_tree(
+            project_id=project_id_value,
+            assistant_content=content_with_binding,
+            successful_tool_names=["save_project_memory"],
+            chat_session_id=chat_session_id_value,
+        )
+        if task_tree_audit is not None and isinstance(result, dict):
+            result["task_tree_audit"] = task_tree_audit
+        return result
 
     @mcp.tool()
     def list_project_members(project_id: str) -> dict:
@@ -2526,11 +3468,14 @@ def create_query_mcp():
         if project is None:
             return {"error": f"Project {project_id_value} not found"}
         from services.dynamic_mcp_runtime import invoke_project_skill_tool_runtime
+        resolved_username, resolved_chat_session_id = _resolve_task_tree_context()
 
         result = invoke_project_skill_tool_runtime(
             project_id=project_id_value,
             tool_name=tool_name_value,
             employee_id=employee_id_value,
+            username=resolved_username,
+            chat_session_id=resolved_chat_session_id,
             args=args,
             args_json=args_json,
             timeout_sec=timeout_sec,
@@ -2572,10 +3517,13 @@ def create_query_mcp():
         if project is None:
             return {"error": f"Project {project_id_value} not found"}
         from services.dynamic_mcp_runtime import execute_project_collaboration_runtime
+        resolved_username, resolved_chat_session_id = _resolve_task_tree_context()
 
         result = execute_project_collaboration_runtime(
             project_id=project_id_value,
             task=task_value,
+            username=resolved_username,
+            chat_session_id=resolved_chat_session_id,
             employee_ids=employee_ids or [],
             max_employees=max_employees,
             max_tool_calls=max_tool_calls,

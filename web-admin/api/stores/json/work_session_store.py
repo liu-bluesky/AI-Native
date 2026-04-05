@@ -46,6 +46,10 @@ class WorkSessionEvent:
     project_name: str = ""
     employee_id: str = ""
     session_id: str = ""
+    task_tree_session_id: str = ""
+    task_tree_chat_session_id: str = ""
+    task_node_id: str = ""
+    task_node_title: str = ""
     source_kind: str = ""
     event_type: str = ""
     phase: str = ""
@@ -67,6 +71,10 @@ class WorkSessionEvent:
         self.project_name = _normalize_text(self.project_name, 120)
         self.employee_id = _normalize_text(self.employee_id, 80)
         self.session_id = _normalize_text(self.session_id, 80)
+        self.task_tree_session_id = _normalize_text(self.task_tree_session_id, 80)
+        self.task_tree_chat_session_id = _normalize_text(self.task_tree_chat_session_id, 80)
+        self.task_node_id = _normalize_text(self.task_node_id, 80)
+        self.task_node_title = _normalize_text(self.task_node_title, 200)
         self.source_kind = _normalize_text(self.source_kind, 40)
         self.event_type = _normalize_text(self.event_type, 40)
         self.phase = _normalize_text(self.phase, 80)
@@ -126,12 +134,18 @@ class WorkSessionStore:
         project_id: str = "",
         employee_id: str = "",
         session_id: str = "",
+        task_tree_session_id: str = "",
+        task_tree_chat_session_id: str = "",
+        task_node_id: str = "",
         query: str = "",
         limit: int = 200,
     ) -> list[WorkSessionEvent]:
         normalized_project_id = _normalize_text(project_id, 80)
         normalized_employee_id = _normalize_text(employee_id, 80)
         normalized_session_id = _normalize_text(session_id, 80)
+        normalized_task_tree_session_id = _normalize_text(task_tree_session_id, 80)
+        normalized_task_tree_chat_session_id = _normalize_text(task_tree_chat_session_id, 80)
+        normalized_task_node_id = _normalize_text(task_node_id, 80)
         keyword = _normalize_text(query, 200).lower()
         try:
             limit_value = max(1, min(int(limit or 200), 500))
@@ -145,12 +159,25 @@ class WorkSessionStore:
                 continue
             if normalized_session_id and item.session_id != normalized_session_id:
                 continue
+            if normalized_task_tree_session_id and item.task_tree_session_id != normalized_task_tree_session_id:
+                continue
+            if (
+                normalized_task_tree_chat_session_id
+                and item.task_tree_chat_session_id != normalized_task_tree_chat_session_id
+            ):
+                continue
+            if normalized_task_node_id and item.task_node_id != normalized_task_node_id:
+                continue
             if keyword:
                 haystack = "\n".join(
                     [
                         item.project_name,
                         item.employee_id,
                         item.session_id,
+                        item.task_tree_session_id,
+                        item.task_tree_chat_session_id,
+                        item.task_node_id,
+                        item.task_node_title,
                         item.source_kind,
                         item.event_type,
                         item.phase,

@@ -143,6 +143,21 @@ def _create_project_chat_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_project_chat_task_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import ProjectChatTaskStore
+
+        return ProjectChatTaskStore(_data_dir())
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.project_chat_task_store import ProjectChatTaskStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return ProjectChatTaskStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_project_material_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
@@ -257,6 +272,7 @@ employee_store = _StoreProxy(_create_employee_store)
 agent_template_store = _StoreProxy(_create_agent_template_store)
 project_store = _StoreProxy(_create_project_store)
 project_chat_store = _StoreProxy(_create_project_chat_store)
+project_chat_task_store = _StoreProxy(_create_project_chat_task_store)
 project_material_store = _StoreProxy(_create_project_material_store)
 project_studio_export_store = _StoreProxy(_create_project_studio_export_store)
 system_config_store = _StoreProxy(_create_system_config_store)
@@ -274,6 +290,7 @@ __all__ = [
     "agent_template_store",
     "project_store",
     "project_chat_store",
+    "project_chat_task_store",
     "project_material_store",
     "project_studio_export_store",
     "system_config_store",

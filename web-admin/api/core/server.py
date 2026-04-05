@@ -32,7 +32,9 @@ from routers import (
     users,
     roles,
     mcp_modules,
+    mcp_monitor,
     dictionaries,
+    online_users,
     work_sessions,
 )
 from services.dynamic_mcp_runtime import (
@@ -99,7 +101,9 @@ def create_app() -> FastAPI:
         users,
         roles,
         mcp_modules,
+        mcp_monitor,
         dictionaries,
+        online_users,
         work_sessions,
     ):
         app.include_router(r.router)
