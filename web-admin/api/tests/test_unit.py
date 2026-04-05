@@ -2465,6 +2465,64 @@ def test_serialize_project_includes_ui_rule_bindings(monkeypatch):
     ]
 
 
+def _build_project_api_test_client(tmp_path, monkeypatch, auth_payload):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in (
+        "project_store",
+        "role_store",
+        "project_material_store",
+        "project_studio_export_store",
+        "employee_store",
+        "system_config_store",
+    ):
+        getattr(store_factory, proxy_name)._instance = None
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: auth_payload
+    client = TestClient(app)
+    return client, store_factory.project_store
+
+
+def test_project_routes_include_created_by_for_create_list_and_detail(tmp_path, monkeypatch):
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "alice", "role": "admin"},
+    )
+
+    create_response = client.post(
+        "/api/projects",
+        json={
+            "name": "创建人测试项目",
+            "description": "验证项目管理接口返回创建人",
+        },
+    )
+
+    assert create_response.status_code == 200
+    created_project = create_response.json()["project"]
+    project_id = created_project["id"]
+
+    assert created_project["created_by"] == "alice"
+    assert project_store.get(project_id).created_by == "alice"
+
+    list_response = client.get("/api/projects")
+    assert list_response.status_code == 200
+    listed_project = next(item for item in list_response.json()["projects"] if item["id"] == project_id)
+    assert listed_project["created_by"] == "alice"
+
+    detail_response = client.get(f"/api/projects/{project_id}")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["project"]["created_by"] == "alice"
+
+
 def test_dictionary_catalog_applies_system_override(monkeypatch):
     import services.dictionary_catalog as catalog
 

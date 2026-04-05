@@ -12,6 +12,7 @@ from services.system_mcp_discovery import list_system_mcp_skills
 from stores.json.system_config_store import (
     normalize_employee_external_skill_sites,
     normalize_public_contact_channels,
+    normalize_public_changelog,
     normalize_dictionaries,
     normalize_skill_registry_sources,
     normalize_system_mcp_config,
@@ -67,6 +68,12 @@ async def get_public_contact_channels():
     return {"items": _serialize_public_contact_channels(getattr(cfg, "public_contact_channels", []))}
 
 
+@public_router.get("/public-changelog")
+async def get_public_changelog():
+    cfg = system_config_store.get_global()
+    return {"content": normalize_public_changelog(getattr(cfg, "public_changelog", ""))}
+
+
 @router.get("/mcp-skills")
 async def get_system_mcp_skills(
     _: None = Depends(_require_system_config_permission),
@@ -93,6 +100,7 @@ async def patch_system_config(
         "chat_upload_max_limit",
         "chat_max_tokens",
         "default_chat_system_prompt",
+        "public_changelog",
         "employee_auto_rule_generation_enabled",
         "employee_auto_rule_generation_source_filters",
         "employee_auto_rule_generation_max_count",
@@ -127,6 +135,9 @@ async def patch_system_config(
 
     if "default_chat_system_prompt" in updates:
         updates["default_chat_system_prompt"] = str(updates["default_chat_system_prompt"] or "").strip()[:8000]
+
+    if "public_changelog" in updates:
+        updates["public_changelog"] = normalize_public_changelog(updates["public_changelog"])
 
     if "employee_auto_rule_generation_source_filters" in updates:
         raw_filters = updates["employee_auto_rule_generation_source_filters"]

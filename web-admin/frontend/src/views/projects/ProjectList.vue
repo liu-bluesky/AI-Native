@@ -36,6 +36,9 @@
         <template #default="{ row }">{{ row.ai_entry_file || '-' }}</template>
       </el-table-column>
       <el-table-column prop="description" label="描述" show-overflow-tooltip />
+      <el-table-column label="创建人" width="140" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.created_by || '-' }}</template>
+      </el-table-column>
       <el-table-column label="成员数" width="90" align="center">
         <template #default="{ row }">{{ row.member_count || 0 }}</template>
       </el-table-column>

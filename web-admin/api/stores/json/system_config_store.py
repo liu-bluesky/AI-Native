@@ -67,6 +67,12 @@ def default_public_contact_channels() -> list[dict[str, object]]:
     return []
 
 
+def normalize_public_changelog(value: object) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = "\n".join(line.rstrip() for line in text.split("\n"))
+    return text.strip()[:24000]
+
+
 def default_system_mcp_config() -> dict[str, object]:
     return {
         "mcpServers": {
@@ -346,6 +352,7 @@ class SystemConfig:
     public_contact_channels: list[dict[str, object]] = field(
         default_factory=default_public_contact_channels
     )
+    public_changelog: str = ""
     skill_registry_sources: dict[str, object] = field(
         default_factory=default_skill_registry_sources
     )
@@ -379,6 +386,7 @@ class SystemConfig:
         self.public_contact_channels = normalize_public_contact_channels(
             self.public_contact_channels
         )
+        self.public_changelog = normalize_public_changelog(self.public_changelog)
         self.skill_registry_sources = normalize_skill_registry_sources(
             self.skill_registry_sources
         )

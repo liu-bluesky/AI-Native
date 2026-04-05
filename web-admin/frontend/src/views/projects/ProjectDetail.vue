@@ -31,6 +31,9 @@
           {{ getProjectTypeLabel(project.type) }}
         </el-tag>
       </el-descriptions-item>
+      <el-descriptions-item label="创建人">{{
+        project.created_by || "-"
+      }}</el-descriptions-item>
       <el-descriptions-item v-if="showProjectLocationFields" label="工作区路径" :span="2">{{
         project.workspace_path || "-"
       }}</el-descriptions-item>
