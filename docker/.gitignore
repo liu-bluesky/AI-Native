@@ -7,7 +7,7 @@
 # Python runtime artifacts
 __pycache__/
 *.py[cod]
-
+.env.prod
 # Frontend build artifacts
 web-admin/frontend/dist/
 rules
@@ -16,3 +16,4 @@ rules
 web-admin/api/.venv/
 backup
 dist
+.codebuddy

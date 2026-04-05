@@ -294,7 +294,7 @@ def build_remote_apply_script(config: dict[str, Any], remote_sql_path: str) -> s
             'mkdir -p "$backup_root"',
             './deploy.sh backup-db "$backup_root/ai_employee.sql"',
             'echo "BACKUP_DIR=$backup_dir"',
-            f'docker exec ai-employee-postgres psql -U admin -d ai_employee -f {remote_sql}',
+            f'cat {remote_sql} | docker exec -i ai-employee-postgres psql -U admin -d ai_employee',
             f'rm -f {remote_sql}',
         ]
     )

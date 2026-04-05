@@ -69,7 +69,7 @@
 
         <div class="hero-stage" data-reveal>
           <div class="hero-stage__shell">
-            <div class="hero-stage__field" aria-hidden="true">
+            <div class="hero-stage__field">
               <div class="hero-stage__halo" />
 
               <div class="hero-core">
@@ -244,22 +244,126 @@
           </el-button>
         </div>
       </section>
+
     </main>
+
+    <button
+      v-if="activeContactChannel"
+      type="button"
+      class="floating-contact-entry"
+      @click="toggleContactPopover"
+    >
+      <span class="floating-contact-entry__dot" aria-hidden="true" />
+      <span>进群交流</span>
+      <span v-if="hasMultipleChannels" class="floating-contact-entry__badge">
+        {{ publicContactChannels.length }}
+      </span>
+    </button>
+
+    <Teleport to="body">
+      <Transition name="contact-popover-fade">
+        <div
+          v-if="contactPopoverVisible && activeContactChannel"
+          class="contact-popover-overlay"
+          @click.self="closeContactPopover"
+        >
+          <div class="contact-popover-panel">
+            <button type="button" class="contact-popover__close" @click="closeContactPopover">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+
+            <div class="contact-popover__header">
+              <div class="contact-popover__eyebrow">Tech Circle</div>
+              <h3 class="contact-popover__title">直接进群</h3>
+              <p class="contact-popover__text">答疑与交流，一步到位。</p>
+            </div>
+
+            <div v-if="hasMultipleChannels" class="contact-popover__switcher">
+              <button
+                v-for="ch in publicContactChannels"
+                :key="ch.id"
+                type="button"
+                class="contact-popover__switcher-item"
+                :class="{ 'is-active': selectedContactChannelId === ch.id }"
+                @click="selectedContactChannelId = ch.id"
+              >
+                {{ ch.title }}
+              </button>
+            </div>
+
+            <div class="contact-popover__surface">
+              <div v-if="activeContactChannel.qr_image_url" class="contact-popover__qr">
+                <img
+                  :src="activeContactChannel.qr_image_url"
+                  :alt="activeContactChannel.title"
+                  loading="lazy"
+                />
+              </div>
+
+              <div class="contact-popover__meta">
+                <span class="contact-popover__name">{{ activeContactChannel.title }}</span>
+                <span v-if="activeContactChannel.qq_group_number" class="contact-popover__number">
+                  {{ activeContactChannel.qq_group_number }}
+                </span>
+              </div>
+
+              <div class="contact-popover__actions">
+                <el-button
+                  v-if="activeContactChannel.join_link"
+                  type="primary"
+                  class="site-nav__primary contact-popover__primary"
+                  @click="openChannelJoinLink(activeContactChannel)"
+                >
+                  打开加群链接
+                </el-button>
+                <el-button
+                  v-else-if="activeContactChannel.qq_group_number"
+                  type="primary"
+                  class="site-nav__primary contact-popover__primary"
+                  @click="copyContactChannel(activeContactChannel)"
+                >
+                  {{ copiedContactChannelId === activeContactChannel.id ? '已复制' : '复制群号' }}
+                </el-button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 
+import api from '@/utils/api.js'
 import { authStateVersion, hasStoredToken } from '@/utils/auth-storage.js'
 
 const router = useRouter()
 let sectionObserver
+let copiedContactTimer = 0
+const publicContactChannels = ref([])
+const copiedContactChannelId = ref('')
+const contactPopoverVisible = ref(false)
+const selectedContactChannelId = ref('')
 
 const authenticated = computed(() => {
   authStateVersion.value
   return hasStoredToken()
+})
+
+const primaryPublicContactChannel = computed(() => publicContactChannels.value[0] || null)
+
+const hasMultipleChannels = computed(() => publicContactChannels.value.length > 1)
+
+const activeContactChannel = computed(() => {
+  const channels = publicContactChannels.value
+  if (!channels.length) return null
+  return channels.find((c) => c.id === selectedContactChannelId.value) || channels[0]
 })
 
 const navItems = [
@@ -387,6 +491,37 @@ const marketHighlights = [
   },
 ]
 
+function normalizePublicContactChannels(value) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+    .map((rawItem) => {
+      const sortOrder = Number(rawItem.sort_order || 0)
+      return {
+        id: String(rawItem.id || '').trim().slice(0, 80),
+        type: 'qq_group',
+        title: String(rawItem.title || '').trim().slice(0, 120) || '加入技术交流群',
+        description: String(rawItem.description || '').trim().slice(0, 280),
+        qq_group_number: String(rawItem.qq_group_number || '')
+          .replace(/\D+/g, '')
+          .slice(0, 32),
+        button_text: String(rawItem.button_text || '').trim().slice(0, 40) || '复制群号',
+        guide_text:
+          String(rawItem.guide_text || '').trim().slice(0, 160) ||
+          '打开 QQ，搜索群号加入。',
+        join_link: String(rawItem.join_link || '').trim().slice(0, 500),
+        qr_image_url: String(rawItem.qr_image_url || '').trim().slice(0, 500),
+        sort_order: Number.isFinite(sortOrder) ? sortOrder : 0,
+      }
+    })
+    .filter((item) => item.qq_group_number || item.join_link || item.qr_image_url)
+    .sort((a, b) => a.sort_order - b.sort_order || a.title.localeCompare(b.title, 'zh-CN'))
+    .slice(0, 10)
+}
+
 function scrollToSection(id) {
   const element = document.getElementById(id)
   if (!element) {
@@ -419,9 +554,78 @@ function handleMarketFollowUpAction() {
   router.push({ path: '/login', query: { redirect: '/market' } })
 }
 
-onMounted(() => {
-  document.title = 'AI 员工工厂 | 官网首页'
+function openChannelJoinLink(channel) {
+  const joinLink = String(channel?.join_link || '').trim()
+  if (!joinLink) {
+    return false
+  }
+  window.open(joinLink, '_blank', 'noopener,noreferrer')
+  return true
+}
 
+function toggleContactPopover() {
+  if (contactPopoverVisible.value) {
+    closeContactPopover()
+  } else {
+    copiedContactChannelId.value = ''
+    if (publicContactChannels.value.length) {
+      selectedContactChannelId.value = publicContactChannels.value[0].id
+    }
+    contactPopoverVisible.value = true
+    document.addEventListener('keydown', handleEscapeKey)
+  }
+}
+
+function closeContactPopover() {
+  contactPopoverVisible.value = false
+  document.removeEventListener('keydown', handleEscapeKey)
+}
+
+function handleEscapeKey(event) {
+  if (event.key === 'Escape') {
+    closeContactPopover()
+  }
+}
+
+async function fetchPublicContactChannels() {
+  try {
+    const data = await api.get('/system-config/public-contact-channels')
+    publicContactChannels.value = normalizePublicContactChannels(data?.items)
+  } catch {
+    publicContactChannels.value = []
+  }
+}
+
+async function copyContactChannel(channel) {
+  const groupNumber = String(channel?.qq_group_number || '').trim()
+  if (!groupNumber) {
+    return
+  }
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(groupNumber)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = groupNumber
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+    copiedContactChannelId.value = String(channel?.id || '')
+    window.clearTimeout(copiedContactTimer)
+    copiedContactTimer = window.setTimeout(() => {
+      copiedContactChannelId.value = ''
+    }, 1800)
+    ElMessage.success('QQ群号已复制')
+  } catch {
+    ElMessage.error('复制失败，请手动复制群号')
+  }
+}
+
+function setupRevealObserver() {
   const sections = document.querySelectorAll('[data-reveal]')
   if (!sections.length) {
     return
@@ -444,11 +648,20 @@ onMounted(() => {
   )
 
   sections.forEach((section) => sectionObserver?.observe(section))
+}
+
+onMounted(async () => {
+  document.title = 'AI 员工工厂 | 官网首页'
+  await fetchPublicContactChannels()
+  await nextTick()
+  setupRevealObserver()
 })
 
 onBeforeUnmount(() => {
   sectionObserver?.disconnect()
   sectionObserver = null
+  window.clearTimeout(copiedContactTimer)
+  document.removeEventListener('keydown', handleEscapeKey)
 })
 </script>
 
@@ -696,16 +909,16 @@ onBeforeUnmount(() => {
   --el-button-active-border-color: #020617;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.16);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
 }
 
 .site-nav__primary::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(120deg, transparent 20%, rgba(255, 255, 255, 0.26) 50%, transparent 80%);
+  background: linear-gradient(120deg, transparent 20%, rgba(255, 255, 255, 0.18) 50%, transparent 80%);
   transform: translateX(-130%);
-  animation: buttonSweep 5.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+  animation: buttonSweep 8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
 }
 
 .site-main {
@@ -898,6 +1111,358 @@ onBeforeUnmount(() => {
     linear-gradient(180deg, rgba(252, 254, 255, 0.88), rgba(239, 245, 251, 0.92)),
     rgba(255, 255, 255, 0.48);
   overflow: hidden;
+}
+
+.floating-contact-entry__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--page-accent-soft);
+  box-shadow: 0 0 0 6px rgba(56, 189, 248, 0.14);
+  animation: signalDotPulse 8s ease-in-out infinite;
+}
+
+.floating-contact-entry__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--page-accent-soft);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* ---- contact popover ---- */
+.contact-popover-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.32), rgba(15, 23, 42, 0.24));
+  backdrop-filter: blur(12px);
+  animation: overlayFadeIn 0.2s ease;
+}
+
+@keyframes overlayFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.contact-popover-panel {
+  position: relative;
+  width: 100%;
+  max-width: 360px;
+  border-radius: 28px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  box-shadow:
+    0 28px 72px rgba(56, 189, 248, 0.16),
+    0 12px 32px rgba(56, 189, 248, 0.12),
+    0 4px 16px rgba(56, 189, 248, 0.08);
+  backdrop-filter: blur(24px);
+  padding: 28px;
+  border: 1px solid rgba(56, 189, 248, 0.12);
+  animation: popoverSlideUp 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes popoverSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.contact-popover__close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(248, 250, 252, 0.8));
+  color: var(--page-text-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--page-transition),
+    color var(--page-transition),
+    border-color var(--page-transition),
+    transform var(--page-transition);
+  box-shadow: 0 4px 12px rgba(56, 189, 248, 0.08);
+}
+
+.contact-popover__close:hover {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
+  color: var(--page-text);
+  border-color: rgba(56, 189, 248, 0.32);
+  transform: scale(1.08);
+  box-shadow: 0 6px 16px rgba(56, 189, 248, 0.12);
+}
+
+.contact-popover__close:active {
+  transform: scale(0.96);
+}
+
+.contact-popover__close svg {
+  width: 16px;
+  height: 16px;
+}
+
+.contact-popover__header {
+  padding-right: 40px;
+  text-align: center;
+}
+
+.contact-popover__eyebrow {
+  color: var(--page-accent-soft);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.contact-popover__title {
+  margin: 12px 0 0;
+  font-family: 'Avenir Next', 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 26px;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+  color: var(--page-text);
+  background: linear-gradient(135deg, var(--page-text), #334155);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.contact-popover__text {
+  margin: 10px 0 0;
+  color: var(--page-text-muted);
+  font-size: 15px;
+  line-height: 1.6;
+  font-weight: 500;
+}
+
+.contact-popover__switcher {
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
+  padding: 6px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.08), rgba(56, 189, 248, 0.04));
+  border: 1px solid rgba(56, 189, 248, 0.12);
+}
+
+.contact-popover__switcher-item {
+  flex: 1;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--page-text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--page-transition),
+    color var(--page-transition),
+    box-shadow var(--page-transition),
+    transform var(--page-transition);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  position: relative;
+  z-index: 1;
+}
+
+.contact-popover__switcher-item.is-active {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  color: var(--page-text);
+  box-shadow:
+    0 4px 16px rgba(56, 189, 248, 0.12),
+    0 2px 8px rgba(56, 189, 248, 0.08);
+  transform: translateY(-1px);
+}
+
+.contact-popover__switcher-item:hover:not(.is-active) {
+  color: var(--page-text);
+  background: rgba(255, 255, 255, 0.6);
+  transform: translateY(-1px);
+}
+
+.contact-popover__surface {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  padding: 24px;
+  border-radius: 24px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.88));
+  border: 1px solid rgba(56, 189, 248, 0.12);
+  box-shadow: 0 8px 24px rgba(56, 189, 248, 0.08);
+  position: relative;
+  overflow: hidden;
+}
+
+.contact-popover__surface::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.08) 0%, transparent 70%);
+  animation: surfaceGlow 6s ease-in-out infinite;
+}
+
+@keyframes surfaceGlow {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.1);
+    opacity: 0.8;
+  }
+}
+
+.contact-popover__qr {
+  width: 150px;
+  padding: 10px;
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
+  box-shadow:
+    0 8px 24px rgba(56, 189, 248, 0.12),
+    0 4px 12px rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  position: relative;
+  z-index: 1;
+  transition: transform var(--page-transition);
+}
+
+.contact-popover__qr:hover {
+  transform: scale(1.02);
+  box-shadow:
+    0 12px 32px rgba(56, 189, 248, 0.16),
+    0 6px 16px rgba(56, 189, 248, 0.12);
+}
+
+.contact-popover__qr img {
+  display: block;
+  width: 100%;
+  border-radius: 16px;
+}
+
+.contact-popover__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 20px;
+  gap: 6px;
+  position: relative;
+  z-index: 1;
+}
+
+.contact-popover__name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--page-text);
+  line-height: 1.3;
+  background: linear-gradient(135deg, var(--page-text), #334155);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.contact-popover__number {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', monospace;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--page-accent-soft);
+  overflow-wrap: anywhere;
+  text-shadow: 0 2px 8px rgba(56, 189, 248, 0.3);
+}
+
+.contact-popover__actions {
+  margin-top: 20px;
+  width: 100%;
+  position: relative;
+  z-index: 1;
+}
+
+.contact-popover__primary {
+  width: 100%;
+  min-height: 48px;
+  border-radius: 999px !important;
+  font-size: 16px;
+  font-weight: 600;
+  position: relative;
+  overflow: hidden;
+}
+
+.contact-popover__primary::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 20%, rgba(255, 255, 255, 0.18) 50%, transparent 80%);
+  transform: translateX(-130%);
+  animation: buttonSweep 4s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+@keyframes buttonSweep {
+  to {
+    transform: translateX(130%);
+  }
+}
+
+.contact-popover-fade-enter-active,
+.contact-popover-fade-leave-active {
+  transition: opacity 0.25s ease;
+}
+
+.contact-popover-fade-enter-from,
+.contact-popover-fade-leave-to {
+  opacity: 0;
+}
+
+.contact-popover-fade-enter-active .contact-popover-panel {
+  animation: popoverSlideUp 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.contact-popover-fade-leave-active .contact-popover-panel {
+  animation: popoverSlideDown 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes popoverSlideDown {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
 }
 
 .hero-stage__field::before {
@@ -1546,6 +2111,51 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
+.floating-contact-entry {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 0 20px;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  border-radius: var(--page-radius-pill);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.88));
+  color: var(--page-text);
+  box-shadow:
+    0 16px 36px rgba(56, 189, 248, 0.12),
+    0 8px 16px rgba(56, 189, 248, 0.08);
+  backdrop-filter: blur(20px);
+  cursor: pointer;
+  transition:
+    transform var(--page-transition),
+    border-color var(--page-transition),
+    background-color var(--page-transition),
+    box-shadow var(--page-transition);
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+
+.floating-contact-entry:hover {
+  transform: translate3d(0, -3px, 0);
+  border-color: rgba(56, 189, 248, 0.4);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
+  box-shadow:
+    0 20px 48px rgba(56, 189, 248, 0.16),
+    0 12px 24px rgba(56, 189, 248, 0.12);
+}
+
+.floating-contact-entry:active {
+  transform: translate3d(0, -1px, 0);
+  box-shadow:
+    0 12px 28px rgba(56, 189, 248, 0.1),
+    0 6px 12px rgba(56, 189, 248, 0.08);
+}
+
 .hero-node.is-visible:hover {
   animation: none;
   transform: translate3d(-50%, calc(-50% - 6px), 0);
@@ -1762,6 +2372,51 @@ onBeforeUnmount(() => {
   .market-banner__title,
   .workflow-card__title {
     font-size: 26px;
+  }
+
+  .floating-contact-entry {
+    right: 14px;
+    bottom: 14px;
+    min-height: 52px;
+    padding: 0 18px;
+    font-size: 14px;
+  }
+
+  .contact-popover-panel {
+    max-width: 100%;
+    margin: 0 8px;
+    padding: 24px;
+    border-radius: 24px;
+  }
+
+  .contact-popover__header {
+    padding-right: 36px;
+  }
+
+  .contact-popover__title {
+    font-size: 24px;
+  }
+
+  .contact-popover__text {
+    font-size: 14px;
+  }
+
+  .contact-popover__surface {
+    padding: 20px;
+    border-radius: 20px;
+  }
+
+  .contact-popover__qr {
+    width: 140px;
+  }
+
+  .contact-popover__number {
+    font-size: 18px;
+  }
+
+  .contact-popover__primary {
+    min-height: 44px;
+    font-size: 15px;
   }
 
   .hero-stage__footer {
@@ -2108,6 +2763,22 @@ onBeforeUnmount(() => {
   52% {
     transform: translate3d(0, 0, 0);
     box-shadow: none;
+  }
+}
+
+@keyframes signalDotPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 6px rgba(56, 189, 248, 0.14);
+    opacity: 0.92;
+  }
+  42% {
+    box-shadow: 0 0 0 12px rgba(56, 189, 248, 0.08);
+    opacity: 1;
+  }
+  76% {
+    box-shadow: 0 0 0 8px rgba(56, 189, 248, 0.12);
+    opacity: 0.88;
   }
 }
 

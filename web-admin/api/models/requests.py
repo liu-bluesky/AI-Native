@@ -539,6 +539,7 @@ class SystemConfigUpdateReq(BaseModel):
     employee_auto_rule_generation_max_count: int | None = None
     employee_auto_rule_generation_prompt: str | None = None
     employee_external_skill_sites: list[dict[str, Any]] | None = None
+    public_contact_channels: list[dict[str, Any]] | None = None
     skill_registry_sources: dict[str, Any] | None = None
     dictionaries: dict[str, Any] | None = None
     mcp_config: dict[str, Any] | None = None

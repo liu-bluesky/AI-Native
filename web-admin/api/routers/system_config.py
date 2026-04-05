@@ -11,10 +11,12 @@ from models.requests import SystemConfigUpdateReq
 from services.system_mcp_discovery import list_system_mcp_skills
 from stores.json.system_config_store import (
     normalize_employee_external_skill_sites,
+    normalize_public_contact_channels,
     normalize_dictionaries,
     normalize_skill_registry_sources,
     normalize_system_mcp_config,
 )
+
 
 def _require_system_config_permission(auth_payload: dict = Depends(require_auth)) -> None:
     ensure_permission(auth_payload, "menu.system.config")
@@ -28,6 +30,27 @@ def _require_system_config_read_permission(auth_payload: dict = Depends(require_
 
 
 router = APIRouter(prefix="/api/system-config", dependencies=[Depends(require_auth)])
+public_router = APIRouter(prefix="/api/system-config")
+
+
+def _serialize_public_contact_channels(channels: object) -> list[dict[str, object]]:
+    items = [
+        {
+            "id": item["id"],
+            "type": item["type"],
+            "title": item["title"],
+            "description": item["description"],
+            "qq_group_number": item["qq_group_number"],
+            "button_text": item["button_text"],
+            "guide_text": item["guide_text"],
+            "join_link": item["join_link"],
+            "qr_image_url": item["qr_image_url"],
+            "sort_order": item["sort_order"],
+        }
+        for item in normalize_public_contact_channels(channels)
+        if item.get("enabled", True)
+    ]
+    return sorted(items, key=lambda item: (int(item["sort_order"]), item["title"], item["id"]))
 
 
 @router.get("")
@@ -36,6 +59,12 @@ async def get_system_config(
 ):
     cfg = system_config_store.get_global()
     return {"config": asdict(cfg)}
+
+
+@public_router.get("/public-contact-channels")
+async def get_public_contact_channels():
+    cfg = system_config_store.get_global()
+    return {"items": _serialize_public_contact_channels(getattr(cfg, "public_contact_channels", []))}
 
 
 @router.get("/mcp-skills")
@@ -69,6 +98,7 @@ async def patch_system_config(
         "employee_auto_rule_generation_max_count",
         "employee_auto_rule_generation_prompt",
         "employee_external_skill_sites",
+        "public_contact_channels",
         "skill_registry_sources",
         "dictionaries",
         "mcp_config",
@@ -138,6 +168,11 @@ async def patch_system_config(
     if "employee_external_skill_sites" in updates:
         updates["employee_external_skill_sites"] = normalize_employee_external_skill_sites(
             updates["employee_external_skill_sites"]
+        )
+
+    if "public_contact_channels" in updates:
+        updates["public_contact_channels"] = normalize_public_contact_channels(
+            updates["public_contact_channels"]
         )
 
     if "skill_registry_sources" in updates:

@@ -45,8 +45,11 @@ python3 remote-docker-deploy/remote_docker_deploy.py \
 如果你要把发布拆成 3 步，直接用这 3 个脚本：
 
 ```bash
+# 第 1 步：只在本地构建并打包产物，生成离线镜像 tar 或 remote-build 源码包
 ./remote-docker-deploy/package_deploy_artifacts.sh --profile prod
+# 第 2 步：只把第 1 步产物上传到服务器，不执行远程部署
 ./remote-docker-deploy/upload_deploy_artifacts.sh --profile prod --remote-deploy-password '你的服务器密码'
+# 第 3 步：只在服务器执行备份、加载产物并更新远程栈；默认会带上 --update-db
 ./remote-docker-deploy/update_remote_stack.sh --profile prod --remote-deploy-password '你的服务器密码'
 ```
 
@@ -227,3 +230,67 @@ python3 remote-docker-deploy/sync_resource_visibility.py \
 - `--api-data-dir /path/to/web-admin-api`
 - `--profile prod`
 - `--dry-run`
+
+## 同步本地 PostgreSQL 业务数据到远程库
+
+如果你的代码已经发布了，但远程 PostgreSQL 里的业务数据还是旧的，可以用这个脚本把本地 `ai-employee-postgres` 的公共表同步到远程 PostgreSQL。
+
+典型场景：
+
+- 本地已经有最新员工、项目、规则、技能、记忆、项目聊天等数据
+- 远程代码和 schema 已更新，但远程库里还是旧数据
+- 你不想手工给每张表导 SQL
+
+基础用法：
+
+```bash
+python3 remote-docker-deploy/sync_postgres_data.py \
+  --profile prod \
+  --remote-deploy-password '你的服务器密码'
+```
+
+默认行为：
+
+1. 从本地容器 `ai-employee-postgres` 读取 public schema 下的所有业务表
+2. 默认跳过 `schema_migrations`
+3. 生成 UPSERT SQL，上传到远程服务器
+4. 先备份远程数据库
+5. 在远程 `ai-employee-postgres` 里执行同步 SQL
+
+如果你只想同步部分表：
+
+```bash
+python3 remote-docker-deploy/sync_postgres_data.py \
+  --profile prod \
+  --remote-deploy-password '你的服务器密码' \
+  --tables users,employees,projects,project_user_members,rules,skills,skill_bindings
+```
+
+如果你希望远程表先清空，再完全按本地数据重建：
+
+```bash
+python3 remote-docker-deploy/sync_postgres_data.py \
+  --profile prod \
+  --remote-deploy-password '你的服务器密码' \
+  --tables users,employees,projects,project_user_members,rules,skills,skill_bindings \
+  --replace
+```
+
+常用参数：
+
+- `--tables`
+- `--exclude-tables`
+- `--replace`
+- `--local-postgres-container ai-employee-postgres`
+- `--local-db-user admin`
+- `--local-db-name ai_employee`
+- `--remote-postgres-container ai-employee-postgres`
+- `--remote-db-user admin`
+- `--remote-db-name ai_employee`
+- `--dry-run`
+
+注意：
+
+- 默认是 UPSERT，不会删除远程多出来的旧行；如果你要远程结果严格等于本地，请显式加 `--replace`
+- 这个脚本同步的是 PostgreSQL 表数据，不负责 Docker volume 里的文件资产
+- 运行前建议先完成代码发布和 schema migration，避免表结构不一致

@@ -63,6 +63,10 @@ def default_employee_external_skill_sites() -> list[dict[str, object]]:
     ]
 
 
+def default_public_contact_channels() -> list[dict[str, object]]:
+    return []
+
+
 def default_system_mcp_config() -> dict[str, object]:
     return {
         "mcpServers": {
@@ -146,6 +150,59 @@ def normalize_employee_external_skill_sites(value: object) -> list[dict[str, obj
             }
         )
         if len(normalized) >= 20:
+            break
+    return normalized
+
+
+def normalize_public_contact_channels(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw_item in value:
+        if not isinstance(raw_item, dict):
+            continue
+        channel_type = str(raw_item.get("type") or "qq_group").strip().lower()
+        if channel_type != "qq_group":
+            continue
+        item_id = str(raw_item.get("id") or "").strip()[:80]
+        title = str(raw_item.get("title") or "").strip()[:120]
+        description = str(raw_item.get("description") or "").strip()[:280]
+        qq_group_number = "".join(
+            char for char in str(raw_item.get("qq_group_number") or "") if char.isdigit()
+        )[:32]
+        button_text = str(raw_item.get("button_text") or "").strip()[:40]
+        guide_text = str(raw_item.get("guide_text") or "").strip()[:160]
+        join_link = str(raw_item.get("join_link") or "").strip()[:500]
+        qr_image_url = str(raw_item.get("qr_image_url") or "").strip()[:500]
+        try:
+            sort_order = int(raw_item.get("sort_order") or 0)
+        except (TypeError, ValueError):
+            sort_order = 0
+        sort_order = max(0, min(999, sort_order))
+        dedupe_key = (item_id or qq_group_number or title).lower()
+        if not dedupe_key or dedupe_key in seen:
+            continue
+        if not qq_group_number and not join_link and not qr_image_url:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(
+            {
+                "id": item_id or f"contact-{len(normalized) + 1}",
+                "enabled": bool(raw_item.get("enabled", True)),
+                "type": "qq_group",
+                "title": title or "加入用户交流群",
+                "description": description,
+                "qq_group_number": qq_group_number,
+                "button_text": button_text or "复制群号",
+                "guide_text": guide_text or "打开 QQ，搜索群号加入。",
+                "join_link": join_link,
+                "qr_image_url": qr_image_url,
+                "sort_order": sort_order,
+            }
+        )
+        if len(normalized) >= 10:
             break
     return normalized
 
@@ -252,6 +309,9 @@ class SystemConfig:
     employee_external_skill_sites: list[dict[str, object]] = field(
         default_factory=default_employee_external_skill_sites
     )
+    public_contact_channels: list[dict[str, object]] = field(
+        default_factory=default_public_contact_channels
+    )
     skill_registry_sources: dict[str, object] = field(
         default_factory=default_skill_registry_sources
     )
@@ -281,6 +341,9 @@ class SystemConfig:
         ).strip()[:8000] or DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT
         self.employee_external_skill_sites = normalize_employee_external_skill_sites(
             self.employee_external_skill_sites
+        )
+        self.public_contact_channels = normalize_public_contact_channels(
+            self.public_contact_channels
         )
         self.skill_registry_sources = normalize_skill_registry_sources(
             self.skill_registry_sources

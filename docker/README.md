@@ -4,6 +4,7 @@
 
 - `README.quick.md`：最短命令速查，适合日常直接照着执行。
 - `README.learn.md`：面向日常使用的通俗解读，适合复习 `docker/` 目录里每个文件的作用和常见命令。
+- `README.deploy-test.md`：按“本地打包 -> 备份 -> 上传 -> 服务器恢复 -> 验收”顺序整理的一次性实操清单，适合首次完整测试。
 - `../web-admin/api/core/sql_migrations/`：PostgreSQL 正式 schema migration 目录；`docker/init/` 只负责首次建库 bootstrap。
 
 ## 目录说明

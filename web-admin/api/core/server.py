@@ -99,6 +99,9 @@ def create_app() -> FastAPI:
         dictionaries,
     ):
         app.include_router(r.router)
+        public_router = getattr(r, "public_router", None)
+        if public_router is not None:
+            app.include_router(public_router)
 
     app.mount("/mcp/rules/{rule_id}", rule_mcp_proxy_app)
     app.mount("/mcp/skills/{skill_id}", skill_mcp_proxy_app)

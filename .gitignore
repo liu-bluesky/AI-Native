@@ -3,7 +3,7 @@
 .db-config*.json
 .DS_Store
 .pytest_cache/
-
+.trae
 # Python runtime artifacts
 __pycache__/
 *.py[cod]

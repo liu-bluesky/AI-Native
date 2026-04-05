@@ -221,6 +221,93 @@
             </div>
           </div>
 
+          <div class="employee-skill-site-head">
+            <div>
+              <div class="switch-title">官网联系方式</div>
+              <div class="switch-desc">
+                官网 `/intro` 会展示这里启用的联系方式。当前先支持 QQ 群，作为次级联系入口使用。
+              </div>
+            </div>
+            <el-button @click="addPublicContactChannel">新增联系方式</el-button>
+          </div>
+
+          <div class="employee-skill-site-list">
+            <div
+              v-for="(item, index) in form.public_contact_channels"
+              :key="item.id || `contact-${index}`"
+              class="employee-skill-site-card"
+            >
+              <div class="employee-skill-site-card__top">
+                <div class="employee-skill-site-card__title">
+                  联系方式 {{ index + 1 }}
+                </div>
+                <div class="employee-skill-site-card__actions">
+                  <el-tag size="small" type="info">QQ群</el-tag>
+                  <el-button text type="danger" @click="removePublicContactChannel(index)">
+                    删除
+                  </el-button>
+                </div>
+              </div>
+
+              <div class="switch-card">
+                <div>
+                  <div class="switch-title">官网展示</div>
+                  <div class="switch-desc">
+                    关闭后仍保留配置，但官网不会展示这条联系方式。
+                  </div>
+                </div>
+                <el-switch v-model="item.enabled" />
+              </div>
+
+              <div class="employee-skill-site-card__grid">
+                <el-form-item label="标题">
+                  <el-input v-model="item.title" placeholder="例如：加入用户交流群" />
+                </el-form-item>
+                <el-form-item label="QQ群号">
+                  <el-input v-model="item.qq_group_number" placeholder="例如：123456789" />
+                </el-form-item>
+                <el-form-item label="排序">
+                  <el-input-number v-model="item.sort_order" :min="0" :max="999" />
+                </el-form-item>
+                <el-form-item label="按钮文案">
+                  <el-input v-model="item.button_text" placeholder="默认：复制群号" />
+                </el-form-item>
+              </div>
+
+              <el-form-item label="描述">
+                <el-input
+                  v-model="item.description"
+                  type="textarea"
+                  :rows="3"
+                  resize="vertical"
+                  placeholder="简短说明这个 QQ 群适合做什么。"
+                />
+              </el-form-item>
+
+              <el-form-item label="加群引导">
+                <el-input
+                  v-model="item.guide_text"
+                  placeholder="例如：打开 QQ，搜索群号加入。"
+                />
+              </el-form-item>
+
+              <div class="employee-skill-site-card__grid">
+                <el-form-item label="加群链接（可选）">
+                  <el-input
+                    v-model="item.join_link"
+                    placeholder="https://qm.qq.com/..."
+                  />
+                </el-form-item>
+                <el-form-item label="二维码图片 URL（可选）">
+                  <el-input
+                    v-model="item.qr_image_url"
+                    placeholder="https://example.com/qq-group.png"
+                  />
+                </el-form-item>
+              </div>
+            </div>
+          </div>
+
           <div class="employee-skill-site-head registry-head">
             <div>
               <div class="switch-title">技能资源源</div>
@@ -535,6 +622,7 @@ const DEFAULT_SKILL_REGISTRY_SOURCES = {
     },
   },
 };
+const DEFAULT_PUBLIC_CONTACT_CHANNELS = [];
 const DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT =
   "基于员工职责、目标、技能建议和 prompts.chat MCP 相关能力，为员工自动补全 1 到 3 条可直接落地的执行规则。优先生成问题排查、输出规范、风险控制、技术选型相关规则；规则内容必须具体、可执行、可绑定。";
 const EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS = [
@@ -617,6 +705,7 @@ const form = ref({
   employee_auto_rule_generation_prompt:
     DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT,
   employee_external_skill_sites: [],
+  public_contact_channels: cloneConfig(DEFAULT_PUBLIC_CONTACT_CHANNELS),
   skill_registry_sources: cloneConfig(DEFAULT_SKILL_REGISTRY_SOURCES),
   mcp_config_text: JSON.stringify(DEFAULT_MCP_CONFIG, null, 2),
 });
@@ -724,6 +813,54 @@ function normalizeEmployeeExternalSkillSites(value) {
   return items;
 }
 
+function normalizePublicContactChannels(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const items = [];
+  const seen = new Set();
+  for (const rawItem of value) {
+    if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+      continue;
+    }
+    const qqGroupNumber = String(rawItem.qq_group_number || "")
+      .replace(/\D+/g, "")
+      .slice(0, 32);
+    const sortOrder = Math.min(
+      999,
+      Math.max(0, Number(rawItem.sort_order || 0)),
+    );
+    const item = {
+      id: String(rawItem.id || "").trim().slice(0, 80),
+      enabled: rawItem.enabled !== false,
+      type: "qq_group",
+      title: String(rawItem.title || "").trim().slice(0, 120),
+      description: String(rawItem.description || "").trim().slice(0, 280),
+      qq_group_number: qqGroupNumber,
+      button_text: String(rawItem.button_text || "").trim().slice(0, 40),
+      guide_text: String(rawItem.guide_text || "").trim().slice(0, 160),
+      join_link: String(rawItem.join_link || "").trim().slice(0, 500),
+      qr_image_url: String(rawItem.qr_image_url || "").trim().slice(0, 500),
+      sort_order: Number.isFinite(sortOrder) ? sortOrder : 0,
+    };
+    const dedupeKey = (
+      item.id ||
+      item.qq_group_number ||
+      item.title ||
+      `contact-${items.length + 1}`
+    ).toLowerCase();
+    if (!dedupeKey || seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    items.push(item);
+    if (items.length >= 10) {
+      break;
+    }
+  }
+  return items;
+}
+
 function normalizeRiskLevelList(value, fallback = []) {
   if (!Array.isArray(value)) {
     return [...fallback];
@@ -796,9 +933,34 @@ function addEmployeeExternalSkillSite() {
   ];
 }
 
+function addPublicContactChannel() {
+  form.value.public_contact_channels = [
+    ...normalizePublicContactChannels(form.value.public_contact_channels),
+    {
+      id: `contact-${Date.now()}`,
+      enabled: true,
+      type: "qq_group",
+      title: "",
+      description: "",
+      qq_group_number: "",
+      button_text: "复制群号",
+      guide_text: "打开 QQ，搜索群号加入。",
+      join_link: "",
+      qr_image_url: "",
+      sort_order: 10,
+    },
+  ];
+}
+
 function removeEmployeeExternalSkillSite(index) {
   form.value.employee_external_skill_sites = normalizeEmployeeExternalSkillSites(
     form.value.employee_external_skill_sites,
+  ).filter((_, currentIndex) => currentIndex !== index);
+}
+
+function removePublicContactChannel(index) {
+  form.value.public_contact_channels = normalizePublicContactChannels(
+    form.value.public_contact_channels,
   ).filter((_, currentIndex) => currentIndex !== index);
 }
 
@@ -857,6 +1019,9 @@ function applyConfigToForm(config, options = {}) {
           ),
     employee_external_skill_sites: normalizeEmployeeExternalSkillSites(
       payload.employee_external_skill_sites,
+    ),
+    public_contact_channels: normalizePublicContactChannels(
+      payload.public_contact_channels,
     ),
     skill_registry_sources: normalizeSkillRegistrySources(
       payload.skill_registry_sources,
@@ -1335,6 +1500,9 @@ async function saveConfig() {
       ),
       employee_external_skill_sites: normalizeEmployeeExternalSkillSites(
         form.value.employee_external_skill_sites,
+      ),
+      public_contact_channels: normalizePublicContactChannels(
+        form.value.public_contact_channels,
       ),
       skill_registry_sources: normalizeSkillRegistrySources(
         form.value.skill_registry_sources,

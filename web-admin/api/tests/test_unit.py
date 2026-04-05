@@ -2671,6 +2671,81 @@ def test_system_config_patch_supports_dictionaries(tmp_path, monkeypatch):
     assert detail_response.json()["default_value"] == "anime"
 
 
+def test_public_contact_channels_endpoint_returns_enabled_items(tmp_path, monkeypatch):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in (
+        "role_store",
+        "system_config_store",
+        "project_store",
+        "project_material_store",
+        "project_studio_export_store",
+    ):
+        getattr(store_factory, proxy_name)._instance = None
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: {"sub": "tester", "role": "admin"}
+    client = TestClient(app)
+
+    patch_response = client.patch(
+        "/api/system-config",
+        json={
+            "public_contact_channels": [
+                {
+                    "id": "group-disabled",
+                    "enabled": False,
+                    "type": "qq_group",
+                    "title": "隐藏群",
+                    "qq_group_number": "999999",
+                },
+                {
+                    "id": "group-main",
+                    "enabled": True,
+                    "type": "qq_group",
+                    "title": "加入用户交流群",
+                    "description": "产品答疑与版本通知",
+                    "qq_group_number": "123 456 789",
+                    "button_text": "复制群号",
+                    "guide_text": "打开 QQ 搜索群号加入",
+                    "join_link": "https://qm.qq.com/example",
+                    "qr_image_url": "https://example.com/qq.png",
+                    "sort_order": 20,
+                },
+            ]
+        },
+    )
+
+    assert patch_response.status_code == 200
+    config_payload = patch_response.json()["config"]["public_contact_channels"]
+    assert len(config_payload) == 2
+    assert config_payload[1]["qq_group_number"] == "123456789"
+
+    response = client.get("/api/system-config/public-contact-channels")
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [
+        {
+            "id": "group-main",
+            "type": "qq_group",
+            "title": "加入用户交流群",
+            "description": "产品答疑与版本通知",
+            "qq_group_number": "123456789",
+            "button_text": "复制群号",
+            "guide_text": "打开 QQ 搜索群号加入",
+            "join_link": "https://qm.qq.com/example",
+            "qr_image_url": "https://example.com/qq.png",
+            "sort_order": 20,
+        }
+    ]
+
+
 def test_filter_project_tools_by_names_keeps_tools_when_empty_selection():
     from routers.projects import _filter_project_tools_by_names
 
