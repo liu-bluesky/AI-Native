@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import mimetypes
@@ -4224,6 +4225,34 @@ def _serialize_project_memory_record(item: Any) -> dict[str, Any]:
     return payload
 
 
+def _project_memory_candidate_records(employee_id: str, *, limit: int = 200) -> list[Any]:
+    recent = getattr(memory_store, "recent", None)
+    list_by_employee = getattr(memory_store, "list_by_employee", None)
+    if callable(recent):
+        try:
+            return list(recent(employee_id, limit) or [])
+        except Exception:
+            return []
+    if callable(list_by_employee):
+        try:
+            return list(list_by_employee(employee_id) or [])[:limit]
+        except Exception:
+            return []
+    return []
+
+
+def _project_memory_fingerprint_tag(*parts: Any) -> str:
+    normalized_parts = [
+        re.sub(r"\s+", " ", str(part or "").strip())[:4000]
+        for part in parts
+        if str(part or "").strip()
+    ]
+    if not normalized_parts:
+        return ""
+    digest = hashlib.sha1("|".join(normalized_parts).encode("utf-8")).hexdigest()[:20]
+    return f"fp:{digest}"
+
+
 def _collect_all_project_related_memories(project: ProjectConfig) -> list[Any]:
     memories, trajectory_memories = _collect_project_related_memories(project)
     return [*memories, *trajectory_memories]
@@ -4618,25 +4647,15 @@ def _save_project_chat_memory_snapshot(
         workflow_tag: str,
         task_tree_session_id: str = "",
         question: str = "",
+        content: str = "",
+        fingerprint_tag: str = "",
     ) -> bool:
-        list_by_employee = getattr(memory_store, "list_by_employee", None)
-        recent = getattr(memory_store, "recent", None)
-        if callable(recent):
-            try:
-                candidates = list(recent(employee_id, 200) or [])
-            except Exception:
-                candidates = []
-        elif callable(list_by_employee):
-            try:
-                candidates = list(list_by_employee(employee_id) or [])
-            except Exception:
-                candidates = []
-        else:
-                candidates = []
+        candidates = _project_memory_candidate_records(employee_id, limit=200)
         normalized_project_name = str(project_name or "").strip()
         normalized_chat_tag = f"chat-session:{chat_session_id}" if chat_session_id else ""
         normalized_task_tree_session_id = str(task_tree_session_id or "").strip()
         normalized_question = str(question or "").strip()
+        normalized_content = str(content or "").strip()
         for memory in candidates:
             if str(getattr(memory, "project_name", "") or "").strip() != normalized_project_name:
                 continue
@@ -4645,8 +4664,12 @@ def _save_project_chat_memory_snapshot(
                 for item in (getattr(memory, "purpose_tags", ()) or [])
                 if str(item or "").strip()
             }
+            if fingerprint_tag and fingerprint_tag in tags:
+                return True
             if workflow_tag not in tags:
                 continue
+            if normalized_content and normalized_content == str(getattr(memory, "content", "") or "").strip():
+                return True
             binding = _parse_project_memory_binding(
                 getattr(memory, "content", ""),
                 getattr(memory, "purpose_tags", ()),
@@ -4736,6 +4759,15 @@ def _save_project_chat_memory_snapshot(
         purpose_tags.append(f"chat-session:{normalized_chat_session_id}")
     if task_tree_binding.get("task_tree_session_id"):
         purpose_tags.append(f"task-tree-session:{task_tree_binding['task_tree_session_id']}")
+    fingerprint_tag = _project_memory_fingerprint_tag(
+        project_name,
+        workflow_tag,
+        normalized_chat_session_id,
+        task_tree_binding.get("task_tree_session_id", ""),
+        content,
+    )
+    if fingerprint_tag:
+        purpose_tags.append(fingerprint_tag)
     for employee_id in target_ids:
         if _memory_record_exists(
             employee_id,
@@ -4744,6 +4776,8 @@ def _save_project_chat_memory_snapshot(
             workflow_tag=workflow_tag,
             task_tree_session_id=task_tree_binding.get("task_tree_session_id", ""),
             question=question,
+            content=content,
+            fingerprint_tag=fingerprint_tag,
         ):
             continue
         try:

@@ -1547,7 +1547,11 @@ const MEMORY_TYPE_LABELS = {
   "stable-preference": "稳定偏好",
   "decision-pattern": "决策模式",
 };
-const INTERNAL_AUTO_QUERY_RESULT_TOOL_TAGS = new Set(["mcp:tools/call:search_ids"]);
+const INTERNAL_AUTO_QUERY_RESULT_TOOL_TAGS = new Set([
+  "mcp:tools/call:search_ids",
+  "mcp:tools/call:list_recent_project_requirements",
+  "mcp:tools/call:get_requirement_history",
+]);
 const memoryFilters = ref({
   query: "",
   employeeId: "",
@@ -3516,6 +3520,8 @@ function isInternalAutoQuestionSnapshot(memory) {
     "mcp:tools/call:append_session_event",
     "mcp:tools/call:resume_work_session",
     "mcp:tools/call:summarize_checkpoint",
+    "mcp:tools/call:list_recent_project_requirements",
+    "mcp:tools/call:get_requirement_history",
     "mcp:tools/call:build_delivery_report",
     "mcp:tools/call:generate_release_note_entry",
     "mcp:tools/call:save_project_memory",

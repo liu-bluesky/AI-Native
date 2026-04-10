@@ -3582,6 +3582,65 @@ def test_save_project_memory_entries_defaults_to_single_team_shared_record(monke
     assert saved_memories[0].employee_id == "emp-1"
     assert saved_memories[0].scope == MemoryScope.TEAM_SHARED
     assert saved_memories[0].type == MemoryType.KEY_EVENT
+    assert saved_memories[0].purpose_tags[:3] == ("query-mcp", "manual-write", "project-id")
+    assert any(tag.startswith("fp:") for tag in saved_memories[0].purpose_tags)
+
+
+def test_save_project_memory_entries_skips_duplicate_manual_write(monkeypatch):
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType
+
+    saved_memories = []
+    existing_memory = Memory(
+        id="mem-existing",
+        employee_id="emp-1",
+        type=MemoryType.KEY_EVENT,
+        content="问题：提交代码到远程仓库\n结论：远程大文件阻塞",
+        project_name="项目一",
+        importance=0.6,
+        scope=MemoryScope.TEAM_SHARED,
+        classification=Classification.INTERNAL,
+        purpose_tags=("query-mcp", "manual-write", "project-id"),
+    )
+
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+            },
+        )(),
+    )
+    monkeypatch.setattr(query_mcp_svc, "_active_project_employee_ids", lambda project_id: ["emp-1", "emp-2"])
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+                "recent": staticmethod(lambda employee_id, limit: [existing_memory]),
+            },
+        )(),
+    )
+
+    result = query_mcp_svc._save_project_memory_entries(
+        project_id="proj-1",
+        content="问题：提交代码到远程仓库\n结论：远程大文件阻塞",
+        memory_type=MemoryType.KEY_EVENT,
+        purpose_tags=("query-mcp", "manual-write", "project-id"),
+    )
+
+    assert result["status"] == "skipped"
+    assert result["saved_count"] == 0
+    assert result["duplicate_skipped"] is True
+    assert result["skipped_employee_ids"] == ["emp-1"]
+    assert saved_memories == []
 
 
 def test_save_project_chat_memory_snapshot_defaults_to_single_team_shared_record(monkeypatch):
@@ -3644,17 +3703,100 @@ def test_save_project_chat_memory_snapshot_defaults_to_single_team_shared_record
     assert len(saved_memories) == 1
     assert saved_memories[0].employee_id == "emp-1"
     assert saved_memories[0].scope == MemoryScope.TEAM_SHARED
-    assert saved_memories[0].purpose_tags == (
+    assert saved_memories[0].purpose_tags[:5] == (
         "auto-capture",
         "project-chat",
         "project-chat-test",
         "workflow:final-summary",
         "chat-session:chat-123",
     )
+    assert any(tag.startswith("fp:") for tag in saved_memories[0].purpose_tags)
     assert "[处理过程]" in saved_memories[0].content
     assert "[解决方案] 因为默认空选人被扩成了项目全员。" in saved_memories[0].content
     assert "[解决状态] 已给出方案" in saved_memories[0].content
     assert "[关联会话] chat-123" in saved_memories[0].content
+
+
+def test_save_project_chat_memory_snapshot_skips_exact_duplicate_record(monkeypatch):
+    from routers import projects as projects_router
+    from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType
+
+    saved_memories = []
+    existing_content = (
+        "[用户问题] 为什么每次都全员写记忆？\n"
+        "[处理过程] 已在当前会话完成问题处理并给出结论，可结合关联任务树回看执行节点与验证结果。\n"
+        "[解决方案] 因为默认空选人被扩成了项目全员。\n"
+        "[最终结论] 因为默认空选人被扩成了项目全员。\n"
+        "[解决状态] 已给出方案\n"
+        "[关联会话] chat-123"
+    )
+    existing_memory = Memory(
+        id="mem-existing",
+        employee_id="emp-1",
+        type=MemoryType.PROJECT_CONTEXT,
+        content=existing_content,
+        project_name="项目一",
+        importance=0.6,
+        scope=MemoryScope.TEAM_SHARED,
+        classification=Classification.INTERNAL,
+        purpose_tags=(
+            "auto-capture",
+            "project-chat",
+            "project-chat-test",
+            "workflow:final-summary",
+            "chat-session:chat-123",
+        ),
+    )
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})()]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id == "emp-1" else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+                "recent": staticmethod(lambda employee_id, limit: [existing_memory]),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="为什么每次都全员写记忆？",
+        answer="因为默认空选人被扩成了项目全员。",
+        chat_session_id="chat-123",
+        selected_employee_ids=["emp-1"],
+        source="project-chat-test",
+    )
+
+    assert saved_memories == []
 
 
 def test_save_project_chat_memory_snapshot_with_multiple_selected_employees_stays_single_team_shared(monkeypatch):
@@ -6551,7 +6693,8 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert saved_memories[0].type == MemoryType.PROJECT_CONTEXT
     assert saved_memories[0].scope == MemoryScope.TEAM_SHARED
     assert saved_memories[0].classification == Classification.INTERNAL
-    assert saved_memories[0].purpose_tags == ("query-mcp", "manual-write", "project-id")
+    assert saved_memories[0].purpose_tags[:3] == ("query-mcp", "manual-write", "project-id")
+    assert any(tag.startswith("fp:") for tag in saved_memories[0].purpose_tags)
 
     assert context["project_id"] == "proj-1"
     assert context["member_count"] == 1
@@ -9103,6 +9246,176 @@ def test_query_mcp_work_session_tools_accept_string_list_fields(monkeypatch):
     assert saved_work_session_events[1].changed_files == ["web-admin/api/services/dynamic_mcp_apps_query.py"]
     assert saved_work_session_events[1].verification == ["python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py"]
     assert saved_work_session_events[2].next_steps == ["检查 query sse 真实调用"]
+
+
+def test_query_mcp_list_recent_project_requirements_supports_recent_and_date_filters(monkeypatch):
+    registered_tools, _registered_resources, _saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    session_a = registered_tools["start_work_session"](
+        "proj-1",
+        employee_id="emp-1",
+        goal="恢复统一查询 MCP 地址配置",
+        phase="排查",
+        step="定位原因",
+    )["session_id"]
+    registered_tools["save_work_facts"](
+        "proj-1",
+        employee_id="emp-1",
+        session_id=session_a,
+        goal="恢复统一查询 MCP 地址配置",
+        phase="实现",
+        step="恢复配置",
+        facts=["已恢复统一查询 MCP 地址配置"],
+        status="in_progress",
+        changed_files=["web-admin/api/services/dynamic_mcp_apps_query.py"],
+    )
+    registered_tools["append_session_event"](
+        "proj-1",
+        employee_id="emp-1",
+        session_id=session_a,
+        event_type="verification",
+        content="已验证地址配置恢复完成",
+        phase="验证",
+        step="回归检查",
+        status="completed",
+        verification=["uv run pytest web-admin/api/tests/test_unit.py -k requirement_history"],
+    )
+
+    session_b = registered_tools["start_work_session"](
+        "proj-1",
+        employee_id="emp-1",
+        goal="补回全局语音助手配置",
+        phase="排查",
+        step="检查丢失项",
+    )["session_id"]
+    registered_tools["append_session_event"](
+        "proj-1",
+        employee_id="emp-1",
+        session_id=session_b,
+        event_type="notes",
+        content="已确认语音助手配置项缺失",
+        phase="排查",
+        step="检查丢失项",
+        status="in_progress",
+    )
+
+    timestamps = [
+        "2026-04-09T09:00:00+00:00",
+        "2026-04-10T07:20:00+00:00",
+        "2026-04-10T08:30:00+00:00",
+        "2026-04-08T11:00:00+00:00",
+        "2026-04-08T11:30:00+00:00",
+    ]
+    for event, timestamp in zip(saved_work_session_events, timestamps):
+        event.created_at = timestamp
+        event.updated_at = timestamp
+
+    recent = registered_tools["list_recent_project_requirements"]("proj-1", employee_id="emp-1", limit=5)
+
+    assert recent["source"] == "work-session"
+    assert recent["total"] == 2
+    assert [item["requirement_title"] for item in recent["requirements"]] == [
+        "恢复统一查询 MCP 地址配置",
+        "补回全局语音助手配置",
+    ]
+    assert recent["requirements"][0]["latest_modified_at"] == "2026-04-10T08:30:00+00:00"
+    assert recent["requirements"][0]["first_seen_at"] == "2026-04-09T09:00:00+00:00"
+    assert recent["requirements"][0]["history_count"] == 3
+    assert recent["requirements"][1]["latest_status"] == "in_progress"
+
+    filtered = registered_tools["list_recent_project_requirements"](
+        "proj-1",
+        employee_id="emp-1",
+        date_from="2026-04-10",
+        date_to="2026-04-10",
+        limit=5,
+    )
+
+    assert filtered["total"] == 1
+    assert filtered["requirements"][0]["requirement_title"] == "恢复统一查询 MCP 地址配置"
+
+
+def test_query_mcp_get_requirement_history_returns_latest_modified_time(monkeypatch):
+    registered_tools, _registered_resources, _saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    session_id = registered_tools["start_work_session"](
+        "proj-1",
+        employee_id="emp-1",
+        goal="恢复统一查询 MCP 地址配置",
+        phase="排查",
+        step="定位原因",
+    )["session_id"]
+    registered_tools["save_work_facts"](
+        "proj-1",
+        employee_id="emp-1",
+        session_id=session_id,
+        goal="恢复统一查询 MCP 地址配置",
+        phase="实现",
+        step="恢复配置",
+        facts=["已恢复统一查询 MCP 地址配置"],
+        status="in_progress",
+    )
+    registered_tools["append_session_event"](
+        "proj-1",
+        employee_id="emp-1",
+        session_id=session_id,
+        event_type="verification",
+        content="已验证地址配置恢复完成",
+        phase="验证",
+        step="回归检查",
+        status="completed",
+        verification=["uv run pytest web-admin/api/tests/test_unit.py -k requirement_history"],
+    )
+
+    timestamps = [
+        "2026-04-09T09:00:00+00:00",
+        "2026-04-10T07:20:00+00:00",
+        "2026-04-10T08:30:00+00:00",
+    ]
+    for event, timestamp in zip(saved_work_session_events, timestamps):
+        event.created_at = timestamp
+        event.updated_at = timestamp
+
+    result = registered_tools["get_requirement_history"](
+        "proj-1",
+        keyword="地址配置",
+        employee_id="emp-1",
+        limit=5,
+    )
+
+    assert result["source"] == "work-session"
+    assert result["total"] == 1
+    assert result["latest_modified_at"] == "2026-04-10T08:30:00+00:00"
+    assert result["first_seen_at"] == "2026-04-09T09:00:00+00:00"
+    assert result["matched_requirement"]["requirement_title"] == "恢复统一查询 MCP 地址配置"
+    assert result["matched_requirement"]["history"][0]["event_type"] == "verification"
+    assert result["matched_requirement"]["history"][0]["status"] == "completed"
+
+
+def test_query_mcp_get_requirement_history_falls_back_to_project_memory(monkeypatch):
+    registered_tools, _registered_resources, saved_memories, _saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    registered_tools["save_project_memory"](
+        "proj-1",
+        employee_id="emp-1",
+        content="问题：恢复统一查询 MCP 地址配置\n结论：已去掉默认 project_id 并保留提示词绑定建议",
+    )
+
+    object.__setattr__(saved_memories[0], "created_at", "2026-04-07T09:00:00+00:00")
+
+    result = registered_tools["get_requirement_history"](
+        "proj-1",
+        keyword="地址配置",
+        employee_id="emp-1",
+        limit=5,
+    )
+
+    assert result["source"] == "project-memory"
+    assert result["total"] == 1
+    assert result["latest_modified_at"] == "2026-04-07T09:00:00+00:00"
+    assert result["matched_requirement"]["requirement_title"] == "恢复统一查询 MCP 地址配置"
+    assert result["matched_requirement"]["source_kinds"] == ["project-memory"]
+    assert result["matched_requirement"]["history"][0]["summary"].startswith("问题：恢复统一查询 MCP 地址配置")
 
 
 def test_query_project_rules_runtime_includes_project_ui_rules(monkeypatch):

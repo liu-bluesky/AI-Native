@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import re
@@ -149,6 +150,8 @@ _QUERY_TOOL_NAMES = {
     "append_session_event",
     "resume_work_session",
     "summarize_checkpoint",
+    "list_recent_project_requirements",
+    "get_requirement_history",
 }
 
 
@@ -402,6 +405,97 @@ def _normalize_text(value: object, limit: int | None = None) -> str:
 
 def _normalize_text_lower(value: object) -> str:
     return _normalize_text(value).lower()
+
+
+def _parse_history_datetime(value: object, *, end_of_day: bool = False) -> datetime | None:
+    text = _normalize_text(value, 80)
+    if not text:
+        return None
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            parsed = datetime.fromisoformat(text)
+            parsed = parsed.replace(
+                hour=23 if end_of_day else 0,
+                minute=59 if end_of_day else 0,
+                second=59 if end_of_day else 0,
+                microsecond=999999 if end_of_day else 0,
+            )
+        else:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _history_datetime_or_min(value: object) -> datetime:
+    parsed = _parse_history_datetime(value)
+    if parsed is not None:
+        return parsed
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _project_memory_candidate_items(employee_id: str, *, limit: int = 200) -> list[object]:
+    recent = getattr(memory_store, "recent", None)
+    list_by_employee = getattr(memory_store, "list_by_employee", None)
+    if callable(recent):
+        try:
+            return list(recent(employee_id, limit) or [])
+        except Exception:
+            return []
+    if callable(list_by_employee):
+        try:
+            return list(list_by_employee(employee_id) or [])[:limit]
+        except Exception:
+            return []
+    return []
+
+
+def _project_memory_fingerprint_tag(*parts: object) -> str:
+    normalized_parts = [
+        re.sub(r"\s+", " ", _normalize_text(part, 4000))
+        for part in parts
+        if _normalize_text(part, 4000)
+    ]
+    if not normalized_parts:
+        return ""
+    digest = hashlib.sha1("|".join(normalized_parts).encode("utf-8")).hexdigest()[:20]
+    return f"fp:{digest}"
+
+
+def _project_memory_duplicate_exists(
+    *,
+    employee_id: str,
+    project_name: str,
+    content: str,
+    purpose_tags: tuple[str, ...],
+    fingerprint_tag: str,
+) -> bool:
+    normalized_project_name = _normalize_text(project_name, 160)
+    content_value = _normalize_text(content, 4000)
+    required_tags = {
+        _normalize_text(tag, 120)
+        for tag in purpose_tags
+        if _normalize_text(tag, 120)
+        and not _normalize_text(tag, 120).startswith(("chat-session:", "task-tree-session:", "fp:"))
+    }
+    for memory in _project_memory_candidate_items(employee_id):
+        if _normalize_text(getattr(memory, "project_name", ""), 160) != normalized_project_name:
+            continue
+        tags = {
+            _normalize_text(item, 120)
+            for item in (getattr(memory, "purpose_tags", ()) or [])
+            if _normalize_text(item, 120)
+        }
+        if fingerprint_tag and fingerprint_tag in tags:
+            return True
+        if content_value != _normalize_text(getattr(memory, "content", ""), 4000):
+            continue
+        if required_tags and not required_tags.issubset(tags):
+            continue
+        return True
+    return False
 
 
 def _tokenize_keywords(text: object) -> list[str]:
@@ -1119,8 +1213,25 @@ def _save_project_memory_entries(
         target_employee_ids = [active_employee_ids[0]]
         memory_scope = MemoryScope.TEAM_SHARED
     memory_ids: list[str] = []
+    skipped_employee_ids: list[str] = []
     importance_value = max(0.0, min(float(importance), 1.0))
+    fingerprint_tag = _project_memory_fingerprint_tag(
+        normalized_project_name,
+        memory_type.value,
+        "|".join(purpose_tags),
+        content_value,
+    )
+    purpose_tags_value = tuple(dict.fromkeys([*purpose_tags, *([fingerprint_tag] if fingerprint_tag else [])]))
     for target_employee_id in target_employee_ids:
+        if _project_memory_duplicate_exists(
+            employee_id=target_employee_id,
+            project_name=normalized_project_name,
+            content=content_value,
+            purpose_tags=purpose_tags_value,
+            fingerprint_tag=fingerprint_tag,
+        ):
+            skipped_employee_ids.append(target_employee_id)
+            continue
         memory = Memory(
             id=memory_store.new_id(),
             employee_id=target_employee_id,
@@ -1130,17 +1241,19 @@ def _save_project_memory_entries(
             importance=importance_value,
             scope=memory_scope,
             classification=Classification.INTERNAL,
-            purpose_tags=purpose_tags,
+            purpose_tags=purpose_tags_value,
         )
         memory_store.save(memory)
         memory_ids.append(memory.id)
     return {
-        "status": "saved",
+        "status": "saved" if memory_ids else "skipped",
         "project_id": project_id_value,
         "project_name": normalized_project_name,
         "employee_ids": target_employee_ids,
         "memory_ids": memory_ids,
         "saved_count": len(memory_ids),
+        "skipped_employee_ids": skipped_employee_ids,
+        "duplicate_skipped": bool(skipped_employee_ids) and not bool(memory_ids),
         "type": memory_type.value,
         "scope": memory_scope.value,
         "importance": importance_value,
@@ -1652,6 +1765,315 @@ def _checkpoint_summary_text(project_id: str, project_name: str, session_id: str
 
 def _structured_session_items(memories: list[dict]) -> list[dict]:
     return [_decorate_work_memory(item) for item in memories]
+
+
+def _item_modified_at(item: dict) -> str:
+    updated_at = _normalize_text(item.get("updated_at"))
+    if updated_at:
+        return updated_at
+    return _normalize_text(item.get("created_at"))
+
+
+def _item_history_summary(item: dict) -> str:
+    trajectory = item.get("trajectory") if isinstance(item.get("trajectory"), dict) else {}
+    summary = _normalize_text(trajectory.get("content"))
+    if not summary:
+        facts = _coerce_list_text(trajectory.get("facts"))
+        if facts:
+            summary = "；".join(facts[:3])
+    if not summary:
+        summary = _normalize_text(item.get("content")).replace("\n", " | ")
+    return summary[:240]
+
+
+def _extract_requirement_title_from_content(content: object) -> str:
+    content_value = _normalize_text(content, 4000)
+    if not content_value:
+        return ""
+    for raw_line in content_value.splitlines():
+        line = re.sub(r"^[\-\*\d\.\)\s]+", "", raw_line.strip())
+        if not line:
+            continue
+        heading_match = re.match(r"^#{1,6}\s*(.+)$", line)
+        if heading_match:
+            return _normalize_text(heading_match.group(1), 200)
+        label_match = re.match(
+            r"^(?:问题原文|问题摘要|问题|需求|标题|目标|goal|root_goal)\s*[:：]\s*(.+)$",
+            line,
+            re.IGNORECASE,
+        )
+        if label_match:
+            return _normalize_text(label_match.group(1), 200)
+    for raw_line in content_value.splitlines():
+        line = re.sub(r"^[\-\*\d\.\)\s]+", "", raw_line.strip())
+        if not line or line.startswith("[") or line.startswith("```"):
+            continue
+        if len(line) < 4:
+            continue
+        return _normalize_text(line, 200)
+    return _normalize_text(content_value.replace("\n", " | "), 200)
+
+
+def _session_requirement_title_lookup(items: list[dict]) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for item in items:
+        trajectory = item.get("trajectory") if isinstance(item.get("trajectory"), dict) else {}
+        session_id = _normalize_text(trajectory.get("session_id"))
+        goal = _normalize_text(trajectory.get("goal"), 200)
+        if session_id and goal and session_id not in lookup:
+            lookup[session_id] = goal
+    return lookup
+
+
+def _derive_requirement_title(item: dict, *, session_title_lookup: dict[str, str] | None = None) -> str:
+    trajectory = item.get("trajectory") if isinstance(item.get("trajectory"), dict) else {}
+    goal = _normalize_text(trajectory.get("goal"), 200)
+    if goal:
+        return goal
+    session_id = _normalize_text(trajectory.get("session_id"))
+    if session_id and isinstance(session_title_lookup, dict):
+        session_title = _normalize_text(session_title_lookup.get(session_id), 200)
+        if session_title:
+            return session_title
+    return _extract_requirement_title_from_content(item.get("content"))
+
+
+def _normalize_requirement_key(title: str, *, item: dict) -> str:
+    normalized_title = re.sub(
+        r"[\s`\"'“”‘’·•，,。！？!?:：;；()\[\]{}<>《》]+",
+        " ",
+        _normalize_text_lower(title),
+    ).strip()
+    if normalized_title:
+        return normalized_title
+    trajectory = item.get("trajectory") if isinstance(item.get("trajectory"), dict) else {}
+    session_id = _normalize_text(trajectory.get("session_id"))
+    if session_id:
+        return f"session:{session_id}"
+    memory_id = _normalize_text(item.get("id"))
+    if memory_id:
+        return f"memory:{memory_id}"
+    return f"requirement:{uuid.uuid4().hex[:12]}"
+
+
+def _filter_requirement_history_items(
+    items: list[dict],
+    *,
+    keyword: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> tuple[list[dict], str]:
+    keyword_value = _normalize_text(keyword)
+    date_from_value = _normalize_text(date_from)
+    date_to_value = _normalize_text(date_to)
+    start_at = _parse_history_datetime(date_from_value, end_of_day=False) if date_from_value else None
+    end_at = _parse_history_datetime(date_to_value, end_of_day=True) if date_to_value else None
+    if date_from_value and start_at is None:
+        return [], "date_from must be an ISO date or datetime"
+    if date_to_value and end_at is None:
+        return [], "date_to must be an ISO date or datetime"
+    if start_at is not None and end_at is not None and start_at > end_at:
+        return [], "date_from must be earlier than or equal to date_to"
+
+    session_title_lookup = _session_requirement_title_lookup(items)
+    filtered: list[dict] = []
+    for item in items:
+        modified_at = _parse_history_datetime(_item_modified_at(item))
+        if start_at is not None and (modified_at is None or modified_at < start_at):
+            continue
+        if end_at is not None and (modified_at is None or modified_at > end_at):
+            continue
+        if keyword_value:
+            trajectory = item.get("trajectory") if isinstance(item.get("trajectory"), dict) else {}
+            title = _derive_requirement_title(item, session_title_lookup=session_title_lookup)
+            if not _keyword_match(
+                keyword_value,
+                title,
+                item.get("content"),
+                trajectory.get("goal"),
+                trajectory.get("content"),
+                trajectory.get("facts"),
+                trajectory.get("changed_files"),
+                trajectory.get("verification"),
+            ):
+                continue
+        filtered.append(item)
+    filtered.sort(
+        key=lambda current: (
+            _history_datetime_or_min(_item_modified_at(current)),
+            _normalize_text(current.get("id")),
+        ),
+        reverse=True,
+    )
+    return filtered, ""
+
+
+def _build_requirement_history_entry(
+    item: dict,
+    *,
+    title: str,
+) -> dict:
+    trajectory = item.get("trajectory") if isinstance(item.get("trajectory"), dict) else {}
+    return {
+        "id": _normalize_text(item.get("id")),
+        "requirement_title": _normalize_text(title, 200),
+        "modified_at": _item_modified_at(item),
+        "created_at": _normalize_text(item.get("created_at")),
+        "updated_at": _normalize_text(item.get("updated_at")),
+        "summary": _item_history_summary(item),
+        "source_kind": _normalize_text(trajectory.get("kind")) or "project-memory",
+        "event_type": _normalize_text(trajectory.get("event_type")),
+        "status": _normalize_text(trajectory.get("status")),
+        "phase": _normalize_text(trajectory.get("phase")),
+        "step": _normalize_text(trajectory.get("step")),
+        "session_id": _normalize_text(trajectory.get("session_id")),
+        "task_tree_session_id": _normalize_text(trajectory.get("task_tree_session_id")),
+        "task_tree_chat_session_id": _normalize_text(trajectory.get("task_tree_chat_session_id")),
+        "task_node_id": _normalize_text(trajectory.get("task_node_id")),
+        "task_node_title": _normalize_text(trajectory.get("task_node_title")) or _normalize_text(item.get("task_node_title")),
+        "changed_files": _coerce_list_text(trajectory.get("changed_files")),
+        "verification": _coerce_list_text(trajectory.get("verification")),
+        "risks": _coerce_list_text(trajectory.get("risks")),
+        "next_steps": _coerce_list_text(trajectory.get("next_steps")),
+    }
+
+
+def _group_requirement_history(
+    items: list[dict],
+    *,
+    limit: int,
+    history_limit: int = 20,
+) -> list[dict]:
+    session_title_lookup = _session_requirement_title_lookup(items)
+    grouped: dict[str, dict] = {}
+    for item in items:
+        title = _derive_requirement_title(item, session_title_lookup=session_title_lookup)
+        key = _normalize_requirement_key(title, item=item)
+        history_item = _build_requirement_history_entry(item, title=title)
+        modified_at = _history_datetime_or_min(history_item.get("modified_at"))
+        created_at = _history_datetime_or_min(history_item.get("created_at"))
+        requirement = grouped.get(key)
+        if requirement is None:
+            requirement = {
+                "requirement_key": key,
+                "requirement_title": _normalize_text(title, 200),
+                "first_seen_at": history_item.get("created_at") or history_item.get("modified_at") or "",
+                "latest_modified_at": history_item.get("modified_at") or history_item.get("created_at") or "",
+                "latest_status": _normalize_text(history_item.get("status")),
+                "latest_summary": _normalize_text(history_item.get("summary"), 240),
+                "session_ids": [],
+                "task_tree_session_ids": [],
+                "task_tree_chat_session_ids": [],
+                "employee_ids": [],
+                "phases": [],
+                "steps": [],
+                "changed_files": [],
+                "verification": [],
+                "risks": [],
+                "next_steps": [],
+                "source_kinds": [],
+                "event_types": [],
+                "history_count": 0,
+                "history": [],
+                "_latest_dt": modified_at,
+                "_first_seen_dt": created_at,
+            }
+            grouped[key] = requirement
+        requirement["history_count"] += 1
+        if modified_at > requirement["_latest_dt"]:
+            requirement["_latest_dt"] = modified_at
+            requirement["latest_modified_at"] = history_item.get("modified_at") or history_item.get("created_at") or ""
+            requirement["latest_status"] = _normalize_text(history_item.get("status"))
+            requirement["latest_summary"] = _normalize_text(history_item.get("summary"), 240)
+        if created_at < requirement["_first_seen_dt"]:
+            requirement["_first_seen_dt"] = created_at
+            requirement["first_seen_at"] = history_item.get("created_at") or history_item.get("modified_at") or ""
+        for field in ("session_ids", "task_tree_session_ids", "task_tree_chat_session_ids"):
+            value = _normalize_text(history_item.get(field) or "")
+            if value and value not in requirement[field]:
+                requirement[field].append(value)
+        employee_id = _normalize_text(item.get("employee_id"))
+        if employee_id and employee_id not in requirement["employee_ids"]:
+            requirement["employee_ids"].append(employee_id)
+        for field, source in (
+            ("phases", _normalize_text(history_item.get("phase"))),
+            ("steps", _normalize_text(history_item.get("step"))),
+            ("source_kinds", _normalize_text(history_item.get("source_kind"))),
+            ("event_types", _normalize_text(history_item.get("event_type"))),
+        ):
+            if source and source not in requirement[field]:
+                requirement[field].append(source)
+        for field in ("changed_files", "verification", "risks", "next_steps"):
+            for value in history_item.get(field) or []:
+                normalized_value = _normalize_text(value)
+                if normalized_value and normalized_value not in requirement[field]:
+                    requirement[field].append(normalized_value)
+        if len(requirement["history"]) < max(1, min(int(history_limit or 20), 50)):
+            requirement["history"].append(history_item)
+
+    requirements = list(grouped.values())
+    requirements.sort(key=lambda item: item["_latest_dt"], reverse=True)
+    normalized_limit = max(1, min(int(limit or 10), 50))
+    sliced = requirements[:normalized_limit]
+    for item in sliced:
+        item.pop("_latest_dt", None)
+        item.pop("_first_seen_dt", None)
+    return sliced
+
+
+def _collect_requirement_history_items(
+    *,
+    project_id: str,
+    employee_id: str = "",
+    project_name: str = "",
+    keyword: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    limit: int = 10,
+) -> tuple[list[dict], str, str]:
+    try:
+        fetch_limit = max(50, min(int(limit or 10) * 25, 500))
+    except (TypeError, ValueError):
+        fetch_limit = 250
+    work_items = _structured_session_items(
+        _collect_work_session_records(
+            project_id=project_id,
+            employee_id=employee_id,
+            query=keyword,
+            limit=fetch_limit,
+        )
+    )
+    filtered_work_items, error = _filter_requirement_history_items(
+        work_items,
+        keyword=keyword,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    if error:
+        return [], "", error
+    if filtered_work_items:
+        return filtered_work_items, "work-session", ""
+
+    memory_items = _structured_session_items(
+        _collect_project_memories(
+            project_id=project_id,
+            employee_id=employee_id,
+            project_name=project_name,
+            query=keyword,
+            limit=min(fetch_limit, 50),
+        )
+    )
+    filtered_memory_items, error = _filter_requirement_history_items(
+        memory_items,
+        keyword=keyword,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    if error:
+        return [], "", error
+    if filtered_memory_items or not work_items:
+        return filtered_memory_items, "project-memory", ""
+    return [], "work-session", ""
 
 
 def _legacy_fact_or_event_counts(memories: list[dict]) -> tuple[int, int]:
@@ -2434,8 +2856,8 @@ def create_query_mcp(
         return (
             "# Unified Query MCP\n\n"
             "- 统一入口路径: /mcp/query\n"
-            "- 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹和交付报告能力。\n"
-            "- 推荐工具: bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / build_delivery_report / generate_release_note_entry / save_project_memory\n"
+            "- 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹、需求历史查询和交付报告能力。\n"
+            "- 推荐工具: bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory\n"
             "\n"
             "## 最少执行规则\n"
             "1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。\n"
@@ -2480,6 +2902,7 @@ def create_query_mcp(
             "- 每个新聊天窗口的首轮有效对话，如用户未显式提供 session_id，应优先调用 start_work_session 获取服务端 session_id，再在本窗口后续所有 save_work_facts / append_session_event / resume_work_session / summarize_checkpoint 中复用同一个值；如果未先调用，save_work_facts 也会自动补生成一个。\n"
             "- start_work_session 会立即写入一条 started 事件建立正式工作轨迹；首次拿到 session_id 后，仍建议尽快调用一次 save_work_facts 补充任务摘要、阶段和文件信息。若既不调用 start_work_session，也不写 save_work_facts / append_session_event，而只写 save_project_memory，会出现“有项目记忆但无正式工作轨迹”的情况。\n"
             "- 缺少活跃 MCP session 的 CLI / bridge 场景下，也必须显式传入并持续复用同一个 chat_session_id；否则容易出现“轨迹已写入，但当前主视图没有挂到任务树”的错觉。\n"
+            "- 如需回答“最近做了哪些需求”“某个需求什么时候改过”“按日期查需求变更”，可调用 list_recent_project_requirements / get_requirement_history；它们会优先读取 work_session_store，命中不足时回退项目记忆。\n"
             "\n"
             "## 记忆与交付\n"
             "- recall_project_memory / recall_employee_memory 只在新需求开始、续跑恢复、修复旧问题或明显需要历史经验时使用；不要把记忆检索当成每个计划节点的固定前置动作。\n"
@@ -3206,6 +3629,93 @@ def create_query_mcp(
                 _normalize_text(session_id),
                 selected,
             ),
+        }
+
+    @mcp.tool()
+    def list_recent_project_requirements(
+        project_id: str,
+        employee_id: str = "",
+        keyword: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        limit: int = 10,
+        project_name: str = "",
+    ) -> dict:
+        """列出项目近期需求，支持按关键词和日期范围过滤。"""
+
+        project_id_value = _normalize_text(project_id)
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        selected, source, error = _collect_requirement_history_items(
+            project_id=project_id_value,
+            employee_id=employee_id,
+            project_name=project_name,
+            keyword=keyword,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+        if error:
+            return {"error": error}
+        requirements = _group_requirement_history(selected, limit=limit)
+        project_name_value = _resolve_project_name(project_id_value, project_name)
+        return {
+            "project_id": project_id_value,
+            "project_name": project_name_value,
+            "employee_id": _normalize_text(employee_id),
+            "keyword": _normalize_text(keyword),
+            "date_from": _normalize_text(date_from),
+            "date_to": _normalize_text(date_to),
+            "source": source,
+            "requirements": requirements,
+            "total": len(requirements),
+        }
+
+    @mcp.tool()
+    def get_requirement_history(
+        project_id: str,
+        keyword: str,
+        employee_id: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        limit: int = 10,
+        project_name: str = "",
+    ) -> dict:
+        """按关键词查询需求历史，并返回需求的最近修改时间与变更轨迹。"""
+
+        project_id_value = _normalize_text(project_id)
+        keyword_value = _normalize_text(keyword)
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        if not keyword_value:
+            return {"error": "keyword is required"}
+        selected, source, error = _collect_requirement_history_items(
+            project_id=project_id_value,
+            employee_id=employee_id,
+            project_name=project_name,
+            keyword=keyword_value,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+        if error:
+            return {"error": error}
+        requirements = _group_requirement_history(selected, limit=limit)
+        primary = requirements[0] if requirements else {}
+        project_name_value = _resolve_project_name(project_id_value, project_name)
+        return {
+            "project_id": project_id_value,
+            "project_name": project_name_value,
+            "employee_id": _normalize_text(employee_id),
+            "keyword": keyword_value,
+            "date_from": _normalize_text(date_from),
+            "date_to": _normalize_text(date_to),
+            "source": source,
+            "requirements": requirements,
+            "total": len(requirements),
+            "matched_requirement": primary,
+            "latest_modified_at": _normalize_text(primary.get("latest_modified_at")),
+            "first_seen_at": _normalize_text(primary.get("first_seen_at")),
         }
 
     @mcp.tool()

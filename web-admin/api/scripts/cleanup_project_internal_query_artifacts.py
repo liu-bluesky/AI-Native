@@ -33,6 +33,8 @@ _INTERNAL_TOOL_TAGS = {
     "mcp:tools/call:append_session_event",
     "mcp:tools/call:resume_work_session",
     "mcp:tools/call:summarize_checkpoint",
+    "mcp:tools/call:list_recent_project_requirements",
+    "mcp:tools/call:get_requirement_history",
     "mcp:tools/call:build_delivery_report",
     "mcp:tools/call:generate_release_note_entry",
     "mcp:tools/call:save_project_memory",

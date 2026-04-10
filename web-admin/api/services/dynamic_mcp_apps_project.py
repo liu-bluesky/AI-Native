@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -64,6 +65,63 @@ _FASTMCP_HOST = os.environ.get("FASTMCP_HOST", "0.0.0.0")
 
 def _new_mcp(service_name: str) -> FastMCP:
     return FastMCP(service_name, host=_FASTMCP_HOST, stateless_http=True)
+
+
+def _project_memory_candidate_items(employee_id: str, *, limit: int = 200) -> list[object]:
+    recent = getattr(memory_store, "recent", None)
+    list_by_employee = getattr(memory_store, "list_by_employee", None)
+    if callable(recent):
+        try:
+            return list(recent(employee_id, limit) or [])
+        except Exception:
+            return []
+    if callable(list_by_employee):
+        try:
+            return list(list_by_employee(employee_id) or [])[:limit]
+        except Exception:
+            return []
+    return []
+
+
+def _project_memory_fingerprint_tag(*parts: object) -> str:
+    normalized_parts = [" ".join(str(part or "").strip().split())[:4000] for part in parts if str(part or "").strip()]
+    if not normalized_parts:
+        return ""
+    digest = hashlib.sha1("|".join(normalized_parts).encode("utf-8")).hexdigest()[:20]
+    return f"fp:{digest}"
+
+
+def _project_memory_duplicate_exists(
+    *,
+    employee_id: str,
+    project_name: str,
+    content: str,
+    purpose_tags: tuple[str, ...],
+    fingerprint_tag: str,
+) -> bool:
+    normalized_project_name = str(project_name or "").strip()
+    content_value = str(content or "").strip()
+    required_tags = {
+        str(tag or "").strip()
+        for tag in purpose_tags
+        if str(tag or "").strip() and not str(tag or "").strip().startswith("fp:")
+    }
+    for memory in _project_memory_candidate_items(employee_id):
+        if str(getattr(memory, "project_name", "") or "").strip() != normalized_project_name:
+            continue
+        tags = {
+            str(item or "").strip()
+            for item in (getattr(memory, "purpose_tags", ()) or [])
+            if str(item or "").strip()
+        }
+        if fingerprint_tag and fingerprint_tag in tags:
+            return True
+        if content_value != str(getattr(memory, "content", "") or "").strip():
+            continue
+        if required_tags and not required_tags.issubset(tags):
+            continue
+        return True
+    return False
 
 
 def create_project_mcp(
@@ -494,6 +552,34 @@ def create_project_mcp(
             return {"error": "importance must be a number"}
         importance_value = max(0.0, min(1.0, importance_value))
         normalized_project_name = str(project_name or "").strip() or str(project.name or "").strip() or "default"
+        fingerprint_tag = _project_memory_fingerprint_tag(
+            normalized_project_name,
+            memory_type.value,
+            "project-mcp|manual-write",
+            content_value,
+            employee_id_value,
+        )
+        purpose_tags = tuple(
+            dict.fromkeys(
+                ["project-mcp", "manual-write", *([fingerprint_tag] if fingerprint_tag else [])]
+            )
+        )
+        if _project_memory_duplicate_exists(
+            employee_id=employee_id_value,
+            project_name=normalized_project_name,
+            content=content_value,
+            purpose_tags=purpose_tags,
+            fingerprint_tag=fingerprint_tag,
+        ):
+            return {
+                "status": "skipped",
+                "memory_id": "",
+                "employee_id": employee_id_value,
+                "project_name": normalized_project_name,
+                "type": memory_type.value,
+                "importance": importance_value,
+                "duplicate_skipped": True,
+            }
         memory = Memory(
             id=memory_store.new_id(),
             employee_id=employee_id_value,
@@ -503,7 +589,7 @@ def create_project_mcp(
             importance=importance_value,
             scope=MemoryScope.EMPLOYEE_PRIVATE,
             classification=Classification.INTERNAL,
-            purpose_tags=("project-mcp", "manual-write"),
+            purpose_tags=purpose_tags,
         )
         memory_store.save(memory)
         return {
