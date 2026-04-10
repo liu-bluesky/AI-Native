@@ -1379,8 +1379,8 @@
   <UnifiedMcpAccessDialog
     v-model="unifiedMcpDialogVisible"
     title="统一 MCP 接入"
-    :project-id="selectedProjectId"
-    :project-label="currentProjectLabel"
+    :project-id="mcpDialogProjectId"
+    :project-label="mcpDialogProjectLabel"
     :chat-session-id="currentChatSessionId"
   />
 
@@ -2951,20 +2951,20 @@ const SETTINGS_CENTER_ITEM_DEFS = [
     permission: "menu.system.config",
   },
   {
+    id: "assistant-guide-modules",
+    label: "AI 助手导览",
+    desc: "维护助手系统导览模块，可通过角色权限分配",
+    kind: "route",
+    path: "/assistant-guide-modules",
+    permission: "menu.system.assistant_guide",
+  },
+  {
     id: "changelog-entries",
     label: "更新日志",
     desc: "维护官网更新日志条目",
     kind: "route",
     path: "/changelog-entries",
     permission: "menu.system.changelog",
-  },
-  {
-    id: "work-sessions",
-    label: "工作轨迹",
-    desc: "查看 query MCP 的会话轨迹与检查点",
-    kind: "route",
-    path: "/work-sessions",
-    permission: "menu.system.work_sessions",
   },
   {
     id: "online-users",
@@ -3072,6 +3072,8 @@ const SETTINGS_GUIDE_REASON_MAP = {
   "user-settings":
     "这里决定你的默认 AI 来源和个人偏好，会影响日常进入对话时的默认落点。",
   "system-config": "适合维护平台级默认值、功能开关和全局行为边界。",
+  "assistant-guide-modules":
+    "这里维护 AI 助手的系统导览模块，可通过角色权限按需开放给指定管理角色。",
   "online-users": "只向超级管理员展示当前在线账号，便于判断后台活跃状态。",
   "mcp-monitor":
     "只向超级管理员展示系统 MCP 运行态，便于判断项目、员工、技能、规则和统一查询入口的在线使用情况。",
@@ -3413,6 +3415,21 @@ const settingsMainCardRef = ref(null);
 const hasSelectedProject = computed(() =>
   Boolean(String(selectedProjectId.value || "").trim()),
 );
+const mcpDialogProjectId = computed(() => {
+  const activeProjectId = String(selectedProjectId.value || "").trim();
+  if (activeProjectId) return activeProjectId;
+  const routeProjectId = String(route.query.project_id || "").trim();
+  if (routeProjectId) return routeProjectId;
+  return String(localStorage.getItem("project_id") || "").trim();
+});
+const mcpDialogProjectLabel = computed(() => {
+  const projectId = String(mcpDialogProjectId.value || "").trim();
+  if (!projectId) return "";
+  const matched = (projects.value || []).find(
+    (item) => String(item?.id || "").trim() === projectId,
+  );
+  return String(matched?.name || projectId).trim();
+});
 const canUseExternalAgent = computed(() => false);
 const isExternalAgentMode = computed(() => false);
 const chatModeLabel = computed(() => "系统对话");
@@ -10417,6 +10434,7 @@ async function doSend() {
       assistant_message_id: assistantMessage.id,
       chat_session_id: activeChatSessionId,
       chat_mode: "system",
+      chat_surface: "main-chat",
       skill_resource_directory: String(
         skillResourceDirectoryResolved.value || "",
       ).trim(),

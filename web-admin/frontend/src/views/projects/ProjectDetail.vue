@@ -341,13 +341,13 @@
 
           <el-tab-pane name="memory">
             <template #label>
-              <span class="project-detail-tab-label">
-                <span class="project-detail-tab-label__title">需求记录</span>
-                <span class="project-detail-tab-label__meta">
-                  {{ requirementRecords.length }} 条记录
+                <span class="project-detail-tab-label">
+                  <span class="project-detail-tab-label__title">需求记录</span>
+                  <span class="project-detail-tab-label__meta">
+                  {{ requirementRecordTabMeta }}
+                  </span>
                 </span>
-              </span>
-            </template>
+              </template>
 
             <div class="project-detail-tab-pane">
               <div class="block block--memory-primary">
@@ -363,7 +363,7 @@
                     <el-button
                       text
                       size="small"
-                      :loading="taskSessionsLoading || workSessionLoading || memoryLoading"
+                      :loading="loading || taskSessionsLoading || workSessionLoading || memoryLoading || taskTreeDetailsLoading"
                       @click="refreshRequirementRecords"
                     >
                       刷新映射
@@ -433,7 +433,7 @@
                         :value="size"
                       />
                     </el-select>
-                    <div class="memory-filters__actions">
+                  <div class="memory-filters__actions">
                       <el-button
                         type="primary"
                         :loading="memoryLoading || workSessionLoading"
@@ -450,6 +450,48 @@
                         >重置</el-button
                       >
                     </div>
+                  </div>
+                  <div v-if="memoryWindowHint" class="memory-filters__hint">
+                    {{ memoryWindowHint }}
+                  </div>
+                </div>
+                <div
+                  v-if="canManageProject"
+                  class="requirement-record-toolbar"
+                >
+                  <div class="requirement-record-toolbar__copy">
+                    <el-tag effect="plain" type="info">
+                      已选 {{ selectedRequirementRecordCount }} / {{ requirementRecords.length }}
+                    </el-tag>
+                    <span>删除全部仅作用于当前筛选结果。</span>
+                  </div>
+                  <div class="requirement-record-toolbar__actions">
+                    <el-button
+                      size="small"
+                      :disabled="!requirementRecords.length || requirementRecordDeleting"
+                      @click="toggleSelectAllRequirementRecords"
+                    >
+                      {{ allRequirementRecordsSelected ? "取消全选" : "全选当前结果" }}
+                    </el-button>
+                    <el-button
+                      plain
+                      type="danger"
+                      size="small"
+                      :loading="requirementRecordDeleting"
+                      :disabled="!selectedRequirementRecordCount"
+                      @click="handleBatchDeleteRequirementRecords"
+                    >
+                      删除所选
+                    </el-button>
+                    <el-button
+                      type="danger"
+                      size="small"
+                      :loading="requirementRecordDeleting"
+                      :disabled="!requirementRecords.length"
+                      @click="handleDeleteAllRequirementRecords"
+                    >
+                      删除当前结果
+                    </el-button>
                   </div>
                 </div>
 
@@ -470,6 +512,14 @@
                         <p>{{ record.summaryText || record.currentFocus || record.completionGate }}</p>
                       </div>
                       <div class="requirement-record__hero-actions">
+                        <el-checkbox
+                          v-if="canManageProject"
+                          :model-value="isRequirementRecordSelected(record)"
+                          :disabled="requirementRecordDeleting"
+                          @change="toggleRequirementRecordSelection(record.id, $event)"
+                        >
+                          选择
+                        </el-checkbox>
                         <el-tag :type="record.statusTagType">
                           {{ record.statusLabel }}
                         </el-tag>
@@ -482,6 +532,16 @@
                         </el-button>
                         <el-button text @click="openRequirementRecordDetail(record)">
                           查看整轮
+                        </el-button>
+                        <el-button
+                          v-if="canManageProject"
+                          type="danger"
+                          plain
+                          size="small"
+                          :loading="requirementRecordDeleting"
+                          @click="handleDeleteRequirementRecord(record)"
+                        >
+                          删除
                         </el-button>
                       </div>
                     </div>
@@ -1397,7 +1457,7 @@ import {
   toWorkspaceRelativePath,
 } from "@/utils/workspace-picker.js";
 import { hasPermission } from "@/utils/permissions.js";
-import { buildRuntimeUrl } from "@/utils/runtime-url.js";
+import { buildRuntimeUrl, fetchConfiguredRuntimeOrigin } from "@/utils/runtime-url.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -1405,6 +1465,7 @@ const projectId = String(route.params.id || "");
 const showProjectLocationFields = false;
 const showProjectAddressFields = false;
 const activeProjectTab = ref("overview");
+const runtimeOrigin = ref("");
 const projectTypeOptions = [
   {
     value: "image",
@@ -1445,6 +1506,8 @@ const employeeOptions = ref([]);
 const userOptions = ref([]);
 const ruleOptions = ref([]);
 const projectMemories = ref([]);
+const projectMemoryTotal = ref(0);
+const projectMemoryHasMore = ref(false);
 const projectWorkSessions = ref([]);
 const projectTaskSessions = ref([]);
 const projectTaskTreeDetails = ref({});
@@ -1454,6 +1517,7 @@ const selectedWorkSessionEvents = ref([]);
 const selectedRequirementNode = ref(null);
 const selectedRequirementNodeRound = ref(null);
 const selectedRequirementNodeEvents = ref([]);
+const selectedRequirementRecordIds = ref([]);
 const expandedRequirementRecordId = ref("");
 const memoryDetailWorkEvents = ref([]);
 const taskTreeStorageBackend = ref("");
@@ -1463,6 +1527,7 @@ const memoryDetailWorkEventsLoading = ref(false);
 const taskTreeDetailsLoading = ref(false);
 const requirementNodeDetailLoading = ref(false);
 const workSessionDetailLoading = ref(false);
+const requirementRecordDeleting = ref(false);
 const projectUsersPage = ref(1);
 const projectUsersPageSize = ref(10);
 const membersPage = ref(1);
@@ -1556,7 +1621,10 @@ const ruleMap = computed(
 );
 const projectMcpSseUrl = computed(() => {
   if (!project.value?.id) return "";
-  return buildRuntimeUrl(`/mcp/projects/${project.value.id}/sse?key=YOUR_API_KEY`);
+  return buildRuntimeUrl(
+    `/mcp/projects/${project.value.id}/sse?key=YOUR_API_KEY`,
+    runtimeOrigin.value,
+  );
 });
 
 function manageBlockedMessage() {
@@ -1568,8 +1636,15 @@ function manageBlockedMessage() {
 }
 const projectMcpHttpUrl = computed(() => {
   if (!project.value?.id) return "";
-  return buildRuntimeUrl(`/mcp/projects/${project.value.id}/mcp?key=YOUR_API_KEY`);
+  return buildRuntimeUrl(
+    `/mcp/projects/${project.value.id}/mcp?key=YOUR_API_KEY`,
+    runtimeOrigin.value,
+  );
 });
+
+async function fetchRuntimeOrigin() {
+  runtimeOrigin.value = await fetchConfiguredRuntimeOrigin();
+}
 
 const taskTreeStorageBackendLabel = computed(() => {
   const normalized = String(taskTreeStorageBackend.value || "").trim().toLowerCase();
@@ -1711,6 +1786,23 @@ const filteredMemoryRows = computed(() => {
   );
 });
 
+const visibleRequirementRecordIds = computed(() =>
+  (requirementRecords.value || [])
+    .map((item) => String(item?.id || "").trim())
+    .filter(Boolean),
+);
+
+const selectedRequirementRecordIdSet = computed(() => new Set(selectedRequirementRecordIds.value || []));
+
+const selectedRequirementRecordCount = computed(() =>
+  visibleRequirementRecordIds.value.filter((item) => selectedRequirementRecordIdSet.value.has(item)).length,
+);
+
+const allRequirementRecordsSelected = computed(() =>
+  visibleRequirementRecordIds.value.length > 0
+  && visibleRequirementRecordIds.value.every((item) => selectedRequirementRecordIdSet.value.has(item)),
+);
+
 const requirementRecords = computed(() => {
   const detailMap = projectTaskTreeDetails.value || {};
   const grouped = new Map();
@@ -1817,14 +1909,25 @@ const requirementRecords = computed(() => {
         }
         return String(left.createdAt || "").localeCompare(String(right.createdAt || ""));
       });
-      let currentRound = sortedRounds[sortedRounds.length - 1] || null;
+      const latestRound = sortedRounds[sortedRounds.length - 1] || null;
+      let currentRound = latestRound;
       for (let index = sortedRounds.length - 1; index >= 0; index -= 1) {
         if (!sortedRounds[index].isFinalized) {
           currentRound = sortedRounds[index];
           break;
         }
       }
-      const latestRound = sortedRounds[sortedRounds.length - 1] || currentRound;
+      if (isRequirementRoundPlaceholder(currentRound)) {
+        const activeRoundWithProgress = sortedRounds
+          .slice()
+          .reverse()
+          .find((item) => !item.isFinalized && !isRequirementRoundPlaceholder(item));
+        const finalizedRound = sortedRounds
+          .slice()
+          .reverse()
+          .find((item) => item.isFinalized);
+        currentRound = activeRoundWithProgress || finalizedRound || currentRound;
+      }
       const actorNames = Array.from(
         new Set(
           sortedRounds.flatMap((item) => [
@@ -1850,7 +1953,9 @@ const requirementRecords = computed(() => {
         detailRound: currentRound || latestRound || null,
         rounds: sortedRounds,
         repairRoundCount: sortedRounds.filter((item) => item.recordKind === "repair").length,
-        activeRoundCount: sortedRounds.filter((item) => !item.isFinalized).length,
+        activeRoundCount: sortedRounds.filter(
+          (item) => !item.isFinalized && !isRequirementRoundPlaceholder(item),
+        ).length,
         memoryTypes,
         status: String(currentRound?.displayStatus || latestRound?.displayStatus || "pending").trim(),
         statusLabel: getTaskSessionStatusLabel(currentRound?.displayStatus || latestRound?.displayStatus),
@@ -1940,6 +2045,18 @@ const requirementRecords = computed(() => {
     });
 });
 
+const requirementRecordTabMeta = computed(() => `${Math.max(0, Number(projectMemoryTotal.value || 0))} 条记录`);
+
+const memoryWindowHint = computed(() => {
+  if (!projectMemoryHasMore.value) {
+    return "";
+  }
+  const limitValue = Number(memoryFilters.value.limit || 20);
+  const safeLimit = Number.isFinite(limitValue) && limitValue > 0 ? limitValue : 20;
+  const total = Math.max(projectMemoryTotal.value, safeLimit);
+  return `当前只展示最近 ${safeLimit} 条命中的项目记忆，现有命中 ${total} 条。删除后若还有更早记录，会自动补位，所以当前结果数可能保持不变。`;
+});
+
 const memoryOverviewItems = computed(() => {
   const rounds = requirementRecords.value.flatMap((item) => item.rounds);
   const repairRounds = rounds.filter((item) => item.recordKind === "repair").length;
@@ -1950,8 +2067,8 @@ const memoryOverviewItems = computed(() => {
   return [
     {
       label: "需求主链",
-      value: `${requirementRecords.value.length} 条`,
-      meta: "每条需求按轮次和任务树自上而下展开",
+      value: `${Math.max(0, Number(projectMemoryTotal.value || 0))} 条`,
+      meta: memoryWindowHint.value || "每条需求按轮次和任务树自上而下展开",
     },
     {
       label: "进行中轮次",
@@ -1974,6 +2091,14 @@ const memoryOverviewItems = computed(() => {
 watch(
   requirementRecords,
   (records) => {
+    const visibleIds = new Set(
+      (records || [])
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean),
+    );
+    selectedRequirementRecordIds.value = (selectedRequirementRecordIds.value || []).filter((item) =>
+      visibleIds.has(String(item || "").trim()),
+    );
     if (!expandedRequirementRecordId.value) return;
     const stillExists = (records || []).some(
       (item) => String(item?.id || "").trim() === expandedRequirementRecordId.value,
@@ -2094,6 +2219,23 @@ function resolveRequirementRoundDisplayStatus(round) {
     return "paused";
   }
   return rawStatus || "pending";
+}
+
+function isRequirementRoundPlaceholder(round) {
+  if (!round || round.isFinalized) {
+    return false;
+  }
+  const rawStatus = String(round.status || "").trim().toLowerCase();
+  if (rawStatus !== "pending") {
+    return false;
+  }
+  if (Number(round.progressPercent || 0) > 0) {
+    return false;
+  }
+  if (round.primaryMemory) {
+    return false;
+  }
+  return !(Array.isArray(round.workSessions) && round.workSessions.length);
 }
 
 function isTaskTreeFinalized(taskTree) {
@@ -2889,6 +3031,35 @@ function openRequirementRecordDetail(record) {
   openRequirementRoundDetail(targetRound);
 }
 
+function isRequirementRecordSelected(record) {
+  const recordId = String(record?.id || "").trim();
+  return Boolean(recordId) && selectedRequirementRecordIdSet.value.has(recordId);
+}
+
+function toggleRequirementRecordSelection(recordId, checked = undefined) {
+  const normalizedRecordId = String(recordId || "").trim();
+  if (!normalizedRecordId) return;
+  const nextSelected = new Set(selectedRequirementRecordIds.value || []);
+  const shouldSelect =
+    typeof checked === "boolean"
+      ? checked
+      : !nextSelected.has(normalizedRecordId);
+  if (shouldSelect) {
+    nextSelected.add(normalizedRecordId);
+  } else {
+    nextSelected.delete(normalizedRecordId);
+  }
+  selectedRequirementRecordIds.value = Array.from(nextSelected);
+}
+
+function toggleSelectAllRequirementRecords() {
+  if (allRequirementRecordsSelected.value) {
+    selectedRequirementRecordIds.value = [];
+    return;
+  }
+  selectedRequirementRecordIds.value = visibleRequirementRecordIds.value.slice();
+}
+
 function isRequirementRecordExpanded(record) {
   const recordId = String(record?.id || "").trim();
   return Boolean(recordId) && recordId === expandedRequirementRecordId.value;
@@ -3642,9 +3813,13 @@ async function fetchProjectMemories() {
     projectMemories.value = Array.isArray(data?.items)
       ? data.items.map((item) => normalizeMemory(item))
       : [];
+    projectMemoryTotal.value = Number(data?.total || 0);
+    projectMemoryHasMore.value = Boolean(data?.has_more);
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "加载项目记忆失败");
     projectMemories.value = [];
+    projectMemoryTotal.value = 0;
+    projectMemoryHasMore.value = false;
   } finally {
     memoryLoading.value = false;
   }
@@ -3655,7 +3830,110 @@ async function applyMemoryFilters() {
 }
 
 async function refreshRequirementRecords() {
-  await Promise.all([fetchProjectTaskSessions(), applyMemoryFilters()]);
+  await refresh();
+}
+
+async function deleteRequirementRecords(recordIds, successLabel = "需求记录") {
+  const normalizedIds = [...new Set(
+    (Array.isArray(recordIds) ? recordIds : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean),
+  )];
+  if (!normalizedIds.length) {
+    ElMessage.warning("请先选择要删除的需求记录");
+    return null;
+  }
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return null;
+  }
+  requirementRecordDeleting.value = true;
+  try {
+    const data = await api.post(`/projects/${projectId}/requirement-records/batch-delete`, {
+      record_ids: normalizedIds,
+    });
+    const deletedIds = Array.isArray(data?.deleted_record_ids) ? data.deleted_record_ids : [];
+    selectedRequirementRecordIds.value = (selectedRequirementRecordIds.value || []).filter(
+      (item) => !deletedIds.includes(item),
+    );
+    if (expandedRequirementRecordId.value && deletedIds.includes(expandedRequirementRecordId.value)) {
+      expandedRequirementRecordId.value = "";
+    }
+    const deletedCount = Number(data?.deleted_count || 0);
+    if (deletedCount > 0) {
+      ElMessage.success(`已删除 ${deletedCount} 条${successLabel}`);
+    } else {
+      ElMessage.warning("没有可删除的需求记录");
+    }
+    await refreshRequirementRecords();
+    return data;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "删除需求记录失败");
+    return null;
+  } finally {
+    requirementRecordDeleting.value = false;
+  }
+}
+
+async function handleDeleteRequirementRecord(record) {
+  if (!record?.id) return;
+  try {
+    await ElMessageBox.confirm(
+      "删除后将同时移除该需求链关联的任务树、工作轨迹与记忆记录，是否继续？",
+      "确认删除",
+      {
+        type: "warning",
+        confirmButtonText: "删除",
+      },
+    );
+  } catch {
+    return;
+  }
+  await deleteRequirementRecords([record.id], "需求记录");
+}
+
+async function handleBatchDeleteRequirementRecords() {
+  const selectedIds = visibleRequirementRecordIds.value.filter((item) =>
+    selectedRequirementRecordIdSet.value.has(item),
+  );
+  if (!selectedIds.length) {
+    ElMessage.warning("请先选择要删除的需求记录");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定删除已选中的 ${selectedIds.length} 条需求记录吗？这会同时清理关联的任务树、工作轨迹与记忆。`,
+      "批量删除",
+      {
+        type: "warning",
+        confirmButtonText: "删除",
+      },
+    );
+  } catch {
+    return;
+  }
+  await deleteRequirementRecords(selectedIds, "需求记录");
+}
+
+async function handleDeleteAllRequirementRecords() {
+  const currentIds = visibleRequirementRecordIds.value.slice();
+  if (!currentIds.length) {
+    ElMessage.warning("当前筛选结果下没有可删除的需求记录");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定删除当前筛选结果中的 ${currentIds.length} 条需求记录吗？这只会删除当前列表结果，并同步清理关联的任务树、工作轨迹与记忆。`,
+      "删除当前结果",
+      {
+        type: "warning",
+        confirmButtonText: "删除",
+      },
+    );
+  } catch {
+    return;
+  }
+  await deleteRequirementRecords(currentIds, "需求记录");
 }
 
 async function resetMemoryFilters() {
@@ -4031,7 +4309,9 @@ async function removeProjectUser(row) {
   }
 }
 
-onMounted(refresh);
+onMounted(async () => {
+  await Promise.allSettled([refresh(), fetchRuntimeOrigin()]);
+});
 </script>
 
 <style scoped>
@@ -4669,6 +4949,44 @@ onMounted(refresh);
   min-width: 0;
 }
 
+.memory-filters__hint {
+  width: 100%;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.requirement-record-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.requirement-record-toolbar__copy,
+.requirement-record-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.requirement-record-toolbar__copy {
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.requirement-record-toolbar__actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .requirement-records {
   display: flex;
   flex-direction: column;
@@ -4737,6 +5055,8 @@ onMounted(refresh);
   flex-shrink: 0;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .requirement-record__supporting {
@@ -5334,6 +5654,17 @@ code {
     align-items: stretch;
   }
 
+  .requirement-record-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .requirement-record-toolbar__copy,
+  .requirement-record-toolbar__actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
   .requirement-record__hero-actions {
     justify-content: space-between;
   }
@@ -5438,6 +5769,10 @@ code {
   }
 
   .requirement-record__hero-actions :deep(.el-button) {
+    flex: 1 1 auto;
+  }
+
+  .requirement-record-toolbar__actions :deep(.el-button) {
     flex: 1 1 auto;
   }
 

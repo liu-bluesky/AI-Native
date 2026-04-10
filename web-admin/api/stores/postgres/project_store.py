@@ -148,6 +148,121 @@ class ProjectStorePostgres:
             rows = cur.fetchall()
         return [ProjectUserMember(**row["payload"]) for row in rows]
 
+    @staticmethod
+    def _normalize_project_ids(project_ids: list[str] | tuple[str, ...] | set[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in project_ids:
+            project_id = str(item or "").strip()
+            if not project_id or project_id in seen:
+                continue
+            seen.add(project_id)
+            normalized.append(project_id)
+        return normalized
+
+    def list_user_memberships(
+        self,
+        username: str,
+        project_ids: list[str] | tuple[str, ...] | set[str],
+    ) -> dict[str, ProjectUserMember]:
+        normalized_username = str(username or "").strip()
+        normalized_project_ids = self._normalize_project_ids(project_ids)
+        if not normalized_username or not normalized_project_ids:
+            return {}
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT project_id, payload
+                FROM project_user_members
+                WHERE username = %s AND project_id = ANY(%s)
+                """,
+                (normalized_username, normalized_project_ids),
+            )
+            rows = cur.fetchall()
+        return {
+            str(row["project_id"] or "").strip(): ProjectUserMember(**row["payload"])
+            for row in rows
+            if str(row.get("project_id") or "").strip()
+        }
+
+    def list_member_counts(
+        self,
+        project_ids: list[str] | tuple[str, ...] | set[str],
+    ) -> dict[str, int]:
+        normalized_project_ids = self._normalize_project_ids(project_ids)
+        if not normalized_project_ids:
+            return {}
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT project_id, COUNT(*)::int AS member_count
+                FROM project_members
+                WHERE project_id = ANY(%s)
+                GROUP BY project_id
+                """,
+                (normalized_project_ids,),
+            )
+            rows = cur.fetchall()
+        return {
+            str(row["project_id"] or "").strip(): int(row["member_count"] or 0)
+            for row in rows
+            if str(row.get("project_id") or "").strip()
+        }
+
+    def list_user_member_counts(
+        self,
+        project_ids: list[str] | tuple[str, ...] | set[str],
+    ) -> dict[str, int]:
+        normalized_project_ids = self._normalize_project_ids(project_ids)
+        if not normalized_project_ids:
+            return {}
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT project_id, COUNT(*)::int AS member_count
+                FROM project_user_members
+                WHERE project_id = ANY(%s)
+                GROUP BY project_id
+                """,
+                (normalized_project_ids,),
+            )
+            rows = cur.fetchall()
+        return {
+            str(row["project_id"] or "").strip(): int(row["member_count"] or 0)
+            for row in rows
+            if str(row.get("project_id") or "").strip()
+        }
+
+    def list_owner_usernames(
+        self,
+        project_ids: list[str] | tuple[str, ...] | set[str],
+    ) -> dict[str, str]:
+        normalized_project_ids = self._normalize_project_ids(project_ids)
+        if not normalized_project_ids:
+            return {}
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT project_id, payload
+                FROM project_user_members
+                WHERE project_id = ANY(%s)
+                  AND LOWER(COALESCE(payload->>'role', '')) = 'owner'
+                  AND COALESCE((payload->>'enabled')::boolean, TRUE) = TRUE
+                ORDER BY project_id ASC, joined_at ASC
+                """,
+                (normalized_project_ids,),
+            )
+            rows = cur.fetchall()
+        owners: dict[str, str] = {}
+        for row in rows:
+            project_id = str(row.get("project_id") or "").strip()
+            if not project_id or project_id in owners:
+                continue
+            owner_username = str((row.get("payload") or {}).get("username") or "").strip()
+            if owner_username:
+                owners[project_id] = owner_username
+        return owners
+
     def get_user_member(self, project_id: str, username: str) -> ProjectUserMember | None:
         with self._conn.cursor() as cur:
             cur.execute(

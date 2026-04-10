@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import mimetypes
 import re
 import shutil
 import subprocess
 import sys
+import uuid
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import asdict, replace
 from collections.abc import AsyncIterator
+from tempfile import NamedTemporaryFile
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -27,8 +32,12 @@ from core.redis_client import get_redis_client
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
 from core.auth import decode_token
 from core.config import get_api_data_dir, get_project_root, get_settings
-from core.deps import employee_store, external_mcp_store, is_admin_like, local_connector_store, project_chat_store, project_chat_task_store, project_material_store, project_studio_export_store, project_store, require_auth, role_store, system_config_store, user_store, work_session_store
+from core.deps import employee_store, external_mcp_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_store, project_chat_task_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_session_store
 from services.feedback_service import get_feedback_service
+from services.global_assistant_service import (
+    build_global_assistant_builtin_tools,
+    build_global_assistant_visibility_context,
+)
 from services.local_connector_service import (
     LocalConnectorLlmAdapter,
     build_local_connector_provider_id,
@@ -57,6 +66,7 @@ from services.project_chat_task_tree import (
 )
 from models.requests import (
     ProjectAiEntryFileUpdateReq,
+    ProjectRequirementRecordBatchDeleteReq,
     ProjectChatHistoryTruncateReq,
     ProjectChatReq,
     ProjectChatSettingsUpdateReq,
@@ -81,6 +91,7 @@ from models.requests import (
     ProjectMemberAddReq,
     ProjectUserAddReq,
     ProjectUpdateReq,
+    GlobalAssistantSpeechReq,
     WorkspaceDirectoryPickReq,
     WorkspaceFilePickReq,
 )
@@ -88,6 +99,13 @@ from stores.json.project_chat_store import ProjectChatMessage
 from stores.json.project_material_store import ProjectMaterialAsset
 from stores.json.project_studio_export_store import ProjectStudioExportJob
 from stores.json.project_store import ProjectConfig, ProjectMember, ProjectUserMember, _now_iso
+from stores.json.system_config_store import (
+    DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
+    DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT,
+    DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT,
+    normalize_voice_allowed_role_ids,
+    normalize_voice_allowed_usernames,
+)
 from core.role_permissions import has_permission, resolve_role_permissions
 from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType, memory_store, rule_store, serialize_memory, skill_store
 
@@ -95,6 +113,12 @@ router = APIRouter(prefix="/api/projects", dependencies=[Depends(require_auth)])
 
 _PROJECT_USERNAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,63}")
 _PROJECT_EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+_GLOBAL_ASSISTANT_STORE_PROJECT_ID = "__global-assistant__"
+_GLOBAL_VOICE_STREAM_SAMPLE_RATE = 16000
+_GLOBAL_VOICE_STREAM_PCM_BYTES_PER_SAMPLE = 2
+_GLOBAL_VOICE_STREAM_MIN_CHUNK_MS = 240
+_GLOBAL_VOICE_STREAM_MAX_BUFFER_SECONDS = 20
+_GLOBAL_VOICE_STREAM_FINAL_MAX_BUFFER_SECONDS = 180
 
 _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "chat_mode": "system",
@@ -237,31 +261,52 @@ def _project_creator_username(project_id: str, project: ProjectConfig | None = N
     return str(getattr(owner_members[0], "username", "") or "").strip() if owner_members else ""
 
 
-def _can_manage_project(project_id: str, auth_payload: dict, project: ProjectConfig | None = None) -> bool:
+def _can_manage_project(
+    project_id: str,
+    auth_payload: dict,
+    project: ProjectConfig | None = None,
+    *,
+    creator_username: str = "",
+) -> bool:
     if _is_admin_like(auth_payload):
         return True
     username = _current_username(auth_payload)
-    creator_username = _project_creator_username(project_id, project)
-    return bool(username and creator_username and username == creator_username)
+    resolved_creator_username = str(creator_username or "").strip() or _project_creator_username(project_id, project)
+    return bool(username and resolved_creator_username and username == resolved_creator_username)
 
 
-def _serialize_project(project: ProjectConfig, auth_payload: dict | None = None) -> dict:
+def _serialize_project(
+    project: ProjectConfig,
+    auth_payload: dict | None = None,
+    *,
+    member_count: int | None = None,
+    user_count: int | None = None,
+    creator_username: str = "",
+    current_member: ProjectUserMember | None = None,
+) -> dict:
     data = asdict(project)
     data.pop("chat_settings", None)
     normalized_type = _normalize_project_type(getattr(project, "type", "mixed"))
-    creator_username = _project_creator_username(project.id, project)
+    resolved_creator_username = str(creator_username or "").strip() or _project_creator_username(project.id, project)
     data["type"] = normalized_type
     data["type_label"] = _PROJECT_TYPE_LABELS.get(normalized_type, _PROJECT_TYPE_LABELS["mixed"])
-    data["member_count"] = len(project_store.list_members(project.id))
-    data["user_count"] = len(project_store.list_user_members(project.id))
-    data["created_by"] = creator_username
+    data["member_count"] = int(member_count) if member_count is not None else len(project_store.list_members(project.id))
+    data["user_count"] = int(user_count) if user_count is not None else len(project_store.list_user_members(project.id))
+    data["created_by"] = resolved_creator_username
     data["ui_rule_ids"] = _normalize_project_ui_rule_ids(getattr(project, "ui_rule_ids", []) or [])
     data["ui_rule_bindings"] = _resolve_project_ui_rule_bindings(project)
     if auth_payload is not None:
         current_username = _current_username(auth_payload)
-        current_member = _get_project_user_member(project.id, current_username)
-        data["current_user_role"] = str(getattr(current_member, "role", "") or "").strip().lower()
-        data["can_manage"] = _can_manage_project(project.id, auth_payload, project)
+        resolved_member = current_member
+        if resolved_member is None and current_username:
+            resolved_member = _get_project_user_member(project.id, current_username)
+        data["current_user_role"] = str(getattr(resolved_member, "role", "") or "").strip().lower()
+        data["can_manage"] = _can_manage_project(
+            project.id,
+            auth_payload,
+            project,
+            creator_username=resolved_creator_username,
+        )
     return data
 
 
@@ -1897,6 +1942,7 @@ async def _generate_project_chat_media_done_payload(
     model_name: str,
     runtime_settings: dict[str, Any],
     memory_source: str,
+    allow_requirement_record: bool = True,
 ) -> dict[str, Any]:
     artifacts = _normalize_chat_media_artifacts(
         await llm_service.generate_media_artifacts(
@@ -1953,6 +1999,7 @@ async def _generate_project_chat_media_done_payload(
         task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
         selected_employee_ids=selected_employee_ids,
         source=memory_source,
+        allow_requirement_record=allow_requirement_record,
     )
     return done_payload
 
@@ -2451,17 +2498,24 @@ def _format_rule_domain_summary(rule_bindings: list[dict[str, str]]) -> str:
 
 
 def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
-    role_id = str(auth_payload.get("role") or "").strip().lower()
-    role = role_store.get(role_id)
-    permissions = getattr(role, "permissions", None)
+    role_ids = get_auth_role_ids(auth_payload)
+    role_id = role_ids[0] if role_ids else ""
+    permissions = resolve_role_ids_permissions(role_ids)
     if not has_permission(permissions, permission_key, role_id=role_id):
         raise HTTPException(403, f"Permission denied: {permission_key}")
 
 
+def _has_permission(auth_payload: dict, permission_key: str) -> bool:
+    role_ids = get_auth_role_ids(auth_payload)
+    role_id = role_ids[0] if role_ids else ""
+    permissions = resolve_role_ids_permissions(role_ids)
+    return has_permission(permissions, permission_key, role_id=role_id)
+
+
 def _ensure_any_permission(auth_payload: dict, permission_keys: list[str]) -> None:
-    role_id = str(auth_payload.get("role") or "").strip().lower()
-    role = role_store.get(role_id)
-    permissions = getattr(role, "permissions", None)
+    role_ids = get_auth_role_ids(auth_payload)
+    role_id = role_ids[0] if role_ids else ""
+    permissions = resolve_role_ids_permissions(role_ids)
     if any(has_permission(permissions, key, role_id=role_id) for key in permission_keys):
         return
     raise HTTPException(403, f"Permission denied: {permission_keys}")
@@ -2577,14 +2631,19 @@ def _cleanup_project_chat_employee_selection(project_id: str, employee_id: str) 
     return True
 
 
-def _pick_chat_provider(provider_id: str, auth_payload: dict) -> tuple[dict, list[dict]]:
+def _pick_chat_provider(
+    provider_id: str,
+    auth_payload: dict,
+    *,
+    include_all_providers: bool = False,
+) -> tuple[dict, list[dict]]:
     from services.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
     providers = llm_service.list_providers(
         enabled_only=True,
         owner_username=str(auth_payload.get("sub") or "").strip(),
-        include_all=is_admin_like(auth_payload),
+        include_all=include_all_providers or is_admin_like(auth_payload),
         include_shared=True,
     )
     if not providers:
@@ -2655,6 +2714,8 @@ async def _build_connector_chat_provider(connector: Any) -> dict[str, Any] | Non
 async def _resolve_provider_runtime_target(
     provider_id: str,
     auth_payload: dict,
+    *,
+    include_all_providers: bool = False,
 ) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
     connector_id = parse_local_connector_provider_id(provider_id)
     if connector_id:
@@ -2665,8 +2726,62 @@ async def _resolve_provider_runtime_target(
         if provider is None:
             raise HTTPException(400, "当前本地连接器未配置可用模型")
         return "local_connector", provider, [provider]
-    provider, providers = _pick_chat_provider(provider_id, auth_payload)
+    provider, providers = _pick_chat_provider(
+        provider_id,
+        auth_payload,
+        include_all_providers=include_all_providers,
+    )
     return "provider", provider, providers
+
+
+async def _resolve_global_assistant_provider_runtime_target(
+    provider_id: str,
+    auth_payload: dict,
+) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
+    try:
+        return await _resolve_provider_runtime_target(
+            provider_id,
+            auth_payload,
+            include_all_providers=True,
+        )
+    except TypeError:
+        return await _resolve_provider_runtime_target(provider_id, auth_payload)
+
+
+def _resolve_global_assistant_chat_model_defaults() -> tuple[str, str]:
+    config = system_config_store.get_global()
+    provider_id = str(
+        getattr(config, "global_assistant_chat_provider_id", "") or ""
+    ).strip()
+    model_name = str(
+        getattr(config, "global_assistant_chat_model_name", "") or ""
+    ).strip()
+    return provider_id, model_name
+
+
+async def _resolve_global_assistant_chat_runtime_target(
+    runtime_settings: dict[str, Any],
+    auth_payload: dict,
+) -> tuple[str, dict[str, Any], str]:
+    configured_provider_id, configured_model_name = (
+        _resolve_global_assistant_chat_model_defaults()
+    )
+    requested_provider_id = str(runtime_settings.get("provider_id") or "").strip()
+    requested_model_name = str(runtime_settings.get("model_name") or "").strip()
+    provider_mode, selected_provider, _ = await _resolve_global_assistant_provider_runtime_target(
+        requested_provider_id or configured_provider_id,
+        auth_payload,
+    )
+    provider_id = str(selected_provider.get("id") or "").strip()
+    model_name = str(
+        requested_model_name
+        or configured_model_name
+        or selected_provider.get("default_model")
+        or (selected_provider.get("models") or [""])[0]
+    ).strip()
+    if not provider_id or not model_name:
+        raise HTTPException(400, "未找到可用模型")
+    return provider_mode, selected_provider, model_name
 
 
 def _project_tool_display_name(tool_name: str) -> str:
@@ -3196,6 +3311,10 @@ def _build_project_chat_messages(
     if not base_prompt:
         base_prompt = "你是项目开发助手。"
         base_prompt += "\n可按需调用工具检索最新项目上下文并完成用户请求。"
+        base_prompt += "\n解决问题时，优先使用当前项目已绑定的员工、规则和技能；先判断项目内现成能力是否足够，再决定是否补充你自己的通用能力。"
+        base_prompt += "\n每次收到项目请求，进入分析、实现或排查前，先读取项目手册，并按需调用 get_project_manual、query_project_rules、list_project_proxy_tools，重新获取与当前问题直接相关的规则正文和技能能力。"
+        base_prompt += "\n若项目绑定员工或技能已经可以闭环，就优先复用项目员工对应的工具或协作链路；只有项目内能力不足、工具缺失或上下文仍不够时，才允许你自行补足实现。"
+        base_prompt += "\n项目规则只使用与当前问题直接相关的部分；不要只看规则标题，也不要把无关项目规则机械套用到所有请求。"
         base_prompt += "\n当用户询问项目信息、员工信息、规则、MCP 服务时，优先调用 search_project_context 再回答。"
         base_prompt += "\n当用户询问当前项目有哪些员工、成员、规则、工具或 MCP 能力时，不要先说无法获取；先调用 query_project_members、query_project_rules 或 search_project_context。"
         base_prompt += "\n当用户明确要完整项目配置、聊天配置、成员原始关系或单员工完整档案时，优先调用 get_project_detail 或 get_project_employee_detail。"
@@ -3403,12 +3522,20 @@ def _build_global_chat_messages(
     answer_style: str = "concise",
     prefer_conclusion_first: bool = True,
     skill_resource_directory: str = "",
+    chat_surface: str = "main-chat",
+    runtime_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     base_prompt = (custom_system_prompt or "").strip()
     if not base_prompt:
-        base_prompt = "你是通用 AI 助手。"
-        base_prompt += "\n当前没有选中项目，请基于通用知识直接回答。"
-        base_prompt += "\n如果用户问题依赖项目、代码库、员工、MCP 或规则配置，请明确提示需要先选择项目后再继续。"
+        if _normalize_project_chat_surface(chat_surface) == "global-assistant":
+            cfg = system_config_store.get_global()
+            base_prompt = str(
+                getattr(cfg, "global_assistant_system_prompt", "") or DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT
+            ).strip() or DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT
+        else:
+            base_prompt = "你是通用 AI 助手。"
+            base_prompt += "\n当前没有选中项目，请基于通用知识直接回答。"
+            base_prompt += "\n如果用户问题依赖项目、代码库、员工、MCP 或规则配置，请明确提示需要先选择项目后再继续。"
 
     style_hint = {
         "concise": "输出风格：简洁，避免冗长。",
@@ -3427,6 +3554,49 @@ def _build_global_chat_messages(
         {"role": "system", "content": system_prompt},
         *_normalize_chat_history(history, limit=history_limit),
     ]
+    runtime_lines: list[str] = []
+    snapshot = runtime_snapshot or {}
+    route_title = str(snapshot.get("route_title") or "").strip()
+    route_path = str(snapshot.get("route_path") or "").strip()
+    current_user = str(snapshot.get("username") or "").strip()
+    current_role = str(snapshot.get("role") or "").strip()
+    current_project_id = str(snapshot.get("current_project_id") or "").strip()
+    current_project_name = str(snapshot.get("current_project_name") or "").strip()
+    if route_title or route_path:
+        runtime_lines.append(
+            f"当前页面：{route_title or route_path} ({route_path or route_title})"
+        )
+    if current_project_id or current_project_name:
+        runtime_lines.append(
+            f"当前项目：{current_project_name or current_project_id} ({current_project_id or current_project_name})"
+        )
+    if current_user:
+        runtime_lines.append(
+            f"当前登录用户：{current_user}，角色：{current_role or 'unknown'}"
+        )
+    metric_map = {
+        "visible_project_count": "可访问项目数",
+        "employee_count": "员工数",
+        "user_count": "用户数",
+        "online_user_count": "在线用户数",
+        "project_mcp_count": "项目 MCP 数",
+        "global_mcp_count": "全局 MCP 数",
+    }
+    metric_lines = [
+        f"{label}：{snapshot[key]}"
+        for key, label in metric_map.items()
+        if snapshot.get(key) is not None
+    ]
+    if metric_lines:
+        runtime_lines.append("实时系统快照：" + "；".join(metric_lines))
+    if runtime_lines:
+        messages.insert(
+            1,
+            {
+                "role": "system",
+                "content": "以下是本轮回答必须参考的真实运行数据快照：\n" + "\n".join(runtime_lines),
+            },
+        )
     normalized_images = _normalize_image_inputs(images)
     if normalized_images:
         content = [{"type": "text", "text": user_message or "请基于图片给建议。"}]
@@ -3436,6 +3606,84 @@ def _build_global_chat_messages(
     else:
         messages.append({"role": "user", "content": user_message})
     return messages
+
+
+async def _build_global_assistant_runtime_snapshot(
+    auth_payload: dict,
+    *,
+    route_path: str = "",
+    route_title: str = "",
+) -> dict[str, Any]:
+    username = _current_username(auth_payload)
+    role = _current_role_id(auth_payload) or "user"
+    visibility = build_global_assistant_visibility_context(
+        username=username,
+        role_ids=_current_role_ids(auth_payload),
+    )
+    visible_project_ids = {
+        str(item or "").strip()
+        for item in (visibility.get("visible_project_ids") or [])
+        if str(item or "").strip()
+    }
+    visible_employee_count = int(visibility.get("visible_employee_count") or 0)
+
+    project_mcp_count = 0
+    global_mcp_count = 0
+    try:
+        for module in external_mcp_store.list_all():
+            if not bool(getattr(module, "enabled", True)):
+                continue
+            module_project_id = str(getattr(module, "project_id", "") or "").strip()
+            if module_project_id:
+                if module_project_id in visible_project_ids:
+                    project_mcp_count += 1
+            else:
+                global_mcp_count += 1
+    except Exception:
+        pass
+
+    online_user_count: int | None = None
+    try:
+        redis_client = await get_redis_client()
+        online_user_count = len(
+            await redis_client.smembers("online-users:members") or set()
+        )
+    except Exception:
+        online_user_count = None
+
+    snapshot: dict[str, Any] = {
+        "username": username,
+        "role": role,
+        "route_path": str(route_path or "").strip(),
+        "route_title": str(route_title or "").strip(),
+        "visible_project_count": len(visible_project_ids),
+        "employee_count": visible_employee_count,
+        "project_mcp_count": project_mcp_count,
+        "global_mcp_count": global_mcp_count,
+    }
+    route_project_match = re.search(
+        r"(proj-[A-Za-z0-9]+)",
+        str(route_path or "").strip(),
+    )
+    if route_project_match:
+        route_project_id = route_project_match.group(1)
+        route_project = project_store.get(route_project_id)
+        if route_project is not None:
+            route_project_visible = _is_admin_like(auth_payload)
+            if not route_project_visible:
+                member = _get_project_user_member(route_project_id, username)
+                route_project_visible = member is not None and bool(
+                    getattr(member, "enabled", True)
+                )
+            if route_project_visible:
+                snapshot["current_project_id"] = route_project_id
+                snapshot["current_project_name"] = str(
+                    getattr(route_project, "name", "") or route_project_id
+                ).strip()
+    if _is_admin_like(auth_payload):
+        snapshot["user_count"] = len(user_store.list_all())
+        snapshot["online_user_count"] = online_user_count
+    return snapshot
 
 
 def _resolve_default_chat_system_prompt(custom_system_prompt: Any = None) -> str | None:
@@ -3480,15 +3728,16 @@ def _current_username(auth_payload: dict) -> str:
 
 
 def _current_role_id(auth_payload: dict) -> str:
-    return str(auth_payload.get("role") or "").strip().lower()
+    role_ids = get_auth_role_ids(auth_payload)
+    return role_ids[0] if role_ids else ""
+
+
+def _current_role_ids(auth_payload: dict) -> list[str]:
+    return get_auth_role_ids(auth_payload)
 
 
 def _is_admin_like(auth_payload: dict) -> bool:
-    role_id = _current_role_id(auth_payload)
-    role = role_store.get(role_id)
-    permissions = getattr(role, "permissions", [])
-    resolved = resolve_role_permissions(permissions, role_id)
-    return "*" in set(resolved)
+    return "*" in set(resolve_role_ids_permissions(_current_role_ids(auth_payload)))
 
 
 def _normalize_text_list(value: Any, *, limit: int = 80) -> list[str]:
@@ -3524,7 +3773,8 @@ def _connector_llm_accessible(item: Any, auth_payload: dict) -> bool:
         return True
     if username in _connector_llm_shared_with_usernames(item):
         return True
-    return _current_role_id(auth_payload) in _connector_llm_shared_with_roles(item)
+    shared_roles = set(_connector_llm_shared_with_roles(item))
+    return any(role_id in shared_roles for role_id in _current_role_ids(auth_payload))
 
 
 def _connector_workspace_accessible(item: Any, auth_payload: dict) -> bool:
@@ -3874,13 +4124,50 @@ def _extract_project_memory_section(content: Any, label: str) -> str:
     return _normalize_project_record_token(matched.group(1), limit=400)
 
 
-def _parse_project_memory_binding(content: Any) -> dict[str, str]:
+def _extract_project_memory_inline_binding(content: Any, key: str, *, limit: int = 120) -> str:
     text = _normalize_project_record_token(content)
-    if not text:
-        return {}
+    normalized_key = str(key or "").strip()
+    if not text or not normalized_key:
+        return ""
+    patterns = (
+        rf"(?:^|[\s,;]){re.escape(normalized_key)}=([A-Za-z0-9_.:-]+)",
+        rf'"{re.escape(normalized_key)}"\s*:\s*"([^"]+)"',
+    )
+    for pattern in patterns:
+        matched = re.search(pattern, text)
+        if matched:
+            return _normalize_project_record_token(matched.group(1), limit=limit)
+    return ""
+
+
+def _extract_project_memory_tag_binding(purpose_tags: Any, prefix: str, *, limit: int = 120) -> str:
+    normalized_prefix = str(prefix or "").strip().lower()
+    if not normalized_prefix:
+        return ""
+    for item in purpose_tags or ():
+        tag = str(item or "").strip()
+        if not tag:
+            continue
+        if tag.lower().startswith(normalized_prefix):
+            return _normalize_project_record_token(tag[len(prefix):], limit=limit)
+    return ""
+
+
+def _parse_project_memory_binding(content: Any, purpose_tags: Any = ()) -> dict[str, str]:
+    text = _normalize_project_record_token(content)
     result = {
-        "chat_session_id": _extract_project_memory_section(text, "关联会话"),
+        "chat_session_id": _extract_project_memory_section(text, "关联会话")
+        or _extract_project_memory_tag_binding(purpose_tags, "chat-session:", limit=120)
+        or _extract_project_memory_inline_binding(text, "chat_session_id", limit=120),
+        "task_tree_session_id": _extract_project_memory_inline_binding(text, "task_tree_session_id", limit=80),
+        "task_tree_chat_session_id": _extract_project_memory_inline_binding(text, "task_tree_chat_session_id", limit=80),
+        "task_node_id": _extract_project_memory_inline_binding(text, "task_node_id", limit=80),
+        "task_node_title": _extract_project_memory_inline_binding(text, "task_node_title", limit=200),
+        "root_goal": _extract_project_memory_inline_binding(text, "root_goal", limit=400),
+        "session_id": _extract_project_memory_inline_binding(text, "session_id", limit=120),
     }
+    if not text:
+        return {key: value for key, value in result.items() if value}
     matched = re.search(r"\[执行轨迹JSON\]\s*([^\n]+)", text)
     if matched:
         try:
@@ -3910,12 +4197,16 @@ def _parse_project_memory_binding(content: Any) -> dict[str, str]:
                         limit=80,
                     ),
                     "task_node_title": _normalize_project_record_token(
-                        payload.get("task_node_title") or current_node.get("title"),
+                        payload.get("task_node_title") or current_node.get("title") or result.get("task_node_title"),
                         limit=200,
                     ),
                     "root_goal": _normalize_project_record_token(
-                        payload.get("root_goal") or payload.get("title"),
+                        payload.get("root_goal") or payload.get("title") or result.get("root_goal"),
                         limit=400,
+                    ),
+                    "session_id": _normalize_project_record_token(
+                        payload.get("session_id") or result.get("session_id"),
+                        limit=120,
                     ),
                 }
             )
@@ -3924,8 +4215,114 @@ def _parse_project_memory_binding(content: Any) -> dict[str, str]:
 
 def _serialize_project_memory_record(item: Any) -> dict[str, Any]:
     payload = serialize_memory(item)
-    payload.update(_parse_project_memory_binding(getattr(item, "content", "")))
+    payload.update(
+        _parse_project_memory_binding(
+            getattr(item, "content", ""),
+            getattr(item, "purpose_tags", ()),
+        )
+    )
     return payload
+
+
+def _collect_all_project_related_memories(project: ProjectConfig) -> list[Any]:
+    memories, trajectory_memories = _collect_project_related_memories(project)
+    return [*memories, *trajectory_memories]
+
+
+def _build_project_requirement_record_delete_index(project: ProjectConfig) -> dict[str, dict[str, Any]]:
+    sessions = project_chat_task_store.list_by_project(project.id, limit=500) or []
+    chain_index: dict[str, dict[str, Any]] = {}
+    session_id_to_chain: dict[str, str] = {}
+    chat_session_id_to_chain: dict[str, str] = {}
+
+    for session in sessions:
+        session_id = _normalize_project_record_token(getattr(session, "id", ""), limit=80)
+        if not session_id:
+            continue
+        source_session_id = _normalize_project_record_token(
+            getattr(session, "source_session_id", ""),
+            limit=80,
+        )
+        chain_id = source_session_id or session_id
+        entry = chain_index.setdefault(
+            chain_id,
+            {
+                "chain_id": chain_id,
+                "task_sessions": [],
+                "task_session_ids": set(),
+                "task_chat_session_ids": set(),
+                "memory_ids": set(),
+                "work_session_ids": set(),
+            },
+        )
+        entry["task_sessions"].append(session)
+        entry["task_session_ids"].add(session_id)
+        session_id_to_chain[session_id] = chain_id
+        for chat_session_id in (
+            _normalize_project_record_token(getattr(session, "chat_session_id", ""), limit=80),
+            _normalize_project_record_token(getattr(session, "source_chat_session_id", ""), limit=80),
+        ):
+            if not chat_session_id:
+                continue
+            entry["task_chat_session_ids"].add(chat_session_id)
+            chat_session_id_to_chain.setdefault(chat_session_id, chain_id)
+
+    for memory in _collect_all_project_related_memories(project):
+        memory_id = _normalize_project_record_token(getattr(memory, "id", ""), limit=80)
+        if not memory_id:
+            continue
+        binding = _parse_project_memory_binding(
+            getattr(memory, "content", ""),
+            getattr(memory, "purpose_tags", ()),
+        )
+        chain_id = session_id_to_chain.get(
+            _normalize_project_record_token(binding.get("task_tree_session_id"), limit=80),
+            "",
+        )
+        if not chain_id:
+            for chat_session_id in (
+                binding.get("task_tree_chat_session_id"),
+                binding.get("chat_session_id"),
+            ):
+                normalized_chat_session_id = _normalize_project_record_token(chat_session_id, limit=80)
+                if normalized_chat_session_id and normalized_chat_session_id in chat_session_id_to_chain:
+                    chain_id = chat_session_id_to_chain[normalized_chat_session_id]
+                    break
+        if not chain_id:
+            normalized_session_id = _normalize_project_record_token(binding.get("session_id"), limit=120)
+            if normalized_session_id and normalized_session_id in chain_index:
+                chain_id = normalized_session_id
+        if not chain_id:
+            continue
+        chain_index[chain_id]["memory_ids"].add(memory_id)
+
+    list_all_work_events = getattr(work_session_store, "list_all", None)
+    if callable(list_all_work_events):
+        work_events = list_all_work_events() or []
+    else:
+        work_events = work_session_store.list_events(project_id=project.id, limit=500)
+    for item in work_events:
+        if _normalize_project_record_token(getattr(item, "project_id", ""), limit=80) != project.id:
+            continue
+        work_session_id = _normalize_project_record_token(getattr(item, "session_id", ""), limit=120)
+        if not work_session_id:
+            continue
+        chain_id = session_id_to_chain.get(
+            _normalize_project_record_token(getattr(item, "task_tree_session_id", ""), limit=80),
+            "",
+        )
+        if not chain_id:
+            chain_id = chat_session_id_to_chain.get(
+                _normalize_project_record_token(getattr(item, "task_tree_chat_session_id", ""), limit=80),
+                "",
+            )
+        if not chain_id and work_session_id in chain_index:
+            chain_id = work_session_id
+        if not chain_id:
+            continue
+        chain_index[chain_id]["work_session_ids"].add(work_session_id)
+
+    return chain_index
 
 
 def _serialize_project_user_member(member: ProjectUserMember) -> dict[str, Any]:
@@ -4013,6 +4410,108 @@ def _resolve_project_memory_target_employee_ids(
     return [], MemoryScope.TEAM_SHARED
 
 
+def _normalize_project_chat_surface(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "global-assistant":
+        return "global-assistant"
+    return "main-chat"
+
+
+def _compose_project_chat_memory_source(base_source: str, chat_surface: str) -> str:
+    normalized_base_source = str(base_source or "").strip() or "project-chat"
+    normalized_surface = _normalize_project_chat_surface(chat_surface)
+    if normalized_surface == "global-assistant":
+        return f"{normalized_base_source}-global-assistant"
+    return normalized_base_source
+
+
+def _allow_project_chat_requirement_record(chat_surface: str) -> bool:
+    return _normalize_project_chat_surface(chat_surface) == "global-assistant"
+
+
+_PROJECT_CHAT_COMPLETION_SIGNAL_TERMS = (
+    "已完成",
+    "已经完成",
+    "完成了",
+    "处理完成",
+    "已处理",
+    "已实现",
+    "实现完成",
+    "已修复",
+    "修复完成",
+    "已解决",
+    "解决了",
+    "done",
+    "fixed",
+)
+_PROJECT_CHAT_COMPLETION_NEGATION_TERMS = (
+    "未完成",
+    "没有完成",
+    "尚未完成",
+    "还没完成",
+    "未实现",
+    "没有实现",
+    "未修复",
+    "没有修复",
+    "未解决",
+    "没有解决",
+)
+_PROJECT_CHAT_VERIFICATION_SIGNAL_TERMS = (
+    "已验证",
+    "验证通过",
+    "测试通过",
+    "构建通过",
+    "回归通过",
+    "联调通过",
+    "人工验证",
+    "人工确认",
+    "截图确认",
+    "日志确认",
+    "验证完成",
+)
+_PROJECT_CHAT_VERIFICATION_NEGATION_TERMS = (
+    "未验证",
+    "没有验证",
+    "尚未验证",
+    "还没验证",
+    "待验证",
+    "需要验证",
+)
+
+
+def _project_chat_answer_has_term(text: str, terms: tuple[str, ...]) -> bool:
+    normalized = str(text or "").strip().lower()
+    return bool(normalized) and any(term in normalized for term in terms)
+
+
+def _project_chat_answer_implies_completed_summary(
+    answer: str,
+    task_tree_payload: dict[str, Any] | None,
+) -> bool:
+    normalized_answer = str(answer or "").strip().lower()
+    if not normalized_answer:
+        return False
+    if _project_chat_answer_has_term(normalized_answer, _PROJECT_CHAT_COMPLETION_NEGATION_TERMS):
+        return False
+    if _project_chat_answer_has_term(normalized_answer, _PROJECT_CHAT_VERIFICATION_NEGATION_TERMS):
+        return False
+    if not _project_chat_answer_has_term(normalized_answer, _PROJECT_CHAT_COMPLETION_SIGNAL_TERMS):
+        return False
+    if not _project_chat_answer_has_term(normalized_answer, _PROJECT_CHAT_VERIFICATION_SIGNAL_TERMS):
+        return False
+    if not isinstance(task_tree_payload, dict):
+        return True
+    payload_status = str(task_tree_payload.get("status") or "").strip().lower()
+    if payload_status in {"blocked", "failed"}:
+        return False
+    current_node = task_tree_payload.get("current_node")
+    if isinstance(current_node, dict):
+        current_status = str(current_node.get("status") or "").strip().lower()
+        if current_status in {"blocked", "failed"}:
+            return False
+    return True
+
+
 def _save_project_chat_memory_snapshot(
     *,
     project_id: str,
@@ -4022,6 +4521,7 @@ def _save_project_chat_memory_snapshot(
     task_tree_payload: dict[str, Any] | None = None,
     selected_employee_ids: list[str] | None = None,
     source: str = "project-chat",
+    allow_requirement_record: bool = True,
 ) -> None:
     project = project_store.get(project_id)
     if project is None:
@@ -4147,7 +4647,10 @@ def _save_project_chat_memory_snapshot(
             }
             if workflow_tag not in tags:
                 continue
-            binding = _parse_project_memory_binding(getattr(memory, "content", ""))
+            binding = _parse_project_memory_binding(
+                getattr(memory, "content", ""),
+                getattr(memory, "purpose_tags", ()),
+            )
             memory_task_tree_session_id = str(binding.get("task_tree_session_id") or "").strip()
             if normalized_task_tree_session_id:
                 if (
@@ -4187,11 +4690,18 @@ def _save_project_chat_memory_snapshot(
 
     project_name = str(getattr(project, "name", "") or project_id).strip() or "default"
     task_tree_completed = _is_task_tree_completed(task_tree_payload)
-    workflow_tag = "workflow:final-summary" if task_tree_completed else "workflow:requirement-record"
-    stage_label = _project_chat_stage_label(task_tree_payload)
+    inferred_completed_summary = (
+        not task_tree_completed
+        and _project_chat_answer_implies_completed_summary(conclusion, task_tree_payload)
+    )
+    snapshot_completed = task_tree_completed or inferred_completed_summary
+    if not snapshot_completed and not allow_requirement_record:
+        return
+    workflow_tag = "workflow:final-summary" if snapshot_completed else "workflow:requirement-record"
+    stage_label = "已完成" if snapshot_completed else _project_chat_stage_label(task_tree_payload)
     plan_outline = _render_task_tree_plan_outline(task_tree_payload)
     verification_summary = _render_task_tree_verification_summary(task_tree_payload)
-    if task_tree_completed:
+    if snapshot_completed:
         content_lines = [
             f"[用户问题] {question[:1200]}",
             f"[处理过程] {_build_project_chat_memory_process_summary(conclusion)}",
@@ -4286,13 +4796,1346 @@ def _derive_project_chat_memory_solve_status(answer: str) -> str:
     return "已给出方案"
 
 
+def _build_global_voice_runtime(auth_payload: dict) -> dict[str, Any]:
+    config = system_config_store.get_global()
+    greeting_enabled = bool(getattr(config, "global_assistant_greeting_enabled", True))
+    greeting_text = str(
+        getattr(config, "global_assistant_greeting_text", "") or DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT
+    ).strip() or DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT
+    transcription_prompt = str(
+        getattr(config, "global_assistant_transcription_prompt", "") or DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT
+    ).strip() or DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT
+    wake_phrase = str(
+        getattr(config, "global_assistant_wake_phrase", "") or "你好助手"
+    ).strip() or "你好助手"
+    idle_timeout_sec = int(
+        getattr(config, "global_assistant_idle_timeout_sec", 5) or 5
+    )
+    if not bool(getattr(config, "voice_input_enabled", False)):
+        return {
+            "enabled": False,
+            "available": False,
+            "mode": "",
+            "reason": "系统未开启语音输入",
+            "greeting_enabled": greeting_enabled,
+            "greeting_text": greeting_text,
+            "transcription_prompt": transcription_prompt,
+            "wake_phrase": wake_phrase,
+            "idle_timeout_sec": idle_timeout_sec,
+        }
+
+    provider_id = str(getattr(config, "voice_input_provider_id", "") or "").strip()
+    model_name = str(getattr(config, "voice_input_model_name", "") or "").strip()
+    if not provider_id or not model_name:
+        return {
+            "enabled": True,
+            "available": False,
+            "mode": "",
+            "reason": "系统语音模型未配置完整",
+            "greeting_enabled": greeting_enabled,
+            "greeting_text": greeting_text,
+            "transcription_prompt": transcription_prompt,
+            "wake_phrase": wake_phrase,
+            "idle_timeout_sec": idle_timeout_sec,
+        }
+
+    username = _current_username(auth_payload)
+    allowed_usernames = normalize_voice_allowed_usernames(
+        getattr(config, "voice_input_allowed_usernames", [])
+    )
+    allowed_roles = set(
+        normalize_voice_allowed_role_ids(getattr(config, "voice_input_allowed_role_ids", []))
+    )
+    current_role_ids = _current_role_ids(auth_payload)
+    scope_open = not allowed_usernames and not allowed_roles
+    username_allowed = username.lower() in {
+        str(item or "").strip().lower()
+        for item in allowed_usernames
+    }
+    role_allowed = any(role_id in allowed_roles for role_id in current_role_ids)
+    if not scope_open and not username_allowed and not role_allowed:
+        return {
+            "enabled": True,
+            "available": False,
+            "mode": "",
+            "reason": "当前账号未开通全局助手语音",
+            "greeting_enabled": greeting_enabled,
+            "greeting_text": greeting_text,
+            "transcription_prompt": transcription_prompt,
+            "wake_phrase": wake_phrase,
+            "idle_timeout_sec": idle_timeout_sec,
+        }
+
+    from services.llm_provider_service import get_llm_provider_service
+
+    llm_service = get_llm_provider_service()
+    provider = llm_service.get_provider_raw(
+        provider_id,
+        owner_username=username,
+        include_all=True,
+        include_shared=True,
+    )
+    if provider is None or not bool(provider.get("enabled", True)):
+        return {
+            "enabled": True,
+            "available": False,
+            "mode": "",
+            "reason": "系统语音模型供应商不可用",
+            "greeting_enabled": greeting_enabled,
+            "greeting_text": greeting_text,
+            "transcription_prompt": transcription_prompt,
+            "wake_phrase": wake_phrase,
+            "idle_timeout_sec": idle_timeout_sec,
+        }
+    model_config = llm_service.get_model_config(provider, model_name) or {}
+    if str(model_config.get("model_type") or "").strip().lower() != "audio_transcription":
+        return {
+            "enabled": True,
+            "available": False,
+            "mode": "",
+            "reason": "系统语音模型类型不是音频转写",
+            "greeting_enabled": greeting_enabled,
+            "greeting_text": greeting_text,
+            "transcription_prompt": transcription_prompt,
+            "wake_phrase": wake_phrase,
+            "idle_timeout_sec": idle_timeout_sec,
+        }
+    return {
+        "enabled": True,
+        "available": True,
+        "mode": "backend",
+        "reason": "",
+        "provider_id": provider_id,
+        "provider_name": str(provider.get("name") or provider_id).strip(),
+        "model_name": model_name,
+        "greeting_enabled": greeting_enabled,
+        "greeting_text": greeting_text,
+        "transcription_prompt": transcription_prompt,
+        "wake_phrase": wake_phrase,
+        "idle_timeout_sec": idle_timeout_sec,
+    }
+
+
+def _require_global_voice_runtime(auth_payload: dict) -> dict[str, Any]:
+    runtime = _build_global_voice_runtime(auth_payload)
+    if not bool(runtime.get("available")):
+        raise HTTPException(403, str(runtime.get("reason") or "当前不可使用语音输入"))
+    return runtime
+
+
+def _resolve_global_assistant_greeting_audio_asset() -> dict[str, Any] | None:
+    config = system_config_store.get_global()
+    greeting_audio = (
+        getattr(config, "global_assistant_greeting_audio", {})
+        if isinstance(getattr(config, "global_assistant_greeting_audio", {}), dict)
+        else {}
+    )
+    storage_path = str(greeting_audio.get("storage_path") or "").strip()
+    if not storage_path:
+        return None
+    relative_path = Path(storage_path)
+    if relative_path.is_absolute():
+        return None
+    data_dir = get_api_data_dir()
+    absolute_path = (data_dir / relative_path).resolve()
+    try:
+        absolute_path.relative_to(data_dir.resolve())
+    except ValueError:
+        return None
+    if not absolute_path.is_file():
+        return None
+    return {
+        "path": absolute_path,
+        "signature": str(greeting_audio.get("signature") or "").strip(),
+        "content_type": str(greeting_audio.get("content_type") or "audio/wav").strip() or "audio/wav",
+    }
+
+
+def _build_global_speech_runtime(auth_payload: dict) -> dict[str, Any]:
+    config = system_config_store.get_global()
+    if not bool(getattr(config, "voice_output_enabled", False)):
+        return {
+            "enabled": False,
+            "available": False,
+            "mode": "",
+            "reason": "系统未开启语音播报",
+        }
+
+    provider_id = str(getattr(config, "voice_output_provider_id", "") or "").strip()
+    model_name = str(getattr(config, "voice_output_model_name", "") or "").strip()
+    voice = str(getattr(config, "voice_output_voice", "") or "").strip()
+    if not provider_id or not model_name or not voice:
+        return {
+            "enabled": True,
+            "available": False,
+            "mode": "",
+            "reason": "系统语音播报配置不完整",
+        }
+
+    username = _current_username(auth_payload)
+    allowed_usernames = normalize_voice_allowed_usernames(
+        getattr(config, "voice_input_allowed_usernames", [])
+    )
+    allowed_roles = set(
+        normalize_voice_allowed_role_ids(getattr(config, "voice_input_allowed_role_ids", []))
+    )
+    current_role_ids = _current_role_ids(auth_payload)
+    scope_open = not allowed_usernames and not allowed_roles
+    username_allowed = username.lower() in {
+        str(item or "").strip().lower()
+        for item in allowed_usernames
+    }
+    role_allowed = any(role_id in allowed_roles for role_id in current_role_ids)
+    if not scope_open and not username_allowed and not role_allowed:
+        return {
+            "enabled": True,
+            "available": False,
+            "mode": "",
+            "reason": "当前账号未开通全局助手语音",
+        }
+
+    from services.llm_provider_service import get_llm_provider_service
+
+    llm_service = get_llm_provider_service()
+    provider = llm_service.get_provider_raw(
+        provider_id,
+        owner_username=username,
+        include_all=True,
+        include_shared=True,
+    )
+    if provider is None or not bool(provider.get("enabled", True)):
+        return {
+            "enabled": True,
+            "available": False,
+            "mode": "",
+            "reason": "系统语音播报供应商不可用",
+        }
+    model_config = llm_service.get_model_config(provider, model_name) or {}
+    if str(model_config.get("model_type") or "").strip().lower() != "audio_generation":
+        return {
+            "enabled": True,
+            "available": False,
+            "mode": "",
+            "reason": "系统语音播报模型类型不是音频生成",
+        }
+    greeting_audio = _resolve_global_assistant_greeting_audio_asset()
+    return {
+        "enabled": True,
+        "available": True,
+        "mode": "backend",
+        "reason": "",
+        "provider_id": provider_id,
+        "provider_name": str(provider.get("name") or provider_id).strip(),
+        "model_name": model_name,
+        "voice": voice,
+        "greeting_audio_available": greeting_audio is not None,
+        "greeting_audio_signature": str((greeting_audio or {}).get("signature") or "").strip(),
+    }
+
+
+def _require_global_speech_runtime(auth_payload: dict) -> dict[str, Any]:
+    runtime = _build_global_speech_runtime(auth_payload)
+    if not bool(runtime.get("available")):
+        raise HTTPException(403, str(runtime.get("reason") or "当前不可使用语音播报"))
+    return runtime
+
+
+def _resolve_request_origin(request: Request) -> str:
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+    forwarded_host = str(request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+    forwarded_port = str(request.headers.get("x-forwarded-port") or "").split(",")[0].strip()
+    scheme = forwarded_proto or str(request.url.scheme or "").strip() or "http"
+    host = (
+        forwarded_host
+        or str(request.headers.get("host") or "").split(",")[0].strip()
+        or str(request.url.netloc or "").strip()
+    )
+    if forwarded_port and host and ":" not in host and not host.endswith("]"):
+        host = f"{host}:{forwarded_port}"
+    if not host:
+        return str(request.base_url).rstrip("/")
+    return f"{scheme}://{host}".rstrip("/")
+
+
+def _build_absolute_runtime_url(origin: str, path: str) -> str:
+    normalized_origin = str(origin or "").strip().rstrip("/")
+    normalized_path = str(path or "").strip()
+    if not normalized_path.startswith("/"):
+        normalized_path = f"/{normalized_path}"
+    return f"{normalized_origin}{normalized_path}"
+
+
+def _normalize_global_voice_transcription_error(exc: Exception) -> tuple[int, str]:
+    message = str(exc or "").strip()
+    lowered = message.lower()
+    if "语音转写结果为空" in message or "no audio segment found" in lowered:
+        return 200, ""
+    if "transcriptions不支持当前文件格式" in message or '"code":"1214"' in lowered:
+        return 400, "当前录音格式暂不支持，请重新录音后再试"
+    return 502, "语音转写暂时不可用，请稍后重试"
+
+
+def _sanitize_global_voice_transcript_text(value: Any) -> str:
+    normalized = (
+        str(value or "")
+        .replace("#", "")
+        .replace("＃", "")
+        .strip()
+    )
+    normalized = re.sub(r"\s*\n+\s*", "", normalized)
+    normalized = re.sub(r"\s{2,}", " ", normalized).strip()
+    previous = ""
+    while normalized and normalized != previous:
+        previous = normalized
+        normalized = re.sub(r"(.{3,}?)\1+", r"\1", normalized).strip()
+    return normalized
+
+
+def _canonicalize_global_voice_transcript_text(value: Any) -> str:
+    return re.sub(
+        r"[，。！？、,.!?\s]+",
+        "",
+        _sanitize_global_voice_transcript_text(value),
+    ).strip()
+
+
+def _should_skip_partial_voice_transcript(
+    current_text: str,
+    previous_text: str,
+) -> bool:
+    current_canonical = _canonicalize_global_voice_transcript_text(current_text)
+    if len(current_canonical) < 2:
+        return True
+    previous_canonical = _canonicalize_global_voice_transcript_text(previous_text)
+    if not previous_canonical:
+        return False
+    if current_canonical == previous_canonical:
+        return True
+    if (
+        len(current_canonical) < len(previous_canonical)
+        and current_canonical in previous_canonical
+    ):
+        return True
+    return False
+
+
+def _coerce_global_voice_stream_sample_rate(value: Any) -> int:
+    try:
+        sample_rate = int(value)
+    except (TypeError, ValueError):
+        sample_rate = _GLOBAL_VOICE_STREAM_SAMPLE_RATE
+    if sample_rate <= 0:
+        return _GLOBAL_VOICE_STREAM_SAMPLE_RATE
+    return sample_rate
+
+
+def _global_voice_stream_min_buffer_bytes(sample_rate: int) -> int:
+    return max(
+        3200,
+        int(
+            max(1, sample_rate)
+            * _GLOBAL_VOICE_STREAM_PCM_BYTES_PER_SAMPLE
+            * _GLOBAL_VOICE_STREAM_MIN_CHUNK_MS
+            / 1000
+        ),
+    )
+
+
+def _global_voice_stream_max_buffer_bytes(sample_rate: int) -> int:
+    return max(
+        _global_voice_stream_min_buffer_bytes(sample_rate) * 2,
+        max(1, sample_rate)
+        * _GLOBAL_VOICE_STREAM_PCM_BYTES_PER_SAMPLE
+        * _GLOBAL_VOICE_STREAM_MAX_BUFFER_SECONDS,
+    )
+
+
+def _global_voice_stream_final_buffer_bytes(sample_rate: int) -> int:
+    return max(
+        _global_voice_stream_max_buffer_bytes(sample_rate),
+        max(1, sample_rate)
+        * _GLOBAL_VOICE_STREAM_PCM_BYTES_PER_SAMPLE
+        * _GLOBAL_VOICE_STREAM_FINAL_MAX_BUFFER_SECONDS,
+    )
+
+
+def _global_voice_stream_has_min_duration(pcm_bytes: bytes, sample_rate: int) -> bool:
+    if not pcm_bytes:
+        return False
+    return len(pcm_bytes) >= _global_voice_stream_min_buffer_bytes(sample_rate)
+
+
+def _decode_global_voice_stream_chunk(value: Any) -> bytes:
+    encoded = str(value or "").strip()
+    if not encoded:
+        return b""
+    padding = "=" * (-len(encoded) % 4)
+    try:
+        return base64.b64decode(f"{encoded}{padding}", validate=False)
+    except Exception as exc:
+        raise ValueError("音频分片解析失败") from exc
+
+
+def _build_global_voice_stream_wave_bytes(pcm_bytes: bytes, sample_rate: int) -> bytes:
+    if not pcm_bytes:
+        return b""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(_GLOBAL_VOICE_STREAM_PCM_BYTES_PER_SAMPLE)
+        wav_file.setframerate(max(1, int(sample_rate)))
+        wav_file.writeframes(pcm_bytes)
+    return buffer.getvalue()
+
+
+async def _transcribe_global_voice_stream_chunk(
+    runtime: dict[str, Any],
+    *,
+    pcm_bytes: bytes,
+    sample_rate: int,
+    language: str,
+    prompt: str,
+    chunk_index: int,
+    owner_username: str,
+) -> str:
+    if not pcm_bytes:
+        return ""
+    wav_bytes = _build_global_voice_stream_wave_bytes(pcm_bytes, sample_rate)
+    temp_path = ""
+    try:
+        with NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            temp_file.write(wav_bytes)
+            temp_path = temp_file.name
+        from services.llm_provider_service import get_llm_provider_service
+
+        llm_service = get_llm_provider_service()
+        result = await llm_service.transcribe_audio(
+            str(runtime.get("provider_id") or "").strip(),
+            str(runtime.get("model_name") or "").strip(),
+            file_path=temp_path,
+            filename=f"global-assistant-stream-{chunk_index}.wav",
+            mime_type="audio/wav",
+            language=str(language or "").strip(),
+            prompt=str(prompt or "").strip(),
+            owner_username=str(owner_username or "").strip(),
+            include_all=True,
+        )
+        return str(result.get("text") or "").strip()
+    finally:
+        if temp_path:
+            Path(temp_path).unlink(missing_ok=True)
+
+
+@router.get("/chat/global/history")
+async def list_global_assistant_chat_history(
+    limit: int = 200,
+    offset: int = 0,
+    chat_session_id: str = "",
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    return {"messages": []}
+
+
+@router.get("/chat/global/sessions")
+async def list_global_assistant_chat_sessions(
+    limit: int = 50,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    return {"sessions": []}
+
+
+@router.post("/chat/global/sessions")
+async def create_global_assistant_chat_session(
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    now = _now_iso()
+    return {
+        "session": {
+            "id": f"chat-session-{uuid.uuid4().hex[:12]}",
+            "title": "新对话",
+            "preview": "",
+            "message_count": 0,
+            "created_at": now,
+            "updated_at": now,
+            "last_message_at": now,
+        }
+    }
+
+
+@router.get("/chat/global/voice-input/runtime")
+async def get_global_assistant_voice_runtime(
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    return {"runtime": _build_global_voice_runtime(auth_payload)}
+
+
+@router.get("/chat/global/voice-output/runtime")
+async def get_global_assistant_speech_runtime(
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    return {"runtime": _build_global_speech_runtime(auth_payload)}
+
+
+@router.get("/query-mcp/runtime")
+async def get_query_mcp_runtime(
+    request: Request,
+    project_id: str = Query("", description="项目 ID"),
+):
+    params = {"key": "YOUR_API_KEY"}
+    normalized_project_id = str(project_id or "").strip()
+    if normalized_project_id:
+        params["project_id"] = normalized_project_id
+    query_string = urlencode(params)
+    config = system_config_store.get_global()
+    origin = (
+        str(getattr(config, "query_mcp_public_base_url", "") or "").strip().rstrip("/")
+        or _resolve_request_origin(request)
+    )
+    return {
+        "runtime": {
+            "origin": origin,
+            "server_name": "query-center",
+            "sse_url": _build_absolute_runtime_url(origin, f"/mcp/query/sse?{query_string}"),
+            "http_url": _build_absolute_runtime_url(origin, f"/mcp/query/mcp?{query_string}"),
+        }
+    }
+
+
+@router.post("/chat/global/voice-output/speech")
+async def generate_global_assistant_speech(
+    req: GlobalAssistantSpeechReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    from services.llm_provider_service import get_llm_provider_service
+
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    runtime = _require_global_speech_runtime(auth_payload)
+    text = str(req.text or "").strip()[:4000]
+    if not text:
+        raise HTTPException(400, "text is required")
+    try:
+        payload = await get_llm_provider_service().generate_audio_speech(
+            str(runtime.get("provider_id") or ""),
+            str(runtime.get("model_name") or ""),
+            text=text,
+            voice=str(runtime.get("voice") or ""),
+            response_format="wav",
+            speed=1.0,
+            owner_username=_current_username(auth_payload),
+            include_all=True,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc) or "语音播报暂时不可用") from exc
+    audio_bytes = payload.get("audio_bytes") or b""
+    if not audio_bytes:
+        raise HTTPException(502, "语音播报结果为空")
+    content_type = str(payload.get("content_type") or "audio/wav").strip() or "audio/wav"
+    return StreamingResponse(
+        io.BytesIO(audio_bytes),
+        media_type=content_type,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": 'inline; filename="assistant-speech.wav"',
+        },
+    )
+
+
+@router.get("/chat/global/voice-output/greeting-audio")
+async def get_global_assistant_greeting_audio(
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _require_global_speech_runtime(auth_payload)
+    asset = _resolve_global_assistant_greeting_audio_asset()
+    if asset is None:
+        raise HTTPException(404, "欢迎语音频不存在")
+    return FileResponse(
+        asset["path"],
+        media_type=str(asset.get("content_type") or "audio/wav"),
+        filename="assistant-greeting.wav",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/chat/global/voice-input/transcriptions")
+async def transcribe_global_assistant_voice(
+    audio: UploadFile = File(...),
+    language: str = Form("zh"),
+    prompt: str = Form(""),
+    is_final: bool = Form(False),
+    auth_payload: dict = Depends(require_auth),
+):
+    from services.llm_provider_service import get_llm_provider_service
+
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    runtime = _require_global_voice_runtime(auth_payload)
+    normalized_prompt = str(prompt or "").strip() or str(runtime.get("transcription_prompt") or "").strip()
+    original_filename = str(audio.filename or "").strip() or "voice-input.webm"
+    content_type = str(audio.content_type or "").strip()
+    suffix = Path(original_filename).suffix or ".webm"
+    raw_audio = await audio.read()
+    if not raw_audio:
+        raise HTTPException(400, "audio file is required")
+    if len(raw_audio) > 12 * 1024 * 1024:
+        raise HTTPException(400, "audio file is too large")
+
+    temp_path = ""
+    try:
+        with NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file.write(raw_audio)
+            temp_path = temp_file.name
+        result = await get_llm_provider_service().transcribe_audio(
+            str(runtime.get("provider_id") or ""),
+            str(runtime.get("model_name") or ""),
+            file_path=temp_path,
+            filename=original_filename,
+            mime_type=content_type,
+            language=str(language or "").strip(),
+            prompt=normalized_prompt,
+            owner_username=_current_username(auth_payload),
+            include_all=True,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        status_code, detail = _normalize_global_voice_transcription_error(exc)
+        if status_code == 200:
+            return {
+                "text": "",
+                "is_final": bool(is_final),
+                "runtime": runtime,
+            }
+        raise HTTPException(status_code, detail) from exc
+    finally:
+        if temp_path:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    return {
+        "text": str(result.get("text") or "").strip(),
+        "is_final": bool(is_final),
+        "runtime": runtime,
+    }
+
+
+@router.websocket("/chat/global/ws")
+async def ws_global_assistant_chat(websocket: WebSocket):
+    auth_payload = _extract_ws_auth_payload(websocket)
+    if auth_payload is None:
+        await websocket.close(code=4401, reason="Missing or invalid token")
+        return
+    try:
+        _ensure_permission(auth_payload, "menu.ai.chat")
+    except HTTPException:
+        await websocket.close(code=4403, reason="Permission denied")
+        return
+
+    await websocket.accept()
+    username = _current_username(auth_payload)
+    await websocket.send_json(
+        {
+            "type": "ready",
+            "message": "connected",
+        }
+    )
+
+    active_tasks: dict[str, asyncio.Task] = {}
+    cancel_events: dict[str, asyncio.Event] = {}
+    voice_sessions: dict[str, dict[str, Any]] = {}
+    browser_tool_futures: dict[str, asyncio.Future] = {}
+
+    async def call_browser_tool(
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        call_id = f"ga-browser-{uuid.uuid4().hex[:12]}"
+        future = asyncio.get_running_loop().create_future()
+        browser_tool_futures[call_id] = future
+        try:
+            await websocket.send_json(
+                {
+                    "type": "browser_tool_call",
+                    "request_id": request_id,
+                    "call_id": call_id,
+                    "tool_name": str(tool_name or "").strip(),
+                    "args": dict(args or {}),
+                }
+            )
+            result = await asyncio.wait_for(future, timeout=20)
+            if isinstance(result, dict):
+                return result
+            return {"result": result}
+        except asyncio.TimeoutError:
+            return {"error": "Browser tool execution timeout"}
+        finally:
+            browser_tool_futures.pop(call_id, None)
+
+    async def handle_browser_tool_result(payload: dict[str, Any]) -> None:
+        call_id = str(payload.get("call_id") or "").strip()
+        if not call_id:
+            return
+        future = browser_tool_futures.get(call_id)
+        if future is None or future.done():
+            return
+        if bool(payload.get("ok")):
+            result = payload.get("result")
+            future.set_result(result if isinstance(result, dict) else {"result": result})
+            return
+        future.set_result(
+            {
+                "error": str(payload.get("error") or "Browser tool execution failed").strip()
+                or "Browser tool execution failed"
+            }
+        )
+
+    async def emit_voice_transcript(
+        request_id: str,
+        session: dict[str, Any],
+        *,
+        chunk_index: int,
+        text: str,
+        is_final: bool,
+    ) -> None:
+        normalized_text = _sanitize_global_voice_transcript_text(text)
+        if not normalized_text:
+            return
+        previous_partial_text = str(session.get("last_partial_transcript") or "").strip()
+        if not is_final and _should_skip_partial_voice_transcript(
+            normalized_text,
+            previous_partial_text,
+        ):
+            return
+        if is_final:
+            session["last_partial_transcript"] = ""
+        else:
+            session["last_partial_transcript"] = normalized_text
+        session["last_transcript"] = normalized_text
+        await websocket.send_json(
+            {
+                "type": "voice_transcript",
+                "request_id": request_id,
+                "chunk_index": chunk_index,
+                "is_final": bool(is_final),
+                "text": normalized_text,
+            }
+        )
+
+    async def close_voice_session(request_id: str):
+        session = voice_sessions.get(request_id)
+        if session is None:
+            return
+        if not bool(session.get("closed_emitted")):
+            session["closed_emitted"] = True
+            await websocket.send_json(
+                {
+                    "type": "voice_stopped",
+                    "request_id": request_id,
+                    "text": str(session.get("last_transcript") or "").strip(),
+                }
+            )
+        if session.get("processing_task") is None:
+            voice_sessions.pop(request_id, None)
+
+    async def finalize_voice_session(request_id: str):
+        session = voice_sessions.get(request_id)
+        if session is None:
+            return
+        if session.get("processing_task") is not None or bool(session.get("finalizing")):
+            return
+        if bool(session.get("finalized")):
+            await close_voice_session(request_id)
+            return
+        full_pcm_buffer = session.get("full_pcm_buffer")
+        full_pcm_bytes = (
+            bytes(full_pcm_buffer)
+            if isinstance(full_pcm_buffer, (bytearray, bytes))
+            else b""
+        )
+        sample_rate = int(session.get("sample_rate") or _GLOBAL_VOICE_STREAM_SAMPLE_RATE)
+        if not full_pcm_bytes:
+            session["finalized"] = True
+            await close_voice_session(request_id)
+            return
+        if not _global_voice_stream_has_min_duration(full_pcm_bytes, sample_rate):
+            session["last_transcript"] = ""
+            session["last_partial_transcript"] = ""
+            session["finalized"] = True
+            await close_voice_session(request_id)
+            return
+
+        chunk_index = max(1, int(session.get("chunk_index") or 0))
+
+        async def run_final_transcription():
+            current = voice_sessions.get(request_id)
+            if current is not session:
+                return
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "voice_status",
+                        "request_id": request_id,
+                        "message": "正在整理完整语音...",
+                    }
+                )
+                text = await _transcribe_global_voice_stream_chunk(
+                    dict(session.get("runtime") or {}),
+                    pcm_bytes=full_pcm_bytes,
+                    sample_rate=sample_rate,
+                    language=str(session.get("language") or "zh").strip(),
+                    prompt=str(session.get("prompt") or "").strip(),
+                    chunk_index=chunk_index,
+                    owner_username=username,
+                )
+                await emit_voice_transcript(
+                    request_id,
+                    session,
+                    chunk_index=chunk_index,
+                    text=text,
+                    is_final=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                status_code, detail = _normalize_global_voice_transcription_error(exc)
+                if status_code != 200 and detail:
+                    session["failed"] = True
+                    session["pending_stop"] = True
+                    await websocket.send_json(
+                        {
+                            "type": "voice_error",
+                            "request_id": request_id,
+                            "message": detail,
+                        }
+                    )
+            finally:
+                current_session = voice_sessions.get(request_id)
+                if current_session is not session:
+                    return
+                session["processing_task"] = None
+                session["finalizing"] = False
+                session["finalized"] = True
+                await close_voice_session(request_id)
+
+        session["finalizing"] = True
+        session["processing_task"] = asyncio.create_task(run_final_transcription())
+
+    async def maybe_flush_voice_session(request_id: str, *, force: bool = False):
+        session = voice_sessions.get(request_id)
+        if (
+            session is None
+            or session.get("processing_task") is not None
+            or bool(session.get("finalizing"))
+        ):
+            return
+        pcm_buffer = session.get("pcm_buffer")
+        if not isinstance(pcm_buffer, bytearray):
+            pcm_buffer = bytearray()
+            session["pcm_buffer"] = pcm_buffer
+        if not pcm_buffer:
+            if force or bool(session.get("pending_stop")):
+                await finalize_voice_session(request_id)
+            return
+        if force and bool(session.get("pending_stop")):
+            session["pcm_buffer"] = bytearray()
+            await finalize_voice_session(request_id)
+            return
+        min_buffer_bytes = int(session.get("min_buffer_bytes") or 0)
+        if not force and len(pcm_buffer) < min_buffer_bytes:
+            return
+
+        pcm_bytes = bytes(pcm_buffer)
+        session["pcm_buffer"] = bytearray()
+        chunk_index = int(session.get("chunk_index") or 0) + 1
+        session["chunk_index"] = chunk_index
+
+        async def run_transcription():
+            current = voice_sessions.get(request_id)
+            if current is not session:
+                return
+            try:
+                await websocket.send_json(
+                    {
+                        "type": "voice_status",
+                        "request_id": request_id,
+                        "message": "正在识别语音...",
+                    }
+                )
+                text = await _transcribe_global_voice_stream_chunk(
+                    dict(session.get("runtime") or {}),
+                    pcm_bytes=pcm_bytes,
+                    sample_rate=int(session.get("sample_rate") or _GLOBAL_VOICE_STREAM_SAMPLE_RATE),
+                    language=str(session.get("language") or "zh").strip(),
+                    prompt=str(session.get("prompt") or "").strip(),
+                    chunk_index=chunk_index,
+                    owner_username=username,
+                )
+                await emit_voice_transcript(
+                    request_id,
+                    session,
+                    chunk_index=chunk_index,
+                    text=text,
+                    is_final=False,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                status_code, detail = _normalize_global_voice_transcription_error(exc)
+                if status_code != 200 and detail:
+                    session["failed"] = True
+                    session["pending_stop"] = True
+                    await websocket.send_json(
+                        {
+                            "type": "voice_error",
+                            "request_id": request_id,
+                            "message": detail,
+                        }
+                    )
+            finally:
+                current_session = voice_sessions.get(request_id)
+                if current_session is not session:
+                    return
+                session["processing_task"] = None
+                if session.get("failed"):
+                    await close_voice_session(request_id)
+                    return
+                if session.get("pcm_buffer"):
+                    await maybe_flush_voice_session(
+                        request_id,
+                        force=bool(session.get("pending_stop")),
+                    )
+                    return
+                if session.get("pending_stop"):
+                    await finalize_voice_session(request_id)
+
+        session["processing_task"] = asyncio.create_task(run_transcription())
+
+    async def handle_voice_payload(payload: dict[str, Any]):
+        request_id = str(payload.get("request_id") or "").strip()
+        payload_type = str(payload.get("type") or "").strip().lower()
+        if not request_id:
+            await websocket.send_json(
+                {
+                    "type": "voice_error",
+                    "message": "request_id is required",
+                }
+            )
+            return
+
+        if payload_type == "voice_start":
+            previous_session = voice_sessions.pop(request_id, None)
+            previous_task = previous_session.get("processing_task") if isinstance(previous_session, dict) else None
+            if previous_task is not None and not previous_task.done():
+                previous_task.cancel()
+            try:
+                runtime = _require_global_voice_runtime(auth_payload)
+            except HTTPException as exc:
+                await websocket.send_json(
+                    {
+                        "type": "voice_error",
+                        "request_id": request_id,
+                        "message": str(exc.detail or "当前不可使用语音输入"),
+                    }
+                )
+                return
+            sample_rate = _coerce_global_voice_stream_sample_rate(payload.get("sample_rate"))
+            voice_sessions[request_id] = {
+                "runtime": runtime,
+                "sample_rate": sample_rate,
+                "language": str(payload.get("language") or "zh").strip() or "zh",
+                "prompt": str(payload.get("prompt") or "").strip()
+                or str(runtime.get("transcription_prompt") or "").strip(),
+                "pcm_buffer": bytearray(),
+                "full_pcm_buffer": bytearray(),
+                "min_buffer_bytes": _global_voice_stream_min_buffer_bytes(sample_rate),
+                "max_buffer_bytes": _global_voice_stream_max_buffer_bytes(sample_rate),
+                "full_max_buffer_bytes": _global_voice_stream_final_buffer_bytes(sample_rate),
+                "processing_task": None,
+                "pending_stop": False,
+                "closed_emitted": False,
+                "failed": False,
+                "finalized": False,
+                "finalizing": False,
+                "chunk_index": 0,
+                "last_transcript": "",
+                "last_partial_transcript": "",
+            }
+            await websocket.send_json(
+                {
+                    "type": "voice_ready",
+                    "request_id": request_id,
+                    "sample_rate": sample_rate,
+                    "mode": "buffered_ws",
+                }
+            )
+            return
+
+        session = voice_sessions.get(request_id)
+        if session is None:
+            await websocket.send_json(
+                {
+                    "type": "voice_error",
+                    "request_id": request_id,
+                    "message": "语音会话不存在，请重新录音",
+                }
+            )
+            return
+
+        if payload_type == "voice_cancel":
+            processing_task = session.get("processing_task")
+            if processing_task is not None and not processing_task.done():
+                processing_task.cancel()
+            voice_sessions.pop(request_id, None)
+            return
+
+        if payload_type == "voice_chunk":
+            try:
+                chunk_bytes = _decode_global_voice_stream_chunk(payload.get("audio_base64"))
+            except ValueError as exc:
+                await websocket.send_json(
+                    {
+                        "type": "voice_error",
+                        "request_id": request_id,
+                        "message": str(exc),
+                    }
+                )
+                return
+            if chunk_bytes:
+                pcm_buffer = session.get("pcm_buffer")
+                if not isinstance(pcm_buffer, bytearray):
+                    pcm_buffer = bytearray()
+                    session["pcm_buffer"] = pcm_buffer
+                pcm_buffer.extend(chunk_bytes)
+                max_buffer_bytes = int(session.get("max_buffer_bytes") or 0)
+                if max_buffer_bytes > 0 and len(pcm_buffer) > max_buffer_bytes:
+                    session["pcm_buffer"] = bytearray(pcm_buffer[-max_buffer_bytes:])
+                full_pcm_buffer = session.get("full_pcm_buffer")
+                if not isinstance(full_pcm_buffer, bytearray):
+                    full_pcm_buffer = bytearray()
+                    session["full_pcm_buffer"] = full_pcm_buffer
+                full_pcm_buffer.extend(chunk_bytes)
+                full_max_buffer_bytes = int(session.get("full_max_buffer_bytes") or 0)
+                if (
+                    full_max_buffer_bytes > 0
+                    and len(full_pcm_buffer) > full_max_buffer_bytes
+                ):
+                    session["full_pcm_buffer"] = bytearray(
+                        full_pcm_buffer[-full_max_buffer_bytes:]
+                    )
+            if bool(payload.get("is_final")):
+                session["pending_stop"] = True
+            await maybe_flush_voice_session(
+                request_id,
+                force=bool(payload.get("is_final")),
+            )
+            return
+
+        if payload_type == "voice_stop":
+            session["pending_stop"] = True
+            await maybe_flush_voice_session(request_id, force=True)
+            return
+
+        await websocket.send_json(
+            {
+                "type": "voice_error",
+                "request_id": request_id,
+                "message": "不支持的语音消息类型",
+            }
+        )
+
+    async def handle_request(payload: dict):
+        nonlocal active_tasks, cancel_events
+        request_id = str(payload.get("request_id") or "").strip()
+        if str(payload.get("type") or "").strip().lower() == "ping":
+            await websocket.send_json({"type": "pong", "request_id": request_id})
+            return
+
+        if str(payload.get("type") or "").strip().lower() == "cancel":
+            if request_id in cancel_events:
+                cancel_events[request_id].set()
+            return
+
+        try:
+            req = ProjectChatReq.model_validate(payload)
+        except Exception as exc:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "request_id": request_id,
+                    "message": f"Invalid payload: {str(exc)}",
+                }
+            )
+            return
+
+        user_message = str(req.message or "").strip()
+        normalized_images = _normalize_image_inputs(req.images)
+        attachment_names = [
+            str(name or "").strip()
+            for name in (req.attachment_names or [])
+            if str(name or "").strip()
+        ]
+        if not user_message and not normalized_images and not attachment_names:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "request_id": request_id,
+                    "message": "message is required",
+                }
+            )
+            return
+
+        try:
+            chat_session_id = _require_project_chat_session_id(req.chat_session_id)
+        except ValueError as exc:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "request_id": request_id,
+                    "message": str(exc),
+                }
+            )
+            return
+
+        effective_user_message = user_message
+        if not effective_user_message and attachment_names:
+            effective_user_message = f"我上传了附件：{'、'.join(attachment_names)}。请先给我处理建议。"
+        elif not effective_user_message and normalized_images:
+            effective_user_message = "请基于我上传的图片给建议。"
+        cancel_event = asyncio.Event()
+        cancel_events[request_id] = cancel_event
+
+        try:
+            runtime_snapshot = await _build_global_assistant_runtime_snapshot(
+                auth_payload,
+                route_path=req.route_path,
+                route_title=req.route_title,
+            )
+            runtime_settings = _normalize_project_chat_settings(
+                {
+                    "provider_id": req.provider_id,
+                    "model_name": req.model_name,
+                    "temperature": req.temperature,
+                    "max_tokens": req.max_tokens,
+                    "system_prompt": req.system_prompt,
+                    "history_limit": req.history_limit,
+                    "answer_style": req.answer_style,
+                    "prefer_conclusion_first": req.prefer_conclusion_first,
+                    "max_loop_rounds": req.max_loop_rounds,
+                    "max_tool_rounds": req.max_tool_rounds,
+                    "repeated_tool_call_threshold": req.repeated_tool_call_threshold,
+                    "tool_only_threshold": req.tool_only_threshold,
+                    "tool_budget_strategy": req.tool_budget_strategy,
+                    "max_tool_calls_per_round": req.max_tool_calls_per_round,
+                    "tool_timeout_sec": req.tool_timeout_sec,
+                    "tool_retry_count": req.tool_retry_count,
+                }
+            )
+            provider_mode, selected_provider, model_name = (
+                await _resolve_global_assistant_chat_runtime_target(
+                    runtime_settings,
+                    auth_payload,
+                )
+            )
+            provider_id = str(selected_provider.get("id") or "").strip()
+            global_assistant_tools = build_global_assistant_builtin_tools()
+            messages = _build_global_chat_messages(
+                effective_user_message,
+                req.history,
+                normalized_images,
+                custom_system_prompt=_resolve_default_chat_system_prompt(
+                    runtime_settings.get("system_prompt")
+                ),
+                history_limit=int(runtime_settings.get("history_limit") or 20),
+                answer_style=str(runtime_settings.get("answer_style") or "concise"),
+                prefer_conclusion_first=bool(
+                    runtime_settings.get("prefer_conclusion_first", True)
+                ),
+                skill_resource_directory=req.skill_resource_directory,
+                chat_surface=req.chat_surface,
+                runtime_snapshot=runtime_snapshot,
+            )
+        except Exception as exc:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "request_id": request_id,
+                    "message": str(exc),
+                }
+            )
+            return
+
+        await websocket.send_json(
+            {
+                "type": "start",
+                "request_id": request_id,
+                "provider_id": provider_id,
+                "model_name": model_name,
+                "chat_mode": "system",
+                "tools_enabled": bool(global_assistant_tools),
+            }
+        )
+
+        try:
+            from services.llm_provider_service import get_llm_provider_service
+
+            llm_service = get_llm_provider_service()
+            if provider_mode == "local_connector":
+                connector = _resolve_accessible_local_connector_for_llm(
+                    parse_local_connector_provider_id(provider_id),
+                    auth_payload,
+                )
+                if connector is None:
+                    raise ValueError("Local connector not found")
+                llm_service_runtime = LocalConnectorLlmAdapter(connector)
+            else:
+                llm_service_runtime = llm_service
+
+            redis_client = await get_redis_client()
+            conv_manager = ConversationManager(redis_client)
+            session_id = await conv_manager.create_session(
+                _GLOBAL_ASSISTANT_STORE_PROJECT_ID,
+                "",
+            )
+            orchestrator = AgentOrchestrator(
+                llm_service_runtime,
+                conv_manager,
+                max_loops=int(runtime_settings.get("max_loop_rounds") or 20),
+                max_tool_rounds=int(runtime_settings.get("max_tool_rounds") or 6),
+                repeated_tool_call_threshold=int(
+                    runtime_settings.get("repeated_tool_call_threshold") or 2
+                ),
+                tool_only_threshold=int(runtime_settings.get("tool_only_threshold") or 3),
+                tool_budget_strategy=str(
+                    runtime_settings.get("tool_budget_strategy") or "finalize"
+                ),
+                max_tool_calls_per_round=int(
+                    runtime_settings.get("max_tool_calls_per_round") or 6
+                ),
+                tool_timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 60),
+                tool_retry_count=int(runtime_settings.get("tool_retry_count") or 0),
+            )
+
+            final_answer = ""
+            stream_error = ""
+            async for chunk_data in orchestrator.run(
+                session_id=session_id,
+                user_message=effective_user_message,
+                tools=global_assistant_tools,
+                provider_id=provider_id,
+                model_name=model_name,
+                temperature=float(runtime_settings.get("temperature") or 0.1),
+                max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
+                project_id=_GLOBAL_ASSISTANT_STORE_PROJECT_ID,
+                employee_id="",
+                username=username,
+                chat_session_id=chat_session_id,
+                role_ids=_current_role_ids(auth_payload),
+                cancel_event=cancel_event,
+                messages=messages,
+                local_connector=None,
+                local_connector_workspace_path="",
+                local_connector_sandbox_mode="workspace-write",
+                global_assistant_bridge_handler=lambda tool_name, args: call_browser_tool(
+                    tool_name,
+                    args,
+                    request_id=request_id,
+                ),
+            ):
+                outgoing = dict(chunk_data)
+                event_type = str(outgoing.get("type") or "").strip().lower()
+                if event_type == "done":
+                    final_answer = str(outgoing.get("content") or "").strip()
+                    if not final_answer:
+                        final_answer = "模型未返回有效内容。"
+                        outgoing["content"] = final_answer
+                if event_type == "error":
+                    stream_error = str(outgoing.get("message") or "未知错误").strip()
+                outgoing["request_id"] = request_id
+                await websocket.send_json(outgoing)
+
+            if stream_error:
+                return
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "request_id": request_id,
+                    "message": str(exc),
+                }
+            )
+        finally:
+            if "conv_manager" in locals() and "session_id" in locals():
+                try:
+                    await conv_manager.delete_session(session_id)
+                except Exception:
+                    pass
+            cancel_events.pop(request_id, None)
+            active_tasks.pop(request_id, None)
+
+    while True:
+        try:
+            payload = await websocket.receive_json()
+            if not isinstance(payload, dict):
+                await websocket.send_json({"type": "error", "message": "Invalid payload type"})
+                continue
+
+            request_id = str(payload.get("request_id") or "").strip()
+            payload_type = str(payload.get("type") or "").strip().lower()
+            if payload_type == "cancel":
+                if request_id in cancel_events:
+                    cancel_events[request_id].set()
+                continue
+            if payload_type == "browser_tool_result":
+                await handle_browser_tool_result(payload)
+                continue
+            if payload_type.startswith("voice_"):
+                await handle_voice_payload(payload)
+                continue
+
+            task = asyncio.create_task(handle_request(payload))
+            if request_id:
+                active_tasks[request_id] = task
+        except WebSocketDisconnect:
+            for ev in cancel_events.values():
+                ev.set()
+            for task in active_tasks.values():
+                task.cancel()
+            for session in voice_sessions.values():
+                processing_task = session.get("processing_task")
+                if processing_task is not None and not processing_task.done():
+                    processing_task.cancel()
+            for future in browser_tool_futures.values():
+                if not future.done():
+                    future.set_result({"error": "Browser websocket disconnected"})
+            browser_tool_futures.clear()
+            voice_sessions.clear()
+            break
+        except Exception:
+            await websocket.send_json({"type": "error", "message": "Invalid JSON payload"})
+            continue
+
+
 @router.post("/chat/global")
 async def chat_without_project(
     req: ProjectChatReq,
     auth_payload: dict = Depends(require_auth),
 ):
-    # 预留接口：当前前端默认关闭“未选择项目时的普通对话”入口，
-    # 但保留这条通用对话链路，后续如产品重新开放可直接复用。
     from services.llm_provider_service import get_llm_provider_service
 
     _ensure_permission(auth_payload, "menu.ai.chat")
@@ -4319,24 +6162,25 @@ async def chat_without_project(
             "prefer_conclusion_first": req.prefer_conclusion_first,
         }
     )
-    provider_mode, selected_provider, _ = await _resolve_provider_runtime_target(
-        str(runtime_settings.get("provider_id") or ""),
-        auth_payload,
+    provider_mode, selected_provider, model_name = (
+        await _resolve_global_assistant_chat_runtime_target(
+            runtime_settings,
+            auth_payload,
+        )
     )
     provider_id = str(selected_provider.get("id") or "").strip()
-    model_name = str(
-        runtime_settings.get("model_name")
-        or selected_provider.get("default_model")
-        or (selected_provider.get("models") or [""])[0]
-    ).strip()
-    if not provider_id or not model_name:
-        raise HTTPException(400, "未找到可用模型")
 
     effective_user_message = user_message
     if not effective_user_message and attachment_names:
         effective_user_message = (
             f"我上传了附件：{'、'.join(attachment_names)}。请先给我处理建议。"
         )
+    runtime_snapshot = await _build_global_assistant_runtime_snapshot(
+        auth_payload,
+        route_path=req.route_path,
+        route_title=req.route_title,
+    )
+    global_assistant_tools = build_global_assistant_builtin_tools()
     messages = _build_global_chat_messages(
         effective_user_message,
         req.history,
@@ -4350,10 +6194,11 @@ async def chat_without_project(
             runtime_settings.get("prefer_conclusion_first", True)
         ),
         skill_resource_directory=req.skill_resource_directory,
+        chat_surface=req.chat_surface,
+        runtime_snapshot=runtime_snapshot,
     )
-
-    llm_service = get_llm_provider_service()
     try:
+        llm_service = get_llm_provider_service()
         if provider_mode == "local_connector":
             connector = _resolve_accessible_local_connector_for_llm(
                 parse_local_connector_provider_id(provider_id),
@@ -4361,31 +6206,76 @@ async def chat_without_project(
             )
             if connector is None:
                 raise HTTPException(404, "Local connector not found")
-            result = await chat_completion_via_connector(
-                connector,
-                model_name=model_name,
-                messages=messages,
-                temperature=float(runtime_settings.get("temperature") or 0.1),
-                max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
-                timeout=120,
-            )
+            llm_service_runtime = LocalConnectorLlmAdapter(connector)
         else:
-            result = await llm_service.chat_completion(
-                provider_id=provider_id,
-                model_name=model_name,
-                messages=messages,
-                temperature=float(runtime_settings.get("temperature") or 0.1),
-                max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
-                timeout=120,
-            )
+            llm_service_runtime = llm_service
+
+        redis_client = await get_redis_client()
+        conv_manager = ConversationManager(redis_client)
+        session_id = await conv_manager.create_session(
+            _GLOBAL_ASSISTANT_STORE_PROJECT_ID,
+            "",
+        )
+        orchestrator = AgentOrchestrator(
+            llm_service_runtime,
+            conv_manager,
+            max_loops=int(runtime_settings.get("max_loop_rounds") or 20),
+            max_tool_rounds=int(runtime_settings.get("max_tool_rounds") or 6),
+            repeated_tool_call_threshold=int(
+                runtime_settings.get("repeated_tool_call_threshold") or 2
+            ),
+            tool_only_threshold=int(runtime_settings.get("tool_only_threshold") or 3),
+            tool_budget_strategy=str(
+                runtime_settings.get("tool_budget_strategy") or "finalize"
+            ),
+            max_tool_calls_per_round=int(
+                runtime_settings.get("max_tool_calls_per_round") or 6
+            ),
+            tool_timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 60),
+            tool_retry_count=int(runtime_settings.get("tool_retry_count") or 0),
+        )
+
+        answer = ""
+        stream_error = ""
+        async for chunk_data in orchestrator.run(
+            session_id=session_id,
+            user_message=effective_user_message,
+            tools=global_assistant_tools,
+            provider_id=provider_id,
+            model_name=model_name,
+            temperature=float(runtime_settings.get("temperature") or 0.1),
+            max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
+            project_id=_GLOBAL_ASSISTANT_STORE_PROJECT_ID,
+            employee_id="",
+            username=_current_username(auth_payload),
+            chat_session_id=str(req.chat_session_id or "").strip(),
+            role_ids=_current_role_ids(auth_payload),
+            cancel_event=asyncio.Event(),
+            messages=messages,
+            local_connector=None,
+            local_connector_workspace_path="",
+            local_connector_sandbox_mode="workspace-write",
+        ):
+            event_type = str(chunk_data.get("type") or "").strip().lower()
+            if event_type == "done":
+                answer = str(chunk_data.get("content") or "").strip() or "模型未返回有效内容。"
+            elif event_type == "error":
+                stream_error = str(chunk_data.get("message") or "Global chat failed").strip()
+        if stream_error:
+            raise HTTPException(500, stream_error)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, f"Global chat failed: {exc}") from exc
+    finally:
+        if "conv_manager" in locals() and "session_id" in locals():
+            try:
+                await conv_manager.delete_session(session_id)
+            except Exception:
+                pass
 
-    answer = str(result.get("content") or "").strip() or "模型未返回有效内容。"
     return {
         "content": answer,
         "provider_id": provider_id,
@@ -4703,16 +6593,47 @@ def _build_project_meta_reply(project: ProjectConfig, selected_employee: dict[st
 async def list_projects(auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.projects")
     projects = project_store.list_all()
+    project_ids = [str(getattr(item, "id", "") or "").strip() for item in projects if str(getattr(item, "id", "") or "").strip()]
+    current_username = _current_username(auth_payload)
+    membership_map = project_store.list_user_memberships(current_username, project_ids) if current_username else {}
     if _is_admin_like(auth_payload):
         visible_projects = projects
     else:
-        username = _current_username(auth_payload)
-        visible_projects = []
-        for item in projects:
-            member = _get_project_user_member(item.id, username)
-            if member is not None and bool(getattr(member, "enabled", True)):
-                visible_projects.append(item)
-    return {"projects": [_serialize_project(item, auth_payload) for item in visible_projects]}
+        visible_projects = [
+            item
+            for item in projects
+            if bool(getattr(membership_map.get(str(getattr(item, "id", "") or "").strip()), "enabled", False))
+        ]
+    visible_project_ids = [
+        str(getattr(item, "id", "") or "").strip()
+        for item in visible_projects
+        if str(getattr(item, "id", "") or "").strip()
+    ]
+    member_counts = project_store.list_member_counts(visible_project_ids)
+    user_counts = project_store.list_user_member_counts(visible_project_ids)
+    creator_usernames = {
+        str(getattr(item, "id", "") or "").strip(): str(getattr(item, "created_by", "") or "").strip()
+        for item in visible_projects
+        if str(getattr(item, "id", "") or "").strip() and str(getattr(item, "created_by", "") or "").strip()
+    }
+    unresolved_creator_project_ids = [
+        project_id for project_id in visible_project_ids if project_id not in creator_usernames
+    ]
+    if unresolved_creator_project_ids:
+        creator_usernames.update(project_store.list_owner_usernames(unresolved_creator_project_ids))
+    return {
+        "projects": [
+            _serialize_project(
+                item,
+                auth_payload,
+                member_count=member_counts.get(item.id, 0),
+                user_count=user_counts.get(item.id, 0),
+                creator_username=creator_usernames.get(item.id, ""),
+                current_member=membership_map.get(item.id),
+            )
+            for item in visible_projects
+        ]
+    }
 
 
 @router.post("/workspace-directory/pick")
@@ -6517,10 +8438,104 @@ async def list_project_memories(
         employee_id=employee_id,
         query=query,
     )
+    total = len(memories)
     return {
         "items": [_serialize_project_memory_record(item) for item in memories[:safe_limit]],
         "project_id": project.id,
         "project_name": project.name,
+        "total": total,
+        "limit": safe_limit,
+        "has_more": total > safe_limit,
+    }
+
+
+@router.post("/{project_id}/requirement-records/batch-delete")
+async def batch_delete_project_requirement_records(
+    project_id: str,
+    req: ProjectRequirementRecordBatchDeleteReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    requested_ids = [
+        _normalize_project_record_token(item, limit=80)
+        for item in (req.record_ids or [])
+    ]
+    requested_ids = [item for item in requested_ids if item]
+    normalized_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for item in requested_ids:
+        if item in seen_ids:
+            continue
+        seen_ids.add(item)
+        normalized_ids.append(item)
+    if not normalized_ids:
+        raise HTTPException(400, "record_ids is required")
+
+    chain_index = _build_project_requirement_record_delete_index(project)
+    deleted_record_ids: list[str] = []
+    missing_ids: list[str] = []
+    skipped_ids: list[str] = []
+    deleted_task_tree_count = 0
+    deleted_memory_count = 0
+    deleted_work_session_count = 0
+    deleted_work_event_count = 0
+
+    for record_id in normalized_ids:
+        entry = chain_index.get(record_id)
+        if entry is None:
+            missing_ids.append(record_id)
+            continue
+
+        task_tree_removed = 0
+        for session in entry["task_sessions"]:
+            username = _normalize_project_record_token(getattr(session, "username", ""), limit=80)
+            chat_session_id = _normalize_project_record_token(
+                getattr(session, "chat_session_id", ""),
+                limit=80,
+            )
+            if not username or not chat_session_id:
+                continue
+            task_tree_removed += int(
+                project_chat_task_store.delete_exact(project.id, username, chat_session_id) or 0
+            )
+
+        work_session_removed = 0
+        work_event_removed = 0
+        for work_session_id in sorted(entry["work_session_ids"]):
+            removed = int(work_session_store.delete_by_session(work_session_id, project_id=project.id) or 0)
+            if removed <= 0:
+                continue
+            work_session_removed += 1
+            work_event_removed += removed
+
+        memory_removed = 0
+        for memory_id in sorted(entry["memory_ids"]):
+            if memory_store.delete(memory_id):
+                memory_removed += 1
+
+        deleted_task_tree_count += task_tree_removed
+        deleted_work_session_count += work_session_removed
+        deleted_work_event_count += work_event_removed
+        deleted_memory_count += memory_removed
+
+        if task_tree_removed or work_session_removed or memory_removed:
+            deleted_record_ids.append(record_id)
+        else:
+            skipped_ids.append(record_id)
+
+    return {
+        "status": "deleted",
+        "project_id": project.id,
+        "project_name": project.name,
+        "requested_count": len(normalized_ids),
+        "deleted_count": len(deleted_record_ids),
+        "deleted_record_ids": deleted_record_ids,
+        "deleted_task_tree_count": deleted_task_tree_count,
+        "deleted_memory_count": deleted_memory_count,
+        "deleted_work_session_count": deleted_work_session_count,
+        "deleted_work_event_count": deleted_work_event_count,
+        "missing_ids": missing_ids,
+        "skipped_ids": skipped_ids,
     }
 
 
@@ -6878,6 +8893,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         except Exception as exc:
             await websocket.send_json({"type": "error", "request_id": request_id, "message": f"Invalid payload: {str(exc)}"})
             return
+        chat_surface = _normalize_project_chat_surface(req.chat_surface)
+        allow_requirement_record = _allow_project_chat_requirement_record(chat_surface)
 
         user_message = str(req.message or "").strip()
         assistant_message_id = str(req.assistant_message_id or "").strip()
@@ -6974,7 +8991,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     chat_session_id=chat_session_id,
                     task_tree_payload=direct_done_payload.get("history_task_tree") or direct_done_payload.get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
-                    source="project-chat-ws-direct-meta",
+                    source=_compose_project_chat_memory_source("project-chat-ws-direct-meta", chat_surface),
+                    allow_requirement_record=allow_requirement_record,
                 )
                 return
 
@@ -7028,7 +9046,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     chat_session_id=chat_session_id,
                     task_tree_payload=direct_done_payload.get("history_task_tree") or direct_done_payload.get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
-                    source="project-chat-ws-direct-tool-probe",
+                    source=_compose_project_chat_memory_source("project-chat-ws-direct-tool-probe", chat_surface),
+                    allow_requirement_record=allow_requirement_record,
                 )
                 return
 
@@ -7075,7 +9094,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     chat_session_id=chat_session_id,
                     task_tree_payload=direct_done_payload.get("history_task_tree") or direct_done_payload.get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
-                    source="project-chat-ws-direct-mcp-modules",
+                    source=_compose_project_chat_memory_source("project-chat-ws-direct-mcp-modules", chat_surface),
+                    allow_requirement_record=allow_requirement_record,
                 )
                 return
 
@@ -7127,7 +9147,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         provider_id=provider_id,
                         model_name=model_name,
                         runtime_settings=runtime_settings,
-                        memory_source="project-chat-ws-media",
+                        memory_source=_compose_project_chat_memory_source("project-chat-ws-media", chat_surface),
+                        allow_requirement_record=allow_requirement_record,
                     )
                     done_payload["request_id"] = request_id
                     await websocket.send_json(done_payload)
@@ -7335,7 +9356,8 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     task_tree_payload=(last_done_payload or {}).get("history_task_tree")
                     or (last_done_payload or {}).get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
-                    source="project-chat-ws",
+                    source=_compose_project_chat_memory_source("project-chat-ws", chat_surface),
+                    allow_requirement_record=allow_requirement_record,
                 )
         except asyncio.CancelledError:
             pass
@@ -7392,6 +9414,8 @@ async def stream_project_chat(
     _ensure_permission(auth_payload, "menu.ai.chat")
     project = _ensure_project_access(project_id, auth_payload)
     username = _current_username(auth_payload)
+    chat_surface = _normalize_project_chat_surface(req.chat_surface)
+    allow_requirement_record = _allow_project_chat_requirement_record(chat_surface)
 
     user_message = str(req.message or "").strip()
     assistant_message_id = str(req.assistant_message_id or "").strip()
@@ -7493,7 +9517,8 @@ async def stream_project_chat(
                 chat_session_id=chat_session_id,
                 task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
                 selected_employee_ids=selected_employee_ids,
-                source="project-chat-sse-direct-meta",
+                source=_compose_project_chat_memory_source("project-chat-sse-direct-meta", chat_surface),
+                allow_requirement_record=allow_requirement_record,
             )
 
         return StreamingResponse(
@@ -7557,7 +9582,8 @@ async def stream_project_chat(
                 chat_session_id=chat_session_id,
                 task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
                 selected_employee_ids=selected_employee_ids,
-                source="project-chat-sse-direct-tool-probe",
+                source=_compose_project_chat_memory_source("project-chat-sse-direct-tool-probe", chat_surface),
+                allow_requirement_record=allow_requirement_record,
             )
 
         return StreamingResponse(
@@ -7614,7 +9640,8 @@ async def stream_project_chat(
                 chat_session_id=chat_session_id,
                 task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
                 selected_employee_ids=selected_employee_ids,
-                source="project-chat-sse-direct-mcp-modules",
+                source=_compose_project_chat_memory_source("project-chat-sse-direct-mcp-modules", chat_surface),
+                allow_requirement_record=allow_requirement_record,
             )
 
         return StreamingResponse(
@@ -7674,7 +9701,8 @@ async def stream_project_chat(
                     provider_id=provider_id,
                     model_name=model_name,
                     runtime_settings=runtime_settings,
-                    memory_source="project-chat-sse-media",
+                    memory_source=_compose_project_chat_memory_source("project-chat-sse-media", chat_surface),
+                    allow_requirement_record=allow_requirement_record,
                 )
                 yield _sse_payload("message", done_payload)
             except Exception as exc:
@@ -7898,7 +9926,8 @@ async def stream_project_chat(
                     task_tree_payload=(last_done_payload or {}).get("history_task_tree")
                     or (last_done_payload or {}).get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
-                    source="project-chat-sse",
+                    source=_compose_project_chat_memory_source("project-chat-sse", chat_surface),
+                    allow_requirement_record=allow_requirement_record,
                 )
         except Exception as exc:
             _append_chat_record(
@@ -8044,15 +10073,18 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
 
 ### 强制执行流程
 1. 收到用户提问后，先调用 `get_project_runtime_context` 或 `list_project_members` 了解成员和能力范围。
-2. 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，调用 `recall_project_memory` 检索相关记忆，优先传 `project_name="{project.name}"`。
-3. 优先复用宿主系统的自动记忆快照；如当前入口未覆盖自动记录链路，或本轮需要额外沉淀稳定结论/关键决策，再调用一次 `save_project_memory` 补记。不要在同一需求的每个中间步骤重复写入项目记忆。
-3.1 若本轮对话存在任务树或执行规划，记忆与工作轨迹必须复用同一条 `chat_session_id` / `session_id`，确保后续能从记忆详情回看规划、节点状态和验证结果。
-4. 在决定是否需要多人协作前，先把本项目手册与相关员工手册视为协作基线：AI 需结合任务目标、规则、技能和工具，自主判断单人主责还是多人协作，不预设固定行业角色分工。
-5. 遇到页面、交互、视觉表达类任务时，先检查本项目绑定的 UI 规则；这些规则优先级高于员工个人规则。{task_tree_workflow_line}
-6. 开始实现或排查前，调用 `query_project_rules` 和 `list_project_proxy_tools` 搜索匹配的规则与技能；`query_project_rules` 返回的规则中，项目级 UI 规则应优先遵循。若任务需要项目内多员工自动协作，可优先调用 `execute_project_collaboration`。
-7. 锁定匹配项后，再调用 `invoke_project_skill_tool`，必要时补 `employee_id` 消歧；若采用多人协作，先明确负责人、子任务边界和结果交接。
-8. 如需沉淀结构化结论、排查经验或关键决策，在自动记录之外显式调用 `save_project_memory` 追加一条可复用记忆。
-9. 发现规则缺口、工具异常或稳定性问题时，调用 `submit_project_feedback_bug`。
+2. 进入分析、实现或排查前，先阅读本项目手册；解决问题时优先依赖项目绑定的员工、规则和技能，不要绕过项目内现成能力直接自行发挥。
+3. 每次新请求都要重新调用 `query_project_rules` 获取与当前问题直接相关的规则正文；不要只看规则标题，也不要把无关项目规则全文机械带入当前问题。
+4. 先判断当前任务能否由单个项目绑定员工闭环；若可以，优先使用该员工已绑定技能及其代理工具。只有项目员工、规则、技能无法覆盖时，才使用自身通用能力补足。
+5. 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，调用 `recall_project_memory` 检索相关记忆，优先传 `project_name="{project.name}"`。
+6. 优先复用宿主系统的自动记忆快照；如当前入口未覆盖自动记录链路，或本轮需要额外沉淀稳定结论/关键决策，再调用一次 `save_project_memory` 补记。不要在同一需求的每个中间步骤重复写入项目记忆。
+6.1 若本轮对话存在任务树或执行规划，记忆与工作轨迹必须复用同一条 `chat_session_id` / `session_id`，确保后续能从记忆详情回看规划、节点状态和验证结果。
+7. 在决定是否需要多人协作前，先把本项目手册与相关员工手册视为协作基线：AI 需结合任务目标、规则、技能和工具，自主判断单人主责还是多人协作，不预设固定行业角色分工。
+8. 遇到页面、交互、视觉表达类任务时，先检查本项目绑定的 UI 规则；这些规则优先级高于员工个人规则。{task_tree_workflow_line}
+9. 开始实现或排查前，调用 `list_project_proxy_tools` 检查项目成员现有技能工具，再结合 `query_project_rules` 的结果收敛方案；若任务需要项目内多员工自动协作，可优先调用 `execute_project_collaboration`。
+10. 锁定匹配项后，再调用 `invoke_project_skill_tool`，必要时补 `employee_id` 消歧；若采用多人协作，先明确负责人、子任务边界和结果交接。
+11. 如需沉淀结构化结论、排查经验或关键决策，在自动记录之外显式调用 `save_project_memory` 追加一条可复用记忆。
+12. 发现规则缺口、工具异常或稳定性问题时，调用 `submit_project_feedback_bug`。
 
 ### 记忆保存示例
 ```json
@@ -8102,12 +10134,12 @@ save_project_memory({{
 ## 推荐工作流
 
 ```text
-1. 获取项目上下文 / 成员信息 → get_project_runtime_context 或 list_project_members
-2. 按需记忆检索 → recall_project_memory
-3. 每次对话记录 → 默认自动记录；未覆盖入口或需要额外沉淀稳定结论时，再调用一次 save_project_memory 补记，并确保与当前 chat_session_id / session_id 绑定
-4. 结合项目手册与员工手册，自主判断单人主责还是多人协作；多人任务优先考虑 execute_project_collaboration
-5. 先检查项目级 UI 规则，再搜索匹配的成员规则与技能 → query_project_rules + list_project_proxy_tools
-6. 锁定匹配项后再调用技能 → execute_project_collaboration 或 invoke_project_skill_tool
+1. 获取项目上下文 / 成员信息，并先读取项目手册 → get_project_runtime_context 或 list_project_members + get_project_manual
+2. 每次新请求先获取与当前任务直接相关的规则正文 → query_project_rules
+3. 优先检查项目绑定员工是否已具备可用技能工具 → list_project_proxy_tools
+4. 先让项目内单员工或项目协作链路闭环；只有项目能力不足时才自行补足 → invoke_project_skill_tool / execute_project_collaboration
+5. 按需记忆检索 → recall_project_memory
+6. 每次对话记录 → 默认自动记录；未覆盖入口或需要额外沉淀稳定结论时，再调用一次 save_project_memory 补记，并确保与当前 chat_session_id / session_id 绑定
 7. 结构化沉淀稳定结论/关键决策 → save_project_memory
 8. 反馈闭环 → submit_project_feedback_bug
 ```
@@ -8149,6 +10181,10 @@ save_project_memory({{
 - 记忆检索只在新需求开始、续跑恢复、修复旧问题或明显需要历史经验时触发；不要把 recall 当成每轮固定前置步骤。
 - 同一任务轮若已生成任务树并进入执行，后续优先依赖当前会话、任务树和工作轨迹，不要重复检索同一批项目记忆。
 - 项目级 UI 规则优先于员工个人规则，尤其是页面、交互、视觉表达类任务。
+- 每次新请求都重新获取与当前问题匹配的规则正文，不要只凭上一次记忆或规则标题继续执行。
+- 只使用与当前问题直接相关的项目规则，不要把无关规则全文机械套用到所有任务。
+- 项目内已有员工、技能或协作链路可以闭环时，优先使用项目能力，不要跳过项目成员直接改走通用能力。
+- 只有项目绑定员工、规则、技能都无法覆盖时，才由 AI 自行补足分析、实现或排查。
 - 每次有效对话都要留下项目记忆；自动记录未覆盖时，必须手动补记。
 - 结构化结论和关键决策建议额外补一条高质量记忆，便于后续复用。
 - 若本轮存在任务树，记忆详情必须能回看该轮规划、节点状态和验证结果；不要把任务树和记忆拆成两条互相无法追溯的记录。

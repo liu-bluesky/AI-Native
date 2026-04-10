@@ -470,6 +470,7 @@ const PROVIDER_PRESETS = [
       { name: 'glm-4.5-air', model_type: 'text_generation' },
       { name: 'glm-tts', model_type: 'audio_generation' },
       { name: 'glm-tts-clone', model_type: 'audio_generation' },
+      { name: 'glm-asr-2512', model_type: 'audio_transcription' },
     ],
     default_model: 'glm-5',
   },

@@ -1003,6 +1003,19 @@ class LlmProviderService:
         return f"{base}/v1/audio/speech"
 
     @staticmethod
+    def _build_audio_transcriptions_url(base_url: str) -> str:
+        base = str(base_url or "").strip().rstrip("/")
+        if base.endswith("/audio/transcriptions"):
+            return base
+        if base.endswith("/v1"):
+            return f"{base}/audio/transcriptions"
+        if base.endswith("/openai"):
+            return f"{base}/audio/transcriptions"
+        if base.endswith("/api/paas/v4"):
+            return f"{base}/audio/transcriptions"
+        return f"{base}/v1/audio/transcriptions"
+
+    @staticmethod
     def _build_voice_list_url(base_url: str) -> str:
         base = str(base_url or "").strip().rstrip("/")
         if base.endswith("/voice/list"):
@@ -1482,6 +1495,69 @@ class LlmProviderService:
             "content_type": content_type or ("audio/wav" if response_format == "wav" else "audio/pcm"),
         }
 
+    @staticmethod
+    def _extract_transcription_text(payload: dict[str, Any]) -> str:
+        text = str(payload.get("text") or "").strip()
+        if text:
+            return text
+        data = payload.get("data")
+        if isinstance(data, dict):
+            nested_text = str(data.get("text") or data.get("content") or "").strip()
+            if nested_text:
+                return nested_text
+        segments = payload.get("segments")
+        if isinstance(segments, list):
+            normalized_segments = [
+                str(item.get("text") or "").strip()
+                for item in segments
+                if isinstance(item, dict) and str(item.get("text") or "").strip()
+            ]
+            if normalized_segments:
+                return " ".join(normalized_segments).strip()
+        return ""
+
+    def _transcribe_audio_sync(
+        self,
+        provider: dict[str, Any],
+        *,
+        model_name: str,
+        file_path: str,
+        filename: str,
+        mime_type: str,
+        language: str,
+        prompt: str,
+    ) -> dict[str, Any]:
+        endpoint = self._build_audio_transcriptions_url(str(provider.get("base_url") or ""))
+        if not endpoint:
+            raise RuntimeError("provider transcription endpoint is empty")
+        with open(file_path, "rb") as handle:
+            payload = self._request_multipart_json(
+                "POST",
+                endpoint,
+                self._build_headers(provider),
+                files={
+                    "file": (
+                        filename,
+                        handle,
+                        mime_type or "application/octet-stream",
+                    ),
+                },
+                data={
+                    "model": model_name,
+                    "response_format": "json",
+                    **({"language": language} if language else {}),
+                    **({"prompt": prompt} if prompt else {}),
+                },
+                timeout=120,
+            )
+        text = self._extract_transcription_text(payload)
+        if not text:
+            raise RuntimeError(self._extract_error_message(payload) or "语音转写结果为空")
+        return {
+            "text": text,
+            "raw": payload,
+        }
+
     async def list_audio_voices(
         self,
         provider_id: str,
@@ -1597,6 +1673,43 @@ class LlmProviderService:
             voice=str(voice or "").strip(),
             response_format=str(response_format or "wav").strip() or "wav",
             speed=max(0.5, min(float(speed or 1.0), 2.0)),
+        )
+
+    async def transcribe_audio(
+        self,
+        provider_id: str,
+        model_name: str,
+        *,
+        file_path: str,
+        filename: str,
+        mime_type: str = "",
+        language: str = "",
+        prompt: str = "",
+        owner_username: str = "",
+        include_all: bool = False,
+    ) -> dict[str, Any]:
+        provider = self.get_provider_raw(
+            provider_id,
+            owner_username=owner_username,
+            include_all=include_all,
+            include_shared=True,
+        )
+        if provider is None:
+            raise LookupError(f"LLM provider {provider_id} not found")
+        if not bool(provider.get("enabled", True)):
+            raise ValueError(f"LLM provider {provider_id} is disabled")
+        chosen_model = str(model_name or "").strip() or self._pick_default_model(provider)
+        if not chosen_model:
+            raise ValueError("model_name is required")
+        return await run_in_threadpool(
+            self._transcribe_audio_sync,
+            provider,
+            model_name=chosen_model,
+            file_path=str(file_path or "").strip(),
+            filename=str(filename or "").strip(),
+            mime_type=str(mime_type or "").strip(),
+            language=str(language or "").strip(),
+            prompt=str(prompt or "").strip(),
         )
 
     @staticmethod

@@ -44,6 +44,12 @@ _DICTIONARY_REGISTRY: dict[str, dict[str, Any]] = {
                 "description": "适合语音、配音或音频内容生成。",
                 "chat_parameter_mode": "text",
             },
+            {
+                "id": "audio_transcription",
+                "label": "音频转写",
+                "description": "适合语音识别、语音转文本与实时转写场景。",
+                "chat_parameter_mode": "text",
+            },
         ],
     },
     "llm_image_resolutions": {

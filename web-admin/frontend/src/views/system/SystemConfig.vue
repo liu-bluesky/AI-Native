@@ -1,12 +1,17 @@
 <template>
   <div class="system-config-page" v-loading="loading">
     <section class="hero">
-      <div>
+      <div class="hero-body">
         <p class="hero-eyebrow">System Control</p>
         <h2>系统配置与 MCP</h2>
         <p class="hero-desc">
           在这里维护系统级开关、默认 MCP 配置，以及当前远程 MCP 服务暴露出的能力状态。
         </p>
+        <div class="hero-highlights">
+          <span class="hero-highlight">系统默认项</span>
+          <span class="hero-highlight">全局助手语音</span>
+          <span class="hero-highlight">MCP 服务探测</span>
+        </div>
       </div>
       <div class="hero-actions">
         <el-button :loading="refreshingPanels" @click="refreshAllPanels"
@@ -36,422 +41,933 @@
       </article>
     </section>
 
-    <div class="content-grid">
-      <section class="panel">
-        <div class="panel-head">
-          <div>
-            <h3>基础开关</h3>
-            <p>控制系统默认行为。</p>
-          </div>
+    <section class="system-config-tabs-shell">
+      <div class="system-config-tabs-shell__header">
+        <div>
+          <p class="panel-kicker">Workspace View</p>
+          <h3>按工作区切换配置</h3>
+          <p>把默认项、助手、生态和 MCP 运行面板拆开，避免在同一页里来回滚动。</p>
         </div>
+      </div>
 
-        <el-alert
-          title="这些开关只影响系统级默认行为，不会修改既有业务数据。"
-          type="info"
-          :closable="false"
-          show-icon
-          class="inline-alert"
-        />
+      <el-tabs v-model="activeTab" class="system-config-tabs">
+        <el-tab-pane name="defaults">
+          <template #label>
+            <span class="system-config-tab-label">
+              <span class="system-config-tab-label__title">默认项</span>
+              <span class="system-config-tab-label__meta">系统开关与员工规则</span>
+            </span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="assistant">
+          <template #label>
+            <span class="system-config-tab-label">
+              <span class="system-config-tab-label__title">全局助手</span>
+              <span class="system-config-tab-label__meta">语音、模型与欢迎语</span>
+            </span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="ecosystem">
+          <template #label>
+            <span class="system-config-tab-label">
+              <span class="system-config-tab-label__title">技能生态</span>
+              <span class="system-config-tab-label__meta">站点、官网与 registry</span>
+            </span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="mcp-config">
+          <template #label>
+            <span class="system-config-tab-label">
+              <span class="system-config-tab-label__title">MCP 配置</span>
+              <span class="system-config-tab-label__meta">地址、开关与 JSON</span>
+            </span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="mcp-discovery">
+          <template #label>
+            <span class="system-config-tab-label">
+              <span class="system-config-tab-label__title">MCP 探测</span>
+              <span class="system-config-tab-label__meta">能力与连通结果</span>
+            </span>
+          </template>
+        </el-tab-pane>
+      </el-tabs>
+    </section>
 
-        <el-form label-position="top" class="switch-form">
-          <div class="switch-list">
-            <div class="switch-card">
-              <div>
-                <div class="switch-title">项目手册旧开关</div>
-                <div class="switch-desc">
-                  兼容保留字段，当前项目使用手册已改为直接读取内容，不再调用大模型。
-                </div>
-              </div>
-              <el-switch v-model="form.enable_project_manual_generation" />
-            </div>
-
-            <div class="switch-card">
-              <div>
-                <div class="switch-title">员工手册旧开关</div>
-                <div class="switch-desc">
-                  兼容保留字段，当前员工使用手册已改为直接读取内容，不再调用大模型。
-                </div>
-              </div>
-              <el-switch v-model="form.enable_employee_manual_generation" />
-            </div>
-          </div>
-
-          <div class="number-grid">
-            <el-form-item label="单次对话最大上传文件数">
-              <el-input-number
-                v-model="form.chat_upload_max_limit"
-                :min="1"
-                :max="20"
-              />
-              <div class="field-desc">
-                限制 AI 对话里一次最多上传的文件数量。
-              </div>
-            </el-form-item>
-
-            <el-form-item label="模型默认 Max Tokens">
-              <el-input-number
-                v-model="form.chat_max_tokens"
-                :min="128"
-                :max="8192"
-                :step="64"
-              />
-              <div class="field-desc">控制 AI 对话默认最大输出长度。</div>
-            </el-form-item>
-          </div>
-
-          <el-form-item label="AI 对话中心默认系统提示词">
-            <el-input
-              v-model="form.default_chat_system_prompt"
-              type="textarea"
-              :rows="8"
-              resize="vertical"
-              placeholder="为空时使用系统内置默认提示词；填写后会作为项目聊天未单独配置 system prompt 时的默认值。"
-            />
-            <div class="field-desc">
-              当项目聊天没有单独填写 `system_prompt` 时，会自动回退到这里。
-            </div>
-          </el-form-item>
-
-          <div class="switch-card employee-rule-config-card">
+    <div
+      v-show="activeTab !== 'mcp-discovery'"
+      :class="['content-grid', { 'content-grid--single': activeTab === 'mcp-config' }]"
+    >
+      <div v-show="activeTab !== 'mcp-config'" class="content-main">
+        <section v-show="activeTab === 'defaults'" class="panel">
+          <div class="panel-head">
             <div>
-              <div class="switch-title">AI 员工规则自动生成</div>
-              <div class="switch-desc">
-                创建 AI 员工时，系统会基于系统级 MCP 规则源自动补全规则草稿，再落地为本地规则并绑定给员工；对话页不再展示规则来源选择。
-              </div>
+              <p class="panel-kicker">Defaults</p>
+              <h3>系统默认项</h3>
+              <p>集中维护系统级开关、上传限制和默认系统提示词。</p>
             </div>
-            <el-switch
-              v-model="form.employee_auto_rule_generation_enabled"
-            />
           </div>
 
-          <div class="number-grid">
-            <el-form-item label="自动生成规则上限">
-              <el-input-number
-                v-model="form.employee_auto_rule_generation_max_count"
-                :min="1"
-                :max="6"
-              />
-              <div class="field-desc">
-                每次创建员工最多补全多少条规则草稿。
-              </div>
-            </el-form-item>
+          <el-alert
+            title="这些开关只影响系统级默认行为，不会修改既有业务数据。"
+            type="info"
+            :closable="false"
+            show-icon
+            class="inline-alert"
+          />
 
-            <el-form-item label="规则来源">
-              <el-checkbox-group
-                v-model="form.employee_auto_rule_generation_source_filters"
-                class="employee-rule-source-group"
-              >
-                <el-checkbox
-                  v-for="option in EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </el-checkbox>
-              </el-checkbox-group>
-              <div class="field-desc">
-                当前先支持系统内置的 prompts.chat curated 规则源。
-              </div>
-            </el-form-item>
-          </div>
-
-          <el-form-item label="规则生成策略提示词">
-            <el-input
-              v-model="form.employee_auto_rule_generation_prompt"
-              type="textarea"
-              :rows="6"
-              resize="vertical"
-              placeholder="用于约束系统在员工创建时优先生成哪类规则。"
-            />
-            <div class="field-desc">
-              这是后台自动生成规则时使用的内部策略提示词，不直接展示给终端用户。
-            </div>
-          </el-form-item>
-
-          <div class="employee-skill-site-head">
-            <div>
-              <div class="switch-title">外部技能网站目录</div>
-              <div class="switch-desc">
-                创建 AI 员工时，这些站点会展示在“外部技能候选”区域，供用户点击跳转查看。
-              </div>
-            </div>
-            <el-button @click="addEmployeeExternalSkillSite">新增站点</el-button>
-          </div>
-
-          <div class="employee-skill-site-list">
-            <div
-              v-for="(item, index) in form.employee_external_skill_sites"
-              :key="item.id || `site-${index}`"
-              class="employee-skill-site-card"
-            >
-              <div class="employee-skill-site-card__top">
-                <div class="employee-skill-site-card__title">
-                  站点 {{ index + 1 }}
+          <el-form label-position="top" class="switch-form">
+            <div class="switch-list">
+              <div class="switch-card">
+                <div>
+                  <div class="switch-title">项目手册旧开关</div>
+                  <div class="switch-desc">
+                    兼容保留字段，当前项目使用手册已改为直接读取内容，不再调用大模型。
+                  </div>
                 </div>
-                <div class="employee-skill-site-card__actions">
-                  <el-button
-                    text
-                    type="danger"
-                    @click="removeEmployeeExternalSkillSite(index)"
-                  >
-                    删除
-                  </el-button>
-                </div>
-              </div>
-              <div class="employee-skill-site-card__grid">
-                <el-form-item label="名称">
-                  <el-input v-model="item.title" placeholder="例如：Vue 深度应用" />
-                </el-form-item>
-              </div>
-              <el-form-item label="跳转地址">
-                <el-input
-                  v-model="item.url"
-                  placeholder="https://example.com/skills/vue"
-                />
-              </el-form-item>
-              <el-form-item label="描述">
-                <el-input
-                  v-model="item.description"
-                  type="textarea"
-                  :rows="3"
-                  resize="vertical"
-                  placeholder="简短说明这个站点适合补哪些技能。"
-                />
-              </el-form-item>
-            </div>
-          </div>
-
-          <div class="employee-skill-site-head">
-            <div>
-              <div class="switch-title">官网联系方式</div>
-              <div class="switch-desc">
-                官网 `/intro` 会展示这里启用的联系方式。当前先支持 QQ 群，作为次级联系入口使用。
-              </div>
-            </div>
-            <el-button @click="addPublicContactChannel">新增联系方式</el-button>
-          </div>
-
-          <div class="employee-skill-site-list">
-            <div
-              v-for="(item, index) in form.public_contact_channels"
-              :key="item.id || `contact-${index}`"
-              class="employee-skill-site-card"
-            >
-              <div class="employee-skill-site-card__top">
-                <div class="employee-skill-site-card__title">
-                  联系方式 {{ index + 1 }}
-                </div>
-                <div class="employee-skill-site-card__actions">
-                  <el-tag size="small" type="info">QQ群</el-tag>
-                  <el-button text type="danger" @click="removePublicContactChannel(index)">
-                    删除
-                  </el-button>
-                </div>
+                <el-switch v-model="form.enable_project_manual_generation" />
               </div>
 
               <div class="switch-card">
                 <div>
-                  <div class="switch-title">官网展示</div>
+                  <div class="switch-title">员工手册旧开关</div>
                   <div class="switch-desc">
-                    关闭后仍保留配置，但官网不会展示这条联系方式。
+                    兼容保留字段，当前员工使用手册已改为直接读取内容，不再调用大模型。
                   </div>
                 </div>
-                <el-switch v-model="item.enabled" />
-              </div>
-
-              <div class="employee-skill-site-card__grid">
-                <el-form-item label="标题">
-                  <el-input v-model="item.title" placeholder="例如：加入用户交流群" />
-                </el-form-item>
-                <el-form-item label="QQ群号">
-                  <el-input v-model="item.qq_group_number" placeholder="例如：123456789" />
-                </el-form-item>
-                <el-form-item label="排序">
-                  <el-input-number v-model="item.sort_order" :min="0" :max="999" />
-                </el-form-item>
-                <el-form-item label="按钮文案">
-                  <el-input v-model="item.button_text" placeholder="默认：复制群号" />
-                </el-form-item>
-              </div>
-
-              <el-form-item label="描述">
-                <el-input
-                  v-model="item.description"
-                  type="textarea"
-                  :rows="3"
-                  resize="vertical"
-                  placeholder="简短说明这个 QQ 群适合做什么。"
-                />
-              </el-form-item>
-
-              <el-form-item label="加群引导">
-                <el-input
-                  v-model="item.guide_text"
-                  placeholder="例如：打开 QQ，搜索群号加入。"
-                />
-              </el-form-item>
-
-              <div class="employee-skill-site-card__grid">
-                <el-form-item label="加群链接（可选）">
-                  <el-input
-                    v-model="item.join_link"
-                    placeholder="https://qm.qq.com/..."
-                  />
-                </el-form-item>
-                <el-form-item label="二维码图片 URL（可选）">
-                  <el-input
-                    v-model="item.qr_image_url"
-                    placeholder="https://example.com/qq-group.png"
-                  />
-                </el-form-item>
+                <el-switch v-model="form.enable_employee_manual_generation" />
               </div>
             </div>
-          </div>
 
-          <div class="employee-skill-site-head registry-head">
+            <div class="number-grid">
+              <el-form-item label="单次对话最大上传文件数">
+                <el-input-number
+                  v-model="form.chat_upload_max_limit"
+                  :min="1"
+                  :max="20"
+                />
+                <div class="field-desc">
+                  限制 AI 对话里一次最多上传的文件数量。
+                </div>
+              </el-form-item>
+
+              <el-form-item label="模型默认 Max Tokens">
+                <el-input-number
+                  v-model="form.chat_max_tokens"
+                  :min="128"
+                  :max="8192"
+                  :step="64"
+                />
+                <div class="field-desc">控制 AI 对话默认最大输出长度。</div>
+              </el-form-item>
+            </div>
+
+            <el-form-item label="AI 对话中心默认系统提示词">
+              <el-input
+                v-model="form.default_chat_system_prompt"
+                type="textarea"
+                :rows="8"
+                resize="vertical"
+                placeholder="为空时使用系统内置默认提示词；填写后会作为项目聊天未单独配置 system prompt 时的默认值。"
+              />
+              <div class="field-desc">
+                当项目聊天没有单独填写 `system_prompt` 时，会自动回退到这里。
+              </div>
+            </el-form-item>
+          </el-form>
+        </section>
+
+        <section v-show="activeTab === 'defaults'" class="panel">
+          <div class="panel-head">
             <div>
-              <div class="switch-title">技能资源源</div>
-              <div class="switch-desc">
-                配置外部技能 registry。当前已接入 Vett，安装时会动态获取临时下载地址。
-              </div>
+              <p class="panel-kicker">Employees</p>
+              <h3>AI 员工规则策略</h3>
+              <p>把自动生成规则的开关、来源和内部策略提示词收拢到同一块。</p>
             </div>
           </div>
 
-          <div class="employee-skill-site-card">
-            <div class="switch-card">
+          <el-form label-position="top" class="switch-form">
+            <div class="switch-card employee-rule-config-card">
               <div>
-                <div class="switch-title">启用 Vett Registry</div>
+                <div class="switch-title">AI 员工规则自动生成</div>
                 <div class="switch-desc">
-                  开启后，前端“技能资源”页面会通过该源搜索和安装技能。
+                  创建 AI 员工时，系统会基于系统级 MCP 规则源自动补全规则草稿，再落地为本地规则并绑定给员工；对话页不再展示规则来源选择。
                 </div>
               </div>
-              <el-switch v-model="form.skill_registry_sources.vett.enabled" />
-            </div>
-
-            <div class="employee-skill-site-card__grid registry-grid">
-              <el-form-item label="Base URL">
-                <el-input
-                  v-model="form.skill_registry_sources.vett.base_url"
-                  placeholder="https://vett.sh/api/v1"
-                />
-              </el-form-item>
-              <el-form-item label="超时 (ms)">
-                <el-input-number
-                  v-model="form.skill_registry_sources.vett.timeout_ms"
-                  :min="1000"
-                  :max="60000"
-                  :step="1000"
-                />
-              </el-form-item>
-            </div>
-
-            <div class="registry-risk-grid">
-              <el-form-item label="允许安装风险">
-                <el-checkbox-group v-model="form.skill_registry_sources.vett.risk_policy.allow">
-                  <el-checkbox
-                    v-for="item in RISK_LEVEL_OPTIONS"
-                    :key="`allow-${item}`"
-                    :value="item"
-                  >
-                    {{ item }}
-                  </el-checkbox>
-                </el-checkbox-group>
-              </el-form-item>
-              <el-form-item label="需人工确认">
-                <el-checkbox-group v-model="form.skill_registry_sources.vett.risk_policy.review">
-                  <el-checkbox
-                    v-for="item in RISK_LEVEL_OPTIONS"
-                    :key="`review-${item}`"
-                    :value="item"
-                  >
-                    {{ item }}
-                  </el-checkbox>
-                </el-checkbox-group>
-              </el-form-item>
-              <el-form-item label="直接拦截">
-                <el-checkbox-group v-model="form.skill_registry_sources.vett.risk_policy.deny">
-                  <el-checkbox
-                    v-for="item in RISK_LEVEL_OPTIONS"
-                    :key="`deny-${item}`"
-                    :value="item"
-                  >
-                    {{ item }}
-                  </el-checkbox>
-                </el-checkbox-group>
-              </el-form-item>
-            </div>
-            <div class="field-desc">
-              这里保存的是 registry API 地址，不是最终 artifact 下载地址。实际下载链接会在安装时实时换取。
-            </div>
-          </div>
-        </el-form>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <div>
-            <h3>系统 MCP 配置</h3>
-            <p>保存为 JSON。默认会保留 `prompts.chat`。</p>
-          </div>
-          <div class="panel-actions">
-            <el-button @click="formatMcpConfigText">格式化 JSON</el-button>
-            <el-button @click="resetMcpConfig">恢复默认</el-button>
-          </div>
-        </div>
-
-        <div class="server-switch-list">
-          <div
-            v-for="server in editableMcpServers"
-            :key="`edit-${server.name}`"
-            class="server-switch-item"
-          >
-            <div class="server-switch-meta">
-              <div class="server-switch-name">{{ server.name }}</div>
-              <div class="server-switch-url">{{ server.url || "未配置 URL" }}</div>
-            </div>
-            <div class="server-switch-actions">
-              <el-tag size="small" :type="server.enabled ? 'success' : 'info'">
-                {{ server.enabled ? "已启用" : "已停用" }}
-              </el-tag>
               <el-switch
-                :model-value="server.enabled"
-                @change="(value) => toggleMcpServer(server.name, value)"
+                v-model="form.employee_auto_rule_generation_enabled"
               />
             </div>
-          </div>
-        </div>
 
-        <el-alert
-          v-if="configParseError"
-          class="inline-alert"
-          type="warning"
-          :closable="false"
-          show-icon
-          :title="configParseError"
-        />
+            <div class="number-grid">
+              <el-form-item label="自动生成规则上限">
+                <el-input-number
+                  v-model="form.employee_auto_rule_generation_max_count"
+                  :min="1"
+                  :max="6"
+                />
+                <div class="field-desc">
+                  每次创建员工最多补全多少条规则草稿。
+                </div>
+              </el-form-item>
 
-        <div class="editor-shell">
-          <div class="editor-toolbar">
-            <span>mcpServers.json</span>
-            <span class="editor-meta">{{ configLineCount }} 行</span>
+              <el-form-item label="规则来源">
+                <el-checkbox-group
+                  v-model="form.employee_auto_rule_generation_source_filters"
+                  class="employee-rule-source-group"
+                >
+                  <el-checkbox
+                    v-for="option in EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </el-checkbox>
+                </el-checkbox-group>
+                <div class="field-desc">
+                  当前先支持系统内置的 prompts.chat curated 规则源。
+                </div>
+              </el-form-item>
+            </div>
+
+            <el-form-item label="规则生成策略提示词">
+              <el-input
+                v-model="form.employee_auto_rule_generation_prompt"
+                type="textarea"
+                :rows="6"
+                resize="vertical"
+                placeholder="用于约束系统在员工创建时优先生成哪类规则。"
+              />
+              <div class="field-desc">
+                这是后台自动生成规则时使用的内部策略提示词，不直接展示给终端用户。
+              </div>
+            </el-form-item>
+          </el-form>
+        </section>
+
+        <section v-show="activeTab === 'assistant'" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Assistant</p>
+              <h3>全局助手语音与欢迎语</h3>
+              <p>统一配置开放范围、模型选择、播报音色和首次欢迎语。</p>
+            </div>
           </div>
-          <el-input
-            v-model="form.mcp_config_text"
-            type="textarea"
-            :rows="16"
-            spellcheck="false"
-            resize="none"
-            class="mcp-config-input"
+
+          <el-form label-position="top" class="switch-form">
+            <div class="employee-skill-site-card voice-config-card">
+              <div class="voice-config-section">
+                <div class="voice-config-section__head">
+                  <div class="employee-skill-site-card__title">统一开放范围</div>
+                  <div class="switch-desc">
+                    下面这组账号范围同时用于语音输入和语音播报。留空时，默认对所有拥有 `menu.ai.chat` 的登录用户开放。
+                  </div>
+                </div>
+
+                <div class="employee-skill-site-card__grid">
+                  <el-form-item label="开放用户">
+                    <el-select
+                      v-model="form.voice_input_allowed_usernames"
+                      multiple
+                      collapse-tags
+                      collapse-tags-tooltip
+                      clearable
+                      filterable
+                      style="width: 100%"
+                      placeholder="留空表示不按用户单独限制"
+                    >
+                      <el-option
+                        v-for="item in voiceUserOptions"
+                        :key="item.username"
+                        :label="item.username"
+                        :value="item.username"
+                      />
+                    </el-select>
+                  </el-form-item>
+
+                  <el-form-item label="开放角色">
+                    <el-select
+                      v-model="form.voice_input_allowed_role_ids"
+                      multiple
+                      collapse-tags
+                      collapse-tags-tooltip
+                      clearable
+                      style="width: 100%"
+                      placeholder="留空表示不按角色单独限制"
+                    >
+                      <el-option
+                        v-for="item in voiceRoleOptions"
+                        :key="item.id"
+                        :label="`${item.name} (${item.id})`"
+                        :value="item.id"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </div>
+              </div>
+
+              <div class="voice-config-divider" />
+
+              <div class="voice-config-section">
+                <div class="voice-config-section__head">
+                  <div class="employee-skill-site-card__title">问题求解</div>
+                  <div class="switch-desc">
+                    为全局助手回答系统问题单独指定对话模型，这组模型和语音转写模型分开管理。
+                  </div>
+                </div>
+
+                <el-alert
+                  v-if="!globalAssistantChatProviderOptions.length"
+                  title="当前没有可用的全局助手对话模型，请先在模型供应商页配置 `text_generation` 或 `multimodal_chat` 类型模型。"
+                  type="warning"
+                  :closable="false"
+                  show-icon
+                  class="inline-alert"
+                />
+
+                <div class="employee-skill-site-card__grid">
+                  <el-form-item label="问题求解供应商">
+                    <el-select
+                      v-model="form.global_assistant_chat_provider_id"
+                      style="width: 100%"
+                      clearable
+                      placeholder="请选择全局助手对话供应商"
+                      :disabled="!globalAssistantChatProviderOptions.length"
+                      @change="handleGlobalAssistantChatProviderChange"
+                    >
+                      <el-option
+                        v-for="item in globalAssistantChatProviderOptions"
+                        :key="item.id"
+                        :label="item.name"
+                        :value="item.id"
+                      />
+                    </el-select>
+                    <div class="field-desc">
+                      留空时仍会走系统默认模型；选中后，全局助手会优先使用这里的模型回答问题。
+                    </div>
+                  </el-form-item>
+
+                  <el-form-item label="问题求解模型">
+                    <el-select
+                      v-model="form.global_assistant_chat_model_name"
+                      style="width: 100%"
+                      clearable
+                      placeholder="请选择全局助手对话模型"
+                      :disabled="!selectedGlobalAssistantChatProviderModels.length"
+                    >
+                      <el-option
+                        v-for="item in selectedGlobalAssistantChatProviderModels"
+                        :key="`${form.global_assistant_chat_provider_id}-${item.name}`"
+                        :label="item.name"
+                        :value="item.name"
+                      />
+                    </el-select>
+                    <div class="field-desc">
+                      这组模型负责理解你的问题、调用工具并生成助手回复，不参与录音转写。
+                    </div>
+                  </el-form-item>
+                </div>
+              </div>
+
+              <div class="voice-config-divider" />
+
+              <div class="voice-config-section">
+                <div class="voice-config-section__head">
+                  <div class="employee-skill-site-card__title">语音输入</div>
+                  <div class="switch-desc">
+                    为助手录音配置真实转写模型，启用后将通过后端转写接口识别，不再依赖浏览器内置识别。
+                  </div>
+                </div>
+
+                <div class="switch-card">
+                  <div>
+                    <div class="switch-title">启用语音输入</div>
+                    <div class="switch-desc">
+                      开启后，助手录音会走后端转写接口。
+                    </div>
+                  </div>
+                  <el-switch v-model="form.voice_input_enabled" />
+                </div>
+
+                <el-alert
+                  v-if="form.voice_input_enabled && !voiceProviderOptions.length"
+                  title="当前没有可用的音频转写模型，请先在模型供应商页配置 `audio_transcription` 类型模型。"
+                  type="warning"
+                  :closable="false"
+                  show-icon
+                  class="inline-alert"
+                />
+
+                <div class="employee-skill-site-card__grid">
+                  <el-form-item label="语音供应商">
+                    <el-select
+                      v-model="form.voice_input_provider_id"
+                      style="width: 100%"
+                      clearable
+                      placeholder="请选择语音转写供应商"
+                      :disabled="!voiceProviderOptions.length"
+                      @change="handleVoiceProviderChange"
+                    >
+                      <el-option
+                        v-for="item in voiceProviderOptions"
+                        :key="item.id"
+                        :label="item.name"
+                        :value="item.id"
+                      />
+                    </el-select>
+                  </el-form-item>
+
+                  <el-form-item label="语音模型">
+                    <el-select
+                      v-model="form.voice_input_model_name"
+                      style="width: 100%"
+                      clearable
+                      placeholder="请选择语音转写模型"
+                      :disabled="!selectedVoiceProviderModels.length"
+                    >
+                      <el-option
+                        v-for="item in selectedVoiceProviderModels"
+                        :key="`${form.voice_input_provider_id}-${item.name}`"
+                        :label="item.name"
+                        :value="item.name"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </div>
+              </div>
+
+              <div class="voice-config-divider" />
+
+              <div class="voice-config-section">
+                <div class="voice-config-section__head">
+                  <div class="employee-skill-site-card__title">语音播报</div>
+                  <div class="switch-desc">
+                    为 AI 助手回答配置真实 TTS 模型和固定音色，启用后优先走后端播报。
+                  </div>
+                </div>
+
+                <div class="switch-card">
+                  <div>
+                    <div class="switch-title">启用语音播报</div>
+                    <div class="switch-desc">
+                      开启后，AI 助手的“语音播放”会优先走系统配置的后端语音模型，不再依赖浏览器内置声音。
+                    </div>
+                  </div>
+                  <el-switch v-model="form.voice_output_enabled" />
+                </div>
+
+                <el-alert
+                  v-if="form.voice_output_enabled && !voiceOutputProviderOptions.length"
+                  title="当前没有可用的语音生成模型，请先在模型供应商页配置 `audio_generation` 类型模型。"
+                  type="warning"
+                  :closable="false"
+                  show-icon
+                  class="inline-alert"
+                />
+
+                <div class="employee-skill-site-card__grid">
+                  <el-form-item label="播报供应商">
+                    <el-select
+                      v-model="form.voice_output_provider_id"
+                      style="width: 100%"
+                      clearable
+                      placeholder="请选择语音播报供应商"
+                      :disabled="!voiceOutputProviderOptions.length"
+                      @change="handleVoiceOutputProviderChange"
+                    >
+                      <el-option
+                        v-for="item in voiceOutputProviderOptions"
+                        :key="item.id"
+                        :label="item.name"
+                        :value="item.id"
+                      />
+                    </el-select>
+                  </el-form-item>
+
+                  <el-form-item label="播报模型">
+                    <el-select
+                      v-model="form.voice_output_model_name"
+                      style="width: 100%"
+                      clearable
+                      placeholder="请选择语音播报模型"
+                      :disabled="!selectedVoiceOutputProviderModels.length"
+                    >
+                      <el-option
+                        v-for="item in selectedVoiceOutputProviderModels"
+                        :key="`${form.voice_output_provider_id}-${item.name}`"
+                        :label="item.name"
+                        :value="item.name"
+                      />
+                    </el-select>
+                  </el-form-item>
+                </div>
+
+                <el-form-item label="播报音色">
+                  <div class="voice-output-voice-field">
+                    <el-select
+                      v-model="form.voice_output_voice"
+                      filterable
+                      allow-create
+                      default-first-option
+                      clearable
+                      style="width: 100%"
+                      placeholder="选择或直接输入 voice id"
+                      :loading="voiceOutputVoiceCatalogLoading"
+                    >
+                      <el-option
+                        v-for="item in normalizedVoiceOutputVoiceOptions"
+                        :key="item.voice"
+                        :label="item.voice_type ? `${item.voice_name} · ${item.voice_type}` : item.voice_name"
+                        :value="item.voice"
+                      />
+                    </el-select>
+                    <el-button
+                      text
+                      type="primary"
+                      :loading="voiceOutputVoiceCatalogLoading"
+                      :disabled="!form.voice_output_provider_id"
+                      @click="fetchVoiceOutputVoices()"
+                    >
+                      刷新音色
+                    </el-button>
+                  </div>
+                  <div class="field-desc">
+                    {{ voiceOutputVoiceHelperText }}
+                  </div>
+                </el-form-item>
+
+                <div class="voice-config-divider" />
+
+                <div class="voice-config-section__head">
+                  <div class="employee-skill-site-card__title">首次欢迎语</div>
+                  <div class="switch-desc">
+                    用户第一次进入系统页面时，全局助手会用这段文案做自我介绍，并准备进入默认实时通话状态。
+                  </div>
+                </div>
+
+                <div class="switch-card">
+                  <div>
+                    <div class="switch-title">启用首次欢迎语</div>
+                    <div class="switch-desc">
+                      关闭后，全局助手仍会自动准备实时通话，但不主动做欢迎介绍。
+                    </div>
+                  </div>
+                  <el-switch v-model="form.global_assistant_greeting_enabled" />
+                </div>
+
+                <el-form-item label="欢迎语内容">
+                  <el-input
+                    v-model="form.global_assistant_greeting_text"
+                    type="textarea"
+                    :rows="4"
+                    resize="vertical"
+                    maxlength="1000"
+                    show-word-limit
+                    placeholder="例如：你好，我是系统状态助手，我会默认保持实时通话，随时帮你观察当前页面和系统状态。"
+                  />
+                </el-form-item>
+
+                <el-form-item label="助手系统提示词">
+                  <el-input
+                    v-model="form.global_assistant_system_prompt"
+                    type="textarea"
+                    :rows="6"
+                    resize="vertical"
+                    maxlength="8000"
+                    show-word-limit
+                    placeholder="用于约束全局助手如何回答系统状态、页面和功能相关问题。留空将使用系统内置提示词。"
+                  />
+                  <div class="field-desc">
+                    控制 AI 助手回答时的角色、边界和工具使用策略。
+                  </div>
+                </el-form-item>
+
+                <el-form-item label="语音转写提示词">
+                  <el-input
+                    v-model="form.global_assistant_transcription_prompt"
+                    type="textarea"
+                    :rows="4"
+                    resize="vertical"
+                    maxlength="1000"
+                    show-word-limit
+                    placeholder="用于约束语音识别只逐字转写，不补词、不总结。留空将使用系统内置提示词。"
+                  />
+                  <div class="field-desc">
+                    控制语音转写模型如何理解你的录音内容。
+                  </div>
+                </el-form-item>
+
+                <div class="employee-skill-site-card__grid">
+                  <el-form-item label="唤醒语句">
+                    <el-input
+                      v-model="form.global_assistant_wake_phrase"
+                      maxlength="80"
+                      show-word-limit
+                      placeholder="例如：你好助手"
+                    />
+                    <div class="field-desc">
+                      全局助手处于待机监听时，识别到这句后才会开始接收新指令。
+                    </div>
+                  </el-form-item>
+
+                  <el-form-item label="空闲待机秒数">
+                    <el-input-number
+                      v-model="form.global_assistant_idle_timeout_sec"
+                      :min="3"
+                      :max="30"
+                    />
+                    <div class="field-desc">
+                      实时通话模式下，超过这段时间没有新内容，就自动回到待机并等待下一次唤醒。
+                    </div>
+                  </el-form-item>
+                </div>
+              </div>
+            </div>
+          </el-form>
+        </section>
+
+        <section v-show="activeTab === 'ecosystem'" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Discovery</p>
+              <h3>外部技能网站目录</h3>
+              <p>创建 AI 员工时，这些站点会展示在“外部技能候选”区域。</p>
+            </div>
+            <div class="panel-actions">
+              <el-button @click="addEmployeeExternalSkillSite">新增站点</el-button>
+            </div>
+          </div>
+
+          <el-form label-position="top" class="switch-form">
+            <div class="employee-skill-site-list">
+              <div
+                v-for="(item, index) in form.employee_external_skill_sites"
+                :key="item.id || `site-${index}`"
+                class="employee-skill-site-card"
+              >
+                <div class="employee-skill-site-card__top">
+                  <div class="employee-skill-site-card__title">
+                    站点 {{ index + 1 }}
+                  </div>
+                  <div class="employee-skill-site-card__actions">
+                    <el-button
+                      text
+                      type="danger"
+                      @click="removeEmployeeExternalSkillSite(index)"
+                    >
+                      删除
+                    </el-button>
+                  </div>
+                </div>
+                <div class="employee-skill-site-card__grid">
+                  <el-form-item label="名称">
+                    <el-input
+                      v-model="item.title"
+                      placeholder="例如：Vue 深度应用"
+                    />
+                  </el-form-item>
+                </div>
+                <el-form-item label="跳转地址">
+                  <el-input
+                    v-model="item.url"
+                    placeholder="https://example.com/skills/vue"
+                  />
+                </el-form-item>
+                <el-form-item label="描述">
+                  <el-input
+                    v-model="item.description"
+                    type="textarea"
+                    :rows="3"
+                    resize="vertical"
+                    placeholder="简短说明这个站点适合补哪些技能。"
+                  />
+                </el-form-item>
+              </div>
+            </div>
+          </el-form>
+        </section>
+
+        <section v-show="activeTab === 'ecosystem'" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Public</p>
+              <h3>官网联系方式</h3>
+              <p>官网 `/intro` 会展示这里启用的联系方式，当前先支持 QQ 群。</p>
+            </div>
+            <div class="panel-actions">
+              <el-button @click="addPublicContactChannel">新增联系方式</el-button>
+            </div>
+          </div>
+
+          <el-form label-position="top" class="switch-form">
+            <div class="employee-skill-site-list">
+              <div
+                v-for="(item, index) in form.public_contact_channels"
+                :key="item.id || `contact-${index}`"
+                class="employee-skill-site-card"
+              >
+                <div class="employee-skill-site-card__top">
+                  <div class="employee-skill-site-card__title">
+                    联系方式 {{ index + 1 }}
+                  </div>
+                  <div class="employee-skill-site-card__actions">
+                    <el-tag size="small" type="info">QQ群</el-tag>
+                    <el-button text type="danger" @click="removePublicContactChannel(index)">
+                      删除
+                    </el-button>
+                  </div>
+                </div>
+
+                <div class="switch-card">
+                  <div>
+                    <div class="switch-title">官网展示</div>
+                    <div class="switch-desc">
+                      关闭后仍保留配置，但官网不会展示这条联系方式。
+                    </div>
+                  </div>
+                  <el-switch v-model="item.enabled" />
+                </div>
+
+                <div class="employee-skill-site-card__grid">
+                  <el-form-item label="标题">
+                    <el-input
+                      v-model="item.title"
+                      placeholder="例如：加入用户交流群"
+                    />
+                  </el-form-item>
+                  <el-form-item label="QQ群号">
+                    <el-input
+                      v-model="item.qq_group_number"
+                      placeholder="例如：123456789"
+                    />
+                  </el-form-item>
+                  <el-form-item label="排序">
+                    <el-input-number
+                      v-model="item.sort_order"
+                      :min="0"
+                      :max="999"
+                    />
+                  </el-form-item>
+                  <el-form-item label="按钮文案">
+                    <el-input
+                      v-model="item.button_text"
+                      placeholder="默认：复制群号"
+                    />
+                  </el-form-item>
+                </div>
+
+                <el-form-item label="描述">
+                  <el-input
+                    v-model="item.description"
+                    type="textarea"
+                    :rows="3"
+                    resize="vertical"
+                    placeholder="简短说明这个 QQ 群适合做什么。"
+                  />
+                </el-form-item>
+
+                <el-form-item label="加群引导">
+                  <el-input
+                    v-model="item.guide_text"
+                    placeholder="例如：打开 QQ，搜索群号加入。"
+                  />
+                </el-form-item>
+
+                <div class="employee-skill-site-card__grid">
+                  <el-form-item label="加群链接（可选）">
+                    <el-input
+                      v-model="item.join_link"
+                      placeholder="https://qm.qq.com/..."
+                    />
+                  </el-form-item>
+                  <el-form-item label="二维码图片 URL（可选）">
+                    <el-input
+                      v-model="item.qr_image_url"
+                      placeholder="https://example.com/qq-group.png"
+                    />
+                  </el-form-item>
+                </div>
+              </div>
+            </div>
+          </el-form>
+        </section>
+
+        <section v-show="activeTab === 'ecosystem'" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Registry</p>
+              <h3>技能资源源</h3>
+              <p>配置外部技能 registry，安装时再动态换取真实下载地址。</p>
+            </div>
+          </div>
+
+          <el-form label-position="top" class="switch-form">
+            <div class="employee-skill-site-card">
+              <div class="switch-card">
+                <div>
+                  <div class="switch-title">启用 Vett Registry</div>
+                  <div class="switch-desc">
+                    开启后，前端“技能资源”页面会通过该源搜索和安装技能。
+                  </div>
+                </div>
+                <el-switch v-model="form.skill_registry_sources.vett.enabled" />
+              </div>
+
+              <div class="employee-skill-site-card__grid registry-grid">
+                <el-form-item label="Base URL">
+                  <el-input
+                    v-model="form.skill_registry_sources.vett.base_url"
+                    placeholder="https://vett.sh/api/v1"
+                  />
+                </el-form-item>
+                <el-form-item label="超时 (ms)">
+                  <el-input-number
+                    v-model="form.skill_registry_sources.vett.timeout_ms"
+                    :min="1000"
+                    :max="60000"
+                    :step="1000"
+                  />
+                </el-form-item>
+              </div>
+
+              <div class="registry-risk-grid">
+                <el-form-item label="允许安装风险">
+                  <el-checkbox-group v-model="form.skill_registry_sources.vett.risk_policy.allow">
+                    <el-checkbox
+                      v-for="item in RISK_LEVEL_OPTIONS"
+                      :key="`allow-${item}`"
+                      :value="item"
+                    >
+                      {{ item }}
+                    </el-checkbox>
+                  </el-checkbox-group>
+                </el-form-item>
+                <el-form-item label="需人工确认">
+                  <el-checkbox-group v-model="form.skill_registry_sources.vett.risk_policy.review">
+                    <el-checkbox
+                      v-for="item in RISK_LEVEL_OPTIONS"
+                      :key="`review-${item}`"
+                      :value="item"
+                    >
+                      {{ item }}
+                    </el-checkbox>
+                  </el-checkbox-group>
+                </el-form-item>
+                <el-form-item label="直接拦截">
+                  <el-checkbox-group v-model="form.skill_registry_sources.vett.risk_policy.deny">
+                    <el-checkbox
+                      v-for="item in RISK_LEVEL_OPTIONS"
+                      :key="`deny-${item}`"
+                      :value="item"
+                    >
+                      {{ item }}
+                    </el-checkbox>
+                  </el-checkbox-group>
+                </el-form-item>
+              </div>
+              <div class="field-desc">
+                这里保存的是 registry API 地址，不是最终 artifact 下载地址。实际下载链接会在安装时实时换取。
+              </div>
+            </div>
+          </el-form>
+        </section>
+      </div>
+
+      <aside v-show="activeTab === 'mcp-config'" class="content-aside">
+        <section class="panel panel--accent panel--sticky">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">MCP Workspace</p>
+              <h3>系统 MCP 配置</h3>
+              <p>把服务开关、对外地址和 JSON 编辑器集中到一个独立工作区。</p>
+            </div>
+            <div class="panel-actions">
+              <el-button @click="formatMcpConfigText">格式化 JSON</el-button>
+              <el-button @click="resetMcpConfig">恢复默认</el-button>
+            </div>
+          </div>
+
+          <div class="mcp-summary-grid">
+            <article class="mcp-summary-card">
+              <span>服务</span>
+              <strong>{{ editableMcpServers.length }}</strong>
+            </article>
+            <article class="mcp-summary-card">
+              <span>行数</span>
+              <strong>{{ configLineCount }}</strong>
+            </article>
+            <article class="mcp-summary-card">
+              <span>异常</span>
+              <strong>{{ totalErrorCount }}</strong>
+            </article>
+          </div>
+
+          <div class="server-switch-list">
+            <div
+              v-for="server in editableMcpServers"
+              :key="`edit-${server.name}`"
+              class="server-switch-item"
+            >
+              <div class="server-switch-meta">
+                <div class="server-switch-name">{{ server.name }}</div>
+                <div class="server-switch-url">{{ server.url || "未配置 URL" }}</div>
+              </div>
+              <div class="server-switch-actions">
+                <el-tag size="small" :type="server.enabled ? 'success' : 'info'">
+                  {{ server.enabled ? "已启用" : "已停用" }}
+                </el-tag>
+                <el-switch
+                  :model-value="server.enabled"
+                  @change="(value) => toggleMcpServer(server.name, value)"
+                />
+              </div>
+            </div>
+          </div>
+
+          <el-alert
+            v-if="configParseError"
+            class="inline-alert"
+            type="warning"
+            :closable="false"
+            show-icon
+            :title="configParseError"
           />
-        </div>
-        <p class="field-desc field-desc-block">
-          当前页面会基于这里的 `url` 自动调用
-          `tools/list`、`prompts/list`、`resources/list` 进行探测。
-        </p>
-      </section>
+
+          <el-form label-position="top" class="switch-form">
+            <el-form-item label="统一 MCP 对外地址">
+              <el-input
+                v-model="form.query_mcp_public_base_url"
+                placeholder="例如：https://mcp.example.com:9443 或 https://example.com/console"
+              />
+              <div class="field-desc">
+                统一 MCP 接入弹窗会优先使用这里生成 `query-center` 的 SSE / HTTP 地址。留空时，后端会继续按当前请求的 Host 与转发头自动推断。
+              </div>
+            </el-form-item>
+          </el-form>
+
+          <div class="editor-shell">
+            <div class="editor-toolbar">
+              <span>mcpServers.json</span>
+              <span class="editor-meta">{{ configLineCount }} 行</span>
+            </div>
+            <el-input
+              v-model="form.mcp_config_text"
+              type="textarea"
+              :rows="16"
+              spellcheck="false"
+              resize="none"
+              class="mcp-config-input"
+            />
+          </div>
+          <p class="field-desc field-desc-block">
+            当前页面会基于这里的 `url` 自动调用
+            `tools/list`、`prompts/list`、`resources/list` 进行探测。
+          </p>
+        </section>
+      </aside>
     </div>
 
-    <section class="panel skill-panel">
+    <section v-show="activeTab === 'mcp-discovery'" class="panel skill-panel">
       <div class="panel-head">
         <div>
           <h3>当前 MCP 技能</h3>
@@ -610,6 +1126,19 @@ const DEFAULT_MCP_CONFIG = {
     },
   },
 };
+const DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT =
+  "你好，我是系统状态助手。我会默认保持实时通话，随时帮你观察当前页面、系统状态和功能是否可用。";
+const DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT = `你是系统状态助手。
+你的职责是基于当前页面、实时系统快照和本轮对话消息，直接回答系统状态、当前页面、当前项目、当前账号、功能可用性相关问题。
+你已经拿到本轮对话历史和实时快照；禁止回答“我无法访问之前的对话历史”或“我没有上下文”。
+如果答案就在本轮消息或快照里，直接给结论；如果快照里没有，就明确说明“当前快照里没有这项数据”，并指出缺少什么信息。
+不要把用户打回去重新描述，除非用户问题本身含糊到无法判断目标。
+当用户询问这个系统做什么、有哪些功能、怎么使用、去哪里配置、哪个页面负责什么时，先调用 global_assistant_system_guide 再回答。
+当用户询问当前页面接口状态、最近请求、响应数据、报错接口或页面是否真的拿到数据时，优先调用 global_assistant_browser_requests。
+当用户要求你检查页面元素、读取页面文字、点击、输入、选择、滚动、按键、切换页面、跳转路由或直接执行页面脚本时，优先调用 global_assistant_browser_actions。
+执行 click、fill、select 前，如果页面里是图标按钮或存在多个相邻按钮，先用 query_dom 查看候选元素，并优先使用 data-testid、id、aria-label、title 这些唯一标识来构造 selector；不要猜测或使用过宽的 .el-button、button:nth-child(...) 之类 selector。`;
+const DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT =
+  "请严格逐字转写用户原话，只输出识别到的中文文本；不要补充、不要改写、不要总结、不要猜测、不要重复上一句；听不清就留空。";
 const DEFAULT_SKILL_REGISTRY_SOURCES = {
   vett: {
     enabled: true,
@@ -665,6 +1194,7 @@ function cloneConfig(value) {
 
 const loading = ref(false);
 const saving = ref(false);
+const activeTab = ref("defaults");
 const skillsLoading = ref(false);
 const connectorsLoading = ref(false);
 const uploadingDesktopArtifact = ref(false);
@@ -682,6 +1212,14 @@ const desktopArtifactUploadFileList = ref([]);
 const showConnectorLlmSharingDialog = ref(false);
 const connectorShareUserOptions = ref([]);
 const connectorShareRoleOptions = ref([]);
+const globalAssistantChatProviderOptions = ref([]);
+const voiceProviderOptions = ref([]);
+const voiceUserOptions = ref([]);
+const voiceRoleOptions = ref([]);
+const voiceOutputProviderOptions = ref([]);
+const voiceOutputVoiceOptions = ref([]);
+const voiceOutputVoiceCatalogLoading = ref(false);
+const voiceOutputVoiceCatalogMessage = ref("");
 const desktopArtifactUploadForm = ref({
   target: "windows:setup",
   version: "",
@@ -705,7 +1243,26 @@ const form = ref({
   employee_auto_rule_generation_prompt:
     DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT,
   employee_external_skill_sites: [],
+  voice_input_enabled: false,
+  voice_input_provider_id: "",
+  voice_input_model_name: "",
+  voice_input_allowed_usernames: [],
+  voice_input_allowed_role_ids: [],
+  voice_output_enabled: false,
+  voice_output_provider_id: "",
+  voice_output_model_name: "",
+  voice_output_voice: "",
+  global_assistant_greeting_enabled: true,
+  global_assistant_greeting_text: DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
+  global_assistant_chat_provider_id: "",
+  global_assistant_chat_model_name: "",
+  global_assistant_system_prompt: DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT,
+  global_assistant_transcription_prompt:
+    DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT,
+  global_assistant_wake_phrase: "你好助手",
+  global_assistant_idle_timeout_sec: 5,
   public_contact_channels: cloneConfig(DEFAULT_PUBLIC_CONTACT_CHANNELS),
+  query_mcp_public_base_url: "",
   skill_registry_sources: cloneConfig(DEFAULT_SKILL_REGISTRY_SOURCES),
   mcp_config_text: JSON.stringify(DEFAULT_MCP_CONFIG, null, 2),
 });
@@ -778,6 +1335,75 @@ const editableMcpServers = computed(() => {
   } catch {
     return [];
   }
+});
+const selectedVoiceProvider = computed(
+  () =>
+    voiceProviderOptions.value.find(
+      (item) => item.id === form.value.voice_input_provider_id,
+    ) || null,
+);
+const selectedGlobalAssistantChatProvider = computed(
+  () =>
+    globalAssistantChatProviderOptions.value.find(
+      (item) => item.id === form.value.global_assistant_chat_provider_id,
+    ) || null,
+);
+const selectedGlobalAssistantChatProviderModels = computed(() =>
+  Array.isArray(selectedGlobalAssistantChatProvider.value?.model_configs)
+    ? selectedGlobalAssistantChatProvider.value.model_configs
+    : [],
+);
+const selectedVoiceProviderModels = computed(() =>
+  Array.isArray(selectedVoiceProvider.value?.model_configs)
+    ? selectedVoiceProvider.value.model_configs
+    : [],
+);
+const selectedVoiceOutputProvider = computed(
+  () =>
+    voiceOutputProviderOptions.value.find(
+      (item) => item.id === form.value.voice_output_provider_id,
+    ) || null,
+);
+const selectedVoiceOutputProviderModels = computed(() =>
+  Array.isArray(selectedVoiceOutputProvider.value?.model_configs)
+    ? selectedVoiceOutputProvider.value.model_configs
+    : [],
+);
+const normalizedVoiceOutputVoiceOptions = computed(() => {
+  const items = [];
+  const seen = new Set();
+  for (const rawItem of Array.isArray(voiceOutputVoiceOptions.value) ? voiceOutputVoiceOptions.value : []) {
+    const voice = String(rawItem?.voice || "").trim();
+    if (!voice || seen.has(voice)) {
+      continue;
+    }
+    seen.add(voice);
+    items.push({
+      voice,
+      voice_name: String(rawItem?.voice_name || voice).trim(),
+      voice_type: String(rawItem?.voice_type || "").trim(),
+    });
+  }
+  const currentVoice = String(form.value.voice_output_voice || "").trim();
+  if (currentVoice && !seen.has(currentVoice)) {
+    items.unshift({
+      voice: currentVoice,
+      voice_name: currentVoice,
+      voice_type: "",
+    });
+  }
+  return items;
+});
+const voiceOutputVoiceHelperText = computed(() => {
+  const message = String(voiceOutputVoiceCatalogMessage.value || "").trim();
+  if (message) return message;
+  if (!String(form.value.voice_output_provider_id || "").trim()) {
+    return "先选择播报供应商，再读取可用音色。";
+  }
+  if (normalizedVoiceOutputVoiceOptions.value.length) {
+    return "优先选择系统读取到的音色；如果供应商未返回列表，也可以直接输入 voice id。";
+  }
+  return "如果当前供应商不支持音色目录接口，可直接手动输入 voice id。";
 });
 function normalizeEmployeeExternalSkillSites(value) {
   if (!Array.isArray(value)) {
@@ -921,6 +1547,18 @@ function normalizeSkillRegistrySources(value) {
   };
 }
 
+function normalizeStringList(value) {
+  return Array.isArray(value)
+    ? Array.from(
+        new Set(
+          value
+            .map((item) => String(item || "").trim())
+            .filter(Boolean),
+        ),
+      )
+    : [];
+}
+
 function addEmployeeExternalSkillSite() {
   form.value.employee_external_skill_sites = [
     ...normalizeEmployeeExternalSkillSites(form.value.employee_external_skill_sites),
@@ -962,6 +1600,113 @@ function removePublicContactChannel(index) {
   form.value.public_contact_channels = normalizePublicContactChannels(
     form.value.public_contact_channels,
   ).filter((_, currentIndex) => currentIndex !== index);
+}
+
+function ensureGlobalAssistantChatModelSelection() {
+  if (!String(form.value.global_assistant_chat_provider_id || "").trim()) {
+    form.value.global_assistant_chat_model_name = "";
+    return;
+  }
+  if (!selectedGlobalAssistantChatProvider.value) {
+    return;
+  }
+  const models = selectedGlobalAssistantChatProviderModels.value;
+  if (!models.length) {
+    form.value.global_assistant_chat_model_name = "";
+    return;
+  }
+  const currentModel = String(
+    form.value.global_assistant_chat_model_name || "",
+  ).trim();
+  if (models.some((item) => item.name === currentModel)) {
+    return;
+  }
+  form.value.global_assistant_chat_model_name = String(
+    selectedGlobalAssistantChatProvider.value?.default_model || models[0]?.name || "",
+  ).trim();
+}
+
+function handleGlobalAssistantChatProviderChange(value) {
+  form.value.global_assistant_chat_provider_id = String(value || "").trim();
+  ensureGlobalAssistantChatModelSelection();
+}
+
+function ensureVoiceModelSelection() {
+  if (!String(form.value.voice_input_provider_id || "").trim()) {
+    form.value.voice_input_model_name = "";
+    return;
+  }
+  if (!selectedVoiceProvider.value) {
+    return;
+  }
+  const models = selectedVoiceProviderModels.value;
+  if (!models.length) {
+    form.value.voice_input_model_name = "";
+    return;
+  }
+  const currentModel = String(form.value.voice_input_model_name || "").trim();
+  if (models.some((item) => item.name === currentModel)) {
+    return;
+  }
+  form.value.voice_input_model_name = String(
+    selectedVoiceProvider.value?.default_model || models[0]?.name || "",
+  ).trim();
+}
+
+function handleVoiceProviderChange(value) {
+  form.value.voice_input_provider_id = String(value || "").trim();
+  ensureVoiceModelSelection();
+}
+
+function ensureVoiceOutputModelSelection() {
+  if (!String(form.value.voice_output_provider_id || "").trim()) {
+    form.value.voice_output_model_name = "";
+    return;
+  }
+  if (!selectedVoiceOutputProvider.value) {
+    return;
+  }
+  const models = selectedVoiceOutputProviderModels.value;
+  if (!models.length) {
+    form.value.voice_output_model_name = "";
+    return;
+  }
+  const currentModel = String(form.value.voice_output_model_name || "").trim();
+  if (models.some((item) => item.name === currentModel)) {
+    return;
+  }
+  form.value.voice_output_model_name = String(
+    selectedVoiceOutputProvider.value?.default_model || models[0]?.name || "",
+  ).trim();
+}
+
+async function fetchVoiceOutputVoices(providerId = form.value.voice_output_provider_id) {
+  const normalizedProviderId = String(providerId || "").trim();
+  if (!normalizedProviderId) {
+    voiceOutputVoiceOptions.value = [];
+    voiceOutputVoiceCatalogMessage.value = "";
+    return;
+  }
+  voiceOutputVoiceCatalogLoading.value = true;
+  try {
+    const data = await api.get("/system-config/voice-output/voices", {
+      params: { provider_id: normalizedProviderId },
+    });
+    voiceOutputVoiceOptions.value = Array.isArray(data?.items) ? data.items : [];
+    voiceOutputVoiceCatalogMessage.value = String(data?.message || "");
+  } catch (err) {
+    voiceOutputVoiceOptions.value = [];
+    voiceOutputVoiceCatalogMessage.value =
+      err?.detail || err?.message || "读取播报音色失败，请稍后重试";
+  } finally {
+    voiceOutputVoiceCatalogLoading.value = false;
+  }
+}
+
+async function handleVoiceOutputProviderChange(value) {
+  form.value.voice_output_provider_id = String(value || "").trim();
+  ensureVoiceOutputModelSelection();
+  await fetchVoiceOutputVoices(form.value.voice_output_provider_id);
 }
 
 function applyConfigToForm(config, options = {}) {
@@ -1020,9 +1765,50 @@ function applyConfigToForm(config, options = {}) {
     employee_external_skill_sites: normalizeEmployeeExternalSkillSites(
       payload.employee_external_skill_sites,
     ),
+    voice_input_enabled: !!payload.voice_input_enabled,
+    voice_input_provider_id: String(payload.voice_input_provider_id || ""),
+    voice_input_model_name: String(payload.voice_input_model_name || ""),
+    voice_input_allowed_usernames: normalizeStringList(
+      payload.voice_input_allowed_usernames,
+    ),
+    voice_input_allowed_role_ids: normalizeStringList(
+      payload.voice_input_allowed_role_ids,
+    ),
+    voice_output_enabled: !!payload.voice_output_enabled,
+    voice_output_provider_id: String(payload.voice_output_provider_id || ""),
+    voice_output_model_name: String(payload.voice_output_model_name || ""),
+    voice_output_voice: String(payload.voice_output_voice || ""),
+    global_assistant_greeting_enabled:
+      payload.global_assistant_greeting_enabled !== false,
+    global_assistant_greeting_text: String(
+      payload.global_assistant_greeting_text ||
+        DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
+    ),
+    global_assistant_chat_provider_id: String(
+      payload.global_assistant_chat_provider_id || "",
+    ),
+    global_assistant_chat_model_name: String(
+      payload.global_assistant_chat_model_name || "",
+    ),
+    global_assistant_system_prompt: String(
+      payload.global_assistant_system_prompt ||
+        DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT,
+    ),
+    global_assistant_transcription_prompt: String(
+      payload.global_assistant_transcription_prompt ||
+        DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT,
+    ),
+    global_assistant_wake_phrase: String(
+      payload.global_assistant_wake_phrase || "你好助手",
+    ),
+    global_assistant_idle_timeout_sec: Math.max(
+      3,
+      Math.min(30, Number(payload.global_assistant_idle_timeout_sec || 5) || 5),
+    ),
     public_contact_channels: normalizePublicContactChannels(
       payload.public_contact_channels,
     ),
+    query_mcp_public_base_url: String(payload.query_mcp_public_base_url || ""),
     skill_registry_sources: normalizeSkillRegistrySources(
       payload.skill_registry_sources,
     ),
@@ -1031,6 +1817,8 @@ function applyConfigToForm(config, options = {}) {
         ? formatMcpConfig(payload.mcp_config)
         : String(form.value.mcp_config_text || formatMcpConfig(DEFAULT_MCP_CONFIG)),
   };
+  ensureVoiceModelSelection();
+  ensureVoiceOutputModelSelection();
 }
 
 function formatMcpConfig(value) {
@@ -1438,10 +2226,63 @@ async function refreshMcpSkills() {
   }
 }
 
+async function fetchVoiceInputOptions() {
+  try {
+    const data = await api.get("/system-config/voice-input/options");
+    voiceProviderOptions.value = Array.isArray(data?.providers)
+      ? data.providers
+      : [];
+    voiceUserOptions.value = Array.isArray(data?.users) ? data.users : [];
+    voiceRoleOptions.value = Array.isArray(data?.roles) ? data.roles : [];
+    ensureVoiceModelSelection();
+  } catch (err) {
+    voiceProviderOptions.value = [];
+    voiceUserOptions.value = [];
+    voiceRoleOptions.value = [];
+    ElMessage.error(err?.detail || err?.message || "加载语音输入配置选项失败");
+  }
+}
+
+async function fetchGlobalAssistantChatOptions() {
+  try {
+    const data = await api.get("/system-config/global-assistant-chat/options");
+    globalAssistantChatProviderOptions.value = Array.isArray(data?.providers)
+      ? data.providers
+      : [];
+    ensureGlobalAssistantChatModelSelection();
+  } catch (err) {
+    globalAssistantChatProviderOptions.value = [];
+    ElMessage.error(
+      err?.detail || err?.message || "加载全局助手对话模型选项失败",
+    );
+  }
+}
+
+async function fetchVoiceOutputOptions() {
+  try {
+    const data = await api.get("/system-config/voice-output/options");
+    voiceOutputProviderOptions.value = Array.isArray(data?.providers)
+      ? data.providers
+      : [];
+    ensureVoiceOutputModelSelection();
+    await fetchVoiceOutputVoices();
+  } catch (err) {
+    voiceOutputProviderOptions.value = [];
+    voiceOutputVoiceOptions.value = [];
+    voiceOutputVoiceCatalogMessage.value = "";
+    ElMessage.error(err?.detail || err?.message || "加载语音播报配置选项失败");
+  }
+}
+
 async function refreshAllPanels() {
   refreshingPanels.value = true;
   try {
-    await refreshMcpSkills();
+    await Promise.all([
+      refreshMcpSkills(),
+      fetchGlobalAssistantChatOptions(),
+      fetchVoiceInputOptions(),
+      fetchVoiceOutputOptions(),
+    ]);
   } finally {
     refreshingPanels.value = false;
   }
@@ -1452,7 +2293,12 @@ async function fetchConfig() {
   try {
     const data = await api.get("/system-config");
     applyConfigToForm(data?.config);
-    await refreshMcpSkills();
+    await Promise.all([
+      refreshMcpSkills(),
+      fetchGlobalAssistantChatOptions(),
+      fetchVoiceInputOptions(),
+      fetchVoiceOutputOptions(),
+    ]);
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "加载系统配置失败");
   } finally {
@@ -1501,9 +2347,53 @@ async function saveConfig() {
       employee_external_skill_sites: normalizeEmployeeExternalSkillSites(
         form.value.employee_external_skill_sites,
       ),
+      voice_input_enabled: Boolean(form.value.voice_input_enabled),
+      voice_input_provider_id: String(form.value.voice_input_provider_id || ""),
+      voice_input_model_name: String(form.value.voice_input_model_name || ""),
+      voice_input_allowed_usernames: normalizeStringList(
+        form.value.voice_input_allowed_usernames,
+      ),
+      voice_input_allowed_role_ids: normalizeStringList(
+        form.value.voice_input_allowed_role_ids,
+      ),
+      voice_output_enabled: Boolean(form.value.voice_output_enabled),
+      voice_output_provider_id: String(form.value.voice_output_provider_id || ""),
+      voice_output_model_name: String(form.value.voice_output_model_name || ""),
+      voice_output_voice: String(form.value.voice_output_voice || "").trim(),
+      global_assistant_greeting_enabled: Boolean(
+        form.value.global_assistant_greeting_enabled,
+      ),
+      global_assistant_greeting_text: String(
+        form.value.global_assistant_greeting_text || "",
+      ).trim(),
+      global_assistant_chat_provider_id: String(
+        form.value.global_assistant_chat_provider_id || "",
+      ).trim(),
+      global_assistant_chat_model_name: String(
+        form.value.global_assistant_chat_model_name || "",
+      ).trim(),
+      global_assistant_system_prompt: String(
+        form.value.global_assistant_system_prompt || "",
+      ).trim(),
+      global_assistant_transcription_prompt: String(
+        form.value.global_assistant_transcription_prompt || "",
+      ).trim(),
+      global_assistant_wake_phrase: String(
+        form.value.global_assistant_wake_phrase || "",
+      ).trim(),
+      global_assistant_idle_timeout_sec: Math.max(
+        3,
+        Math.min(
+          30,
+          Number(form.value.global_assistant_idle_timeout_sec || 5) || 5,
+        ),
+      ),
       public_contact_channels: normalizePublicContactChannels(
         form.value.public_contact_channels,
       ),
+      query_mcp_public_base_url: String(
+        form.value.query_mcp_public_base_url || "",
+      ).trim(),
       skill_registry_sources: normalizeSkillRegistrySources(
         form.value.skill_registry_sources,
       ),
@@ -1513,7 +2403,12 @@ async function saveConfig() {
       preservePrompt: true,
       preserveMcpConfig: true,
     });
-    await refreshMcpSkills();
+    await Promise.all([
+      refreshMcpSkills(),
+      fetchGlobalAssistantChatOptions(),
+      fetchVoiceInputOptions(),
+      fetchVoiceOutputOptions(),
+    ]);
     ElMessage.success("系统配置已保存");
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "保存系统配置失败");
@@ -1576,6 +2471,10 @@ onMounted(() => {
     );
 }
 
+.hero-body {
+  min-width: 0;
+}
+
 .hero-eyebrow {
   margin: 0 0 10px;
   color: var(--accent);
@@ -1600,10 +2499,32 @@ onMounted(() => {
   line-height: 1.7;
 }
 
+.hero-highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.hero-highlight {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(30, 106, 168, 0.14);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .hero-actions {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .overview-grid {
@@ -1643,15 +2564,34 @@ onMounted(() => {
 
 .content-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.86fr);
   gap: 16px;
   margin-top: 16px;
+  align-items: start;
+}
+
+.content-main,
+.content-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .panel {
   padding: 20px;
   border-radius: 24px;
   background: var(--panel-bg);
+}
+
+.panel--accent {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(244, 248, 252, 0.94)),
+    var(--panel-bg);
+}
+
+.panel--sticky {
+  position: sticky;
+  top: 108px;
 }
 
 .panel-head {
@@ -1673,6 +2613,15 @@ onMounted(() => {
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.panel-kicker {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 .panel-actions {
@@ -1759,6 +2708,10 @@ onMounted(() => {
   margin-top: 8px;
 }
 
+.guide-modules-head {
+  margin-top: 4px;
+}
+
 .employee-skill-site-list {
   display: flex;
   flex-direction: column;
@@ -1773,6 +2726,29 @@ onMounted(() => {
   border-radius: 16px;
   border: 1px solid rgba(112, 128, 144, 0.14);
   background: rgba(248, 250, 252, 0.9);
+}
+
+.voice-config-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.voice-config-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.voice-config-section__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.voice-config-divider {
+  height: 1px;
+  background: rgba(112, 128, 144, 0.14);
 }
 
 .employee-skill-site-card__top {
@@ -1799,6 +2775,22 @@ onMounted(() => {
 .employee-skill-site-card__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.guide-module-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) 140px;
+  gap: 12px;
+}
+
+.guide-module-switch-grid {
+  margin-bottom: 12px;
+}
+
+.voice-output-voice-field {
+  display: flex;
+  align-items: center;
   gap: 12px;
 }
 
@@ -1878,6 +2870,34 @@ onMounted(() => {
 
 .editor-meta {
   color: rgba(234, 239, 245, 0.58);
+}
+
+.mcp-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.mcp-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(112, 128, 144, 0.12);
+  background: rgba(248, 251, 254, 0.96);
+}
+
+.mcp-summary-card span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.mcp-summary-card strong {
+  color: var(--text-main);
+  font-size: 28px;
+  line-height: 1;
 }
 
 :deep(.mcp-config-input .el-textarea__inner) {
@@ -2406,11 +3426,17 @@ onMounted(() => {
   .connector-grid,
   .connector-metric-row,
   .employee-skill-site-card__grid,
+  .guide-module-meta-grid,
   .desktop-artifact-upload-grid,
   .skill-section-grid,
   .check-list,
-  .overview-grid {
+  .overview-grid,
+  .mcp-summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .panel--sticky {
+    position: static;
   }
 }
 
@@ -2429,7 +3455,7 @@ onMounted(() => {
   .panel-head,
   .server-head,
   .switch-card,
-  .employee-skill-site-head,
+  .voice-output-voice-field,
   .employee-skill-site-card__top,
   .server-switch-item,
   .pair-code-top,
@@ -2462,6 +3488,11 @@ onMounted(() => {
   .desktop-artifact-upload-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .hero-highlights {
+    display: flex;
+    gap: 8px;
   }
 }
 </style>

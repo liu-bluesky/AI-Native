@@ -14,7 +14,6 @@ from stores.json.system_config_store import SystemConfig, _now_iso
 class SystemConfigStorePostgres:
     def __init__(self, database_url: str) -> None:
         self._conn = connect(database_url, autocommit=True, row_factory=dict_row)
-        self._ensure_schema()
 
     def _ensure_schema(self) -> None:
         with self._conn.cursor() as cur:

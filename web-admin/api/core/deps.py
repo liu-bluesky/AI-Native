@@ -42,32 +42,71 @@ async def require_auth(
     return payload
 
 
-def _resolve_role_permissions_from_payload(auth_payload: dict | None) -> tuple[str, list[str] | None]:
+def get_auth_role_ids(auth_payload: dict | None) -> list[str]:
     payload = auth_payload if isinstance(auth_payload, dict) else {}
+    normalized: list[str] = []
+    seen: set[str] = set()
+    raw_roles = payload.get("roles")
+    if isinstance(raw_roles, list):
+        for item in raw_roles:
+            role_id = str(item or "").strip().lower()
+            if not role_id or role_id in seen:
+                continue
+            seen.add(role_id)
+            normalized.append(role_id)
     role_id = str(payload.get("role") or "").strip().lower()
-    if not role_id:
-        return "", None
-    try:
-        role = role_store.get(role_id)
-    except ValueError:
-        return role_id, None
-    return role_id, getattr(role, "permissions", None)
+    if role_id and role_id not in seen:
+        normalized.append(role_id)
+    return normalized
+
+
+def get_primary_role_id(auth_payload: dict | None) -> str:
+    role_ids = get_auth_role_ids(auth_payload)
+    return role_ids[0] if role_ids else ""
+
+
+def resolve_role_ids_permissions(role_ids: list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
+    normalized_role_ids = [
+        str(item or "").strip().lower()
+        for item in (role_ids or [])
+        if str(item or "").strip()
+    ]
+    if not normalized_role_ids:
+        return []
+    resolved: set[str] = set()
+    for role_id in normalized_role_ids:
+        try:
+            role = role_store.get(role_id)
+        except ValueError:
+            role = None
+        role_permissions = getattr(role, "permissions", None)
+        current_permissions = resolve_role_permissions(role_permissions, role_id)
+        if "*" in set(current_permissions):
+            return ["*"]
+        resolved.update(current_permissions)
+    return sorted(resolved)
+
+
+def _resolve_role_permissions_from_payload(auth_payload: dict | None) -> tuple[list[str], list[str]]:
+    role_ids = get_auth_role_ids(auth_payload)
+    return role_ids, resolve_role_ids_permissions(role_ids)
 
 
 def ensure_permission(auth_payload: dict, permission_key: str) -> None:
-    role_id, role_permissions = _resolve_role_permissions_from_payload(auth_payload)
-    if not role_has_permission(role_permissions, permission_key, role_id=role_id):
+    role_ids, role_permissions = _resolve_role_permissions_from_payload(auth_payload)
+    primary_role_id = role_ids[0] if role_ids else ""
+    if not role_has_permission(role_permissions, permission_key, role_id=primary_role_id):
         raise HTTPException(403, f"Permission denied: {permission_key}")
 
 
 def ensure_any_permission(auth_payload: dict, permission_keys: list[str]) -> None:
-    role_id, role_permissions = _resolve_role_permissions_from_payload(auth_payload)
-    if any(role_has_permission(role_permissions, key, role_id=role_id) for key in permission_keys):
+    role_ids, role_permissions = _resolve_role_permissions_from_payload(auth_payload)
+    primary_role_id = role_ids[0] if role_ids else ""
+    if any(role_has_permission(role_permissions, key, role_id=primary_role_id) for key in permission_keys):
         return
     raise HTTPException(403, f"Permission denied: {permission_keys}")
 
 
 def is_admin_like(auth_payload: dict) -> bool:
-    role_id, permissions = _resolve_role_permissions_from_payload(auth_payload)
-    resolved = resolve_role_permissions(permissions, role_id)
-    return "*" in set(resolved)
+    _, permissions = _resolve_role_permissions_from_payload(auth_payload)
+    return "*" in set(permissions)

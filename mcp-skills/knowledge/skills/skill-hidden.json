@@ -1,0 +1,19 @@
+{
+  "id": "skill-hidden",
+  "version": "1.0.0",
+  "name": "隐藏技能",
+  "description": "hidden",
+  "mcp_service": "hidden",
+  "created_by": "other",
+  "share_scope": "private",
+  "shared_with_usernames": [],
+  "package_dir": "",
+  "tools": [],
+  "resources": [],
+  "proxy_entries": [],
+  "dependencies": [],
+  "tags": [],
+  "mcp_enabled": false,
+  "created_at": "2026-04-10T07:24:39.227736+00:00",
+  "updated_at": "2026-04-10T07:24:39.227737+00:00"
+}

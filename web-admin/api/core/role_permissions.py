@@ -14,6 +14,7 @@ MENU_PERMISSION_ITEMS = [
     {"key": "menu.skills", "label": "技能目录", "path": "/skills"},
     {"key": "menu.rules", "label": "规则管理", "path": "/rules"},
     {"key": "menu.system.config", "label": "系统配置", "path": "/system/config"},
+    {"key": "menu.system.assistant_guide", "label": "AI 助手导览", "path": "/assistant-guide-modules"},
     {"key": "menu.system.changelog", "label": "更新日志", "path": "/changelog-entries"},
     {"key": "menu.system.work_sessions", "label": "工作轨迹", "path": "/work-sessions"},
     {"key": "menu.system.dictionaries", "label": "字典管理", "path": "/dictionaries"},
@@ -22,6 +23,7 @@ MENU_PERMISSION_ITEMS = [
 ]
 
 BUTTON_PERMISSION_ITEMS = [
+    {"key": "button.ai.assistant.voice", "label": "AI 助手-语音"},
     {"key": "button.project.chat", "label": "项目详情-AI对话"},
     {"key": "button.employees.update", "label": "员工管理-编辑员工"},
     {"key": "button.employees.delete", "label": "员工管理-删除员工"},

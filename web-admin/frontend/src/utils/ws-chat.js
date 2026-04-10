@@ -13,8 +13,7 @@ function normalizeWsUrl(pathname, token) {
   return url.toString()
 }
 
-export function createProjectChatWsClient({ projectId, token, onMessage, onOpen, onClose, onError }) {
-  const path = `/api/projects/${encodeURIComponent(projectId)}/chat/ws`
+function createChatWsClient({ path, token, onMessage, onOpen, onClose, onError }) {
   const socket = new WebSocket(normalizeWsUrl(path, token))
 
   let openResolved = false
@@ -73,3 +72,24 @@ export function createProjectChatWsClient({ projectId, token, onMessage, onOpen,
   }
 }
 
+export function createProjectChatWsClient({ projectId, token, onMessage, onOpen, onClose, onError }) {
+  return createChatWsClient({
+    path: `/api/projects/${encodeURIComponent(projectId)}/chat/ws`,
+    token,
+    onMessage,
+    onOpen,
+    onClose,
+    onError,
+  })
+}
+
+export function createGlobalAssistantWsClient({ token, onMessage, onOpen, onClose, onError }) {
+  return createChatWsClient({
+    path: '/api/projects/chat/global/ws',
+    token,
+    onMessage,
+    onOpen,
+    onClose,
+    onError,
+  })
+}

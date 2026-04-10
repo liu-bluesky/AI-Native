@@ -12,17 +12,24 @@ class ToolExecutor:
         *,
         username: str = "",
         chat_session_id: str = "",
+        role_ids: list[str] | None = None,
         timeout_sec: int | None = None,
         max_retries: int = 0,
         allowed_tool_names: list[str] | None = None,
         local_connector: Any | None = None,
         local_connector_workspace_path: str = "",
         local_connector_sandbox_mode: str = "workspace-write",
+        global_assistant_bridge_handler: Any | None = None,
     ):
         self._project_id = project_id
         self._employee_id = employee_id
         self._username = str(username or "").strip()
         self._chat_session_id = str(chat_session_id or "").strip()
+        self._role_ids = [
+            str(item or "").strip().lower()
+            for item in (role_ids or [])
+            if str(item or "").strip()
+        ]
         settings = get_settings()
         base_timeout = int(settings.tool_timeout)
         if timeout_sec is not None:
@@ -47,6 +54,7 @@ class ToolExecutor:
             str(local_connector_sandbox_mode or "workspace-write").strip()
             or "workspace-write"
         )
+        self._global_assistant_bridge_handler = global_assistant_bridge_handler
 
     async def execute_parallel(self, tool_calls: list[dict], timeout: int | None = None) -> list[dict]:
         timeout = timeout or self._timeout
@@ -81,6 +89,19 @@ class ToolExecutor:
             attempt += 1
 
     async def _execute_tool(self, tool_name: str, args: dict) -> dict:
+        from services.global_assistant_service import (
+            is_global_assistant_builtin_tool,
+            execute_global_assistant_builtin_tool,
+        )
+
+        if is_global_assistant_builtin_tool(tool_name):
+            return await execute_global_assistant_builtin_tool(
+                tool_name,
+                args,
+                username=self._username,
+                role_ids=self._role_ids,
+                browser_bridge_handler=self._global_assistant_bridge_handler,
+            )
         if str(tool_name or "").strip().startswith("local_connector_"):
             return await self._execute_local_connector_tool(tool_name, args)
         from services.dynamic_mcp_runtime import invoke_project_tool_runtime

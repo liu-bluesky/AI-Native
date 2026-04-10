@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 
 def _now_iso() -> str:
@@ -67,10 +68,251 @@ def default_public_contact_channels() -> list[dict[str, object]]:
     return []
 
 
+def default_global_assistant_guide_modules() -> list[dict[str, object]]:
+    return [
+        {
+            "id": "ai-chat",
+            "name": "AI 对话中心",
+            "summary": "统一的 AI 对话入口，可用于系统咨询、项目协作、状态排查和需求推进。",
+            "paths": ["/ai/chat"],
+            "permission": "menu.ai.chat",
+            "enabled": True,
+            "is_public": False,
+            "sort_order": 10,
+        },
+        {
+            "id": "projects",
+            "name": "项目管理",
+            "summary": "管理项目、项目成员、项目聊天设置与项目级工作入口。",
+            "paths": ["/projects"],
+            "permission": "menu.projects",
+            "enabled": True,
+            "is_public": False,
+            "sort_order": 20,
+        },
+        {
+            "id": "employees",
+            "name": "员工管理",
+            "summary": "配置 AI 员工、职责、技能绑定、规则绑定和使用手册。",
+            "paths": ["/employees"],
+            "permission": "menu.employees",
+            "enabled": True,
+            "is_public": False,
+            "sort_order": 30,
+        },
+        {
+            "id": "skills",
+            "name": "技能目录",
+            "summary": "维护技能、技能资源与可复用能力资产。",
+            "paths": ["/skills", "/skill-resources"],
+            "permission": "menu.skills",
+            "enabled": True,
+            "is_public": False,
+            "sort_order": 40,
+        },
+        {
+            "id": "rules",
+            "name": "规则管理",
+            "summary": "维护通用规则、项目规则与员工规则，用于约束 AI 输出和执行方式。",
+            "paths": ["/rules"],
+            "permission": "menu.rules",
+            "enabled": True,
+            "is_public": False,
+            "sort_order": 50,
+        },
+        {
+            "id": "system-config",
+            "name": "系统配置",
+            "summary": "配置系统级开关、语音能力、默认提示词和运行参数。",
+            "paths": ["/system/config"],
+            "permission": "menu.system.config",
+            "enabled": True,
+            "is_public": False,
+            "sort_order": 60,
+        },
+        {
+            "id": "llm-providers",
+            "name": "模型供应商",
+            "summary": "接入文本、语音、图像等模型供应商，并配置默认模型。",
+            "paths": ["/llm/providers"],
+            "permission": "menu.llm.providers",
+            "enabled": True,
+            "is_public": False,
+            "sort_order": 70,
+        },
+        {
+            "id": "users-roles",
+            "name": "用户与角色",
+            "summary": "管理账号、角色、菜单权限和按钮权限。",
+            "paths": ["/users", "/roles"],
+            "permission": "menu.users",
+            "enabled": True,
+            "is_public": False,
+            "sort_order": 80,
+        },
+        {
+            "id": "materials",
+            "name": "素材工作区",
+            "summary": "查看素材库、声音资产和产出作品。",
+            "paths": ["/materials", "/materials/voices", "/materials/works"],
+            "permission": "",
+            "enabled": True,
+            "is_public": False,
+            "sort_order": 90,
+        },
+        {
+            "id": "studio",
+            "name": "短片工作台",
+            "summary": "围绕分镜、音轨、导出等流程完成短片制作。",
+            "paths": ["/materials/studio"],
+            "permission": "",
+            "enabled": True,
+            "is_public": False,
+            "sort_order": 100,
+        },
+        {
+            "id": "intro",
+            "name": "官网介绍页",
+            "summary": "对外展示产品定位、核心能力和整体工作流。",
+            "paths": ["/intro"],
+            "permission": "",
+            "enabled": True,
+            "is_public": True,
+            "sort_order": 110,
+        },
+        {
+            "id": "market",
+            "name": "官网市场页",
+            "summary": "对外展示产品能力、案例与市场化介绍内容。",
+            "paths": ["/market"],
+            "permission": "",
+            "enabled": True,
+            "is_public": True,
+            "sort_order": 120,
+        },
+        {
+            "id": "updates",
+            "name": "官网更新页",
+            "summary": "对外展示版本更新、功能变更和产品迭代记录。",
+            "paths": ["/updates"],
+            "permission": "",
+            "enabled": True,
+            "is_public": True,
+            "sort_order": 130,
+        },
+    ]
+
+
+def normalize_voice_allowed_usernames(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_item in value:
+        username = str(raw_item or "").strip()[:120]
+        if not username:
+            continue
+        dedupe_key = username.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(username)
+        if len(normalized) >= 200:
+            break
+    return normalized
+
+
+def normalize_voice_allowed_role_ids(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_item in value:
+        role_id = str(raw_item or "").strip().lower()[:64]
+        if not role_id or role_id in seen:
+            continue
+        seen.add(role_id)
+        normalized.append(role_id)
+        if len(normalized) >= 50:
+            break
+    return normalized
+
+
+def normalize_global_assistant_wake_phrase(value: object) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = " ".join(part for part in text.split())
+    return text.strip()[:80] or "你好助手"
+
+
+def normalize_global_assistant_idle_timeout_sec(value: object) -> int:
+    try:
+        timeout_sec = int(value or 5)
+    except (TypeError, ValueError):
+        timeout_sec = 5
+    return max(3, min(30, timeout_sec))
+
+
+DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT = (
+    "你好，我是系统状态助手。我会默认保持实时通话，随时帮你观察当前页面、系统状态和功能是否可用。"
+)
+DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT = (
+    "你是系统状态助手。\n"
+    "你的职责是基于当前页面、实时系统快照和本轮对话消息，直接回答系统状态、当前页面、当前项目、当前账号、功能可用性相关问题。\n"
+    "你已经拿到本轮对话历史和实时快照；禁止回答“我无法访问之前的对话历史”或“我没有上下文”。\n"
+    "如果答案就在本轮消息或快照里，直接给结论；如果快照里没有，就明确说明“当前快照里没有这项数据”，并指出缺少什么信息。\n"
+    "不要把用户打回去重新描述，除非用户问题本身含糊到无法判断目标。\n"
+    "当用户询问这个系统做什么、有哪些功能、怎么使用、去哪里配置、哪个页面负责什么时，先调用 global_assistant_system_guide 再回答。\n"
+    "当用户询问当前页面接口状态、最近请求、响应数据、报错接口或页面是否真的拿到数据时，优先调用 global_assistant_browser_requests。\n"
+    "当用户要求你检查页面元素、读取页面文字、点击、输入、选择、滚动、按键、切换页面、跳转路由或直接执行页面脚本时，优先调用 global_assistant_browser_actions。\n"
+    "执行 click、fill、select 前，如果页面里是图标按钮或存在多个相邻按钮，先用 query_dom 查看候选元素，并优先使用 data-testid、id、aria-label、title 这些唯一标识来构造 selector；不要猜测或使用过宽的 .el-button、button:nth-child(...) 之类 selector。"
+)
+DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT = (
+    "请严格逐字转写用户原话，只输出识别到的中文文本；不要补充、不要改写、不要总结、不要猜测、不要重复上一句；听不清就留空。"
+)
+
+
+def normalize_global_assistant_greeting_audio(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, object] = {}
+    signature = str(value.get("signature") or "").strip()[:64]
+    if signature:
+        normalized["signature"] = signature
+    storage_path = str(value.get("storage_path") or "").strip()[:500]
+    if storage_path:
+        normalized["storage_path"] = storage_path
+    content_type = str(value.get("content_type") or "").strip()[:120]
+    if content_type:
+        normalized["content_type"] = content_type
+    generated_at = str(value.get("generated_at") or "").strip()[:80]
+    if generated_at:
+        normalized["generated_at"] = generated_at
+    try:
+        file_size_bytes = int(value.get("file_size_bytes") or 0)
+    except (TypeError, ValueError):
+        file_size_bytes = 0
+    if file_size_bytes > 0:
+        normalized["file_size_bytes"] = file_size_bytes
+    return normalized
+
+
 def normalize_public_changelog(value: object) -> str:
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
     text = "\n".join(line.rstrip() for line in text.split("\n"))
     return text.strip()[:24000]
+
+
+def normalize_query_mcp_public_base_url(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlsplit(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    if parsed.query or parsed.fragment:
+        return ""
+    normalized_path = str(parsed.path or "").strip().rstrip("/")
+    return urlunsplit((parsed.scheme, parsed.netloc, normalized_path, "", ""))
 
 
 def default_system_mcp_config() -> dict[str, object]:
@@ -213,6 +455,89 @@ def normalize_public_contact_channels(value: object) -> list[dict[str, object]]:
     return normalized
 
 
+def _normalize_global_assistant_guide_module_id(raw_value: object, fallback: str) -> str:
+    text = str(raw_value or "").strip().lower()[:80]
+    for source, target in (
+        (" ", "-"),
+        ("/", "-"),
+        ("\\", "-"),
+        (".", "-"),
+        (":", "-"),
+    ):
+        text = text.replace(source, target)
+    while "--" in text:
+        text = text.replace("--", "-")
+    text = text.strip("-_")
+    if text:
+        return text
+    return fallback
+
+
+def normalize_global_assistant_guide_modules(value: object) -> list[dict[str, object]]:
+    defaults = deepcopy(default_global_assistant_guide_modules())
+    if not isinstance(value, list):
+        return defaults
+
+    normalized: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw_item in value:
+        if not isinstance(raw_item, dict):
+            continue
+        raw_paths = raw_item.get("paths")
+        path_values = raw_paths if isinstance(raw_paths, list) else [raw_paths]
+        paths: list[str] = []
+        seen_paths: set[str] = set()
+        for raw_path in path_values:
+            path = str(raw_path or "").strip()[:240]
+            if not path or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            paths.append(path)
+            if len(paths) >= 12:
+                break
+        name = str(raw_item.get("name") or "").strip()[:120]
+        summary = str(raw_item.get("summary") or "").strip()[:280]
+        permission = str(raw_item.get("permission") or "").strip()[:120]
+        fallback_id = f"module-{len(normalized) + 1}"
+        module_id = _normalize_global_assistant_guide_module_id(
+            raw_item.get("id") or name or (paths[0] if paths else ""),
+            fallback_id,
+        )
+        dedupe_key = module_id.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        try:
+            sort_order = int(raw_item.get("sort_order") or 0)
+        except (TypeError, ValueError):
+            sort_order = 0
+        sort_order = max(0, min(999, sort_order))
+        normalized.append(
+            {
+                "id": module_id,
+                "name": name or module_id,
+                "summary": summary,
+                "paths": paths,
+                "permission": permission,
+                "enabled": bool(raw_item.get("enabled", True)),
+                "is_public": bool(raw_item.get("is_public", False)),
+                "sort_order": sort_order,
+            }
+        )
+        if len(normalized) >= 40:
+            break
+    if not normalized:
+        return defaults
+    return sorted(
+        normalized,
+        key=lambda item: (
+            int(item.get("sort_order") or 0),
+            str(item.get("name") or "").strip(),
+            str(item.get("id") or "").strip(),
+        ),
+    )
+
+
 def normalize_skill_registry_sources(value: object) -> dict[str, object]:
     defaults = deepcopy(default_skill_registry_sources())
     if not isinstance(value, dict):
@@ -349,10 +674,32 @@ class SystemConfig:
     employee_external_skill_sites: list[dict[str, object]] = field(
         default_factory=default_employee_external_skill_sites
     )
+    global_assistant_guide_modules: list[dict[str, object]] = field(
+        default_factory=default_global_assistant_guide_modules
+    )
+    voice_input_enabled: bool = False
+    voice_input_provider_id: str = ""
+    voice_input_model_name: str = ""
+    voice_input_allowed_usernames: list[str] = field(default_factory=list)
+    voice_input_allowed_role_ids: list[str] = field(default_factory=list)
+    voice_output_enabled: bool = False
+    voice_output_provider_id: str = ""
+    voice_output_model_name: str = ""
+    voice_output_voice: str = ""
+    global_assistant_greeting_enabled: bool = True
+    global_assistant_greeting_text: str = DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT
+    global_assistant_chat_provider_id: str = ""
+    global_assistant_chat_model_name: str = ""
+    global_assistant_system_prompt: str = DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT
+    global_assistant_transcription_prompt: str = DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT
+    global_assistant_wake_phrase: str = "你好助手"
+    global_assistant_idle_timeout_sec: int = 5
+    global_assistant_greeting_audio: dict[str, object] = field(default_factory=dict)
     public_contact_channels: list[dict[str, object]] = field(
         default_factory=default_public_contact_channels
     )
     public_changelog: str = ""
+    query_mcp_public_base_url: str = ""
     skill_registry_sources: dict[str, object] = field(
         default_factory=default_skill_registry_sources
     )
@@ -374,6 +721,9 @@ class SystemConfig:
             )
         except (TypeError, ValueError):
             self.employee_auto_rule_generation_max_count = 3
+        self.query_mcp_public_base_url = normalize_query_mcp_public_base_url(
+            self.query_mcp_public_base_url
+        )
         self.employee_auto_rule_generation_max_count = max(
             1, min(6, self.employee_auto_rule_generation_max_count)
         )
@@ -382,6 +732,45 @@ class SystemConfig:
         ).strip()[:8000] or DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT
         self.employee_external_skill_sites = normalize_employee_external_skill_sites(
             self.employee_external_skill_sites
+        )
+        self.global_assistant_guide_modules = normalize_global_assistant_guide_modules(
+            self.global_assistant_guide_modules
+        )
+        self.voice_input_provider_id = str(self.voice_input_provider_id or "").strip()[:120]
+        self.voice_input_model_name = str(self.voice_input_model_name or "").strip()[:160]
+        self.voice_input_allowed_usernames = normalize_voice_allowed_usernames(
+            self.voice_input_allowed_usernames
+        )
+        self.voice_input_allowed_role_ids = normalize_voice_allowed_role_ids(
+            self.voice_input_allowed_role_ids
+        )
+        self.voice_output_provider_id = str(self.voice_output_provider_id or "").strip()[:120]
+        self.voice_output_model_name = str(self.voice_output_model_name or "").strip()[:160]
+        self.voice_output_voice = str(self.voice_output_voice or "").strip()[:200]
+        self.global_assistant_chat_provider_id = str(
+            self.global_assistant_chat_provider_id or ""
+        ).strip()[:120]
+        self.global_assistant_chat_model_name = str(
+            self.global_assistant_chat_model_name or ""
+        ).strip()[:160]
+        self.global_assistant_greeting_text = str(
+            self.global_assistant_greeting_text
+            or DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT
+        ).strip()[:1000]
+        self.global_assistant_system_prompt = str(
+            self.global_assistant_system_prompt or DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT
+        ).strip()[:8000]
+        self.global_assistant_transcription_prompt = str(
+            self.global_assistant_transcription_prompt or DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT
+        ).strip()[:1000]
+        self.global_assistant_wake_phrase = normalize_global_assistant_wake_phrase(
+            self.global_assistant_wake_phrase
+        )
+        self.global_assistant_idle_timeout_sec = normalize_global_assistant_idle_timeout_sec(
+            self.global_assistant_idle_timeout_sec
+        )
+        self.global_assistant_greeting_audio = normalize_global_assistant_greeting_audio(
+            self.global_assistant_greeting_audio
         )
         self.public_contact_channels = normalize_public_contact_channels(
             self.public_contact_channels

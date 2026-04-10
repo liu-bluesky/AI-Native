@@ -2315,6 +2315,7 @@ def test_dictionary_catalog_includes_llm_model_types():
     assert definition is not None
     assert definition["default_value"] == "text_generation"
     assert any(item["id"] == "image_generation" for item in definition["options"])
+    assert any(item["id"] == "audio_transcription" for item in definition["options"])
 
 
 def test_dictionary_catalog_includes_llm_chat_parameter_dictionaries():
@@ -2355,6 +2356,18 @@ def test_permission_catalog_includes_work_session_management():
     )
 
     assert any(item["key"] == "menu.system.work_sessions" for item in menu_items)
+
+
+def test_permission_catalog_includes_ai_assistant_voice_button():
+    from core.role_permissions import permission_catalog
+
+    catalog = permission_catalog()
+    button_items = next(
+        (group["items"] for group in catalog["groups"] if group["group"] == "button"),
+        [],
+    )
+
+    assert any(item["key"] == "button.ai.assistant.voice" for item in button_items)
 
 
 def test_project_manage_access_prefers_creator_over_later_owner(monkeypatch):
@@ -2537,6 +2550,48 @@ def test_project_routes_include_created_by_for_create_list_and_detail(tmp_path, 
     assert detail_response.json()["project"]["created_by"] == "alice"
 
 
+def test_project_store_supports_project_membership_aggregates(tmp_path):
+    from stores.json.project_store import ProjectConfig, ProjectStore, ProjectUserMember
+
+    project_store = ProjectStore(tmp_path / "data")
+    project_store.save(ProjectConfig(id="proj-a", name="项目 A"))
+    project_store.save(ProjectConfig(id="proj-b", name="项目 B"))
+    project_store.upsert_user_member(
+        ProjectUserMember(
+            project_id="proj-a",
+            username="alice",
+            role="owner",
+            enabled=True,
+            joined_at="2026-04-09T00:00:00+00:00",
+        )
+    )
+    project_store.upsert_user_member(
+        ProjectUserMember(
+            project_id="proj-a",
+            username="bob",
+            role="member",
+            enabled=True,
+            joined_at="2026-04-10T00:00:00+00:00",
+        )
+    )
+    project_store.upsert_user_member(
+        ProjectUserMember(
+            project_id="proj-b",
+            username="alice",
+            role="owner",
+            enabled=False,
+            joined_at="2026-04-08T00:00:00+00:00",
+        )
+    )
+
+    memberships = project_store.list_user_memberships("alice", ["proj-a", "proj-b", "proj-missing"])
+
+    assert memberships["proj-a"].username == "alice"
+    assert memberships["proj-b"].enabled is False
+    assert project_store.list_user_member_counts(["proj-a", "proj-b"]) == {"proj-a": 2, "proj-b": 1}
+    assert project_store.list_owner_usernames(["proj-a", "proj-b"]) == {"proj-a": "alice"}
+
+
 def test_project_memory_route_excludes_work_trajectory_records(tmp_path, monkeypatch):
     from core.deps import employee_store
     from routers import projects as projects_router
@@ -2601,6 +2656,9 @@ def test_project_memory_route_excludes_work_trajectory_records(tmp_path, monkeyp
     assert response.status_code == 200
     payload = response.json()
     assert payload["project_id"] == "proj-1"
+    assert payload["total"] == 1
+    assert payload["limit"] == 50
+    assert payload["has_more"] is False
     assert [item["id"] for item in payload["items"]] == ["mem-keep"]
     assert payload["items"][0]["chat_session_id"] == "chat-123"
     assert payload["items"][0]["task_tree_session_id"] == "task-tree-123"
@@ -3063,6 +3121,64 @@ def test_system_config_patch_supports_dictionaries(tmp_path, monkeypatch):
     detail_response = client.get("/api/dictionaries/llm_image_styles")
     assert detail_response.status_code == 200
     assert detail_response.json()["default_value"] == "anime"
+
+
+def test_system_config_redacts_voice_allowlists_for_non_admin_readers(tmp_path, monkeypatch):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+    from stores.json.role_store import RoleConfig
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in (
+        "role_store",
+        "system_config_store",
+        "project_store",
+        "project_material_store",
+        "project_studio_export_store",
+    ):
+        getattr(store_factory, proxy_name)._instance = None
+
+    store_factory.system_config_store.patch_global(
+        {
+            "voice_input_enabled": True,
+            "voice_input_provider_id": "provider-stt",
+            "voice_input_model_name": "stt-model",
+            "voice_input_allowed_usernames": ["alice", "bob"],
+            "voice_input_allowed_role_ids": ["user"],
+        }
+    )
+    store_factory.role_store.save(
+        RoleConfig(
+            id="chat-reader",
+            name="Chat Reader",
+            description="Can read AI chat runtime config only",
+            permissions=["menu.ai.chat"],
+            built_in=False,
+        )
+    )
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: {
+        "sub": "reader",
+        "role": "chat-reader",
+        "roles": ["chat-reader"],
+    }
+    client = TestClient(app)
+
+    response = client.get("/api/system-config")
+
+    assert response.status_code == 200
+    config = response.json()["config"]
+    assert config["voice_input_enabled"] is True
+    assert config["voice_input_provider_id"] == "provider-stt"
+    assert config["voice_input_model_name"] == "stt-model"
+    assert config["voice_input_allowed_usernames"] == []
+    assert config["voice_input_allowed_role_ids"] == []
 
 
 def test_public_contact_channels_endpoint_returns_enabled_items(tmp_path, monkeypatch):
@@ -3764,6 +3880,77 @@ def test_save_project_chat_memory_snapshot_in_progress_stores_requirement_record
     assert "[完成条件] 只有所有计划项完成并写入验证结果后，当前需求才算结束。" in saved_memory.content
 
 
+def test_save_project_chat_memory_snapshot_in_progress_can_skip_requirement_record(monkeypatch):
+    from routers import projects as projects_router
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id == "emp-1" else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+                "recent": staticmethod(lambda employee_id, limit: []),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="这条普通聊天不该落成需求记录",
+        answer="这里是一次普通对话回复。",
+        chat_session_id="chat-123",
+        task_tree_payload={
+            "id": "task-tree-123",
+            "chat_session_id": "chat-123",
+            "source_chat_session_id": "chat-123",
+            "root_goal": "这条普通聊天不该落成需求记录",
+            "status": "in_progress",
+            "current_node": {
+                "id": "node-1",
+                "title": "仅普通交流",
+                "status": "in_progress",
+            },
+        },
+        selected_employee_ids=["emp-1"],
+        source="project-chat-test",
+        allow_requirement_record=False,
+    )
+
+    assert saved_memories == []
+
+
 def test_save_project_chat_memory_snapshot_completed_stores_final_summary(monkeypatch):
     from routers import projects as projects_router
 
@@ -3840,6 +4027,162 @@ def test_save_project_chat_memory_snapshot_completed_stores_final_summary(monkey
     assert "[解决方案] 已改成执行中只保留需求记录，全部完成并验证后才生成最终结论。" in saved_memory.content
     assert "[最终结论] 已改成执行中只保留需求记录，全部完成并验证后才生成最终结论。" in saved_memory.content
     assert "[验证结果]" in saved_memory.content
+
+
+def test_save_project_chat_memory_snapshot_completed_still_saves_final_summary_when_requirement_record_disabled(monkeypatch):
+    from routers import projects as projects_router
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id == "emp-1" else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+                "recent": staticmethod(lambda employee_id, limit: []),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="这轮工作已经完成",
+        answer="已完成需求实现，并补充了验证结果。",
+        chat_session_id="chat-123",
+        task_tree_payload={
+            "id": "task-tree-123",
+            "chat_session_id": "chat-123",
+            "source_chat_session_id": "chat-123",
+            "root_goal": "这轮工作已经完成",
+            "status": "done",
+            "is_archived": True,
+            "progress_percent": 100,
+            "nodes": [
+                {"id": "root", "level": 0, "title": "这轮工作已经完成", "status": "done", "verification_result": "整体通过"},
+                {"id": "node-1", "level": 1, "title": "收尾验证", "status": "done", "verification_result": "单测通过"},
+            ],
+        },
+        selected_employee_ids=["emp-1"],
+        source="project-chat-test",
+        allow_requirement_record=False,
+    )
+
+    assert len(saved_memories) == 1
+    assert "workflow:final-summary" in saved_memories[0].purpose_tags
+
+
+def test_save_project_chat_memory_snapshot_incomplete_task_tree_with_completed_verified_answer_still_saves_final_summary(
+    monkeypatch,
+):
+    from routers import projects as projects_router
+
+    saved_memories = []
+
+    monkeypatch.setattr(
+        projects_router,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_members": staticmethod(
+                    lambda project_id: [
+                        type("DummyMember", (), {"employee_id": "emp-1", "enabled": True})(),
+                    ]
+                ),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "employee_store",
+        type(
+            "DummyEmployeeStore",
+            (),
+            {
+                "get": staticmethod(lambda employee_id: object() if employee_id == "emp-1" else None),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "new_id": staticmethod(lambda: f"mem-{len(saved_memories) + 1}"),
+                "save": staticmethod(lambda memory: saved_memories.append(memory)),
+                "recent": staticmethod(lambda employee_id, limit: []),
+            },
+        )(),
+    )
+
+    projects_router._save_project_chat_memory_snapshot(
+        project_id="proj-1",
+        user_message="优化 /ai/chat/settings/system/config 页面内容布局 现在太乱了",
+        answer="已完成页面布局优化，npm run build 构建通过，人工验证通过。",
+        chat_session_id="chat-123",
+        task_tree_payload={
+            "id": "task-tree-123",
+            "chat_session_id": "chat-123",
+            "source_chat_session_id": "chat-123",
+            "root_goal": "优化 /ai/chat/settings/system/config 页面内容布局 现在太乱了",
+            "status": "in_progress",
+            "progress_percent": 67,
+            "current_node": {
+                "id": "node-2",
+                "title": "验证布局调整",
+                "status": "verifying",
+            },
+            "nodes": [
+                {"id": "root", "level": 0, "title": "优化 /ai/chat/settings/system/config 页面内容布局 现在太乱了", "status": "in_progress"},
+                {"id": "node-1", "level": 1, "title": "整理页面结构", "status": "done", "verification_result": "DOM 结构已按模块拆分"},
+                {"id": "node-2", "level": 1, "title": "验证布局调整", "status": "verifying", "verification_result": ""},
+            ],
+        },
+        selected_employee_ids=["emp-1"],
+        source="project-chat-test",
+        allow_requirement_record=False,
+    )
+
+    assert len(saved_memories) == 1
+    saved_memory = saved_memories[0]
+    assert "workflow:final-summary" in saved_memory.purpose_tags
+    assert "[最终结论] 已完成页面布局优化，npm run build 构建通过，人工验证通过。" in saved_memory.content
+    assert "[解决状态]" in saved_memory.content
 
 
 def test_save_project_chat_memory_snapshot_allows_multiple_requirement_records_in_same_chat_session(monkeypatch):
@@ -4542,6 +4885,99 @@ def test_query_mcp_save_project_memory_audits_lookup_task_tree(monkeypatch):
     }
     assert "chat-session:chat-789" in save_calls[0]["purpose_tags"]
     assert "task-tree-session:task-tree-lookup" in save_calls[0]["purpose_tags"]
+
+
+def test_query_mcp_list_project_members_audits_lookup_task_tree_on_direct_call(monkeypatch):
+    import services.project_chat_task_tree as task_tree_svc
+    from contextvars import ContextVar
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+
+    registered_tools = {}
+    audit_calls = []
+
+    class DummyMCP:
+        def tool(self, *args, **kwargs):
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri: str, *args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    monkeypatch.setattr(query_mcp_svc, "FastMCP", lambda *args, **kwargs: DummyMCP())
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_all": staticmethod(lambda: []),
+                "list_members": staticmethod(lambda project_id: []),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "list_project_member_profiles_runtime",
+        lambda project_id, include_disabled=False, include_missing=False, rule_limit=30: [
+            {"employee_id": "emp-1", "name": "产品专员"},
+            {"employee_id": "emp-2", "name": "后端工程师"},
+        ]
+        if project_id == "proj-1"
+        else [],
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "audit_task_tree_round",
+        lambda **kwargs: audit_calls.append(kwargs)
+        or {
+            "code": "lookup_query_auto_completed",
+            "chat_session_id": kwargs["chat_session_id"],
+            "project_id": kwargs["project_id"],
+        },
+    )
+
+    username_ctx = ContextVar("query_user_members_audit", default="")
+    session_ctx = ContextVar("query_session_members_audit", default="")
+    username_ctx.set("admin")
+    session_ctx.set("transport-members-1")
+    session_contexts = {
+        "transport-members-1": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "employee_id": "",
+            "chat_session_id": "chat-members-1",
+        }
+    }
+
+    query_mcp_svc.create_query_mcp(
+        current_key_owner_username_ctx=username_ctx,
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+
+    result = registered_tools["list_project_members"]("proj-1")
+
+    assert result["project_id"] == "proj-1"
+    assert result["total"] == 2
+    assert result["task_tree_audit"]["code"] == "lookup_query_auto_completed"
+    assert result["task_tree_audit"]["chat_session_id"] == "chat-members-1"
+    assert audit_calls == [
+        {
+            "project_id": "proj-1",
+            "username": "admin",
+            "chat_session_id": "chat-members-1",
+            "assistant_content": "已获取项目成员列表，共 2 名。 成员包括：产品专员、后端工程师。",
+            "successful_tool_names": ["list_project_members"],
+        }
+    ]
 
 
 def test_query_mcp_work_session_tools_sync_task_tree_progress(monkeypatch):
@@ -7271,6 +7707,8 @@ def test_query_mcp_mount_lists_tools_and_reads_resources(monkeypatch):
     assert "bind_project_context" in usage_contents[0]["text"]
     assert "analyze_task" in usage_contents[0]["text"]
     assert "execute_project_collaboration" in usage_contents[0]["text"]
+    assert "优先使用项目绑定员工、规则和技能" in usage_contents[0]["text"]
+    assert "重新获取与当前任务直接相关的规则正文" in usage_contents[0]["text"]
 
     assert codex_read_response.status_code == 200
     codex_rpc = extract_sse_payload(codex_read_response.text)
@@ -7280,6 +7718,7 @@ def test_query_mcp_mount_lists_tools_and_reads_resources(monkeypatch):
     assert "search_ids" in codex_contents[0]["text"]
     assert "get_manual_content" in codex_contents[0]["text"]
     assert "build_delivery_report" in codex_contents[0]["text"]
+    assert "优先使用项目绑定员工、规则和技能" in codex_contents[0]["text"]
 
 
 def _extract_query_mcp_sse_payload(response_text: str) -> dict:
@@ -8318,14 +8757,20 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "check_operation_policy" in usage_guide
     assert "start_work_session" in usage_guide
     assert "任务树节点必须直接描述面向用户目标的工作步骤" in usage_guide
+    assert "优先使用项目绑定员工、规则和技能" in usage_guide
+    assert "重新获取与当前任务直接相关的规则正文" in usage_guide
     assert "save_work_facts" in claude_profile
     assert "任务树节点必须描述面向用户目标的真实工作步骤" in claude_profile
+    assert "优先使用项目绑定员工、规则和技能" in claude_profile
     assert "search_ids" in codex_profile
     assert "get_manual_content" in codex_profile
     assert "build_delivery_report" in codex_profile
     assert "Auto inferred proxy entry from scripts/..." in codex_profile
+    assert "优先使用项目绑定员工、规则和技能" in codex_profile
+    assert "重新获取与当前任务直接相关的规则正文" in codex_profile
     assert "analyze_task" in generic_profile
     assert "节点必须直接对应用户目标" in generic_profile
+    assert "优先使用项目绑定员工、规则和技能" in generic_profile
 
     analysis = registered_tools["analyze_task"](
         "继续升级 /mcp/query/sse，必须补测试并更新 docs/总结文档.md",
@@ -9610,6 +10055,8 @@ def test_build_project_chat_messages_prefers_project_ui_rules(monkeypatch):
     assert "优先级高于员工个人规则" in system_prompt
     assert "按钮采用圆角 12px" in system_prompt
     assert "当前执行员工" in system_prompt
+    assert "优先使用当前项目已绑定的员工、规则和技能" in system_prompt
+    assert "重新获取与当前问题直接相关的规则正文" in system_prompt
     assert system_prompt.index("当前项目已绑定 UI 规则") < system_prompt.index("当前执行员工")
 
 
@@ -9675,6 +10122,9 @@ def test_build_project_manual_template_payload_prefers_ai_decided_collaboration(
     assert "项目级 UI 规则" in manual
     assert "高于员工个人规则" in manual
     assert "按钮统一圆角 12px" in manual
+    assert "优先依赖项目绑定的员工、规则和技能" in manual
+    assert "每次新请求都要重新调用 `query_project_rules`" in manual
+    assert "只有项目绑定员工、规则、技能都无法覆盖时，才由 AI 自行补足" in manual
 
 
 def test_can_view_record_supports_private_selected_and_all_users():

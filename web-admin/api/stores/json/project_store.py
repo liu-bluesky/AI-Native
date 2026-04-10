@@ -148,6 +148,69 @@ class ProjectStore:
         data = json.loads(path.read_text(encoding="utf-8"))
         return [ProjectUserMember(**item) for item in data]
 
+    @staticmethod
+    def _normalize_project_ids(project_ids: list[str] | tuple[str, ...] | set[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in project_ids:
+            project_id = str(item or "").strip()
+            if not project_id or project_id in seen:
+                continue
+            seen.add(project_id)
+            normalized.append(project_id)
+        return normalized
+
+    def list_user_memberships(
+        self,
+        username: str,
+        project_ids: list[str] | tuple[str, ...] | set[str],
+    ) -> dict[str, ProjectUserMember]:
+        normalized_username = str(username or "").strip()
+        if not normalized_username:
+            return {}
+        memberships: dict[str, ProjectUserMember] = {}
+        for project_id in self._normalize_project_ids(project_ids):
+            member = self.get_user_member(project_id, normalized_username)
+            if member is not None:
+                memberships[project_id] = member
+        return memberships
+
+    def list_member_counts(
+        self,
+        project_ids: list[str] | tuple[str, ...] | set[str],
+    ) -> dict[str, int]:
+        return {
+            project_id: len(self.list_members(project_id))
+            for project_id in self._normalize_project_ids(project_ids)
+        }
+
+    def list_user_member_counts(
+        self,
+        project_ids: list[str] | tuple[str, ...] | set[str],
+    ) -> dict[str, int]:
+        return {
+            project_id: len(self.list_user_members(project_id))
+            for project_id in self._normalize_project_ids(project_ids)
+        }
+
+    def list_owner_usernames(
+        self,
+        project_ids: list[str] | tuple[str, ...] | set[str],
+    ) -> dict[str, str]:
+        owners: dict[str, str] = {}
+        for project_id in self._normalize_project_ids(project_ids):
+            owner_members = [
+                item
+                for item in self.list_user_members(project_id)
+                if bool(getattr(item, "enabled", True))
+                and str(getattr(item, "role", "") or "").strip().lower() == "owner"
+                and str(getattr(item, "username", "") or "").strip()
+            ]
+            owner_members.sort(key=lambda item: str(getattr(item, "joined_at", "") or ""))
+            if owner_members:
+                owners[project_id] = str(getattr(owner_members[0], "username", "") or "").strip()
+        return owners
+
     def get_user_member(self, project_id: str, username: str) -> ProjectUserMember | None:
         for member in self.list_user_members(project_id):
             if member.username == username:

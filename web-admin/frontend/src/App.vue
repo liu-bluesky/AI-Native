@@ -1,11 +1,13 @@
 <template>
   <router-view />
+  <GlobalAiAssistant />
 </template>
 
 <script setup>
 import { onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
+import GlobalAiAssistant from './components/GlobalAiAssistant.vue'
 import api from './utils/api.js'
 import { syncCurrentUser } from './utils/auth.js'
 import { authStateVersion, clearAuthSession, getStoredToken } from './utils/auth-storage.js'

@@ -27,6 +27,7 @@ class UserCreateReq(BaseModel):
     username: str
     password: str
     role: str = "user"
+    role_ids: list[str] = []
 
 
 class UserPasswordUpdateReq(BaseModel):
@@ -34,7 +35,8 @@ class UserPasswordUpdateReq(BaseModel):
 
 
 class UserUpdateReq(BaseModel):
-    role: str
+    role: str = ""
+    role_ids: list[str] = []
     password: str = ""
 
 
@@ -452,7 +454,10 @@ class ProjectChatReq(BaseModel):
     message_id: str = ""
     assistant_message_id: str = ""
     chat_session_id: str = ""
+    route_path: str = ""
+    route_title: str = ""
     chat_mode: str = "system"
+    chat_surface: str = "main-chat"
     local_connector_id: str = ""
     connector_workspace_path: str = ""
     connector_sandbox_mode: str | None = None
@@ -619,10 +624,33 @@ class SystemConfigUpdateReq(BaseModel):
     employee_auto_rule_generation_max_count: int | None = None
     employee_auto_rule_generation_prompt: str | None = None
     employee_external_skill_sites: list[dict[str, Any]] | None = None
+    global_assistant_guide_modules: list[dict[str, Any]] | None = None
+    voice_input_enabled: bool | None = None
+    voice_input_provider_id: str | None = None
+    voice_input_model_name: str | None = None
+    voice_input_allowed_usernames: list[str] | None = None
+    voice_input_allowed_role_ids: list[str] | None = None
+    voice_output_enabled: bool | None = None
+    voice_output_provider_id: str | None = None
+    voice_output_model_name: str | None = None
+    voice_output_voice: str | None = None
+    global_assistant_greeting_enabled: bool | None = None
+    global_assistant_greeting_text: str | None = None
+    global_assistant_chat_provider_id: str | None = None
+    global_assistant_chat_model_name: str | None = None
+    global_assistant_system_prompt: str | None = None
+    global_assistant_transcription_prompt: str | None = None
+    global_assistant_wake_phrase: str | None = None
+    global_assistant_idle_timeout_sec: int | None = None
     public_contact_channels: list[dict[str, Any]] | None = None
+    query_mcp_public_base_url: str | None = None
     skill_registry_sources: dict[str, Any] | None = None
     dictionaries: dict[str, Any] | None = None
     mcp_config: dict[str, Any] | None = None
+
+
+class GlobalAssistantSpeechReq(BaseModel):
+    text: str = Field(default="", max_length=4000)
 
 
 class ReviewReq(BaseModel):
@@ -730,6 +758,10 @@ class CompressReq(BaseModel):
 class MemoryBatchDeleteReq(BaseModel):
     memory_ids: list[str]
     employee_id: str = ""
+
+
+class ProjectRequirementRecordBatchDeleteReq(BaseModel):
+    record_ids: list[str] = Field(default_factory=list)
 
 
 # ── Skill ──

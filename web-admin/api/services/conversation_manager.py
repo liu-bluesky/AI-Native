@@ -93,6 +93,13 @@ class ConversationManager:
         await self._redis.expire(key, self._session_ttl)
         await self._touch_session(session_id, message_delta=1)
 
+    async def delete_session(self, session_id: str) -> None:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return
+        await self._redis.delete(f"session:{normalized_session_id}:meta")
+        await self._redis.delete(f"session:{normalized_session_id}:messages")
+
     async def _save_session(self, session: ConversationSession) -> None:
         key = f"session:{session.id}:meta"
         await self._redis.set(key, json.dumps(asdict(session)), ex=self._session_ttl)

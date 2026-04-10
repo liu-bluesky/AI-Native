@@ -36,9 +36,26 @@ class User:
     username: str
     password_hash: str
     role: str = "admin"
+    role_ids: list[str] = field(default_factory=list)
     default_ai_provider_id: str = ""
     created_by: str = ""
     created_at: str = field(default_factory=_now_iso)
+
+    def __post_init__(self) -> None:
+        normalized_role_ids: list[str] = []
+        seen: set[str] = set()
+        raw_role_ids = self.role_ids if isinstance(self.role_ids, list) else []
+        seed_values = [*raw_role_ids, self.role]
+        for item in seed_values:
+            role_id = str(item or "").strip().lower()
+            if not role_id or role_id in seen:
+                continue
+            seen.add(role_id)
+            normalized_role_ids.append(role_id)
+        if not normalized_role_ids:
+            normalized_role_ids = ["admin"]
+        object.__setattr__(self, "role_ids", normalized_role_ids)
+        object.__setattr__(self, "role", normalized_role_ids[0])
 
 
 class UserStore:
@@ -61,6 +78,7 @@ class UserStore:
             "username": user.username,
             "password_hash": user.password_hash,
             "role": user.role,
+            "role_ids": user.role_ids,
             "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
             "created_by": str(user.created_by or "").strip(),
             "created_at": user.created_at,
@@ -101,6 +119,7 @@ class UserStore:
             username=str(data.get("username") or ""),
             password_hash=str(data.get("password_hash") or ""),
             role=str(data.get("role") or "user"),
+            role_ids=data.get("role_ids") if isinstance(data.get("role_ids"), list) else [],
             default_ai_provider_id=str(data.get("default_ai_provider_id") or "").strip(),
             created_by=str(data.get("created_by") or "").strip(),
             created_at=str(data.get("created_at") or _now_iso()),

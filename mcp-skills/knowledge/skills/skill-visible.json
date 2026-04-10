@@ -1,0 +1,19 @@
+{
+  "id": "skill-visible",
+  "version": "1.0.0",
+  "name": "可见技能",
+  "description": "only visible",
+  "mcp_service": "visible",
+  "created_by": "tester",
+  "share_scope": "private",
+  "shared_with_usernames": [],
+  "package_dir": "",
+  "tools": [],
+  "resources": [],
+  "proxy_entries": [],
+  "dependencies": [],
+  "tags": [],
+  "mcp_enabled": false,
+  "created_at": "2026-04-10T07:24:39.227653+00:00",
+  "updated_at": "2026-04-10T07:24:39.227655+00:00"
+}
