@@ -3583,7 +3583,10 @@ def test_save_project_memory_entries_defaults_to_single_team_shared_record(monke
     assert saved_memories[0].scope == MemoryScope.TEAM_SHARED
     assert saved_memories[0].type == MemoryType.KEY_EVENT
     assert saved_memories[0].purpose_tags[:3] == ("query-mcp", "manual-write", "project-id")
+    assert "project-id:proj-1" in saved_memories[0].purpose_tags
     assert any(tag.startswith("fp:") for tag in saved_memories[0].purpose_tags)
+    assert "[项目ID] proj-1" in saved_memories[0].content
+    assert "[项目名称] 项目一" in saved_memories[0].content
 
 
 def test_save_project_memory_entries_skips_duplicate_manual_write(monkeypatch):
@@ -3600,7 +3603,7 @@ def test_save_project_memory_entries_skips_duplicate_manual_write(monkeypatch):
         importance=0.6,
         scope=MemoryScope.TEAM_SHARED,
         classification=Classification.INTERNAL,
-        purpose_tags=("query-mcp", "manual-write", "project-id"),
+        purpose_tags=("query-mcp", "manual-write", "project-id", "project-id:proj-1"),
     )
 
     monkeypatch.setattr(
@@ -3641,6 +3644,52 @@ def test_save_project_memory_entries_skips_duplicate_manual_write(monkeypatch):
     assert result["duplicate_skipped"] is True
     assert result["skipped_employee_ids"] == ["emp-1"]
     assert saved_memories == []
+
+
+def test_collect_project_memories_filters_explicit_other_project_binding(monkeypatch):
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType
+
+    target_memory = Memory(
+        id="mem-target",
+        employee_id="emp-1",
+        type=MemoryType.PROJECT_CONTEXT,
+        content="[项目ID] proj-1\n[项目名称] 项目一\n问题：目标项目",
+        project_name="项目一",
+        importance=0.6,
+        scope=MemoryScope.TEAM_SHARED,
+        classification=Classification.INTERNAL,
+        purpose_tags=("query-mcp", "manual-write", "project-id:proj-1"),
+    )
+    wrong_memory = Memory(
+        id="mem-wrong",
+        employee_id="emp-1",
+        type=MemoryType.PROJECT_CONTEXT,
+        content="[项目ID] proj-2\n[项目名称] 项目一\n问题：串项目数据",
+        project_name="项目一",
+        importance=0.9,
+        scope=MemoryScope.TEAM_SHARED,
+        classification=Classification.INTERNAL,
+        purpose_tags=("query-mcp", "manual-write", "project-id:proj-2"),
+    )
+
+    monkeypatch.setattr(query_mcp_svc, "_active_project_employee_ids", lambda project_id: ["emp-1"])
+    monkeypatch.setattr(query_mcp_svc, "_resolve_project_name", lambda project_id, project_name="": "项目一")
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "memory_store",
+        type(
+            "DummyMemoryStore",
+            (),
+            {
+                "recent": staticmethod(lambda employee_id, limit, project_name="": [wrong_memory, target_memory]),
+            },
+        )(),
+    )
+
+    collected = query_mcp_svc._collect_project_memories(project_id="proj-1", employee_id="emp-1", limit=10)
+
+    assert [item["id"] for item in collected] == ["mem-target"]
 
 
 def test_save_project_chat_memory_snapshot_defaults_to_single_team_shared_record(monkeypatch):
@@ -3708,12 +3757,15 @@ def test_save_project_chat_memory_snapshot_defaults_to_single_team_shared_record
         "project-chat",
         "project-chat-test",
         "workflow:final-summary",
-        "chat-session:chat-123",
+        "project-id:proj-1",
     )
+    assert "chat-session:chat-123" in saved_memories[0].purpose_tags
     assert any(tag.startswith("fp:") for tag in saved_memories[0].purpose_tags)
     assert "[处理过程]" in saved_memories[0].content
     assert "[解决方案] 因为默认空选人被扩成了项目全员。" in saved_memories[0].content
     assert "[解决状态] 已给出方案" in saved_memories[0].content
+    assert "[项目ID] proj-1" in saved_memories[0].content
+    assert "[项目名称] 项目一" in saved_memories[0].content
     assert "[关联会话] chat-123" in saved_memories[0].content
 
 
@@ -3744,6 +3796,7 @@ def test_save_project_chat_memory_snapshot_skips_exact_duplicate_record(monkeypa
             "project-chat",
             "project-chat-test",
             "workflow:final-summary",
+            "project-id:proj-1",
             "chat-session:chat-123",
         ),
     )
@@ -7141,6 +7194,272 @@ def test_query_mcp_proxy_app_direct_cli_reuses_stable_chat_session(monkeypatch):
     assert captured_task_tree_calls[0]["chat_session_id"] == captured_task_tree_calls[1]["chat_session_id"]
 
 
+def test_query_mcp_project_state_persists_under_project_hidden_dir(tmp_path, monkeypatch):
+    from services import query_mcp_project_state as state_service
+
+    workspace = tmp_path / "demo-workspace"
+    workspace.mkdir()
+
+    class DummyProjectStore:
+        @staticmethod
+        def get(project_id: str):
+            if project_id != "proj-1":
+                return None
+            return type(
+                "Project",
+                (),
+                {
+                    "workspace_path": str(workspace),
+                    "chat_settings": {},
+                },
+            )()
+
+    monkeypatch.setattr(state_service, "project_store", DummyProjectStore())
+
+    saved = state_service.save_query_mcp_project_state(
+        project_id="proj-1",
+        project_name="项目一",
+        chat_session_id="chat-1",
+        session_id="ws-proj-1",
+        root_goal="继续任务",
+        latest_status="in_progress",
+        phase="implementation",
+        step="开始恢复",
+        source="test",
+    )
+
+    active_path = workspace / ".ai-employee" / "query-mcp" / "active" / "proj-1.json"
+    history_path = workspace / ".ai-employee" / "query-mcp" / "session-history" / "proj-1__chat-1.json"
+
+    assert saved["chat_session_id"] == "chat-1"
+    assert saved["session_id"] == "ws-proj-1"
+    assert active_path.exists() is True
+    assert history_path.exists() is True
+    assert state_service.load_query_mcp_project_state("proj-1")["session_id"] == "ws-proj-1"
+    assert state_service.load_resumable_query_mcp_project_state("proj-1")["chat_session_id"] == "chat-1"
+
+    state_service.save_query_mcp_project_state(
+        project_id="proj-1",
+        chat_session_id="chat-1",
+        latest_status="done",
+    )
+
+    assert state_service.load_resumable_query_mcp_project_state("proj-1") == {}
+
+
+def test_query_mcp_proxy_app_direct_cli_reuses_persisted_project_chat_session_across_instances(
+    tmp_path,
+    monkeypatch,
+):
+    from fastapi import FastAPI, Request
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+    from services import query_mcp_project_state as state_service
+
+    workspace = tmp_path / "shared-workspace"
+    workspace.mkdir()
+    captured_task_tree_calls = []
+    api_key_ctx: ContextVar[str] = ContextVar("query_direct_cli_persisted_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_direct_cli_persisted_developer", default="")
+
+    class DummyProjectStore:
+        @staticmethod
+        def get(project_id: str):
+            if project_id != "proj-1":
+                return None
+            return type(
+                "Project",
+                (),
+                {
+                    "workspace_path": str(workspace),
+                    "chat_settings": {},
+                },
+            )()
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def get_key(api_key: str):
+            if api_key == "valid-key":
+                return {"created_by": "owner-tester"}
+            return None
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    monkeypatch.setattr(state_service, "project_store", DummyProjectStore())
+    monkeypatch.setattr(
+        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
+    )
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["POST"])
+    async def echo(request: Request, full_path: str):
+        payload = await request.json()
+        return {"full_path": full_path, "payload": payload}
+
+    def build_client():
+        proxy_app = QueryMcpProxyApp(
+            usage_store=DummyUsageStore(),
+            current_api_key_ctx=api_key_ctx,
+            current_developer_name_ctx=developer_ctx,
+            session_keys={},
+            session_contexts={},
+            query_app=downstream,
+            save_auto_query_memory=lambda *args, **kwargs: None,
+            replace_path_suffix=replace_path_suffix,
+        )
+        app = FastAPI()
+        app.mount("/mcp/query", proxy_app)
+        return TestClient(app)
+
+    first_client = build_client()
+    first = first_client.post(
+        "/mcp/query/mcp?key=valid-key&project_id=proj-1",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "search_ids",
+                "arguments": {"keyword": "第一次跨工具续跑"},
+            },
+        },
+    )
+    assert first.status_code == 200
+    first_chat_session_id = captured_task_tree_calls[-1]["chat_session_id"]
+
+    captured_task_tree_calls.clear()
+    second_client = build_client()
+    second = second_client.post(
+        "/mcp/query/mcp?key=valid-key&project_id=proj-1",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": "search_ids",
+                "arguments": {"keyword": "第二次跨工具续跑"},
+            },
+        },
+    )
+    assert second.status_code == 200
+    second_chat_session_id = captured_task_tree_calls[-1]["chat_session_id"]
+
+    assert first_chat_session_id == second_chat_session_id
+    assert state_service.load_query_mcp_project_state("proj-1")["chat_session_id"] == first_chat_session_id
+
+
+def test_query_mcp_proxy_app_persists_work_session_id_into_project_state(tmp_path, monkeypatch):
+    from fastapi import FastAPI, Request
+    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.dynamic_mcp_transports import replace_path_suffix
+    from services import query_mcp_project_state as state_service
+
+    workspace = tmp_path / "persist-session-workspace"
+    workspace.mkdir()
+    api_key_ctx: ContextVar[str] = ContextVar("query_direct_cli_session_file_api_key", default="")
+    developer_ctx: ContextVar[str] = ContextVar("query_direct_cli_session_file_developer", default="")
+
+    class DummyProjectStore:
+        @staticmethod
+        def get(project_id: str):
+            if project_id != "proj-1":
+                return None
+            return type(
+                "Project",
+                (),
+                {
+                    "workspace_path": str(workspace),
+                    "chat_settings": {},
+                },
+            )()
+
+    class DummyUsageStore:
+        @staticmethod
+        def validate_key(api_key: str):
+            return "tester" if api_key == "valid-key" else ""
+
+        @staticmethod
+        def get_key(api_key: str):
+            if api_key == "valid-key":
+                return {"created_by": "owner-tester"}
+            return None
+
+        @staticmethod
+        def record_event(*args, **kwargs):
+            return None
+
+    downstream = FastAPI()
+
+    @downstream.api_route("/{full_path:path}", methods=["POST"])
+    async def emit_start_work_session(request: Request, full_path: str):
+        _ = full_path
+        payload = await request.json()
+        return {
+            "jsonrpc": "2.0",
+            "id": payload.get("id"),
+            "result": {
+                "structuredContent": {
+                    "status": "started",
+                    "project_id": "proj-1",
+                    "project_name": "项目一",
+                    "chat_session_id": "chat-persisted-1",
+                    "session_id": "ws_proj-1_team_20260414T060000Z_abcd",
+                    "goal": "继续任务",
+                    "phase": "implementation",
+                    "step": "开始",
+                }
+            },
+        }
+
+    monkeypatch.setattr(state_service, "project_store", DummyProjectStore())
+    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+
+    proxy_app = QueryMcpProxyApp(
+        usage_store=DummyUsageStore(),
+        current_api_key_ctx=api_key_ctx,
+        current_developer_name_ctx=developer_ctx,
+        session_keys={},
+        session_contexts={},
+        query_app=downstream,
+        save_auto_query_memory=lambda *args, **kwargs: None,
+        replace_path_suffix=replace_path_suffix,
+    )
+
+    app = FastAPI()
+    app.mount("/mcp/query", proxy_app)
+    client = TestClient(app)
+
+    response = client.post(
+        "/mcp/query/mcp?key=valid-key&project_id=proj-1",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "start_work_session",
+                "arguments": {
+                    "project_id": "proj-1",
+                    "chat_session_id": "chat-persisted-1",
+                    "goal": "继续任务",
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = state_service.load_query_mcp_project_state("proj-1")
+    assert payload["chat_session_id"] == "chat-persisted-1"
+    assert payload["session_id"] == "ws_proj-1_team_20260414T060000Z_abcd"
+    assert payload["latest_status"] == "started"
+
+
 def test_query_mcp_proxy_app_direct_cli_internal_progress_tools_reuse_existing_chat_without_new_memory(monkeypatch):
     from contextvars import ContextVar
     from fastapi import FastAPI, Request
@@ -9687,6 +10006,139 @@ def test_merge_project_chat_settings_overrides_keeps_persisted_connector_when_qu
     assert merged["connector_sandbox_mode"] == "workspace-write"
     assert merged["local_connector_id"] == "connector-1"
     assert merged["connector_workspace_path"] == "/tmp/workspace"
+
+
+def test_project_memory_matches_project_prefers_explicit_project_id_binding():
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig
+
+    project = ProjectConfig(id="proj-1", name="项目一")
+    wrong_memory = type(
+        "DummyMemory",
+        (),
+        {
+            "project_name": "项目一",
+            "content": "[项目ID] proj-2\n[项目名称] 项目一\n问题：串项目",
+            "purpose_tags": ("project-id:proj-2",),
+        },
+    )()
+    right_memory = type(
+        "DummyMemory",
+        (),
+        {
+            "project_name": "项目一",
+            "content": "[项目ID] proj-1\n[项目名称] 项目一\n问题：正确项目",
+            "purpose_tags": ("project-id:proj-1",),
+        },
+    )()
+
+    assert projects_router._project_memory_matches_project(wrong_memory, project) is False
+    assert projects_router._project_memory_matches_project(right_memory, project) is True
+
+
+def test_resolve_project_workspace_for_chat_prefers_connector_workspace():
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig
+
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        workspace_path="/tmp/project-workspace",
+    )
+
+    resolved = projects_router._resolve_project_workspace_for_chat(
+        project,
+        {"connector_workspace_path": "/tmp/connector-workspace"},
+    )
+
+    assert resolved == "/tmp/connector-workspace"
+
+
+def test_resolve_local_connector_coding_tools_returns_registered_tools(monkeypatch):
+    from routers import projects as projects_router
+
+    connector = object()
+
+    tools, selected_connector, sandbox_mode = projects_router._resolve_local_connector_coding_tools(
+        {"sub": "tester", "role": "admin"},
+        {
+            "local_connector_id": "connector-1",
+            "connector_workspace_path": "/tmp/connector-workspace",
+            "connector_sandbox_mode": "workspace-write",
+        },
+        "/tmp/project-workspace",
+    )
+
+    assert selected_connector is None
+    assert tools == []
+    assert sandbox_mode == "workspace-write"
+
+    selected_connector = connector
+
+    def fake_resolve(connector_id, auth_payload):
+        assert connector_id == "connector-1"
+        assert auth_payload["sub"] == "tester"
+        return selected_connector
+
+    monkeypatch.setattr(projects_router, "_resolve_accessible_local_connector", fake_resolve)
+    tools, selected_connector, sandbox_mode = projects_router._resolve_local_connector_coding_tools(
+        {"sub": "tester", "role": "admin"},
+        {
+            "local_connector_id": "connector-1",
+            "connector_workspace_path": "/tmp/connector-workspace",
+            "connector_sandbox_mode": "workspace-write",
+        },
+        "/tmp/project-workspace",
+    )
+
+    tool_names = {item["tool_name"] for item in tools}
+    assert selected_connector is connector
+    assert sandbox_mode == "workspace-write"
+    assert "local_connector_read_file" in tool_names
+    assert "local_connector_run_command" in tool_names
+    assert all(item["workspace_path"] == "/tmp/connector-workspace" for item in tools)
+
+
+def test_project_chat_providers_route_returns_connector_workspace_path(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from services import dynamic_mcp_runtime
+    from stores.json.project_store import ProjectConfig
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            workspace_path="/tmp/project-workspace",
+            chat_settings={
+                "local_connector_id": "connector-1",
+                "connector_workspace_path": "/tmp/connector-workspace",
+                "connector_sandbox_mode": "workspace-write",
+            },
+        )
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "_pick_chat_provider",
+        lambda provider_id, auth_payload: (
+            {"id": "provider-1", "default_model": "glm-test"},
+            [{"id": "provider-1", "default_model": "glm-test"}],
+        ),
+    )
+    monkeypatch.setattr(projects_router, "_build_chat_mcp_modules", lambda project_id: {})
+    monkeypatch.setattr(dynamic_mcp_runtime, "list_project_external_tools_runtime", lambda project_id: [])
+
+    response = client.get("/api/projects/proj-1/chat/providers")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workspace_path"] == "/tmp/connector-workspace"
+    assert payload["project_workspace_path"] == "/tmp/project-workspace"
+    assert payload["chat_settings"]["connector_workspace_path"] == "/tmp/connector-workspace"
 
 
 @pytest.mark.asyncio

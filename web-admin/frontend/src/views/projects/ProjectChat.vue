@@ -233,6 +233,61 @@
               </div>
             </div>
           </div>
+          <div
+            v-if="
+              ongoingTaskRestoreNotice &&
+              currentChatSessionId === ongoingTaskRestoreNotice.chat_session_id
+            "
+            class="chat-restore-banner"
+          >
+            <div class="chat-restore-banner__copy">
+              <div class="chat-restore-banner__eyebrow">任务已恢复</div>
+              <div class="chat-restore-banner__title">
+                {{
+                  ongoingTaskRestoreNotice.title || "已恢复进行中的任务"
+                }}
+              </div>
+              <div class="chat-restore-banner__meta">
+                <span v-if="ongoingTaskRestoreNotice.current_node_title">
+                  当前节点
+                  {{ ongoingTaskRestoreNotice.current_node_title }}
+                </span>
+                <span v-if="ongoingTaskRestoreNotice.work_session_id">
+                  工作轨迹
+                  {{
+                    formatCompactSessionId(
+                      ongoingTaskRestoreNotice.work_session_id,
+                    )
+                  }}
+                </span>
+                <span v-if="ongoingTaskRestoreNotice.updated_at">
+                  最近更新
+                  {{
+                    formatRelativeDateTime(
+                      ongoingTaskRestoreNotice.updated_at,
+                    )
+                  }}
+                </span>
+              </div>
+            </div>
+            <div class="chat-restore-banner__actions">
+              <el-button
+                size="small"
+                plain
+                class="chat-restore-banner__button"
+                @click="openTaskTreePanel"
+              >
+                查看任务树
+              </el-button>
+              <button
+                type="button"
+                class="chat-restore-banner__dismiss"
+                @click="clearOngoingTaskRestoreNotice"
+              >
+                收起
+              </button>
+            </div>
+          </div>
           <div class="chat-messages-shell">
             <div
               class="chat-messages"
@@ -610,11 +665,45 @@
                         <div
                           v-if="item.taskTreeAudit"
                           class="message-task-tree-audit"
-                          :class="`is-${item.taskTreeAudit.status || 'attention'}`"
+                          :class="[
+                            `is-${item.taskTreeAudit.status || 'attention'}`,
+                            `has-severity-${item.taskTreeAudit.severity || 'medium'}`,
+                          ]"
                         >
                           <div class="message-task-tree-audit__head">
-                            <div class="message-task-tree-audit__title">
-                              任务推进校验
+                            <div class="message-task-tree-audit__head-main">
+                              <div class="message-task-tree-audit__title">
+                                任务推进校验
+                              </div>
+                              <div class="message-task-tree-audit__signal-tags">
+                                <el-tag
+                                  size="small"
+                                  effect="plain"
+                                  :type="
+                                    getTaskTreeAuditSeverityMeta(
+                                      item.taskTreeAudit.severity,
+                                    ).type
+                                  "
+                                >
+                                  {{
+                                    getTaskTreeAuditSeverityMeta(
+                                      item.taskTreeAudit.severity,
+                                    ).label
+                                  }}
+                                </el-tag>
+                                <el-tag
+                                  v-if="item.taskTreeAudit.category"
+                                  size="small"
+                                  effect="plain"
+                                  type="info"
+                                >
+                                  {{
+                                    getTaskTreeAuditCategoryLabel(
+                                      item.taskTreeAudit.category,
+                                    )
+                                  }}
+                                </el-tag>
+                              </div>
                             </div>
                             <el-button
                               text
@@ -626,6 +715,12 @@
                           </div>
                           <div class="message-task-tree-audit__text">
                             {{ item.taskTreeAudit.message }}
+                          </div>
+                          <div
+                            v-if="item.taskTreeAudit.recommended_action"
+                            class="message-task-tree-audit__action"
+                          >
+                            建议动作：{{ item.taskTreeAudit.recommended_action }}
                           </div>
                           <div class="message-task-tree-audit__meta">
                             当前节点：
@@ -645,6 +740,22 @@
                             >
                               · 已自动保留
                             </template>
+                          </div>
+                          <div
+                            v-if="item.taskTreeAudit.evidence?.length"
+                            class="message-task-tree-audit__evidence"
+                          >
+                            <div class="message-task-tree-audit__evidence-label">
+                              证据
+                            </div>
+                            <ul class="message-task-tree-audit__evidence-list">
+                              <li
+                                v-for="(evidence, evidenceIndex) in item.taskTreeAudit.evidence"
+                                :key="`task-audit-evidence-${evidenceIndex}`"
+                              >
+                                {{ evidence }}
+                              </li>
+                            </ul>
                           </div>
                           <div
                             v-if="item.taskTreeAudit.executed_tool_names?.length"
@@ -1181,6 +1292,11 @@
                   </el-button>
                 </div>
               </div>
+
+              <TaskTreeFeedbackBanner
+                v-if="displayedChatTaskTreeHealth"
+                :health="displayedChatTaskTreeHealth"
+              />
 
               <div v-if="hasChatTaskTree" class="task-tree-panel__body">
                 <div class="task-tree-panel__outline">
@@ -2647,6 +2763,9 @@ import ExternalMcpManager from "@/components/ExternalMcpManager.vue";
 import ProjectEmployeeDraftCreateDialog from "@/components/ProjectEmployeeDraftCreateDialog.vue";
 import ProjectMaterialSaveDialog from "@/components/ProjectMaterialSaveDialog.vue";
 import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
+import TaskTreeFeedbackBanner from "@/modules/task-tree-feedback/TaskTreeFeedbackBanner.vue";
+import { normalizeTaskTreeHealth } from "@/modules/task-tree-feedback/taskTreeFeedback";
+import { useTaskTreeHealth } from "@/modules/task-tree-feedback/useTaskTreeHealth";
 import api from "@/utils/api.js";
 import { createProjectChatWsClient } from "@/utils/ws-chat.js";
 import { hasPermission, isSuperAdmin } from "@/utils/permissions.js";
@@ -2702,6 +2821,7 @@ import {
   buildChatSettingsRoute,
   inferSettingsPanelFromPath,
   isChatSettingsRoutePath,
+  stripChatSettingsPrefix,
 } from "@/utils/chat-settings-route.js";
 
 // 配置 marked 以支持代码高亮和换行
@@ -3361,6 +3481,8 @@ const selectedTaskTreeNodeId = ref("");
 const taskTreeStatusDraft = ref("pending");
 const taskTreeVerificationDraft = ref("");
 const taskTreeSummaryDraft = ref("");
+const currentWorkSessionId = ref("");
+const ongoingTaskRestoreNotice = ref(null);
 const creatingChatSession = ref(false);
 const deletingChatSessionId = ref("");
 const downloadingDesktopArtifactKey = ref("");
@@ -3418,7 +3540,7 @@ const hasSelectedProject = computed(() =>
 const mcpDialogProjectId = computed(() => {
   const activeProjectId = String(selectedProjectId.value || "").trim();
   if (activeProjectId) return activeProjectId;
-  const routeProjectId = String(route.query.project_id || "").trim();
+  const routeProjectId = String(routeChatTarget().projectId || "").trim();
   if (routeProjectId) return routeProjectId;
   return String(localStorage.getItem("project_id") || "").trim();
 });
@@ -3612,11 +3734,7 @@ const hasChatTaskTree = computed(() =>
   Boolean(String(displayedChatTaskTree.value?.id || "").trim()),
 );
 const taskTreeIsReadonly = computed(() => {
-  const payload = displayedChatTaskTree.value;
-  if (!payload) return false;
-  const lifecycle = String(payload.lifecycle_status || "").trim().toLowerCase();
-  const status = String(payload.status || "").trim().toLowerCase();
-  return Boolean(payload.is_archived || lifecycle === "archived" || status === "done");
+  return isTaskTreeArchivedOrDone(displayedChatTaskTree.value);
 });
 const taskTreeTreeData = computed(() =>
   Array.isArray(displayedChatTaskTree.value?.tree) ? displayedChatTaskTree.value.tree : [],
@@ -3625,6 +3743,9 @@ const taskTreeProgressLabel = computed(() => {
   if (!hasChatTaskTree.value) return "未拆解";
   return `${Number(displayedChatTaskTree.value?.progress_percent || 0)}%`;
 });
+const displayedChatTaskTreeHealth = useTaskTreeHealth(
+  () => displayedChatTaskTree.value?.task_tree_health || null,
+);
 const taskTreeSelectedNode = computed(() => {
   const nodeId = String(selectedTaskTreeNodeId.value || "").trim();
   if (!nodeId) return null;
@@ -4604,6 +4725,16 @@ function chatSessionStorageKey(projectId) {
   return normalized ? `project_chat_session_${normalized}` : "";
 }
 
+function taskTreeSessionStorageKey(projectId) {
+  const normalized = String(projectId || "").trim();
+  return normalized ? `project_chat_task_tree_session_${normalized}` : "";
+}
+
+function workSessionStorageKey(projectId) {
+  const normalized = String(projectId || "").trim();
+  return normalized ? `project_chat_work_session_${normalized}` : "";
+}
+
 function rememberChatSession(projectId, sessionId) {
   const key = chatSessionStorageKey(projectId);
   if (!key) return;
@@ -4621,8 +4752,56 @@ function restoreChatSession(projectId) {
   return String(localStorage.getItem(key) || "").trim();
 }
 
+function rememberTaskTreeSession(projectId, sessionId) {
+  const key = taskTreeSessionStorageKey(projectId);
+  if (!key) return;
+  const normalized = String(sessionId || "").trim();
+  if (normalized) {
+    localStorage.setItem(key, normalized);
+  } else {
+    localStorage.removeItem(key);
+  }
+}
+
+function restoreTaskTreeSession(projectId) {
+  const key = taskTreeSessionStorageKey(projectId);
+  if (!key) return "";
+  return String(localStorage.getItem(key) || "").trim();
+}
+
+function rememberWorkSession(projectId, sessionId) {
+  const key = workSessionStorageKey(projectId);
+  if (!key) return;
+  const normalized = String(sessionId || "").trim();
+  if (normalized) {
+    localStorage.setItem(key, normalized);
+  } else {
+    localStorage.removeItem(key);
+  }
+}
+
+function restoreWorkSession(projectId) {
+  const key = workSessionStorageKey(projectId);
+  if (!key) return "";
+  return String(localStorage.getItem(key) || "").trim();
+}
+
 function clearChatSessionMemory(projectId) {
   const key = chatSessionStorageKey(projectId);
+  if (key) {
+    localStorage.removeItem(key);
+  }
+}
+
+function clearTaskTreeSessionMemory(projectId) {
+  const key = taskTreeSessionStorageKey(projectId);
+  if (key) {
+    localStorage.removeItem(key);
+  }
+}
+
+function clearWorkSessionMemory(projectId) {
+  const key = workSessionStorageKey(projectId);
   if (key) {
     localStorage.removeItem(key);
   }
@@ -5218,6 +5397,7 @@ function normalizeTaskTreePayload(raw) {
     progress_percent: Number(raw.progress_percent || 0),
     nodes,
     tree,
+    task_tree_health: normalizeTaskTreeHealth(raw.task_tree_health),
     current_node:
       raw.current_node && typeof raw.current_node === "object"
         ? raw.current_node
@@ -5231,12 +5411,20 @@ function normalizeTaskTreePayload(raw) {
 
 function normalizeTaskTreeAuditPayload(raw) {
   if (!raw || typeof raw !== "object") return null;
-  const message = String(raw.message || "").trim();
+  const message = buildTaskTreeAuditMessage(raw);
   if (!message) return null;
   return {
     status: String(raw.status || "attention").trim().toLowerCase(),
     code: String(raw.code || "").trim(),
+    severity: String(raw.severity || "medium").trim().toLowerCase(),
+    category: String(raw.category || "").trim(),
     message,
+    recommended_action: String(raw.recommended_action || "").trim(),
+    evidence: Array.isArray(raw.evidence)
+      ? raw.evidence
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+      : [],
     auto_updated: Boolean(raw.auto_updated),
     suggested_status: String(raw.suggested_status || "")
       .trim()
@@ -5252,6 +5440,79 @@ function normalizeTaskTreeAuditPayload(raw) {
       raw.current_node && typeof raw.current_node === "object"
         ? raw.current_node
         : null,
+  };
+}
+
+function buildTaskTreeAuditMessage(raw) {
+  const explicitMessage = String(raw?.message || "").trim();
+  if (explicitMessage) return explicitMessage;
+  const normalizedCode = String(raw?.code || "").trim().toLowerCase();
+  if (normalizedCode === "lookup_query_auto_completed") {
+    return "当前检索型任务已自动归档。";
+  }
+  if (normalizedCode === "embedded_task_call_recovered") {
+    return "系统已恢复回答中的任务树回写。";
+  }
+  if (normalizedCode === "bootstrap_step_auto_completed") {
+    return "系统已自动完成当前上下文预检节点。";
+  }
+  if (normalizedCode === "completion_unverified") {
+    return "当前节点存在完成表述，但还缺少验证结果。";
+  }
+  if (normalizedCode === "progress_not_written_back") {
+    return "当前节点已有进展，但任务树没有完整回写。";
+  }
+  const recommendedAction = String(raw?.recommended_action || "").trim();
+  if (recommendedAction) return recommendedAction;
+  return "";
+}
+
+function getTaskTreeAuditSeverityMeta(value) {
+  const normalized = String(value || "medium").trim().toLowerCase();
+  if (normalized === "high") {
+    return { label: "高优先级", type: "danger" };
+  }
+  if (normalized === "low") {
+    return { label: "低优先级", type: "info" };
+  }
+  return { label: "中优先级", type: "warning" };
+}
+
+function getTaskTreeAuditCategoryLabel(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return (
+    {
+      verification_guard: "完成前校验",
+      writeback_missing: "回写缺失",
+      lookup_query: "检索归档",
+      embedded_writeback_recovery: "回写恢复",
+      context_bootstrap: "上下文预检",
+      task_tree_sync: "任务同步",
+    }[normalized] || "任务校验"
+  );
+}
+
+function normalizeWorkSessionSummary(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const sessionId = String(raw.session_id || "").trim();
+  if (!sessionId) return null;
+  return {
+    session_id: sessionId,
+    latest_status: String(raw.latest_status || "").trim().toLowerCase(),
+    goal: String(raw.goal || "").trim(),
+    task_tree_session_id: String(raw.task_tree_session_id || "").trim(),
+    task_tree_chat_session_id: String(
+      raw.task_tree_chat_session_id || "",
+    ).trim(),
+    task_node_title: String(raw.task_node_title || "").trim(),
+    updated_at: String(raw.updated_at || "").trim(),
+    created_at: String(raw.created_at || "").trim(),
+    phases: Array.isArray(raw.phases)
+      ? raw.phases.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    steps: Array.isArray(raw.steps)
+      ? raw.steps.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
   };
 }
 
@@ -5274,9 +5535,27 @@ function resolveTaskTreeEventPayload(payload) {
   return payload;
 }
 
+function isTaskTreeArchivedOrDone(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  const lifecycle = String(payload.lifecycle_status || "").trim().toLowerCase();
+  const status = String(payload.status || "").trim().toLowerCase();
+  return Boolean(payload.is_archived || lifecycle === "archived" || status === "done");
+}
+
 function applyTaskTreePayload(payload) {
   const normalized = normalizeTaskTreePayload(payload);
   chatTaskTree.value = normalized;
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (projectId) {
+    if (normalized?.id && !isTaskTreeArchivedOrDone(normalized)) {
+      rememberTaskTreeSession(projectId, normalized.id);
+    } else if (normalized?.id && isTaskTreeArchivedOrDone(normalized)) {
+      clearTaskTreeSessionMemory(projectId);
+      clearWorkSessionMemory(projectId);
+      currentWorkSessionId.value = "";
+      clearOngoingTaskRestoreNotice();
+    }
+  }
   if (!normalized) {
     selectedTaskTreeNodeId.value = "";
     taskTreeStatusDraft.value = "pending";
@@ -5303,6 +5582,117 @@ function applyTaskTreePayload(payload) {
   taskTreeSummaryDraft.value = String(
     targetNode?.summary_for_model || "",
   ).trim();
+}
+
+function clearOngoingTaskRestoreNotice() {
+  ongoingTaskRestoreNotice.value = null;
+}
+
+function setOngoingTaskRestoreNotice(taskTree, workSession) {
+  const chatSessionId = String(taskTree?.chat_session_id || "").trim();
+  if (!chatSessionId) {
+    clearOngoingTaskRestoreNotice();
+    return;
+  }
+  ongoingTaskRestoreNotice.value = {
+    chat_session_id: chatSessionId,
+    task_tree_session_id: String(taskTree?.id || "").trim(),
+    work_session_id: String(workSession?.session_id || "").trim(),
+    title:
+      String(taskTree?.title || taskTree?.root_goal || "").trim() ||
+      "已恢复进行中的任务",
+    current_node_title: String(
+      taskTree?.current_node?.title || taskTree?.root_goal || "",
+    ).trim(),
+    updated_at: String(
+      workSession?.updated_at ||
+        taskTree?.updated_at ||
+        taskTree?.created_at ||
+        "",
+    ).trim(),
+    latest_status: String(workSession?.latest_status || "").trim(),
+  };
+}
+
+function formatCompactSessionId(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized || normalized.length <= 22) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 14)}...${normalized.slice(-6)}`;
+}
+
+function applyWorkSessionPayload(raw, options = {}) {
+  const normalized = normalizeWorkSessionSummary(raw);
+  const projectId = String(
+    options.projectId || selectedProjectId.value || "",
+  ).trim();
+  if (!projectId || !normalized?.session_id) {
+    return null;
+  }
+  currentWorkSessionId.value = normalized.session_id;
+  rememberWorkSession(projectId, normalized.session_id);
+  const taskTree =
+    options.taskTree && typeof options.taskTree === "object"
+      ? options.taskTree
+      : displayedChatTaskTree.value;
+  const noticeSessionId = String(
+    ongoingTaskRestoreNotice.value?.chat_session_id || "",
+  ).trim();
+  const taskChatSessionId = String(taskTree?.chat_session_id || "").trim();
+  if (
+    noticeSessionId &&
+    taskChatSessionId &&
+    noticeSessionId === taskChatSessionId
+  ) {
+    setOngoingTaskRestoreNotice(taskTree, normalized);
+  }
+  return normalized;
+}
+
+async function syncOngoingWorkSessionFromTaskTree(
+  projectId,
+  taskTree,
+  options = {},
+) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const taskTreeSessionId = String(taskTree?.id || "").trim();
+  const taskTreeChatSessionId = String(taskTree?.chat_session_id || "").trim();
+  if (!normalizedProjectId || !taskTreeSessionId) {
+    if (options.clearIfMissing !== false) {
+      currentWorkSessionId.value = "";
+      clearWorkSessionMemory(normalizedProjectId);
+    }
+    return null;
+  }
+  try {
+    const data = await api.get(
+      `/projects/${encodeURIComponent(normalizedProjectId)}/work-sessions`,
+      {
+        params: {
+          task_tree_session_id: taskTreeSessionId,
+          task_tree_chat_session_id: taskTreeChatSessionId,
+          limit: 1,
+        },
+      },
+    );
+    const workSession = normalizeWorkSessionSummary(data?.items?.[0]);
+    if (workSession?.session_id) {
+      currentWorkSessionId.value = workSession.session_id;
+      rememberWorkSession(normalizedProjectId, workSession.session_id);
+      return workSession;
+    }
+    if (options.clearIfMissing !== false) {
+      currentWorkSessionId.value = "";
+      clearWorkSessionMemory(normalizedProjectId);
+    }
+    return null;
+  } catch (err) {
+    if (!options.silent) {
+      ElMessage.error(err?.detail || err?.message || "恢复工作轨迹失败");
+    }
+    return null;
+  }
 }
 
 function syncTaskTreeDrafts(node) {
@@ -6515,9 +6905,28 @@ function clearHighlightedMessage() {
   highlightedMessageId.value = "";
 }
 
+function resolveSettingsRouteProjectId() {
+  if (!isChatSettingsRoutePath(route.path)) {
+    return "";
+  }
+  const routeParamProjectId = String(route.params.id || "").trim();
+  if (!routeParamProjectId) {
+    return "";
+  }
+  const scopedPath = stripChatSettingsPrefix(route.path);
+  if (
+    scopedPath === `/projects/${routeParamProjectId}`
+    || scopedPath.startsWith(`/projects/${routeParamProjectId}/`)
+  ) {
+    return routeParamProjectId;
+  }
+  return "";
+}
+
 function routeChatTarget() {
+  const routeProjectId = String(route.query.project_id || "").trim();
   return {
-    projectId: String(route.query.project_id || "").trim(),
+    projectId: routeProjectId || resolveSettingsRouteProjectId(),
     chatSessionId: String(route.query.chat_session_id || "").trim(),
     messageId: String(route.query.message_id || "").trim(),
   };
@@ -8698,11 +9107,76 @@ async function fetchChatTaskTree(
     );
     const payload = normalizeTaskTreePayload(data?.task_tree);
     applyTaskTreePayload(payload);
+    if (payload?.id && !isTaskTreeArchivedOrDone(payload)) {
+      await syncOngoingWorkSessionFromTaskTree(normalizedProjectId, payload, {
+        silent: true,
+      });
+    }
     return payload;
   } catch (err) {
     applyTaskTreePayload(null);
     if (!options.silent) {
       ElMessage.error(err?.detail || err?.message || "加载任务树失败");
+    }
+    return null;
+  } finally {
+    taskTreeLoading.value = false;
+  }
+}
+
+async function restoreOngoingTaskFromServer(projectId, options = {}) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const taskSessionId = restoreTaskTreeSession(normalizedProjectId);
+  currentWorkSessionId.value = taskSessionId
+    ? restoreWorkSession(normalizedProjectId)
+    : "";
+  if (!normalizedProjectId || !taskSessionId) {
+    return null;
+  }
+  taskTreeLoading.value = true;
+  try {
+    const data = await api.get(
+      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/task-tree`,
+      {
+        params: { session_id: taskSessionId },
+      },
+    );
+    const payload = normalizeTaskTreePayload(data?.task_tree);
+    if (!payload?.id || isTaskTreeArchivedOrDone(payload)) {
+      clearTaskTreeSessionMemory(normalizedProjectId);
+      clearWorkSessionMemory(normalizedProjectId);
+      currentWorkSessionId.value = "";
+      return null;
+    }
+    const chatSessionId = String(payload.chat_session_id || "").trim();
+    if (!chatSessionId) {
+      clearTaskTreeSessionMemory(normalizedProjectId);
+      clearWorkSessionMemory(normalizedProjectId);
+      currentWorkSessionId.value = "";
+      return null;
+    }
+    currentChatSessionId.value = chatSessionId;
+    rememberChatSession(normalizedProjectId, chatSessionId);
+    rememberTaskTreeSession(normalizedProjectId, payload.id);
+    applyTaskTreePayload(payload);
+    const workSession = await syncOngoingWorkSessionFromTaskTree(
+      normalizedProjectId,
+      payload,
+      { silent: true },
+    );
+    return {
+      chatSessionId,
+      taskTree: payload,
+      workSession,
+    };
+  } catch (err) {
+    if (Number(err?.status || 0) === 404) {
+      clearTaskTreeSessionMemory(normalizedProjectId);
+      clearWorkSessionMemory(normalizedProjectId);
+      currentWorkSessionId.value = "";
+    }
+    if (!options.silent) {
+      ElMessage.error(err?.detail || err?.message || "恢复进行中任务失败");
     }
     return null;
   } finally {
@@ -8966,6 +9440,10 @@ async function createChatSession(options = {}) {
     if (options.switchTo !== false) {
       currentChatSessionId.value = session.id;
       rememberChatSession(projectId, session.id);
+      clearTaskTreeSessionMemory(projectId);
+      clearWorkSessionMemory(projectId);
+      currentWorkSessionId.value = "";
+      clearOngoingTaskRestoreNotice();
       messages.value = [];
       chatHistoryLoadedCount.value = 0;
       applyTaskTreePayload(null);
@@ -9200,6 +9678,10 @@ async function deleteChatSession(session) {
     const isCurrentSession = currentChatSessionId.value === chatSessionId;
     if (isCurrentSession) {
       clearChatSessionMemory(projectId);
+      clearTaskTreeSessionMemory(projectId);
+      clearWorkSessionMemory(projectId);
+      currentWorkSessionId.value = "";
+      clearOngoingTaskRestoreNotice();
       const nextSessionId = String(chatSessions.value[0]?.id || "").trim();
       if (nextSessionId) {
         await fetchChatHistory(projectId, nextSessionId);
@@ -9237,6 +9719,10 @@ async function clearMessages() {
       (item) => item.id !== chatSessionId,
     );
     clearChatSessionMemory(projectId);
+    clearTaskTreeSessionMemory(projectId);
+    clearWorkSessionMemory(projectId);
+    currentWorkSessionId.value = "";
+    clearOngoingTaskRestoreNotice();
     const nextSessionId = String(chatSessions.value[0]?.id || "").trim();
     if (nextSessionId) {
       await fetchChatHistory(projectId, nextSessionId);
@@ -9374,6 +9860,9 @@ async function handleSocketMessage(eventData) {
   }
   if (eventType === "start") {
     terminalPanelStatus.value = "running";
+    const taskTreePayload = eventData
+      ? resolveTaskTreeEventPayload(eventData)
+      : null;
     if (
       eventData &&
       (
@@ -9381,7 +9870,16 @@ async function handleSocketMessage(eventData) {
         Object.prototype.hasOwnProperty.call(eventData, "history_task_tree")
       )
     ) {
-      applyTaskTreePayload(resolveTaskTreeEventPayload(eventData));
+      applyTaskTreePayload(taskTreePayload);
+    }
+    if (
+      eventData?.work_session &&
+      taskTreePayload &&
+      !isTaskTreeArchivedOrDone(taskTreePayload)
+    ) {
+      applyWorkSessionPayload(eventData.work_session, {
+        taskTree: taskTreePayload,
+      });
     }
     row.displayMode =
       String(eventData?.chat_mode || "").trim() === "external_agent"
@@ -9639,6 +10137,9 @@ async function handleSocketMessage(eventData) {
         row.content = doneContent;
       }
     }
+    const taskTreePayload = eventData
+      ? resolveTaskTreeEventPayload(eventData)
+      : null;
     if (
       eventData &&
       (
@@ -9646,7 +10147,16 @@ async function handleSocketMessage(eventData) {
         Object.prototype.hasOwnProperty.call(eventData, "history_task_tree")
       )
     ) {
-      applyTaskTreePayload(resolveTaskTreeEventPayload(eventData));
+      applyTaskTreePayload(taskTreePayload);
+    }
+    if (
+      eventData?.work_session &&
+      taskTreePayload &&
+      !isTaskTreeArchivedOrDone(taskTreePayload)
+    ) {
+      applyWorkSessionPayload(eventData.work_session, {
+        taskTree: taskTreePayload,
+      });
     }
     row.taskTreeAudit = normalizeTaskTreeAuditPayload(
       eventData?.task_tree_audit,
@@ -10620,9 +11130,13 @@ watch(autoSaveFingerprint, (nextFingerprint, prevFingerprint) => {
 
 function clearSelectedProjectState() {
   clearChatSessionMemory(selectedProjectId.value);
+  clearTaskTreeSessionMemory(selectedProjectId.value);
+  clearWorkSessionMemory(selectedProjectId.value);
   selectedProjectId.value = "";
   localStorage.removeItem("project_id");
   currentChatSessionId.value = "";
+  currentWorkSessionId.value = "";
+  clearOngoingTaskRestoreNotice();
   chatSessions.value = [];
 }
 
@@ -10644,6 +11158,8 @@ watch(selectedProjectId, async (value) => {
   } else {
     localStorage.removeItem("project_id");
   }
+  clearOngoingTaskRestoreNotice();
+  currentWorkSessionId.value = "";
   if (!projectId) {
     rejectPendingRequests("已切换项目，当前请求取消");
     disconnectWs("switch project");
@@ -10659,12 +11175,60 @@ watch(selectedProjectId, async (value) => {
     agentStatusExpanded.value = false;
     await fetchProvidersByProject(projectId);
     const { chatSessionId: routeChatSessionId } = routeChatTarget();
-    let chatSessionId = await fetchChatSessions(projectId, routeChatSessionId);
+    const restoredTask = routeChatSessionId
+      ? null
+      : await restoreOngoingTaskFromServer(projectId, { silent: true });
+    let chatSessionId = await fetchChatSessions(
+      projectId,
+      routeChatSessionId || restoredTask?.chatSessionId || "",
+    );
+    if (restoredTask?.chatSessionId) {
+      const restoredChatSessionId = String(restoredTask.chatSessionId || "").trim();
+      if (
+        restoredChatSessionId &&
+        !chatSessions.value.some((item) => item.id === restoredChatSessionId)
+      ) {
+        chatSessions.value = [
+          {
+            id: restoredChatSessionId,
+            title:
+              String(
+                restoredTask.taskTree?.title ||
+                  restoredTask.taskTree?.root_goal ||
+                  "进行中的任务",
+              ).trim() || "进行中的任务",
+            preview: String(
+              restoredTask.taskTree?.current_node?.title ||
+                restoredTask.taskTree?.root_goal ||
+                "",
+            ).trim(),
+            message_count: 0,
+            created_at: String(restoredTask.taskTree?.created_at || "").trim(),
+            updated_at: String(restoredTask.taskTree?.updated_at || "").trim(),
+            last_message_at: String(
+              restoredTask.taskTree?.updated_at ||
+                restoredTask.taskTree?.created_at ||
+                "",
+            ).trim(),
+          },
+          ...chatSessions.value.filter((item) => item.id !== restoredChatSessionId),
+        ];
+      }
+      chatSessionId = restoredChatSessionId;
+      currentChatSessionId.value = restoredChatSessionId;
+      rememberChatSession(projectId, restoredChatSessionId);
+    }
     if (!chatSessionId) {
       const created = await createChatSession({ switchTo: true });
       chatSessionId = String(created?.id || "").trim();
     }
     await fetchChatHistory(projectId, chatSessionId);
+    if (restoredTask?.chatSessionId) {
+      setOngoingTaskRestoreNotice(
+        restoredTask.taskTree,
+        restoredTask.workSession,
+      );
+    }
     await applyRouteMessageFocus();
   } catch (err) {
     if (
@@ -10688,8 +11252,20 @@ watch(selectedProjectId, async (value) => {
 });
 
 watch(
+  () => String(currentChatSessionId.value || "").trim(),
+  (sessionId) => {
+    const noticeSessionId = String(
+      ongoingTaskRestoreNotice.value?.chat_session_id || "",
+    ).trim();
+    if (noticeSessionId && sessionId && noticeSessionId !== sessionId) {
+      clearOngoingTaskRestoreNotice();
+    }
+  },
+);
+
+watch(
   () => [
-    String(route.query.project_id || "").trim(),
+    String(routeChatTarget().projectId || "").trim(),
     String(route.query.chat_session_id || "").trim(),
     String(route.query.message_id || "").trim(),
   ],
@@ -11421,6 +11997,8 @@ onUnmounted(() => {
   display: grid;
   gap: 12px;
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   margin: 0 0 18px;
   padding: 22px;
   border: 1px solid rgba(255, 255, 255, 0.82);
@@ -11464,6 +12042,7 @@ onUnmounted(() => {
 }
 
 .settings-summary-pill {
+  max-width: 100%;
   padding: 7px 12px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.84);
@@ -11472,6 +12051,7 @@ onUnmounted(() => {
   font-size: 12px;
   line-height: 1.4;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .model-parameter-note {
@@ -12558,11 +13138,28 @@ onUnmounted(() => {
   border-color: rgba(245, 158, 11, 0.28);
 }
 
+.message-task-tree-audit.has-severity-high {
+  background: #fff7f5;
+  border-color: rgba(239, 68, 68, 0.22);
+}
+
+.message-task-tree-audit.has-severity-low {
+  background: #f8fbff;
+  border-color: rgba(56, 189, 248, 0.2);
+}
+
 .message-task-tree-audit__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.message-task-tree-audit__head-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .message-task-tree-audit__title {
@@ -12571,12 +13168,73 @@ onUnmounted(() => {
   color: #92400e;
 }
 
+.message-task-tree-audit.has-severity-high .message-task-tree-audit__title {
+  color: #b42318;
+}
+
+.message-task-tree-audit.has-severity-low .message-task-tree-audit__title {
+  color: #0f4c81;
+}
+
+.message-task-tree-audit__signal-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .message-task-tree-audit__text,
 .message-task-tree-audit__meta {
   margin-top: 8px;
   font-size: 12px;
   line-height: 1.6;
   color: #78350f;
+}
+
+.message-task-tree-audit.has-severity-high .message-task-tree-audit__text,
+.message-task-tree-audit.has-severity-high .message-task-tree-audit__meta,
+.message-task-tree-audit.has-severity-high .message-task-tree-audit__action,
+.message-task-tree-audit.has-severity-high .message-task-tree-audit__evidence {
+  color: #7a271a;
+}
+
+.message-task-tree-audit.has-severity-low .message-task-tree-audit__text,
+.message-task-tree-audit.has-severity-low .message-task-tree-audit__meta,
+.message-task-tree-audit.has-severity-low .message-task-tree-audit__action,
+.message-task-tree-audit.has-severity-low .message-task-tree-audit__evidence {
+  color: #0f3d5e;
+}
+
+.message-task-tree-audit__action {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.message-task-tree-audit__evidence {
+  margin-top: 8px;
+}
+
+.message-task-tree-audit__evidence-label {
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7c8aa0;
+}
+
+.message-task-tree-audit__evidence-list {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.message-task-tree-audit__evidence-list li + li {
+  margin-top: 2px;
 }
 
 .message-task-tree-audit__tags {
@@ -14758,6 +15416,99 @@ onUnmounted(() => {
   border-radius: 14px;
 }
 
+.chat-restore-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 12px;
+  padding: 14px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 24px;
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(103, 232, 249, 0.14),
+      transparent 34%
+    ),
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.82),
+      rgba(248, 250, 252, 0.68)
+    );
+  box-shadow:
+    0 14px 34px rgba(15, 23, 42, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(18px);
+}
+
+.chat-restore-banner__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.chat-restore-banner__eyebrow {
+  color: #7c8aa0;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.chat-restore-banner__title {
+  margin-top: 6px;
+  color: #0f172a;
+  font-size: 16px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.chat-restore-banner__meta {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chat-restore-banner__meta span:not(:last-child)::after {
+  content: "·";
+  margin-left: 10px;
+  color: #cbd5e1;
+}
+
+.chat-restore-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.chat-restore-banner__button {
+  border-radius: 999px !important;
+  border-color: rgba(15, 23, 42, 0.1) !important;
+  background: rgba(255, 255, 255, 0.82) !important;
+  color: #334155 !important;
+}
+
+.chat-restore-banner__dismiss {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #7c8aa0;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chat-restore-banner__dismiss:hover {
+  color: #0f172a;
+}
+
 .chat-messages-shell {
   flex: 1;
   min-height: 0;
@@ -15009,6 +15760,74 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 16px;
   padding: 20px;
+}
+
+.task-tree-health-card {
+  padding: 16px 18px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 22px;
+  background: rgba(248, 250, 252, 0.84);
+}
+
+.task-tree-health-card.is-danger {
+  border-color: rgba(239, 68, 68, 0.22);
+  background: rgba(255, 247, 245, 0.94);
+}
+
+.task-tree-health-card.is-warning {
+  border-color: rgba(245, 158, 11, 0.22);
+  background: rgba(255, 251, 235, 0.94);
+}
+
+.task-tree-health-card.is-info {
+  border-color: rgba(56, 189, 248, 0.18);
+  background: rgba(248, 251, 255, 0.94);
+}
+
+.task-tree-health-card.is-success {
+  border-color: rgba(16, 185, 129, 0.18);
+  background: rgba(240, 253, 250, 0.94);
+}
+
+.task-tree-health-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-tree-health-card__eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(71, 85, 105, 0.82);
+}
+
+.task-tree-health-card__title {
+  margin-top: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.task-tree-health-card__summary,
+.task-tree-health-card__meta,
+.task-tree-health-card__issues {
+  margin-top: 10px;
+  color: rgba(51, 65, 85, 0.86);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.task-tree-health-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.task-tree-health-card__issues {
+  margin-bottom: 0;
+  padding-left: 18px;
 }
 
 .task-tree-panel__eyebrow,
@@ -16454,6 +17273,23 @@ onUnmounted(() => {
   .chat-context-bar__surface {
     padding: 14px;
     border-radius: 22px;
+  }
+
+  .chat-restore-banner {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 14px;
+    border-radius: 22px;
+  }
+
+  .chat-restore-banner__actions,
+  .chat-restore-banner__meta {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .chat-restore-banner__meta span:not(:last-child)::after {
+    display: none;
   }
 
   .chat-context-bar__title {

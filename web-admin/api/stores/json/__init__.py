@@ -12,6 +12,7 @@ from stores.json.project_studio_export_store import ProjectStudioExportStore
 from stores.json.project_store import ProjectStore
 from stores.json.role_store import RoleStore
 from stores.json.system_config_store import SystemConfigStore
+from stores.json.task_tree_evolution_store import TaskTreeEvolutionStore
 from stores.json.usage_store import UsageStore
 from stores.json.user_store import UserStore
 from stores.json.work_session_store import WorkSessionStore
@@ -29,6 +30,7 @@ __all__ = [
     "ProjectStore",
     "RoleStore",
     "SystemConfigStore",
+    "TaskTreeEvolutionStore",
     "UsageStore",
     "UserStore",
     "WorkSessionStore",

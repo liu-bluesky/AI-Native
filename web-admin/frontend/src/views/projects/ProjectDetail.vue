@@ -180,7 +180,7 @@
               <span class="project-detail-tab-label">
                 <span class="project-detail-tab-label__title">协作设置</span>
                 <span class="project-detail-tab-label__meta">
-                  {{ projectUsers.length }} 用户 · {{ members.length }} 成员
+                  {{ accessTabMeta }}
                 </span>
               </span>
             </template>
@@ -381,6 +381,52 @@
                     <small>{{ item.meta }}</small>
                   </div>
                 </div>
+                <div v-if="requirementRecords.length" class="memory-health-shell">
+                  <div class="memory-health-shell__head">
+                    <div>
+                      <div class="block-eyebrow">Task Health</div>
+                      <h5>任务健康</h5>
+                    </div>
+                    <p>统一 MCP 任务链的可恢复性、验证缺口和归档状态会直接汇总在这里。</p>
+                  </div>
+                  <div class="memory-health-strip">
+                    <div
+                      v-for="item in taskHealthOverviewItems"
+                      :key="item.label"
+                      class="memory-health-card"
+                      :class="`is-${item.tone}`"
+                    >
+                      <span>{{ item.label }}</span>
+                      <strong>{{ item.value }}</strong>
+                      <small>{{ item.meta }}</small>
+                    </div>
+                  </div>
+                  <div v-if="taskHealthHighlights.length" class="memory-health-grid">
+                    <article
+                      v-for="item in taskHealthHighlights"
+                      :key="item.key"
+                      class="memory-health-highlight"
+                      :class="`is-${item.tone}`"
+                    >
+                      <div class="memory-health-highlight__head">
+                        <div>
+                          <div class="memory-health-highlight__eyebrow">
+                            {{ item.eyebrow }}
+                          </div>
+                          <h6>{{ item.title }}</h6>
+                        </div>
+                        <el-tag size="small" effect="plain" :type="item.tagType">
+                          {{ item.label }}
+                        </el-tag>
+                      </div>
+                      <p>{{ item.summary }}</p>
+                      <div class="memory-health-highlight__meta">
+                        <span>{{ item.progress }}</span>
+                        <span>{{ item.focus }}</span>
+                      </div>
+                    </article>
+                  </div>
+                </div>
                 <div class="memory-toolbar-shell">
                   <div class="memory-toolbar-shell__copy">
                     <p>
@@ -500,7 +546,7 @@
                   v-loading="memoryLoading || workSessionLoading || taskSessionsLoading || taskTreeDetailsLoading"
                 >
                   <article
-                    v-for="record in requirementRecords"
+                    v-for="record in pagedRequirementRecords"
                     :key="record.id"
                     class="requirement-record"
                     :class="{ 'requirement-record--expanded': isRequirementRecordExpanded(record) }"
@@ -612,7 +658,10 @@
                         v-show="isRequirementRecordExpanded(record)"
                         class="requirement-record__detail-shell"
                       >
-                        <div class="requirement-record__tree-board">
+                        <div
+                          class="requirement-record__tree-board"
+                          v-loading="isRequirementRoundTaskTreeLoading(record.detailRound)"
+                        >
                           <div class="requirement-record__detail-head">
                             <div>
                               <div class="requirement-record__detail-eyebrow">On Demand</div>
@@ -642,6 +691,17 @@
                   <el-empty
                     v-if="!requirementRecords.length && !memoryLoading"
                     description="暂无匹配的需求记录"
+                  />
+                </div>
+
+                <div v-if="requirementRecords.length" class="table-panel__pagination">
+                  <el-pagination
+                    v-model:current-page="requirementRecordsPage"
+                    v-model:page-size="requirementRecordsPageSize"
+                    background
+                    layout="total, prev, pager, next, jumper, sizes"
+                    :total="requirementRecords.length"
+                    :page-sizes="[10, 20, 50]"
                   />
                 </div>
               </div>
@@ -1449,6 +1509,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import RequirementTreeNode from "@/components/RequirementTreeNode.vue";
 import WorkSessionDetailPanel from "@/components/WorkSessionDetailPanel.vue";
+import { normalizeTaskTreeHealth } from "@/modules/task-tree-feedback/taskTreeFeedback";
 import api from "@/utils/api.js";
 import { formatDateTime } from "@/utils/date.js";
 import {
@@ -1461,7 +1522,7 @@ import { buildRuntimeUrl, fetchConfiguredRuntimeOrigin } from "@/utils/runtime-u
 
 const route = useRoute();
 const router = useRouter();
-const projectId = String(route.params.id || "");
+const projectId = computed(() => String(route.params.id || "").trim());
 const showProjectLocationFields = false;
 const showProjectAddressFields = false;
 const activeProjectTab = ref("overview");
@@ -1526,17 +1587,31 @@ const memoryDetailTaskTreeLoading = ref(false);
 const memoryDetailWorkEventsLoading = ref(false);
 const taskTreeDetailsLoading = ref(false);
 const requirementNodeDetailLoading = ref(false);
+const requirementRoundTaskTreeLoadingMap = ref({});
 const workSessionDetailLoading = ref(false);
 const requirementRecordDeleting = ref(false);
 const projectUsersPage = ref(1);
 const projectUsersPageSize = ref(10);
 const membersPage = ref(1);
 const membersPageSize = ref(10);
+const requirementRecordsPage = ref(1);
+const requirementRecordsPageSize = ref(10);
 const showMemoryDetailDialog = ref(false);
 const showWorkSessionDetailDialog = ref(false);
 const showRequirementNodeDetailDialog = ref(false);
 const canManageProjectUsers = ref(false);
+const tabDataLoaded = ref({
+  overview: false,
+  access: false,
+  memory: false,
+});
+const tabDataPromises = {
+  overview: null,
+  access: null,
+  memory: null,
+};
 const memoryLimitOptions = [20, 50, 100];
+const PROJECT_TASK_SESSION_FETCH_LIMIT = 300;
 const MEMORY_TYPE_LABELS = {
   "project-context": "项目上下文",
   "user-preference": "用户偏好",
@@ -1585,6 +1660,29 @@ const editForm = ref({
 const uiRuleForm = ref({
   rule_ids: [],
 });
+
+function resetProjectScopedState() {
+  project.value = {};
+  projectUsers.value = [];
+  members.value = [];
+  projectMemories.value = [];
+  projectMemoryTotal.value = 0;
+  projectMemoryHasMore.value = false;
+  projectWorkSessions.value = [];
+  projectTaskSessions.value = [];
+  projectTaskTreeDetails.value = {};
+  selectedRequirementRecordIds.value = [];
+  expandedRequirementRecordId.value = "";
+  requirementRoundTaskTreeLoadingMap.value = {};
+  tabDataLoaded.value = {
+    overview: false,
+    access: false,
+    memory: false,
+  };
+  tabDataPromises.overview = null;
+  tabDataPromises.access = null;
+  tabDataPromises.memory = null;
+}
 
 const memberIdSet = computed(() => {
   return new Set(
@@ -1699,6 +1797,30 @@ const projectHeroSignals = computed(() => [
   },
 ]);
 
+const projectMemberCount = computed(() => {
+  if (tabDataLoaded.value.access || members.value.length) {
+    return members.value.length;
+  }
+  return Math.max(
+    0,
+    Number(project.value?.active_member_count ?? project.value?.member_count ?? 0),
+  );
+});
+
+const projectUserCount = computed(() => {
+  if (tabDataLoaded.value.access || projectUsers.value.length) {
+    return projectUsers.value.length;
+  }
+  return Math.max(0, Number(project.value?.active_user_count ?? project.value?.user_count ?? 0));
+});
+
+function resolveDeferredCountLabel(value, unit, loaded, loadingState) {
+  if (loaded) {
+    return `${Math.max(0, Number(value || 0))} ${unit}`;
+  }
+  return loadingState ? "加载中" : "待加载";
+}
+
 const visibleProjectMemories = computed(() => {
   const grouped = new Map();
   for (const memory of projectMemories.value || []) {
@@ -1725,7 +1847,7 @@ const visibleProjectMemories = computed(() => {
 const projectHeroStats = computed(() => [
   {
     label: "成员",
-    value: `${members.value.length || Number(project.value?.active_member_count || 0)} 名`,
+    value: `${projectMemberCount.value} 名`,
   },
   {
     label: "UI 规则",
@@ -1733,13 +1855,25 @@ const projectHeroStats = computed(() => [
   },
   {
     label: "需求记录",
-    value: `${visibleProjectMemories.value.length} 条`,
+    value: resolveDeferredCountLabel(
+      requirementRecords.value.length,
+      "条",
+      tabDataLoaded.value.memory,
+      memoryLoading.value || taskSessionsLoading.value || workSessionLoading.value,
+    ),
   },
   {
     label: "工作轨迹",
-    value: `${projectWorkSessions.value.length} 条`,
+    value: resolveDeferredCountLabel(
+      projectWorkSessions.value.length,
+      "条",
+      tabDataLoaded.value.memory,
+      workSessionLoading.value,
+    ),
   },
 ]);
+
+const accessTabMeta = computed(() => `${projectUserCount.value} 用户 · ${projectMemberCount.value} 成员`);
 
 const availableProjectDetailTabs = computed(() => {
   const tabs = ["overview", "access", "memory"];
@@ -1814,10 +1948,11 @@ const requirementRecords = computed(() => {
   for (const summary of projectTaskSessions.value || []) {
     const sessionId = String(summary?.id || "").trim();
     if (!sessionId) continue;
+    const taskTreeSummary = normalizeTaskTreePayload(summary);
     const taskTree = detailMap[sessionId] && typeof detailMap[sessionId] === "object"
       ? detailMap[sessionId]
-      : null;
-    const sourceSessionId = String(taskTree?.source_session_id || "").trim();
+      : taskTreeSummary;
+    const sourceSessionId = String(taskTree?.source_session_id || summary?.source_session_id || "").trim();
     const chatSessionId = String(
       taskTree?.source_chat_session_id
       || taskTree?.chat_session_id
@@ -1861,12 +1996,14 @@ const requirementRecords = computed(() => {
       rootNode: taskTree?.tree?.[0] || null,
       rootGoal: String(taskTree?.root_goal || summary?.root_goal || summary?.title || "").trim(),
       title: String(taskTree?.title || summary?.title || "").trim(),
-      recordKind: String(taskTree?.record_kind || "requirement").trim() || "requirement",
-      roundIndex: Math.max(1, Number(taskTree?.round_index || 1)),
+      recordKind: String(taskTree?.record_kind || summary?.record_kind || "requirement").trim() || "requirement",
+      roundIndex: Math.max(1, Number(taskTree?.round_index || summary?.round_index || 1)),
       status: String(taskTree?.status || summary?.status || "pending").trim(),
       progressPercent: Number(resolveTaskTreeProgressPercent(taskTree || summary)),
       currentNodeId: String(taskTree?.current_node_id || summary?.current_node_id || "").trim(),
-      currentNodeTitle: String(taskTree?.current_node?.title || summary?.current_node_title || "").trim(),
+      currentNodeTitle: String(
+        taskTree?.current_node?.title || summary?.current_node?.title || summary?.current_node_title || "",
+      ).trim(),
       leafTotal: Number(taskTree?.leaf_total ?? taskTree?.stats?.leaf_total ?? summary?.leaf_total ?? 0),
       doneLeafTotal: Number(
         taskTree?.done_leaf_total ?? taskTree?.stats?.done_leaf_total ?? summary?.done_leaf_total ?? 0,
@@ -2049,7 +2186,20 @@ const requirementRecords = computed(() => {
     });
 });
 
-const requirementRecordTabMeta = computed(() => `${Math.max(0, Number(projectMemoryTotal.value || 0))} 条记录`);
+const pagedRequirementRecords = computed(() => {
+  const start = Math.max(0, (requirementRecordsPage.value - 1) * requirementRecordsPageSize.value);
+  return requirementRecords.value.slice(start, start + requirementRecordsPageSize.value);
+});
+
+const requirementRecordTabMeta = computed(() =>
+  tabDataLoaded.value.memory
+    ? `${requirementRecords.value.length} 条记录`
+    : (
+      memoryLoading.value || taskSessionsLoading.value || workSessionLoading.value
+        ? "加载中"
+        : "待加载"
+    ),
+);
 
 const memoryWindowHint = computed(() => {
   if (!projectMemoryHasMore.value) {
@@ -2071,8 +2221,8 @@ const memoryOverviewItems = computed(() => {
   return [
     {
       label: "需求主链",
-      value: `${Math.max(0, Number(projectMemoryTotal.value || 0))} 条`,
-      meta: memoryWindowHint.value || "每条需求按轮次和任务树自上而下展开",
+      value: `${requirementRecords.value.length} 条`,
+      meta: "每条需求按轮次和任务树自上而下展开",
     },
     {
       label: "进行中轮次",
@@ -2092,6 +2242,94 @@ const memoryOverviewItems = computed(() => {
   ];
 });
 
+const taskHealthEntries = computed(() =>
+  requirementRecords.value
+    .map((record) => {
+      const round = record?.currentRound || record?.latestRound || null;
+      if (!round) return null;
+      const health = resolveRequirementRoundHealth(round);
+      return {
+        key: `${record.id}:${round.sessionId}:${health.state}`,
+        record,
+        round,
+        health,
+      };
+    })
+    .filter(Boolean),
+);
+
+const taskHealthOverviewItems = computed(() => {
+  const entries = taskHealthEntries.value;
+  const rebuildCount = entries.filter((item) => item.health.state === "needs_rebuild").length;
+  const verificationCount = entries.filter((item) => item.health.state === "needs_verification").length;
+  const closureCount = entries.filter((item) => item.health.state === "needs_closure").length;
+  const resumableCount = entries.filter((item) => item.health.state === "resumable").length;
+  const placeholderCount = entries.filter((item) => item.health.state === "placeholder").length;
+  const archivedCount = entries.filter((item) => item.health.state === "archived").length;
+  return [
+    {
+      label: "建议重建",
+      value: `${rebuildCount} 条`,
+      meta: rebuildCount ? "当前任务树生成结果和真实目标不一致，建议先重建再继续执行。" : "当前没有识别到需要优先重建的任务树。",
+      tone: rebuildCount ? "danger" : "neutral",
+    },
+    {
+      label: "待补验证",
+      value: `${verificationCount} 条`,
+      meta: verificationCount ? "当前节点已经推进到验证阶段，但还缺最终验证结果。" : "当前没有卡在验证阶段的任务链。",
+      tone: verificationCount ? "warning" : "neutral",
+    },
+    {
+      label: "待收口",
+      value: `${closureCount} 条`,
+      meta: closureCount ? "工作轨迹已经结束，但任务树还没完成归档。" : "当前没有工作轨迹与任务树脱节的轮次。",
+      tone: closureCount ? "danger" : "neutral",
+    },
+    {
+      label: "可恢复",
+      value: `${resumableCount} 条`,
+      meta: resumableCount ? "已保留任务树和会话锚点，中断后可以直接续跑。" : "当前没有需要恢复的进行中任务。",
+      tone: resumableCount ? "info" : "neutral",
+    },
+    {
+      label: "空挂占位",
+      value: `${placeholderCount} 条`,
+      meta: placeholderCount ? "当前只挂上了会话，没有真正写入执行进展。" : "当前没有空挂的占位轮次。",
+      tone: placeholderCount ? "warning" : "neutral",
+    },
+    {
+      label: "已归档",
+      value: `${archivedCount} 条`,
+      meta: archivedCount ? "任务树已完成闭环，可以直接回看历史。" : "当前还没有完成归档的任务链。",
+      tone: archivedCount ? "success" : "neutral",
+    },
+  ];
+});
+
+const taskHealthHighlights = computed(() =>
+  taskHealthEntries.value
+    .filter((item) => item.health.priority < 4)
+    .slice()
+    .sort((left, right) => {
+      if (left.health.priority !== right.health.priority) {
+        return left.health.priority - right.health.priority;
+      }
+      return String(right.round.updatedAt || "").localeCompare(String(left.round.updatedAt || ""));
+    })
+    .slice(0, 3)
+    .map((item) => ({
+      key: item.key,
+      tone: item.health.tone,
+      tagType: item.health.tagType,
+      label: item.health.label,
+      eyebrow: item.record.roundDigest || "当前轮次",
+      title: item.record.rootGoal || item.record.currentFocus || "未命名任务链",
+      summary: item.health.summary,
+      progress: item.record.progressDigest || "暂无节点进度",
+      focus: item.record.currentFocus || "等待进入计划节点",
+    })),
+);
+
 watch(
   requirementRecords,
   (records) => {
@@ -2103,6 +2341,13 @@ watch(
     selectedRequirementRecordIds.value = (selectedRequirementRecordIds.value || []).filter((item) =>
       visibleIds.has(String(item || "").trim()),
     );
+    const totalPages = Math.max(
+      1,
+      Math.ceil(visibleIds.size / Math.max(1, Number(requirementRecordsPageSize.value || 10))),
+    );
+    if (requirementRecordsPage.value > totalPages) {
+      requirementRecordsPage.value = totalPages;
+    }
     if (!expandedRequirementRecordId.value) return;
     const stillExists = (records || []).some(
       (item) => String(item?.id || "").trim() === expandedRequirementRecordId.value,
@@ -2112,6 +2357,13 @@ watch(
     }
   },
   { immediate: true },
+);
+
+watch(
+  () => requirementRecordsPageSize.value,
+  () => {
+    requirementRecordsPage.value = 1;
+  },
 );
 
 const selectedRequirementNodeRoundLabel = computed(() => {
@@ -2240,6 +2492,101 @@ function isRequirementRoundPlaceholder(round) {
     return false;
   }
   return !(Array.isArray(round.workSessions) && round.workSessions.length);
+}
+
+function resolveRequirementRoundHealth(round) {
+  if (!round) {
+    return {
+      state: "unknown",
+      label: "待同步",
+      summary: "当前轮次还没有足够的任务树信息。",
+      tone: "neutral",
+      tagType: "info",
+      priority: 5,
+    };
+  }
+  const taskStatus = String(round.status || "").trim().toLowerCase();
+  const currentNodeStatus = String(round.taskTree?.current_node?.status || "").trim().toLowerCase();
+  const workSessionStatus = String(round.primaryWorkSession?.latest_status || "").trim().toLowerCase();
+  const taskTreeHealth = round.taskTree?.task_tree_health || null;
+  const hasResumeAnchor = Boolean(
+    round.primaryWorkSession?.session_id || round.sessionId || round.chatSessionId,
+  );
+  if (!round.isFinalized && taskTreeHealth?.rebuild_recommended) {
+    return {
+      state: "needs_rebuild",
+      label: "建议重建",
+      summary: String(
+        taskTreeHealth.rebuild_reason
+        || taskTreeHealth.issues?.[0]?.message
+        || "当前任务树和真实目标不匹配，建议先重建后再继续。",
+      ).trim(),
+      tone: "danger",
+      tagType: "danger",
+      priority: 0,
+    };
+  }
+  if (round.isFinalized) {
+    return {
+      state: "archived",
+      label: "已归档",
+      summary: "任务树和验证结果已经闭环完成，这条链路可以直接当历史查看。",
+      tone: "success",
+      tagType: "success",
+      priority: 5,
+    };
+  }
+  if (currentNodeStatus === "verifying" || taskStatus === "verifying") {
+    return {
+      state: "needs_verification",
+      label: "待补验证",
+      summary: "当前节点已经进入验证阶段，补齐验证结果后才能真正完成本轮任务。",
+      tone: "warning",
+      tagType: "warning",
+      priority: 0,
+    };
+  }
+  if (isCompletedLikeStatus(workSessionStatus) && !round.isFinalized) {
+    return {
+      state: "needs_closure",
+      label: "待收口",
+      summary: "工作轨迹显示本轮已跑完，但任务树还没有完成归档，建议优先收口。",
+      tone: "danger",
+      tagType: "danger",
+      priority: 1,
+    };
+  }
+  if (isRequirementRoundPlaceholder(round)) {
+    return {
+      state: "placeholder",
+      label: "空挂占位",
+      summary: "当前只挂上了会话，还没有形成有效节点进展或执行轨迹。",
+      tone: "warning",
+      tagType: "warning",
+      priority: 2,
+    };
+  }
+  if (
+    hasResumeAnchor
+    && (taskStatus === "pending" || taskStatus === "in_progress" || currentNodeStatus === "in_progress")
+  ) {
+    return {
+      state: "resumable",
+      label: "可恢复",
+      summary: "任务树、聊天会话和工作轨迹锚点都还在，中断后可以直接继续执行。",
+      tone: "info",
+      tagType: "info",
+      priority: 3,
+    };
+  }
+  return {
+    state: "active",
+    label: getTaskSessionStatusLabel(taskStatus || currentNodeStatus || "pending"),
+    summary: "当前轮次正在正常推进，没有发现需要优先处理的健康信号。",
+    tone: "neutral",
+    tagType: getTaskSessionStatusTagType(taskStatus || currentNodeStatus || "pending") || "info",
+    priority: 4,
+  };
 }
 
 function isTaskTreeFinalized(taskTree) {
@@ -2649,6 +2996,22 @@ watch([projectUsersPageSize, projectUsers], () => {
 });
 
 watch(
+  () => projectId.value,
+  async (nextProjectId, previousProjectId) => {
+    if (nextProjectId === previousProjectId && previousProjectId !== undefined) {
+      return;
+    }
+    resetProjectScopedState();
+    if (!nextProjectId) {
+      loading.value = false;
+      return;
+    }
+    await refresh(nextProjectId);
+  },
+  { immediate: true },
+);
+
+watch(
   () => [route.query.tab, availableProjectDetailTabs.value.join("|")],
   () => {
     const nextTab = normalizeProjectDetailTab(route.query.tab);
@@ -2665,6 +3028,7 @@ watch(activeProjectTab, (value) => {
     activeProjectTab.value = normalized;
     return;
   }
+  void ensureProjectTabData(normalized);
   const defaultTab = availableProjectDetailTabs.value[0] || "overview";
   const currentTab = String(route.query.tab || "").trim();
   if ((normalized === defaultTab && !currentTab) || currentTab === normalized) {
@@ -2774,8 +3138,11 @@ async function fetchRules() {
   }
 }
 
-async function fetchProject() {
-  const data = await api.get(`/projects/${projectId}`);
+async function fetchProject(targetProjectId = projectId.value) {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) return;
+  const data = await api.get(`/projects/${effectiveProjectId}`);
+  if (effectiveProjectId !== projectId.value) return;
   project.value = {
     ...(data.project || {}),
     type: normalizeProjectType(data.project?.type),
@@ -2896,7 +3263,7 @@ async function openMemoryDetail(row) {
     } else if (chatSessionId) {
       params.chat_session_id = chatSessionId;
     }
-    const data = await api.get(`/projects/${projectId}/chat/task-tree`, {
+    const data = await api.get(`/projects/${projectId.value}/chat/task-tree`, {
       params,
     });
     memoryDetailTaskTree.value = normalizeTaskTreePayload(resolveTaskTreeResponsePayload(data));
@@ -2935,7 +3302,7 @@ async function fetchMemoryDetailWorkEvents(taskTree, options = {}) {
     if (taskTreeChatSessionId) {
       params.task_tree_chat_session_id = taskTreeChatSessionId;
     }
-    const data = await api.get(`/projects/${projectId}/work-session-events`, { params });
+    const data = await api.get(`/projects/${projectId.value}/work-session-events`, { params });
     memoryDetailWorkEvents.value = Array.isArray(data?.items)
       ? data.items.map((item) => normalizeProjectWorkEvent(item))
       : [];
@@ -2955,7 +3322,7 @@ async function openWorkSessionDetail(row) {
   selectedWorkSession.value = normalizeWorkSessionSummary(row);
   selectedWorkSessionEvents.value = [];
   try {
-    const data = await api.get(`/projects/${projectId}/work-sessions/${encodeURIComponent(sessionId)}`, {
+    const data = await api.get(`/projects/${projectId.value}/work-sessions/${encodeURIComponent(sessionId)}`, {
       params: {
         employee_id: row?.employee_id || undefined,
       },
@@ -3035,6 +3402,50 @@ function openRequirementRecordDetail(record) {
   openRequirementRoundDetail(targetRound);
 }
 
+function isRequirementRoundTaskTreeLoading(round) {
+  const sessionId = String(round?.sessionId || round?.id || "").trim();
+  return Boolean(sessionId) && Boolean(requirementRoundTaskTreeLoadingMap.value?.[sessionId]);
+}
+
+async function ensureRequirementRoundTaskTree(round, options = {}) {
+  const sessionId = String(round?.sessionId || round?.id || "").trim();
+  const force = Boolean(options?.force);
+  if (!sessionId) {
+    return null;
+  }
+  if (!force && projectTaskTreeDetails.value?.[sessionId]) {
+    return projectTaskTreeDetails.value[sessionId];
+  }
+  if (isRequirementRoundTaskTreeLoading(round)) {
+    return null;
+  }
+  requirementRoundTaskTreeLoadingMap.value = {
+    ...requirementRoundTaskTreeLoadingMap.value,
+    [sessionId]: true,
+  };
+  try {
+    const data = await api.get(`/projects/${projectId.value}/chat/task-tree`, {
+      params: { session_id: sessionId },
+    });
+    const payload = normalizeTaskTreePayload(resolveTaskTreeResponsePayload(data));
+    if (payload) {
+      projectTaskTreeDetails.value = {
+        ...(projectTaskTreeDetails.value || {}),
+        [sessionId]: payload,
+      };
+      return payload;
+    }
+    return null;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "加载任务树详情失败");
+    return null;
+  } finally {
+    const nextLoadingMap = { ...(requirementRoundTaskTreeLoadingMap.value || {}) };
+    delete nextLoadingMap[sessionId];
+    requirementRoundTaskTreeLoadingMap.value = nextLoadingMap;
+  }
+}
+
 function isRequirementRecordSelected(record) {
   const recordId = String(record?.id || "").trim();
   return Boolean(recordId) && selectedRequirementRecordIdSet.value.has(recordId);
@@ -3072,7 +3483,13 @@ function isRequirementRecordExpanded(record) {
 function toggleRequirementRecordExpansion(record) {
   const recordId = String(record?.id || "").trim();
   if (!recordId) return;
-  expandedRequirementRecordId.value = expandedRequirementRecordId.value === recordId ? "" : recordId;
+  const shouldExpand = expandedRequirementRecordId.value !== recordId;
+  expandedRequirementRecordId.value = shouldExpand ? recordId : "";
+  if (!shouldExpand) {
+    return;
+  }
+  const targetRound = record?.detailRound || record?.currentRound || record?.latestRound || null;
+  void ensureRequirementRoundTaskTree(targetRound);
 }
 
 async function openRequirementNodeDetail(node, round) {
@@ -3093,7 +3510,7 @@ async function openRequirementNodeDetail(node, round) {
     if (!shouldLoadWholeRound) {
       params.task_node_id = taskNodeId;
     }
-    const data = await api.get(`/projects/${projectId}/work-session-events`, {
+    const data = await api.get(`/projects/${projectId.value}/work-session-events`, {
       params,
     });
     selectedRequirementNodeEvents.value = Array.isArray(data?.items)
@@ -3122,73 +3539,59 @@ function openMemoryLinkedWorkSession() {
   });
 }
 
-async function fetchProjectUsers() {
-  const data = await api.get(`/projects/${projectId}/users`);
+async function fetchProjectUsers(targetProjectId = projectId.value) {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) return;
+  const data = await api.get(`/projects/${effectiveProjectId}/users`);
+  if (effectiveProjectId !== projectId.value) return;
   projectUsers.value = data.members || [];
   userOptions.value = data.all_users || [];
   canManageProjectUsers.value = !!data.can_manage;
 }
 
-async function fetchMembers() {
-  const data = await api.get(`/projects/${projectId}/members`);
+async function fetchMembers(targetProjectId = projectId.value) {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) return;
+  const data = await api.get(`/projects/${effectiveProjectId}/members`);
+  if (effectiveProjectId !== projectId.value) return;
   members.value = data.members || [];
 }
 
-async function fetchProjectTaskTreeDetails(sessionIds = []) {
-  const uniqueIds = [...new Set(
-    (Array.isArray(sessionIds) ? sessionIds : [])
-      .map((item) => String(item || "").trim())
-      .filter(Boolean),
-  )];
-  if (!uniqueIds.length) {
-    projectTaskTreeDetails.value = {};
-    return;
-  }
-  taskTreeDetailsLoading.value = true;
-  try {
-    const results = await Promise.allSettled(
-      uniqueIds.map((sessionId) =>
-        api.get(`/projects/${projectId}/chat/task-tree`, {
-          params: { session_id: sessionId },
-        })),
-    );
-    const nextDetails = {};
-    results.forEach((result, index) => {
-      if (result.status !== "fulfilled") {
-        return;
-      }
-      const sessionId = uniqueIds[index];
-      const payload = normalizeTaskTreePayload(resolveTaskTreeResponsePayload(result.value));
-      if (payload) {
-        nextDetails[sessionId] = payload;
-      }
-    });
-    projectTaskTreeDetails.value = nextDetails;
-  } finally {
-    taskTreeDetailsLoading.value = false;
-  }
-}
-
-async function fetchProjectTaskSessions() {
+async function fetchProjectTaskSessions(targetProjectId = projectId.value) {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) return;
   taskSessionsLoading.value = true;
   try {
-    const data = await api.get(`/projects/${projectId}/chat/task-tree/sessions`, {
-      params: { limit: 50 },
+    const data = await api.get(`/projects/${effectiveProjectId}/chat/task-tree/sessions`, {
+      params: { limit: PROJECT_TASK_SESSION_FETCH_LIMIT },
     });
+    if (effectiveProjectId !== projectId.value) return;
     projectTaskSessions.value = Array.isArray(data.items) ? data.items : [];
     taskTreeStorageBackend.value = String(data.storage_backend || "").trim();
-    await fetchProjectTaskTreeDetails(projectTaskSessions.value.map((item) => item.id));
+    const validSessionIds = new Set(
+      (projectTaskSessions.value || [])
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean),
+    );
+    projectTaskTreeDetails.value = Object.fromEntries(
+      Object.entries(projectTaskTreeDetails.value || {}).filter(([sessionId]) => validSessionIds.has(sessionId)),
+    );
   } catch (err) {
+    if (effectiveProjectId !== projectId.value) return;
     projectTaskSessions.value = [];
     projectTaskTreeDetails.value = {};
     taskTreeStorageBackend.value = "";
     ElMessage.error(err?.detail || err?.message || "加载任务推进列表失败");
   } finally {
-    taskSessionsLoading.value = false;
+    if (effectiveProjectId === projectId.value) {
+      taskSessionsLoading.value = false;
+    }
   }
 }
 
-async function fetchProjectWorkSessions() {
+async function fetchProjectWorkSessions(targetProjectId = projectId.value) {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) return;
   workSessionLoading.value = true;
   try {
     const query = String(memoryFilters.value.query || "").trim();
@@ -3202,15 +3605,19 @@ async function fetchProjectWorkSessions() {
     if (selectedEmployeeId) {
       params.employee_id = selectedEmployeeId;
     }
-    const data = await api.get(`/projects/${projectId}/work-sessions`, { params });
+    const data = await api.get(`/projects/${effectiveProjectId}/work-sessions`, { params });
+    if (effectiveProjectId !== projectId.value) return;
     projectWorkSessions.value = Array.isArray(data?.items)
       ? data.items.map((item) => normalizeWorkSessionSummary(item))
       : [];
   } catch (err) {
+    if (effectiveProjectId !== projectId.value) return;
     ElMessage.error(err?.detail || err?.message || "加载工作轨迹失败");
     projectWorkSessions.value = [];
   } finally {
-    workSessionLoading.value = false;
+    if (effectiveProjectId === projectId.value) {
+      workSessionLoading.value = false;
+    }
   }
 }
 
@@ -3684,6 +4091,7 @@ function normalizeTaskTreePayload(taskTree) {
     done_leaf_total: Number(taskTree.done_leaf_total ?? stats.done_leaf_total ?? 0),
     nodes,
     tree,
+    task_tree_health: normalizeTaskTreeHealth(taskTree.task_tree_health),
     current_node:
       normalizedCurrentNode
         ? normalizedCurrentNode
@@ -3744,7 +4152,7 @@ function getMemoryTypeLabel(type) {
 }
 
 function buildMemoryExportFilename() {
-  const projectName = String(project.value?.name || projectId || "project").trim() || "project";
+  const projectName = String(project.value?.name || projectId.value || "project").trim() || "project";
   const safeProjectName = projectName.replace(/[\\/:*?"<>|]+/g, "-");
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   return `${safeProjectName}-project-memories-${timestamp}.csv`;
@@ -3801,7 +4209,9 @@ function exportProjectMemories() {
   }
 }
 
-async function fetchProjectMemories() {
+async function fetchProjectMemories(targetProjectId = projectId.value) {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) return;
   memoryLoading.value = true;
   try {
     const query = String(memoryFilters.value.query || "").trim();
@@ -3815,28 +4225,32 @@ async function fetchProjectMemories() {
     if (selectedEmployeeId) {
       params.employee_id = selectedEmployeeId;
     }
-    const data = await api.get(`/projects/${projectId}/memories`, { params });
+    const data = await api.get(`/projects/${effectiveProjectId}/memories`, { params });
+    if (effectiveProjectId !== projectId.value) return;
     projectMemories.value = Array.isArray(data?.items)
       ? data.items.map((item) => normalizeMemory(item))
       : [];
     projectMemoryTotal.value = Number(data?.total || 0);
     projectMemoryHasMore.value = Boolean(data?.has_more);
   } catch (err) {
+    if (effectiveProjectId !== projectId.value) return;
     ElMessage.error(err?.detail || err?.message || "加载项目记忆失败");
     projectMemories.value = [];
     projectMemoryTotal.value = 0;
     projectMemoryHasMore.value = false;
   } finally {
-    memoryLoading.value = false;
+    if (effectiveProjectId === projectId.value) {
+      memoryLoading.value = false;
+    }
   }
 }
 
-async function applyMemoryFilters() {
-  await Promise.all([fetchProjectMemories(), fetchProjectWorkSessions()]);
+async function applyMemoryFilters(targetProjectId = projectId.value) {
+  await Promise.all([fetchProjectMemories(targetProjectId), fetchProjectWorkSessions(targetProjectId)]);
 }
 
 async function refreshRequirementRecords() {
-  await refresh();
+  await ensureMemoryTabData(projectId.value, { force: true });
 }
 
 async function deleteRequirementRecords(recordIds, successLabel = "需求记录") {
@@ -3855,7 +4269,7 @@ async function deleteRequirementRecords(recordIds, successLabel = "需求记录"
   }
   requirementRecordDeleting.value = true;
   try {
-    const data = await api.post(`/projects/${projectId}/requirement-records/batch-delete`, {
+    const data = await api.post(`/projects/${projectId.value}/requirement-records/batch-delete`, {
       record_ids: normalizedIds,
     });
     const deletedIds = Array.isArray(data?.deleted_record_ids) ? data.deleted_record_ids : [];
@@ -3952,31 +4366,114 @@ async function resetMemoryFilters() {
   await applyMemoryFilters();
 }
 
-async function refresh() {
+function setTabDataLoaded(tab, loaded = true) {
+  tabDataLoaded.value = {
+    ...tabDataLoaded.value,
+    [tab]: loaded,
+  };
+}
+
+async function ensureOverviewTabData(targetProjectId = projectId.value, options = {}) {
+  const force = Boolean(options?.force);
+  if (!force && tabDataLoaded.value.overview) {
+    return;
+  }
+  if (tabDataPromises.overview) {
+    return tabDataPromises.overview;
+  }
+  tabDataPromises.overview = (async () => {
+    await fetchRules();
+    setTabDataLoaded("overview", true);
+  })().finally(() => {
+    tabDataPromises.overview = null;
+  });
+  return tabDataPromises.overview;
+}
+
+async function ensureAccessTabData(targetProjectId = projectId.value, options = {}) {
+  const force = Boolean(options?.force);
+  if (!force && tabDataLoaded.value.access) {
+    return;
+  }
+  if (tabDataPromises.access) {
+    return tabDataPromises.access;
+  }
+  tabDataPromises.access = (async () => {
+    await Promise.all([
+      fetchProjectUsers(targetProjectId),
+      fetchMembers(targetProjectId),
+      fetchEmployees(),
+    ]);
+    setTabDataLoaded("access", true);
+  })().finally(() => {
+    tabDataPromises.access = null;
+  });
+  return tabDataPromises.access;
+}
+
+async function ensureMemoryTabData(targetProjectId = projectId.value, options = {}) {
+  const force = Boolean(options?.force);
+  if (!force && tabDataLoaded.value.memory) {
+    return;
+  }
+  if (tabDataPromises.memory) {
+    return tabDataPromises.memory;
+  }
+  tabDataPromises.memory = (async () => {
+    await fetchMembers(targetProjectId);
+    await Promise.all([
+      fetchProjectTaskSessions(targetProjectId),
+      applyMemoryFilters(targetProjectId),
+    ]);
+    setTabDataLoaded("memory", true);
+  })().finally(() => {
+    tabDataPromises.memory = null;
+  });
+  return tabDataPromises.memory;
+}
+
+async function ensureProjectTabData(tab = activeProjectTab.value, targetProjectId = projectId.value, options = {}) {
+  const normalizedTab = normalizeProjectDetailTab(tab);
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) {
+    return;
+  }
+  if (normalizedTab === "memory") {
+    await ensureMemoryTabData(effectiveProjectId, options);
+    return;
+  }
+  if (normalizedTab === "access") {
+    await ensureAccessTabData(effectiveProjectId, options);
+    return;
+  }
+  await ensureOverviewTabData(effectiveProjectId, options);
+}
+
+async function refresh(targetProjectId = projectId.value) {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) return;
   loading.value = true;
   try {
-    await fetchProject();
-    await Promise.all([
-      fetchProjectUsers(),
-      fetchMembers(),
-      fetchEmployees(),
-      fetchRules(),
-      fetchProjectTaskSessions(),
-    ]);
-    await applyMemoryFilters();
+    await fetchProject(effectiveProjectId);
+    await ensureProjectTabData(route.query.tab || activeProjectTab.value, effectiveProjectId, {
+      force: true,
+    });
   } catch (err) {
+    if (effectiveProjectId !== projectId.value) return;
     const message = err?.detail || err?.message || "加载失败";
     ElMessage.error(message);
     if (String(err?.detail || "").includes("Project access denied")) {
       router.push("/projects");
     }
   } finally {
-    loading.value = false;
+    if (effectiveProjectId === projectId.value) {
+      loading.value = false;
+    }
   }
 }
 
 function openProjectChat(chatSessionId = "") {
-  const currentProjectId = String(project.value?.id || projectId || "").trim();
+  const currentProjectId = String(project.value?.id || projectId.value || "").trim();
   if (!currentProjectId) {
     ElMessage.warning("当前项目 ID 无效");
     return;
@@ -3995,7 +4492,7 @@ function openProjectChat(chatSessionId = "") {
 }
 
 function openMaterialLibrary() {
-  const currentProjectId = String(project.value?.id || projectId || "").trim();
+  const currentProjectId = String(project.value?.id || projectId.value || "").trim();
   if (!currentProjectId) {
     ElMessage.warning("当前项目 ID 无效");
     return;
@@ -4103,7 +4600,7 @@ async function saveEdit() {
   }
   saving.value = true;
   try {
-    await api.put(`/projects/${projectId}`, editForm.value);
+    await api.put(`/projects/${projectId.value}`, editForm.value);
     ElMessage.success("项目已更新");
     showEditDialog.value = false;
     await fetchProject();
@@ -4122,7 +4619,7 @@ async function saveUiRuleBindings() {
   }
   uiRuleSaving.value = true;
   try {
-    await api.put(`/projects/${projectId}`, {
+    await api.put(`/projects/${projectId.value}`, {
       ui_rule_ids: normalizeStringList(uiRuleForm.value.rule_ids || []),
     });
     await fetchProject();
@@ -4138,9 +4635,9 @@ async function saveUiRuleBindings() {
 async function showProjectManual() {
   manualLoading.value = true;
   try {
-    const data = await api.get(`/projects/${projectId}/manual-template`);
+    const data = await api.get(`/projects/${projectId.value}/manual-template`);
     generatedManual.value = data.template || "";
-    manualDialogTitle.value = `项目使用手册: ${project.value?.name || projectId}`;
+    manualDialogTitle.value = `项目使用手册: ${project.value?.name || projectId.value}`;
     showManualDialog.value = true;
     ElMessage.success("项目使用手册加载成功");
   } catch (err) {
@@ -4187,7 +4684,7 @@ async function addMember() {
     const roleValue = String(addForm.value.role || "member").trim() || "member";
     const results = await Promise.allSettled(
       toAdd.map((employeeId) =>
-        api.post(`/projects/${projectId}/members`, {
+        api.post(`/projects/${projectId.value}/members`, {
           employee_id: employeeId,
           role: roleValue,
           enabled: !!addForm.value.enabled,
@@ -4246,7 +4743,7 @@ async function addProjectUsers() {
     const roleValue = String(userForm.value.role || "member").trim() || "member";
     const results = await Promise.allSettled(
       toAdd.map((username) =>
-        api.post(`/projects/${projectId}/users`, {
+        api.post(`/projects/${projectId.value}/users`, {
           username,
           role: roleValue,
           enabled: !!userForm.value.enabled,
@@ -4287,7 +4784,7 @@ async function removeMember(row) {
     { type: "warning" },
   );
   try {
-    await api.delete(`/projects/${projectId}/members/${row.employee_id}`);
+    await api.delete(`/projects/${projectId.value}/members/${row.employee_id}`);
     ElMessage.success("成员已移除");
     await fetchMembers();
     await fetchProjectMemories();
@@ -4307,7 +4804,7 @@ async function removeProjectUser(row) {
     { type: "warning" },
   );
   try {
-    await api.delete(`/projects/${projectId}/users/${encodeURIComponent(row.username)}`);
+    await api.delete(`/projects/${projectId.value}/users/${encodeURIComponent(row.username)}`);
     ElMessage.success("用户访问权限已移除");
     await fetchProjectUsers();
   } catch (err) {
@@ -4316,7 +4813,7 @@ async function removeProjectUser(row) {
 }
 
 onMounted(async () => {
-  await Promise.allSettled([refresh(), fetchRuntimeOrigin()]);
+  await fetchRuntimeOrigin();
 });
 </script>
 
@@ -4859,6 +5356,12 @@ onMounted(async () => {
   line-height: 1.6;
 }
 
+.table-panel__pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
 .memory-filters {
   display: flex;
   flex-wrap: wrap;
@@ -4901,6 +5404,160 @@ onMounted(async () => {
 .memory-overview-card small {
   color: #64748b;
   line-height: 1.5;
+}
+
+.memory-health-shell {
+  margin-bottom: 16px;
+  padding: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(125, 211, 252, 0.12), transparent 30%),
+    rgba(248, 250, 252, 0.8);
+}
+
+.memory-health-shell__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.memory-health-shell__head h5 {
+  margin: 8px 0 0;
+  color: #0f172a;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.memory-health-shell__head p {
+  margin: 0;
+  max-width: 30ch;
+  color: #64748b;
+  line-height: 1.6;
+  text-align: right;
+}
+
+.memory-health-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.memory-health-card,
+.memory-health-highlight {
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.memory-health-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+}
+
+.memory-health-card.is-warning {
+  border-color: rgba(245, 158, 11, 0.24);
+  background: rgba(255, 251, 235, 0.9);
+}
+
+.memory-health-card.is-danger {
+  border-color: rgba(239, 68, 68, 0.2);
+  background: rgba(255, 247, 245, 0.92);
+}
+
+.memory-health-card.is-info {
+  border-color: rgba(56, 189, 248, 0.18);
+  background: rgba(248, 251, 255, 0.92);
+}
+
+.memory-health-card.is-success {
+  border-color: rgba(16, 185, 129, 0.18);
+  background: rgba(240, 253, 250, 0.92);
+}
+
+.memory-health-card span,
+.memory-health-highlight__eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #7c8aa0;
+}
+
+.memory-health-card strong {
+  color: #0f172a;
+  font-size: 20px;
+  line-height: 1.1;
+}
+
+.memory-health-card small {
+  color: #64748b;
+  line-height: 1.55;
+}
+
+.memory-health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.memory-health-highlight {
+  padding: 16px;
+}
+
+.memory-health-highlight.is-warning {
+  border-color: rgba(245, 158, 11, 0.2);
+}
+
+.memory-health-highlight.is-danger {
+  border-color: rgba(239, 68, 68, 0.18);
+}
+
+.memory-health-highlight.is-info {
+  border-color: rgba(56, 189, 248, 0.16);
+}
+
+.memory-health-highlight__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.memory-health-highlight__head h6 {
+  margin: 8px 0 0;
+  color: #0f172a;
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.memory-health-highlight p {
+  margin: 12px 0 0;
+  color: #475569;
+  line-height: 1.65;
+}
+
+.memory-health-highlight__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.memory-health-highlight__meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.9);
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .memory-toolbar-shell {
@@ -5655,6 +6312,11 @@ code {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .memory-health-strip,
+  .memory-health-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .requirement-record__hero {
     flex-direction: column;
     align-items: stretch;
@@ -5757,6 +6419,25 @@ code {
   }
 
   .memory-overview-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .memory-health-shell {
+    padding: 14px;
+    border-radius: 20px;
+  }
+
+  .memory-health-shell__head {
+    flex-direction: column;
+  }
+
+  .memory-health-shell__head p {
+    max-width: none;
+    text-align: left;
+  }
+
+  .memory-health-strip,
+  .memory-health-grid {
     grid-template-columns: 1fr;
   }
 

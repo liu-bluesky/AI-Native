@@ -464,14 +464,73 @@ def _project_memory_fingerprint_tag(*parts: object) -> str:
     return f"fp:{digest}"
 
 
+def _append_memory_project_binding(content: str, project_id: str, project_name: str = "") -> str:
+    content_value = _normalize_text(content, 4000)
+    project_id_value = _normalize_text(project_id, 120)
+    project_name_value = _normalize_text(project_name, 160)
+    if not content_value:
+        return content_value
+    lines = [content_value]
+    if project_id_value and not re.search(r"(?:^|\n)\[项目ID\]\s*[^\n]+", content_value):
+        lines.append(f"[项目ID] {project_id_value}")
+    if project_name_value and not re.search(r"(?:^|\n)\[项目名称\]\s*[^\n]+", content_value):
+        lines.append(f"[项目名称] {project_name_value}")
+    return _normalize_text("\n".join(lines), 4000)
+
+
+def _strip_memory_project_binding(content: str) -> str:
+    content_value = _normalize_text(content, 4000)
+    if not content_value:
+        return ""
+    cleaned_lines = [
+        line
+        for line in content_value.splitlines()
+        if not re.match(r"^\[(?:项目ID|项目名称)\]\s*", line.strip())
+    ]
+    return _normalize_text("\n".join(cleaned_lines), 4000)
+
+
+def _memory_matches_project_scope(
+    memory: object,
+    *,
+    project_id: str,
+    project_name: str,
+) -> bool:
+    project_id_value = _normalize_text(project_id, 120)
+    project_name_value = _normalize_text(project_name, 160)
+    purpose_tags = {
+        _normalize_text(item, 120)
+        for item in (getattr(memory, "purpose_tags", ()) or [])
+        if _normalize_text(item, 120)
+    }
+    tagged_project_id = next(
+        (
+            tag.split("project-id:", 1)[1]
+            for tag in purpose_tags
+            if tag.startswith("project-id:")
+        ),
+        "",
+    )
+    content_value = _normalize_text(getattr(memory, "content", ""), 4000)
+    bound_project_id = ""
+    matched = re.search(r"(?:^|\n)\[项目ID\]\s*([^\n]+)", content_value)
+    if matched:
+        bound_project_id = _normalize_text(matched.group(1), 120)
+    if bound_project_id or tagged_project_id:
+        return (bound_project_id or tagged_project_id) == project_id_value
+    return _normalize_text(getattr(memory, "project_name", ""), 160) == project_name_value
+
+
 def _project_memory_duplicate_exists(
     *,
+    project_id: str,
     employee_id: str,
     project_name: str,
     content: str,
     purpose_tags: tuple[str, ...],
     fingerprint_tag: str,
 ) -> bool:
+    normalized_project_id = _normalize_text(project_id, 120)
     normalized_project_name = _normalize_text(project_name, 160)
     content_value = _normalize_text(content, 4000)
     required_tags = {
@@ -481,7 +540,11 @@ def _project_memory_duplicate_exists(
         and not _normalize_text(tag, 120).startswith(("chat-session:", "task-tree-session:", "fp:"))
     }
     for memory in _project_memory_candidate_items(employee_id):
-        if _normalize_text(getattr(memory, "project_name", ""), 160) != normalized_project_name:
+        if not _memory_matches_project_scope(
+            memory,
+            project_id=normalized_project_id,
+            project_name=normalized_project_name,
+        ):
             continue
         tags = {
             _normalize_text(item, 120)
@@ -490,7 +553,8 @@ def _project_memory_duplicate_exists(
         }
         if fingerprint_tag and fingerprint_tag in tags:
             return True
-        if content_value != _normalize_text(getattr(memory, "content", ""), 4000):
+        current_content = _normalize_text(getattr(memory, "content", ""), 4000)
+        if content_value != current_content and _strip_memory_project_binding(content_value) != _strip_memory_project_binding(current_content):
             continue
         if required_tags and not required_tags.issubset(tags):
             continue
@@ -1212,6 +1276,11 @@ def _save_project_memory_entries(
         # duplicates under every active member.
         target_employee_ids = [active_employee_ids[0]]
         memory_scope = MemoryScope.TEAM_SHARED
+    content_value = _append_memory_project_binding(
+        content_value,
+        project_id_value,
+        normalized_project_name,
+    )
     memory_ids: list[str] = []
     skipped_employee_ids: list[str] = []
     importance_value = max(0.0, min(float(importance), 1.0))
@@ -1221,9 +1290,18 @@ def _save_project_memory_entries(
         "|".join(purpose_tags),
         content_value,
     )
-    purpose_tags_value = tuple(dict.fromkeys([*purpose_tags, *([fingerprint_tag] if fingerprint_tag else [])]))
+    purpose_tags_value = tuple(
+        dict.fromkeys(
+            [
+                *purpose_tags,
+                f"project-id:{project_id_value}",
+                *([fingerprint_tag] if fingerprint_tag else []),
+            ]
+        )
+    )
     for target_employee_id in target_employee_ids:
         if _project_memory_duplicate_exists(
+            project_id=project_id_value,
             employee_id=target_employee_id,
             project_name=normalized_project_name,
             content=content_value,
@@ -1685,6 +1763,12 @@ def _collect_project_memories(
                 project_name=normalized_project_name,
             )
         for mem in memories:
+            if not _memory_matches_project_scope(
+                mem,
+                project_id=project_id_value,
+                project_name=normalized_project_name,
+            ):
+                continue
             if getattr(mem, "id", "") in seen_ids:
                 continue
             seen_ids.add(getattr(mem, "id", ""))
@@ -2091,11 +2175,14 @@ def _client_profile_text(client_name: str) -> str:
             "- 定位: 适合需要较强代码修改、命令执行和长任务续跑的开发型 CLI。",
             "- 推荐链路: query://usage-guide -> analyze_task -> search_ids/get_manual_content -> resolve_relevant_context -> generate_execution_plan -> check_operation_policy -> start_work_session。",
             "- 接入约束: `description` 只用于说明，不参与项目绑定；要续接任务树，优先让 URL 带上 `project_id` 和 `chat_session_id`，缺失时首轮调用 `bind_project_context(...)`。",
+            "- 接入约束: 每个 CLI 会话都应自行生成唯一 `chat_session_id`；如能解析项目工作区，优先持久化到项目目录 `.ai-employee/query-mcp/`，否则再退回 CLI 自己的本地存储。同一轮任务内固定复用，只有新开的并行 CLI 或新任务才重新生成。",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall。",
             "- 任务树约束: 任务树节点必须描述面向用户目标的真实工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 或候选代理工具名直接写成节点。",
             "- 工作流约束: 用户提需求后先规划，再执行；执行中只更新任务树、工作事实和会话事件，不要提前输出最终结论。",
             "- 工作流约束: 必须做到“完成一个节点、补一次验证、再进入下一步”；只有整棵任务树完成并写入验证结果后，当前需求才算结束。",
-            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id；每完成一个子阶段调用 save_work_facts 或 append_session_event，恢复时调用 resume_work_session / summarize_checkpoint。",
+            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起优先持久化到项目目录 `.ai-employee/query-mcp/`；若当前拿不到项目工作区，再退回 CLI 自己的本地存储。每完成一个子阶段调用 save_work_facts 或 append_session_event。",
+            "- 长任务建议: 中断恢复顺序应固定为“恢复本地 `chat_session_id/session_id` -> bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...) -> 按当前任务树继续执行”；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。",
+            "- 可视化建议: 如宿主前端已接项目聊天接口，可额外读取 `/api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...` 查看误判样本汇总与高频 issue。",
             "- 适合自动化的能力: 任务分析、相关上下文聚合、执行步骤骨架、风险分类、工作轨迹恢复。",
             "- 需要谨慎的能力: 高风险命令、工作区外路径、破坏性命令，优先先调用 check_operation_policy。",
         ]
@@ -2106,13 +2193,16 @@ def _client_profile_text(client_name: str) -> str:
             "- 推荐链路: query://usage-guide -> query://client-profile/codex -> search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan -> check_operation_policy -> start_work_session -> build_delivery_report。",
             "- 接入约束: `description`、项目说明和“当前项目”文字不会自动绑定任务树；URL 或首轮工具参数里必须显式出现 `project_id`，需要续接时再补 `chat_session_id` 或 `bind_project_context(...)`。",
             "- 接入约束: 如果当前 CLI 没有活跃 MCP session，只要显式传了 `project_id + chat_session_id`，`bind_project_context(...)` 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 `chat_session_id`。",
+            "- 接入约束: 每个 Codex CLI 会话都应先持久化自己生成的 `chat_session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Codex 自己的本地存储。同一进程整轮任务固定复用，只有新开的并行任务或全新需求才重新生成。",
             "- 查询约束: 首轮先把用户原始问题写进 `search_ids(keyword=\"<用户原始问题>\")`；项目型问题再读取 `get_manual_content(project_id=...)`，不要只写“当前项目”这类代称。",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall_project_memory / recall_employee_memory。",
             "- 任务树约束: 查询型问题保持单检索节点；实现型任务节点才写成分析、实现、验证这类面向目标的步骤。不要把内部检索工具、规则查询工具、候选代理工具或 `Auto inferred proxy entry from scripts/...` 这类描述直接当成节点。",
             "- 工作流约束: 用户提需求后先生成计划并挂到任务树，再按计划逐项推进；执行中不要把阶段性结果写成最终结论。",
             "- 工作流约束: 每完成一个计划项就立刻补验证结果，再处理下一个；只有所有计划项完成后，才能生成最终总结或补稳定结论记忆。",
             "- 收尾要求: 若宿主未启用自动记忆，或本轮需要额外沉淀稳定结论/关键决策，再调用一次 save_project_memory(project_id, content, ...)；不要在同一需求的每个中间步骤重复补记。",
-            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id；关键决策写入 save_work_facts，关键执行节点写入 append_session_event，并始终复用同一个 `chat_session_id` / `session_id`。",
+            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起优先持久化到项目目录 `.ai-employee/query-mcp/`；若当前拿不到项目工作区，再退回 Codex 自己的本地存储。关键决策写入 save_work_facts，关键执行节点写入 append_session_event，并始终复用同一个 `chat_session_id` / `session_id`。",
+            "- 长任务建议: 中断后恢复时，先从本地恢复 `chat_session_id + session_id`，再按 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)` 的顺序拉起上下文，随后紧接着继续当前任务；如果项目工作区不可解析，则恢复来源应是 Codex 自己的本地存储，而不是共享仓库根目录。",
+            "- 可视化建议: 如需从前端直接查看当前聊天的任务树误判汇总，可读取 `/api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...`。",
             "- 适合自动化的能力: 结构化任务分析、项目规则聚合、交付报告、更新日志条目生成。",
             "- 需要谨慎的能力: 任何真实执行前先补 classify_command_risk / check_operation_policy。",
         ]
@@ -2122,12 +2212,13 @@ def _client_profile_text(client_name: str) -> str:
             "- 定位: 适合通用 MCP 宿主或尚未针对当前系统定制的 CLI 客户端。",
             "- 推荐链路: query://usage-guide -> search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> start_work_session。",
             "- 接入约束: `type=sse` 的客户端有些会直接使用 `POST /mcp/query/sse` 作为 JSON-RPC bridge；这时如果 URL 没有 `project_id` / `chat_session_id`，首轮必须调用 `bind_project_context(...)` 或在工具参数里显式传 `project_id`。",
+            "- 接入约束: 统一入口 CLI 建议同时持久化自生成的 `chat_session_id` 和服务端返回的 `session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 CLI 自己的本地存储，这样中断后才能稳定续跑。",
             "- 记忆约束: 不要把 recall 当成每轮固定前置步骤；只有新需求、续跑恢复、修复旧问题或明显需要历史经验时才查记忆。",
             "- 任务树约束: 若宿主会展示任务树，节点必须直接对应用户目标，不要把内部检索工具、规划工具或候选代理工具直接展示成节点。",
             "- 工作流约束: 先计划、再执行、逐项验证；未完成前只保留需求记录和过程状态，不要提前输出最终结论。",
             "- 最小可用目标: 先跑通查询、分析、规划，再逐步接入策略判断和恢复能力。",
             "- 建议优先工具: analyze_task、resolve_relevant_context、generate_execution_plan、check_operation_policy。",
-            "- 长任务建议: 新会话优先调用 start_work_session；使用 save_work_facts 和 summarize_checkpoint 做轻量恢复。",
+            "- 长任务建议: 新会话优先调用 start_work_session；恢复时按 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)` 顺序拉起上下文，再继续执行。",
         ]
     return "\n".join([f"# {title} Client Profile", "", *focus])
 
@@ -2275,6 +2366,19 @@ def create_query_mcp(
             "",
         )
         return _normalize_text(first_line, 1000)
+
+    def _append_memory_project_binding(content: str, project_id: str, project_name: str = "") -> str:
+        content_value = _normalize_text(content, 4000)
+        project_id_value = _normalize_text(project_id, 120)
+        project_name_value = _normalize_text(project_name, 160)
+        if not content_value:
+            return content_value
+        lines = [content_value]
+        if project_id_value and not _extract_memory_section(content_value, "项目ID"):
+            lines.append(f"[项目ID] {project_id_value}")
+        if project_name_value and not _extract_memory_section(content_value, "项目名称"):
+            lines.append(f"[项目名称] {project_name_value}")
+        return _normalize_text("\n".join(lines), 4000)
 
     def _append_memory_chat_session(content: str, chat_session_id: str) -> str:
         content_value = _normalize_text(content, 4000)
@@ -2864,6 +2968,7 @@ def create_query_mcp(
             "2. MCP 配置里的 description、项目说明、\"当前项目\" 这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文，以及 bind_project_context(...) 写入的 MCP 会话绑定。\n"
             "3. 若接入地址缺少 project_id，或需要续接任务树但缺少 chat_session_id，首轮立即调用 bind_project_context(project_id, chat_session_id?, root_goal?)；不要只依赖 description 里的项目说明。\n"
             "4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。\n"
+            "4.1 每个 CLI 会话都应持久化自己生成的 chat_session_id；如能解析项目工作区，优先写到项目目录 .ai-employee/query-mcp/，否则再退回 CLI 自己的本地存储。同一轮任务固定复用，只有新开的并行 CLI 或全新任务才重新生成。\n"
             "5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。\n"
             "6. 首轮查询必须把用户原始问题原文放进 search_ids(keyword=\"<用户原始问题>\")；不要只写“当前项目”“这个规则”“项目手册”这类代称。\n"
             "7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。\n"
@@ -2900,9 +3005,12 @@ def create_query_mcp(
             "- 多轮任务先 start_work_session；后续复用同一个 chat_session_id / session_id，并用 save_work_facts、append_session_event、resume_work_session、summarize_checkpoint 维护轨迹。\n"
             "- start_work_session 可返回服务端生成的 session_id；save_work_facts 和 append_session_event 支持附带 session_id、phase、step、changed_files、verification、risks、next_steps 等结构化轨迹字段；resume_work_session / summarize_checkpoint 会聚合这些字段，直接输出阶段、步骤、文件、验证、风险和下一步。\n"
             "- 每个新聊天窗口的首轮有效对话，如用户未显式提供 session_id，应优先调用 start_work_session 获取服务端 session_id，再在本窗口后续所有 save_work_facts / append_session_event / resume_work_session / summarize_checkpoint 中复用同一个值；如果未先调用，save_work_facts 也会自动补生成一个。\n"
+            "- 建议把客户端自生成的 chat_session_id 和 start_work_session 返回的 session_id 一起持久化；如能解析项目工作区，优先写到项目目录 .ai-employee/query-mcp/，否则再退回 CLI 自己的本地存储。这样 CLI 中断后可以直接恢复同一条任务树和工作轨迹。\n"
             "- start_work_session 会立即写入一条 started 事件建立正式工作轨迹；首次拿到 session_id 后，仍建议尽快调用一次 save_work_facts 补充任务摘要、阶段和文件信息。若既不调用 start_work_session，也不写 save_work_facts / append_session_event，而只写 save_project_memory，会出现“有项目记忆但无正式工作轨迹”的情况。\n"
             "- 缺少活跃 MCP session 的 CLI / bridge 场景下，也必须显式传入并持续复用同一个 chat_session_id；否则容易出现“轨迹已写入，但当前主视图没有挂到任务树”的错觉。\n"
+            "- 推荐的中断恢复顺序是：先从本地恢复 chat_session_id 和 session_id，再调用 bind_project_context(...)，然后依次调用 resume_work_session(...)、summarize_checkpoint(...)，最后按当前任务树继续执行；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。\n"
             "- 如需回答“最近做了哪些需求”“某个需求什么时候改过”“按日期查需求变更”，可调用 list_recent_project_requirements / get_requirement_history；它们会优先读取 work_session_store，命中不足时回退项目记忆。\n"
+            "- 如宿主前端需要直接展示当前聊天的误判样本汇总，可读取 /api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...。\n"
             "\n"
             "## 记忆与交付\n"
             "- recall_project_memory / recall_employee_memory 只在新需求开始、续跑恢复、修复旧问题或明显需要历史经验时使用；不要把记忆检索当成每个计划节点的固定前置动作。\n"

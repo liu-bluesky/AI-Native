@@ -19,6 +19,7 @@ from stores.factory import (
     project_store,
     role_store,
     system_config_store,
+    task_tree_evolution_store,
     usage_store,
     user_store,
     work_session_store,

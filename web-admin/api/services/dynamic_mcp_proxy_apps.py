@@ -18,6 +18,10 @@ from services.dynamic_mcp_audit import (
 )
 from services.project_mcp_presence import touch_project_mcp_presence as _touch_project_mcp_presence
 from services.project_chat_task_tree import audit_task_tree_round, ensure_task_tree
+from services.query_mcp_project_state import (
+    load_resumable_query_mcp_project_state,
+    save_query_mcp_project_state,
+)
 
 
 def _is_well_known_probe(path: str) -> bool:
@@ -37,9 +41,7 @@ _QUERY_TASK_TREE_AUDIT_SKIP_TOOLS = {
     "save_project_memory",
 }
 
-_QUERY_QUESTION_TASK_TREE_SKIP_TOOLS = {
-    "search_ids",
-}
+_QUERY_QUESTION_TASK_TREE_SKIP_TOOLS: set[str] = set()
 
 _QUERY_RESULT_MEMORY_SKIP_TOOLS = {
     "bind_project_context",
@@ -740,6 +742,12 @@ class QueryMcpProxyApp:
         is_sse = auth_state["is_sse"]
         is_streamable = auth_state["is_streamable"]
         is_messages = auth_state["is_messages"]
+        accept_header = ""
+        for name, value in scope.get("headers") or []:
+            if bytes(name).lower() == b"accept":
+                accept_header = value.decode("latin-1", errors="ignore").lower()
+                break
+        expects_event_stream_response = "text/event-stream" in accept_header
         session_id = ((query.get("session_id") or [""])[0]).strip()
         request_token = uuid.uuid4().hex[:10]
         chat_session_id = _resolve_chat_session_id(query, session_id, self._session_contexts)
@@ -752,7 +760,9 @@ class QueryMcpProxyApp:
             not session_id and method != "GET" and (is_streamable or is_sse)
         )
         direct_cli_context_key = ""
+        persisted_direct_state: dict[str, str] = {}
         if direct_cli_fallback_enabled and project_id_from_query:
+            persisted_direct_state = load_resumable_query_mcp_project_state(project_id_from_query)
             direct_cli_context_key = _build_direct_cli_context_key(
                 project_id_from_query,
                 key_owner_username=key_owner_username,
@@ -764,7 +774,41 @@ class QueryMcpProxyApp:
                     stored_direct_context.get("chat_session_id", ""),
                     120,
                 )
+            if not chat_session_id:
+                chat_session_id = _normalize_text(
+                    persisted_direct_state.get("chat_session_id", ""),
+                    120,
+                )
         direct_cli_chat_session_id = ""
+
+        def _persist_project_local_state(**extra: str) -> dict[str, Any]:
+            resolved_project_id = _normalize_text(
+                extra.get("project_id") or project_id_from_query,
+                120,
+            )
+            resolved_chat_session_id = _normalize_text(
+                extra.get("chat_session_id") or chat_session_id or direct_cli_chat_session_id,
+                200,
+            )
+            if not resolved_project_id or not resolved_chat_session_id:
+                return {}
+            return save_query_mcp_project_state(
+                project_id=resolved_project_id,
+                project_name=_normalize_text(
+                    extra.get("project_name") or project_name_from_query,
+                    200,
+                ),
+                employee_id=_normalize_text(extra.get("employee_id"), 120),
+                chat_session_id=resolved_chat_session_id,
+                session_id=_normalize_text(extra.get("work_session_id"), 200),
+                root_goal=_normalize_text(extra.get("root_goal"), 1000),
+                latest_status=_normalize_text(extra.get("latest_status"), 80),
+                phase=_normalize_text(extra.get("phase"), 80),
+                step=_normalize_text(extra.get("step"), 200),
+                developer_name=developer_name,
+                key_owner_username=key_owner_username,
+                source=_normalize_text(extra.get("source"), 120),
+            )
 
         def _ensure_direct_cli_chat_session_id(project_id_hint: str = "") -> str:
             nonlocal chat_session_id, direct_cli_chat_session_id
@@ -786,6 +830,11 @@ class QueryMcpProxyApp:
             if stored_chat_session_id:
                 direct_cli_chat_session_id = stored_chat_session_id
             if not direct_cli_chat_session_id:
+                direct_cli_chat_session_id = _normalize_text(
+                    persisted_direct_state.get("chat_session_id", ""),
+                    120,
+                )
+            if not direct_cli_chat_session_id:
                 direct_cli_chat_session_id = _build_query_cli_chat_session_id(
                     normalized_project_id,
                     key_owner_username=key_owner_username,
@@ -801,6 +850,13 @@ class QueryMcpProxyApp:
             }
             if self._current_mcp_session_id_ctx is not None:
                 self._current_mcp_session_id_ctx.set(chat_session_id or session_id)
+            _persist_project_local_state(
+                project_id=normalized_project_id,
+                project_name=str(project_name_from_query or "").strip(),
+                employee_id=str((stored_direct_context or {}).get("employee_id") or "").strip(),
+                chat_session_id=chat_session_id,
+                source="direct_cli_fallback",
+            )
             return chat_session_id
 
         if not chat_session_id:
@@ -891,6 +947,51 @@ class QueryMcpProxyApp:
             context: dict[str, str],
             metadata: dict[str, Any],
         ) -> None:
+            parsed_payload = tool_payload.get("parsed_payload")
+            if isinstance(parsed_payload, dict):
+                task_tree_payload = (
+                    parsed_payload.get("task_tree")
+                    if isinstance(parsed_payload.get("task_tree"), dict)
+                    else {}
+                )
+                trajectory_payload = (
+                    parsed_payload.get("trajectory")
+                    if isinstance(parsed_payload.get("trajectory"), dict)
+                    else {}
+                )
+                _persist_project_local_state(
+                    project_id=str((context or {}).get("project_id") or parsed_payload.get("project_id") or ""),
+                    project_name=str((context or {}).get("project_name") or parsed_payload.get("project_name") or ""),
+                    employee_id=str((context or {}).get("employee_id") or parsed_payload.get("employee_id") or ""),
+                    chat_session_id=str(
+                        parsed_payload.get("chat_session_id")
+                        or task_tree_payload.get("chat_session_id")
+                        or trajectory_payload.get("task_tree_chat_session_id")
+                        or (context or {}).get("chat_session_id")
+                        or ""
+                    ),
+                    work_session_id=str(
+                        parsed_payload.get("session_id")
+                        or trajectory_payload.get("session_id")
+                        or ""
+                    ),
+                    root_goal=str(
+                        parsed_payload.get("goal")
+                        or parsed_payload.get("root_goal")
+                        or task_tree_payload.get("root_goal")
+                        or ""
+                    ),
+                    latest_status=str(
+                        parsed_payload.get("status")
+                        or parsed_payload.get("initial_status")
+                        or trajectory_payload.get("status")
+                        or task_tree_payload.get("status")
+                        or ""
+                    ),
+                    phase=str(parsed_payload.get("phase") or trajectory_payload.get("phase") or ""),
+                    step=str(parsed_payload.get("step") or trajectory_payload.get("step") or ""),
+                    source=f"tool_result:{_normalize_text(tool_name, 120)}",
+                )
             if method_name != "tools/call":
                 return
             normalized_tool_name = _normalize_text(tool_name, 120)
@@ -965,6 +1066,17 @@ class QueryMcpProxyApp:
             tool_name: str,
             context: dict[str, str],
         ) -> None:
+            resolved_project_id = str((context or {}).get("project_id") or project_id_from_query).strip()
+            resolved_project_name = str((context or {}).get("project_name") or project_name_from_query).strip()
+            resolved_chat_session_id = _resolve_effective_chat_session_id(context)
+            if resolved_project_id and resolved_chat_session_id:
+                _persist_project_local_state(
+                    project_id=resolved_project_id,
+                    project_name=resolved_project_name,
+                    employee_id=str((context or {}).get("employee_id") or employee_id_from_query),
+                    chat_session_id=resolved_chat_session_id,
+                    source=f"context:{_normalize_text(tool_name or method_name, 120)}",
+                )
             resolved_project_id, resolved_project_name = _resolve_project_context(
                 query,
                 session_id,
@@ -1001,11 +1113,17 @@ class QueryMcpProxyApp:
             resolved_chat_session_id = _resolve_effective_chat_session_id(context)
             resolved_username = str(key_owner_username or developer_name).strip()
             normalized_tool_name = _normalize_text(tool_name, 120)
+            should_skip_question_bootstrap = (
+                normalized_tool_name == "search_ids"
+                and expects_event_stream_response
+                and not is_sse
+            )
             if (
                 resolved_project_id
                 and resolved_chat_session_id
                 and resolved_username
                 and normalized_tool_name not in _QUERY_QUESTION_TASK_TREE_SKIP_TOOLS
+                and not should_skip_question_bootstrap
             ):
                 root_goal = ""
                 for item in questions or []:

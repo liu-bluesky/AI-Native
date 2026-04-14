@@ -20,6 +20,7 @@ def _build_project_chat_task_tree_test_client(tmp_path, monkeypatch, auth_payloa
         "project_chat_store",
         "project_chat_task_store",
         "work_session_store",
+        "task_tree_evolution_store",
     ):
         getattr(store_factory, proxy_name)._instance = None
 
@@ -487,6 +488,12 @@ def test_project_chat_task_tree_audit_keeps_unverified_completion_out_of_done(
 
     assert audit_payload is not None
     assert audit_payload["code"] == "completion_unverified"
+    assert audit_payload["severity"] == "high"
+    assert audit_payload["category"] == "verification_guard"
+    assert audit_payload["message"]
+    assert audit_payload["recommended_action"]
+    assert any("当前节点：" in item for item in audit_payload["evidence"])
+    assert any("建议状态：" in item for item in audit_payload["evidence"])
     assert audit_payload["auto_updated"] is True
     assert audit_payload["suggested_status"] == "verifying"
     assert audit_payload["task_tree"]["current_node"]["status"] == "verifying"
@@ -569,6 +576,10 @@ def test_project_chat_task_tree_audit_auto_completes_context_bootstrap_step(
 
     assert audit_payload is not None
     assert audit_payload["code"] == "bootstrap_step_auto_completed"
+    assert audit_payload["severity"] == "low"
+    assert audit_payload["category"] == "context_bootstrap"
+    assert audit_payload["recommended_action"]
+    assert any("自动完成上下文预检节点" in item for item in audit_payload["evidence"])
     assert audit_payload["auto_updated"] is True
     assert audit_payload["task_tree"]["progress_percent"] > 0
     assert audit_payload["task_tree"]["current_node"]["id"] != current_node_before["id"]
@@ -641,6 +652,276 @@ def test_project_chat_task_tree_generates_single_step_for_colloquial_lookup_quer
     assert "检索问题所需信息并直接回答用户" in leaf_nodes[0]["title"]
 
 
+def test_project_chat_task_tree_governance_goal_avoids_tabs_template(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    generate_response = client.post(
+        "/api/projects/proj-1/chat/task-tree/generate",
+        json={
+            "chat_session_id": chat_session_id,
+            "message": "升级统一MCP任务树持久化方案，让前端页面直接看到反馈并支持中断恢复",
+        },
+    )
+    assert generate_response.status_code == 200
+    payload = generate_response.json()["task_tree"]
+    leaf_nodes = [item for item in payload["nodes"] if int(item["level"]) == 1]
+    assert leaf_nodes
+    assert not any("Tabs" in item["title"] or "切换路径" in item["title"] for item in leaf_nodes)
+    health = payload["task_tree_health"]
+    assert health["detected_intent"] == "governance"
+    assert health["rebuild_recommended"] is False
+    assert health["safe_to_display"] is True
+
+
+def test_project_chat_task_tree_health_flags_template_goal_mismatch(
+    tmp_path,
+    monkeypatch,
+):
+    from core.deps import project_chat_task_store
+    from services.project_chat_task_tree import serialize_task_tree
+    from stores.json.project_chat_task_store import ProjectChatTaskNode, ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    chat_session_id = "chat-session-health-1"
+    session_id = "tts-health-1"
+    root_node = ProjectChatTaskNode(
+        id="node-root-health-1",
+        session_id=session_id,
+        title="升级统一MCP任务树持久化方案，让前端页面直接看到反馈并支持中断恢复",
+        description="根任务",
+        level=0,
+        sort_order=0,
+        status="pending",
+    )
+    wrong_ui_node = ProjectChatTaskNode(
+        id="node-ui-health-1",
+        session_id=session_id,
+        parent_id=root_node.id,
+        title="改造成页内 Tabs 切换并保持状态同步",
+        description="围绕错误模板推进页面切换改造。",
+        level=1,
+        sort_order=1,
+        status="pending",
+    )
+    verification_node = ProjectChatTaskNode(
+        id="node-verify-health-1",
+        session_id=session_id,
+        parent_id=root_node.id,
+        title="验证结果并完成本轮收尾",
+        description="验证当前治理任务结果。",
+        level=1,
+        sort_order=2,
+        status="pending",
+    )
+    saved = project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id=session_id,
+            project_id="proj-1",
+            username="tester",
+            chat_session_id=chat_session_id,
+            title=root_node.title,
+            root_goal=root_node.title,
+            current_node_id=wrong_ui_node.id,
+            nodes=[root_node, wrong_ui_node, verification_node],
+        )
+    )
+
+    payload = serialize_task_tree(saved)
+    assert payload is not None
+    health = payload["task_tree_health"]
+    assert health["detected_intent"] == "governance"
+    assert health["rebuild_recommended"] is True
+    assert health["safe_to_display"] is False
+    issue_codes = {item["code"] for item in health["issues"]}
+    assert "template_goal_mismatch" in issue_codes
+
+
+def test_project_chat_task_tree_generation_mismatch_records_evolution_sample(
+    tmp_path,
+    monkeypatch,
+):
+    from core.deps import project_chat_task_store
+    from services.project_chat_task_tree import _record_task_tree_health_evolution_samples
+    from stores.json.project_chat_task_store import ProjectChatTaskNode, ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    chat_session_id = "chat-session-health-sample-1"
+    session_id = "tts-health-sample-1"
+    root_goal = "升级统一MCP任务树持久化方案，让前端页面直接看到反馈并支持中断恢复"
+    root_node = ProjectChatTaskNode(
+        id="node-root-health-sample-1",
+        session_id=session_id,
+        title=root_goal,
+        description="根任务",
+        level=0,
+        sort_order=0,
+        status="pending",
+    )
+    wrong_ui_node = ProjectChatTaskNode(
+        id="node-ui-health-sample-1",
+        session_id=session_id,
+        parent_id=root_node.id,
+        title="改造成页内 Tabs 切换并保持状态同步",
+        description="围绕错误模板推进页面切换改造。",
+        level=1,
+        sort_order=1,
+        status="pending",
+    )
+    verification_node = ProjectChatTaskNode(
+        id="node-verify-health-sample-1",
+        session_id=session_id,
+        parent_id=root_node.id,
+        title="验证结果并完成本轮收尾",
+        description="验证当前治理任务结果。",
+        level=1,
+        sort_order=2,
+        status="pending",
+    )
+    session = project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id=session_id,
+            project_id="proj-1",
+            username="tester",
+            chat_session_id=chat_session_id,
+            title=root_goal,
+            root_goal=root_goal,
+            current_node_id=wrong_ui_node.id,
+            nodes=[root_node, wrong_ui_node, verification_node],
+        )
+    )
+
+    _record_task_tree_health_evolution_samples(session)
+
+    samples = store_factory.task_tree_evolution_store.list_samples(
+        project_id="proj-1",
+        chat_session_id=chat_session_id,
+        source_kind="generation",
+    )
+    assert samples
+    assert samples[0].issue_code == "template_goal_mismatch"
+    assert samples[0].wrong_template == "ui_flow"
+    assert samples[0].corrected_template == "governance"
+
+
+def test_project_chat_task_tree_evolution_summary_route_returns_high_frequency_issues(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_store import ProjectConfig
+    from stores.json.task_tree_evolution_store import TaskTreeEvolutionSample
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    store_factory.task_tree_evolution_store.save(
+        TaskTreeEvolutionSample(
+            id="ttes-1",
+            project_id="proj-1",
+            chat_session_id="chat-1",
+            task_tree_session_id="tts-1",
+            source_kind="generation",
+            root_goal="升级统一 MCP 任务树持久化",
+            detected_intent="governance",
+            wrong_template="ui_flow",
+            corrected_template="governance",
+            issue_code="template_goal_mismatch",
+            issue_message="当前节点与治理目标不一致。",
+            user_visible=True,
+            evidence=["命中了页面型启发式关键词：页面"],
+        )
+    )
+    store_factory.task_tree_evolution_store.save(
+        TaskTreeEvolutionSample(
+            id="ttes-2",
+            project_id="proj-1",
+            chat_session_id="chat-1",
+            task_tree_session_id="tts-1",
+            source_kind="generation",
+            root_goal="升级统一 MCP 任务树持久化",
+            detected_intent="governance",
+            wrong_template="ui_flow",
+            corrected_template="governance",
+            issue_code="template_goal_mismatch",
+            issue_message="当前节点与治理目标不一致。",
+            user_visible=True,
+            evidence=["命中了页面型启发式关键词：页面"],
+        )
+    )
+    store_factory.task_tree_evolution_store.save(
+        TaskTreeEvolutionSample(
+            id="ttes-3",
+            project_id="proj-1",
+            chat_session_id="chat-1",
+            task_tree_session_id="tts-1",
+            source_kind="audit",
+            root_goal="升级统一 MCP 任务树持久化",
+            detected_intent="governance",
+            wrong_template="",
+            corrected_template="",
+            issue_code="progress_not_written_back",
+            issue_message="当前节点未回写。",
+            user_visible=True,
+            manually_corrected=True,
+            evidence=["建议状态：in_progress"],
+        )
+    )
+
+    response = client.get(
+        "/api/projects/proj-1/chat/task-tree/evolution-summary",
+        params={
+            "chat_session_id": "chat-1",
+            "top": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["project_id"] == "proj-1"
+    assert payload["chat_session_id"] == "chat-1"
+    assert payload["summary"]["total_samples"] == 3
+    assert payload["summary"]["user_visible_count"] == 3
+    assert payload["summary"]["manually_corrected_count"] == 1
+    assert payload["summary"]["top_issue_codes"][0] == {
+        "issue_code": "template_goal_mismatch",
+        "count": 2,
+    }
+    assert payload["summary"]["top_wrong_templates"][0] == {
+        "wrong_template": "ui_flow",
+        "count": 2,
+    }
+    assert len(payload["summary"]["recent_samples"]) == 2
+
+
 def test_project_chat_task_tree_audit_auto_completes_lookup_query(
     tmp_path,
     monkeypatch,
@@ -679,6 +960,11 @@ def test_project_chat_task_tree_audit_auto_completes_lookup_query(
 
     assert audit_payload is not None
     assert audit_payload["code"] == "lookup_query_auto_completed"
+    assert audit_payload["severity"] == "low"
+    assert audit_payload["category"] == "lookup_query"
+    assert audit_payload["message"]
+    assert audit_payload["recommended_action"]
+    assert any("归档目标：" in item for item in audit_payload["evidence"])
     assert audit_payload["task_tree"] is None
     assert audit_payload["history_task_tree"]["status"] == "done"
     assert audit_payload["history_task_tree"]["is_archived"] is True
@@ -741,6 +1027,9 @@ def test_project_chat_task_tree_audit_auto_completes_colloquial_lookup_query(
 
     assert audit_payload is not None
     assert audit_payload["code"] == "lookup_query_auto_completed"
+    assert audit_payload["severity"] == "low"
+    assert audit_payload["category"] == "lookup_query"
+    assert audit_payload["message"]
     assert audit_payload["history_task_tree"]["status"] == "done"
     assert audit_payload["history_task_tree"]["is_archived"] is True
 
@@ -789,11 +1078,24 @@ def test_project_chat_task_tree_audit_recovers_embedded_task_completion_call(
 
     assert audit_payload is not None
     assert audit_payload["code"] == "embedded_task_call_recovered"
+    assert audit_payload["severity"] == "low"
+    assert audit_payload["category"] == "embedded_writeback_recovery"
+    assert audit_payload["message"]
+    assert audit_payload["recommended_action"]
+    assert any("恢复的嵌入调用：" in item for item in audit_payload["evidence"])
     updated_leaf = next(
         item for item in audit_payload["task_tree"]["nodes"] if item["id"] == leaf_node["id"]
     )
     assert updated_leaf["status"] == "done"
     assert "日志核对" in updated_leaf["verification_result"]
+
+    samples = store_factory.task_tree_evolution_store.list_samples(
+        project_id="proj-1",
+        chat_session_id=chat_session_id,
+        source_kind="audit",
+    )
+    assert samples
+    assert any(item.issue_code == "embedded_task_call_recovered" for item in samples)
 
 
 def test_project_chat_task_tree_regenerates_for_new_goal_after_completion(
@@ -854,16 +1156,20 @@ def test_project_chat_task_tree_regenerates_for_new_goal_after_completion(
         },
     )
     assert start_root.status_code == 200
-    finish_root = client.patch(
-        f"/api/projects/proj-1/chat/task-tree/nodes/{root_node['id']}",
-        json={
-            "chat_session_id": chat_session_id,
-            "status": "done",
-            "verification_result": "整体验证通过",
-        },
-    )
-    assert finish_root.status_code == 200
-    finish_root_payload = finish_root.json()
+    start_root_payload = start_root.json()
+    finish_root_payload = start_root_payload
+    if start_root_payload.get("history_task_tree") is None:
+        finish_root = client.patch(
+            f"/api/projects/proj-1/chat/task-tree/nodes/{root_node['id']}",
+            json={
+                "chat_session_id": chat_session_id,
+                "status": "done",
+                "verification_result": "整体验证通过",
+            },
+        )
+        assert finish_root.status_code == 200
+        finish_root_payload = finish_root.json()
+
     assert finish_root_payload["task_tree"] is None
     assert finish_root_payload["history_task_tree"]["status"] == "done"
     assert finish_root_payload["history_task_tree"]["is_archived"] is True

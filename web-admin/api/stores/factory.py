@@ -265,6 +265,15 @@ def _create_work_session_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_task_tree_evolution_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import TaskTreeEvolutionStore
+
+        return TaskTreeEvolutionStore(_data_dir())
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 user_store = _StoreProxy(_create_user_store)
 changelog_entry_store = _StoreProxy(_create_changelog_entry_store)
 role_store = _StoreProxy(_create_role_store)
@@ -280,6 +289,7 @@ usage_store = _StoreProxy(_create_usage_store)
 external_mcp_store = _StoreProxy(_create_external_mcp_store)
 local_connector_store = _StoreProxy(_create_local_connector_store)
 work_session_store = _StoreProxy(_create_work_session_store)
+task_tree_evolution_store = _StoreProxy(_create_task_tree_evolution_store)
 
 
 __all__ = [
@@ -298,4 +308,5 @@ __all__ = [
     "external_mcp_store",
     "local_connector_store",
     "work_session_store",
+    "task_tree_evolution_store",
 ]

@@ -493,10 +493,12 @@ class AgentOrchestrator:
         cancel_event: asyncio.Event,
         username: str = "",
         chat_session_id: str = "",
+        role_ids: list[str] | None = None,
         messages: list[dict] | None = None,
         local_connector: Any | None = None,
         local_connector_workspace_path: str = "",
         local_connector_sandbox_mode: str = "workspace-write",
+        global_assistant_bridge_handler: Any | None = None,
     ) -> AsyncGenerator[dict, None]:
         start_time = time.time()
         metrics.inc_counter("conversation_started", {"project_id": project_id})
@@ -516,11 +518,13 @@ class AgentOrchestrator:
                 employee_id,
                 username=username,
                 chat_session_id=chat_session_id,
+                role_ids=role_ids,
                 timeout_sec=self._tool_timeout_sec,
                 max_retries=self._tool_retry_count,
                 local_connector=local_connector,
                 local_connector_workspace_path=local_connector_workspace_path,
                 local_connector_sandbox_mode=local_connector_sandbox_mode,
+                global_assistant_bridge_handler=global_assistant_bridge_handler,
             )
             loop_count = 0
             completed = False

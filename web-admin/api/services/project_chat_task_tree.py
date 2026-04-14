@@ -6,12 +6,18 @@ from dataclasses import asdict
 import re
 from typing import Any
 
-from core.deps import project_chat_task_store, project_store, work_session_store
+from core.deps import (
+    project_chat_task_store,
+    project_store,
+    task_tree_evolution_store,
+    work_session_store,
+)
 from services.dynamic_mcp_apps_query import _generate_execution_plan_payload
 from stores.json.project_chat_task_store import (
     ProjectChatTaskNode,
     ProjectChatTaskSession,
 )
+from stores.json.task_tree_evolution_store import TaskTreeEvolutionSample
 from stores.json.work_session_store import WorkSessionEvent
 
 _NODE_STATUS_VALUES = {"pending", "in_progress", "blocked", "verifying", "done"}
@@ -173,6 +179,66 @@ _EMBEDDED_TOOL_CALL_RE = re.compile(r"<tool_call>([^<]+)(.*?)</tool_call>", re.S
 _EMBEDDED_TOOL_ARG_RE = re.compile(
     r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
     re.S,
+)
+_TASK_TREE_GOVERNANCE_TERMS = (
+    "统一mcp",
+    "mcp",
+    "任务树",
+    "运行时",
+    "补强",
+    "升级",
+    "持久化",
+    "本地存储",
+    "任务id",
+    "session_id",
+    "chat_session_id",
+    "work session",
+    "续跑",
+    "恢复",
+    "审计",
+    "回写",
+    "反馈",
+    "可恢复",
+    "稳定",
+    "治理",
+)
+_TASK_TREE_DOCUMENT_TERMS = (
+    "方案",
+    "文档",
+    "设计",
+    "规划",
+    "说明",
+    "prd",
+    "流程",
+    "策略",
+)
+_TASK_TREE_UI_SURFACE_TERMS = (
+    "页面",
+    "设置页",
+    "tabs",
+    "tab",
+    "路由",
+    "交互",
+)
+_TASK_TREE_UI_ACTION_TERMS = (
+    "新增页面",
+    "改页面",
+    "页面改造",
+    "重做页面",
+    "改路由",
+    "路由改造",
+    "tabs",
+    "tab",
+    "页内切换",
+    "切换路径",
+    "交互重构",
+)
+_TASK_TREE_UI_TEMPLATE_TERMS = (
+    "tabs",
+    "tab",
+    "切换路径",
+    "设置页",
+    "路由",
 )
 
 
@@ -474,13 +540,340 @@ def _has_verification_flavored_step(steps: list[dict[str, str]]) -> bool:
     return False
 
 
+def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
+    normalized = _normalize_text(text, 4000)
+    if not normalized:
+        return False
+    lower_text = normalized.lower()
+    return any(term in normalized or term in lower_text for term in terms)
+
+
+def _classify_task_tree_intent(task_text: str) -> str:
+    normalized_task = _normalize_text(task_text, 1000)
+    if not normalized_task:
+        return "general"
+    if _is_lookup_query_goal(normalized_task):
+        return "lookup_query"
+    has_governance = _contains_any_term(normalized_task, _TASK_TREE_GOVERNANCE_TERMS)
+    has_document = _contains_any_term(normalized_task, _TASK_TREE_DOCUMENT_TERMS)
+    has_ui_surface = _contains_any_term(normalized_task, _TASK_TREE_UI_SURFACE_TERMS)
+    has_ui_action = _contains_any_term(normalized_task, _TASK_TREE_UI_ACTION_TERMS)
+    if has_governance and (has_document or "反馈" in normalized_task or "稳定" in normalized_task):
+        return "governance"
+    if has_document and not has_ui_action:
+        return "documentation"
+    if has_ui_surface and has_ui_action and not has_governance:
+        return "ui_flow"
+    if any(term in normalized_task for term in ("修复", "bug", "错误", "异常", "不对")):
+        return "bugfix"
+    if any(term in normalized_task for term in ("优化", "完善", "重构")):
+        return "optimization"
+    if has_governance:
+        return "governance"
+    return "general"
+
+
+def _is_explicit_ui_rebuild_goal(task_text: str) -> bool:
+    normalized_task = _normalize_text(task_text, 1000)
+    return _contains_any_term(normalized_task, _TASK_TREE_UI_SURFACE_TERMS) and _contains_any_term(
+        normalized_task,
+        _TASK_TREE_UI_ACTION_TERMS,
+    )
+
+
+def _build_task_tree_health_issue(
+    *,
+    code: str,
+    severity: str,
+    category: str,
+    message: str,
+    recommended_action: str,
+    evidence: list[str] | None = None,
+) -> dict[str, Any]:
+    normalized_severity = _normalize_text(severity, 20).lower() or "medium"
+    if normalized_severity not in {"low", "medium", "high"}:
+        normalized_severity = "medium"
+    return {
+        "code": _normalize_text(code, 80),
+        "severity": normalized_severity,
+        "category": _normalize_text(category, 80),
+        "message": _normalize_text(message, 400),
+        "recommended_action": _normalize_text(recommended_action, 240),
+        "evidence": [
+            _normalize_text(item, 240)
+            for item in (evidence or [])
+            if _normalize_text(item, 240)
+        ][:6],
+    }
+
+
+def _task_tree_contains_internal_node_text(session: ProjectChatTaskSession) -> list[str]:
+    matches: list[str] = []
+    for node in session.nodes:
+        compact_text = " ".join(
+            [
+                _normalize_text(node.title, 200),
+                _normalize_text(node.description, 280),
+                _normalize_text(node.objective, 280),
+            ]
+        ).strip()
+        if not compact_text:
+            continue
+        lower_compact = compact_text.lower()
+        if _AUTO_INFERRED_PROXY_ENTRY_PREFIX in lower_compact:
+            matches.append(_normalize_text(node.title or compact_text, 200))
+            continue
+        if any(tool_name in lower_compact for tool_name in _TASK_TREE_INTERNAL_PLAN_TOOL_NAMES):
+            matches.append(_normalize_text(node.title or compact_text, 200))
+    return matches[:4]
+
+
+def _build_task_tree_health_report(session: ProjectChatTaskSession | None) -> dict[str, Any] | None:
+    if session is None:
+        return None
+    normalized = _recompute_session(ProjectChatTaskSession(**asdict(session)))
+    if not normalized.nodes:
+        return None
+    detected_intent = _classify_task_tree_intent(normalized.root_goal or normalized.title)
+    children_by_parent = _children_map(normalized.nodes)
+    leaf_nodes = [node for node in normalized.nodes if not children_by_parent.get(node.id)]
+    issues: list[dict[str, Any]] = []
+
+    if detected_intent == "lookup_query" and len(leaf_nodes) != 1:
+        issues.append(
+            _build_task_tree_health_issue(
+                code="lookup_query_overexpanded",
+                severity="high",
+                category="generation_shape",
+                message="当前检索型任务被拆成了多个执行节点，容易让任务树偏离单轮检索闭环。",
+                recommended_action="将当前任务树收敛为单个检索回答节点后再继续。",
+                evidence=[
+                    f"根目标：{_normalize_text(normalized.root_goal or normalized.title, 200)}",
+                    f"叶子节点数：{len(leaf_nodes)}",
+                ],
+            )
+        )
+
+    internal_node_matches = _task_tree_contains_internal_node_text(normalized)
+    if internal_node_matches:
+        issues.append(
+            _build_task_tree_health_issue(
+                code="internal_plan_node_detected",
+                severity="high",
+                category="node_quality",
+                message="当前任务树节点混入了内部工具或自动推断入口，不适合直接作为用户可见执行路径。",
+                recommended_action="用面向用户目标的真实工作步骤重写这些节点。",
+                evidence=[f"命中节点：{item}" for item in internal_node_matches],
+            )
+        )
+
+    if (
+        detected_intent in {"governance", "documentation"}
+        and not _is_explicit_ui_rebuild_goal(normalized.root_goal or normalized.title)
+    ):
+        mismatch_titles = [
+            _normalize_text(node.title, 200)
+            for node in leaf_nodes
+            if _contains_any_term(
+                " ".join(
+                    [
+                        _normalize_text(node.title, 200),
+                        _normalize_text(node.description, 280),
+                    ]
+                ),
+                _TASK_TREE_UI_TEMPLATE_TERMS,
+            )
+        ]
+        if mismatch_titles:
+            issues.append(
+                _build_task_tree_health_issue(
+                    code="template_goal_mismatch",
+                    severity="high",
+                    category="generation_mismatch",
+                    message="当前需求更像治理/方案型任务，但任务树误落到了页面切换或路由改造模板。",
+                    recommended_action="建议重建任务树，并改用治理型或方案型步骤模板。",
+                    evidence=[
+                        f"识别意图：{detected_intent}",
+                        f"根目标：{_normalize_text(normalized.root_goal or normalized.title, 200)}",
+                        *[f"命中节点：{item}" for item in mismatch_titles[:3]],
+                    ],
+                )
+            )
+
+    if not _has_verification_flavored_step(
+        [
+            {
+                "step": _normalize_text(node.title, 200),
+                "purpose": _normalize_text(node.description or node.objective, 280),
+            }
+            for node in leaf_nodes
+        ]
+    ):
+        issues.append(
+            _build_task_tree_health_issue(
+                code="verification_tail_missing",
+                severity="medium",
+                category="verification_tail",
+                message="当前任务树缺少明确的验证型尾节点，后续容易出现完成但未验证的收口问题。",
+                recommended_action="补一个明确的验证/收尾节点，再继续执行。",
+                evidence=[f"叶子节点数：{len(leaf_nodes)}"],
+            )
+        )
+
+    deduction_map = {"low": 8, "medium": 18, "high": 35}
+    health_score = max(0, 100 - sum(deduction_map.get(item.get("severity"), 0) for item in issues))
+    rebuild_issue = next(
+        (
+            item
+            for item in issues
+            if str(item.get("code") or "")
+            in {"lookup_query_overexpanded", "internal_plan_node_detected", "template_goal_mismatch"}
+        ),
+        None,
+    )
+    rebuild_recommended = rebuild_issue is not None
+    rebuild_reason = _normalize_text(rebuild_issue.get("message"), 300) if rebuild_issue else ""
+    safe_to_display = not any(str(item.get("severity") or "") == "high" for item in issues)
+    return {
+        "detected_intent": detected_intent,
+        "health_score": int(health_score),
+        "issue_count": len(issues),
+        "issues": issues,
+        "rebuild_recommended": rebuild_recommended,
+        "rebuild_reason": rebuild_reason,
+        "safe_to_display": safe_to_display,
+    }
+
+
+def _infer_wrong_template_from_health_issue(issue: dict[str, Any]) -> str:
+    code = _normalize_text(issue.get("code"), 80)
+    if code == "template_goal_mismatch":
+        return "ui_flow"
+    if code == "lookup_query_overexpanded":
+        return "lookup_query_overexpanded"
+    if code == "internal_plan_node_detected":
+        return "internal_tool_node"
+    return ""
+
+
+def _save_task_tree_evolution_sample(
+    *,
+    project_id: str,
+    chat_session_id: str,
+    task_tree_session_id: str,
+    source_kind: str,
+    root_goal: str,
+    detected_intent: str,
+    wrong_template: str,
+    corrected_template: str,
+    issue_code: str,
+    issue_message: str,
+    user_visible: bool,
+    manually_corrected: bool = False,
+    rebuild_successful: bool = False,
+    evidence: list[str] | None = None,
+) -> None:
+    normalized_project_id = _normalize_text(project_id, 80)
+    if not normalized_project_id:
+        return
+    try:
+        sample = TaskTreeEvolutionSample(
+            id=task_tree_evolution_store.new_id(),
+            project_id=normalized_project_id,
+            chat_session_id=_normalize_text(chat_session_id, 80),
+            task_tree_session_id=_normalize_text(task_tree_session_id, 80),
+            source_kind=_normalize_text(source_kind, 40),
+            root_goal=_normalize_text(root_goal, 1000),
+            detected_intent=_normalize_text(detected_intent, 80),
+            wrong_template=_normalize_text(wrong_template, 120),
+            corrected_template=_normalize_text(corrected_template, 120),
+            issue_code=_normalize_text(issue_code, 80),
+            issue_message=_normalize_text(issue_message, 500),
+            user_visible=bool(user_visible),
+            manually_corrected=bool(manually_corrected),
+            rebuild_successful=bool(rebuild_successful),
+            evidence=[
+                _normalize_text(item, 240)
+                for item in (evidence or [])
+                if _normalize_text(item, 240)
+            ][:12],
+        )
+        task_tree_evolution_store.save(sample)
+    except Exception:
+        return
+
+
+def _record_task_tree_health_evolution_samples(session: ProjectChatTaskSession) -> None:
+    health_report = _build_task_tree_health_report(session)
+    if not isinstance(health_report, dict):
+        return
+    detected_intent = _normalize_text(health_report.get("detected_intent"), 80)
+    for issue in list(health_report.get("issues") or []):
+        if not isinstance(issue, dict):
+            continue
+        severity = _normalize_text(issue.get("severity"), 20).lower()
+        if severity not in {"high", "medium"}:
+            continue
+        _save_task_tree_evolution_sample(
+            project_id=session.project_id,
+            chat_session_id=session.chat_session_id,
+            task_tree_session_id=session.id,
+            source_kind="generation",
+            root_goal=session.root_goal or session.title,
+            detected_intent=detected_intent,
+            wrong_template=_infer_wrong_template_from_health_issue(issue),
+            corrected_template=detected_intent,
+            issue_code=_normalize_text(issue.get("code"), 80),
+            issue_message=_normalize_text(issue.get("message"), 500),
+            user_visible=not bool(health_report.get("safe_to_display")),
+            rebuild_successful=False,
+            evidence=list(issue.get("evidence") or []),
+        )
+
+
 def _build_goal_oriented_plan_steps(task_text: str, *, max_steps: int = 6) -> list[dict[str, str]]:
     normalized_task = _normalize_text(task_text, 300)
     route_path = _extract_route_path(normalized_task)
     target = route_path or "当前需求"
-    lower_task = normalized_task.lower()
+    detected_intent = _classify_task_tree_intent(normalized_task)
 
-    if "tab" in lower_task or any(term in normalized_task for term in ("tabs", "切换", "设置页", "页面")):
+    if detected_intent == "governance":
+        steps = [
+            {
+                "step": f"梳理 {target} 当前任务链、反馈面和状态绑定",
+                "purpose": "先确认任务树、工作轨迹、前端反馈和持久化锚点的现状与缺口。",
+                "phase": "analysis",
+            },
+            {
+                "step": f"完成 {target} 的稳定性补强与反馈透出",
+                "purpose": "围绕统一 MCP 主链补齐持久化、回写或健康反馈，不把问题误拆成页面切换改造。",
+                "phase": "implementation",
+            },
+            {
+                "step": "验证任务连续性、健康反馈和收尾结果",
+                "purpose": "确认中断恢复、状态透出和验证闭环都成立，再结束本轮任务。",
+                "phase": "verification",
+            },
+        ]
+    elif detected_intent == "documentation":
+        steps = [
+            {
+                "step": f"梳理 {target} 的背景、约束与现状",
+                "purpose": "先明确当前方案边界、已有实现和需要补齐的内容。",
+                "phase": "analysis",
+            },
+            {
+                "step": f"沉淀 {target} 的方案与执行说明",
+                "purpose": "输出面向当前目标的方案文档或说明，避免偏成页面改造任务。",
+                "phase": "implementation",
+            },
+            {
+                "step": "校对方案一致性并补齐收尾结论",
+                "purpose": "确认方案、实现和验证口径一致，再完成本轮收口。",
+                "phase": "verification",
+            },
+        ]
+    elif detected_intent == "ui_flow":
         steps = [
             {
                 "step": f"梳理 {target} 当前结构与切换路径",
@@ -1400,6 +1793,7 @@ def ensure_task_tree(
                 ),
                 next_steps=next_steps,
             )
+            _record_task_tree_health_evolution_samples(refined)
             return refined
         if not force and not _should_rebuild_task_tree_for_new_goal(existing, root_goal):
             return existing
@@ -1427,6 +1821,7 @@ def ensure_task_tree(
         content=f"已创建需求任务树，共 {max(len(saved_session.nodes) - 1, 0)} 个计划节点。",
         next_steps=next_steps,
     )
+    _record_task_tree_health_evolution_samples(saved_session)
     return saved_session
 
 
@@ -1583,6 +1978,7 @@ def serialize_task_tree(session: ProjectChatTaskSession | None) -> dict[str, Any
             "leaf_total": len(leaf_nodes),
             "done_leaf_total": done_leaf_total,
         },
+        "task_tree_health": _build_task_tree_health_report(normalized),
         "model_context_summary": build_task_tree_prompt(normalized),
         "created_at": normalized.created_at,
         "updated_at": normalized.updated_at,
@@ -1762,8 +2158,11 @@ def list_project_task_tree_summaries(project_id: str, limit: int = 200) -> list[
                 "username": str(payload.get("username") or "").strip(),
                 "chat_session_id": str(payload.get("chat_session_id") or "").strip(),
                 "source_chat_session_id": str(payload.get("source_chat_session_id") or "").strip(),
+                "source_session_id": str(payload.get("source_session_id") or "").strip(),
                 "title": str(payload.get("title") or "").strip(),
                 "root_goal": str(payload.get("root_goal") or "").strip(),
+                "record_kind": str(payload.get("record_kind") or "requirement").strip() or "requirement",
+                "round_index": int(payload.get("round_index") or 1),
                 "status": _normalize_status(payload.get("status")),
                 "lifecycle_status": str(payload.get("lifecycle_status") or "active").strip(),
                 "is_archived": bool(payload.get("is_archived")),
@@ -1773,9 +2172,19 @@ def list_project_task_tree_summaries(project_id: str, limit: int = 200) -> list[
                 "current_node_id": str(payload.get("current_node_id") or "").strip(),
                 "current_node_title": str(current_node.get("title") or "").strip(),
                 "current_node_status": _normalize_status(current_node.get("status")),
+                "current_node": {
+                    "id": str(current_node.get("id") or "").strip(),
+                    "title": str(current_node.get("title") or "").strip(),
+                    "status": _normalize_status(current_node.get("status")),
+                },
                 "leaf_total": int(stats.get("leaf_total") or 0),
                 "done_leaf_total": int(stats.get("done_leaf_total") or 0),
                 "node_total": int(stats.get("node_total") or 0),
+                "task_tree_health": (
+                    payload.get("task_tree_health")
+                    if isinstance(payload.get("task_tree_health"), dict)
+                    else None
+                ),
                 "created_at": str(payload.get("created_at") or "").strip(),
                 "updated_at": str(payload.get("updated_at") or "").strip(),
             }
@@ -1945,10 +2354,10 @@ def audit_task_tree_round(
     message = ""
     if archived_payload is not None:
         code = "lookup_query_auto_completed"
-        message = ""
+        message = "当前检索型任务已完成回答，系统已自动补齐验证并归档本轮任务树。"
     elif recovered_embedded_task_call:
         code = "embedded_task_call_recovered"
-        message = ""
+        message = "检测到回答中夹带了任务树回写调用，系统已自动恢复并同步当前节点状态。"
     elif auto_completed_bootstrap:
         code = "bootstrap_step_auto_completed"
         message = "检测到本轮已完成项目上下文预检，系统已自动完成当前上下文节点并推进到下一节点。"
@@ -1963,10 +2372,68 @@ def audit_task_tree_round(
     if not code:
         return None
 
-    return {
+    evidence: list[str] = []
+    current_node_title = _normalize_text(current_node_after.get("title"), 200)
+    if current_node_title:
+        evidence.append(f"当前节点：{current_node_title}")
+    if completion_signal:
+        evidence.append("检测到完成性表述。")
+    if verification_signal:
+        evidence.append("检测到验证性表述。")
+    if non_task_tree_tool_names:
+        evidence.append(
+            "执行工具：" + "、".join(non_task_tree_tool_names[:4])
+        )
+    severity = "medium"
+    category = "task_tree_sync"
+    recommended_action = ""
+    if code == "lookup_query_auto_completed":
+        severity = "low"
+        category = "lookup_query"
+        recommended_action = "无需额外处理，当前检索型任务已自动归档。"
+        if archived_payload is not None:
+            archived_goal = _normalize_text(
+                archived_payload.get("root_goal") or archived_payload.get("title"),
+                200,
+            )
+            if archived_goal:
+                evidence.append(f"归档目标：{archived_goal}")
+    elif code == "embedded_task_call_recovered":
+        severity = "low"
+        category = "embedded_writeback_recovery"
+        recommended_action = "系统已恢复嵌入式任务回写，后续请继续显式调用任务树工具。"
+        if embedded_task_tree_call is not None:
+            tool_name = _normalize_text(embedded_task_tree_call.get("tool_name"), 120)
+            if tool_name:
+                evidence.append(f"恢复的嵌入调用：{tool_name}")
+    elif code == "bootstrap_step_auto_completed":
+        severity = "low"
+        category = "context_bootstrap"
+        recommended_action = "无需手动回退，继续按新的当前节点执行。"
+        evidence.append("系统已自动完成上下文预检节点。")
+    elif code == "completion_unverified":
+        severity = "high"
+        category = "verification_guard"
+        recommended_action = "先补当前节点的验证结果，再将节点标记为完成。"
+        evidence.append(f"当前状态：{current_status_after or current_status}")
+        if suggested_status:
+            evidence.append(f"建议状态：{suggested_status}")
+    elif code == "progress_not_written_back":
+        severity = "medium"
+        category = "writeback_missing"
+        recommended_action = "将当前节点回写为 in_progress 或 verifying，并补充验证结果。"
+        evidence.append(f"当前状态：{current_status_after or current_status}")
+        if suggested_status:
+            evidence.append(f"建议状态：{suggested_status}")
+
+    payload = {
         "status": "resolved" if not message else "attention",
         "code": code,
+        "severity": severity,
+        "category": category,
         "message": message,
+        "recommended_action": recommended_action,
+        "evidence": evidence[:6],
         "auto_updated": auto_updated,
         "suggested_status": suggested_status,
         "completion_signal_detected": completion_signal,
@@ -1976,3 +2443,22 @@ def audit_task_tree_round(
         "task_tree": serialized_after if archived_payload is None else None,
         "history_task_tree": archived_payload,
     }
+    _save_task_tree_evolution_sample(
+        project_id=normalized_project_id,
+        chat_session_id=normalized_chat_session_id,
+        task_tree_session_id=_normalize_text(getattr(session, "id", ""), 80),
+        source_kind="audit",
+        root_goal=_normalize_text(getattr(session, "root_goal", "") or getattr(session, "title", ""), 1000),
+        detected_intent=_classify_task_tree_intent(
+            _normalize_text(getattr(session, "root_goal", "") or getattr(session, "title", ""), 1000)
+        ),
+        wrong_template="",
+        corrected_template="",
+        issue_code=code,
+        issue_message=message or _normalize_text(recommended_action, 240),
+        user_visible=True,
+        manually_corrected=code == "embedded_task_call_recovered",
+        rebuild_successful=False,
+        evidence=evidence,
+    )
+    return payload

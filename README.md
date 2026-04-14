@@ -3,6 +3,15 @@
 基于 MCP（Model Context Protocol）的 AI-Native 开发平台。用户可自由组合 Skills、Rules、Memory、Persona 创建多个 AI 员工，并通过进化引擎持续优化能力。
 /Users/liulantian/.vett/skills/github/awesome-copilot/refactor
 
+## 使用主次定位
+
+当前项目默认按 `MCP-first` 理解和设计：
+
+- 主入口是 `项目 MCP` 与 `统一查询 MCP`，优先服务宿主 AI、IDE、CLI 或其他外部 Agent 的接入与调用。
+- `web-admin` 里的 AI 对话框属于次要入口，主要承担演示、运营配置、人工验证、问题排查和任务可视化，不应反向定义平台主能力边界。
+- 新功能设计时，默认先回答“是否能通过 MCP tools/resources/prompts/任务树上下文稳定暴露”，再决定是否补充聊天页面或后台界面。
+- 若某项能力只能在聊天框里使用、却无法沉淀为 MCP 能力或项目级可追溯数据，默认不应视为平台核心能力完成。
+
 ## 技术栈
 
 - 前端：Vue 3 + Element Plus + Vite

@@ -40,11 +40,8 @@ from services.global_assistant_service import (
     build_global_assistant_visibility_context,
 )
 from services.local_connector_service import (
-    LocalConnectorLlmAdapter,
-    build_local_connector_provider_id,
+    build_local_connector_file_tools,
     chat_completion_via_connector,
-    connector_base_url,
-    list_connector_llm_models,
     parse_local_connector_provider_id,
 )
 from services.llm_chat_parameter_catalog import (
@@ -65,6 +62,32 @@ from services.project_chat_task_tree import (
     serialize_task_tree,
     update_task_node,
 )
+from services.runtime.provider_resolver import (
+    ResolvedProviderRuntime,
+    finalize_resolved_provider_runtime,
+    list_visible_chat_providers,
+    pick_provider_from_candidates,
+    resolve_provider_runtime,
+    resolve_runtime_llm_service,
+)
+from services.runtime.prompt_assembler import (
+    assemble_chat_messages,
+    join_prompt_sections,
+    resolve_chat_style_hints,
+)
+from services.runtime.orchestrator_factory import build_agent_orchestrator
+from services.runtime.run_request_factory import build_orchestrator_run_kwargs
+from services.runtime.tool_registry import (
+    collect_project_runtime_tools as collect_project_runtime_tools_via_registry,
+    filter_tools_by_employee_ids as filter_tools_by_employee_ids_via_registry,
+    filter_tools_by_names as filter_tools_by_names_via_registry,
+    resolve_chat_workspace_path as resolve_chat_workspace_path_via_registry,
+    resolve_local_connector_runtime_tools as resolve_local_connector_runtime_tools_via_registry,
+    sort_tools_by_priority as sort_tools_by_priority_via_registry,
+    summarize_effective_tools as summarize_effective_tools_via_registry,
+)
+from services.runtime.runtime_resolver import build_chat_runtime_context
+from services.task_tree_guard.task_tree_evolution import build_task_tree_evolution_summary
 from models.requests import (
     ProjectAiEntryFileUpdateReq,
     ProjectRequirementRecordBatchDeleteReq,
@@ -2638,78 +2661,12 @@ def _pick_chat_provider(
     *,
     include_all_providers: bool = False,
 ) -> tuple[dict, list[dict]]:
-    from services.llm_provider_service import get_llm_provider_service
-
-    llm_service = get_llm_provider_service()
-    providers = llm_service.list_providers(
-        enabled_only=True,
-        owner_username=str(auth_payload.get("sub") or "").strip(),
-        include_all=include_all_providers or is_admin_like(auth_payload),
-        include_shared=True,
+    providers = list_visible_chat_providers(
+        auth_payload,
+        include_all_providers=include_all_providers,
     )
-    if not providers:
-        raise HTTPException(400, "未配置可用的 LLM 提供商")
-    expected = str(provider_id or "").strip()
-    if expected:
-        selected = next((item for item in providers if str(item.get("id") or "") == expected), None)
-        if selected is None:
-            raise HTTPException(404, f"LLM provider not found: {expected}")
-        return selected, providers
-    default_provider = next((item for item in providers if bool(item.get("is_default"))), providers[0])
-    return default_provider, providers
-
-
-async def _build_connector_chat_provider(connector: Any) -> dict[str, Any] | None:
-    connector_id = str(getattr(connector, "id", "") or "").strip()
-    if not connector_id or not connector_base_url(connector):
-        return None
-    try:
-        llm_info = await list_connector_llm_models(connector)
-    except Exception:
-        llm_info = {
-            "enabled": False,
-            "default_model": "",
-            "models": [],
-        }
-    if not bool(llm_info.get("enabled")):
-        return None
-    models = [
-        str(item or "").strip()
-        for item in (llm_info.get("models") or [])
-        if str(item or "").strip()
-    ]
-    default_model = str(llm_info.get("default_model") or "").strip()
-    if default_model and default_model not in models:
-        models = [default_model, *models]
-    if not models:
-        return None
-    connector_name = str(getattr(connector, "connector_name", "") or "").strip() or connector_id
-    connector_owner = str(getattr(connector, "owner_username", "") or "").strip()
-    provider_name = (
-        f"本地连接器 · {connector_name} · {connector_owner}"
-        if connector_owner
-        else f"本地连接器 · {connector_name}"
-    )
-    return {
-        "id": build_local_connector_provider_id(connector_id),
-        "name": provider_name,
-        "provider_type": "local-connector",
-        "base_url": connector_base_url(connector),
-        "models": models,
-        "model_configs": [
-            {
-                "name": model_name,
-                "model_type": DEFAULT_MODEL_TYPE,
-            }
-            for model_name in models
-        ],
-        "default_model": default_model or models[0],
-        "enabled": True,
-        "is_default": False,
-        "connector_id": connector_id,
-        "connector_name": connector_name,
-        "connector_owner_username": connector_owner,
-    }
+    selected_provider, providers, _ = pick_provider_from_candidates(provider_id, providers)
+    return selected_provider, providers
 
 
 async def _resolve_provider_runtime_target(
@@ -2718,21 +2675,16 @@ async def _resolve_provider_runtime_target(
     *,
     include_all_providers: bool = False,
 ) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
-    connector_id = parse_local_connector_provider_id(provider_id)
-    if connector_id:
-        connector = _resolve_accessible_local_connector_for_llm(connector_id, auth_payload)
-        if connector is None:
-            raise HTTPException(404, "Local connector not found")
-        provider = await _build_connector_chat_provider(connector)
-        if provider is None:
-            raise HTTPException(400, "当前本地连接器未配置可用模型")
-        return "local_connector", provider, [provider]
-    provider, providers = _pick_chat_provider(
+    runtime = await resolve_provider_runtime(
         provider_id,
         auth_payload,
+        resolve_local_connector=lambda connector_id: _resolve_accessible_local_connector_for_llm(
+            connector_id,
+            auth_payload,
+        ),
         include_all_providers=include_all_providers,
     )
-    return "provider", provider, providers
+    return runtime.provider_mode, runtime.provider, runtime.providers
 
 
 async def _resolve_global_assistant_provider_runtime_target(
@@ -2760,29 +2712,97 @@ def _resolve_global_assistant_chat_model_defaults() -> tuple[str, str]:
     return provider_id, model_name
 
 
-async def _resolve_global_assistant_chat_runtime_target(
+def _finalize_resolved_provider_runtime(
+    provider_mode: str,
+    selected_provider: dict[str, Any],
+    providers: list[dict[str, Any]] | None,
+    *,
+    requested_model_name: str = "",
+    fallback_model_name: str = "",
+    missing_model_message: str,
+) -> ResolvedProviderRuntime:
+    runtime = ResolvedProviderRuntime(
+        provider_mode=provider_mode,
+        provider=dict(selected_provider or {}),
+        providers=list(providers or []),
+        provider_id=str((selected_provider or {}).get("id") or "").strip(),
+        connector_id=(
+            parse_local_connector_provider_id(str((selected_provider or {}).get("id") or ""))
+            if provider_mode == "local_connector"
+            else ""
+        ),
+    )
+    return finalize_resolved_provider_runtime(
+        runtime,
+        requested_model_name,
+        fallback_model_name,
+        missing_model_message=missing_model_message,
+    )
+
+
+async def _resolve_global_assistant_chat_runtime(
     runtime_settings: dict[str, Any],
     auth_payload: dict,
-) -> tuple[str, dict[str, Any], str]:
+) -> ResolvedProviderRuntime:
     configured_provider_id, configured_model_name = (
         _resolve_global_assistant_chat_model_defaults()
     )
     requested_provider_id = str(runtime_settings.get("provider_id") or "").strip()
     requested_model_name = str(runtime_settings.get("model_name") or "").strip()
-    provider_mode, selected_provider, _ = await _resolve_global_assistant_provider_runtime_target(
-        requested_provider_id or configured_provider_id,
+    provider_mode, selected_provider, providers = (
+        await _resolve_global_assistant_provider_runtime_target(
+            requested_provider_id or configured_provider_id,
+            auth_payload,
+        )
+    )
+    return _finalize_resolved_provider_runtime(
+        provider_mode,
+        selected_provider,
+        providers,
+        requested_model_name=requested_model_name,
+        fallback_model_name=configured_model_name,
+        missing_model_message="未找到可用模型",
+    )
+
+
+async def _resolve_global_assistant_chat_runtime_target(
+    runtime_settings: dict[str, Any],
+    auth_payload: dict,
+) -> tuple[str, dict[str, Any], str]:
+    runtime = await _resolve_global_assistant_chat_runtime(runtime_settings, auth_payload)
+    return runtime.provider_mode, runtime.provider, runtime.model_name
+
+
+async def _resolve_project_chat_runtime(
+    runtime_settings: dict[str, Any],
+    auth_payload: dict,
+) -> ResolvedProviderRuntime:
+    provider_mode, selected_provider, providers = await _resolve_provider_runtime_target(
+        str(runtime_settings.get("provider_id") or ""),
         auth_payload,
     )
-    provider_id = str(selected_provider.get("id") or "").strip()
-    model_name = str(
-        requested_model_name
-        or configured_model_name
-        or selected_provider.get("default_model")
-        or (selected_provider.get("models") or [""])[0]
-    ).strip()
-    if not provider_id or not model_name:
-        raise HTTPException(400, "未找到可用模型")
-    return provider_mode, selected_provider, model_name
+    return _finalize_resolved_provider_runtime(
+        provider_mode,
+        selected_provider,
+        providers,
+        requested_model_name=str(runtime_settings.get("model_name") or "").strip(),
+        missing_model_message="model_name is required",
+    )
+
+
+def _resolve_chat_llm_service_runtime(
+    base_llm_service: Any,
+    resolved_runtime: ResolvedProviderRuntime,
+    auth_payload: dict,
+) -> Any:
+    return resolve_runtime_llm_service(
+        base_llm_service,
+        resolved_runtime,
+        resolve_local_connector=lambda connector_id: _resolve_accessible_local_connector_for_llm(
+            connector_id,
+            auth_payload,
+        ),
+    )
 
 
 def _project_tool_display_name(tool_name: str) -> str:
@@ -2992,30 +3012,12 @@ def _filter_project_tools_by_names(
     *,
     explicit_filter: bool,
 ) -> list[dict[str, Any]]:
-    normalized = [str(item or "").strip() for item in (enabled_tool_names or []) if str(item or "").strip()]
-    allowed = set(normalized)
-    if not allowed:
-        return tools
-    filtered = []
-    for item in tools:
-        tool_name = str(item.get("tool_name") or "").strip()
-        if tool_name in allowed:
-            filtered.append(item)
-    return filtered
+    _ = explicit_filter
+    return filter_tools_by_names_via_registry(tools, enabled_tool_names)
 
 
 def _sort_tools_by_priority(tools: list[dict[str, Any]], tool_priority: list[str] | None) -> list[dict[str, Any]]:
-    normalized = [str(item or "").strip() for item in (tool_priority or []) if str(item or "").strip()]
-    if not normalized:
-        return tools
-    priority_map = {name: idx for idx, name in enumerate(normalized)}
-    return sorted(
-        tools,
-        key=lambda item: (
-            priority_map.get(str(item.get("tool_name") or "").strip(), 10**9),
-            str(item.get("tool_name") or "").strip(),
-        ),
-    )
+    return sort_tools_by_priority_via_registry(tools, tool_priority)
 
 
 def _collect_runtime_tools(
@@ -3028,18 +3030,18 @@ def _collect_runtime_tools(
 ) -> list[dict[str, Any]]:
     from services.dynamic_mcp_runtime import list_project_external_tools_runtime, list_project_proxy_tools_runtime
 
-    internal_tools = list_project_proxy_tools_runtime(project_id, "")
-    internal_tools = _filter_project_tools_by_employee_ids(internal_tools, selected_employee_ids)
-    internal_tools = _filter_project_tools_by_names(
-        internal_tools,
-        enabled_tool_names,
-        explicit_filter=explicit_tool_filter,
+    _ = explicit_tool_filter
+    return collect_project_runtime_tools_via_registry(
+        project_id,
+        selected_employee_ids=selected_employee_ids,
+        enabled_tool_names=enabled_tool_names,
+        tool_priority=tool_priority,
+        list_internal_tools=lambda current_project_id: list_project_proxy_tools_runtime(
+            current_project_id,
+            "",
+        ),
+        list_external_tools=list_project_external_tools_runtime,
     )
-
-    external_tools = list_project_external_tools_runtime(project_id)
-    tools = internal_tools + external_tools
-    tools = _sort_tools_by_priority(tools, list(tool_priority or []))
-    return tools
 
 
 def _summarize_effective_tools(
@@ -3047,35 +3049,7 @@ def _summarize_effective_tools(
     *,
     max_items: int = 24,
 ) -> tuple[list[dict[str, str]], int]:
-    source_tools = tools if isinstance(tools, list) else []
-    summarized: list[dict[str, str]] = []
-    for item in source_tools[:max_items]:
-        if not isinstance(item, dict):
-            continue
-        tool_name = str(item.get("tool_name") or "").strip()
-        if not tool_name:
-            continue
-        module_type = str(item.get("module_type") or "").strip().lower()
-        if tool_name.startswith("local_connector_"):
-            source = "local_connector"
-        elif module_type == "external_mcp_tool":
-            source = "external_mcp"
-        elif module_type == "system_mcp_tool":
-            source = "system_mcp"
-        elif bool(item.get("builtin")) or str(item.get("skill_id") or "").strip() == "__builtin__":
-            source = "builtin"
-        elif str(item.get("employee_id") or "").strip():
-            source = "project_skill"
-        else:
-            source = "project_tool"
-        summarized.append(
-            {
-                "tool_name": tool_name,
-                "source": source,
-                "description": str(item.get("description") or "").strip(),
-            }
-        )
-    return summarized, len(source_tools)
+    return summarize_effective_tools_via_registry(tools, max_items=max_items)
 
 
 def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) -> dict[str, Any]:
@@ -3122,17 +3096,7 @@ def _filter_project_tools_by_employee_ids(
     tools: list[dict[str, Any]],
     employee_ids: list[str] | None,
 ) -> list[dict[str, Any]]:
-    normalized = [str(item or "").strip() for item in (employee_ids or []) if str(item or "").strip()]
-    allowed = set(normalized)
-    if not allowed:
-        return tools
-    filtered: list[dict[str, Any]] = []
-    for item in tools:
-        employee_id = str(item.get("employee_id") or "").strip()
-        # builtin / global tool keeps empty employee_id
-        if not employee_id or employee_id in allowed:
-            filtered.append(item)
-    return filtered
+    return filter_tools_by_employee_ids_via_registry(tools, employee_ids)
 
 
 def _normalize_image_inputs(images: list[str] | None) -> list[str]:
@@ -3285,7 +3249,10 @@ def _build_project_chat_messages(
     workspace_info = ""
     effective_workspace_path = str(workspace_path or project.workspace_path or "").strip()
     if effective_workspace_path:
-        workspace_info = f"\n\n当前项目工作区路径: {effective_workspace_path}\n请在此目录下进行代码开发和文件操作。"
+        workspace_info = (
+            f"当前项目工作区路径: {effective_workspace_path}\n"
+            "请在此目录下进行代码开发和文件操作。"
+        )
     ai_entry_info = ""
     ai_entry_file = str(project.ai_entry_file or "").strip()
     if ai_entry_file:
@@ -3293,14 +3260,14 @@ def _build_project_chat_messages(
         if effective_workspace_path and not ai_entry_path.is_absolute():
             resolved_entry_hint = str(Path(effective_workspace_path) / ai_entry_file)
             ai_entry_info = (
-                f"\n\n当前项目 AI 入口文件: {ai_entry_file}"
+                f"当前项目 AI 入口文件: {ai_entry_file}"
                 f"\n该入口文件相对于项目工作区，对应路径: {resolved_entry_hint}"
                 "\n在开始分析、编码、调用工具或回答项目前，优先读取这个入口文件，并按其中约定理解项目规则、目录结构、实现约束和执行顺序。"
                 "\n仅当该入口文件不存在、无法访问或信息不足时，再自行补充读取项目内其他相关规则文件。"
             )
         else:
             ai_entry_info = (
-                f"\n\n当前项目 AI 入口文件: {ai_entry_file}"
+                f"当前项目 AI 入口文件: {ai_entry_file}"
                 "\n在开始分析、编码、调用工具或回答项目前，优先读取这个入口文件，并按其中约定理解项目规则、目录结构、实现约束和执行顺序。"
                 "\n仅当该入口文件不存在、无法访问或信息不足时，再自行补充读取项目内其他相关规则文件。"
             )
@@ -3320,27 +3287,28 @@ def _build_project_chat_messages(
         base_prompt += "\n当用户询问当前项目有哪些员工、成员、规则、工具或 MCP 能力时，不要先说无法获取；先调用 query_project_members、query_project_rules 或 search_project_context。"
         base_prompt += "\n当用户明确要完整项目配置、聊天配置、成员原始关系或单员工完整档案时，优先调用 get_project_detail 或 get_project_employee_detail。"
 
-    style_hint = {
-        "concise": "输出风格：简洁，避免冗长。",
-        "balanced": "输出风格：平衡，先结论后关键步骤。",
-        "detailed": "输出风格：详细，覆盖关键前提、步骤与风险。",
-    }.get(str(answer_style or "concise").strip().lower(), "输出风格：简洁，避免冗长。")
-    order_hint = "回答顺序：先给结论再给步骤。" if prefer_conclusion_first else "回答顺序：按自然推理顺序给出。"
-    skill_resource_prompt = _build_skill_resource_prompt_block(
-        skill_resource_directory,
+    style_hint, order_hint = resolve_chat_style_hints(
+        answer_style,
+        prefer_conclusion_first=prefer_conclusion_first,
     )
+    skill_resource_prompt = _build_skill_resource_prompt_block(skill_resource_directory)
     coordination_mode = str(employee_coordination_mode or "auto").strip().lower()
     multi_employee_prompt = (
         _build_multi_employee_collaboration_prompt(selected_employees, tools)
         if coordination_mode == "auto"
         else ""
     )
-    system_prompt = (
-        f"{base_prompt}\n{workspace_info}{ai_entry_info}\n\n{tool_list_text}\n{order_hint}\n{style_hint}"
-        f"{skill_resource_prompt}{multi_employee_prompt}"
+    system_prompt = join_prompt_sections(
+        base_prompt,
+        workspace_info,
+        ai_entry_info,
+        tool_list_text,
+        order_hint,
+        style_hint,
+        skill_resource_prompt,
+        multi_employee_prompt,
+        task_tree_prompt,
     )
-    if task_tree_prompt:
-        system_prompt += f"\n\n{task_tree_prompt}"
     project_ui_rule_bindings = _resolve_project_ui_rule_bindings(project, include_content=True)
     if project_ui_rule_bindings:
         project_ui_rule_titles = [
@@ -3363,12 +3331,15 @@ def _build_project_chat_messages(
                 project_ui_rule_lines.append(
                     f"- {title} ({rule_id}) [domain={domain}]"
                 )
-        system_prompt += (
-            "\n当前项目已绑定 UI 规则，这些规则优先级高于员工个人规则；涉及页面、交互、视觉表达时必须先遵循项目 UI 规则。"
+        system_prompt = join_prompt_sections(
+            system_prompt,
+            (
+                "当前项目已绑定 UI 规则，这些规则优先级高于员工个人规则；涉及页面、交互、视觉表达时必须先遵循项目 UI 规则。"
             f"\nproject_ui_rule_titles={', '.join(project_ui_rule_titles) or '-'}。"
             f"\nproject_ui_rule_domains={', '.join(project_ui_rule_domains) or '-'}。"
             "\n项目 UI 规则正文：\n"
             + "\n".join(project_ui_rule_lines)
+        )
         )
     if selected_employee:
         rule_bindings = list(selected_employee.get("rule_bindings") or [])
@@ -3376,8 +3347,8 @@ def _build_project_chat_messages(
         rule_titles = [item for item in rule_titles if item]
         rule_domains = _collect_rule_domains(rule_bindings)
         workflow = [str(item or "").strip() for item in (selected_employee.get("default_workflow") or []) if str(item or "").strip()]
-        system_prompt += (
-            f"\n当前执行员工：{selected_employee.get('name') or selected_employee.get('id')} "
+        employee_section = (
+            f"当前执行员工：{selected_employee.get('name') or selected_employee.get('id')} "
             f"({selected_employee.get('id')})，"
             f"goal={str(selected_employee.get('goal') or '-').strip() or '-'}，"
             f"skills={', '.join(selected_employee.get('skill_names') or []) or '-'}，"
@@ -3385,29 +3356,23 @@ def _build_project_chat_messages(
             f"rule_domains={', '.join(rule_domains) or '-'}。"
         )
         if workflow:
-            system_prompt += f"\n默认工作流：{' -> '.join(workflow)}。"
+            employee_section += f"\n默认工作流：{' -> '.join(workflow)}。"
         tool_usage_policy = str(selected_employee.get("tool_usage_policy") or "").strip()
         if tool_usage_policy:
-            system_prompt += f"\n工具使用策略：{tool_usage_policy}"
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system_prompt},
-        {
-            "role": "system",
-            "content": (
-                f"当前项目: id={project.id}, name={project.name}, description={project.description or '-'}"
-            ),
-        },
-        *_normalize_chat_history(history, limit=history_limit),
-    ]
-    normalized_images = _normalize_image_inputs(images)
-    if normalized_images:
-        content = [{"type": "text", "text": user_message or "请基于图片给建议。"}]
-        for img in normalized_images:
-            content.append({"type": "image_url", "image_url": {"url": img}})
-        messages.append({"role": "user", "content": content})
-    else:
-        messages.append({"role": "user", "content": user_message})
-    return messages
+            employee_section += f"\n工具使用策略：{tool_usage_policy}"
+        system_prompt = join_prompt_sections(system_prompt, employee_section)
+    return assemble_chat_messages(
+        system_messages=[
+            system_prompt,
+            f"当前项目: id={project.id}, name={project.name}, description={project.description or '-'}",
+        ],
+        history=history,
+        user_message=user_message,
+        images=images,
+        history_limit=history_limit,
+        normalize_history=_normalize_chat_history,
+        normalize_images=_normalize_image_inputs,
+    )
 
 
 def _resolve_project_chat_task_tree_context(
@@ -3479,6 +3444,144 @@ def _attach_task_tree_audit_to_done_payload(
     return payload
 
 
+def _resolve_project_chat_work_session_payload(
+    *,
+    project_id: str,
+    task_tree_payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(task_tree_payload, dict):
+        return None
+    normalized_project_id = str(project_id or "").strip()
+    if not normalized_project_id:
+        return None
+    task_tree_session_id = str(task_tree_payload.get("id") or "").strip()
+    task_tree_chat_session_id = str(
+        task_tree_payload.get("source_chat_session_id")
+        or task_tree_payload.get("chat_session_id")
+        or ""
+    ).strip()
+    source_session_id = str(task_tree_payload.get("source_session_id") or "").strip()
+    grouped: dict[str, list[Any]] = {}
+    if task_tree_session_id:
+        try:
+            events = work_session_store.list_events(
+                project_id=normalized_project_id,
+                task_tree_session_id=task_tree_session_id,
+                task_tree_chat_session_id=task_tree_chat_session_id,
+                limit=200,
+            )
+        except Exception:
+            events = []
+        for item in events:
+            session_id = str(getattr(item, "session_id", "") or "").strip()
+            if not session_id:
+                continue
+            grouped.setdefault(session_id, []).append(item)
+    if grouped:
+        summaries = [
+            _summarize_project_work_session(items)
+            for items in grouped.values()
+            if items
+        ]
+        summaries = [item for item in summaries if item.get("session_id")]
+        summaries.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        if summaries:
+            selected = summaries[0]
+            return {
+                "session_id": str(selected.get("session_id") or "").strip(),
+                "project_id": normalized_project_id,
+                "task_tree_session_id": str(
+                    selected.get("task_tree_session_id") or task_tree_session_id or ""
+                ).strip(),
+                "task_tree_chat_session_id": str(
+                    selected.get("task_tree_chat_session_id")
+                    or task_tree_chat_session_id
+                    or ""
+                ).strip(),
+                "task_node_id": str(selected.get("task_node_id") or "").strip(),
+                "task_node_title": str(selected.get("task_node_title") or "").strip(),
+                "goal": str(selected.get("goal") or "").strip(),
+                "latest_status": str(selected.get("latest_status") or "").strip(),
+                "updated_at": str(selected.get("updated_at") or "").strip(),
+                "created_at": str(selected.get("created_at") or "").strip(),
+            }
+    if not source_session_id and not task_tree_session_id:
+        return None
+    current_node = (
+        task_tree_payload.get("current_node")
+        if isinstance(task_tree_payload.get("current_node"), dict)
+        else {}
+    )
+    return {
+        "session_id": source_session_id,
+        "project_id": normalized_project_id,
+        "task_tree_session_id": task_tree_session_id,
+        "task_tree_chat_session_id": task_tree_chat_session_id,
+        "task_node_id": str(current_node.get("id") or "").strip(),
+        "task_node_title": str(current_node.get("title") or "").strip(),
+        "goal": str(task_tree_payload.get("root_goal") or task_tree_payload.get("title") or "").strip(),
+        "latest_status": str(task_tree_payload.get("status") or "").strip(),
+        "updated_at": str(task_tree_payload.get("updated_at") or "").strip(),
+        "created_at": str(task_tree_payload.get("created_at") or "").strip(),
+    }
+
+
+def _attach_project_chat_work_session_payload(
+    payload: dict[str, Any],
+    *,
+    project_id: str,
+    task_tree_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    work_session_payload = _resolve_project_chat_work_session_payload(
+        project_id=project_id,
+        task_tree_payload=task_tree_payload,
+    )
+    if isinstance(work_session_payload, dict) and work_session_payload.get("session_id"):
+        payload["work_session"] = work_session_payload
+    return payload
+
+
+def _build_project_chat_start_payload(
+    *,
+    project_id: str,
+    request_id: str = "",
+    provider_id: str = "",
+    model_name: str = "",
+    chat_mode: str = "system",
+    employee_id: str = "",
+    employee_name: str = "",
+    employee_ids: list[str] | None = None,
+    tools_enabled: bool = False,
+    effective_tools: list[dict[str, Any]] | None = None,
+    effective_tool_total: int | None = None,
+    task_tree_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": "start",
+        "project_id": project_id,
+        "provider_id": provider_id,
+        "model_name": model_name,
+        "chat_mode": chat_mode,
+        "employee_id": employee_id,
+        "employee_name": employee_name,
+        "tools_enabled": bool(tools_enabled),
+        "task_tree": task_tree_payload,
+    }
+    if request_id:
+        payload["request_id"] = request_id
+    if employee_ids is not None:
+        payload["employee_ids"] = employee_ids
+    if effective_tools is not None:
+        payload["effective_tools"] = effective_tools
+    if effective_tool_total is not None:
+        payload["effective_tool_total"] = int(effective_tool_total or 0)
+    return _attach_project_chat_work_session_payload(
+        payload,
+        project_id=project_id,
+        task_tree_payload=task_tree_payload,
+    )
+
+
 def _build_project_chat_done_payload(
     *,
     content: str,
@@ -3502,7 +3605,7 @@ def _build_project_chat_done_payload(
         payload["artifacts"] = normalized_artifacts
         payload["images"] = _collect_chat_artifact_urls(normalized_artifacts, asset_type="image")
         payload["videos"] = _collect_chat_artifact_urls(normalized_artifacts, asset_type="video")
-    return _attach_task_tree_audit_to_done_payload(
+    payload = _attach_task_tree_audit_to_done_payload(
         payload,
         project_id=project_id,
         username=username,
@@ -3510,6 +3613,17 @@ def _build_project_chat_done_payload(
         content=content,
         successful_tool_names=successful_tool_names,
         task_tree_tool_used=task_tree_tool_used,
+    )
+    task_tree_payload = None
+    history_task_tree_payload = payload.get("history_task_tree")
+    if isinstance(history_task_tree_payload, dict):
+        task_tree_payload = history_task_tree_payload
+    elif isinstance(payload.get("task_tree"), dict):
+        task_tree_payload = payload.get("task_tree")
+    return _attach_project_chat_work_session_payload(
+        payload,
+        project_id=project_id,
+        task_tree_payload=task_tree_payload,
     )
 
 
@@ -3538,23 +3652,18 @@ def _build_global_chat_messages(
             base_prompt += "\n当前没有选中项目，请基于通用知识直接回答。"
             base_prompt += "\n如果用户问题依赖项目、代码库、员工、MCP 或规则配置，请明确提示需要先选择项目后再继续。"
 
-    style_hint = {
-        "concise": "输出风格：简洁，避免冗长。",
-        "balanced": "输出风格：平衡，先结论后关键步骤。",
-        "detailed": "输出风格：详细，覆盖关键前提、步骤与风险。",
-    }.get(str(answer_style or "concise").strip().lower(), "输出风格：简洁，避免冗长。")
-    order_hint = "回答顺序：先给结论再给步骤。" if prefer_conclusion_first else "回答顺序：按自然推理顺序给出。"
-    skill_resource_prompt = _build_skill_resource_prompt_block(
-        skill_resource_directory,
+    style_hint, order_hint = resolve_chat_style_hints(
+        answer_style,
+        prefer_conclusion_first=prefer_conclusion_first,
     )
-    system_prompt = (
-        f"{base_prompt}\n\n当前模式：通用对话（未选择项目）。\n{order_hint}\n{style_hint}"
-        f"{skill_resource_prompt}"
+    skill_resource_prompt = _build_skill_resource_prompt_block(skill_resource_directory)
+    system_prompt = join_prompt_sections(
+        base_prompt,
+        "当前模式：通用对话（未选择项目）。",
+        order_hint,
+        style_hint,
+        skill_resource_prompt,
     )
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system_prompt},
-        *_normalize_chat_history(history, limit=history_limit),
-    ]
     runtime_lines: list[str] = []
     snapshot = runtime_snapshot or {}
     route_title = str(snapshot.get("route_title") or "").strip()
@@ -3590,23 +3699,20 @@ def _build_global_chat_messages(
     ]
     if metric_lines:
         runtime_lines.append("实时系统快照：" + "；".join(metric_lines))
+    system_messages = [system_prompt]
     if runtime_lines:
-        messages.insert(
-            1,
-            {
-                "role": "system",
-                "content": "以下是本轮回答必须参考的真实运行数据快照：\n" + "\n".join(runtime_lines),
-            },
+        system_messages.append(
+            "以下是本轮回答必须参考的真实运行数据快照：\n" + "\n".join(runtime_lines)
         )
-    normalized_images = _normalize_image_inputs(images)
-    if normalized_images:
-        content = [{"type": "text", "text": user_message or "请基于图片给建议。"}]
-        for img in normalized_images:
-            content.append({"type": "image_url", "image_url": {"url": img}})
-        messages.append({"role": "user", "content": content})
-    else:
-        messages.append({"role": "user", "content": user_message})
-    return messages
+    return assemble_chat_messages(
+        system_messages=system_messages,
+        history=history,
+        user_message=user_message,
+        images=images,
+        history_limit=history_limit,
+        normalize_history=_normalize_chat_history,
+        normalize_images=_normalize_image_inputs,
+    )
 
 
 async def _build_global_assistant_runtime_snapshot(
@@ -3856,7 +3962,10 @@ def _resolve_project_workspace_for_chat(
     project: ProjectConfig,
     settings: dict[str, Any],
 ) -> str:
-    return str(project.workspace_path or "").strip()
+    return resolve_chat_workspace_path_via_registry(
+        str(project.workspace_path or "").strip(),
+        settings,
+    )
 
 
 def _resolve_local_connector_coding_tools(
@@ -3864,8 +3973,15 @@ def _resolve_local_connector_coding_tools(
     settings: dict[str, Any],
     workspace_path: str,
 ) -> tuple[list[dict[str, Any]], Any | None, str]:
-    _ = (auth_payload, settings, workspace_path)
-    return [], None, ""
+    return resolve_local_connector_runtime_tools_via_registry(
+        settings,
+        workspace_path,
+        resolve_local_connector=lambda connector_id: _resolve_accessible_local_connector(
+            connector_id,
+            auth_payload,
+        ),
+        build_connector_tools=build_local_connector_file_tools,
+    )
 
 
 def _get_project_user_member(project_id: str, username: str) -> ProjectUserMember | None:
@@ -3914,10 +4030,18 @@ def _normalize_project_record_tags(value: Any) -> tuple[str, ...]:
 
 
 def _project_memory_matches_project(memory: Any, project: ProjectConfig) -> bool:
+    project_id = _normalize_project_record_token(getattr(project, "id", ""), limit=120)
     project_tokens = {
-        str(project.id or "").strip().lower(),
-        str(project.name or "").strip().lower(),
+        project_id.lower(),
+        _normalize_project_record_token(getattr(project, "name", ""), limit=160).lower(),
     }
+    binding = _parse_project_memory_binding(
+        getattr(memory, "content", ""),
+        getattr(memory, "purpose_tags", ()),
+    )
+    bound_project_id = _normalize_project_record_token(binding.get("project_id"), limit=120)
+    if bound_project_id:
+        return bound_project_id == project_id
     memory_project_name = _normalize_project_record_token(getattr(memory, "project_name", ""), limit=160).lower()
     return bool(memory_project_name) and memory_project_name in project_tokens
 
@@ -4157,6 +4281,11 @@ def _extract_project_memory_tag_binding(purpose_tags: Any, prefix: str, *, limit
 def _parse_project_memory_binding(content: Any, purpose_tags: Any = ()) -> dict[str, str]:
     text = _normalize_project_record_token(content)
     result = {
+        "project_id": _extract_project_memory_section(text, "项目ID")
+        or _extract_project_memory_tag_binding(purpose_tags, "project-id:", limit=120)
+        or _extract_project_memory_inline_binding(text, "project_id", limit=120),
+        "project_name": _extract_project_memory_section(text, "项目名称")
+        or _extract_project_memory_inline_binding(text, "project_name", limit=160),
         "chat_session_id": _extract_project_memory_section(text, "关联会话")
         or _extract_project_memory_tag_binding(purpose_tags, "chat-session:", limit=120)
         or _extract_project_memory_inline_binding(text, "chat_session_id", limit=120),
@@ -4179,6 +4308,14 @@ def _parse_project_memory_binding(content: Any, purpose_tags: Any = ()) -> dict[
             current_node = payload.get("current_node") if isinstance(payload.get("current_node"), dict) else {}
             result.update(
                 {
+                    "project_id": _normalize_project_record_token(
+                        payload.get("project_id") or result.get("project_id"),
+                        limit=120,
+                    ),
+                    "project_name": _normalize_project_record_token(
+                        payload.get("project_name") or result.get("project_name"),
+                        limit=160,
+                    ),
                     "chat_session_id": _normalize_project_record_token(
                         payload.get("chat_session_id") or result.get("chat_session_id"),
                         limit=120,
@@ -4642,6 +4779,7 @@ def _save_project_chat_memory_snapshot(
     def _memory_record_exists(
         employee_id: str,
         *,
+        project_id: str,
         project_name: str,
         chat_session_id: str,
         workflow_tag: str,
@@ -4651,6 +4789,7 @@ def _save_project_chat_memory_snapshot(
         fingerprint_tag: str = "",
     ) -> bool:
         candidates = _project_memory_candidate_records(employee_id, limit=200)
+        normalized_project_id = str(project_id or "").strip()
         normalized_project_name = str(project_name or "").strip()
         normalized_chat_tag = f"chat-session:{chat_session_id}" if chat_session_id else ""
         normalized_task_tree_session_id = str(task_tree_session_id or "").strip()
@@ -4666,14 +4805,22 @@ def _save_project_chat_memory_snapshot(
             }
             if fingerprint_tag and fingerprint_tag in tags:
                 return True
-            if workflow_tag not in tags:
-                continue
-            if normalized_content and normalized_content == str(getattr(memory, "content", "") or "").strip():
-                return True
             binding = _parse_project_memory_binding(
                 getattr(memory, "content", ""),
                 getattr(memory, "purpose_tags", ()),
             )
+            memory_project_id = str(binding.get("project_id") or "").strip()
+            if normalized_project_id:
+                if memory_project_id and memory_project_id != normalized_project_id:
+                    continue
+                if not memory_project_id and str(getattr(memory, "project_name", "") or "").strip() != normalized_project_name:
+                    continue
+            elif str(getattr(memory, "project_name", "") or "").strip() != normalized_project_name:
+                continue
+            if workflow_tag not in tags:
+                continue
+            if normalized_content and normalized_content == str(getattr(memory, "content", "") or "").strip():
+                return True
             memory_task_tree_session_id = str(binding.get("task_tree_session_id") or "").strip()
             if normalized_task_tree_session_id:
                 if (
@@ -4746,6 +4893,8 @@ def _save_project_chat_memory_snapshot(
         ]
         if plan_outline:
             content_lines.append(f"[任务计划]\n{plan_outline}")
+    content_lines.append(f"[项目ID] {project_id}")
+    content_lines.append(f"[项目名称] {project_name}")
     if normalized_chat_session_id:
         content_lines.append(f"[关联会话] {normalized_chat_session_id}")
     task_tree_binding = _extract_task_tree_binding(task_tree_payload)
@@ -4754,7 +4903,7 @@ def _save_project_chat_memory_snapshot(
             "[执行轨迹JSON] " + json.dumps(task_tree_binding, ensure_ascii=False, sort_keys=True)
         )
     content = "\n".join(content_lines)
-    purpose_tags = ["auto-capture", "project-chat", source, workflow_tag]
+    purpose_tags = ["auto-capture", "project-chat", source, workflow_tag, f"project-id:{project_id}"]
     if normalized_chat_session_id:
         purpose_tags.append(f"chat-session:{normalized_chat_session_id}")
     if task_tree_binding.get("task_tree_session_id"):
@@ -4771,6 +4920,7 @@ def _save_project_chat_memory_snapshot(
     for employee_id in target_ids:
         if _memory_record_exists(
             employee_id,
+            project_id=project_id,
             project_name=project_name,
             chat_session_id=normalized_chat_session_id,
             workflow_tag=workflow_tag,
@@ -5978,13 +6128,14 @@ async def ws_global_assistant_chat(websocket: WebSocket):
                     "tool_retry_count": req.tool_retry_count,
                 }
             )
-            provider_mode, selected_provider, model_name = (
-                await _resolve_global_assistant_chat_runtime_target(
-                    runtime_settings,
-                    auth_payload,
-                )
+            resolved_runtime = await _resolve_global_assistant_chat_runtime(
+                runtime_settings,
+                auth_payload,
             )
-            provider_id = str(selected_provider.get("id") or "").strip()
+            provider_mode = resolved_runtime.provider_mode
+            selected_provider = resolved_runtime.provider
+            provider_id = resolved_runtime.provider_id
+            model_name = resolved_runtime.model_name
             global_assistant_tools = build_global_assistant_builtin_tools()
             messages = _build_global_chat_messages(
                 effective_user_message,
@@ -6000,6 +6151,20 @@ async def ws_global_assistant_chat(websocket: WebSocket):
                 ),
                 skill_resource_directory=req.skill_resource_directory,
                 chat_surface=req.chat_surface,
+                runtime_snapshot=runtime_snapshot,
+            )
+            runtime_context = build_chat_runtime_context(
+                project_id=_GLOBAL_ASSISTANT_STORE_PROJECT_ID,
+                username=username,
+                chat_session_id=chat_session_id,
+                skill_resource_directory=req.skill_resource_directory,
+                chat_surface=req.chat_surface,
+                history=req.history,
+                images=normalized_images,
+                chat_settings=runtime_settings,
+                resolved_provider=resolved_runtime,
+                tools=global_assistant_tools,
+                messages=messages,
                 runtime_snapshot=runtime_snapshot,
             )
         except Exception as exc:
@@ -6027,16 +6192,11 @@ async def ws_global_assistant_chat(websocket: WebSocket):
             from services.llm_provider_service import get_llm_provider_service
 
             llm_service = get_llm_provider_service()
-            if provider_mode == "local_connector":
-                connector = _resolve_accessible_local_connector_for_llm(
-                    parse_local_connector_provider_id(provider_id),
-                    auth_payload,
-                )
-                if connector is None:
-                    raise ValueError("Local connector not found")
-                llm_service_runtime = LocalConnectorLlmAdapter(connector)
-            else:
-                llm_service_runtime = llm_service
+            llm_service_runtime = _resolve_chat_llm_service_runtime(
+                llm_service,
+                resolved_runtime,
+                auth_payload,
+            )
 
             redis_client = await get_redis_client()
             conv_manager = ConversationManager(redis_client)
@@ -6044,50 +6204,30 @@ async def ws_global_assistant_chat(websocket: WebSocket):
                 _GLOBAL_ASSISTANT_STORE_PROJECT_ID,
                 "",
             )
-            orchestrator = AgentOrchestrator(
+            orchestrator = build_agent_orchestrator(
                 llm_service_runtime,
                 conv_manager,
-                max_loops=int(runtime_settings.get("max_loop_rounds") or 20),
-                max_tool_rounds=int(runtime_settings.get("max_tool_rounds") or 6),
-                repeated_tool_call_threshold=int(
-                    runtime_settings.get("repeated_tool_call_threshold") or 2
-                ),
-                tool_only_threshold=int(runtime_settings.get("tool_only_threshold") or 3),
-                tool_budget_strategy=str(
-                    runtime_settings.get("tool_budget_strategy") or "finalize"
-                ),
-                max_tool_calls_per_round=int(
-                    runtime_settings.get("max_tool_calls_per_round") or 6
-                ),
-                tool_timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 60),
-                tool_retry_count=int(runtime_settings.get("tool_retry_count") or 0),
+                runtime_settings,
+                orchestrator_cls=AgentOrchestrator,
             )
 
             final_answer = ""
             stream_error = ""
             async for chunk_data in orchestrator.run(
-                session_id=session_id,
-                user_message=effective_user_message,
-                tools=global_assistant_tools,
-                provider_id=provider_id,
-                model_name=model_name,
-                temperature=float(runtime_settings.get("temperature") or 0.1),
-                max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
-                project_id=_GLOBAL_ASSISTANT_STORE_PROJECT_ID,
-                employee_id="",
-                username=username,
-                chat_session_id=chat_session_id,
-                role_ids=_current_role_ids(auth_payload),
-                cancel_event=cancel_event,
-                messages=messages,
-                local_connector=None,
-                local_connector_workspace_path="",
-                local_connector_sandbox_mode="workspace-write",
-                global_assistant_bridge_handler=lambda tool_name, args: call_browser_tool(
-                    tool_name,
-                    args,
-                    request_id=request_id,
-                ),
+                **build_orchestrator_run_kwargs(
+                    session_id=session_id,
+                    user_message=effective_user_message,
+                    runtime_context=runtime_context,
+                    temperature=float(runtime_settings.get("temperature") or 0.1),
+                    max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
+                    cancel_event=cancel_event,
+                    role_ids=_current_role_ids(auth_payload),
+                    global_assistant_bridge_handler=lambda tool_name, args: call_browser_tool(
+                        tool_name,
+                        args,
+                        request_id=request_id,
+                    ),
+                )
             ):
                 outgoing = dict(chunk_data)
                 event_type = str(outgoing.get("type") or "").strip().lower()
@@ -6196,13 +6336,14 @@ async def chat_without_project(
             "prefer_conclusion_first": req.prefer_conclusion_first,
         }
     )
-    provider_mode, selected_provider, model_name = (
-        await _resolve_global_assistant_chat_runtime_target(
-            runtime_settings,
-            auth_payload,
-        )
+    resolved_runtime = await _resolve_global_assistant_chat_runtime(
+        runtime_settings,
+        auth_payload,
     )
-    provider_id = str(selected_provider.get("id") or "").strip()
+    provider_mode = resolved_runtime.provider_mode
+    selected_provider = resolved_runtime.provider
+    provider_id = resolved_runtime.provider_id
+    model_name = resolved_runtime.model_name
 
     effective_user_message = user_message
     if not effective_user_message and attachment_names:
@@ -6231,18 +6372,27 @@ async def chat_without_project(
         chat_surface=req.chat_surface,
         runtime_snapshot=runtime_snapshot,
     )
+    runtime_context = build_chat_runtime_context(
+        project_id=_GLOBAL_ASSISTANT_STORE_PROJECT_ID,
+        username=_current_username(auth_payload),
+        chat_session_id=str(req.chat_session_id or "").strip(),
+        skill_resource_directory=req.skill_resource_directory,
+        chat_surface=req.chat_surface,
+        history=req.history,
+        images=normalized_images,
+        chat_settings=runtime_settings,
+        resolved_provider=resolved_runtime,
+        tools=global_assistant_tools,
+        messages=messages,
+        runtime_snapshot=runtime_snapshot,
+    )
     try:
         llm_service = get_llm_provider_service()
-        if provider_mode == "local_connector":
-            connector = _resolve_accessible_local_connector_for_llm(
-                parse_local_connector_provider_id(provider_id),
-                auth_payload,
-            )
-            if connector is None:
-                raise HTTPException(404, "Local connector not found")
-            llm_service_runtime = LocalConnectorLlmAdapter(connector)
-        else:
-            llm_service_runtime = llm_service
+        llm_service_runtime = _resolve_chat_llm_service_runtime(
+            llm_service,
+            resolved_runtime,
+            auth_payload,
+        )
 
         redis_client = await get_redis_client()
         conv_manager = ConversationManager(redis_client)
@@ -6250,45 +6400,25 @@ async def chat_without_project(
             _GLOBAL_ASSISTANT_STORE_PROJECT_ID,
             "",
         )
-        orchestrator = AgentOrchestrator(
+        orchestrator = build_agent_orchestrator(
             llm_service_runtime,
             conv_manager,
-            max_loops=int(runtime_settings.get("max_loop_rounds") or 20),
-            max_tool_rounds=int(runtime_settings.get("max_tool_rounds") or 6),
-            repeated_tool_call_threshold=int(
-                runtime_settings.get("repeated_tool_call_threshold") or 2
-            ),
-            tool_only_threshold=int(runtime_settings.get("tool_only_threshold") or 3),
-            tool_budget_strategy=str(
-                runtime_settings.get("tool_budget_strategy") or "finalize"
-            ),
-            max_tool_calls_per_round=int(
-                runtime_settings.get("max_tool_calls_per_round") or 6
-            ),
-            tool_timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 60),
-            tool_retry_count=int(runtime_settings.get("tool_retry_count") or 0),
+            runtime_settings,
+            orchestrator_cls=AgentOrchestrator,
         )
 
         answer = ""
         stream_error = ""
         async for chunk_data in orchestrator.run(
-            session_id=session_id,
-            user_message=effective_user_message,
-            tools=global_assistant_tools,
-            provider_id=provider_id,
-            model_name=model_name,
-            temperature=float(runtime_settings.get("temperature") or 0.1),
-            max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
-            project_id=_GLOBAL_ASSISTANT_STORE_PROJECT_ID,
-            employee_id="",
-            username=_current_username(auth_payload),
-            chat_session_id=str(req.chat_session_id or "").strip(),
-            role_ids=_current_role_ids(auth_payload),
-            cancel_event=asyncio.Event(),
-            messages=messages,
-            local_connector=None,
-            local_connector_workspace_path="",
-            local_connector_sandbox_mode="workspace-write",
+            **build_orchestrator_run_kwargs(
+                session_id=session_id,
+                user_message=effective_user_message,
+                runtime_context=runtime_context,
+                temperature=float(runtime_settings.get("temperature") or 0.1),
+                max_tokens=_resolve_chat_max_tokens(runtime_settings.get("max_tokens")),
+                cancel_event=asyncio.Event(),
+                role_ids=_current_role_ids(auth_payload),
+            )
         ):
             event_type = str(chunk_data.get("type") or "").strip().lower()
             if event_type == "done":
@@ -8412,6 +8542,32 @@ async def get_project_chat_task_tree(
     return {"task_tree": payload}
 
 
+@router.get("/{project_id}/chat/task-tree/evolution-summary")
+async def get_project_chat_task_tree_evolution_summary(
+    project_id: str,
+    chat_session_id: str = "",
+    task_tree_session_id: str = "",
+    issue_code: str = "",
+    source_kind: str = "",
+    limit: int = 200,
+    top: int = 5,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    safe_limit = max(1, min(int(limit or 200), 500))
+    safe_top = max(1, min(int(top or 5), 20))
+    return build_task_tree_evolution_summary(
+        project_id=project_id,
+        chat_session_id=chat_session_id,
+        task_tree_session_id=task_tree_session_id,
+        issue_code=issue_code,
+        source_kind=source_kind,
+        limit=safe_limit,
+        top_limit=safe_top,
+    )
+
+
 @router.delete("/{project_id}/chat/task-tree")
 async def delete_project_chat_task_tree(
     project_id: str,
@@ -8985,17 +9141,16 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             if _is_project_meta_query(effective_user_message):
                 direct_answer = _build_project_meta_reply(project, selected_employee, candidates)
                 await websocket.send_json(
-                    {
-                        "type": "start",
-                        "request_id": request_id,
-                        "project_id": project_id,
-                        "provider_id": "",
-                        "model_name": "direct-project-meta",
-                        "employee_id": employee_id_val,
-                        "employee_name": str((selected_employee or {}).get("name") or ""),
-                        "tools_enabled": False,
-                        "task_tree": task_tree_payload,
-                    }
+                    _build_project_chat_start_payload(
+                        request_id=request_id,
+                        project_id=project_id,
+                        provider_id="",
+                        model_name="direct-project-meta",
+                        employee_id=employee_id_val,
+                        employee_name=str((selected_employee or {}).get("name") or ""),
+                        tools_enabled=False,
+                        task_tree_payload=task_tree_payload,
+                    )
                 )
                 direct_done_payload = _build_project_chat_done_payload(
                     content=direct_answer,
@@ -9040,17 +9195,16 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     explicit_filter=explicit_tool_filter,
                 )
                 await websocket.send_json(
-                    {
-                        "type": "start",
-                        "request_id": request_id,
-                        "project_id": project_id,
-                        "provider_id": "",
-                        "model_name": "direct-tool-probe",
-                        "employee_id": employee_id_val,
-                        "employee_name": str((selected_employee or {}).get("name") or ""),
-                        "tools_enabled": False,
-                        "task_tree": task_tree_payload,
-                    }
+                    _build_project_chat_start_payload(
+                        request_id=request_id,
+                        project_id=project_id,
+                        provider_id="",
+                        model_name="direct-tool-probe",
+                        employee_id=employee_id_val,
+                        employee_name=str((selected_employee or {}).get("name") or ""),
+                        tools_enabled=False,
+                        task_tree_payload=task_tree_payload,
+                    )
                 )
                 direct_done_payload = _build_project_chat_done_payload(
                     content=direct_answer,
@@ -9088,17 +9242,16 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             if _is_mcp_modules_query(effective_user_message):
                 direct_answer = _build_mcp_modules_reply(project_id)
                 await websocket.send_json(
-                    {
-                        "type": "start",
-                        "request_id": request_id,
-                        "project_id": project_id,
-                        "provider_id": "",
-                        "model_name": "direct-mcp-modules",
-                        "employee_id": employee_id_val,
-                        "employee_name": str((selected_employee or {}).get("name") or ""),
-                        "tools_enabled": False,
-                        "task_tree": task_tree_payload,
-                    }
+                    _build_project_chat_start_payload(
+                        request_id=request_id,
+                        project_id=project_id,
+                        provider_id="",
+                        model_name="direct-mcp-modules",
+                        employee_id=employee_id_val,
+                        employee_name=str((selected_employee or {}).get("name") or ""),
+                        tools_enabled=False,
+                        task_tree_payload=task_tree_payload,
+                    )
                 )
                 direct_done_payload = _build_project_chat_done_payload(
                     content=direct_answer,
@@ -9133,14 +9286,14 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 )
                 return
 
-            provider_mode, selected_provider, _ = await _resolve_provider_runtime_target(
-                str(runtime_settings.get("provider_id") or ""),
+            resolved_runtime = await _resolve_project_chat_runtime(
+                runtime_settings,
                 auth_payload,
             )
-            provider_id = str(selected_provider.get("id") or "")
-            model_name = str(runtime_settings.get("model_name") or "").strip() or str(selected_provider.get("default_model") or "")
-            if not model_name:
-                raise ValueError("model_name is required")
+            provider_mode = resolved_runtime.provider_mode
+            selected_provider = resolved_runtime.provider
+            provider_id = resolved_runtime.provider_id
+            model_name = resolved_runtime.model_name
             from services.llm_provider_service import get_llm_provider_service
 
             llm_service = get_llm_provider_service()
@@ -9152,21 +9305,20 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             )
             if model_parameter_mode in {"image", "video"}:
                 await websocket.send_json(
-                    {
-                        "type": "start",
-                        "request_id": request_id,
-                        "project_id": project_id,
-                        "provider_id": provider_id,
-                        "model_name": model_name,
-                        "chat_mode": "system",
-                        "employee_id": employee_id_val,
-                        "employee_name": str((selected_employee or {}).get("name") or ""),
-                        "employee_ids": selected_employee_ids,
-                        "tools_enabled": False,
-                        "effective_tools": [],
-                        "effective_tool_total": 0,
-                        "task_tree": task_tree_payload,
-                    }
+                    _build_project_chat_start_payload(
+                        request_id=request_id,
+                        project_id=project_id,
+                        provider_id=provider_id,
+                        model_name=model_name,
+                        chat_mode="system",
+                        employee_id=employee_id_val,
+                        employee_name=str((selected_employee or {}).get("name") or ""),
+                        employee_ids=selected_employee_ids,
+                        tools_enabled=False,
+                        effective_tools=[],
+                        effective_tool_total=0,
+                        task_tree_payload=task_tree_payload,
+                    )
                 )
                 try:
                     done_payload = await _generate_project_chat_media_done_payload(
@@ -9244,23 +9396,47 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 employee_coordination_mode=str(runtime_settings.get("employee_coordination_mode") or "auto"),
                 task_tree_prompt=task_tree_prompt,
             )
+            runtime_context = build_chat_runtime_context(
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                employee_id=employee_id_val,
+                selected_employee_ids=selected_employee_ids,
+                workspace_path=effective_workspace_path,
+                skill_resource_directory=req.skill_resource_directory,
+                chat_surface=chat_surface,
+                history=req.history,
+                images=normalized_images,
+                task_tree_payload=task_tree_payload,
+                task_tree_prompt=task_tree_prompt,
+                chat_settings=runtime_settings,
+                resolved_provider=resolved_runtime,
+                tools=tools,
+                messages=messages,
+                local_connector=selected_local_connector,
+                local_connector_sandbox_mode=local_connector_sandbox_mode,
+            )
 
         except Exception as exc:
             await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
             return
 
-        await websocket.send_json({
-            "type": "start", "request_id": request_id, "project_id": project_id,
-            "provider_id": provider_id, "model_name": model_name,
-            "chat_mode": "system",
-            "employee_id": employee_id_val,
-            "employee_name": str((selected_employee or {}).get("name") or ""),
-            "employee_ids": selected_employee_ids,
-            "tools_enabled": bool(tools),
-            "effective_tools": effective_tools,
-            "effective_tool_total": effective_tool_total,
-            "task_tree": task_tree_payload,
-        })
+        await websocket.send_json(
+            _build_project_chat_start_payload(
+                request_id=request_id,
+                project_id=project_id,
+                provider_id=provider_id,
+                model_name=model_name,
+                chat_mode="system",
+                employee_id=employee_id_val,
+                employee_name=str((selected_employee or {}).get("name") or ""),
+                employee_ids=selected_employee_ids,
+                tools_enabled=bool(tools),
+                effective_tools=effective_tools,
+                effective_tool_total=effective_tool_total,
+                task_tree_payload=task_tree_payload,
+            )
+        )
 
         try:
             final_answer = ""
@@ -9268,49 +9444,32 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             assistant_artifacts: list[dict[str, Any]] = []
             last_done_payload: dict[str, Any] | None = None
 
-            if provider_mode == "local_connector":
-                connector = _resolve_accessible_local_connector_for_llm(
-                    parse_local_connector_provider_id(provider_id),
-                    auth_payload,
-                )
-                if connector is None:
-                    raise ValueError("Local connector not found")
-                llm_service = LocalConnectorLlmAdapter(connector)
+            llm_service = _resolve_chat_llm_service_runtime(
+                llm_service,
+                resolved_runtime,
+                auth_payload,
+            )
 
             # 创建会话和编排器
             redis_client = await get_redis_client()
             conv_manager = ConversationManager(redis_client)
             session_id = await conv_manager.create_session(project_id, employee_id_val)
-            orchestrator = AgentOrchestrator(
+            orchestrator = build_agent_orchestrator(
                 llm_service,
                 conv_manager,
-                max_loops=int(runtime_settings.get("max_loop_rounds") or 20),
-                max_tool_rounds=int(runtime_settings.get("max_tool_rounds") or 6),
-                repeated_tool_call_threshold=int(runtime_settings.get("repeated_tool_call_threshold") or 2),
-                tool_only_threshold=int(runtime_settings.get("tool_only_threshold") or 3),
-                tool_budget_strategy=str(runtime_settings.get("tool_budget_strategy") or "finalize"),
-                max_tool_calls_per_round=int(runtime_settings.get("max_tool_calls_per_round") or 6),
-                tool_timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 60),
-                tool_retry_count=int(runtime_settings.get("tool_retry_count") or 0),
+                runtime_settings,
+                orchestrator_cls=AgentOrchestrator,
             )
 
             async for chunk_data in orchestrator.run(
-                session_id=session_id,
-                user_message=effective_user_message,
-                tools=tools,
-                provider_id=provider_id,
-                model_name=model_name,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                project_id=project_id,
-                employee_id=employee_id_val,
-                username=username,
-                chat_session_id=chat_session_id,
-                cancel_event=cancel_event,
-                messages=messages,
-                local_connector=selected_local_connector,
-                local_connector_workspace_path=effective_workspace_path,
-                local_connector_sandbox_mode=local_connector_sandbox_mode,
+                **build_orchestrator_run_kwargs(
+                    session_id=session_id,
+                    user_message=effective_user_message,
+                    runtime_context=runtime_context,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    cancel_event=cancel_event,
+                )
             ):
                 outgoing = dict(chunk_data)
                 event_type = str(outgoing.get("type") or "").strip().lower()
@@ -9522,16 +9681,15 @@ async def stream_project_chat(
             )
             yield _sse_payload(
                 "message",
-                {
-                    "type": "start",
-                    "project_id": project_id,
-                    "provider_id": "",
-                    "model_name": "direct-project-meta",
-                    "employee_id": employee_id_val,
-                    "employee_name": str((selected_employee or {}).get("name") or ""),
-                    "tools_enabled": False,
-                    "task_tree": task_tree_payload,
-                },
+                _build_project_chat_start_payload(
+                    project_id=project_id,
+                    provider_id="",
+                    model_name="direct-project-meta",
+                    employee_id=employee_id_val,
+                    employee_name=str((selected_employee or {}).get("name") or ""),
+                    tools_enabled=False,
+                    task_tree_payload=task_tree_payload,
+                ),
             )
             for part in _chunk_text(answer):
                 yield _sse_payload("message", {"type": "delta", "content": part})
@@ -9587,16 +9745,15 @@ async def stream_project_chat(
             )
             yield _sse_payload(
                 "message",
-                {
-                    "type": "start",
-                    "project_id": project_id,
-                    "provider_id": "",
-                    "model_name": "direct-tool-probe",
-                    "employee_id": employee_id_val,
-                    "employee_name": str((selected_employee or {}).get("name") or ""),
-                    "tools_enabled": False,
-                    "task_tree": task_tree_payload,
-                },
+                _build_project_chat_start_payload(
+                    project_id=project_id,
+                    provider_id="",
+                    model_name="direct-tool-probe",
+                    employee_id=employee_id_val,
+                    employee_name=str((selected_employee or {}).get("name") or ""),
+                    tools_enabled=False,
+                    task_tree_payload=task_tree_payload,
+                ),
             )
             for part in _chunk_text(answer):
                 yield _sse_payload("message", {"type": "delta", "content": part})
@@ -9645,16 +9802,15 @@ async def stream_project_chat(
             )
             yield _sse_payload(
                 "message",
-                {
-                    "type": "start",
-                    "project_id": project_id,
-                    "provider_id": "",
-                    "model_name": "direct-mcp-modules",
-                    "employee_id": employee_id_val,
-                    "employee_name": str((selected_employee or {}).get("name") or ""),
-                    "tools_enabled": False,
-                    "task_tree": task_tree_payload,
-                },
+                _build_project_chat_start_payload(
+                    project_id=project_id,
+                    provider_id="",
+                    model_name="direct-mcp-modules",
+                    employee_id=employee_id_val,
+                    employee_name=str((selected_employee or {}).get("name") or ""),
+                    tools_enabled=False,
+                    task_tree_payload=task_tree_payload,
+                ),
             )
             for part in _chunk_text(answer):
                 yield _sse_payload("message", {"type": "delta", "content": part})
@@ -9688,14 +9844,14 @@ async def stream_project_chat(
             },
         )
 
-    provider_mode, selected_provider, _ = await _resolve_provider_runtime_target(
-        str(runtime_settings.get("provider_id") or ""),
+    resolved_runtime = await _resolve_project_chat_runtime(
+        runtime_settings,
         auth_payload,
     )
-    provider_id = str(selected_provider.get("id") or "")
-    model_name = str(runtime_settings.get("model_name") or "").strip() or str(selected_provider.get("default_model") or "")
-    if not model_name:
-        raise HTTPException(400, "model_name is required")
+    provider_mode = resolved_runtime.provider_mode
+    selected_provider = resolved_runtime.provider
+    provider_id = resolved_runtime.provider_id
+    model_name = resolved_runtime.model_name
 
     llm_service = get_llm_provider_service()
     model_parameter_mode = _resolve_provider_model_parameter_mode(
@@ -9708,19 +9864,18 @@ async def stream_project_chat(
         async def media_event_stream() -> AsyncIterator[str]:
             yield _sse_payload(
                 "message",
-                {
-                    "type": "start",
-                    "project_id": project_id,
-                    "provider_id": provider_id,
-                    "model_name": model_name,
-                    "employee_id": str((selected_employee or {}).get("id") or ""),
-                    "employee_name": str((selected_employee or {}).get("name") or ""),
-                    "employee_ids": selected_employee_ids,
-                    "tools_enabled": False,
-                    "effective_tools": [],
-                    "effective_tool_total": 0,
-                    "task_tree": task_tree_payload,
-                },
+                _build_project_chat_start_payload(
+                    project_id=project_id,
+                    provider_id=provider_id,
+                    model_name=model_name,
+                    employee_id=str((selected_employee or {}).get("id") or ""),
+                    employee_name=str((selected_employee or {}).get("name") or ""),
+                    employee_ids=selected_employee_ids,
+                    tools_enabled=False,
+                    effective_tools=[],
+                    effective_tool_total=0,
+                    task_tree_payload=task_tree_payload,
+                ),
             )
             try:
                 done_payload = await _generate_project_chat_media_done_payload(
@@ -9811,50 +9966,58 @@ async def stream_project_chat(
         employee_coordination_mode=str(runtime_settings.get("employee_coordination_mode") or "auto"),
         task_tree_prompt=task_tree_prompt,
     )
+    runtime_context = build_chat_runtime_context(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        employee_id=employee_id_val,
+        selected_employee_ids=selected_employee_ids,
+        workspace_path=effective_workspace_path,
+        skill_resource_directory=req.skill_resource_directory,
+        chat_surface=chat_surface,
+        history=req.history,
+        images=normalized_images,
+        task_tree_payload=task_tree_payload,
+        task_tree_prompt=task_tree_prompt,
+        chat_settings=runtime_settings,
+        resolved_provider=resolved_runtime,
+        tools=tools,
+        messages=messages,
+        local_connector=selected_local_connector,
+        local_connector_sandbox_mode=local_connector_sandbox_mode,
+    )
 
     async def event_stream() -> AsyncIterator[str]:
         yield _sse_payload(
             "message",
-            {
-                "type": "start",
-                "project_id": project_id,
-                "provider_id": provider_id,
-                "model_name": model_name,
-                "employee_id": str((selected_employee or {}).get("id") or ""),
-                "employee_name": str((selected_employee or {}).get("name") or ""),
-                "employee_ids": selected_employee_ids,
-                "tools_enabled": bool(tools),
-                "effective_tools": effective_tools,
-                "effective_tool_total": effective_tool_total,
-                "task_tree": task_tree_payload,
-            },
+            _build_project_chat_start_payload(
+                project_id=project_id,
+                provider_id=provider_id,
+                model_name=model_name,
+                employee_id=str((selected_employee or {}).get("id") or ""),
+                employee_name=str((selected_employee or {}).get("name") or ""),
+                employee_ids=selected_employee_ids,
+                tools_enabled=bool(tools),
+                effective_tools=effective_tools,
+                effective_tool_total=effective_tool_total,
+                task_tree_payload=task_tree_payload,
+            ),
         )
         try:
-            if provider_mode == "local_connector":
-                connector = _resolve_accessible_local_connector_for_llm(
-                    parse_local_connector_provider_id(provider_id),
-                    auth_payload,
-                )
-                if connector is None:
-                    raise HTTPException(404, "Local connector not found")
-                llm_service_runtime = LocalConnectorLlmAdapter(connector)
-            else:
-                llm_service_runtime = llm_service
+            llm_service_runtime = _resolve_chat_llm_service_runtime(
+                llm_service,
+                resolved_runtime,
+                auth_payload,
+            )
 
             redis_client = await get_redis_client()
             conv_manager = ConversationManager(redis_client)
             session_id = await conv_manager.create_session(project_id, employee_id_val)
-            orchestrator = AgentOrchestrator(
+            orchestrator = build_agent_orchestrator(
                 llm_service_runtime,
                 conv_manager,
-                max_loops=int(runtime_settings.get("max_loop_rounds") or 20),
-                max_tool_rounds=int(runtime_settings.get("max_tool_rounds") or 6),
-                repeated_tool_call_threshold=int(runtime_settings.get("repeated_tool_call_threshold") or 2),
-                tool_only_threshold=int(runtime_settings.get("tool_only_threshold") or 3),
-                tool_budget_strategy=str(runtime_settings.get("tool_budget_strategy") or "finalize"),
-                max_tool_calls_per_round=int(runtime_settings.get("max_tool_calls_per_round") or 6),
-                tool_timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 60),
-                tool_retry_count=int(runtime_settings.get("tool_retry_count") or 0),
+                runtime_settings,
+                orchestrator_cls=AgentOrchestrator,
             )
 
             final_answer = ""
@@ -9863,22 +10026,14 @@ async def stream_project_chat(
             last_done_payload: dict[str, Any] | None = None
             cancel_event = asyncio.Event()
             async for chunk_data in orchestrator.run(
-                session_id=session_id,
-                user_message=effective_user_message,
-                tools=tools,
-                provider_id=provider_id,
-                model_name=model_name,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                project_id=project_id,
-                employee_id=employee_id_val,
-                username=username,
-                chat_session_id=chat_session_id,
-                cancel_event=cancel_event,
-                messages=messages,
-                local_connector=selected_local_connector,
-                local_connector_workspace_path=effective_workspace_path,
-                local_connector_sandbox_mode=local_connector_sandbox_mode,
+                **build_orchestrator_run_kwargs(
+                    session_id=session_id,
+                    user_message=effective_user_message,
+                    runtime_context=runtime_context,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    cancel_event=cancel_event,
+                )
             ):
                 outgoing = dict(chunk_data)
                 event_type = str(outgoing.get("type") or "").strip().lower()

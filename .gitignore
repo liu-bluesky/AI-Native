@@ -1,4 +1,5 @@
 .ace-tool/
+.ai-employee/
 .claude
 .db-config*.json
 .DS_Store
