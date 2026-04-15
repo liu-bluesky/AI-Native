@@ -209,6 +209,8 @@ def create_project_mcp(
         return display_path, content
 
     def _build_usage_guide(project) -> dict:
+        from routers.projects import _resolve_project_experience_rule_bindings
+
         manual_resource = f"project://{project.id}/manual"
         display_path, ai_entry_excerpt = _read_ai_entry_excerpt(project)
         mcp_instruction = _resolve_mcp_instruction(project)
@@ -218,27 +220,35 @@ def create_project_mcp(
         proxy_tool_count = len(scoped_proxy_specs)
         external_tool_count = len(external_tool_specs)
         ui_rule_bindings = project_ui_rule_summary(project.id, limit=20)
+        experience_rule_bindings = _resolve_project_experience_rule_bindings(project)
         ui_rule_titles = [str(item.get("title") or item.get("id") or "").strip() for item in ui_rule_bindings if str(item.get("title") or item.get("id") or "").strip()]
+        experience_rule_titles = [
+            str(item.get("title") or item.get("id") or "").strip()
+            for item in experience_rule_bindings
+            if str(item.get("title") or item.get("id") or "").strip()
+        ]
         guide_lines = [
             f"# {project.name} Project MCP Usage Guide",
             "",
             f"- 项目 ID: {project.id}",
             f"- 项目描述: {project.description or '-'}",
             f"- MCP 使用说明: {mcp_instruction or '-'}",
-            f"- 适用场景: 读取项目画像、项目级 UI 规则、项目成员规则、项目成员技能代理工具，以及当前项目挂载的外部 MCP 工具。",
+            f"- 适用场景: 读取项目画像、项目级 UI 规则、项目经验规则、项目成员规则、项目成员技能代理工具，以及当前项目挂载的外部 MCP 工具。",
             f"- 项目使用手册 Resource: {manual_resource}",
             "",
             "## 推荐调用顺序",
             f"1. 先调用 get_project_usage_guide 或读取 project://{project.id}/usage-guide，了解项目范围与约定。",
             "2. 如需项目手册，直接读取 project://<project_id>/manual 或调用 get_project_manual。",
             "3. 调用 get_project_profile，确认项目基础配置、工作区与入口文件配置。",
-            "4. 调用 get_project_runtime_context，快速了解成员数量、项目级 UI 规则、规则规模和代理工具规模。",
+            "4. 调用 get_project_runtime_context，快速了解成员数量、项目级 UI 规则、项目经验规则、规则规模和代理工具规模。",
             f"5. 如需选人，先调用 list_project_members；如需选工具，先调用 list_project_proxy_tools 或读取 project://{project.id}/proxy-tools。",
-            "6. 如需历史经验或续跑线索，只在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时调用 recall_project_memory；同一任务轮进入执行后不要重复 recall。",
-            "7. 规则检索用 query_project_rules；其中项目级 UI 规则优先于员工个人规则。协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断单人主责或多人协作；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
+            "6. 若当前需求可能复用历史开发经验，调用 resolve_project_experience_rules 按任务文本只加载相关经验卡片；不要全量拼接全部经验规则。",
+            "7. 如需历史记忆或续跑线索，只在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时调用 recall_project_memory；同一任务轮进入执行后不要重复 recall。",
+            "8. 规则检索用 query_project_rules；其中项目级 UI 规则优先于员工个人规则。协作型任务可直接调用 execute_project_collaboration，由 AI 结合项目手册、员工手册、规则和工具自主判断单人主责或多人协作；成员技能脚本调用用 invoke_project_skill_tool；外部模块调用用 list_external_mcp_tools / invoke_external_mcp_tool。",
             "",
             "## 调用建议",
             "- 页面、交互、视觉相关任务先检查项目级 UI 规则，其优先级高于员工个人规则。",
+            "- 项目经验规则默认按需解析，不默认全量注入；只在任务模式相近时调用 resolve_project_experience_rules。",
             "- 记忆检索采用按需触发；不要把 recall_project_memory 当成每个计划节点的固定前置动作。",
             "- 当 tool_name 可能重名时，给 invoke_project_skill_tool 同时传 employee_id 做消歧。",
             "- 在直接调用技能脚本前，先读取项目规则和成员信息，避免工具选错。",
@@ -251,6 +261,8 @@ def create_project_mcp(
             "## 当前项目能力概览",
             f"- 项目级 UI 规则数: {len(ui_rule_bindings)}",
             f"- 项目级 UI 规则: {', '.join(ui_rule_titles) or '-'}",
+            f"- 项目经验规则数: {len(experience_rule_bindings)}",
+            f"- 项目经验规则: {', '.join(experience_rule_titles) or '-'}",
             f"- 项目成员技能代理工具数: {proxy_tool_count}",
             f"- 外部 MCP 工具数: {external_tool_count}",
         ]
@@ -300,6 +312,8 @@ def create_project_mcp(
             "ai_entry_file": display_path,
             "ui_rule_count": len(ui_rule_bindings),
             "ui_rules": ui_rule_bindings,
+            "experience_rule_count": len(experience_rule_bindings),
+            "experience_rules": experience_rule_bindings,
             "proxy_tool_count": proxy_tool_count,
             "external_tool_count": external_tool_count,
             "recommended_flow": [
@@ -307,6 +321,7 @@ def create_project_mcp(
                 "get_project_manual",
                 "get_project_profile",
                 "get_project_runtime_context",
+                "resolve_project_experience_rules",
                 "list_project_members or list_project_proxy_tools",
                 "get_current_task_tree / update_task_node_status / complete_task_node_with_verification",
                 "query_project_rules / invoke_project_skill_tool / invoke_external_mcp_tool",
@@ -463,13 +478,20 @@ def create_project_mcp(
         project = _get_project()
         if not project:
             return {"error": "Project not found"}
+        from routers.projects import _resolve_project_experience_rule_bindings
+
         pairs = _list_member_pairs()
         ui_rules = project_ui_rule_summary(project.id, limit=30)
+        experience_rules = _resolve_project_experience_rule_bindings(project)
         rule_ids: set[str] = set()
         for _member, employee in pairs:
             for rule in _query_rules_by_employee(employee):
                 rule_ids.add(rule.id)
         for item in ui_rules:
+            rule_id = str(item.get("id") or "").strip()
+            if rule_id:
+                rule_ids.add(rule_id)
+        for item in experience_rules:
             rule_id = str(item.get("id") or "").strip()
             if rule_id:
                 rule_ids.add(rule_id)
@@ -482,7 +504,19 @@ def create_project_mcp(
             "rule_count": len(rule_ids),
             "ui_rule_count": len(ui_rules),
             "ui_rules": ui_rules,
+            "experience_rule_count": len(experience_rules),
+            "experience_rules": experience_rules,
         }
+
+    @mcp.tool()
+    def resolve_project_experience_rules(task_text: str, limit: int = 3) -> dict:
+        """按任务文本从当前项目经验规则中按需解析高相关经验卡片。"""
+        project = _get_project()
+        if not project:
+            return {"error": "Project not found"}
+        from routers.projects import _resolve_project_experience_rules_payload
+
+        return _resolve_project_experience_rules_payload(project, task_text, limit=limit)
 
     @mcp.tool()
     def recall_project_memory(

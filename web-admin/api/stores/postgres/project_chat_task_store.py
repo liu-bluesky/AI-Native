@@ -31,6 +31,12 @@ class ProjectChatTaskStorePostgres:
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_project_chat_task_session_scope
                     ON project_chat_task_sessions (project_id, username, chat_session_id);
+                CREATE INDEX IF NOT EXISTS idx_project_chat_task_sessions_project_updated
+                    ON project_chat_task_sessions (project_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_project_chat_task_sessions_project_source_session
+                    ON project_chat_task_sessions (project_id, ((COALESCE(payload->>'source_session_id', ''))));
+                CREATE INDEX IF NOT EXISTS idx_project_chat_task_sessions_project_source_chat
+                    ON project_chat_task_sessions (project_id, ((COALESCE(payload->>'source_chat_session_id', ''))));
                 """
             )
 

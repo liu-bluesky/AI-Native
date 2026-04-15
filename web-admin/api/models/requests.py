@@ -251,6 +251,7 @@ class ProjectCreateReq(BaseModel):
     description: str = ""
     type: Literal["image", "storyboard_video", "mixed"] = "mixed"
     ui_rule_ids: list[str] = []
+    experience_rule_ids: list[str] = []
     mcp_instruction: str = ""
     workspace_path: str = ""
     ai_entry_file: str = ""
@@ -263,6 +264,7 @@ class ProjectUpdateReq(BaseModel):
     description: str | None = None
     type: Literal["image", "storyboard_video", "mixed"] | None = None
     ui_rule_ids: list[str] | None = None
+    experience_rule_ids: list[str] | None = None
     mcp_instruction: str | None = None
     workspace_path: str | None = None
     ai_entry_file: str | None = None
@@ -762,6 +764,25 @@ class MemoryBatchDeleteReq(BaseModel):
 
 class ProjectRequirementRecordBatchDeleteReq(BaseModel):
     record_ids: list[str] = Field(default_factory=list)
+
+
+class ProjectExperienceSummaryReq(BaseModel):
+    provider_id: str
+    model_name: str = ""
+    record_ids: list[str] = Field(default_factory=list)
+    clear_requirement_records: bool = True
+    max_cards: int = Field(default=5, ge=1, le=8)
+    experience_scope: Literal["development", "project"] = "development"
+
+
+class ProjectExperienceRuleUpdateReq(BaseModel):
+    title: str
+    content: str
+
+
+class ProjectExperienceRuleResolveReq(BaseModel):
+    task_text: str
+    limit: int = Field(default=3, ge=1, le=10)
 
 
 # ── Skill ──

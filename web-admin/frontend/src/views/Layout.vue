@@ -10,6 +10,10 @@
     <router-view />
   </div>
 
+  <div v-else-if="isProjectListRoute" class="project-list-route-layout">
+    <router-view />
+  </div>
+
   <div v-else class="default-route-layout">
     <div class="page-content">
       <router-view />
@@ -24,6 +28,9 @@ import { useRoute } from "vue-router";
 const route = useRoute();
 const isChatRoute = computed(() => route.path.startsWith("/ai/chat"));
 const isMaterialRoute = computed(() => route.path.startsWith("/materials"));
+const isProjectListRoute = computed(() =>
+  route.path === "/projects" || route.path === "/ai/chat/settings/projects",
+);
 const isEmbeddedMode = computed(() => {
   if (typeof window === "undefined") return false;
   return new URLSearchParams(window.location.search).get("embedded") === "1";
@@ -33,7 +40,8 @@ const isEmbeddedMode = computed(() => {
 <style scoped>
 .embedded-layout,
 .chat-route-layout,
-.material-route-layout {
+.material-route-layout,
+.project-list-route-layout {
   min-height: 100vh;
   height: 100vh;
 }
@@ -52,6 +60,16 @@ const isEmbeddedMode = computed(() => {
   overflow: hidden;
   background: var(--page-bg);
   box-sizing: border-box;
+}
+
+.project-list-route-layout {
+  overflow: auto;
+  padding: 18px 20px 24px;
+  box-sizing: border-box;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(125, 211, 252, 0.18), transparent 24%),
+    radial-gradient(circle at 88% 10%, rgba(103, 232, 249, 0.14), transparent 20%),
+    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 40%, #edf2f7 100%);
 }
 
 .default-route-layout {
@@ -77,6 +95,10 @@ const isEmbeddedMode = computed(() => {
 }
 
 @media (max-width: 960px) {
+  .project-list-route-layout {
+    padding: 14px 14px 18px;
+  }
+
   .default-route-layout {
     padding: 14px;
   }

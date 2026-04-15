@@ -4,13 +4,25 @@
       <h3>规则详情: {{ rule.title }}</h3>
       <div>
         <el-button
+          v-if="isManagedExperienceRule"
+          type="primary"
+          @click="openProjectDetail"
+        >
+          到项目详情编辑
+        </el-button>
+        <el-button
+          v-else
           type="primary"
           :disabled="!canManageRecord(rule)"
           @click="$router.push(`/rules/${route.params.id}/edit`)"
         >
           编辑
         </el-button>
-        <el-button type="danger" :disabled="!canManageRecord(rule)" @click="handleDelete">删除</el-button>
+        <el-button
+          type="danger"
+          :disabled="isManagedExperienceRule || !canManageRecord(rule)"
+          @click="handleDelete"
+        >删除</el-button>
         <el-button @click="$router.back()">返回</el-button>
       </div>
     </div>
@@ -29,6 +41,15 @@
       <el-descriptions-item label="创建人">{{ formatRecordOwner(rule) }}</el-descriptions-item>
       <el-descriptions-item label="创建时间">{{ rule.created_at }}</el-descriptions-item>
     </el-descriptions>
+
+    <el-alert
+      v-if="isManagedExperienceRule"
+      class="section-alert"
+      type="info"
+      :closable="false"
+      show-icon
+      :title="`这条规则由项目经验工作流维护，请到${primarySourceProject?.name || '关联项目'}详情页编辑或删除。`"
+    />
 
     <h4 class="section-title">规则内容</h4>
     <div class="rule-content" v-if="rule.content">{{ rule.content }}</div>
@@ -50,7 +71,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
@@ -66,6 +87,13 @@ const loading = ref(false)
 const rule = reactive({})
 const employeesById = ref(new Map())
 const boundEmployeeRows = ref([])
+const sourceProjectBindings = computed(() =>
+  Array.isArray(rule.source_project_bindings) ? rule.source_project_bindings : [],
+)
+const primarySourceProject = computed(() => sourceProjectBindings.value[0] || null)
+const isManagedExperienceRule = computed(() =>
+  rule.system_source === 'project_experience' || rule.system_source === 'development_experience',
+)
 
 function sevColor(s) {
   return { required: 'danger', recommended: 'warning', optional: 'info' }[s] || 'info'
@@ -105,6 +133,10 @@ async function fetchEmployees() {
 }
 
 async function handleDelete() {
+  if (isManagedExperienceRule.value) {
+    ElMessage.warning('经验规则请到项目详情中管理')
+    return
+  }
   if (!canManageRecord(rule)) {
     ElMessage.warning(getOwnershipDeniedMessage(rule, '删除'))
     return
@@ -117,6 +149,15 @@ async function handleDelete() {
   } catch {
     ElMessage.error('删除失败')
   }
+}
+
+function openProjectDetail() {
+  const projectId = String(primarySourceProject.value?.id || '').trim()
+  if (!projectId) {
+    ElMessage.warning('当前经验规则未关联可跳转的项目')
+    return
+  }
+  router.push(`/projects/${projectId}`)
 }
 
 onMounted(async () => {
@@ -144,6 +185,10 @@ onMounted(async () => {
 
 .section-title {
   margin-top: 20px;
+}
+
+.section-alert {
+  margin-top: 16px;
 }
 
 .bound-rows {

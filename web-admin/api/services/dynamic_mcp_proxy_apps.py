@@ -19,8 +19,8 @@ from services.dynamic_mcp_audit import (
 from services.project_mcp_presence import touch_project_mcp_presence as _touch_project_mcp_presence
 from services.project_chat_task_tree import audit_task_tree_round, ensure_task_tree
 from services.query_mcp_project_state import (
-    load_resumable_query_mcp_project_state,
-    save_query_mcp_project_state,
+    load_resumable_query_mcp_local_state,
+    persist_query_mcp_local_state,
 )
 
 
@@ -159,6 +159,8 @@ def _build_query_tool_solution_summary(tool_name: str, tool_payload: dict[str, A
     if tool_name == "get_project_runtime_context":
         return "通过读取项目运行时上下文整理成员、规则和当前配置，再返回关键信息。"
     if tool_name == "resolve_relevant_context":
+        if isinstance(parsed_payload, dict) and parsed_payload.get("matched_experience_rules"):
+            return "通过聚合相关成员、规则、工具和命中的经验规则，筛出与当前问题最相关的信息后返回。"
         return "通过聚合相关成员、规则和工具上下文，筛出与当前问题最相关的信息后返回。"
     if tool_name == "get_manual_content":
         entity_type = ""
@@ -762,7 +764,7 @@ class QueryMcpProxyApp:
         direct_cli_context_key = ""
         persisted_direct_state: dict[str, str] = {}
         if direct_cli_fallback_enabled and project_id_from_query:
-            persisted_direct_state = load_resumable_query_mcp_project_state(project_id_from_query)
+            persisted_direct_state = load_resumable_query_mcp_local_state(project_id_from_query)
             direct_cli_context_key = _build_direct_cli_context_key(
                 project_id_from_query,
                 key_owner_username=key_owner_username,
@@ -792,7 +794,7 @@ class QueryMcpProxyApp:
             )
             if not resolved_project_id or not resolved_chat_session_id:
                 return {}
-            return save_query_mcp_project_state(
+            return persist_query_mcp_local_state(
                 project_id=resolved_project_id,
                 project_name=_normalize_text(
                     extra.get("project_name") or project_name_from_query,

@@ -14,7 +14,7 @@ from core.ownership import (
     normalize_shared_usernames,
     ownership_payload,
 )
-from core.deps import employee_store, ensure_permission, require_auth
+from core.deps import employee_store, ensure_permission, project_store, require_auth
 from stores.json.employee_store import _now_iso
 from stores.mcp_bridge import rule_store, serialize_rule, Rule, Severity, RiskDomain, rules_now_iso
 from models.requests import RuleUsageReq, RuleCreateReq, RuleUpdateReq
@@ -114,6 +114,55 @@ def _rule_shared_via_employees(rule: Rule, auth_payload: dict | None) -> list[di
     return items
 
 
+def _projects_having_rule(rule_id: str) -> list[dict[str, str]]:
+    target = str(rule_id or "").strip()
+    if not target:
+        return []
+    items: list[dict[str, str]] = []
+    for project in project_store.list_all():
+        project_rule_ids = _normalize_tokens(getattr(project, "experience_rule_ids", []) or [])
+        if target not in project_rule_ids:
+            continue
+        project_id = str(getattr(project, "id", "") or "").strip()
+        if not project_id:
+            continue
+        items.append(
+            {
+                "id": project_id,
+                "name": str(getattr(project, "name", "") or "").strip() or project_id,
+            }
+        )
+    return items
+
+
+def _is_project_experience_rule(rule: Rule | None) -> bool:
+    if rule is None:
+        return False
+    domain = str(getattr(rule, "domain", "") or "").strip()
+    title = str(getattr(rule, "title", "") or "").strip()
+    return domain == "项目经验" and title.startswith("经验卡片 · ")
+
+
+def _rule_system_source(rule: Rule | None) -> str:
+    if rule is None:
+        return ""
+    domain = str(getattr(rule, "domain", "") or "").strip()
+    title = str(getattr(rule, "title", "") or "").strip()
+    if domain == "项目经验" or title.startswith("经验卡片 · "):
+        return "project_experience"
+    if domain == "开发经验" or title.startswith("开发经验 · "):
+        return "development_experience"
+    return ""
+
+
+def _is_managed_experience_rule(rule: Rule | None) -> bool:
+    return _rule_system_source(rule) in {"project_experience", "development_experience"}
+
+
+def _should_exclude_from_general_rule_list(rule: Rule | None) -> bool:
+    return _is_managed_experience_rule(rule)
+
+
 def _can_view_rule(rule: Rule, auth_payload: dict | None) -> bool:
     if not isinstance(auth_payload, dict):
         return True
@@ -194,6 +243,8 @@ def _serialize_rule_payload(rule: Rule, auth_payload: dict | None = None) -> dic
     payload = serialize_rule(rule)
     bound_ids = _employees_having_rule(rule.id)
     shared_via_employees = _rule_shared_via_employees(rule, auth_payload)
+    source_project_bindings = _projects_having_rule(rule.id)
+    system_source = _rule_system_source(rule)
     name_map = {
         str(getattr(emp, "id", "") or "").strip(): str(getattr(emp, "name", "") or "").strip()
         for emp in employee_store.list_all()
@@ -203,13 +254,20 @@ def _serialize_rule_payload(rule: Rule, auth_payload: dict | None = None) -> dic
     payload["bound_employee_count"] = len(bound_ids)
     payload["bound_employee_names"] = [name_map.get(eid) or eid for eid in bound_ids]
     payload["shared_via_employees"] = shared_via_employees
+    payload["source_project_bindings"] = source_project_bindings
+    payload["system_managed"] = system_source == "project_experience"
+    payload["system_source"] = system_source
     payload.update(ownership_payload(rule, auth_payload))
     return payload
 
 
 @router.get("")
 async def list_rules(auth_payload: dict = Depends(require_auth)):
-    rules = [rule for rule in rule_store.list_all() if _can_view_rule(rule, auth_payload)]
+    rules = [
+        rule
+        for rule in rule_store.list_all()
+        if _can_view_rule(rule, auth_payload) and not _should_exclude_from_general_rule_list(rule)
+    ]
     return {"rules": [_serialize_rule_payload(r, auth_payload) for r in rules]}
 
 
@@ -219,7 +277,11 @@ async def rule_domains(auth_payload: dict = Depends(require_auth)):
         {
             str(getattr(rule, "domain", "") or "").strip()
             for rule in rule_store.list_all()
-            if _can_view_rule(rule, auth_payload) and str(getattr(rule, "domain", "") or "").strip()
+            if (
+                _can_view_rule(rule, auth_payload)
+                and not _should_exclude_from_general_rule_list(rule)
+                and str(getattr(rule, "domain", "") or "").strip()
+            )
         }
     )
     return {"domains": domains}
@@ -231,7 +293,11 @@ async def search_rules(
     domain: str = None,
     auth_payload: dict = Depends(require_auth),
 ):
-    results = [rule for rule in rule_store.query(keyword, domain) if _can_view_rule(rule, auth_payload)]
+    results = [
+        rule
+        for rule in rule_store.query(keyword, domain)
+        if _can_view_rule(rule, auth_payload) and not _should_exclude_from_general_rule_list(rule)
+    ]
     return {"rules": [_serialize_rule_payload(r, auth_payload) for r in results]}
 
 
@@ -244,6 +310,8 @@ async def get_rule(rule_id: str, auth_payload: dict = Depends(require_auth)):
 @router.delete("/{rule_id}")
 async def delete_rule(rule_id: str, auth_payload: dict = Depends(require_auth)):
     rule = _ensure_rule_view_access(rule_store.get(rule_id), auth_payload)
+    if _is_managed_experience_rule(rule):
+        raise HTTPException(403, "经验规则请到项目详情中管理")
     assert_can_manage_record(rule, auth_payload, "规则")
     _remove_rule_from_all_employees(rule_id)
     if not rule_store.delete(rule_id):
@@ -288,6 +356,8 @@ async def create_rule(req: RuleCreateReq, auth_payload: dict = Depends(require_a
 @router.put("/{rule_id}")
 async def update_rule(rule_id: str, req: RuleUpdateReq, auth_payload: dict = Depends(require_auth)):
     r = _ensure_rule_view_access(rule_store.get(rule_id), auth_payload)
+    if _is_managed_experience_rule(r):
+        raise HTTPException(403, "经验规则请到项目详情中编辑")
     assert_can_manage_record(r, auth_payload, "规则")
     updates = req.model_dump(exclude_unset=True)
     if "share_scope" in updates:

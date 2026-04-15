@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 import wave
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ from core.redis_client import get_redis_client
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
 from core.auth import decode_token
 from core.config import get_api_data_dir, get_project_root, get_settings
+from core.redis_client import get_redis_client
 from core.deps import employee_store, external_mcp_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_store, project_chat_task_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_session_store
 from services.feedback_service import get_feedback_service
 from services.global_assistant_service import (
@@ -90,6 +92,9 @@ from services.runtime.runtime_resolver import build_chat_runtime_context
 from services.task_tree_guard.task_tree_evolution import build_task_tree_evolution_summary
 from models.requests import (
     ProjectAiEntryFileUpdateReq,
+    ProjectExperienceRuleUpdateReq,
+    ProjectExperienceRuleResolveReq,
+    ProjectExperienceSummaryReq,
     ProjectRequirementRecordBatchDeleteReq,
     ProjectChatHistoryTruncateReq,
     ProjectChatReq,
@@ -131,7 +136,20 @@ from stores.json.system_config_store import (
     normalize_voice_allowed_usernames,
 )
 from core.role_permissions import has_permission, resolve_role_permissions
-from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType, memory_store, rule_store, serialize_memory, skill_store
+from stores.mcp_bridge import (
+    Classification,
+    Memory,
+    MemoryScope,
+    MemoryType,
+    RiskDomain,
+    Rule,
+    Severity,
+    memory_store,
+    rule_store,
+    rules_now_iso,
+    serialize_memory,
+    skill_store,
+)
 
 router = APIRouter(prefix="/api/projects", dependencies=[Depends(require_auth)])
 
@@ -143,6 +161,28 @@ _GLOBAL_VOICE_STREAM_PCM_BYTES_PER_SAMPLE = 2
 _GLOBAL_VOICE_STREAM_MIN_CHUNK_MS = 240
 _GLOBAL_VOICE_STREAM_MAX_BUFFER_SECONDS = 20
 _GLOBAL_VOICE_STREAM_FINAL_MAX_BUFFER_SECONDS = 180
+_PROJECT_REQUIREMENT_RECORDS_CACHE_PREFIX = "project:req-records:item:"
+_PROJECT_REQUIREMENT_RECORDS_CACHE_SET_PREFIX = "project:req-records:project:"
+_PROJECT_REQUIREMENT_RECORDS_CACHE_TTL_SECONDS = 15
+_project_requirement_records_local_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_PROJECT_EXPERIENCE_SUMMARY_RECORD_LIMIT = 300
+_PROJECT_EXPERIENCE_RULE_DOMAIN = "项目经验"
+_PROJECT_EXPERIENCE_RULE_TITLE_PREFIX = "经验卡片 · "
+_DEVELOPMENT_EXPERIENCE_RULE_DOMAIN = "开发经验"
+_DEVELOPMENT_EXPERIENCE_RULE_TITLE_PREFIX = "开发经验 · "
+_EXPERIENCE_SCOPE_PROJECT = "project"
+_EXPERIENCE_SCOPE_DEVELOPMENT = "development"
+_EXPERIENCE_QUERY_STOPWORDS = {
+    "一个",
+    "开发",
+    "处理",
+    "页面",
+    "需求",
+    "问题",
+    "项目",
+    "当前",
+    "功能",
+}
 
 _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "chat_mode": "system",
@@ -319,6 +359,13 @@ def _serialize_project(
     data["created_by"] = resolved_creator_username
     data["ui_rule_ids"] = _normalize_project_ui_rule_ids(getattr(project, "ui_rule_ids", []) or [])
     data["ui_rule_bindings"] = _resolve_project_ui_rule_bindings(project)
+    data["experience_rule_ids"] = _normalize_project_experience_rule_ids(
+        getattr(project, "experience_rule_ids", []) or []
+    )
+    data["experience_rule_bindings"] = _resolve_project_experience_rule_bindings(project)
+    data["has_mcp_instruction"] = bool(str(getattr(project, "mcp_instruction", "") or "").strip())
+    data["has_workspace_path"] = bool(str(getattr(project, "workspace_path", "") or "").strip())
+    data["has_ai_entry_file"] = bool(str(getattr(project, "ai_entry_file", "") or "").strip())
     if auth_payload is not None:
         current_username = _current_username(auth_payload)
         resolved_member = current_member
@@ -331,6 +378,51 @@ def _serialize_project(
             project,
             creator_username=resolved_creator_username,
         )
+    return data
+
+
+def _serialize_project_list_item(
+    project: ProjectConfig,
+    auth_payload: dict | None = None,
+    *,
+    member_count: int | None = None,
+    user_count: int | None = None,
+    creator_username: str = "",
+    current_member: ProjectUserMember | None = None,
+) -> dict[str, Any]:
+    normalized_type = _normalize_project_type(getattr(project, "type", "mixed"))
+    resolved_creator_username = str(creator_username or "").strip() or _project_creator_username(project.id, project)
+    data: dict[str, Any] = {
+        "id": str(getattr(project, "id", "") or "").strip(),
+        "name": str(getattr(project, "name", "") or "").strip(),
+        "description": str(getattr(project, "description", "") or "").strip(),
+        "created_by": resolved_creator_username,
+        "type": normalized_type,
+        "type_label": _PROJECT_TYPE_LABELS.get(normalized_type, _PROJECT_TYPE_LABELS["mixed"]),
+        "member_count": int(member_count) if member_count is not None else len(project_store.list_members(project.id)),
+        "user_count": int(user_count) if user_count is not None else len(project_store.list_user_members(project.id)),
+        "mcp_enabled": bool(getattr(project, "mcp_enabled", True)),
+        "feedback_upgrade_enabled": bool(getattr(project, "feedback_upgrade_enabled", True)),
+        "created_at": str(getattr(project, "created_at", "") or ""),
+        "updated_at": str(getattr(project, "updated_at", "") or ""),
+        "ui_rule_count": len(_normalize_project_ui_rule_ids(getattr(project, "ui_rule_ids", []) or [])),
+        "has_mcp_instruction": bool(str(getattr(project, "mcp_instruction", "") or "").strip()),
+        "has_workspace_path": bool(str(getattr(project, "workspace_path", "") or "").strip()),
+        "has_ai_entry_file": bool(str(getattr(project, "ai_entry_file", "") or "").strip()),
+    }
+    if auth_payload is None:
+        return data
+    current_username = _current_username(auth_payload)
+    resolved_member = current_member
+    if resolved_member is None and current_username and not _is_admin_like(auth_payload):
+        resolved_member = _get_project_user_member(project.id, current_username)
+    data["current_user_role"] = str(getattr(resolved_member, "role", "") or "").strip().lower()
+    data["can_manage"] = _can_manage_project(
+        project.id,
+        auth_payload,
+        project,
+        creator_username=resolved_creator_username,
+    )
     return data
 
 
@@ -2362,6 +2454,121 @@ def _resolve_project_ui_rule_bindings(
     return bindings
 
 
+def _normalize_project_experience_rule_ids(values: Any) -> list[str]:
+    return _normalize_project_ui_rule_ids(values)
+
+
+def _normalize_experience_rule_scope(value: Any) -> str:
+    normalized = _normalize_project_record_token(value, limit=40).lower()
+    if normalized == _EXPERIENCE_SCOPE_PROJECT:
+        return _EXPERIENCE_SCOPE_PROJECT
+    return _EXPERIENCE_SCOPE_DEVELOPMENT
+
+
+def _experience_rule_domain_for_scope(scope: str) -> str:
+    return (
+        _PROJECT_EXPERIENCE_RULE_DOMAIN
+        if _normalize_experience_rule_scope(scope) == _EXPERIENCE_SCOPE_PROJECT
+        else _DEVELOPMENT_EXPERIENCE_RULE_DOMAIN
+    )
+
+
+def _experience_rule_title_prefix_for_scope(scope: str) -> str:
+    return (
+        _PROJECT_EXPERIENCE_RULE_TITLE_PREFIX
+        if _normalize_experience_rule_scope(scope) == _EXPERIENCE_SCOPE_PROJECT
+        else _DEVELOPMENT_EXPERIENCE_RULE_TITLE_PREFIX
+    )
+
+
+def _normalize_experience_rule_title(title: str, scope: str) -> str:
+    raw = str(title or "").strip()
+    for prefix in (
+        _PROJECT_EXPERIENCE_RULE_TITLE_PREFIX,
+        _DEVELOPMENT_EXPERIENCE_RULE_TITLE_PREFIX,
+    ):
+        if raw.startswith(prefix):
+            raw = raw[len(prefix) :].strip()
+            break
+    raw = raw or (
+        "项目经验"
+        if _normalize_experience_rule_scope(scope) == _EXPERIENCE_SCOPE_PROJECT
+        else "开发经验"
+    )
+    return f"{_experience_rule_title_prefix_for_scope(scope)}{raw}"
+
+
+def _strip_experience_rule_title_prefix(title: str) -> str:
+    raw = str(title or "").strip()
+    for prefix in (
+        _PROJECT_EXPERIENCE_RULE_TITLE_PREFIX,
+        _DEVELOPMENT_EXPERIENCE_RULE_TITLE_PREFIX,
+    ):
+        if raw.startswith(prefix):
+            return raw[len(prefix) :].strip() or raw
+    return raw
+
+
+def _extract_experience_rule_preview(content: str, *, limit: int = 140) -> str:
+    lines = [
+        str(line or "").strip()
+        for line in str(content or "").splitlines()
+        if str(line or "").strip()
+    ]
+    for line in lines:
+        if line.startswith("#") or line.startswith("- 主题键:") or line.startswith("- 关键词:"):
+            continue
+        if line.startswith("- "):
+            text = line[2:].strip()
+            if text:
+                return text[:limit]
+        return line[:limit]
+    return ""
+
+
+def _resolve_project_experience_rule_bindings(
+    project: ProjectConfig | None,
+    *,
+    include_content: bool = False,
+) -> list[dict[str, str]]:
+    if project is None:
+        return []
+    bindings: list[dict[str, str]] = []
+    for rule_id in _normalize_project_experience_rule_ids(
+        getattr(project, "experience_rule_ids", []) or []
+    ):
+        rule = rule_store.get(rule_id)
+        if rule is None:
+            payload = {
+                "id": rule_id,
+                "title": f"{rule_id}（规则不存在）",
+                "domain": _PROJECT_EXPERIENCE_RULE_DOMAIN,
+                "preview": "",
+            }
+            if include_content:
+                payload["content"] = ""
+            bindings.append(payload)
+            continue
+        content = str(getattr(rule, "content", "") or "")
+        experience_scope = _infer_experience_rule_scope(rule)
+        payload = {
+            "id": str(getattr(rule, "id", "") or ""),
+            "title": str(getattr(rule, "title", "") or ""),
+            "domain": str(getattr(rule, "domain", "") or "") or _experience_rule_domain_for_scope(experience_scope),
+            "preview": _extract_experience_rule_preview(content),
+            "experience_scope": experience_scope,
+            "system_source": (
+                "project_experience"
+                if experience_scope == _EXPERIENCE_SCOPE_PROJECT
+                else "development_experience"
+            ),
+        }
+        if include_content:
+            payload["content"] = content
+        bindings.append(payload)
+    return bindings
+
+
 def _collect_rule_domains(rule_bindings: list[dict[str, str]]) -> list[str]:
     seen: set[str] = set()
     domains: list[str] = []
@@ -4029,6 +4236,114 @@ def _normalize_project_record_tags(value: Any) -> tuple[str, ...]:
     )
 
 
+def _project_requirement_records_cache_set_key(project_id: str) -> str:
+    normalized_project_id = _normalize_project_record_token(project_id, limit=120)
+    return f"{_PROJECT_REQUIREMENT_RECORDS_CACHE_SET_PREFIX}{normalized_project_id}:keys"
+
+
+def _project_requirement_records_cache_key(
+    project_id: str,
+    *,
+    employee_id: str = "",
+    query: str = "",
+    memory_type: str = "",
+    limit: int = 200,
+) -> str:
+    payload = json.dumps(
+        {
+            "project_id": _normalize_project_record_token(project_id, limit=120),
+            "employee_id": _normalize_project_record_token(employee_id, limit=80),
+            "query": _normalize_project_record_token(query, limit=200),
+            "memory_type": _normalize_project_record_token(memory_type, limit=80),
+            "limit": max(1, min(int(limit or 200), 500)),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
+    return f"{_PROJECT_REQUIREMENT_RECORDS_CACHE_PREFIX}{digest}"
+
+
+async def _load_project_requirement_records_cache(cache_key: str) -> dict[str, Any] | None:
+    now = time.monotonic()
+    cached_local = _project_requirement_records_local_cache.get(cache_key)
+    if cached_local and cached_local[0] > now:
+        return dict(cached_local[1])
+    if cached_local:
+        _project_requirement_records_local_cache.pop(cache_key, None)
+
+    try:
+        redis_client = await get_redis_client()
+        raw = await redis_client.get(cache_key)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    _project_requirement_records_local_cache[cache_key] = (
+        now + _PROJECT_REQUIREMENT_RECORDS_CACHE_TTL_SECONDS,
+        payload,
+    )
+    return dict(payload)
+
+
+async def _save_project_requirement_records_cache(
+    project_id: str,
+    cache_key: str,
+    payload: dict[str, Any],
+) -> None:
+    _project_requirement_records_local_cache[cache_key] = (
+        time.monotonic() + _PROJECT_REQUIREMENT_RECORDS_CACHE_TTL_SECONDS,
+        dict(payload),
+    )
+    try:
+        redis_client = await get_redis_client()
+        await redis_client.set(
+            cache_key,
+            json.dumps(payload, ensure_ascii=False),
+            ex=_PROJECT_REQUIREMENT_RECORDS_CACHE_TTL_SECONDS,
+        )
+        project_set_key = _project_requirement_records_cache_set_key(project_id)
+        await redis_client.sadd(project_set_key, cache_key)
+        await redis_client.expire(project_set_key, _PROJECT_REQUIREMENT_RECORDS_CACHE_TTL_SECONDS)
+    except Exception:
+        return
+
+
+async def _invalidate_project_requirement_records_cache(project_id: str) -> None:
+    normalized_project_id = _normalize_project_record_token(project_id, limit=120)
+    if not normalized_project_id:
+        return
+    local_keys = [
+        key
+        for key in _project_requirement_records_local_cache.keys()
+        if key.startswith(_PROJECT_REQUIREMENT_RECORDS_CACHE_PREFIX)
+    ]
+    for key in local_keys:
+        _project_requirement_records_local_cache.pop(key, None)
+    project_set_key = _project_requirement_records_cache_set_key(normalized_project_id)
+    try:
+        redis_client = await get_redis_client()
+        cache_keys = await redis_client.smembers(project_set_key) or set()
+        normalized_keys = [
+            _normalize_project_record_token(item, limit=240)
+            for item in cache_keys
+            if _normalize_project_record_token(item, limit=240)
+        ]
+        if normalized_keys:
+            await redis_client.delete(*normalized_keys)
+        await redis_client.delete(project_set_key)
+    except Exception:
+        return
+
+
 def _project_memory_matches_project(memory: Any, project: ProjectConfig) -> bool:
     project_id = _normalize_project_record_token(getattr(project, "id", ""), limit=120)
     project_tokens = {
@@ -4489,6 +4804,453 @@ def _build_project_requirement_record_delete_index(project: ProjectConfig) -> di
         chain_index[chain_id]["work_session_ids"].add(work_session_id)
 
     return chain_index
+
+
+def _is_completed_like_project_status(value: Any) -> bool:
+    normalized = _normalize_project_record_token(value, limit=40).lower()
+    return normalized in {"completed", "done"}
+
+
+def _get_project_task_session_status_tag_type(value: Any) -> str:
+    normalized = _normalize_project_record_token(value, limit=40).lower()
+    if normalized == "done":
+        return "success"
+    if normalized == "blocked":
+        return "danger"
+    if normalized == "verifying":
+        return "warning"
+    if normalized == "paused":
+        return "info"
+    if normalized == "in_progress":
+        return ""
+    return "info"
+
+
+def _get_project_task_session_status_label(value: Any) -> str:
+    normalized = _normalize_project_record_token(value, limit=40).lower()
+    if normalized == "done":
+        return "已完成"
+    if normalized == "blocked":
+        return "阻塞"
+    if normalized == "verifying":
+        return "验证中"
+    if normalized == "paused":
+        return "已暂停"
+    if normalized == "in_progress":
+        return "进行中"
+    if normalized == "pending":
+        return "待开始"
+    return _normalize_project_record_token(value, limit=80) or "待开始"
+
+
+def _is_project_task_tree_finalized(task_tree: dict[str, Any] | None) -> bool:
+    if not isinstance(task_tree, dict):
+        return False
+    status = _normalize_project_record_token(task_tree.get("status"), limit=40).lower()
+    progress_percent = int(task_tree.get("progress_percent") or 0)
+    stats = task_tree.get("stats") if isinstance(task_tree.get("stats"), dict) else {}
+    leaf_total = int(task_tree.get("leaf_total") or stats.get("leaf_total") or 0)
+    done_leaf_total = int(task_tree.get("done_leaf_total") or stats.get("done_leaf_total") or 0)
+    if bool(task_tree.get("is_archived")) and status == "done":
+        return True
+    if status != "done":
+        return False
+    if progress_percent >= 100:
+        return True
+    return leaf_total > 0 and done_leaf_total >= leaf_total
+
+
+def _resolve_project_task_tree_progress_percent(task_tree: dict[str, Any] | None) -> int:
+    if not isinstance(task_tree, dict):
+        return 0
+    explicit_progress = int(task_tree.get("progress_percent") or 0)
+    if explicit_progress > 0:
+        return explicit_progress
+    if _is_project_task_tree_finalized(task_tree):
+        return 100
+    stats = task_tree.get("stats") if isinstance(task_tree.get("stats"), dict) else {}
+    leaf_total = int(task_tree.get("leaf_total") or stats.get("leaf_total") or 0)
+    done_leaf_total = int(task_tree.get("done_leaf_total") or stats.get("done_leaf_total") or 0)
+    if leaf_total > 0 and done_leaf_total > 0:
+        return round((done_leaf_total / leaf_total) * 100)
+    return 0
+
+
+def _resolve_project_requirement_round_display_status(round_payload: dict[str, Any]) -> str:
+    if not isinstance(round_payload, dict):
+        return "pending"
+    raw_status = _normalize_project_record_token(round_payload.get("status"), limit=40).lower()
+    if bool(round_payload.get("isFinalized")) or raw_status == "done":
+        return "done"
+    if raw_status == "blocked":
+        return "blocked"
+    primary_work_session = (
+        round_payload.get("primaryWorkSession")
+        if isinstance(round_payload.get("primaryWorkSession"), dict)
+        else {}
+    )
+    work_session_status = _normalize_project_record_token(primary_work_session.get("latest_status"), limit=40).lower()
+    if raw_status in {"pending", "in_progress", "verifying"} and _is_completed_like_project_status(work_session_status):
+        return "paused"
+    return raw_status or "pending"
+
+
+def _is_project_requirement_round_placeholder(round_payload: dict[str, Any]) -> bool:
+    if not isinstance(round_payload, dict) or bool(round_payload.get("isFinalized")):
+        return False
+    raw_status = _normalize_project_record_token(round_payload.get("status"), limit=40).lower()
+    if raw_status != "pending":
+        return False
+    if int(round_payload.get("progressPercent") or 0) > 0:
+        return False
+    if isinstance(round_payload.get("primaryMemory"), dict) and round_payload["primaryMemory"]:
+        return False
+    work_sessions = round_payload.get("workSessions")
+    return not (isinstance(work_sessions, list) and work_sessions)
+
+
+def _build_project_requirement_records(
+    project: ProjectConfig,
+    *,
+    employee_id: str = "",
+    query: str = "",
+    memory_type: str = "",
+    limit: int = 200,
+) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit or 200), 500))
+    normalized_employee_id = _normalize_project_record_token(employee_id, limit=80)
+    query_text = _normalize_project_record_token(query, limit=200).lower()
+    normalized_memory_type = _normalize_project_record_token(memory_type, limit=80)
+
+    task_sessions = list_project_task_tree_summaries(project.id, safe_limit)
+    employee_names = _project_employee_name_map(project.id)
+
+    summary_limit = max(safe_limit * 8, safe_limit)
+    work_events = work_session_store.list_events(
+        project_id=project.id,
+        employee_id=normalized_employee_id,
+        query=query_text,
+        limit=summary_limit,
+    )
+    grouped_work_events: dict[str, list[Any]] = {}
+    for item in work_events:
+        session_id = _normalize_project_record_token(getattr(item, "session_id", ""), limit=120)
+        if not session_id:
+            continue
+        grouped_work_events.setdefault(session_id, []).append(item)
+
+    work_session_summaries = [
+        _serialize_project_work_session_summary(_summarize_project_work_session(items), employee_names)
+        for items in grouped_work_events.values()
+        if items
+    ]
+    work_session_summaries.sort(
+        key=lambda item: _normalize_project_record_token(item.get("updated_at"), limit=40),
+        reverse=True,
+    )
+
+    work_sessions_by_task_session: dict[str, list[dict[str, Any]]] = {}
+    work_sessions_by_chat_session: dict[str, list[dict[str, Any]]] = {}
+    for item in work_session_summaries:
+        task_session_id = _normalize_project_record_token(item.get("task_tree_session_id"), limit=80)
+        task_chat_session_id = _normalize_project_record_token(item.get("task_tree_chat_session_id"), limit=80)
+        if task_session_id:
+            work_sessions_by_task_session.setdefault(task_session_id, []).append(item)
+        if task_chat_session_id:
+            work_sessions_by_chat_session.setdefault(task_chat_session_id, []).append(item)
+
+    serialized_memories: list[dict[str, Any]] = []
+    if normalized_employee_id or query_text or normalized_memory_type:
+        memories, _trajectory_memories = _collect_project_related_memories(
+            project,
+            employee_id=normalized_employee_id,
+            query=query_text,
+        )
+        serialized_memories = [
+            _serialize_project_memory_record(item)
+            for item in memories
+            if not normalized_memory_type
+            or _normalize_project_record_token(getattr(item, "type", ""), limit=80) == normalized_memory_type
+        ]
+
+    memories_by_task_session: dict[str, list[dict[str, Any]]] = {}
+    memories_by_chat_session: dict[str, list[dict[str, Any]]] = {}
+    for item in serialized_memories:
+        task_session_id = _normalize_project_record_token(item.get("task_tree_session_id"), limit=80)
+        chat_session_id = _normalize_project_record_token(
+            item.get("task_tree_chat_session_id") or item.get("chat_session_id"),
+            limit=80,
+        )
+        if task_session_id:
+            memories_by_task_session.setdefault(task_session_id, []).append(item)
+        if chat_session_id:
+            memories_by_chat_session.setdefault(chat_session_id, []).append(item)
+
+    grouped_records: dict[str, list[dict[str, Any]]] = {}
+    for summary in task_sessions:
+        if not isinstance(summary, dict):
+            continue
+        session_id = _normalize_project_record_token(summary.get("id"), limit=80)
+        if not session_id:
+            continue
+        source_session_id = _normalize_project_record_token(summary.get("source_session_id"), limit=80)
+        chat_session_id = _normalize_project_record_token(
+            summary.get("source_chat_session_id") or summary.get("chat_session_id"),
+            limit=80,
+        )
+        memory_matches = list(memories_by_task_session.get(session_id, []))
+        if chat_session_id:
+            for item in memories_by_chat_session.get(chat_session_id, []):
+                if item not in memory_matches:
+                    memory_matches.append(item)
+        work_sessions = list(work_sessions_by_task_session.get(session_id, []))
+        if chat_session_id:
+            for item in work_sessions_by_chat_session.get(chat_session_id, []):
+                if item not in work_sessions:
+                    work_sessions.append(item)
+        primary_memory = (
+            sorted(
+                memory_matches,
+                key=lambda item: _normalize_project_record_token(item.get("created_at"), limit=40),
+                reverse=True,
+            )[0]
+            if memory_matches
+            else None
+        )
+        task_tree = dict(summary)
+        round_payload = {
+            "id": session_id,
+            "sessionId": session_id,
+            "sourceSessionId": source_session_id,
+            "chatSessionId": chat_session_id,
+            "taskTree": task_tree,
+            "rootNode": None,
+            "rootGoal": _normalize_project_record_token(summary.get("root_goal") or summary.get("title"), limit=1000),
+            "title": _normalize_project_record_token(summary.get("title"), limit=200),
+            "recordKind": _normalize_project_record_token(summary.get("record_kind"), limit=40) or "requirement",
+            "roundIndex": max(1, int(summary.get("round_index") or 1)),
+            "status": _normalize_project_record_token(summary.get("status"), limit=40) or "pending",
+            "progressPercent": _resolve_project_task_tree_progress_percent(task_tree),
+            "currentNodeId": _normalize_project_record_token(summary.get("current_node_id"), limit=80),
+            "currentNodeTitle": _normalize_project_record_token(summary.get("current_node_title"), limit=200),
+            "leafTotal": int(summary.get("leaf_total") or 0),
+            "doneLeafTotal": int(summary.get("done_leaf_total") or 0),
+            "nodeTotal": int(summary.get("node_total") or 0),
+            "isArchived": bool(summary.get("is_archived")),
+            "createdAt": _normalize_project_record_token(summary.get("created_at"), limit=40),
+            "updatedAt": _normalize_project_record_token(summary.get("updated_at"), limit=40),
+            "primaryMemory": primary_memory,
+            "workSessions": work_sessions,
+            "primaryWorkSession": work_sessions[0] if work_sessions else None,
+            "isFinalized": _is_project_task_tree_finalized(task_tree),
+        }
+        round_payload["displayStatus"] = _resolve_project_requirement_round_display_status(round_payload)
+        if round_payload["isFinalized"]:
+            summary_text = (
+                _normalize_project_record_token(
+                    (primary_memory or {}).get("latest_outcome")
+                    or task_tree.get("current_node_title"),
+                    limit=1000,
+                )
+                or "全部计划节点已完成并写入验证结果。"
+            )
+        else:
+            summary_text = (
+                _normalize_project_record_token(
+                    (primary_memory or {}).get("display_preview")
+                    or round_payload["currentNodeTitle"],
+                    limit=1000,
+                )
+                or "计划已入树，当前按节点推进并逐项验证。"
+            )
+        round_payload["summaryText"] = summary_text
+        chain_key = source_session_id or session_id
+        grouped_records.setdefault(chain_key, []).append(round_payload)
+
+    records: list[dict[str, Any]] = []
+    for chain_id, rounds in grouped_records.items():
+        sorted_rounds = sorted(
+            rounds,
+            key=lambda item: (
+                int(item.get("roundIndex") or 1),
+                _normalize_project_record_token(item.get("createdAt"), limit=40),
+            ),
+        )
+        latest_round = sorted_rounds[-1] if sorted_rounds else None
+        current_round = latest_round
+        for item in reversed(sorted_rounds):
+            if not bool(item.get("isFinalized")):
+                current_round = item
+                break
+        if _is_project_requirement_round_placeholder(current_round or {}):
+            active_round_with_progress = next(
+                (
+                    item
+                    for item in reversed(sorted_rounds)
+                    if not bool(item.get("isFinalized")) and not _is_project_requirement_round_placeholder(item)
+                ),
+                None,
+            )
+            finalized_round = next((item for item in reversed(sorted_rounds) if bool(item.get("isFinalized"))), None)
+            current_round = active_round_with_progress or finalized_round or current_round
+
+        actor_names: list[str] = []
+        for item in sorted_rounds:
+            primary_memory = item.get("primaryMemory") if isinstance(item.get("primaryMemory"), dict) else {}
+            primary_work_session = item.get("workSessions") if isinstance(item.get("workSessions"), list) else []
+            for actor in [
+                _normalize_project_record_token(primary_memory.get("employee_name") or primary_memory.get("employee_id"), limit=120),
+                *[
+                    _normalize_project_record_token(
+                        entry.get("employee_name") or entry.get("employee_id"),
+                        limit=120,
+                    )
+                    for entry in primary_work_session
+                    if isinstance(entry, dict)
+                ],
+            ]:
+                if actor and actor not in actor_names:
+                    actor_names.append(actor)
+
+        memory_types = [
+            item
+            for item in {
+                _normalize_project_record_token(
+                    ((round_item.get("primaryMemory") or {}).get("type") if isinstance(round_item.get("primaryMemory"), dict) else ""),
+                    limit=80,
+                )
+                for round_item in sorted_rounds
+            }
+            if item
+        ]
+
+        current_or_latest = current_round or latest_round or {}
+        record_payload = {
+            "id": chain_id,
+            "rootGoal": _normalize_project_record_token(
+                (current_round or {}).get("rootGoal") or (latest_round or {}).get("rootGoal"),
+                limit=1000,
+            ),
+            "actorNames": actor_names,
+            "actorLabel": " / ".join(actor_names) if actor_names else "未绑定执行人",
+            "latestRound": latest_round,
+            "currentRound": current_round,
+            "detailRound": current_or_latest,
+            "rounds": sorted_rounds,
+            "repairRoundCount": sum(1 for item in sorted_rounds if item.get("recordKind") == "repair"),
+            "activeRoundCount": sum(
+                1
+                for item in sorted_rounds
+                if not bool(item.get("isFinalized")) and not _is_project_requirement_round_placeholder(item)
+            ),
+            "memoryTypes": memory_types,
+            "status": _normalize_project_record_token(current_or_latest.get("displayStatus"), limit=40) or "pending",
+            "statusLabel": _get_project_task_session_status_label(current_or_latest.get("displayStatus")),
+            "statusTagType": _get_project_task_session_status_tag_type(current_or_latest.get("displayStatus")),
+            "progressPercent": int(current_or_latest.get("progressPercent") or 0),
+            "currentFocus": _normalize_project_record_token(
+                current_or_latest.get("currentNodeTitle") or (latest_round or {}).get("currentNodeTitle"),
+                limit=200,
+            ) or "等待进入计划节点",
+            "completionGate": (
+                "全部计划节点已完成并通过验证，本轮可视为结束。"
+                if bool(current_or_latest.get("isFinalized"))
+                else "只有所有计划节点完成并写入验证结果，需求才算真正结束。"
+            ),
+            "summaryText": _normalize_project_record_token(
+                current_or_latest.get("summaryText") or (latest_round or {}).get("summaryText"),
+                limit=1000,
+            ),
+            "roundDigest": (
+                f"{'最近' if bool(current_or_latest.get('isFinalized')) else '当前'}第 {max(1, int(current_or_latest.get('roundIndex') or len(sorted_rounds) or 1))} 轮，共 {len(sorted_rounds)} 轮"
+                if len(sorted_rounds) > 1
+                else "单轮处理"
+            ),
+            "progressDigest": (
+                f"{max(0, int(current_or_latest.get('doneLeafTotal') or 0))}/"
+                f"{max(0, int(current_or_latest.get('leafTotal') or current_or_latest.get('nodeTotal') or 0))} 已完成"
+            ),
+            "detailWorkSessionCount": len(current_or_latest.get("workSessions") or []),
+            "updatedAt": _normalize_project_record_token(
+                current_or_latest.get("updatedAt") or (latest_round or {}).get("updatedAt"),
+                limit=40,
+            ),
+            "createdAt": _normalize_project_record_token((sorted_rounds[0] or {}).get("createdAt"), limit=40),
+        }
+
+        if normalized_memory_type and normalized_memory_type not in memory_types:
+            continue
+        if normalized_employee_id:
+            has_employee = False
+            for round_item in sorted_rounds:
+                primary_memory = round_item.get("primaryMemory") if isinstance(round_item.get("primaryMemory"), dict) else {}
+                if _normalize_project_record_token(primary_memory.get("employee_id"), limit=80) == normalized_employee_id:
+                    has_employee = True
+                    break
+                for entry in round_item.get("workSessions") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    if _normalize_project_record_token(entry.get("employee_id"), limit=80) == normalized_employee_id:
+                        has_employee = True
+                        break
+                if has_employee:
+                    break
+            if not has_employee:
+                continue
+        if query_text:
+            search_values = [
+                record_payload["rootGoal"],
+                record_payload["summaryText"],
+                record_payload["currentFocus"],
+                record_payload["actorLabel"],
+            ]
+            for round_item in sorted_rounds:
+                primary_memory = round_item.get("primaryMemory") if isinstance(round_item.get("primaryMemory"), dict) else {}
+                search_values.extend(
+                    [
+                        _normalize_project_record_token(round_item.get("rootGoal"), limit=1000),
+                        _normalize_project_record_token(round_item.get("title"), limit=200),
+                        _normalize_project_record_token(round_item.get("currentNodeTitle"), limit=200),
+                        _normalize_project_record_token(round_item.get("summaryText"), limit=1000),
+                        _normalize_project_record_token(primary_memory.get("content"), limit=4000),
+                    ]
+                )
+                for entry in round_item.get("workSessions") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    search_values.extend(
+                        [
+                            _normalize_project_record_token(entry.get("goal"), limit=400),
+                            *[
+                                _normalize_project_record_token(value, limit=400)
+                                for value in entry.get("steps") or []
+                            ],
+                            *[
+                                _normalize_project_record_token(value, limit=400)
+                                for value in entry.get("verification") or []
+                            ],
+                            *[
+                                _normalize_project_record_token(value, limit=400)
+                                for value in entry.get("next_steps") or []
+                            ],
+                        ]
+                    )
+            normalized_values = [item.lower() for item in search_values if item]
+            if not any(query_text in item for item in normalized_values):
+                continue
+        records.append(record_payload)
+
+    records.sort(
+        key=lambda item: (
+            _normalize_project_record_token(item.get("updatedAt") or item.get("createdAt"), limit=40),
+            _normalize_project_record_token(item.get("id"), limit=80),
+        ),
+        reverse=True,
+    )
+    return {
+        "items": records[:safe_limit],
+        "task_sessions": task_sessions,
+    }
 
 
 def _serialize_project_user_member(member: ProjectUserMember) -> dict[str, Any]:
@@ -6759,8 +7521,13 @@ async def list_projects(auth_payload: dict = Depends(require_auth)):
     projects = project_store.list_all()
     project_ids = [str(getattr(item, "id", "") or "").strip() for item in projects if str(getattr(item, "id", "") or "").strip()]
     current_username = _current_username(auth_payload)
-    membership_map = project_store.list_user_memberships(current_username, project_ids) if current_username else {}
-    if _is_admin_like(auth_payload):
+    admin_like = _is_admin_like(auth_payload)
+    membership_map = (
+        {}
+        if admin_like or not current_username
+        else project_store.list_user_memberships(current_username, project_ids)
+    )
+    if admin_like:
         visible_projects = projects
     else:
         visible_projects = [
@@ -6787,7 +7554,7 @@ async def list_projects(auth_payload: dict = Depends(require_auth)):
         creator_usernames.update(project_store.list_owner_usernames(unresolved_creator_project_ids))
     return {
         "projects": [
-            _serialize_project(
+            _serialize_project_list_item(
                 item,
                 auth_payload,
                 member_count=member_counts.get(item.id, 0),
@@ -6849,6 +7616,7 @@ async def create_project(req: ProjectCreateReq, auth_payload: dict = Depends(req
         created_by=creator_username,
         type=_normalize_project_type(req.type),
         ui_rule_ids=_normalize_project_ui_rule_ids(req.ui_rule_ids),
+        experience_rule_ids=_normalize_project_experience_rule_ids(req.experience_rule_ids),
         mcp_instruction=_normalize_project_mcp_instruction_for_save(req.mcp_instruction),
         workspace_path=_normalize_workspace_path_for_save(req.workspace_path),
         ai_entry_file=_normalize_ai_entry_file_for_save(req.ai_entry_file),
@@ -8237,6 +9005,10 @@ def _apply_project_update(project_id: str, req: ProjectUpdateReq, auth_payload: 
         updates["type"] = _normalize_project_type(updates.get("type"))
     if "ui_rule_ids" in updates:
         updates["ui_rule_ids"] = _normalize_project_ui_rule_ids(updates.get("ui_rule_ids"))
+    if "experience_rule_ids" in updates:
+        updates["experience_rule_ids"] = _normalize_project_experience_rule_ids(
+            updates.get("experience_rule_ids")
+        )
     updates["updated_at"] = _now_iso()
     updated = replace(project, **updates)
     project_store.save(updated)
@@ -8588,6 +9360,7 @@ async def delete_project_chat_task_tree(
         )
         or 0
     )
+    await _invalidate_project_requirement_records_cache(project_id)
     return {
         "status": "deleted",
         "project_id": project_id,
@@ -8610,6 +9383,43 @@ async def list_project_chat_task_tree_sessions(
         "items": list_project_task_tree_summaries(project_id, safe_limit),
         "storage_backend": str(settings.core_store_backend or "").strip() or "json",
         "project_id": project_id,
+    }
+
+
+@router.get("/{project_id}/requirement-records")
+async def list_project_requirement_records(
+    project_id: str,
+    employee_id: str = Query("", max_length=80),
+    query: str = Query("", max_length=200),
+    memory_type: str = Query("", max_length=80),
+    limit: int = Query(200, ge=1, le=500),
+    auth_payload: dict = Depends(require_auth),
+):
+    project = _ensure_project_access(project_id, auth_payload)
+    settings = get_settings()
+    cache_key = _project_requirement_records_cache_key(
+        project.id,
+        employee_id=employee_id,
+        query=query,
+        memory_type=memory_type,
+        limit=limit,
+    )
+    payload = await _load_project_requirement_records_cache(cache_key)
+    if payload is None:
+        payload = _build_project_requirement_records(
+            project,
+            employee_id=employee_id,
+            query=query,
+            memory_type=memory_type,
+            limit=limit,
+        )
+        await _save_project_requirement_records_cache(project.id, cache_key, payload)
+    return {
+        "items": payload.get("items", []),
+        "task_sessions": payload.get("task_sessions", []),
+        "storage_backend": str(settings.core_store_backend or "").strip() or "json",
+        "project_id": project.id,
+        "project_name": project.name,
     }
 
 
@@ -8713,6 +9523,7 @@ async def batch_delete_project_requirement_records(
         else:
             skipped_ids.append(record_id)
 
+    await _invalidate_project_requirement_records_cache(project.id)
     return {
         "status": "deleted",
         "project_id": project.id,
@@ -8727,6 +9538,1185 @@ async def batch_delete_project_requirement_records(
         "missing_ids": missing_ids,
         "skipped_ids": skipped_ids,
     }
+
+
+def _normalize_experience_topic_key(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "-", text).strip("-")
+    return text[:80]
+
+
+def _normalize_experience_list(
+    values: Any,
+    *,
+    item_limit: int = 160,
+    max_items: int = 8,
+) -> list[str]:
+    items = values if isinstance(values, list) else [values]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        text = text[:item_limit]
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
+def _extract_json_object_from_text(text: str) -> dict[str, Any]:
+    raw = str(text or "").strip()
+    if not raw:
+        raise ValueError("summary result is empty")
+    try:
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            return payload
+    except json.JSONDecodeError:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("summary result does not contain valid JSON")
+    payload = json.loads(raw[start : end + 1])
+    if not isinstance(payload, dict):
+        raise ValueError("summary result JSON must be an object")
+    return payload
+
+
+def _build_project_experience_source_lines(records: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for index, record in enumerate(records, start=1):
+        root_goal = _normalize_project_record_token(record.get("rootGoal"), limit=240)
+        summary_text = _normalize_project_record_token(record.get("summaryText"), limit=320)
+        current_focus = _normalize_project_record_token(record.get("currentFocus"), limit=200)
+        actor_label = _normalize_project_record_token(record.get("actorLabel"), limit=120)
+        round_digest = _normalize_project_record_token(record.get("roundDigest"), limit=80)
+        record_kind = _normalize_project_record_token(
+            record.get("detailRound", {}).get("recordKind") if isinstance(record.get("detailRound"), dict) else "",
+            limit=60,
+        )
+        parts = [
+            f"记录{index}",
+            f"目标={root_goal or '未命名需求'}",
+            f"摘要={summary_text or '-'}",
+            f"当前焦点={current_focus or '-'}",
+            f"执行人={actor_label or '-'}",
+            f"轮次={round_digest or '-'}",
+        ]
+        if record_kind:
+            parts.append(f"类型={record_kind}")
+        lines.append("；".join(parts))
+    return lines
+
+
+def _build_project_experience_summary_messages(
+    project: ProjectConfig,
+    records: list[dict[str, Any]],
+    *,
+    max_cards: int,
+) -> list[dict[str, str]]:
+    source_lines = _build_project_experience_source_lines(records)
+    source_block = "\n".join(f"- {line}" for line in source_lines[:60])
+    system_prompt = (
+        "你是资深软件团队的经验萃取助手。"
+        "你的任务是把需求记录总结成可复用、可按需加载的经验卡片，而不是项目复盘长文。"
+        "输出必须是 JSON 对象，不要输出 Markdown 代码块。"
+    )
+    user_prompt = (
+        f"项目名称：{project.name}\n"
+        f"最多输出 {max_cards} 张经验卡片。\n"
+        "要求：\n"
+        "1. 经验必须通用，不要包含项目名、人员名、具体一次性背景。\n"
+        "2. 每张卡片只保留一个稳定主题，避免把多个问题混成一条。\n"
+        "3. 若问题只出现一次且不可复用，可以忽略，不必强行产出。\n"
+        "4. topic_key 要稳定、短、可用于后续合并，例如 login-form、permission-routing。\n"
+        "5. domain 只允许 frontend/backend/product/testing/workflow/general。\n"
+        "6. keywords、applicable_when、signals、root_causes、recommended_actions、anti_patterns、verification 都输出数组。\n"
+        "7. 输出 JSON 结构：\n"
+        "{\n"
+        '  "cards": [\n'
+        "    {\n"
+        '      "title": "经验标题",\n'
+        '      "topic_key": "stable-topic-key",\n'
+        '      "domain": "frontend",\n'
+        '      "keywords": ["关键词"],\n'
+        '      "applicable_when": ["适用场景"],\n'
+        '      "signals": ["问题信号"],\n'
+        '      "root_causes": ["根因模式"],\n'
+        '      "recommended_actions": ["推荐做法"],\n'
+        '      "anti_patterns": ["禁止做法"],\n'
+        '      "verification": ["验证方式"]\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "需求记录如下：\n"
+        f"{source_block}"
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def _normalize_experience_cards(payload: dict[str, Any], *, max_cards: int) -> list[dict[str, Any]]:
+    raw_cards = payload.get("cards") if isinstance(payload, dict) else []
+    if not isinstance(raw_cards, list):
+        raw_cards = []
+    cards: list[dict[str, Any]] = []
+    seen_topics: set[str] = set()
+    for item in raw_cards:
+        if not isinstance(item, dict):
+            continue
+        title = _normalize_project_record_token(item.get("title"), limit=120)
+        topic_key = _normalize_experience_topic_key(item.get("topic_key") or title)
+        if not title or not topic_key or topic_key in seen_topics:
+            continue
+        seen_topics.add(topic_key)
+        domain = _normalize_domain(str(item.get("domain") or "").strip()) or "general"
+        if domain not in {"frontend", "backend", "product", "testing", "workflow", "general"}:
+            domain = "general"
+        cards.append(
+            {
+                "title": title,
+                "topic_key": topic_key,
+                "domain": domain,
+                "keywords": _normalize_experience_list(item.get("keywords"), item_limit=60),
+                "applicable_when": _normalize_experience_list(item.get("applicable_when")),
+                "signals": _normalize_experience_list(item.get("signals")),
+                "root_causes": _normalize_experience_list(item.get("root_causes")),
+                "recommended_actions": _normalize_experience_list(item.get("recommended_actions")),
+                "anti_patterns": _normalize_experience_list(item.get("anti_patterns")),
+                "verification": _normalize_experience_list(item.get("verification")),
+            }
+        )
+        if len(cards) >= max_cards:
+            break
+    return cards
+
+
+def _parse_experience_rule_content(content: str) -> dict[str, Any]:
+    parsed: dict[str, Any] = {
+        "topic_key": "",
+        "keywords": [],
+        "applicable_when": [],
+        "signals": [],
+        "root_causes": [],
+        "recommended_actions": [],
+        "anti_patterns": [],
+        "verification": [],
+    }
+    section_map = {
+        "适用场景": "applicable_when",
+        "问题信号": "signals",
+        "根因模式": "root_causes",
+        "推荐做法": "recommended_actions",
+        "禁止做法": "anti_patterns",
+        "验证方式": "verification",
+    }
+    current_section = ""
+    for raw_line in str(content or "").splitlines():
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        if line.startswith("- 主题键:"):
+            parsed["topic_key"] = line.split(":", 1)[1].strip()
+            current_section = ""
+            continue
+        if line.startswith("- 关键词:"):
+            parsed["keywords"] = _normalize_experience_list(
+                re.split(r"[、,，/|]", line.split(":", 1)[1].strip()),
+                item_limit=60,
+            )
+            current_section = ""
+            continue
+        if line.startswith("## "):
+            current_section = line[3:].strip()
+            continue
+        if current_section and line.startswith("- "):
+            key = section_map.get(current_section)
+            if key:
+                parsed[key] = _normalize_experience_list(
+                    [*parsed.get(key, []), line[2:].strip()],
+                )
+    return parsed
+
+
+def _infer_experience_rule_scope(rule: Rule | None) -> str:
+    if rule is None:
+        return _EXPERIENCE_SCOPE_DEVELOPMENT
+    domain = str(getattr(rule, "domain", "") or "").strip()
+    title = str(getattr(rule, "title", "") or "").strip()
+    if domain == _PROJECT_EXPERIENCE_RULE_DOMAIN or title.startswith(_PROJECT_EXPERIENCE_RULE_TITLE_PREFIX):
+        return _EXPERIENCE_SCOPE_PROJECT
+    return _EXPERIENCE_SCOPE_DEVELOPMENT
+
+
+def _render_experience_rule_content(card: dict[str, Any]) -> str:
+    sections = [
+        ("适用场景", card.get("applicable_when") or []),
+        ("问题信号", card.get("signals") or []),
+        ("根因模式", card.get("root_causes") or []),
+        ("推荐做法", card.get("recommended_actions") or []),
+        ("禁止做法", card.get("anti_patterns") or []),
+        ("验证方式", card.get("verification") or []),
+    ]
+    lines = [
+        f"# {str(card.get('domain') or _DEVELOPMENT_EXPERIENCE_RULE_DOMAIN).strip()}卡片",
+        f"- 主题键: {card['topic_key']}",
+        f"- 适用领域: {card['domain']}",
+        f"- 关键词: {', '.join(card.get('keywords') or [])}",
+        "",
+    ]
+    for title, items in sections:
+        normalized_items = _normalize_experience_list(items)
+        if not normalized_items:
+            continue
+        lines.append(f"## {title}")
+        lines.extend(f"- {item}" for item in normalized_items)
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _merge_experience_rule_card(existing_rule: Rule, card: dict[str, Any]) -> Rule:
+    parsed = _parse_experience_rule_content(str(getattr(existing_rule, "content", "") or ""))
+    experience_scope = _normalize_experience_rule_scope(
+        card.get("experience_scope") or _infer_experience_rule_scope(existing_rule)
+    )
+    merged_card = {
+        "title": card["title"],
+        "topic_key": card["topic_key"],
+        "domain": card["domain"],
+        "keywords": _normalize_experience_list([*(parsed.get("keywords") or []), *(card.get("keywords") or [])], item_limit=60),
+        "applicable_when": _normalize_experience_list([*(parsed.get("applicable_when") or []), *(card.get("applicable_when") or [])]),
+        "signals": _normalize_experience_list([*(parsed.get("signals") or []), *(card.get("signals") or [])]),
+        "root_causes": _normalize_experience_list([*(parsed.get("root_causes") or []), *(card.get("root_causes") or [])]),
+        "recommended_actions": _normalize_experience_list([*(parsed.get("recommended_actions") or []), *(card.get("recommended_actions") or [])]),
+        "anti_patterns": _normalize_experience_list([*(parsed.get("anti_patterns") or []), *(card.get("anti_patterns") or [])]),
+        "verification": _normalize_experience_list([*(parsed.get("verification") or []), *(card.get("verification") or [])]),
+    }
+    return replace(
+        existing_rule,
+        title=_normalize_experience_rule_title(str(card["title"] or ""), experience_scope),
+        domain=_experience_rule_domain_for_scope(experience_scope),
+        content=_render_experience_rule_content(merged_card),
+        updated_at=rules_now_iso(),
+    )
+
+
+def _extract_experience_rule_topic_key(rule: Rule | None) -> str:
+    if rule is None:
+        return ""
+    return _normalize_experience_topic_key(
+        _parse_experience_rule_content(str(getattr(rule, "content", "") or "")).get("topic_key")
+    )
+
+
+def _build_experience_card_from_rule(rule: Rule, *, experience_scope: str) -> dict[str, Any]:
+    normalized_scope = _normalize_experience_rule_scope(experience_scope)
+    parsed = _parse_experience_rule_content(str(getattr(rule, "content", "") or ""))
+    raw_title = _strip_experience_rule_title_prefix(str(getattr(rule, "title", "") or ""))
+    topic_key = _extract_experience_rule_topic_key(rule) or _normalize_experience_topic_key(raw_title)
+    return {
+        "title": raw_title or (
+            "项目经验"
+            if normalized_scope == _EXPERIENCE_SCOPE_PROJECT
+            else "开发经验"
+        ),
+        "topic_key": topic_key or _normalize_experience_topic_key(str(getattr(rule, "id", "") or "")),
+        "domain": _experience_rule_domain_for_scope(normalized_scope),
+        "experience_scope": normalized_scope,
+        "keywords": _normalize_experience_list(parsed.get("keywords") or [], item_limit=60),
+        "applicable_when": _normalize_experience_list(parsed.get("applicable_when") or []),
+        "signals": _normalize_experience_list(parsed.get("signals") or []),
+        "root_causes": _normalize_experience_list(parsed.get("root_causes") or []),
+        "recommended_actions": _normalize_experience_list(parsed.get("recommended_actions") or []),
+        "anti_patterns": _normalize_experience_list(parsed.get("anti_patterns") or []),
+        "verification": _normalize_experience_list(parsed.get("verification") or []),
+    }
+
+
+def _projects_binding_experience_rule(
+    rule_id: str,
+    *,
+    exclude_project_id: str = "",
+) -> list[str]:
+    normalized_rule_id = _normalize_project_record_token(rule_id, limit=80)
+    excluded_project_id = _normalize_project_record_token(exclude_project_id, limit=80)
+    if not normalized_rule_id:
+        return []
+    project_ids: list[str] = []
+    for project in project_store.list_all():
+        project_id = _normalize_project_record_token(getattr(project, "id", ""), limit=80)
+        if not project_id or project_id == excluded_project_id:
+            continue
+        project_rule_ids = _normalize_project_experience_rule_ids(
+            getattr(project, "experience_rule_ids", []) or []
+        )
+        if normalized_rule_id in project_rule_ids:
+            project_ids.append(project_id)
+    return project_ids
+
+
+def _build_global_experience_rule_topic_index(
+    *,
+    experience_scope: str,
+) -> dict[str, Rule]:
+    topic_index: dict[str, Rule] = {}
+    normalized_scope = _normalize_experience_rule_scope(experience_scope)
+    for project in project_store.list_all():
+        for rule_id in _normalize_project_experience_rule_ids(
+            getattr(project, "experience_rule_ids", []) or []
+        ):
+            rule = rule_store.get(rule_id)
+            if _infer_experience_rule_scope(rule) != normalized_scope:
+                continue
+            topic_key = _extract_experience_rule_topic_key(rule)
+            if not topic_key or topic_key in topic_index or rule is None:
+                continue
+            topic_index[topic_key] = rule
+    return topic_index
+
+
+def _experience_rule_group_key(rule: Rule) -> str:
+    topic_key = _extract_experience_rule_topic_key(rule)
+    if topic_key:
+        return topic_key
+    fallback_title = _strip_experience_rule_title_prefix(str(getattr(rule, "title", "") or ""))
+    return _normalize_experience_topic_key(fallback_title) or _normalize_experience_topic_key(
+        str(getattr(rule, "id", "") or "")
+    )
+
+
+async def _consolidate_project_experience_rules(
+    project: ProjectConfig,
+    *,
+    auth_payload: dict,
+) -> tuple[ProjectConfig, list[str], list[str], list[str]]:
+    existing_rule_ids = _normalize_project_experience_rule_ids(
+        getattr(project, "experience_rule_ids", []) or []
+    )
+    existing_rules = [
+        rule
+        for rule_id in existing_rule_ids
+        if (rule := rule_store.get(rule_id)) is not None
+    ]
+    if not existing_rules:
+        raise HTTPException(400, "当前项目没有可汇总的经验规则")
+    grouped_rules: dict[str, list[Rule]] = {}
+    ordered_group_keys: list[str] = []
+    for rule in existing_rules:
+        group_key = _experience_rule_group_key(rule)
+        if group_key not in grouped_rules:
+            grouped_rules[group_key] = []
+            ordered_group_keys.append(group_key)
+        grouped_rules[group_key].append(rule)
+
+    final_rule_ids: list[str] = []
+    consolidated_rule_ids: list[str] = []
+    unchanged_rule_ids: list[str] = []
+    deleted_rule_ids: list[str] = []
+
+    for group_key in ordered_group_keys:
+        rules_in_group = grouped_rules.get(group_key) or []
+        if not rules_in_group:
+            continue
+        if len(rules_in_group) == 1:
+            unchanged_rule_ids.append(rules_in_group[0].id)
+            final_rule_ids.append(rules_in_group[0].id)
+            continue
+
+        base_rule = rules_in_group[0]
+        merged_scope = _infer_experience_rule_scope(base_rule)
+        merged_cards = await _merge_experience_cards_with_llm(
+            project,
+            [
+                _build_experience_card_from_rule(rule, experience_scope=merged_scope)
+                for rule in rules_in_group
+            ],
+            auth_payload=auth_payload,
+            max_cards=1,
+        )
+        merged_card = {
+            **merged_cards[0],
+            "topic_key": group_key,
+            "domain": _experience_rule_domain_for_scope(merged_scope),
+            "experience_scope": merged_scope,
+        }
+        if _projects_binding_experience_rule(base_rule.id, exclude_project_id=project.id):
+            base_rule = Rule(
+                id=rule_store.new_id(),
+                domain=str(getattr(base_rule, "domain", "") or "") or _experience_rule_domain_for_scope(merged_scope),
+                title=str(getattr(base_rule, "title", "") or ""),
+                content=str(getattr(base_rule, "content", "") or ""),
+                severity=Severity.RECOMMENDED,
+                risk_domain=RiskDomain.LOW,
+                created_by=str(getattr(base_rule, "created_by", "") or "").strip()
+                or _current_username(auth_payload),
+            )
+        merged_rule = replace(
+            base_rule,
+            title=_normalize_experience_rule_title(str(merged_card["title"] or ""), merged_scope),
+            domain=_experience_rule_domain_for_scope(merged_scope),
+            content=_render_experience_rule_content(merged_card),
+            updated_at=rules_now_iso(),
+            created_by=str(getattr(base_rule, "created_by", "") or "").strip()
+            or _current_username(auth_payload),
+        )
+        rule_store.save(merged_rule)
+        consolidated_rule_ids.append(merged_rule.id)
+        final_rule_ids.append(merged_rule.id)
+
+        for redundant_rule in rules_in_group:
+            redundant_id = str(getattr(redundant_rule, "id", "") or "").strip()
+            if not redundant_id or redundant_id == merged_rule.id:
+                continue
+            if _projects_binding_experience_rule(redundant_id):
+                continue
+            if rule_store.delete(redundant_id):
+                deleted_rule_ids.append(redundant_id)
+
+    updated_project = replace(
+        project,
+        experience_rule_ids=_normalize_project_experience_rule_ids(final_rule_ids),
+        updated_at=_now_iso(),
+    )
+    project_store.save(updated_project)
+    return updated_project, consolidated_rule_ids, unchanged_rule_ids, deleted_rule_ids
+
+
+def _score_experience_rule(rule: Rule, task_text: str) -> tuple[int, list[str]]:
+    query = str(task_text or "").strip().lower()
+    if not query:
+        return 0, []
+    haystack = " ".join(
+        [
+            str(getattr(rule, "title", "") or "").lower(),
+            str(getattr(rule, "content", "") or "").lower(),
+        ]
+    )
+    terms = [
+        term
+        for term in re.split(r"[\s,，。；;、:/|()（）]+", query)
+        if len(term) >= 2
+    ]
+    chinese_chunks = re.findall(r"[\u4e00-\u9fff]{2,}", query)
+    for chunk in chinese_chunks:
+        if len(chunk) <= 3:
+            terms.append(chunk)
+            continue
+        for size in (2, 3):
+            for index in range(0, len(chunk) - size + 1):
+                terms.append(chunk[index : index + size])
+    terms = list(
+        dict.fromkeys(
+            term
+            for term in terms
+            if len(term) >= 2 and term not in _EXPERIENCE_QUERY_STOPWORDS
+        )
+    )
+    if not terms:
+        terms = [query]
+    matched: list[str] = []
+    score = 0
+    for term in terms:
+        if term and term in haystack:
+            matched.append(term)
+            score += 3
+    title = str(getattr(rule, "title", "") or "").lower()
+    for term in terms:
+        if term and term in title:
+            score += 2
+    return score, matched[:5]
+
+
+async def _summarize_project_experience_cards(
+    project: ProjectConfig,
+    *,
+    provider_id: str,
+    model_name: str,
+    records: list[dict[str, Any]],
+    max_cards: int,
+    auth_payload: dict,
+) -> list[dict[str, Any]]:
+    from services.llm_provider_service import get_llm_provider_service
+
+    llm_service = get_llm_provider_service()
+    provider = llm_service.get_provider_raw(
+        provider_id,
+        owner_username=_current_username(auth_payload),
+        include_all=is_admin_like(auth_payload),
+        include_shared=True,
+    )
+    if provider is None:
+        raise HTTPException(404, f"LLM provider {provider_id} not found")
+    if not bool(provider.get("enabled", True)):
+        raise HTTPException(400, f"LLM provider {provider_id} is disabled")
+    chosen_model = str(model_name or provider.get("default_model") or "").strip()
+    if not chosen_model:
+        chosen_model = str((provider.get("models") or [""])[0] or "").strip()
+    if not chosen_model:
+        raise HTTPException(400, "model_name is required")
+    result = await llm_service.chat_completion(
+        provider_id,
+        chosen_model,
+        _build_project_experience_summary_messages(project, records, max_cards=max_cards),
+        temperature=0.1,
+        max_tokens=2200,
+        timeout=90,
+    )
+    try:
+        payload = _extract_json_object_from_text(result.get("content") or "")
+    except ValueError as exc:
+        raise HTTPException(502, f"经验总结结果解析失败: {exc}") from exc
+    cards = _normalize_experience_cards(payload, max_cards=max_cards)
+    if not cards:
+        raise HTTPException(502, "经验总结结果为空，未生成可保存的经验卡片")
+    return cards
+
+
+def _resolve_project_experience_llm_target(
+    project: ProjectConfig,
+    *,
+    auth_payload: dict,
+    provider_id: str = "",
+    model_name: str = "",
+) -> tuple[str, str]:
+    from services.llm_provider_service import get_llm_provider_service
+
+    llm_service = get_llm_provider_service()
+    resolved_provider_id = str(provider_id or "").strip()
+    resolved_model_name = str(model_name or "").strip()
+    if not resolved_provider_id:
+        chat_settings = getattr(project, "chat_settings", {}) or {}
+        resolved_provider_id = str(chat_settings.get("provider_id") or "").strip()
+        resolved_model_name = resolved_model_name or str(chat_settings.get("model_name") or "").strip()
+    if not resolved_provider_id:
+        raise HTTPException(400, "当前未配置可用于经验规则融合的大模型")
+    provider = llm_service.get_provider_raw(
+        resolved_provider_id,
+        owner_username=_current_username(auth_payload),
+        include_all=is_admin_like(auth_payload),
+        include_shared=True,
+    )
+    if provider is None:
+        raise HTTPException(404, f"LLM provider {resolved_provider_id} not found")
+    if not bool(provider.get("enabled", True)):
+        raise HTTPException(400, f"LLM provider {resolved_provider_id} is disabled")
+    if not resolved_model_name:
+        resolved_model_name = str(provider.get("default_model") or "").strip()
+    if not resolved_model_name:
+        resolved_model_name = str((provider.get("models") or [""])[0] or "").strip()
+    if not resolved_model_name:
+        raise HTTPException(400, "当前未配置可用于经验规则融合的模型")
+    return resolved_provider_id, resolved_model_name
+
+
+def _build_project_experience_merge_messages(
+    project: ProjectConfig,
+    cards: list[dict[str, Any]],
+    *,
+    max_cards: int,
+) -> list[dict[str, str]]:
+    normalized_cards: list[dict[str, Any]] = []
+    for item in cards:
+        if not isinstance(item, dict):
+            continue
+        normalized_cards.append(
+            {
+                "title": _normalize_project_record_token(item.get("title"), limit=120),
+                "topic_key": _normalize_experience_topic_key(item.get("topic_key")),
+                "domain": _normalize_domain(str(item.get("domain") or "").strip()) or "general",
+                "keywords": _normalize_experience_list(item.get("keywords"), item_limit=60),
+                "applicable_when": _normalize_experience_list(item.get("applicable_when")),
+                "signals": _normalize_experience_list(item.get("signals")),
+                "root_causes": _normalize_experience_list(item.get("root_causes")),
+                "recommended_actions": _normalize_experience_list(item.get("recommended_actions")),
+                "anti_patterns": _normalize_experience_list(item.get("anti_patterns")),
+                "verification": _normalize_experience_list(item.get("verification")),
+            }
+        )
+    source_block = json.dumps({"cards": normalized_cards}, ensure_ascii=False, indent=2)
+    system_prompt = (
+        "你是资深软件团队的经验规则融合助手。"
+        "你的任务是把同主题的经验卡片融合成一致、无冲突、可执行的经验卡片。"
+        "输出必须是 JSON 对象，不要输出 Markdown 代码块。"
+    )
+    user_prompt = (
+        f"项目名称：{project.name}\n"
+        f"最多输出 {max_cards} 张经验卡片。\n"
+        "要求：\n"
+        "1. 只融合同主题经验，不要把不同主题硬合成一张卡。\n"
+        "2. 必须保留正确、明确、可执行的推荐做法，不要把关键动作弱化成反义或模糊描述。\n"
+        "3. 若输入内容存在冲突，优先保留更具体、约束更强、可验证的表达。\n"
+        "4. topic_key 要稳定，title 要简洁，domain 只允许 frontend/backend/product/testing/workflow/general。\n"
+        "5. keywords、applicable_when、signals、root_causes、recommended_actions、anti_patterns、verification 都输出数组。\n"
+        "6. 输出 JSON 结构：\n"
+        "{\n"
+        '  "cards": [\n'
+        "    {\n"
+        '      "title": "经验标题",\n'
+        '      "topic_key": "stable-topic-key",\n'
+        '      "domain": "frontend",\n'
+        '      "keywords": ["关键词"],\n'
+        '      "applicable_when": ["适用场景"],\n'
+        '      "signals": ["问题信号"],\n'
+        '      "root_causes": ["根因模式"],\n'
+        '      "recommended_actions": ["推荐做法"],\n'
+        '      "anti_patterns": ["禁止做法"],\n'
+        '      "verification": ["验证方式"]\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "待融合经验卡片如下：\n"
+        f"{source_block}"
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+async def _merge_experience_cards_with_llm(
+    project: ProjectConfig,
+    cards: list[dict[str, Any]],
+    *,
+    auth_payload: dict,
+    provider_id: str = "",
+    model_name: str = "",
+    max_cards: int = 1,
+) -> list[dict[str, Any]]:
+    from services.llm_provider_service import get_llm_provider_service
+
+    if len(cards) <= 1:
+        return cards[:1]
+    resolved_provider_id, resolved_model_name = _resolve_project_experience_llm_target(
+        project,
+        auth_payload=auth_payload,
+        provider_id=provider_id,
+        model_name=model_name,
+    )
+    llm_service = get_llm_provider_service()
+    result = await llm_service.chat_completion(
+        resolved_provider_id,
+        resolved_model_name,
+        _build_project_experience_merge_messages(project, cards, max_cards=max_cards),
+        temperature=0.1,
+        max_tokens=2200,
+        timeout=90,
+    )
+    try:
+        payload = _extract_json_object_from_text(result.get("content") or "")
+    except ValueError as exc:
+        raise HTTPException(502, f"经验规则融合结果解析失败: {exc}") from exc
+    merged_cards = _normalize_experience_cards(payload, max_cards=max_cards)
+    if not merged_cards:
+        raise HTTPException(502, "经验规则融合结果为空")
+    return merged_cards
+
+
+async def _upsert_project_experience_rules(
+    project: ProjectConfig,
+    cards: list[dict[str, Any]],
+    *,
+    auth_payload: dict,
+    experience_scope: str,
+    provider_id: str = "",
+    model_name: str = "",
+) -> tuple[ProjectConfig, list[str], list[str]]:
+    normalized_scope = _normalize_experience_rule_scope(experience_scope)
+    existing_rule_ids = _normalize_project_experience_rule_ids(
+        getattr(project, "experience_rule_ids", []) or []
+    )
+    existing_rules = {
+        rule_id: rule_store.get(rule_id)
+        for rule_id in existing_rule_ids
+    }
+    existing_by_topic = {}
+    valid_rule_ids: list[str] = []
+    global_rules_by_topic = (
+        _build_global_experience_rule_topic_index(experience_scope=normalized_scope)
+        if normalized_scope == _EXPERIENCE_SCOPE_DEVELOPMENT
+        else {}
+    )
+    for rule_id, rule in existing_rules.items():
+        if rule is None:
+            continue
+        valid_rule_ids.append(rule_id)
+        topic_key = _extract_experience_rule_topic_key(rule)
+        if topic_key:
+            existing_by_topic[topic_key] = rule
+
+    created_rule_ids: list[str] = []
+    updated_rule_ids: list[str] = []
+    for card in cards:
+        topic_key = _normalize_experience_topic_key(card.get("topic_key"))
+        card = {
+            **card,
+            "domain": _experience_rule_domain_for_scope(normalized_scope),
+            "experience_scope": normalized_scope,
+        }
+        existing_rule = existing_by_topic.get(topic_key) or global_rules_by_topic.get(topic_key)
+        if existing_rule is not None:
+            merged_cards = await _merge_experience_cards_with_llm(
+                project,
+                [
+                    _build_experience_card_from_rule(
+                        existing_rule,
+                        experience_scope=normalized_scope,
+                    ),
+                    card,
+                ],
+                auth_payload=auth_payload,
+                provider_id=provider_id,
+                model_name=model_name,
+                max_cards=1,
+            )
+            merged_card = {
+                **merged_cards[0],
+                "domain": _experience_rule_domain_for_scope(normalized_scope),
+                "experience_scope": normalized_scope,
+            }
+            merged_rule = replace(
+                existing_rule,
+                title=_normalize_experience_rule_title(str(merged_card["title"] or ""), normalized_scope),
+                domain=_experience_rule_domain_for_scope(normalized_scope),
+                content=_render_experience_rule_content(merged_card),
+                updated_at=rules_now_iso(),
+            )
+            rule_store.save(merged_rule)
+            updated_rule_ids.append(merged_rule.id)
+            valid_rule_ids.append(merged_rule.id)
+            existing_by_topic[topic_key] = merged_rule
+            global_rules_by_topic[topic_key] = merged_rule
+            continue
+        new_rule = Rule(
+            id=rule_store.new_id(),
+            domain=_experience_rule_domain_for_scope(normalized_scope),
+            title=_normalize_experience_rule_title(str(card["title"] or ""), normalized_scope),
+            content=_render_experience_rule_content(card),
+            severity=Severity.RECOMMENDED,
+            risk_domain=RiskDomain.LOW,
+            created_by=_current_username(auth_payload),
+        )
+        rule_store.save(new_rule)
+        created_rule_ids.append(new_rule.id)
+        valid_rule_ids.append(new_rule.id)
+        existing_by_topic[topic_key] = new_rule
+
+    updated_project = replace(
+        project,
+        experience_rule_ids=_normalize_project_experience_rule_ids(
+            [*valid_rule_ids, *created_rule_ids]
+        ),
+        updated_at=_now_iso(),
+    )
+    project_store.save(updated_project)
+    return updated_project, created_rule_ids, updated_rule_ids
+
+
+def _migrate_project_experience_rules_to_development(
+    project: ProjectConfig,
+    *,
+    auth_payload: dict,
+) -> tuple[ProjectConfig, list[str], list[str], list[str]]:
+    existing_rule_ids = _normalize_project_experience_rule_ids(
+        getattr(project, "experience_rule_ids", []) or []
+    )
+    existing_rules = [
+        rule
+        for rule_id in existing_rule_ids
+        if (rule := rule_store.get(rule_id)) is not None
+    ]
+    legacy_rules = [
+        rule for rule in existing_rules
+        if _infer_experience_rule_scope(rule) == _EXPERIENCE_SCOPE_PROJECT
+    ]
+    if not legacy_rules:
+        raise HTTPException(400, "当前项目没有可迁移的项目经验规则")
+
+    development_by_topic = _build_global_experience_rule_topic_index(
+        experience_scope=_EXPERIENCE_SCOPE_DEVELOPMENT,
+    )
+    migrated_rule_ids: list[str] = []
+    created_rule_ids: list[str] = []
+    updated_rule_ids: list[str] = []
+    final_rule_ids: list[str] = []
+
+    for rule_id in existing_rule_ids:
+        rule = rule_store.get(rule_id)
+        if rule is None:
+            continue
+        if _infer_experience_rule_scope(rule) != _EXPERIENCE_SCOPE_PROJECT:
+            final_rule_ids.append(rule_id)
+            continue
+
+        card = _build_experience_card_from_rule(
+            rule,
+            experience_scope=_EXPERIENCE_SCOPE_DEVELOPMENT,
+        )
+        topic_key = _normalize_experience_topic_key(card.get("topic_key"))
+        target_rule = development_by_topic.get(topic_key)
+        if target_rule is not None:
+            merged_rule = _merge_experience_rule_card(target_rule, card)
+            rule_store.save(merged_rule)
+            updated_rule_ids.append(merged_rule.id)
+            migrated_rule_ids.append(rule.id)
+            development_by_topic[topic_key] = merged_rule
+            final_rule_ids.append(merged_rule.id)
+            continue
+
+        new_rule = Rule(
+            id=rule_store.new_id(),
+            domain=_DEVELOPMENT_EXPERIENCE_RULE_DOMAIN,
+            title=_normalize_experience_rule_title(str(card["title"] or ""), _EXPERIENCE_SCOPE_DEVELOPMENT),
+            content=_render_experience_rule_content(card),
+            severity=Severity.RECOMMENDED,
+            risk_domain=RiskDomain.LOW,
+            created_by=_current_username(auth_payload),
+        )
+        rule_store.save(new_rule)
+        created_rule_ids.append(new_rule.id)
+        migrated_rule_ids.append(rule.id)
+        development_by_topic[topic_key] = new_rule
+        final_rule_ids.append(new_rule.id)
+
+    updated_project = replace(
+        project,
+        experience_rule_ids=_normalize_project_experience_rule_ids(final_rule_ids),
+        updated_at=_now_iso(),
+    )
+    project_store.save(updated_project)
+
+    deleted_rule_ids: list[str] = []
+    for rule in legacy_rules:
+        rule_id = str(getattr(rule, "id", "") or "").strip()
+        if not rule_id:
+            continue
+        if _projects_binding_experience_rule(rule_id):
+            continue
+        if rule_store.delete(rule_id):
+            deleted_rule_ids.append(rule_id)
+
+    return updated_project, created_rule_ids, updated_rule_ids, deleted_rule_ids
+
+
+@router.post("/{project_id}/experience-summary-jobs")
+async def summarize_project_experience(
+    project_id: str,
+    req: ProjectExperienceSummaryReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    experience_scope = _normalize_experience_rule_scope(req.experience_scope)
+    payload = _build_project_requirement_records(
+        project,
+        limit=_PROJECT_EXPERIENCE_SUMMARY_RECORD_LIMIT,
+    )
+    all_records = payload.get("items") if isinstance(payload, dict) else []
+    if not isinstance(all_records, list):
+        all_records = []
+    requested_ids = [
+        _normalize_project_record_token(item, limit=80)
+        for item in (req.record_ids or [])
+    ]
+    requested_ids = [item for item in requested_ids if item]
+    target_records = all_records
+    if requested_ids:
+        selected_id_set = set(requested_ids)
+        target_records = [
+            item for item in all_records
+            if _normalize_project_record_token(item.get("id"), limit=80) in selected_id_set
+        ]
+    if not target_records:
+        raise HTTPException(400, "没有可用于总结的需求记录")
+
+    cards = await _summarize_project_experience_cards(
+        project,
+        provider_id=str(req.provider_id or "").strip(),
+        model_name=str(req.model_name or "").strip(),
+        records=target_records,
+        max_cards=int(req.max_cards or 5),
+        auth_payload=auth_payload,
+    )
+    updated_project, created_rule_ids, updated_rule_ids = await _upsert_project_experience_rules(
+        project,
+        cards,
+        auth_payload=auth_payload,
+        experience_scope=experience_scope,
+        provider_id=str(req.provider_id or "").strip(),
+        model_name=str(req.model_name or "").strip(),
+    )
+
+    clear_result: dict[str, Any] | None = None
+    if req.clear_requirement_records:
+        clear_result = await batch_delete_project_requirement_records(
+            project_id,
+            ProjectRequirementRecordBatchDeleteReq(
+                record_ids=[
+                    _normalize_project_record_token(item.get("id"), limit=80)
+                    for item in target_records
+                ]
+            ),
+            auth_payload,
+        )
+
+    return {
+        "status": "completed",
+        "project_id": updated_project.id,
+        "project_name": updated_project.name,
+        "source_record_ids": [
+            _normalize_project_record_token(item.get("id"), limit=80)
+            for item in target_records
+        ],
+        "source_record_count": len(target_records),
+        "created_rule_ids": created_rule_ids,
+        "updated_rule_ids": updated_rule_ids,
+        "experience_rule_ids": _normalize_project_experience_rule_ids(
+            getattr(updated_project, "experience_rule_ids", []) or []
+        ),
+        "experience_rule_bindings": _resolve_project_experience_rule_bindings(updated_project),
+        "clear_result": clear_result,
+        "provider_id": str(req.provider_id or "").strip(),
+        "model_name": str(req.model_name or "").strip(),
+        "experience_scope": experience_scope,
+    }
+
+
+@router.post("/{project_id}/experience-rules/migrate-to-development")
+async def migrate_project_experience_rules_to_development(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    updated_project, created_rule_ids, updated_rule_ids, deleted_rule_ids = (
+        _migrate_project_experience_rules_to_development(
+            project,
+            auth_payload=auth_payload,
+        )
+    )
+    return {
+        "status": "completed",
+        "project_id": updated_project.id,
+        "project_name": updated_project.name,
+        "created_rule_ids": created_rule_ids,
+        "updated_rule_ids": updated_rule_ids,
+        "deleted_rule_ids": deleted_rule_ids,
+        "experience_rule_ids": _normalize_project_experience_rule_ids(
+            getattr(updated_project, "experience_rule_ids", []) or []
+        ),
+        "experience_rule_bindings": _resolve_project_experience_rule_bindings(updated_project),
+        "experience_scope": _EXPERIENCE_SCOPE_DEVELOPMENT,
+    }
+
+
+@router.post("/{project_id}/experience-rules/consolidate")
+async def consolidate_project_experience_rules(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    updated_project, consolidated_rule_ids, unchanged_rule_ids, deleted_rule_ids = await _consolidate_project_experience_rules(
+        project,
+        auth_payload=auth_payload,
+    )
+    return {
+        "status": "completed",
+        "project_id": updated_project.id,
+        "project_name": updated_project.name,
+        "merged_rule_id": consolidated_rule_ids[0] if len(consolidated_rule_ids) == 1 else "",
+        "consolidated_rule_ids": consolidated_rule_ids,
+        "unchanged_rule_ids": unchanged_rule_ids,
+        "remaining_rule_count": len(
+            _normalize_project_experience_rule_ids(
+                getattr(updated_project, "experience_rule_ids", []) or []
+            )
+        ),
+        "deleted_rule_ids": deleted_rule_ids,
+        "experience_rule_ids": _normalize_project_experience_rule_ids(
+            getattr(updated_project, "experience_rule_ids", []) or []
+        ),
+        "experience_rule_bindings": _resolve_project_experience_rule_bindings(updated_project),
+    }
+
+
+@router.put("/{project_id}/experience-rules/{rule_id}")
+async def update_project_experience_rule(
+    project_id: str,
+    rule_id: str,
+    req: ProjectExperienceRuleUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    normalized_rule_id = _normalize_project_record_token(rule_id, limit=80)
+    existing_rule_ids = _normalize_project_experience_rule_ids(
+        getattr(project, "experience_rule_ids", []) or []
+    )
+    if normalized_rule_id not in existing_rule_ids:
+        raise HTTPException(404, "项目经验规则不存在")
+    rule = rule_store.get(normalized_rule_id)
+    if rule is None:
+        raise HTTPException(404, "经验规则不存在")
+    experience_scope = _infer_experience_rule_scope(rule)
+    title = str(req.title or "").strip()
+    content = str(req.content or "").strip()
+    if not title:
+        raise HTTPException(400, "title is required")
+    if not content:
+        raise HTTPException(400, "content is required")
+    updated_rule = replace(
+        rule,
+        title=_normalize_experience_rule_title(title, experience_scope),
+        domain=_experience_rule_domain_for_scope(experience_scope),
+        content=content,
+        updated_at=rules_now_iso(),
+    )
+    rule_store.save(updated_rule)
+    return {
+        "status": "updated",
+        "project_id": project.id,
+        "project_name": project.name,
+        "rule": {
+            "id": str(getattr(updated_rule, "id", "") or ""),
+            "title": str(getattr(updated_rule, "title", "") or ""),
+            "domain": str(getattr(updated_rule, "domain", "") or "") or _experience_rule_domain_for_scope(experience_scope),
+            "preview": _extract_experience_rule_preview(content),
+            "content": content,
+        },
+        "experience_rule_bindings": _resolve_project_experience_rule_bindings(project, include_content=True),
+    }
+
+
+@router.delete("/{project_id}/experience-rules/{rule_id}")
+async def delete_project_experience_rule(
+    project_id: str,
+    rule_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    normalized_rule_id = _normalize_project_record_token(rule_id, limit=80)
+    existing_rule_ids = _normalize_project_experience_rule_ids(
+        getattr(project, "experience_rule_ids", []) or []
+    )
+    if normalized_rule_id not in existing_rule_ids:
+        raise HTTPException(404, "项目经验规则不存在")
+
+    remaining_rule_ids = [item for item in existing_rule_ids if item != normalized_rule_id]
+    updated_project = replace(
+        project,
+        experience_rule_ids=remaining_rule_ids,
+        updated_at=_now_iso(),
+    )
+    project_store.save(updated_project)
+
+    deleted_rule_ids: list[str] = []
+    if not _projects_binding_experience_rule(normalized_rule_id):
+        if rule_store.delete(normalized_rule_id):
+            deleted_rule_ids.append(normalized_rule_id)
+
+    remaining_project_ids = _projects_binding_experience_rule(normalized_rule_id)
+    return {
+        "status": "deleted",
+        "project_id": updated_project.id,
+        "project_name": updated_project.name,
+        "removed_rule_id": normalized_rule_id,
+        "deleted_rule_ids": deleted_rule_ids,
+        "rule_deleted": bool(deleted_rule_ids),
+        "remaining_project_binding_count": len(remaining_project_ids),
+        "remaining_project_binding_ids": remaining_project_ids,
+        "experience_rule_ids": _normalize_project_experience_rule_ids(
+            getattr(updated_project, "experience_rule_ids", []) or []
+        ),
+        "experience_rule_bindings": _resolve_project_experience_rule_bindings(updated_project),
+    }
+
+
+def _resolve_project_experience_rules_payload(
+    project: ProjectConfig,
+    task_text: str,
+    *,
+    limit: int = 3,
+) -> dict[str, Any]:
+    task_text_value = str(task_text or "").strip()
+    try:
+        limit_value = max(1, min(int(limit or 3), 10))
+    except (TypeError, ValueError):
+        limit_value = 3
+    experience_rule_ids = _normalize_project_experience_rule_ids(
+        getattr(project, "experience_rule_ids", []) or []
+    )
+    items: list[dict[str, Any]] = []
+    for rule_id in experience_rule_ids:
+        rule = rule_store.get(rule_id)
+        if rule is None:
+            continue
+        score, matched_terms = _score_experience_rule(rule, task_text_value)
+        if score <= 0:
+            continue
+        items.append(
+            {
+                "id": str(getattr(rule, "id", "") or ""),
+                "title": str(getattr(rule, "title", "") or ""),
+                "domain": str(getattr(rule, "domain", "") or ""),
+                "preview": _extract_experience_rule_preview(str(getattr(rule, "content", "") or "")),
+                "content": str(getattr(rule, "content", "") or ""),
+                "score": score,
+                "matched_terms": matched_terms,
+            }
+        )
+    items.sort(
+        key=lambda item: (
+            int(item.get("score") or 0),
+            str(item.get("title") or ""),
+        ),
+        reverse=True,
+    )
+    limited_items = items[:limit_value]
+    prompt_blocks = [
+        "\n".join(
+            [
+                f"[Relevant Experience Card] {item['title']}",
+                f"Preview: {item['preview'] or '-'}",
+                item["content"],
+            ]
+        ).strip()
+        for item in limited_items
+    ]
+    return {
+        "project_id": project.id,
+        "project_name": project.name,
+        "task_text": task_text_value,
+        "experience_rule_count": len(experience_rule_ids),
+        "items": limited_items,
+        "prompt_blocks": prompt_blocks,
+        "assembled_context": "\n\n".join(prompt_blocks).strip(),
+    }
+
+
+@router.post("/{project_id}/experience-rules/resolve")
+async def resolve_project_experience_rules(
+    project_id: str,
+    req: ProjectExperienceRuleResolveReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_access(project_id, auth_payload)
+    return _resolve_project_experience_rules_payload(
+        project,
+        req.task_text,
+        limit=req.limit,
+    )
 
 
 @router.get("/{project_id}/work-sessions")
@@ -8878,6 +10868,7 @@ async def generate_project_chat_task_tree(
         force=bool(req.force),
         max_steps=max_steps,
     )
+    await _invalidate_project_requirement_records_cache(project_id)
     return {
         "status": "generated",
         "task_tree": serialize_task_tree(session),
@@ -8920,6 +10911,7 @@ async def patch_project_chat_task_tree_node(
         )
         history_task_tree = serialize_task_tree(archived_session)
         task_tree_payload = None
+    await _invalidate_project_requirement_records_cache(project_id)
     return {
         "status": "updated",
         "task_tree": task_tree_payload,
@@ -8983,6 +10975,7 @@ async def clear_project_chat_history(
     )
     if normalized_chat_session_id:
         project_chat_task_store.delete(project_id, username, normalized_chat_session_id)
+    await _invalidate_project_requirement_records_cache(project_id)
     return {"status": "cleared", "removed_count": int(removed)}
 
 
@@ -10205,6 +12198,19 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
 """
         )
     project_ui_rules_text = "\n".join(project_ui_rule_lines) if project_ui_rule_lines else "无"
+    project_experience_rule_bindings = _resolve_project_experience_rule_bindings(project)
+    project_experience_rule_lines: list[str] = []
+    for item in project_experience_rule_bindings:
+        title = str(item.get("title") or item.get("id") or "").strip() or "未命名经验规则"
+        rule_id = str(item.get("id") or "").strip() or "-"
+        domain = str(item.get("domain") or "").strip() or "-"
+        preview = str(item.get("preview") or "").strip() or "暂无摘要"
+        project_experience_rule_lines.append(
+            f"- {title} (`{rule_id}` / {domain}): {preview}"
+        )
+    project_experience_rules_text = (
+        "\n".join(project_experience_rule_lines) if project_experience_rule_lines else "无"
+    )
     employee_template_lines: list[str] = []
     for item in member_items:
         employee = item["employee"]
@@ -10264,16 +12270,17 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
 1. 收到用户提问后，先调用 `get_project_runtime_context` 或 `list_project_members` 了解成员和能力范围。
 2. 进入分析、实现或排查前，先阅读本项目手册；解决问题时优先依赖项目绑定的员工、规则和技能，不要绕过项目内现成能力直接自行发挥。
 3. 每次新请求都要重新调用 `query_project_rules` 获取与当前问题直接相关的规则正文；不要只看规则标题，也不要把无关项目规则全文机械带入当前问题。
-4. 先判断当前任务能否由单个项目绑定员工闭环；若可以，优先使用该员工已绑定技能及其代理工具。只有项目员工、规则、技能无法覆盖时，才使用自身通用能力补足。
-5. 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，调用 `recall_project_memory` 检索相关记忆，优先传 `project_name="{project.name}"`。
-6. 优先复用宿主系统的自动记忆快照；如当前入口未覆盖自动记录链路，或本轮需要额外沉淀稳定结论/关键决策，再调用一次 `save_project_memory` 补记。不要在同一需求的每个中间步骤重复写入项目记忆。
-6.1 若本轮对话存在任务树或执行规划，记忆与工作轨迹必须复用同一条 `chat_session_id` / `session_id`，确保后续能从记忆详情回看规划、节点状态和验证结果。
-7. 在决定是否需要多人协作前，先把本项目手册与相关员工手册视为协作基线：AI 需结合任务目标、规则、技能和工具，自主判断单人主责还是多人协作，不预设固定行业角色分工。
-8. 遇到页面、交互、视觉表达类任务时，先检查本项目绑定的 UI 规则；这些规则优先级高于员工个人规则。{task_tree_workflow_line}
-9. 开始实现或排查前，调用 `list_project_proxy_tools` 检查项目成员现有技能工具，再结合 `query_project_rules` 的结果收敛方案；若任务需要项目内多员工自动协作，可优先调用 `execute_project_collaboration`。
-10. 锁定匹配项后，再调用 `invoke_project_skill_tool`，必要时补 `employee_id` 消歧；若采用多人协作，先明确负责人、子任务边界和结果交接。
-11. 如需沉淀结构化结论、排查经验或关键决策，在自动记录之外显式调用 `save_project_memory` 追加一条可复用记忆。
-12. 发现规则缺口、工具异常或稳定性问题时，调用 `submit_project_feedback_bug`。
+4. 若项目已沉淀经验规则，且当前需求明显可能复用历史做法，调用 `resolve_project_experience_rules(task_text="<用户原始需求>")` 按需加载相关经验卡片；不要把全部经验规则机械注入上下文。
+5. 先判断当前任务能否由单个项目绑定员工闭环；若可以，优先使用该员工已绑定技能及其代理工具。只有项目员工、规则、技能无法覆盖时，才使用自身通用能力补足。
+6. 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，调用 `recall_project_memory` 检索相关记忆，优先传 `project_name="{project.name}"`。
+7. 优先复用宿主系统的自动记忆快照；如当前入口未覆盖自动记录链路，或本轮需要额外沉淀稳定结论/关键决策，再调用一次 `save_project_memory` 补记。不要在同一需求的每个中间步骤重复写入项目记忆。
+7.1 若本轮对话存在任务树或执行规划，记忆与工作轨迹必须复用同一条 `chat_session_id` / `session_id`，确保后续能从记忆详情回看规划、节点状态和验证结果。
+8. 在决定是否需要多人协作前，先把本项目手册与相关员工手册视为协作基线：AI 需结合任务目标、规则、技能和工具，自主判断单人主责还是多人协作，不预设固定行业角色分工。
+9. 遇到页面、交互、视觉表达类任务时，先检查本项目绑定的 UI 规则；这些规则优先级高于员工个人规则。{task_tree_workflow_line}
+10. 开始实现或排查前，调用 `list_project_proxy_tools` 检查项目成员现有技能工具，再结合 `query_project_rules` 和 `resolve_project_experience_rules` 的结果收敛方案；若任务需要项目内多员工自动协作，可优先调用 `execute_project_collaboration`。
+11. 锁定匹配项后，再调用 `invoke_project_skill_tool`，必要时补 `employee_id` 消歧；若采用多人协作，先明确负责人、子任务边界和结果交接。
+12. 如需沉淀结构化结论、排查经验或关键决策，在自动记录之外显式调用 `save_project_memory` 追加一条可复用记忆。
+13. 发现规则缺口、工具异常或稳定性问题时，调用 `submit_project_feedback_bug`。
 
 ### 记忆保存示例
 ```json
@@ -10297,6 +12304,14 @@ save_project_memory({{
 
 {project_ui_rules_text}
 
+## 项目经验规则（按需加载）
+
+- 项目经验规则用于沉淀历史需求里可复用的开发经验，不作为默认全量上下文注入。
+- 当新需求与历史问题模式相近时，先调用 `resolve_project_experience_rules(task_text="<用户原始需求>")`，只取高相关经验卡片。
+- 若当前任务与已有经验无关，不要为了“带上经验”而强行注入无关卡片。
+
+{project_experience_rules_text}
+
 ## 项目共享技能索引（写手册时不要只写技能名，需结合下面信息展开）
 
 {skills_text}
@@ -10312,6 +12327,7 @@ save_project_memory({{
 - **`list_project_members`**：列出项目成员，用于先确定可协作员工。
 - **`get_project_profile`**：读取项目基础配置、工作区和入口文件信息。
 - **`get_project_runtime_context`**：查看项目运行时上下文、成员、项目级 UI 规则、规则和技能规模。
+- **`resolve_project_experience_rules`**：按任务文本从项目经验规则中按需解析高相关经验卡片，避免无关经验占用上下文。
 - **`recall_project_memory`**：按需检索项目记忆，优先传 `project_name="{project.name}"`；仅在新需求开始、续跑恢复、修复旧问题或明显需要历史经验时调用。
 - **`save_project_memory`**：手动补记项目级结论、经验和关键决策；当当前入口未自动记录，或需要追加一条稳定结论/关键决策时再调用。不要在同一需求的每个中间步骤重复补记。若本轮存在任务树，应确保记忆与当前聊天会话绑定，后续可从记忆详情反查规划。
 - **`query_project_rules`**：按关键词查询项目规则，返回项目级 UI 规则与成员规则；页面/交互类任务先看项目级 UI 规则，最终以具体规则正文为准。
@@ -10325,12 +12341,13 @@ save_project_memory({{
 ```text
 1. 获取项目上下文 / 成员信息，并先读取项目手册 → get_project_runtime_context 或 list_project_members + get_project_manual
 2. 每次新请求先获取与当前任务直接相关的规则正文 → query_project_rules
-3. 优先检查项目绑定员工是否已具备可用技能工具 → list_project_proxy_tools
-4. 先让项目内单员工或项目协作链路闭环；只有项目能力不足时才自行补足 → invoke_project_skill_tool / execute_project_collaboration
-5. 按需记忆检索 → recall_project_memory
-6. 每次对话记录 → 默认自动记录；未覆盖入口或需要额外沉淀稳定结论时，再调用一次 save_project_memory 补记，并确保与当前 chat_session_id / session_id 绑定
-7. 结构化沉淀稳定结论/关键决策 → save_project_memory
-8. 反馈闭环 → submit_project_feedback_bug
+3. 若项目存在经验规则且当前需求可能复用历史模式，按需解析经验卡片 → resolve_project_experience_rules
+4. 优先检查项目绑定员工是否已具备可用技能工具 → list_project_proxy_tools
+5. 先让项目内单员工或项目协作链路闭环；只有项目能力不足时才自行补足 → invoke_project_skill_tool / execute_project_collaboration
+6. 按需记忆检索 → recall_project_memory
+7. 每次对话记录 → 默认自动记录；未覆盖入口或需要额外沉淀稳定结论时，再调用一次 save_project_memory 补记，并确保与当前 chat_session_id / session_id 绑定
+8. 结构化沉淀稳定结论/关键决策 → save_project_memory
+9. 反馈闭环 → submit_project_feedback_bug
 ```
 
 ## 常见问题与故障排查
@@ -10370,6 +12387,7 @@ save_project_memory({{
 - 记忆检索只在新需求开始、续跑恢复、修复旧问题或明显需要历史经验时触发；不要把 recall 当成每轮固定前置步骤。
 - 同一任务轮若已生成任务树并进入执行，后续优先依赖当前会话、任务树和工作轨迹，不要重复检索同一批项目记忆。
 - 项目级 UI 规则优先于员工个人规则，尤其是页面、交互、视觉表达类任务。
+- 项目经验规则默认按需解析，不默认全量注入；只有当前任务与经验卡片明显相关时才加载。
 - 每次新请求都重新获取与当前问题匹配的规则正文，不要只凭上一次记忆或规则标题继续执行。
 - 只使用与当前问题直接相关的项目规则，不要把无关规则全文机械套用到所有任务。
 - 项目内已有员工、技能或协作链路可以闭环时，优先使用项目能力，不要跳过项目成员直接改走通用能力。

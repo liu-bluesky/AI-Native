@@ -2518,6 +2518,398 @@ def _build_project_api_test_client(tmp_path, monkeypatch, auth_payload):
     return client, store_factory.project_store
 
 
+def test_project_experience_summary_route_merges_existing_rule_and_clears_records(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores import mcp_bridge
+    from stores.json.project_store import ProjectConfig
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    temp_rule_store = mcp_bridge._rules_mod.RuleStore(tmp_path / "experience-rules")
+    monkeypatch.setattr(projects_router, "rule_store", temp_rule_store)
+
+    existing_rule = mcp_bridge.Rule(
+        id=temp_rule_store.new_id(),
+        domain="项目经验",
+        title="经验卡片 · 登录表单流程",
+        content=projects_router._render_experience_rule_content(
+            {
+                "title": "登录表单流程",
+                "topic_key": "login-form",
+                "domain": "frontend",
+                "keywords": ["登录", "表单"],
+                "applicable_when": ["开发登录页面"],
+                "signals": ["重复点击提交"],
+                "root_causes": ["提交态未统一"],
+                "recommended_actions": ["统一 pending 状态"],
+                "anti_patterns": ["多个 loading 状态分散维护"],
+                "verification": ["重复点击测试"],
+            }
+        ),
+        created_by="tester",
+    )
+    temp_rule_store.save(existing_rule)
+    project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            created_by="tester",
+            experience_rule_ids=[existing_rule.id],
+        )
+    )
+
+    class _FakeLlmService:
+        def __init__(self):
+            self.call_count = 0
+
+        def get_provider_raw(self, provider_id, **kwargs):
+            if provider_id != "provider-1":
+                return None
+            return {
+                "id": "provider-1",
+                "enabled": True,
+                "default_model": "glm-test",
+                "models": ["glm-test"],
+            }
+
+        async def chat_completion(
+            self,
+            provider_id,
+            model_name,
+            messages,
+            temperature=0.2,
+            max_tokens=1024,
+            timeout=45,
+        ):
+            assert provider_id == "provider-1"
+            assert model_name == "glm-test"
+            assert messages and isinstance(messages, list)
+            self.call_count += 1
+            if self.call_count == 1:
+                return {
+                    "content": json.dumps(
+                        {
+                            "cards": [
+                                {
+                                    "title": "登录表单流程",
+                                    "topic_key": "login-form",
+                                    "domain": "frontend",
+                                    "keywords": ["登录", "表单", "提交"],
+                                    "applicable_when": ["开发登录页面"],
+                                    "signals": ["错误提示不一致"],
+                                    "root_causes": ["错误态未统一管理"],
+                                    "recommended_actions": ["统一错误提示与按钮禁用态"],
+                                    "anti_patterns": ["请求结束前允许重复提交"],
+                                    "verification": ["错误提示回归测试"],
+                                }
+                            ]
+                        },
+                        ensure_ascii=False,
+                    )
+                }
+            return {
+                "content": json.dumps(
+                    {
+                        "cards": [
+                            {
+                                "title": "登录表单流程",
+                                "topic_key": "login-form",
+                                "domain": "frontend",
+                                "keywords": ["登录", "表单", "提交", "错误态"],
+                                "applicable_when": ["开发登录页面"],
+                                "signals": ["重复点击提交", "错误提示不一致"],
+                                "root_causes": ["提交态未统一", "错误态未统一管理"],
+                                "recommended_actions": ["统一 pending 状态", "统一错误提示与按钮禁用态"],
+                                "anti_patterns": ["多个 loading 状态分散维护", "请求结束前允许重复提交"],
+                                "verification": ["重复点击测试", "错误提示回归测试"],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            }
+
+    fake_llm_service = _FakeLlmService()
+    monkeypatch.setattr(
+        "services.llm_provider_service.get_llm_provider_service",
+        lambda: fake_llm_service,
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "_build_project_requirement_records",
+        lambda project, **kwargs: {
+            "items": [
+                {
+                    "id": "record-1",
+                    "rootGoal": "开发登录页面",
+                    "summaryText": "登录表单重复点击后状态错乱",
+                    "currentFocus": "梳理提交态和错误提示",
+                    "actorLabel": "前端",
+                    "roundDigest": "当前轮次",
+                    "detailRound": {"recordKind": "requirement"},
+                }
+            ]
+        },
+    )
+
+    async def _fake_batch_delete(project_id, req, auth_payload):
+        assert project_id == "proj-1"
+        assert req.record_ids == ["record-1"]
+        return {
+            "status": "deleted",
+            "deleted_count": 1,
+            "deleted_record_ids": ["record-1"],
+        }
+
+    monkeypatch.setattr(projects_router, "batch_delete_project_requirement_records", _fake_batch_delete)
+
+    response = client.post(
+        "/api/projects/proj-1/experience-summary-jobs",
+        json={
+            "provider_id": "provider-1",
+            "model_name": "glm-test",
+            "record_ids": ["record-1"],
+            "clear_requirement_records": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["created_rule_ids"] == []
+    assert payload["updated_rule_ids"] == [existing_rule.id]
+    assert payload["clear_result"]["deleted_count"] == 1
+    project = project_store.get("proj-1")
+    assert project is not None
+    assert project.experience_rule_ids == [existing_rule.id]
+    updated_rule = temp_rule_store.get(existing_rule.id)
+    assert updated_rule is not None
+    assert "统一 pending 状态" in updated_rule.content
+    assert "统一错误提示与按钮禁用态" in updated_rule.content
+
+
+def test_project_experience_consolidate_route_keeps_distinct_topics(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores import mcp_bridge
+    from stores.json.project_store import ProjectConfig
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    temp_rule_store = mcp_bridge._rules_mod.RuleStore(tmp_path / "experience-rules-consolidate")
+    monkeypatch.setattr(projects_router, "rule_store", temp_rule_store)
+
+    table_rule = mcp_bridge.Rule(
+        id=temp_rule_store.new_id(),
+        domain="开发经验",
+        title="开发经验 · 表格高度自适应撑满",
+        content=projects_router._render_experience_rule_content(
+            {
+                "title": "表格高度自适应撑满",
+                "topic_key": "table-height-fill",
+                "domain": "frontend",
+                "keywords": ["表格", "高度", "撑满"],
+                "applicable_when": ["页面主体区域需要由表格填满剩余空间"],
+                "signals": ["表格底部留白"],
+                "root_causes": ["容器高度链路不完整"],
+                "recommended_actions": ["建立从页面容器到表格内容区的高度链路并确保撑满"],
+                "anti_patterns": ["只给表格固定高度导致无法撑满"],
+                "verification": ["窗口变化后表格仍撑满内容区"],
+            }
+        ),
+        created_by="tester",
+    )
+    dialog_rule = mcp_bridge.Rule(
+        id=temp_rule_store.new_id(),
+        domain="开发经验",
+        title="开发经验 · 弹窗关闭后重置表单",
+        content=projects_router._render_experience_rule_content(
+            {
+                "title": "弹窗关闭后重置表单",
+                "topic_key": "dialog-form-reset",
+                "domain": "frontend",
+                "keywords": ["弹窗", "表单", "重置"],
+                "applicable_when": ["弹窗承载新增或编辑表单"],
+                "signals": ["再次打开仍残留上次输入"],
+                "root_causes": ["关闭时未重置表单状态"],
+                "recommended_actions": ["关闭弹窗时统一重置表单和校验状态"],
+                "anti_patterns": ["依赖手工逐字段清空"],
+                "verification": ["重复打开弹窗不残留上次表单值"],
+            }
+        ),
+        created_by="tester",
+    )
+    temp_rule_store.save(table_rule)
+    temp_rule_store.save(dialog_rule)
+    project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            created_by="tester",
+            experience_rule_ids=[table_rule.id, dialog_rule.id],
+        )
+    )
+
+    response = client.post("/api/projects/proj-1/experience-rules/consolidate")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["consolidated_rule_ids"] == []
+    assert payload["deleted_rule_ids"] == []
+    assert payload["remaining_rule_count"] == 2
+    assert sorted(payload["experience_rule_ids"]) == sorted([table_rule.id, dialog_rule.id])
+
+
+def test_project_experience_rule_resolve_route_returns_only_relevant_rules(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores import mcp_bridge
+    from stores.json.project_store import ProjectConfig
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    temp_rule_store = mcp_bridge._rules_mod.RuleStore(tmp_path / "experience-rules")
+    monkeypatch.setattr(projects_router, "rule_store", temp_rule_store)
+
+    login_rule = mcp_bridge.Rule(
+        id=temp_rule_store.new_id(),
+        domain="项目经验",
+        title="经验卡片 · 登录表单流程",
+        content=projects_router._render_experience_rule_content(
+            {
+                "title": "登录表单流程",
+                "topic_key": "login-form",
+                "domain": "frontend",
+                "keywords": ["登录", "表单", "校验"],
+                "applicable_when": ["开发登录页面"],
+                "signals": ["重复提交"],
+                "root_causes": ["提交态未统一"],
+                "recommended_actions": ["统一 pending 状态"],
+                "anti_patterns": ["多个 loading 状态分散维护"],
+                "verification": ["重复点击测试"],
+            }
+        ),
+        created_by="tester",
+    )
+    export_rule = mcp_bridge.Rule(
+        id=temp_rule_store.new_id(),
+        domain="项目经验",
+        title="经验卡片 · 导出任务重试",
+        content=projects_router._render_experience_rule_content(
+            {
+                "title": "导出任务重试",
+                "topic_key": "export-retry",
+                "domain": "backend",
+                "keywords": ["导出", "重试", "队列"],
+                "applicable_when": ["处理导出失败"],
+                "signals": ["导出任务失败"],
+                "root_causes": ["任务状态未幂等"],
+                "recommended_actions": ["补齐重试保护"],
+                "anti_patterns": ["重复入队"],
+                "verification": ["失败重试测试"],
+            }
+        ),
+        created_by="tester",
+    )
+    temp_rule_store.save(login_rule)
+    temp_rule_store.save(export_rule)
+    project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            created_by="tester",
+            experience_rule_ids=[login_rule.id, export_rule.id],
+        )
+    )
+
+    response = client.post(
+        "/api/projects/proj-1/experience-rules/resolve",
+        json={"task_text": "开发一个登录页面并处理登录表单提交", "limit": 3},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["id"] == login_rule.id
+    assert "登录表单流程" in payload["prompt_blocks"][0]
+
+
+def test_project_experience_rule_delete_route_unbinds_then_deletes_last_shared_rule(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores import mcp_bridge
+    from stores.json.project_store import ProjectConfig
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    temp_rule_store = mcp_bridge._rules_mod.RuleStore(tmp_path / "experience-rules")
+    monkeypatch.setattr(projects_router, "rule_store", temp_rule_store)
+
+    shared_rule = mcp_bridge.Rule(
+        id=temp_rule_store.new_id(),
+        domain="开发经验",
+        title="开发经验 · 登录表单流程",
+        content=projects_router._render_experience_rule_content(
+            {
+                "title": "登录表单流程",
+                "topic_key": "login-form",
+                "domain": "frontend",
+                "keywords": ["登录", "表单"],
+                "applicable_when": ["开发登录页面"],
+                "signals": ["重复提交"],
+                "root_causes": ["提交态未统一"],
+                "recommended_actions": ["统一 pending 状态"],
+                "anti_patterns": ["散落多个 loading 状态"],
+                "verification": ["重复点击测试"],
+            }
+        ),
+        created_by="tester",
+    )
+    temp_rule_store.save(shared_rule)
+    project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            created_by="tester",
+            experience_rule_ids=[shared_rule.id],
+        )
+    )
+    project_store.save(
+        ProjectConfig(
+            id="proj-2",
+            name="项目二",
+            created_by="tester",
+            experience_rule_ids=[shared_rule.id],
+        )
+    )
+
+    first_response = client.delete(f"/api/projects/proj-1/experience-rules/{shared_rule.id}")
+    assert first_response.status_code == 200
+    first_payload = first_response.json()
+    assert first_payload["rule_deleted"] is False
+    assert first_payload["remaining_project_binding_count"] == 1
+    assert project_store.get("proj-1").experience_rule_ids == []
+    assert project_store.get("proj-2").experience_rule_ids == [shared_rule.id]
+    assert temp_rule_store.get(shared_rule.id) is not None
+
+    second_response = client.delete(f"/api/projects/proj-2/experience-rules/{shared_rule.id}")
+    assert second_response.status_code == 200
+    second_payload = second_response.json()
+    assert second_payload["rule_deleted"] is True
+    assert second_payload["deleted_rule_ids"] == [shared_rule.id]
+    assert second_payload["remaining_project_binding_count"] == 0
+    assert project_store.get("proj-2").experience_rule_ids == []
+    assert temp_rule_store.get(shared_rule.id) is None
+
+
 def test_project_routes_include_created_by_for_create_list_and_detail(tmp_path, monkeypatch):
     client, project_store = _build_project_api_test_client(
         tmp_path,
@@ -2548,6 +2940,58 @@ def test_project_routes_include_created_by_for_create_list_and_detail(tmp_path, 
     detail_response = client.get(f"/api/projects/{project_id}")
     assert detail_response.status_code == 200
     assert detail_response.json()["project"]["created_by"] == "alice"
+
+
+def test_project_list_route_returns_compact_payload(tmp_path, monkeypatch):
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "alice", "role": "admin"},
+    )
+    project_store.save(
+        ProjectConfig(
+            id="proj-compact",
+            name="轻量列表项目",
+            description="用于验证列表接口精简字段",
+            created_by="alice",
+            ui_rule_ids=["rule-ui"],
+            mcp_instruction="先读说明",
+            workspace_path="/tmp/project",
+            ai_entry_file=".ai/ENTRY.md",
+        )
+    )
+    project_store.upsert_user_member(
+        ProjectUserMember(
+            project_id="proj-compact",
+            username="alice",
+            role="owner",
+            enabled=True,
+        )
+    )
+
+    list_response = client.get("/api/projects")
+    assert list_response.status_code == 200
+    listed_project = next(item for item in list_response.json()["projects"] if item["id"] == "proj-compact")
+
+    assert listed_project["created_by"] == "alice"
+    assert listed_project["ui_rule_count"] == 1
+    assert listed_project["has_mcp_instruction"] is True
+    assert listed_project["has_workspace_path"] is True
+    assert listed_project["has_ai_entry_file"] is True
+    assert "ui_rule_bindings" not in listed_project
+    assert "ui_rule_ids" not in listed_project
+    assert "workspace_path" not in listed_project
+    assert "ai_entry_file" not in listed_project
+    assert "mcp_instruction" not in listed_project
+
+    detail_response = client.get("/api/projects/proj-compact")
+    assert detail_response.status_code == 200
+    detail_project = detail_response.json()["project"]
+    assert detail_project["workspace_path"] == "/tmp/project"
+    assert detail_project["ai_entry_file"] == ".ai/ENTRY.md"
+    assert detail_project["mcp_instruction"] == "先读说明"
 
 
 def test_project_store_supports_project_membership_aggregates(tmp_path):
@@ -6550,6 +6994,24 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
         if project_id == "proj-1"
         else [],
     )
+    monkeypatch.setattr(
+        "routers.projects._resolve_project_experience_rule_bindings",
+        lambda project, include_content=False: [{"id": "rule-exp", "title": "经验卡片 · 登录流程", "domain": "项目经验", "preview": "统一提交态"}]
+        if getattr(project, "id", "") == "proj-1"
+        else [],
+    )
+    monkeypatch.setattr(
+        "routers.projects._resolve_project_experience_rules_payload",
+        lambda project, task_text, limit=3: {
+            "project_id": getattr(project, "id", ""),
+            "project_name": getattr(project, "name", ""),
+            "task_text": str(task_text or "").strip(),
+            "experience_rule_count": 1,
+            "items": [{"id": "rule-exp", "title": "经验卡片 · 登录流程"}],
+            "prompt_blocks": ["[Relevant Experience Card] 经验卡片 · 登录流程"],
+            "assembled_context": "[Relevant Experience Card] 经验卡片 · 登录流程",
+        },
+    )
 
     project_mcp_svc.create_project_mcp(
         "proj-1",
@@ -6576,12 +7038,17 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
     assert collaboration_result["tool_name"] == "execute_project_collaboration"
     assert collaboration_result["selected_employee_ids"] == ["emp-1"]
     assert collaboration_result["auto_execute"] is False
+    assert "resolve_project_experience_rules" in registered_tools
     assert "project://proj-1/usage-guide" in registered_resources
     usage_guide = registered_resources["project://proj-1/usage-guide"]()
     assert "execute_project_collaboration" in usage_guide
     assert "自主判断单人主责或多人协作" in usage_guide
     assert "项目级 UI 规则" in usage_guide
     assert "优先级高于员工个人规则" in usage_guide
+    assert "项目经验规则" in usage_guide
+    experience_result = registered_tools["resolve_project_experience_rules"]("开发登录页面", limit=2)
+    assert experience_result["experience_rule_count"] == 1
+    assert experience_result["items"][0]["id"] == "rule-exp"
 
 
 def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
@@ -6653,6 +7120,24 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
         if project_id == "proj-1"
         else [],
     )
+    monkeypatch.setattr(
+        "routers.projects._resolve_project_experience_rule_bindings",
+        lambda project, include_content=False: [{"id": "rule-exp", "title": "经验卡片 · 登录流程", "domain": "项目经验", "preview": "统一提交态"}]
+        if getattr(project, "id", "") == "proj-1"
+        else [],
+    )
+    monkeypatch.setattr(
+        "routers.projects._resolve_project_experience_rules_payload",
+        lambda project, task_text, limit=3: {
+            "project_id": getattr(project, "id", ""),
+            "project_name": getattr(project, "name", ""),
+            "task_text": str(task_text or "").strip(),
+            "experience_rule_count": 1,
+            "items": [{"id": "rule-exp", "title": "经验卡片 · 登录流程"}],
+            "prompt_blocks": ["[Relevant Experience Card] 经验卡片 · 登录流程"],
+            "assembled_context": "[Relevant Experience Card] 经验卡片 · 登录流程",
+        },
+    )
     saved_memories = []
     monkeypatch.setattr(
         query_mcp_svc,
@@ -6672,6 +7157,7 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert "save_project_memory" in registered_tools
     assert "list_project_members" in registered_tools
     assert "get_project_runtime_context" in registered_tools
+    assert "resolve_project_experience_rules" in registered_tools
     assert "list_project_proxy_tools" in registered_tools
     assert "invoke_project_skill_tool" in registered_tools
     assert "execute_project_collaboration" in registered_tools
@@ -6712,6 +7198,7 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
         )
         members = registered_tools["list_project_members"]("proj-1")
         context = registered_tools["get_project_runtime_context"]("proj-1")
+        experience = registered_tools["resolve_project_experience_rules"]("proj-1", "开发登录页面", limit=2)
         tools = registered_tools["list_project_proxy_tools"]("proj-1", "emp-1")
         invoke_result = registered_tools["invoke_project_skill_tool"](
             "proj-1",
@@ -6752,9 +7239,15 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert context["project_id"] == "proj-1"
     assert context["member_count"] == 1
     assert context["scoped_proxy_tool_count"] == 1
-    assert context["rule_count"] == 1
+    assert context["rule_count"] == 2
     assert context["ui_rule_count"] == 1
     assert context["ui_rules"][0]["id"] == "rule-ui"
+    assert context["experience_rule_count"] == 1
+    assert context["experience_rules"][0]["id"] == "rule-exp"
+
+    assert experience["project_id"] == "proj-1"
+    assert experience["experience_rule_count"] == 1
+    assert experience["items"][0]["id"] == "rule-exp"
 
     assert tools["project_id"] == "proj-1"
     assert tools["employee_id"] == "emp-1"
@@ -7230,12 +7723,15 @@ def test_query_mcp_project_state_persists_under_project_hidden_dir(tmp_path, mon
 
     active_path = workspace / ".ai-employee" / "query-mcp" / "active" / "proj-1.json"
     history_path = workspace / ".ai-employee" / "query-mcp" / "session-history" / "proj-1__chat-1.json"
+    current_path = workspace / ".ai-employee" / "query-mcp" / "current-session.json"
 
     assert saved["chat_session_id"] == "chat-1"
     assert saved["session_id"] == "ws-proj-1"
     assert active_path.exists() is True
     assert history_path.exists() is True
+    assert current_path.exists() is True
     assert state_service.load_query_mcp_project_state("proj-1")["session_id"] == "ws-proj-1"
+    assert state_service.load_current_query_mcp_session("proj-1")["chat_session_id"] == "chat-1"
     assert state_service.load_resumable_query_mcp_project_state("proj-1")["chat_session_id"] == "chat-1"
 
     state_service.save_query_mcp_project_state(
@@ -7245,6 +7741,53 @@ def test_query_mcp_project_state_persists_under_project_hidden_dir(tmp_path, mon
     )
 
     assert state_service.load_resumable_query_mcp_project_state("proj-1") == {}
+
+
+def test_query_mcp_project_state_reads_legacy_pointer_files_without_new_legacy_writes(tmp_path, monkeypatch):
+    from services import query_mcp_project_state as state_service
+
+    workspace = tmp_path / "legacy-workspace"
+    workspace.mkdir()
+    state_root = workspace / ".ai-employee" / "query-mcp"
+    state_root.mkdir(parents=True)
+    (state_root / "current-work-session.json").write_text(
+        json.dumps(
+            {
+                "project_id": "proj-1",
+                "chat_session_id": "legacy-chat-1",
+                "session_id": "legacy-ws-1",
+                "root_goal": "legacy resume",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (state_root / "chat_session_id.txt").write_text("legacy-chat-from-txt", encoding="utf-8")
+    (state_root / "session_id.txt").write_text("legacy-ws-from-txt", encoding="utf-8")
+
+    class DummyProjectStore:
+        @staticmethod
+        def get(project_id: str):
+            if project_id != "proj-1":
+                return None
+            return type(
+                "Project",
+                (),
+                {
+                    "workspace_path": str(workspace),
+                    "chat_settings": {},
+                },
+            )()
+
+    monkeypatch.setattr(state_service, "project_store", DummyProjectStore())
+
+    loaded = state_service.load_query_mcp_local_state("proj-1")
+
+    assert loaded["project_id"] == "proj-1"
+    assert loaded["chat_session_id"] == "legacy-chat-1"
+    assert loaded["session_id"] == "legacy-ws-1"
+    assert (state_root / "current-session.json").exists() is False
 
 
 def test_query_mcp_proxy_app_direct_cli_reuses_persisted_project_chat_session_across_instances(
@@ -8941,6 +9484,7 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
     import sys
     import types
 
+    from routers import projects as projects_router
     from services import dynamic_mcp_apps_query as query_mcp_svc
 
     registered_tools: dict[str, object] = {}
@@ -9138,6 +9682,41 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
         if project_id == "proj-1"
         else [],
     )
+    monkeypatch.setattr(
+        projects_router,
+        "_resolve_project_experience_rules_payload",
+        lambda project, task_text, limit=3: {
+            "project_id": getattr(project, "id", ""),
+            "project_name": getattr(project, "name", ""),
+            "task_text": str(task_text or "").strip(),
+            "experience_rule_count": 2,
+            "items": [
+                {
+                    "id": "rule-exp-login",
+                    "title": "经验卡片 · 登录工作流",
+                    "domain": "项目经验",
+                    "preview": "统一登录提交态与错误态",
+                    "content": "登录相关需求统一走提交态、错误态和回跳路径校验。",
+                    "score": 8,
+                    "matched_terms": ["登录", "工作流"],
+                }
+            ],
+            "prompt_blocks": [
+                "[Relevant Experience Card] 经验卡片 · 登录工作流\nPreview: 统一登录提交态与错误态\n登录相关需求统一走提交态、错误态和回跳路径校验。"
+            ],
+            "assembled_context": "[Relevant Experience Card] 经验卡片 · 登录工作流\nPreview: 统一登录提交态与错误态\n登录相关需求统一走提交态、错误态和回跳路径校验。",
+        }
+        if getattr(project, "id", "") == "proj-1"
+        else {
+            "project_id": getattr(project, "id", ""),
+            "project_name": getattr(project, "name", ""),
+            "task_text": str(task_text or "").strip(),
+            "experience_rule_count": 0,
+            "items": [],
+            "prompt_blocks": [],
+            "assembled_context": "",
+        },
+    )
     monkeypatch.setattr(query_mcp_svc, "memory_store", DummyMemoryStore())
     monkeypatch.setattr(query_mcp_svc, "work_session_store", DummyWorkSessionStore())
 
@@ -9296,10 +9875,17 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert context["matched_members"][0]["employee_id"] == "emp-1"
     assert context["matched_rules"][0]["id"] == "rule-mcp"
     assert context["matched_tools"][0]["tool_name"] == "skill_query__upgrade_mcp"
+    assert context["experience_rule_count"] == 2
+    assert context["matched_experience_rule_count"] == 1
+    assert context["matched_experience_rules"][0]["id"] == "rule-exp-login"
+    assert "登录工作流" in context["experience_context"]
 
     assert plan["planning_mode"] == "project-collaboration-runtime"
     assert plan["selected_employee_ids"] == ["emp-1"]
     assert plan["plan_step_count"] == 3
+    assert plan["experience_rule_count"] == 2
+    assert plan["matched_experience_rule_count"] == 1
+    assert plan["matched_experience_rules"][0]["title"] == "经验卡片 · 登录工作流"
 
     assert risk["risk_level"] == "high"
     assert risk["requires_confirmation"] is True
@@ -11000,6 +11586,109 @@ async def test_list_rules_includes_private_rule_shared_via_employee(tmp_path, mo
 
     assert rule_ids == {"rule-1"}
     assert result["rules"][0]["shared_via_employees"][0]["id"] == "emp-1"
+
+
+@pytest.mark.asyncio
+async def test_list_rules_excludes_managed_experience_rules(tmp_path, monkeypatch):
+    from routers import rules as rules_router
+    from stores import mcp_bridge
+    from stores.json.employee_store import EmployeeStore
+    from stores.json.project_store import ProjectConfig, ProjectStore
+
+    employee_store = EmployeeStore(tmp_path / "data")
+    project_store = ProjectStore(tmp_path / "data")
+    rule_store = mcp_bridge._rules_mod.RuleStore(tmp_path / "rules-runtime")
+
+    normal_rule = mcp_bridge._rules_mod.Rule(
+        id="rule-normal",
+        domain="security",
+        title="普通规则",
+        content="visible",
+        created_by="alice",
+    )
+    project_experience_rule = mcp_bridge._rules_mod.Rule(
+        id="rule-project-exp",
+        domain="项目经验",
+        title="经验卡片 · 登录表单流程",
+        content="hidden",
+        created_by="alice",
+    )
+    development_experience_rule = mcp_bridge._rules_mod.Rule(
+        id="rule-dev-exp",
+        domain="开发经验",
+        title="开发经验 · 登录表单流程",
+        content="hidden too",
+        created_by="alice",
+    )
+    rule_store.save(normal_rule)
+    rule_store.save(project_experience_rule)
+    rule_store.save(development_experience_rule)
+    project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            created_by="alice",
+            experience_rule_ids=[project_experience_rule.id, development_experience_rule.id],
+        )
+    )
+
+    monkeypatch.setattr(rules_router, "employee_store", employee_store)
+    monkeypatch.setattr(rules_router, "project_store", project_store)
+    monkeypatch.setattr(rules_router, "rule_store", rule_store)
+
+    result = await rules_router.list_rules({"sub": "alice", "role": "admin"})
+    rule_ids = {item["id"] for item in result["rules"]}
+    assert rule_ids == {"rule-normal"}
+
+    domain_result = await rules_router.rule_domains({"sub": "alice", "role": "admin"})
+    assert domain_result["domains"] == ["security"]
+
+    search_result = await rules_router.search_rules(
+        keyword="登录表单",
+        domain=None,
+        auth_payload={"sub": "alice", "role": "admin"},
+    )
+    assert search_result["rules"] == []
+
+
+@pytest.mark.asyncio
+async def test_update_and_delete_managed_experience_rules_are_blocked_in_rules_router(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from models.requests import RuleUpdateReq
+    from routers import rules as rules_router
+    from stores import mcp_bridge
+    from stores.json.employee_store import EmployeeStore
+    from stores.json.project_store import ProjectStore
+
+    employee_store = EmployeeStore(tmp_path / "data")
+    project_store = ProjectStore(tmp_path / "data")
+    rule_store = mcp_bridge._rules_mod.RuleStore(tmp_path / "rules-runtime")
+    managed_rule = mcp_bridge._rules_mod.Rule(
+        id="rule-dev-exp",
+        domain="开发经验",
+        title="开发经验 · 登录表单流程",
+        content="demo",
+        created_by="alice",
+    )
+    rule_store.save(managed_rule)
+
+    monkeypatch.setattr(rules_router, "employee_store", employee_store)
+    monkeypatch.setattr(rules_router, "project_store", project_store)
+    monkeypatch.setattr(rules_router, "rule_store", rule_store)
+
+    with pytest.raises(HTTPException) as update_exc:
+        await rules_router.update_rule(
+            "rule-dev-exp",
+            RuleUpdateReq(title="修改后标题"),
+            {"sub": "alice", "role": "admin"},
+        )
+    assert update_exc.value.status_code == 403
+    assert update_exc.value.detail == "经验规则请到项目详情中编辑"
+
+    with pytest.raises(HTTPException) as delete_exc:
+        await rules_router.delete_rule("rule-dev-exp", {"sub": "alice", "role": "admin"})
+    assert delete_exc.value.status_code == 403
+    assert delete_exc.value.detail == "经验规则请到项目详情中管理"
 
 
 @pytest.mark.asyncio

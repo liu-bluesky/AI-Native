@@ -32,6 +32,16 @@ class WorkSessionStorePostgres:
                     ON work_session_events (project_id, session_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_work_session_events_session
                     ON work_session_events (session_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_work_session_events_project_created
+                    ON work_session_events (project_id, ((COALESCE(payload->>'created_at', ''))) DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_work_session_events_project_employee
+                    ON work_session_events (project_id, ((COALESCE(payload->>'employee_id', ''))));
+                CREATE INDEX IF NOT EXISTS idx_work_session_events_project_task_tree_session
+                    ON work_session_events (project_id, ((COALESCE(payload->>'task_tree_session_id', ''))));
+                CREATE INDEX IF NOT EXISTS idx_work_session_events_project_task_tree_chat
+                    ON work_session_events (project_id, ((COALESCE(payload->>'task_tree_chat_session_id', ''))));
+                CREATE INDEX IF NOT EXISTS idx_work_session_events_project_task_node
+                    ON work_session_events (project_id, ((COALESCE(payload->>'task_node_id', ''))));
                 """
             )
 
@@ -95,52 +105,53 @@ class WorkSessionStorePostgres:
             limit_value = max(1, min(int(limit or 200), 500))
         except (TypeError, ValueError):
             limit_value = 200
+        where_clauses = ["1 = 1"]
+        params: list[object] = []
+
+        if normalized_project_id:
+            where_clauses.append("project_id = %s")
+            params.append(normalized_project_id)
+        if normalized_session_id:
+            where_clauses.append("session_id = %s")
+            params.append(normalized_session_id)
+        if normalized_employee_id:
+            where_clauses.append("COALESCE(payload->>'employee_id', '') = %s")
+            params.append(normalized_employee_id)
+        if normalized_task_tree_session_id:
+            where_clauses.append("COALESCE(payload->>'task_tree_session_id', '') = %s")
+            params.append(normalized_task_tree_session_id)
+        if normalized_task_tree_chat_session_id:
+            where_clauses.append("COALESCE(payload->>'task_tree_chat_session_id', '') = %s")
+            params.append(normalized_task_tree_chat_session_id)
+        if normalized_task_node_id:
+            where_clauses.append("COALESCE(payload->>'task_node_id', '') = %s")
+            params.append(normalized_task_node_id)
+        if keyword:
+            where_clauses.append("LOWER(payload::text) LIKE %s")
+            params.append(f"%{keyword}%")
+
+        sql = f"""
+            SELECT payload
+            FROM work_session_events
+            WHERE {" AND ".join(where_clauses)}
+            ORDER BY COALESCE(payload->>'created_at', '') DESC, id DESC
+            LIMIT %s
+        """
+        params.append(limit_value)
+
+        with self._conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall() or []
+
         items: list[WorkSessionEvent] = []
-        for item in self.list_all():
-            if normalized_project_id and item.project_id != normalized_project_id:
+        for row in rows:
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
                 continue
-            if normalized_employee_id and item.employee_id != normalized_employee_id:
+            try:
+                items.append(WorkSessionEvent(**payload))
+            except Exception:
                 continue
-            if normalized_session_id and item.session_id != normalized_session_id:
-                continue
-            if normalized_task_tree_session_id and item.task_tree_session_id != normalized_task_tree_session_id:
-                continue
-            if (
-                normalized_task_tree_chat_session_id
-                and item.task_tree_chat_session_id != normalized_task_tree_chat_session_id
-            ):
-                continue
-            if normalized_task_node_id and item.task_node_id != normalized_task_node_id:
-                continue
-            if keyword:
-                haystack = "\n".join(
-                    [
-                        item.project_name,
-                        item.employee_id,
-                        item.session_id,
-                        item.task_tree_session_id,
-                        item.task_tree_chat_session_id,
-                        item.task_node_id,
-                        item.task_node_title,
-                        item.source_kind,
-                        item.event_type,
-                        item.phase,
-                        item.step,
-                        item.status,
-                        item.goal,
-                        item.content,
-                        *item.facts,
-                        *item.changed_files,
-                        *item.verification,
-                        *item.risks,
-                        *item.next_steps,
-                    ]
-                ).lower()
-                if keyword not in haystack:
-                    continue
-            items.append(item)
-            if len(items) >= limit_value:
-                break
         return items
 
     def delete_by_session(self, session_id: str, *, project_id: str = "") -> int:

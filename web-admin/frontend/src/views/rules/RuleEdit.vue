@@ -143,6 +143,13 @@ async function fetchDetail() {
   loading.value = true
   try {
     const { rule } = await api.get(`/rules/${route.params.id}`)
+    if (rule?.system_source === 'project_experience' || rule?.system_source === 'development_experience') {
+      const projectBindings = Array.isArray(rule?.source_project_bindings) ? rule.source_project_bindings : []
+      const projectId = String(projectBindings[0]?.id || '').trim()
+      ElMessage.warning('经验规则请到项目详情中编辑')
+      router.replace(projectId ? `/projects/${projectId}` : `/rules/${route.params.id}`)
+      return false
+    }
     if (!canManageRecord(rule)) {
       ElMessage.warning(getOwnershipDeniedMessage(rule, '编辑'))
       router.replace(`/rules/${route.params.id}`)

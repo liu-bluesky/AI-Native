@@ -273,7 +273,10 @@ def search_project_context_runtime(
     }
 
     if scope_value in {"all", "project"}:
+        from routers.projects import _resolve_project_experience_rule_bindings
+
         project_ui_rules = project_ui_rule_summary(project_id, limit=limit_value)
+        project_experience_rules = _resolve_project_experience_rule_bindings(project)
         result["project"] = {
             "id": project_id,
             "name": str(getattr(project, "name", "") or ""),
@@ -288,6 +291,13 @@ def search_project_context_runtime(
             ],
             "ui_rule_bindings": project_ui_rules,
             "ui_rule_count": len(project_ui_rules),
+            "experience_rule_ids": [
+                str(item or "").strip()
+                for item in (getattr(project, "experience_rule_ids", []) or [])
+                if str(item or "").strip()
+            ],
+            "experience_rule_bindings": project_experience_rules,
+            "experience_rule_count": len(project_experience_rules),
         }
 
     if scope_value in {"all", "members"}:

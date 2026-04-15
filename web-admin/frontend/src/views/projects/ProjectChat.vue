@@ -3741,7 +3741,7 @@ const taskTreeTreeData = computed(() =>
 );
 const taskTreeProgressLabel = computed(() => {
   if (!hasChatTaskTree.value) return "未拆解";
-  return `${Number(displayedChatTaskTree.value?.progress_percent || 0)}%`;
+  return `${resolveTaskTreeProgressPercent(displayedChatTaskTree.value)}%`;
 });
 const displayedChatTaskTreeHealth = useTaskTreeHealth(
   () => displayedChatTaskTree.value?.task_tree_health || null,
@@ -5394,7 +5394,7 @@ function normalizeTaskTreePayload(raw) {
         .trim()
         .toLowerCase() || "pending",
     current_node_id: currentNodeId,
-    progress_percent: Number(raw.progress_percent || 0),
+    progress_percent: resolveTaskTreeProgressPercent(raw),
     nodes,
     tree,
     task_tree_health: normalizeTaskTreeHealth(raw.task_tree_health),
@@ -5540,6 +5540,47 @@ function isTaskTreeArchivedOrDone(payload) {
   const lifecycle = String(payload.lifecycle_status || "").trim().toLowerCase();
   const status = String(payload.status || "").trim().toLowerCase();
   return Boolean(payload.is_archived || lifecycle === "archived" || status === "done");
+}
+
+function isTaskTreeFinalized(taskTree) {
+  if (!taskTree || typeof taskTree !== "object") {
+    return false;
+  }
+  const status = String(taskTree.status || "").trim().toLowerCase();
+  const progressPercent = Number(taskTree.progress_percent || 0);
+  const stats = taskTree.stats && typeof taskTree.stats === "object" ? taskTree.stats : {};
+  const leafTotal = Number(taskTree.leaf_total ?? stats.leaf_total ?? 0);
+  const doneLeafTotal = Number(taskTree.done_leaf_total ?? stats.done_leaf_total ?? 0);
+  if (Boolean(taskTree.is_archived) && status === "done") {
+    return true;
+  }
+  if (status !== "done") {
+    return false;
+  }
+  if (progressPercent >= 100) {
+    return true;
+  }
+  return leafTotal > 0 && doneLeafTotal >= leafTotal;
+}
+
+function resolveTaskTreeProgressPercent(taskTree) {
+  if (!taskTree || typeof taskTree !== "object") {
+    return 0;
+  }
+  const explicitProgress = Number(taskTree.progress_percent || 0);
+  if (explicitProgress > 0) {
+    return explicitProgress;
+  }
+  if (isTaskTreeFinalized(taskTree)) {
+    return 100;
+  }
+  const stats = taskTree.stats && typeof taskTree.stats === "object" ? taskTree.stats : {};
+  const leafTotal = Number(taskTree.leaf_total ?? stats.leaf_total ?? 0);
+  const doneLeafTotal = Number(taskTree.done_leaf_total ?? stats.done_leaf_total ?? 0);
+  if (leafTotal > 0 && doneLeafTotal > 0) {
+    return Math.round((doneLeafTotal / leafTotal) * 100);
+  }
+  return 0;
 }
 
 function applyTaskTreePayload(payload) {

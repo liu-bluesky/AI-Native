@@ -297,6 +297,10 @@ class PgMemoryStore(_PgStoreBase):
                 CREATE INDEX IF NOT EXISTS idx_memories_employee ON memories(employee_id);
                 CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(employee_id, importance DESC);
                 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(employee_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_memories_employee_project_name
+                    ON memories (employee_id, ((COALESCE(payload->>'project_name', ''))), created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_memories_employee_type
+                    ON memories (employee_id, ((COALESCE(payload->>'type', ''))), created_at DESC);
                 """
             )
 
@@ -366,15 +370,29 @@ class PgMemoryStore(_PgStoreBase):
         mem_type: Optional[Any] = None,
         project_name: str = "",
     ) -> list[Any]:
+        normalized_employee_id = str(employee_id or "").strip()
+        normalized_project_name = self._normalized_project_name(project_name)
+        normalized_mem_type = str(mem_type.value if hasattr(mem_type, "value") else mem_type or "").strip()
+        where_clauses = ["employee_id = %s"]
+        params: list[Any] = [normalized_employee_id]
+        if normalized_project_name:
+            where_clauses.append("COALESCE(payload->>'project_name', '') = %s")
+            params.append(normalized_project_name)
+        if normalized_mem_type:
+            where_clauses.append("COALESCE(payload->>'type', '') = %s")
+            params.append(normalized_mem_type)
         with self._conn.cursor() as cur:
-            cur.execute("SELECT payload FROM memories WHERE employee_id = %s", (employee_id,))
+            cur.execute(
+                f"""
+                SELECT payload
+                FROM memories
+                WHERE {" AND ".join(where_clauses)}
+                ORDER BY created_at DESC, id DESC
+                """,
+                tuple(params),
+            )
             rows = cur.fetchall()
         mems = [self._deserialize_memory(r["payload"]) for r in rows]
-        if mem_type:
-            mems = [m for m in mems if m.type == mem_type]
-        normalized_project_name = self._normalized_project_name(project_name)
-        if normalized_project_name:
-            mems = [m for m in mems if str(getattr(m, "project_name", "")) == normalized_project_name]
         return mems
 
     def list_all(self) -> list[Any]:
@@ -396,7 +414,7 @@ class PgMemoryStore(_PgStoreBase):
 
     def recent(self, employee_id: str, limit: int = 10, project_name: str = "") -> list[Any]:
         mems = self.list_by_employee(employee_id, project_name=project_name)
-        return sorted(mems, key=lambda m: m.created_at, reverse=True)[:limit]
+        return mems[:limit]
 
     def important(self, employee_id: str, limit: int = 10, project_name: str = "") -> list[Any]:
         mems = [m for m in self.list_by_employee(employee_id, project_name=project_name) if m.importance >= 0.7]
@@ -426,10 +444,19 @@ class PgMemoryStore(_PgStoreBase):
 
     def count(self, employee_id: str, project_name: str = "") -> int:
         normalized_project_name = self._normalized_project_name(project_name)
-        if normalized_project_name:
-            return len(self.list_by_employee(employee_id, project_name=normalized_project_name))
         with self._conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) AS cnt FROM memories WHERE employee_id = %s", (employee_id,))
+            if normalized_project_name:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS cnt
+                    FROM memories
+                    WHERE employee_id = %s
+                      AND COALESCE(payload->>'project_name', '') = %s
+                    """,
+                    (employee_id, normalized_project_name),
+                )
+            else:
+                cur.execute("SELECT COUNT(*) AS cnt FROM memories WHERE employee_id = %s", (employee_id,))
             row = cur.fetchone()
         return int(row["cnt"]) if row else 0
 

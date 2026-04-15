@@ -50,6 +50,13 @@
               <el-button type="primary" plain @click="openMaterialLibrary">素材库</el-button>
             </div>
             <div class="project-hero__actions-secondary">
+              <el-button
+                v-if="canManageProject"
+                :loading="experienceSummaryLoading"
+                plain
+                @click="openExperienceSummaryDialog"
+                >总结经验</el-button
+              >
               <el-button v-if="canManageProject" plain @click="openEditDialog">编辑项目</el-button>
               <el-button
                 :loading="manualLoading"
@@ -171,6 +178,81 @@
                   </div>
                 </div>
                 <el-empty v-else description="当前项目未绑定 UI 规则" :image-size="60" />
+              </div>
+
+              <div class="block">
+                <div class="block-header">
+                  <div>
+                    <div class="block-eyebrow">Experience Rules</div>
+                    <h4>经验规则</h4>
+                  </div>
+                  <div v-if="canManageProject" class="block-header__actions">
+                    <el-button
+                      v-if="hasLegacyProjectExperienceRules"
+                      size="small"
+                      :loading="experienceRuleMigrating"
+                      @click="handleMigrateExperienceRulesToDevelopment"
+                      >迁移旧项目经验</el-button
+                    >
+                    <el-button
+                      v-if="boundExperienceRules.length > 1"
+                      size="small"
+                      :loading="experienceRuleConsolidating"
+                      @click="handleConsolidateExperienceRules"
+                      >汇总成一条</el-button
+                    >
+                    <el-button
+                      type="primary"
+                      size="small"
+                      :loading="experienceSummaryLoading"
+                      @click="openExperienceSummaryDialog"
+                      >总结为开发经验</el-button
+                    >
+                  </div>
+                </div>
+                <el-alert
+                  class="section-alert"
+                  title="这里展示项目引用的经验规则；当前默认会把需求记录沉淀为可复用的开发经验，并把项目绑定到对应规则。"
+                  type="info"
+                  :closable="false"
+                  show-icon
+                />
+                <div v-if="boundExperienceRules.length" class="ui-rule-list">
+                  <div
+                    v-for="rule in boundExperienceRules"
+                    :key="rule.id"
+                    class="ui-rule-card"
+                  >
+                    <div class="ui-rule-card__title">{{ rule.displayTitle || rule.title || rule.id }}</div>
+                    <div class="ui-rule-card__meta">
+                      <span>{{ rule.id }}</span>
+                      <span>{{ rule.domain || "项目经验" }}</span>
+                      <span>{{ rule.systemSource === "project_experience" ? "项目私有" : "开发经验" }}</span>
+                    </div>
+                    <p v-if="rule.preview" class="experience-rule-card__preview">
+                      {{ rule.preview }}
+                    </p>
+                    <div v-if="canManageProject" class="experience-rule-card__actions">
+                      <el-button
+                        text
+                        type="primary"
+                        size="small"
+                        :loading="experienceRuleEditingLoading && editingExperienceRuleId === rule.id"
+                        @click="openExperienceRuleEditDialog(rule)"
+                        >编辑规则</el-button
+                      >
+                      <el-button
+                        text
+                        type="danger"
+                        size="small"
+                        :loading="experienceRuleDeletingLoading && deletingExperienceRuleId === rule.id"
+                        @click="handleDeleteExperienceRule(rule)"
+                        >删除规则</el-button
+                      >
+                    </div>
+                  </div>
+                </div>
+                <el-empty v-else description="当前项目还没有沉淀经验规则" :image-size="60" />
               </div>
             </div>
           </el-tab-pane>
@@ -363,7 +445,7 @@
                     <el-button
                       text
                       size="small"
-                      :loading="loading || taskSessionsLoading || workSessionLoading || memoryLoading || taskTreeDetailsLoading"
+                      :loading="loading || taskSessionsLoading || taskTreeDetailsLoading"
                       @click="refreshRequirementRecords"
                     >
                       刷新映射
@@ -384,14 +466,14 @@
                 <div v-if="requirementRecords.length" class="memory-health-shell">
                   <div class="memory-health-shell__head">
                     <div>
-                      <div class="block-eyebrow">Task Health</div>
-                      <h5>任务健康</h5>
+                      <div class="block-eyebrow">Action Queue</div>
+                      <h5>待处理事项</h5>
                     </div>
-                    <p>统一 MCP 任务链的可恢复性、验证缺口和归档状态会直接汇总在这里。</p>
+                    <p>这里不再只做分类统计，直接给出继续处理、重建任务树和清空入口。</p>
                   </div>
                   <div class="memory-health-strip">
                     <div
-                      v-for="item in taskHealthOverviewItems"
+                      v-for="item in taskActionOverviewItems"
                       :key="item.label"
                       class="memory-health-card"
                       :class="`is-${item.tone}`"
@@ -401,9 +483,9 @@
                       <small>{{ item.meta }}</small>
                     </div>
                   </div>
-                  <div v-if="taskHealthHighlights.length" class="memory-health-grid">
+                  <div v-if="taskActionItems.length" class="memory-health-grid">
                     <article
-                      v-for="item in taskHealthHighlights"
+                      v-for="item in taskActionItems"
                       :key="item.key"
                       class="memory-health-highlight"
                       :class="`is-${item.tone}`"
@@ -424,8 +506,56 @@
                         <span>{{ item.progress }}</span>
                         <span>{{ item.focus }}</span>
                       </div>
+                      <div class="memory-health-highlight__actions">
+                        <el-button plain size="small" @click="focusRequirementRecord(item.record)">
+                          定位需求
+                        </el-button>
+                        <el-button
+                          v-if="item.canContinue"
+                          type="primary"
+                          plain
+                          size="small"
+                          @click="openProjectChat(item.round.chatSessionId)"
+                        >
+                          继续处理
+                        </el-button>
+                        <el-button
+                          v-if="canManageProject && item.canRebuildTaskTree"
+                          type="warning"
+                          plain
+                          size="small"
+                          :loading="isRequirementRecordTaskTreeRegenerating(item.record)"
+                          @click="handleRegenerateRequirementRecordTaskTree(item.record)"
+                        >
+                          重建任务树
+                        </el-button>
+                        <el-button
+                          v-if="canManageProject && item.canClearTaskTree"
+                          plain
+                          size="small"
+                          :loading="isRequirementRecordTaskTreeClearing(item.record)"
+                          @click="handleClearRequirementRecordTaskTree(item.record)"
+                        >
+                          清空任务树
+                        </el-button>
+                        <el-button
+                          v-if="canManageProject"
+                          type="danger"
+                          plain
+                          size="small"
+                          :loading="requirementRecordDeleting"
+                          @click="handleDeleteRequirementRecord(item.record)"
+                        >
+                          删除整条
+                        </el-button>
+                      </div>
                     </article>
                   </div>
+                  <el-empty
+                    v-else
+                    description="当前没有需要手动处理的需求"
+                    :image-size="56"
+                  />
                 </div>
                 <div class="memory-toolbar-shell">
                   <div class="memory-toolbar-shell__copy">
@@ -482,17 +612,17 @@
                   <div class="memory-filters__actions">
                       <el-button
                         type="primary"
-                        :loading="memoryLoading || workSessionLoading"
+                        :loading="taskSessionsLoading"
                         @click="applyMemoryFilters"
                         >刷新结果</el-button
                       >
                       <el-button
                         plain
-                        :disabled="memoryLoading || !filteredMemoryRows.length"
+                        :loading="memoryLoading || workSessionLoading"
                         @click="exportProjectMemories"
                         >导出</el-button
                       >
-                      <el-button :disabled="memoryLoading" @click="resetMemoryFilters"
+                      <el-button :disabled="taskSessionsLoading" @click="resetMemoryFilters"
                         >重置</el-button
                       >
                     </div>
@@ -512,6 +642,16 @@
                     <span>删除全部仅作用于当前筛选结果。</span>
                   </div>
                   <div class="requirement-record-toolbar__actions">
+                    <el-button
+                      v-if="canManageProject"
+                      type="primary"
+                      size="small"
+                      :loading="experienceSummaryLoading"
+                      :disabled="!requirementRecords.length || requirementRecordDeleting"
+                      @click="openExperienceSummaryDialog"
+                    >
+                      总结为开发经验
+                    </el-button>
                     <el-button
                       size="small"
                       :disabled="!requirementRecords.length || requirementRecordDeleting"
@@ -543,11 +683,12 @@
 
                 <div
                   class="requirement-records"
-                  v-loading="memoryLoading || workSessionLoading || taskSessionsLoading || taskTreeDetailsLoading"
+                  v-loading="taskSessionsLoading || taskTreeDetailsLoading"
                 >
                   <article
                     v-for="record in pagedRequirementRecords"
                     :key="record.id"
+                    :id="`requirement-record-${record.id}`"
                     class="requirement-record"
                     :class="{ 'requirement-record--expanded': isRequirementRecordExpanded(record) }"
                   >
@@ -936,6 +1077,52 @@
       </template>
     </el-dialog>
 
+    <ModelProviderPickerDialog
+      v-model="showExperienceSummaryDialog"
+      title="选择总结模型"
+      :description="experienceSummaryDialogDescription"
+      confirm-text="开启总结经验工作流"
+      :internal-providers="experienceProviderOptions"
+      :loading="experienceProvidersLoading || experienceSummaryLoading"
+      :provider-id="experienceSummaryProviderId"
+      :model-name="experienceSummaryModelName"
+      @update:provider-id="experienceSummaryProviderId = $event"
+      @update:model-name="experienceSummaryModelName = $event"
+      @confirm="handleConfirmExperienceSummary"
+    />
+
+    <el-dialog
+      v-model="showExperienceRuleEditDialog"
+      title="编辑经验规则"
+      width="760px"
+    >
+      <el-form label-width="92px">
+        <el-form-item label="标题">
+          <el-input
+            v-model="experienceRuleEditForm.title"
+            placeholder="输入经验规则标题"
+          />
+        </el-form-item>
+        <el-form-item label="内容">
+          <el-input
+            v-model="experienceRuleEditForm.content"
+            type="textarea"
+            :rows="18"
+            placeholder="输入经验规则正文"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showExperienceRuleEditDialog = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="experienceRuleEditSaving"
+          @click="handleSaveExperienceRuleEdit"
+          >保存</el-button
+        >
+      </template>
+    </el-dialog>
+
     <el-dialog
       v-model="showRequirementNodeDetailDialog"
       class="memory-detail-dialog"
@@ -1198,7 +1385,7 @@
                   <div class="memory-detail-task-tree__stats">
                     <div class="memory-detail-task-tree__stat">
                       <span>进度</span>
-                      <strong>{{ Number(memoryDetailTaskTree.progress_percent || 0) }}%</strong>
+                      <strong>{{ resolveTaskTreeProgressPercent(memoryDetailTaskTree) }}%</strong>
                     </div>
                     <div class="memory-detail-task-tree__stat">
                       <span>节点完成</span>
@@ -1507,6 +1694,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
+import ModelProviderPickerDialog from "@/components/ModelProviderPickerDialog.vue";
 import RequirementTreeNode from "@/components/RequirementTreeNode.vue";
 import WorkSessionDetailPanel from "@/components/WorkSessionDetailPanel.vue";
 import { normalizeTaskTreeHealth } from "@/modules/task-tree-feedback/taskTreeFeedback";
@@ -1552,9 +1740,27 @@ const showAddUserDialog = ref(false);
 const showUiRuleDialog = ref(false);
 const showEditDialog = ref(false);
 const showManualDialog = ref(false);
+const showExperienceSummaryDialog = ref(false);
+const showExperienceRuleEditDialog = ref(false);
 const manualDialogTitle = ref("项目手册");
 const manualLoading = ref(false);
 const generatedManual = ref("");
+const experienceProvidersLoading = ref(false);
+const experienceSummaryLoading = ref(false);
+const experienceRuleMigrating = ref(false);
+const experienceRuleConsolidating = ref(false);
+const experienceRuleEditingLoading = ref(false);
+const experienceRuleDeletingLoading = ref(false);
+const experienceRuleEditSaving = ref(false);
+const experienceProviderOptions = ref([]);
+const experienceSummaryProviderId = ref("");
+const experienceSummaryModelName = ref("");
+const editingExperienceRuleId = ref("");
+const deletingExperienceRuleId = ref("");
+const experienceRuleEditForm = ref({
+  title: "",
+  content: "",
+});
 const memoryLoading = ref(false);
 const workSessionLoading = ref(false);
 const uiRuleSaving = ref(false);
@@ -1570,6 +1776,7 @@ const projectMemories = ref([]);
 const projectMemoryTotal = ref(0);
 const projectMemoryHasMore = ref(false);
 const projectWorkSessions = ref([]);
+const projectRequirementRecords = ref([]);
 const projectTaskSessions = ref([]);
 const projectTaskTreeDetails = ref({});
 const selectedMemoryDetail = ref(null);
@@ -1590,6 +1797,9 @@ const requirementNodeDetailLoading = ref(false);
 const requirementRoundTaskTreeLoadingMap = ref({});
 const workSessionDetailLoading = ref(false);
 const requirementRecordDeleting = ref(false);
+const requirementRecordTaskTreeClearingMap = ref({});
+const requirementRecordTaskTreeRegeneratingMap = ref({});
+const requirementRecordsLoaded = ref(false);
 const projectUsersPage = ref(1);
 const projectUsersPageSize = ref(10);
 const membersPage = ref(1);
@@ -1669,11 +1879,15 @@ function resetProjectScopedState() {
   projectMemoryTotal.value = 0;
   projectMemoryHasMore.value = false;
   projectWorkSessions.value = [];
+  projectRequirementRecords.value = [];
   projectTaskSessions.value = [];
   projectTaskTreeDetails.value = {};
   selectedRequirementRecordIds.value = [];
   expandedRequirementRecordId.value = "";
   requirementRoundTaskTreeLoadingMap.value = {};
+  requirementRecordTaskTreeClearingMap.value = {};
+  requirementRecordTaskTreeRegeneratingMap.value = {};
+  requirementRecordsLoaded.value = false;
   tabDataLoaded.value = {
     overview: false,
     access: false,
@@ -1941,7 +2155,7 @@ const allRequirementRecordsSelected = computed(() =>
   && visibleRequirementRecordIds.value.every((item) => selectedRequirementRecordIdSet.value.has(item)),
 );
 
-const requirementRecords = computed(() => {
+const derivedRequirementRecords = computed(() => {
   const detailMap = projectTaskTreeDetails.value || {};
   const grouped = new Map();
 
@@ -2186,6 +2400,102 @@ const requirementRecords = computed(() => {
     });
 });
 
+function hydrateRequirementRound(round) {
+  if (!round || typeof round !== "object") {
+    return null;
+  }
+  const sessionId = String(round.sessionId || round.id || "").trim();
+  const detailTaskTree = sessionId && projectTaskTreeDetails.value?.[sessionId]
+    ? normalizeTaskTreePayload(projectTaskTreeDetails.value[sessionId])
+    : null;
+  const fallbackTaskTree = round.taskTree && typeof round.taskTree === "object"
+    ? normalizeTaskTreePayload(round.taskTree)
+    : null;
+  const taskTree = detailTaskTree || fallbackTaskTree || null;
+  const workSessions = Array.isArray(round.workSessions)
+    ? round.workSessions.map((item) => normalizeWorkSessionSummary(item))
+    : [];
+  const primaryWorkSessionSource = round.primaryWorkSession && typeof round.primaryWorkSession === "object"
+    ? round.primaryWorkSession
+    : workSessions[0] || null;
+  const primaryWorkSession = primaryWorkSessionSource
+    ? normalizeWorkSessionSummary(primaryWorkSessionSource)
+    : null;
+  const primaryMemory = round.primaryMemory && typeof round.primaryMemory === "object"
+    ? {
+        ...normalizeMemory(round.primaryMemory, round.primaryMemory.employee_id || ""),
+        ...round.primaryMemory,
+      }
+    : null;
+  const hydrated = {
+    ...round,
+    sessionId: sessionId || String(round.sessionId || round.id || "").trim(),
+    id: String(round.id || sessionId || "").trim(),
+    sourceSessionId: String(round.sourceSessionId || "").trim(),
+    chatSessionId: String(
+      round.chatSessionId
+      || taskTree?.source_chat_session_id
+      || taskTree?.chat_session_id
+      || "",
+    ).trim(),
+    taskTree,
+    rootNode: taskTree?.tree?.[0] || null,
+    currentNodeId: String(round.currentNodeId || taskTree?.current_node_id || "").trim(),
+    currentNodeTitle: String(
+      round.currentNodeTitle
+      || taskTree?.current_node?.title
+      || "",
+    ).trim(),
+    primaryMemory,
+    workSessions,
+    primaryWorkSession,
+    isFinalized: typeof round.isFinalized === "boolean"
+      ? round.isFinalized
+      : isTaskTreeFinalized(taskTree || round),
+  };
+  hydrated.displayStatus = String(
+    round.displayStatus || resolveRequirementRoundDisplayStatus(hydrated),
+  ).trim();
+  return hydrated;
+}
+
+function hydrateRequirementRecord(record) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+  const rounds = Array.isArray(record.rounds)
+    ? record.rounds.map((item) => hydrateRequirementRound(item)).filter(Boolean)
+    : [];
+  const latestRoundId = String(record.latestRound?.sessionId || record.latestRound?.id || "").trim();
+  const currentRoundId = String(record.currentRound?.sessionId || record.currentRound?.id || "").trim();
+  const detailRoundId = String(record.detailRound?.sessionId || record.detailRound?.id || "").trim();
+  const latestRound = rounds.find((item) => String(item?.sessionId || item?.id || "").trim() === latestRoundId)
+    || rounds[rounds.length - 1]
+    || null;
+  const currentRound = rounds.find((item) => String(item?.sessionId || item?.id || "").trim() === currentRoundId)
+    || latestRound;
+  const detailRound = rounds.find((item) => String(item?.sessionId || item?.id || "").trim() === detailRoundId)
+    || currentRound
+    || latestRound
+    || null;
+  return {
+    ...record,
+    latestRound,
+    currentRound,
+    detailRound,
+    rounds,
+    updatedAt: String(record.updatedAt || currentRound?.updatedAt || latestRound?.updatedAt || "").trim(),
+    createdAt: String(record.createdAt || rounds[0]?.createdAt || "").trim(),
+  };
+}
+
+const requirementRecords = computed(() => {
+  if (!requirementRecordsLoaded.value) {
+    return [];
+  }
+  return (projectRequirementRecords.value || []).map((item) => hydrateRequirementRecord(item)).filter(Boolean);
+});
+
 const pagedRequirementRecords = computed(() => {
   const start = Math.max(0, (requirementRecordsPage.value - 1) * requirementRecordsPageSize.value);
   return requirementRecords.value.slice(start, start + requirementRecordsPageSize.value);
@@ -2195,7 +2505,7 @@ const requirementRecordTabMeta = computed(() =>
   tabDataLoaded.value.memory
     ? `${requirementRecords.value.length} 条记录`
     : (
-      memoryLoading.value || taskSessionsLoading.value || workSessionLoading.value
+      taskSessionsLoading.value
         ? "加载中"
         : "待加载"
     ),
@@ -2258,44 +2568,27 @@ const taskHealthEntries = computed(() =>
     .filter(Boolean),
 );
 
-const taskHealthOverviewItems = computed(() => {
+const taskActionOverviewItems = computed(() => {
   const entries = taskHealthEntries.value;
-  const rebuildCount = entries.filter((item) => item.health.state === "needs_rebuild").length;
-  const verificationCount = entries.filter((item) => item.health.state === "needs_verification").length;
-  const closureCount = entries.filter((item) => item.health.state === "needs_closure").length;
-  const resumableCount = entries.filter((item) => item.health.state === "resumable").length;
-  const placeholderCount = entries.filter((item) => item.health.state === "placeholder").length;
+  const pendingActionCount = entries.filter((item) =>
+    ["needs_rebuild", "needs_verification", "needs_closure", "placeholder"].includes(item.health.state),
+  ).length;
+  const resumableCount = entries.filter((item) =>
+    ["resumable", "active"].includes(item.health.state),
+  ).length;
   const archivedCount = entries.filter((item) => item.health.state === "archived").length;
   return [
     {
-      label: "建议重建",
-      value: `${rebuildCount} 条`,
-      meta: rebuildCount ? "当前任务树生成结果和真实目标不一致，建议先重建再继续执行。" : "当前没有识别到需要优先重建的任务树。",
-      tone: rebuildCount ? "danger" : "neutral",
+      label: "待手动处理",
+      value: `${pendingActionCount} 条`,
+      meta: pendingActionCount ? "优先处理待验证、待收口、空挂和建议重建的需求。" : "当前没有必须手动修复的需求。",
+      tone: pendingActionCount ? "danger" : "neutral",
     },
     {
-      label: "待补验证",
-      value: `${verificationCount} 条`,
-      meta: verificationCount ? "当前节点已经推进到验证阶段，但还缺最终验证结果。" : "当前没有卡在验证阶段的任务链。",
-      tone: verificationCount ? "warning" : "neutral",
-    },
-    {
-      label: "待收口",
-      value: `${closureCount} 条`,
-      meta: closureCount ? "工作轨迹已经结束，但任务树还没完成归档。" : "当前没有工作轨迹与任务树脱节的轮次。",
-      tone: closureCount ? "danger" : "neutral",
-    },
-    {
-      label: "可恢复",
+      label: "可继续推进",
       value: `${resumableCount} 条`,
-      meta: resumableCount ? "已保留任务树和会话锚点，中断后可以直接续跑。" : "当前没有需要恢复的进行中任务。",
+      meta: resumableCount ? "会话锚点和任务树都还在，可以直接进入对话继续处理。" : "当前没有可直接续跑的需求。",
       tone: resumableCount ? "info" : "neutral",
-    },
-    {
-      label: "空挂占位",
-      value: `${placeholderCount} 条`,
-      meta: placeholderCount ? "当前只挂上了会话，没有真正写入执行进展。" : "当前没有空挂的占位轮次。",
-      tone: placeholderCount ? "warning" : "neutral",
     },
     {
       label: "已归档",
@@ -2306,9 +2599,9 @@ const taskHealthOverviewItems = computed(() => {
   ];
 });
 
-const taskHealthHighlights = computed(() =>
+const taskActionItems = computed(() =>
   taskHealthEntries.value
-    .filter((item) => item.health.priority < 4)
+    .filter((item) => item.health.state !== "archived")
     .slice()
     .sort((left, right) => {
       if (left.health.priority !== right.health.priority) {
@@ -2316,9 +2609,11 @@ const taskHealthHighlights = computed(() =>
       }
       return String(right.round.updatedAt || "").localeCompare(String(left.round.updatedAt || ""));
     })
-    .slice(0, 3)
+    .slice(0, 6)
     .map((item) => ({
       key: item.key,
+      record: item.record,
+      round: item.round,
       tone: item.health.tone,
       tagType: item.health.tagType,
       label: item.health.label,
@@ -2327,6 +2622,9 @@ const taskHealthHighlights = computed(() =>
       summary: item.health.summary,
       progress: item.record.progressDigest || "暂无节点进度",
       focus: item.record.currentFocus || "等待进入计划节点",
+      canContinue: Boolean(String(item.round.chatSessionId || "").trim()),
+      canClearTaskTree: canClearRequirementRecordTaskTree(item.record),
+      canRebuildTaskTree: canRegenerateRequirementRecordTaskTree(item.record),
     })),
 );
 
@@ -3072,6 +3370,57 @@ const boundUiRules = computed(() => {
   });
 });
 
+const boundExperienceRules = computed(() => {
+  const bindings = Array.isArray(project.value?.experience_rule_bindings)
+    ? project.value.experience_rule_bindings
+    : [];
+  if (bindings.length) {
+    return bindings.map((item) => ({
+      id: String(item.id || "").trim(),
+      title: String(item.title || item.id || "").trim(),
+      displayTitle: stripExperienceRuleTitlePrefix(String(item.title || item.id || "").trim()),
+      domain: String(item.domain || "").trim(),
+      preview: String(item.preview || "").trim(),
+      experienceScope: String(item.experience_scope || "").trim(),
+      systemSource: String(item.system_source || "").trim(),
+    }));
+  }
+  return normalizeStringList(project.value?.experience_rule_ids || []).map((ruleId) => ({
+    id: ruleId,
+    title: `${ruleId} (历史配置)`,
+    displayTitle: `${ruleId} (历史配置)`,
+    domain: "项目经验",
+    preview: "",
+    experienceScope: "project",
+    systemSource: "project_experience",
+  }));
+});
+
+const hasLegacyProjectExperienceRules = computed(() =>
+  boundExperienceRules.value.some((item) => item.systemSource === "project_experience"),
+);
+
+const experienceSummaryDialogDescription = computed(() => {
+  const targetIds = getExperienceSummaryTargetRecordIds();
+  const targetCount = targetIds.length;
+  if (!targetCount) {
+    return getExperienceSummaryUnavailableMessage();
+  }
+  const selectedCount = selectedRequirementRecordCount.value;
+  const scopeText = selectedCount
+    ? `将优先总结已选中的 ${selectedCount} 条需求记录`
+    : `将总结当前筛选结果中的 ${targetCount} 条需求记录`;
+  return `${scopeText}，生成可复用开发经验卡片，写入开发经验库，并把当前项目绑定到对应规则，成功后会清空这批记录。`;
+});
+
+const hasActiveRequirementRecordFilters = computed(() =>
+  Boolean(
+    String(memoryFilters.value.query || "").trim()
+    || String(memoryFilters.value.employeeId || "").trim()
+    || String(memoryFilters.value.type || "").trim(),
+  ),
+);
+
 function normalizeStringList(values) {
   return Array.from(
     new Set(
@@ -3080,6 +3429,16 @@ function normalizeStringList(values) {
         .filter(Boolean),
     ),
   );
+}
+
+function stripExperienceRuleTitlePrefix(value) {
+  const title = String(value || "").trim();
+  for (const prefix of ["经验卡片 · ", "开发经验 · "]) {
+    if (title.startsWith(prefix)) {
+      return title.slice(prefix.length).trim() || title;
+    }
+  }
+  return title;
 }
 
 function ensureUiRuleOptionCoverage() {
@@ -3147,8 +3506,48 @@ async function fetchProject(targetProjectId = projectId.value) {
     ...(data.project || {}),
     type: normalizeProjectType(data.project?.type),
     ui_rule_ids: normalizeStringList(data.project?.ui_rule_ids || []),
+    experience_rule_ids: normalizeStringList(data.project?.experience_rule_ids || []),
   };
   ensureUiRuleOptionCoverage();
+}
+
+async function fetchExperienceProviders() {
+  experienceProvidersLoading.value = true;
+  try {
+    const data = await api.get("/llm/providers", {
+      params: { enabled_only: true },
+    });
+    const providers = Array.isArray(data?.providers) ? data.providers : [];
+    experienceProviderOptions.value = providers
+      .map((item) => ({
+        id: String(item.id || "").trim(),
+        name: String(item.name || item.id || "未命名模型源").trim(),
+        models: Array.isArray(item.models)
+          ? item.models.map((model) => String(model || "").trim()).filter(Boolean)
+          : [],
+        default_model: String(item.default_model || "").trim(),
+        is_default: !!item.is_default,
+      }))
+      .filter((item) => item.id && item.models.length);
+    const preferred =
+      experienceProviderOptions.value.find((item) => item.id === experienceSummaryProviderId.value)
+      || experienceProviderOptions.value.find((item) => item.is_default)
+      || experienceProviderOptions.value[0]
+      || null;
+    experienceSummaryProviderId.value = preferred?.id || "";
+    const availableModels = preferred?.models || [];
+    if (!availableModels.includes(String(experienceSummaryModelName.value || "").trim())) {
+      experienceSummaryModelName.value =
+        preferred?.default_model || availableModels[0] || "";
+    }
+  } catch (err) {
+    experienceProviderOptions.value = [];
+    experienceSummaryProviderId.value = "";
+    experienceSummaryModelName.value = "";
+    ElMessage.error(err?.detail || err?.message || "加载模型列表失败");
+  } finally {
+    experienceProvidersLoading.value = false;
+  }
 }
 
 function normalizeProjectType(value) {
@@ -3387,11 +3786,14 @@ function buildSyntheticMemoryFromRound(round) {
 }
 
 function openRequirementRoundDetail(round) {
+  const syntheticMemory = buildSyntheticMemoryFromRound(round);
   if (round?.primaryMemory) {
-    void openMemoryDetail(round.primaryMemory);
+    void openMemoryDetail({
+      ...round.primaryMemory,
+      ...(syntheticMemory || {}),
+    });
     return;
   }
-  const syntheticMemory = buildSyntheticMemoryFromRound(round);
   if (!syntheticMemory) return;
   void openMemoryDetail(syntheticMemory);
 }
@@ -3400,6 +3802,65 @@ function openRequirementRecordDetail(record) {
   const targetRound = record?.detailRound || record?.currentRound || record?.latestRound || null;
   if (!targetRound) return;
   openRequirementRoundDetail(targetRound);
+}
+
+function getRequirementRecordActionRound(record) {
+  return record?.detailRound || record?.currentRound || record?.latestRound || null;
+}
+
+function getRequirementRecordActionKey(record) {
+  const round = getRequirementRecordActionRound(record);
+  return String(record?.id || round?.sessionId || round?.chatSessionId || "").trim();
+}
+
+function getRequirementRecordActionChatSessionId(record) {
+  const round = getRequirementRecordActionRound(record);
+  return String(round?.chatSessionId || "").trim();
+}
+
+function getRequirementRecordActionRootGoal(record) {
+  const round = getRequirementRecordActionRound(record);
+  return String(record?.rootGoal || round?.rootGoal || "").trim();
+}
+
+function canClearRequirementRecordTaskTree(record) {
+  return Boolean(getRequirementRecordActionChatSessionId(record));
+}
+
+function canRegenerateRequirementRecordTaskTree(record) {
+  return Boolean(
+    getRequirementRecordActionChatSessionId(record)
+    && getRequirementRecordActionRootGoal(record),
+  );
+}
+
+function isRequirementRecordTaskTreeClearing(record) {
+  const actionKey = getRequirementRecordActionKey(record);
+  return Boolean(actionKey) && Boolean(requirementRecordTaskTreeClearingMap.value?.[actionKey]);
+}
+
+function isRequirementRecordTaskTreeRegenerating(record) {
+  const actionKey = getRequirementRecordActionKey(record);
+  return Boolean(actionKey) && Boolean(requirementRecordTaskTreeRegeneratingMap.value?.[actionKey]);
+}
+
+function pruneRequirementRecordTaskTreeDetails(record) {
+  const nextDetails = { ...(projectTaskTreeDetails.value || {}) };
+  for (const round of Array.isArray(record?.rounds) ? record.rounds : []) {
+    const sessionId = String(round?.sessionId || round?.id || "").trim();
+    if (sessionId) {
+      delete nextDetails[sessionId];
+    }
+  }
+  projectTaskTreeDetails.value = nextDetails;
+}
+
+function focusRequirementRecord(record) {
+  const recordId = String(record?.id || "").trim();
+  if (!recordId) return;
+  expandedRequirementRecordId.value = recordId;
+  const target = document.getElementById(`requirement-record-${recordId}`);
+  target?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function isRequirementRoundTaskTreeLoading(round) {
@@ -3584,6 +4045,50 @@ async function fetchProjectTaskSessions(targetProjectId = projectId.value) {
     ElMessage.error(err?.detail || err?.message || "加载任务推进列表失败");
   } finally {
     if (effectiveProjectId === projectId.value) {
+      taskSessionsLoading.value = false;
+    }
+  }
+}
+
+async function fetchRequirementRecords(targetProjectId = projectId.value) {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) return;
+  taskSessionsLoading.value = true;
+  requirementRecordsLoaded.value = false;
+  try {
+    const query = String(memoryFilters.value.query || "").trim();
+    const selectedEmployeeId = String(memoryFilters.value.employeeId || "").trim();
+    const selectedType = String(memoryFilters.value.type || "").trim();
+    const data = await api.get(`/projects/${effectiveProjectId}/requirement-records`, {
+      params: {
+        limit: PROJECT_TASK_SESSION_FETCH_LIMIT,
+        query: query || undefined,
+        employee_id: selectedEmployeeId || undefined,
+        memory_type: selectedType || undefined,
+      },
+    });
+    if (effectiveProjectId !== projectId.value) return;
+    projectRequirementRecords.value = Array.isArray(data?.items) ? data.items : [];
+    projectTaskSessions.value = Array.isArray(data?.task_sessions) ? data.task_sessions : [];
+    taskTreeStorageBackend.value = String(data?.storage_backend || "").trim();
+    const validSessionIds = new Set(
+      (projectTaskSessions.value || [])
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean),
+    );
+    projectTaskTreeDetails.value = Object.fromEntries(
+      Object.entries(projectTaskTreeDetails.value || {}).filter(([sessionId]) => validSessionIds.has(sessionId)),
+    );
+  } catch (err) {
+    if (effectiveProjectId !== projectId.value) return;
+    projectRequirementRecords.value = [];
+    projectTaskSessions.value = [];
+    projectTaskTreeDetails.value = {};
+    taskTreeStorageBackend.value = "";
+    ElMessage.error(err?.detail || err?.message || "加载需求记录失败");
+  } finally {
+    if (effectiveProjectId === projectId.value) {
+      requirementRecordsLoaded.value = true;
       taskSessionsLoading.value = false;
     }
   }
@@ -4195,7 +4700,11 @@ function downloadTextFile(content, filename, mimeType = "text/plain;charset=utf-
   URL.revokeObjectURL(url);
 }
 
-function exportProjectMemories() {
+async function exportProjectMemories() {
+  await Promise.all([
+    fetchProjectMemories(projectId.value),
+    fetchProjectWorkSessions(projectId.value),
+  ]);
   if (!filteredMemoryRows.value.length) {
     ElMessage.warning("暂无可导出的项目记忆");
     return;
@@ -4246,11 +4755,100 @@ async function fetchProjectMemories(targetProjectId = projectId.value) {
 }
 
 async function applyMemoryFilters(targetProjectId = projectId.value) {
-  await Promise.all([fetchProjectMemories(targetProjectId), fetchProjectWorkSessions(targetProjectId)]);
+  await fetchRequirementRecords(targetProjectId);
 }
 
 async function refreshRequirementRecords() {
   await ensureMemoryTabData(projectId.value, { force: true });
+}
+
+async function handleClearRequirementRecordTaskTree(record) {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  const chatSessionId = getRequirementRecordActionChatSessionId(record);
+  if (!chatSessionId) {
+    ElMessage.warning("当前需求没有可清空的任务树会话");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "清空后只会删除当前 chat_session 对应的任务树，需求记录本身仍会保留，后续可以重新生成。是否继续？",
+      "清空任务树",
+      {
+        type: "warning",
+        confirmButtonText: "清空",
+      },
+    );
+  } catch {
+    return;
+  }
+  const actionKey = getRequirementRecordActionKey(record);
+  requirementRecordTaskTreeClearingMap.value = {
+    ...requirementRecordTaskTreeClearingMap.value,
+    [actionKey]: true,
+  };
+  try {
+    await api.delete(`/projects/${projectId.value}/chat/task-tree`, {
+      params: { chat_session_id: chatSessionId },
+    });
+    pruneRequirementRecordTaskTreeDetails(record);
+    ElMessage.success("已清空任务树");
+    await refreshRequirementRecords();
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "清空任务树失败");
+  } finally {
+    const nextMap = { ...(requirementRecordTaskTreeClearingMap.value || {}) };
+    delete nextMap[actionKey];
+    requirementRecordTaskTreeClearingMap.value = nextMap;
+  }
+}
+
+async function handleRegenerateRequirementRecordTaskTree(record) {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  const chatSessionId = getRequirementRecordActionChatSessionId(record);
+  const rootGoal = getRequirementRecordActionRootGoal(record);
+  if (!chatSessionId || !rootGoal) {
+    ElMessage.warning("当前需求缺少 chat_session_id 或根目标，无法重建任务树");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "会基于当前需求重新生成任务树，并覆盖现有节点结构。适合处理分类错乱、空挂或重建建议场景。",
+      "重建任务树",
+      {
+        type: "warning",
+        confirmButtonText: "重建",
+      },
+    );
+  } catch {
+    return;
+  }
+  const actionKey = getRequirementRecordActionKey(record);
+  requirementRecordTaskTreeRegeneratingMap.value = {
+    ...requirementRecordTaskTreeRegeneratingMap.value,
+    [actionKey]: true,
+  };
+  try {
+    await api.post(`/projects/${projectId.value}/chat/task-tree/generate`, {
+      chat_session_id: chatSessionId,
+      message: rootGoal,
+      force: true,
+    });
+    pruneRequirementRecordTaskTreeDetails(record);
+    ElMessage.success("已重建任务树");
+    await refreshRequirementRecords();
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "重建任务树失败");
+  } finally {
+    const nextMap = { ...(requirementRecordTaskTreeRegeneratingMap.value || {}) };
+    delete nextMap[actionKey];
+    requirementRecordTaskTreeRegeneratingMap.value = nextMap;
+  }
 }
 
 async function deleteRequirementRecords(recordIds, successLabel = "需求记录") {
@@ -4420,10 +5018,9 @@ async function ensureMemoryTabData(targetProjectId = projectId.value, options = 
     return tabDataPromises.memory;
   }
   tabDataPromises.memory = (async () => {
-    await fetchMembers(targetProjectId);
     await Promise.all([
-      fetchProjectTaskSessions(targetProjectId),
-      applyMemoryFilters(targetProjectId),
+      fetchMembers(targetProjectId),
+      fetchRequirementRecords(targetProjectId),
     ]);
     setTabDataLoaded("memory", true);
   })().finally(() => {
@@ -4538,6 +5135,232 @@ function openUiRuleDialog() {
   showUiRuleDialog.value = true;
 }
 
+function getExperienceSummaryTargetRecordIds() {
+  const selectedIds = visibleRequirementRecordIds.value.filter((item) =>
+    selectedRequirementRecordIdSet.value.has(item),
+  );
+  if (selectedIds.length) {
+    return selectedIds;
+  }
+  return visibleRequirementRecordIds.value.slice();
+}
+
+function getExperienceSummaryUnavailableMessage() {
+  if (hasActiveRequirementRecordFilters.value) {
+    return "当前筛选条件下没有可总结的需求记录，请先清空筛选条件再试。";
+  }
+  if (boundExperienceRules.value.length) {
+    return "当前没有新的需求记录可总结；此前需求记录已沉淀为经验规则，可直接复用、编辑或汇总。";
+  }
+  return "当前没有可总结的需求记录。";
+}
+
+async function openExperienceSummaryDialog() {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  if (!requirementRecordsLoaded.value) {
+    await fetchRequirementRecords(projectId.value);
+  }
+  if (!getExperienceSummaryTargetRecordIds().length) {
+    ElMessage.warning(getExperienceSummaryUnavailableMessage());
+    return;
+  }
+  await fetchExperienceProviders();
+  if (!experienceProviderOptions.value.length) {
+    ElMessage.warning("当前没有可用模型，无法开启开发经验沉淀流程");
+    return;
+  }
+  showExperienceSummaryDialog.value = true;
+}
+
+async function openExperienceRuleEditDialog(rule) {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  const ruleId = String(rule?.id || "").trim();
+  if (!ruleId) {
+    ElMessage.warning("当前经验规则缺少 ID");
+    return;
+  }
+  experienceRuleEditingLoading.value = true;
+  editingExperienceRuleId.value = ruleId;
+  try {
+    const data = await api.get(`/rules/${ruleId}`);
+    const currentRule = data?.rule || {};
+    experienceRuleEditForm.value = {
+      title: stripExperienceRuleTitlePrefix(currentRule.title || rule.title || ""),
+      content: String(currentRule.content || "").trim(),
+    };
+    showExperienceRuleEditDialog.value = true;
+  } catch (err) {
+    editingExperienceRuleId.value = "";
+    ElMessage.error(err?.detail || err?.message || "加载经验规则失败");
+  } finally {
+    experienceRuleEditingLoading.value = false;
+  }
+}
+
+async function handleSaveExperienceRuleEdit() {
+  const ruleId = String(editingExperienceRuleId.value || "").trim();
+  const title = String(experienceRuleEditForm.value.title || "").trim();
+  const content = String(experienceRuleEditForm.value.content || "").trim();
+  if (!ruleId) {
+    ElMessage.warning("当前没有可保存的经验规则");
+    return;
+  }
+  if (!title) {
+    ElMessage.warning("请输入经验规则标题");
+    return;
+  }
+  if (!content) {
+    ElMessage.warning("请输入经验规则内容");
+    return;
+  }
+  experienceRuleEditSaving.value = true;
+  try {
+    await api.put(`/projects/${projectId.value}/experience-rules/${ruleId}`, {
+      title,
+      content,
+    });
+    await fetchProject();
+    ElMessage.success("经验规则已更新");
+    editingExperienceRuleId.value = "";
+    showExperienceRuleEditDialog.value = false;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存经验规则失败");
+  } finally {
+    experienceRuleEditSaving.value = false;
+  }
+}
+
+async function handleDeleteExperienceRule(rule) {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  const ruleId = String(rule?.id || "").trim();
+  if (!ruleId) {
+    ElMessage.warning("当前经验规则缺少 ID");
+    return;
+  }
+  const scopeLabel = rule?.systemSource === "project_experience" ? "项目私有经验" : "开发经验";
+  const deleteMessage = rule?.systemSource === "development_experience"
+    ? "如果还有其他项目引用这条开发经验，只会移除当前项目绑定；没有其他引用时才会真正删除规则。"
+    : "删除后会从当前项目移除这条项目私有经验规则。";
+  try {
+    await ElMessageBox.confirm(
+      `确定删除「${rule.displayTitle || rule.title || ruleId}」？\n${deleteMessage}`,
+      `删除${scopeLabel}`,
+      {
+        type: "warning",
+        confirmButtonText: "删除",
+      },
+    );
+  } catch {
+    return;
+  }
+  experienceRuleDeletingLoading.value = true;
+  deletingExperienceRuleId.value = ruleId;
+  try {
+    const data = await api.delete(`/projects/${projectId.value}/experience-rules/${ruleId}`);
+    await fetchProject();
+    const remainingCount = Number(data?.remaining_project_binding_count || 0);
+    if (data?.rule_deleted) {
+      ElMessage.success("经验规则已删除");
+    } else if (remainingCount > 0) {
+      ElMessage.success(`已移除当前项目引用，该经验仍被 ${remainingCount} 个其他项目使用`);
+    } else {
+      ElMessage.success("已从当前项目移除经验规则");
+    }
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "删除经验规则失败");
+  } finally {
+    experienceRuleDeletingLoading.value = false;
+    deletingExperienceRuleId.value = "";
+  }
+}
+
+async function handleMigrateExperienceRulesToDevelopment() {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  if (!hasLegacyProjectExperienceRules.value) {
+    ElMessage.warning("当前没有需要迁移的旧项目经验规则");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "会把当前项目下旧的项目私有经验升级为开发经验，并按主题归并到开发经验库；项目仍会保留规则引用。是否继续？",
+      "迁移旧项目经验",
+      {
+        type: "warning",
+        confirmButtonText: "开始迁移",
+      },
+    );
+  } catch {
+    return;
+  }
+  experienceRuleMigrating.value = true;
+  try {
+    const data = await api.post(`/projects/${projectId.value}/experience-rules/migrate-to-development`);
+    await fetchProject();
+    const createdCount = Array.isArray(data?.created_rule_ids) ? data.created_rule_ids.length : 0;
+    const updatedCount = Array.isArray(data?.updated_rule_ids) ? data.updated_rule_ids.length : 0;
+    const deletedCount = Array.isArray(data?.deleted_rule_ids) ? data.deleted_rule_ids.length : 0;
+    ElMessage.success(
+      `迁移完成：新增 ${createdCount} 条，归并更新 ${updatedCount} 条，清理 ${deletedCount} 条旧规则`,
+    );
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "迁移旧项目经验失败");
+  } finally {
+    experienceRuleMigrating.value = false;
+  }
+}
+
+async function handleConsolidateExperienceRules() {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  if (boundExperienceRules.value.length <= 1) {
+    ElMessage.warning("当前经验规则已经是单条，无需再汇总");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "会按主题合并重复经验规则，保留不同主题的规则，并清理多余重复项。是否继续？",
+      "汇总经验规则",
+      {
+        type: "warning",
+        confirmButtonText: "开始汇总",
+      },
+    );
+  } catch {
+    return;
+  }
+  experienceRuleConsolidating.value = true;
+  try {
+    const data = await api.post(`/projects/${projectId.value}/experience-rules/consolidate`);
+    await fetchProject();
+    const deletedCount = Array.isArray(data?.deleted_rule_ids) ? data.deleted_rule_ids.length : 0;
+    const consolidatedCount = Array.isArray(data?.consolidated_rule_ids) ? data.consolidated_rule_ids.length : 0;
+    const remainingCount = Number(data?.remaining_rule_count || 0);
+    if (!consolidatedCount && !deletedCount) {
+      ElMessage.success(`未发现可合并的重复主题，当前保留 ${remainingCount} 条经验规则`);
+      return;
+    }
+    ElMessage.success(`已按主题汇总 ${consolidatedCount} 组经验规则，当前保留 ${remainingCount} 条，清理 ${deletedCount} 条重复规则`);
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "汇总经验规则失败");
+  } finally {
+    experienceRuleConsolidating.value = false;
+  }
+}
+
 function openEditDialog() {
   if (!canManageProject.value) {
     ElMessage.warning(manageBlockedMessage());
@@ -4644,6 +5467,47 @@ async function showProjectManual() {
     ElMessage.error(err?.detail || err?.message || "加载项目使用手册失败");
   } finally {
     manualLoading.value = false;
+  }
+}
+
+async function handleConfirmExperienceSummary() {
+  const targetRecordIds = getExperienceSummaryTargetRecordIds();
+  if (!targetRecordIds.length) {
+    ElMessage.warning(getExperienceSummaryUnavailableMessage());
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `本次会总结 ${targetRecordIds.length} 条需求记录，生成可复用的开发经验规则，并在成功后清空这批记录。是否继续？`,
+      "开启开发经验沉淀",
+      {
+        type: "warning",
+        confirmButtonText: "开始总结",
+      },
+    );
+  } catch {
+    return;
+  }
+  experienceSummaryLoading.value = true;
+  try {
+    const data = await api.post(`/projects/${projectId.value}/experience-summary-jobs`, {
+      provider_id: String(experienceSummaryProviderId.value || "").trim(),
+      model_name: String(experienceSummaryModelName.value || "").trim(),
+      record_ids: targetRecordIds,
+      clear_requirement_records: true,
+      experience_scope: "development",
+    });
+    await Promise.all([fetchProject(), refreshRequirementRecords()]);
+    const createdCount = Array.isArray(data?.created_rule_ids) ? data.created_rule_ids.length : 0;
+    const updatedCount = Array.isArray(data?.updated_rule_ids) ? data.updated_rule_ids.length : 0;
+    const clearCount = Number(data?.clear_result?.deleted_count || 0);
+    ElMessage.success(
+      `经验总结完成：新增 ${createdCount} 条，更新 ${updatedCount} 条，清空 ${clearCount} 条记录`,
+    );
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "总结经验失败");
+  } finally {
+    experienceSummaryLoading.value = false;
   }
 }
 
@@ -5234,6 +6098,12 @@ onMounted(async () => {
   margin-bottom: 16px;
 }
 
+.block-header__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .ui-rule-list {
   display: grid;
   gap: 14px;
@@ -5260,6 +6130,19 @@ onMounted(async () => {
   margin-top: 8px;
   font-size: 12px;
   color: #7c8aa0;
+}
+
+.experience-rule-card__preview {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #475569;
+}
+
+.experience-rule-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 .ui-rule-help {
@@ -5441,7 +6324,7 @@ onMounted(async () => {
 
 .memory-health-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -5558,6 +6441,13 @@ onMounted(async () => {
   color: #475569;
   font-size: 12px;
   line-height: 1.4;
+}
+
+.memory-health-highlight__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .memory-toolbar-shell {
@@ -6317,6 +7207,10 @@ code {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .memory-health-highlight__actions :deep(.el-button) {
+    flex: 1 1 calc(50% - 4px);
+  }
+
   .requirement-record__hero {
     flex-direction: column;
     align-items: stretch;
@@ -6439,6 +7333,14 @@ code {
   .memory-health-strip,
   .memory-health-grid {
     grid-template-columns: 1fr;
+  }
+
+  .memory-health-highlight__actions {
+    flex-direction: column;
+  }
+
+  .memory-health-highlight__actions :deep(.el-button) {
+    width: 100%;
   }
 
   .memory-filter-control,

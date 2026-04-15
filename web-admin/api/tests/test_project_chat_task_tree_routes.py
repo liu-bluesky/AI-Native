@@ -1383,6 +1383,110 @@ def test_project_work_session_events_can_filter_by_task_tree_and_node(
     assert set(summary_item["task_node_titles"]) == {"定位问题", "完成修复"}
 
 
+def test_project_requirement_records_route_returns_aggregated_chain_summaries(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_chat_task_store import ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+    from stores.json.work_session_store import WorkSessionEvent
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-1",
+            project_id="proj-1",
+            username="tester",
+            chat_session_id="chat-1",
+            source_chat_session_id="chat-1",
+            source_session_id="",
+            title="修复需求记录加载性能",
+            root_goal="修复需求记录加载性能",
+            status="in_progress",
+            lifecycle_status="active",
+            round_index=1,
+        )
+    )
+    store_factory.work_session_store.save(
+        WorkSessionEvent(
+            id=store_factory.work_session_store.new_id(),
+            project_id="proj-1",
+            project_name="项目一",
+            employee_id="emp-1",
+            session_id="ws-1",
+            task_tree_session_id="tts-1",
+            task_tree_chat_session_id="chat-1",
+            task_node_id="node-1",
+            task_node_title="梳理慢点",
+            source_kind="work-facts",
+            event_type="analysis",
+            phase="分析",
+            step="梳理慢点",
+            status="in_progress",
+            goal="修复需求记录加载性能",
+            content="已完成首轮排查",
+        )
+    )
+
+    response = client.get("/api/projects/proj-1/requirement-records")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["project_id"] == "proj-1"
+    assert payload["storage_backend"] == "json"
+    assert len(payload["task_sessions"]) == 1
+    assert len(payload["items"]) == 1
+    item = payload["items"][0]
+    assert item["id"]
+    assert item["rootGoal"] == "修复需求记录加载性能"
+    assert item["roundDigest"] == "单轮处理"
+    assert item["actorLabel"] == "emp-1"
+    assert item["detailRound"]["sessionId"] == "tts-1"
+    assert item["detailRound"]["primaryWorkSession"]["session_id"] == "ws-1"
+
+
+def test_project_requirement_records_route_uses_short_ttl_cache(
+    tmp_path,
+    monkeypatch,
+):
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig
+
+    call_count = 0
+    original_builder = projects_router._build_project_requirement_records
+    projects_router._project_requirement_records_local_cache.clear()
+
+    def counted_builder(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original_builder(*args, **kwargs)
+
+    async def _get_fake_redis():
+        raise RuntimeError("redis unavailable in test")
+
+    monkeypatch.setattr(projects_router, "_build_project_requirement_records", counted_builder)
+    monkeypatch.setattr(projects_router, "get_redis_client", _get_fake_redis)
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    first = client.get("/api/projects/proj-1/requirement-records")
+    second = client.get("/api/projects/proj-1/requirement-records")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert call_count == 1
+
+
 def test_project_chat_task_tree_requires_started_status_before_completion(
     tmp_path,
     monkeypatch,

@@ -320,7 +320,24 @@ function canManageRow(row) {
   return canManageRecord(row);
 }
 
+function getPrimaryProjectBinding(row) {
+  const bindings = Array.isArray(row?.source_project_bindings) ? row.source_project_bindings : [];
+  return bindings[0] || null;
+}
+
 function getRuleActions(row) {
+  if (row?.system_source === "project_experience" || row?.system_source === "development_experience") {
+    const projectBinding = getPrimaryProjectBinding(row);
+    return [
+      { key: "detail", label: "详情", type: "primary", disabled: false },
+      {
+        key: "project-detail",
+        label: "项目详情",
+        type: "warning",
+        disabled: !projectBinding?.id,
+      },
+    ];
+  }
   const actions = [];
   if (row.mcp_enabled) {
     actions.push({ key: "mcp-config", label: "接入", type: "success", disabled: false });
@@ -378,6 +395,12 @@ function handleRuleAction(row, actionKey) {
     case "detail":
       router.push(`/rules/${row.id}`);
       break;
+    case "project-detail": {
+      const projectBinding = getPrimaryProjectBinding(row);
+      if (!projectBinding?.id) return;
+      router.push(`/projects/${projectBinding.id}`);
+      break;
+    }
     case "edit":
       if (!canManageRow(row)) return;
       router.push(`/rules/${row.id}/edit`);

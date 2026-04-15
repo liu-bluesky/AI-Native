@@ -138,6 +138,7 @@ _QUERY_TOOL_NAMES = {
     "save_project_memory",
     "list_project_members",
     "get_project_runtime_context",
+    "resolve_project_experience_rules",
     "list_project_proxy_tools",
     "invoke_project_skill_tool",
     "execute_project_collaboration",
@@ -793,6 +794,44 @@ def _rank_project_tools(project_id: str, task: str, employee_id: str, limit: int
     return results
 
 
+def _resolve_project_experience_context_payload(
+    project_id: str,
+    task: str,
+    *,
+    limit: int,
+) -> dict:
+    project_id_value = _normalize_text(project_id)
+    task_value = _normalize_text(task)
+    default_payload = {
+        "experience_rule_count": 0,
+        "matched_experience_rule_count": 0,
+        "matched_experience_rules": [],
+        "experience_prompt_blocks": [],
+        "experience_context": "",
+    }
+    if not project_id_value or not task_value:
+        return default_payload
+    project = project_store.get(project_id_value)
+    if project is None:
+        return default_payload
+    from routers.projects import _resolve_project_experience_rules_payload
+
+    experience_payload = _resolve_project_experience_rules_payload(
+        project,
+        task_value,
+        limit=limit,
+    )
+    items = experience_payload.get("items") or []
+    prompt_blocks = experience_payload.get("prompt_blocks") or []
+    return {
+        "experience_rule_count": int(experience_payload.get("experience_rule_count") or 0),
+        "matched_experience_rule_count": len(items),
+        "matched_experience_rules": items,
+        "experience_prompt_blocks": prompt_blocks,
+        "experience_context": _normalize_text(experience_payload.get("assembled_context"), 12000),
+    }
+
+
 def _resolve_relevant_context_payload(task: str, project_id: str = "", employee_id: str = "", limit: int = 5) -> dict:
     task_value = _normalize_text(task)
     project_id_value = _normalize_text(project_id)
@@ -829,6 +868,13 @@ def _resolve_relevant_context_payload(task: str, project_id: str = "", employee_
             task_value,
             employee_id_value,
             limit_value,
+        )
+        payload.update(
+            _resolve_project_experience_context_payload(
+                project_id_value,
+                task_value,
+                limit=limit_value,
+            )
         )
     return payload
 
@@ -902,7 +948,7 @@ def _generate_execution_plan_payload(
         )
         if isinstance(result, dict) and not result.get("error"):
             plan_steps = result.get("plan_steps") or []
-            return {
+            payload = {
                 "task": task_value,
                 "project_id": project_id_value,
                 "employee_id": employee_id_value,
@@ -913,8 +959,16 @@ def _generate_execution_plan_payload(
                 "plan_steps": plan_steps[:step_limit],
                 "plan_step_count": min(len(plan_steps), step_limit),
             }
+            payload.update(
+                _resolve_project_experience_context_payload(
+                    project_id_value,
+                    task_value,
+                    limit=min(step_limit, 5),
+                )
+            )
+            return payload
     generic_steps = _generic_execution_steps(task_value, project_id=project_id_value)
-    return {
+    payload = {
         "task": task_value,
         "project_id": project_id_value,
         "employee_id": employee_id_value,
@@ -925,6 +979,15 @@ def _generate_execution_plan_payload(
         "plan_steps": generic_steps[:step_limit],
         "plan_step_count": min(len(generic_steps), step_limit),
     }
+    if project_id_value:
+        payload.update(
+            _resolve_project_experience_context_payload(
+                project_id_value,
+                task_value,
+                limit=min(step_limit, 5),
+            )
+        )
+    return payload
 
 
 def _infer_action(tool_name: str = "", command: str = "", path: str = "", action: str = "") -> str:
@@ -2176,11 +2239,14 @@ def _client_profile_text(client_name: str) -> str:
             "- 推荐链路: query://usage-guide -> analyze_task -> search_ids/get_manual_content -> resolve_relevant_context -> generate_execution_plan -> check_operation_policy -> start_work_session。",
             "- 接入约束: `description` 只用于说明，不参与项目绑定；要续接任务树，优先让 URL 带上 `project_id` 和 `chat_session_id`，缺失时首轮调用 `bind_project_context(...)`。",
             "- 接入约束: 每个 CLI 会话都应自行生成唯一 `chat_session_id`；如能解析项目工作区，优先持久化到项目目录 `.ai-employee/query-mcp/`，否则再退回 CLI 自己的本地存储。同一轮任务内固定复用，只有新开的并行 CLI 或新任务才重新生成。",
+            "- 接入约束: `query-mcp` 本地状态必须只写三类 canonical 文件：`.ai-employee/query-mcp/current-session.json`、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；`chat_session_id.txt`、`session_id.txt`、`current-work-session.json` 等 legacy 文件只允许兼容读取，不允许新写。",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall。",
+            "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
+            "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
             "- 任务树约束: 任务树节点必须描述面向用户目标的真实工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 或候选代理工具名直接写成节点。",
             "- 工作流约束: 用户提需求后先规划，再执行；执行中只更新任务树、工作事实和会话事件，不要提前输出最终结论。",
             "- 工作流约束: 必须做到“完成一个节点、补一次验证、再进入下一步”；只有整棵任务树完成并写入验证结果后，当前需求才算结束。",
-            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起优先持久化到项目目录 `.ai-employee/query-mcp/`；若当前拿不到项目工作区，再退回 CLI 自己的本地存储。每完成一个子阶段调用 save_work_facts 或 append_session_event。",
+            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起通过统一状态服务持久化到 `.ai-employee/query-mcp/current-session.json`、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；若当前拿不到项目工作区，再退回 CLI 自己的本地存储。每完成一个子阶段调用 save_work_facts 或 append_session_event。",
             "- 长任务建议: 中断恢复顺序应固定为“恢复本地 `chat_session_id/session_id` -> bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...) -> 按当前任务树继续执行”；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。",
             "- 可视化建议: 如宿主前端已接项目聊天接口，可额外读取 `/api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...` 查看误判样本汇总与高频 issue。",
             "- 适合自动化的能力: 任务分析、相关上下文聚合、执行步骤骨架、风险分类、工作轨迹恢复。",
@@ -2194,13 +2260,16 @@ def _client_profile_text(client_name: str) -> str:
             "- 接入约束: `description`、项目说明和“当前项目”文字不会自动绑定任务树；URL 或首轮工具参数里必须显式出现 `project_id`，需要续接时再补 `chat_session_id` 或 `bind_project_context(...)`。",
             "- 接入约束: 如果当前 CLI 没有活跃 MCP session，只要显式传了 `project_id + chat_session_id`，`bind_project_context(...)` 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 `chat_session_id`。",
             "- 接入约束: 每个 Codex CLI 会话都应先持久化自己生成的 `chat_session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Codex 自己的本地存储。同一进程整轮任务固定复用，只有新开的并行任务或全新需求才重新生成。",
+            "- 接入约束: `query-mcp` 本地状态必须只写三类 canonical 文件：`.ai-employee/query-mcp/current-session.json`、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；`chat_session_id.txt`、`session_id.txt`、`current-query-session.json`、`current-work-session.json`、`session.env` 等 legacy 文件只允许兼容读取，不允许新写。",
             "- 查询约束: 首轮先把用户原始问题写进 `search_ids(keyword=\"<用户原始问题>\")`；项目型问题再读取 `get_manual_content(project_id=...)`，不要只写“当前项目”这类代称。",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall_project_memory / recall_employee_memory。",
+            "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
+            "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
             "- 任务树约束: 查询型问题保持单检索节点；实现型任务节点才写成分析、实现、验证这类面向目标的步骤。不要把内部检索工具、规则查询工具、候选代理工具或 `Auto inferred proxy entry from scripts/...` 这类描述直接当成节点。",
             "- 工作流约束: 用户提需求后先生成计划并挂到任务树，再按计划逐项推进；执行中不要把阶段性结果写成最终结论。",
             "- 工作流约束: 每完成一个计划项就立刻补验证结果，再处理下一个；只有所有计划项完成后，才能生成最终总结或补稳定结论记忆。",
             "- 收尾要求: 若宿主未启用自动记忆，或本轮需要额外沉淀稳定结论/关键决策，再调用一次 save_project_memory(project_id, content, ...)；不要在同一需求的每个中间步骤重复补记。",
-            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起优先持久化到项目目录 `.ai-employee/query-mcp/`；若当前拿不到项目工作区，再退回 Codex 自己的本地存储。关键决策写入 save_work_facts，关键执行节点写入 append_session_event，并始终复用同一个 `chat_session_id` / `session_id`。",
+            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起通过统一状态服务持久化到 `.ai-employee/query-mcp/current-session.json`、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；若当前拿不到项目工作区，再退回 Codex 自己的本地存储。关键决策写入 save_work_facts，关键执行节点写入 append_session_event，并始终复用同一个 `chat_session_id` / `session_id`。",
             "- 长任务建议: 中断后恢复时，先从本地恢复 `chat_session_id + session_id`，再按 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)` 的顺序拉起上下文，随后紧接着继续当前任务；如果项目工作区不可解析，则恢复来源应是 Codex 自己的本地存储，而不是共享仓库根目录。",
             "- 可视化建议: 如需从前端直接查看当前聊天的任务树误判汇总，可读取 `/api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...`。",
             "- 适合自动化的能力: 结构化任务分析、项目规则聚合、交付报告、更新日志条目生成。",
@@ -2214,6 +2283,8 @@ def _client_profile_text(client_name: str) -> str:
             "- 接入约束: `type=sse` 的客户端有些会直接使用 `POST /mcp/query/sse` 作为 JSON-RPC bridge；这时如果 URL 没有 `project_id` / `chat_session_id`，首轮必须调用 `bind_project_context(...)` 或在工具参数里显式传 `project_id`。",
             "- 接入约束: 统一入口 CLI 建议同时持久化自生成的 `chat_session_id` 和服务端返回的 `session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 CLI 自己的本地存储，这样中断后才能稳定续跑。",
             "- 记忆约束: 不要把 recall 当成每轮固定前置步骤；只有新需求、续跑恢复、修复旧问题或明显需要历史经验时才查记忆。",
+            "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
+            "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
             "- 任务树约束: 若宿主会展示任务树，节点必须直接对应用户目标，不要把内部检索工具、规划工具或候选代理工具直接展示成节点。",
             "- 工作流约束: 先计划、再执行、逐项验证；未完成前只保留需求记录和过程状态，不要提前输出最终结论。",
             "- 最小可用目标: 先跑通查询、分析、规划，再逐步接入策略判断和恢复能力。",
@@ -2969,9 +3040,12 @@ def create_query_mcp(
             "3. 若接入地址缺少 project_id，或需要续接任务树但缺少 chat_session_id，首轮立即调用 bind_project_context(project_id, chat_session_id?, root_goal?)；不要只依赖 description 里的项目说明。\n"
             "4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。\n"
             "4.1 每个 CLI 会话都应持久化自己生成的 chat_session_id；如能解析项目工作区，优先写到项目目录 .ai-employee/query-mcp/，否则再退回 CLI 自己的本地存储。同一轮任务固定复用，只有新开的并行 CLI 或全新任务才重新生成。\n"
+            "4.2 query-mcp 本地持久化必须使用唯一文件规范：权威状态文件固定为 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；当前会话便捷恢复指针只允许写 `.ai-employee/query-mcp/current-session.json`。除兼容历史数据时只读外，禁止新写 `chat_session_id.txt`、`session_id.txt`、`chat_session_id`、`session_id`、`session.env`、`current-query-session.json`、`current-work-session.json` 这类分叉文件。\n"
             "5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。\n"
             "6. 首轮查询必须把用户原始问题原文放进 search_ids(keyword=\"<用户原始问题>\")；不要只写“当前项目”“这个规则”“项目手册”这类代称。\n"
             "7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。\n"
+            "7.0 项目型问题优先使用项目绑定员工、规则和技能；先判断项目内现成能力能否闭环，只有项目能力不足时才自行补足。\n"
+            "7.0.1 每次新请求进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文；不要只看规则标题，也不要把无关规则机械带入当前问题。\n"
             "7.1 记忆检索不是每轮固定步骤；仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，再调用 recall_project_memory 或 recall_employee_memory。\n"
             "7.2 同一任务轮若已生成任务树并进入执行，后续默认依赖当前会话、任务树和工作轨迹，不要重复检索同一批项目记忆。\n"
             "8. 实现型需求必须遵守任务树闭环：先 analyze_task -> resolve_relevant_context -> generate_execution_plan，再 get_current_task_tree 确认节点；执行中用 update_task_node_status 回写状态，完成时必须 complete_task_node_with_verification 填写验证结果。\n"
@@ -2984,7 +3058,7 @@ def create_query_mcp(
             "- 同一条用户提问在统一查询 MCP 下只允许沉淀 1 条项目级问题记忆，并绑定 1 棵任务树；start_work_session / save_work_facts / append_session_event 等续跑工具不得再生成新的“用户问题”记忆或新的任务树。\n"
             "- 当前 /ai/chat 页面只展示仍在进行中的任务树；已完成或已归档任务树属于历史记录，不应继续作为当前会话任务展示。\n"
             "- 需要沉淀对话结论时，除最终答案外，还应保证后续可从记忆详情回看该轮规划、执行节点和验证结果。\n"
-            "- 任务树节点必须直接描述面向用户目标的真实工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 等内部检索/规划工具直接当成节点标题。\n"
+            "- 任务树节点必须直接描述面向用户目标的工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 等内部检索/规划工具直接当成节点标题。\n"
             "- 候选代理工具、脚本路径和类似“Auto inferred proxy entry from scripts/... ”的描述，只能作为内部工具信息，不得直接展示为任务树节点。\n"
             "\n"
             "## 高层能力\n"
@@ -2998,14 +3072,15 @@ def create_query_mcp(
             "- check_workspace_scope: 校验路径是否位于工作区内。\n"
             "- resolve_execution_mode: 判断该走 local connector、项目工具还是仅保留查询。\n"
             "- check_operation_policy: 输出允许 / 拦截 / 需确认结论。\n"
-            "- execute_project_collaboration: 统一项目协作编排入口，但是否单人主责、是否需要多人协作以及如何拆分，仍由 AI 结合项目手册、员工手册、规则和工具自主判断，不预设固定行业分工模板。\n"
-            "- 若需要手动编排项目执行，再继续调用 list_project_members / get_project_runtime_context / list_project_proxy_tools / invoke_project_skill_tool。\n"
+            "- resolve_project_experience_rules: 按任务文本从项目经验规则中按需加载相关经验卡片，避免无关经验占用上下文。\n"
+            "- execute_project_collaboration: 统一编排入口（项目协作），但是否单人主责、是否需要多人协作以及如何拆分，仍由 AI 结合项目手册、员工手册、规则和工具自主判断，不预设固定行业分工模板。\n"
+            "- 若需要手动编排项目执行，再继续调用 list_project_members / get_project_runtime_context / resolve_project_experience_rules / list_project_proxy_tools / invoke_project_skill_tool。\n"
             "\n"
             "## 工作轨迹与恢复\n"
             "- 多轮任务先 start_work_session；后续复用同一个 chat_session_id / session_id，并用 save_work_facts、append_session_event、resume_work_session、summarize_checkpoint 维护轨迹。\n"
             "- start_work_session 可返回服务端生成的 session_id；save_work_facts 和 append_session_event 支持附带 session_id、phase、step、changed_files、verification、risks、next_steps 等结构化轨迹字段；resume_work_session / summarize_checkpoint 会聚合这些字段，直接输出阶段、步骤、文件、验证、风险和下一步。\n"
             "- 每个新聊天窗口的首轮有效对话，如用户未显式提供 session_id，应优先调用 start_work_session 获取服务端 session_id，再在本窗口后续所有 save_work_facts / append_session_event / resume_work_session / summarize_checkpoint 中复用同一个值；如果未先调用，save_work_facts 也会自动补生成一个。\n"
-            "- 建议把客户端自生成的 chat_session_id 和 start_work_session 返回的 session_id 一起持久化；如能解析项目工作区，优先写到项目目录 .ai-employee/query-mcp/，否则再退回 CLI 自己的本地存储。这样 CLI 中断后可以直接恢复同一条任务树和工作轨迹。\n"
+            "- 建议把客户端自生成的 chat_session_id 和 start_work_session 返回的 session_id 一起持久化；如能解析项目工作区，优先通过统一状态服务写入 `.ai-employee/query-mcp/current-session.json`、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`，否则再退回 CLI 自己的本地存储。这样 CLI 中断后可以直接恢复同一条任务树和工作轨迹。\n"
             "- start_work_session 会立即写入一条 started 事件建立正式工作轨迹；首次拿到 session_id 后，仍建议尽快调用一次 save_work_facts 补充任务摘要、阶段和文件信息。若既不调用 start_work_session，也不写 save_work_facts / append_session_event，而只写 save_project_memory，会出现“有项目记忆但无正式工作轨迹”的情况。\n"
             "- 缺少活跃 MCP session 的 CLI / bridge 场景下，也必须显式传入并持续复用同一个 chat_session_id；否则容易出现“轨迹已写入，但当前主视图没有挂到任务树”的错觉。\n"
             "- 推荐的中断恢复顺序是：先从本地恢复 chat_session_id 和 session_id，再调用 bind_project_context(...)，然后依次调用 resume_work_session(...)、summarize_checkpoint(...)，最后按当前任务树继续执行；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。\n"
@@ -4015,6 +4090,8 @@ def create_query_mcp(
         project = project_store.get(project_id_value)
         if project is None:
             return {"error": f"Project {project_id_value} not found"}
+        from routers.projects import _resolve_project_experience_rule_bindings
+
         pairs = list_project_member_profiles_runtime(
             project_id_value,
             include_disabled=False,
@@ -4023,6 +4100,7 @@ def create_query_mcp(
         )
         rules = query_project_rules_runtime(project_id_value)
         ui_rules = project_ui_rule_summary(project_id_value, limit=30)
+        experience_rules = _resolve_project_experience_rule_bindings(project)
         from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
 
         proxy_tools = list_project_proxy_tools_runtime(project_id_value, "")
@@ -4036,11 +4114,29 @@ def create_query_mcp(
                 if str(item.get("employee_id") or "").strip()
             ],
             "scoped_proxy_tool_count": len(proxy_tools),
-            "rule_count": len(rules),
+            "rule_count": len(rules) + len(experience_rules),
             "ui_rule_count": len(ui_rules),
             "ui_rules": ui_rules,
+            "experience_rule_count": len(experience_rules),
+            "experience_rules": experience_rules,
             "project_mcp_path": f"/mcp/projects/{project_id_value}",
         }
+
+    @mcp.tool()
+    def resolve_project_experience_rules(project_id: str, task_text: str, limit: int = 3) -> dict:
+        """通过统一入口按任务文本解析项目经验规则，只返回高相关经验卡片。"""
+
+        project_id_value = str(project_id or "").strip()
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        project = project_store.get(project_id_value)
+        if project is None:
+            return {"error": f"Project {project_id_value} not found"}
+        from routers.projects import _resolve_project_experience_rules_payload
+
+        payload = _resolve_project_experience_rules_payload(project, task_text, limit=limit)
+        payload["project_mcp_path"] = f"/mcp/projects/{project_id_value}"
+        return payload
 
     @mcp.tool()
     def list_project_proxy_tools(project_id: str, employee_id: str = "") -> dict:
