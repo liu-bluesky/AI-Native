@@ -23,7 +23,7 @@
 16. 回答必须基于 MCP 查询结果，并尽量保留项目 / 员工 / 规则 ID 方便追溯。
 17. 当前默认项目是 `proj-d16591a6`（ai设计规范）；涉及当前项目时优先显式传 `project_id=proj-d16591a6`。
 18. 第一次处理当前项目相关请求时，先执行 `bind_project_context(project_id="proj-d16591a6", chat_session_id="<聊天会话ID>", root_goal="<用户原始问题>")` 或确认 URL 已带上稳定上下文，再执行 `search_ids(keyword="<用户原始问题>", project_id="proj-d16591a6")`。
-19. 当前页面已有 `chat_session_id=chat-session-8635d55008c7`，这只适合明确要续接当前这轮任务时手动复用；如果是新开的或并行 CLI，请改为自己生成新的 `chat_session_id`，不要直接共用。
+19. 当前页面已有 `chat_session_id=cli.proj-d16591a6.20260416T075521.liudeM.6509.c31l4l`，这只适合明确要续接当前这轮任务时手动复用；如果是新开的或并行 CLI，请改为自己生成新的 `chat_session_id`，不要直接共用。
 20. 如暂不方便先调用 `start_work_session`，工作轨迹 `session_id` 至少按 `ws_proj-d16591a6_<employee_id|team>_<YYYYMMDDTHHMMSS>_<rand4>` 规则生成并全程复用。
 21. 当前项目如需在前端直接查看误判样本与高频问题，可读取 `/api/projects/proj-d16591a6/chat/task-tree/evolution-summary?chat_session_id=<聊天会话ID>`。
 

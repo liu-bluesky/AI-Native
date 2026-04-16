@@ -1090,6 +1090,19 @@
       @update:model-name="experienceSummaryModelName = $event"
       @confirm="handleConfirmExperienceSummary"
     />
+    <ModelProviderPickerDialog
+      v-model="showExperienceConsolidateDialog"
+      title="选择汇总模型"
+      :description="experienceConsolidateDialogDescription"
+      confirm-text="按主题汇总经验规则"
+      :internal-providers="experienceProviderOptions"
+      :loading="experienceProvidersLoading || experienceRuleConsolidating"
+      :provider-id="experienceSummaryProviderId"
+      :model-name="experienceSummaryModelName"
+      @update:provider-id="experienceSummaryProviderId = $event"
+      @update:model-name="experienceSummaryModelName = $event"
+      @confirm="handleConfirmConsolidateExperienceRules"
+    />
 
     <el-dialog
       v-model="showExperienceRuleEditDialog"
@@ -1741,6 +1754,7 @@ const showUiRuleDialog = ref(false);
 const showEditDialog = ref(false);
 const showManualDialog = ref(false);
 const showExperienceSummaryDialog = ref(false);
+const showExperienceConsolidateDialog = ref(false);
 const showExperienceRuleEditDialog = ref(false);
 const manualDialogTitle = ref("项目手册");
 const manualLoading = ref(false);
@@ -3411,6 +3425,14 @@ const experienceSummaryDialogDescription = computed(() => {
     ? `将优先总结已选中的 ${selectedCount} 条需求记录`
     : `将总结当前筛选结果中的 ${targetCount} 条需求记录`;
   return `${scopeText}，生成可复用开发经验卡片，写入开发经验库，并把当前项目绑定到对应规则，成功后会清空这批记录。`;
+});
+
+const experienceConsolidateDialogDescription = computed(() => {
+  const totalCount = boundExperienceRules.value.length;
+  if (totalCount <= 1) {
+    return "当前经验规则不足 2 条，无需汇总。";
+  }
+  return `会检查当前 ${totalCount} 条经验规则，仅对重复主题做模型融合，保留不同主题的规则，并清理重复项。`;
 });
 
 const hasActiveRequirementRecordFilters = computed(() =>
@@ -5330,21 +5352,21 @@ async function handleConsolidateExperienceRules() {
     ElMessage.warning("当前经验规则已经是单条，无需再汇总");
     return;
   }
-  try {
-    await ElMessageBox.confirm(
-      "会按主题合并重复经验规则，保留不同主题的规则，并清理多余重复项。是否继续？",
-      "汇总经验规则",
-      {
-        type: "warning",
-        confirmButtonText: "开始汇总",
-      },
-    );
-  } catch {
+  await fetchExperienceProviders();
+  if (!experienceProviderOptions.value.length) {
+    ElMessage.warning("当前没有可用模型，无法汇总经验规则");
     return;
   }
+  showExperienceConsolidateDialog.value = true;
+}
+
+async function handleConfirmConsolidateExperienceRules() {
   experienceRuleConsolidating.value = true;
   try {
-    const data = await api.post(`/projects/${projectId.value}/experience-rules/consolidate`);
+    const data = await api.post(`/projects/${projectId.value}/experience-rules/consolidate`, {
+      provider_id: String(experienceSummaryProviderId.value || "").trim(),
+      model_name: String(experienceSummaryModelName.value || "").trim(),
+    });
     await fetchProject();
     const deletedCount = Array.isArray(data?.deleted_rule_ids) ? data.deleted_rule_ids.length : 0;
     const consolidatedCount = Array.isArray(data?.consolidated_rule_ids) ? data.consolidated_rule_ids.length : 0;

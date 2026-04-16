@@ -259,6 +259,10 @@ def _task_tree_work_session_id(session: ProjectChatTaskSession) -> str:
     return _normalize_text(f"ws_{normalized.id}", 80)
 
 
+def _is_query_cli_chat_session_id(value: Any) -> bool:
+    return _normalize_text(value, 120).lower().startswith("query-cli.")
+
+
 def _resolve_project_name(project_id: str) -> str:
     normalized_project_id = _normalize_text(project_id, 80)
     if not normalized_project_id:
@@ -1823,6 +1827,80 @@ def ensure_task_tree(
     )
     _record_task_tree_health_evolution_samples(saved_session)
     return saved_session
+
+
+def rebind_task_tree_chat_session(
+    *,
+    project_id: str,
+    username: str,
+    from_chat_session_id: str,
+    to_chat_session_id: str,
+    root_goal: str = "",
+) -> ProjectChatTaskSession | None:
+    normalized_project_id = _normalize_text(project_id, 80)
+    normalized_username = _normalize_text(username, 80)
+    source_chat_session_id = _normalize_text(from_chat_session_id, 80)
+    target_chat_session_id = _normalize_text(to_chat_session_id, 80)
+    normalized_root_goal = _normalize_text(root_goal, 1000)
+    if not (
+        normalized_project_id
+        and normalized_username
+        and source_chat_session_id
+        and target_chat_session_id
+    ):
+        return None
+    if source_chat_session_id == target_chat_session_id:
+        return get_task_tree(normalized_project_id, normalized_username, target_chat_session_id)
+    if not _is_query_cli_chat_session_id(source_chat_session_id):
+        return get_task_tree(normalized_project_id, normalized_username, target_chat_session_id)
+
+    source_session = get_task_tree(normalized_project_id, normalized_username, source_chat_session_id)
+    if source_session is None:
+        return get_task_tree(normalized_project_id, normalized_username, target_chat_session_id)
+
+    target_session = get_task_tree(normalized_project_id, normalized_username, target_chat_session_id)
+    source_goal = _normalize_text(source_session.root_goal or source_session.title, 1000)
+    target_goal = _normalize_text(
+        (target_session.root_goal or target_session.title) if target_session is not None else "",
+        1000,
+    )
+    expected_goal = normalized_root_goal or target_goal or source_goal
+
+    if expected_goal and source_goal and source_goal != expected_goal:
+        return target_session
+
+    if target_session is not None:
+        if expected_goal and target_goal and target_goal != expected_goal:
+            return target_session
+        project_chat_task_store.delete_exact(
+            normalized_project_id,
+            normalized_username,
+            source_chat_session_id,
+        )
+        return target_session
+
+    migrated = ProjectChatTaskSession(**asdict(source_session))
+    migrated.chat_session_id = target_chat_session_id
+    if _is_query_cli_chat_session_id(migrated.source_chat_session_id):
+        migrated.source_chat_session_id = ""
+    deleted_count = 0
+    try:
+        deleted_count = int(
+            project_chat_task_store.delete_exact(
+                normalized_project_id,
+                normalized_username,
+                source_chat_session_id,
+            )
+            or 0
+        )
+        return project_chat_task_store.save(migrated)
+    except Exception:
+        if deleted_count > 0:
+            try:
+                project_chat_task_store.save(source_session)
+            except Exception:
+                pass
+        raise
 
 
 def update_task_node(

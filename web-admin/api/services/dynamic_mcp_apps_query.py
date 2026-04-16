@@ -2238,6 +2238,7 @@ def _client_profile_text(client_name: str) -> str:
             "- 定位: 适合需要较强代码修改、命令执行和长任务续跑的开发型 CLI。",
             "- 推荐链路: query://usage-guide -> analyze_task -> search_ids/get_manual_content -> resolve_relevant_context -> generate_execution_plan -> check_operation_policy -> start_work_session。",
             "- 接入约束: `description` 只用于说明，不参与项目绑定；要续接任务树，优先让 URL 带上 `project_id` 和 `chat_session_id`，缺失时首轮调用 `bind_project_context(...)`。",
+            "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`，避免产生影子链路。",
             "- 接入约束: 每个 CLI 会话都应自行生成唯一 `chat_session_id`；如能解析项目工作区，优先持久化到项目目录 `.ai-employee/query-mcp/`，否则再退回 CLI 自己的本地存储。同一轮任务内固定复用，只有新开的并行 CLI 或新任务才重新生成。",
             "- 接入约束: `query-mcp` 本地状态必须只写三类 canonical 文件：`.ai-employee/query-mcp/current-session.json`、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；`chat_session_id.txt`、`session_id.txt`、`current-work-session.json` 等 legacy 文件只允许兼容读取，不允许新写。",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall。",
@@ -2259,6 +2260,7 @@ def _client_profile_text(client_name: str) -> str:
             "- 推荐链路: query://usage-guide -> query://client-profile/codex -> search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan -> check_operation_policy -> start_work_session -> build_delivery_report。",
             "- 接入约束: `description`、项目说明和“当前项目”文字不会自动绑定任务树；URL 或首轮工具参数里必须显式出现 `project_id`，需要续接时再补 `chat_session_id` 或 `bind_project_context(...)`。",
             "- 接入约束: 如果当前 CLI 没有活跃 MCP session，只要显式传了 `project_id + chat_session_id`，`bind_project_context(...)` 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 `chat_session_id`。",
+            "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`。",
             "- 接入约束: 每个 Codex CLI 会话都应先持久化自己生成的 `chat_session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Codex 自己的本地存储。同一进程整轮任务固定复用，只有新开的并行任务或全新需求才重新生成。",
             "- 接入约束: `query-mcp` 本地状态必须只写三类 canonical 文件：`.ai-employee/query-mcp/current-session.json`、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；`chat_session_id.txt`、`session_id.txt`、`current-query-session.json`、`current-work-session.json`、`session.env` 等 legacy 文件只允许兼容读取，不允许新写。",
             "- 查询约束: 首轮先把用户原始问题写进 `search_ids(keyword=\"<用户原始问题>\")`；项目型问题再读取 `get_manual_content(project_id=...)`，不要只写“当前项目”这类代称。",
@@ -3039,6 +3041,7 @@ def create_query_mcp(
             "2. MCP 配置里的 description、项目说明、\"当前项目\" 这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文，以及 bind_project_context(...) 写入的 MCP 会话绑定。\n"
             "3. 若接入地址缺少 project_id，或需要续接任务树但缺少 chat_session_id，首轮立即调用 bind_project_context(project_id, chat_session_id?, root_goal?)；不要只依赖 description 里的项目说明。\n"
             "4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。\n"
+            "4.0 如果 direct CLI fallback 已先生成临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话调用 bind_project_context(...) 时，系统会自动把影子任务树迁到正式会话；但最佳实践仍然是首轮就传稳定 chat_session_id。\n"
             "4.1 每个 CLI 会话都应持久化自己生成的 chat_session_id；如能解析项目工作区，优先写到项目目录 .ai-employee/query-mcp/，否则再退回 CLI 自己的本地存储。同一轮任务固定复用，只有新开的并行 CLI 或全新任务才重新生成。\n"
             "4.2 query-mcp 本地持久化必须使用唯一文件规范：权威状态文件固定为 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；当前会话便捷恢复指针只允许写 `.ai-employee/query-mcp/current-session.json`。除兼容历史数据时只读外，禁止新写 `chat_session_id.txt`、`session_id.txt`、`chat_session_id`、`session_id`、`session.env`、`current-query-session.json`、`current-work-session.json` 这类分叉文件。\n"
             "5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。\n"
@@ -3177,6 +3180,20 @@ def create_query_mcp(
             "session_id": session_binding_key,
             "chat_session_id": normalized_chat_session_id,
         }
+
+        if session_binding_key and normalized_chat_session_id and session_binding_key != normalized_chat_session_id:
+            from services.project_chat_task_tree import rebind_task_tree_chat_session
+
+            username, _ = _resolve_task_tree_context()
+            migrated_session = rebind_task_tree_chat_session(
+                project_id=project_id_value,
+                username=username,
+                from_chat_session_id=session_binding_key,
+                to_chat_session_id=normalized_chat_session_id,
+                root_goal=root_goal_value,
+            )
+            if migrated_session is not None:
+                payload["shadow_task_tree_rebound"] = True
 
         if root_goal_value:
             from services.project_chat_task_tree import ensure_task_tree, serialize_task_tree

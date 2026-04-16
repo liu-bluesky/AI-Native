@@ -1487,6 +1487,175 @@ def test_project_requirement_records_route_uses_short_ttl_cache(
     assert call_count == 1
 
 
+def test_project_requirement_records_route_hides_query_cli_shadow_chain_near_real_cli_chain(
+    tmp_path,
+    monkeypatch,
+):
+    from routers import projects as projects_router
+    from stores.json.project_chat_task_store import ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+
+    projects_router._project_requirement_records_local_cache.clear()
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-shadow-1", name="项目一"))
+
+    root_goal = "当前 的 项目 规则有哪些"
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-query-cli-1",
+            project_id="proj-shadow-1",
+            username="tester",
+            chat_session_id="query-cli.proj-1.tester.req-1",
+            source_session_id="ws-query-cli-1",
+            title=root_goal,
+            root_goal=root_goal,
+            status="done",
+            lifecycle_status="active",
+            created_at="2026-04-16T07:56:00+08:00",
+            updated_at="2026-04-16T07:56:00+08:00",
+        )
+    )
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-cli-1",
+            project_id="proj-shadow-1",
+            username="tester",
+            chat_session_id="cli.proj-1.20260416T075700.host01.1001.abc123",
+            source_session_id="ws-cli-1",
+            title=root_goal,
+            root_goal=root_goal,
+            status="done",
+            lifecycle_status="active",
+            created_at="2026-04-16T07:57:00+08:00",
+            updated_at="2026-04-16T07:57:00+08:00",
+        )
+    )
+
+    response = client.get("/api/projects/proj-shadow-1/requirement-records")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["detailRound"]["chatSessionId"] == "cli.proj-1.20260416T075700.host01.1001.abc123"
+    assert len(payload["task_sessions"]) == 1
+    assert payload["task_sessions"][0]["chat_session_id"] == "cli.proj-1.20260416T075700.host01.1001.abc123"
+
+
+def test_project_requirement_records_route_keeps_same_goal_query_cli_history_when_time_gap_is_large(
+    tmp_path,
+    monkeypatch,
+):
+    from routers import projects as projects_router
+    from stores.json.project_chat_task_store import ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+
+    projects_router._project_requirement_records_local_cache.clear()
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-shadow-2", name="项目一"))
+
+    root_goal = "当前 的 项目 规则有哪些"
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-query-cli-old",
+            project_id="proj-shadow-2",
+            username="tester",
+            chat_session_id="query-cli.proj-1.tester.req-old",
+            source_session_id="ws-query-cli-old",
+            title=root_goal,
+            root_goal=root_goal,
+            status="done",
+            lifecycle_status="active",
+            created_at="2026-04-16T07:00:00+08:00",
+            updated_at="2026-04-16T07:00:00+08:00",
+        )
+    )
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-cli-new",
+            project_id="proj-shadow-2",
+            username="tester",
+            chat_session_id="cli.proj-1.20260416T075700.host01.1001.abc123",
+            source_session_id="ws-cli-new",
+            title=root_goal,
+            root_goal=root_goal,
+            status="done",
+            lifecycle_status="active",
+            created_at="2026-04-16T07:57:00+08:00",
+            updated_at="2026-04-16T07:57:00+08:00",
+        )
+    )
+
+    response = client.get("/api/projects/proj-shadow-2/requirement-records")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["items"]) == 2
+    assert {item["detailRound"]["chatSessionId"] for item in payload["items"]} == {
+        "query-cli.proj-1.tester.req-old",
+        "cli.proj-1.20260416T075700.host01.1001.abc123",
+    }
+    assert len(payload["task_sessions"]) == 2
+
+
+def test_rebind_task_tree_chat_session_moves_query_cli_shadow_session(
+    tmp_path,
+    monkeypatch,
+):
+    from services.project_chat_task_tree import get_task_tree, rebind_task_tree_chat_session
+    from stores.json.project_chat_task_store import ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+
+    _client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-shadow-1",
+            project_id="proj-1",
+            username="tester",
+            chat_session_id="query-cli.proj-1.tester.req-1",
+            title="当前 的 项目 规则有哪些",
+            root_goal="当前 的 项目 规则有哪些",
+            status="pending",
+            lifecycle_status="active",
+        )
+    )
+
+    migrated = rebind_task_tree_chat_session(
+        project_id="proj-1",
+        username="tester",
+        from_chat_session_id="query-cli.proj-1.tester.req-1",
+        to_chat_session_id="cli.proj-1.20260416T075700.host01.1001.abc123",
+        root_goal="当前 的 项目 规则有哪些",
+    )
+
+    assert migrated is not None
+    assert migrated.id == "tts-shadow-1"
+    assert migrated.chat_session_id == "cli.proj-1.20260416T075700.host01.1001.abc123"
+    assert (
+        get_task_tree("proj-1", "tester", "query-cli.proj-1.tester.req-1")
+        is None
+    )
+    rebound = get_task_tree(
+        "proj-1",
+        "tester",
+        "cli.proj-1.20260416T075700.host01.1001.abc123",
+    )
+    assert rebound is not None
+    assert rebound.id == "tts-shadow-1"
+
+
 def test_project_chat_task_tree_requires_started_status_before_completion(
     tmp_path,
     monkeypatch,

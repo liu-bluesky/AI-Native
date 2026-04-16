@@ -92,6 +92,7 @@ from services.runtime.runtime_resolver import build_chat_runtime_context
 from services.task_tree_guard.task_tree_evolution import build_task_tree_evolution_summary
 from models.requests import (
     ProjectAiEntryFileUpdateReq,
+    ProjectExperienceRuleConsolidateReq,
     ProjectExperienceRuleUpdateReq,
     ProjectExperienceRuleResolveReq,
     ProjectExperienceSummaryReq,
@@ -4705,6 +4706,127 @@ def _project_memory_fingerprint_tag(*parts: Any) -> str:
     return f"fp:{digest}"
 
 
+def _normalize_project_requirement_goal_key(value: Any) -> str:
+    return re.sub(r"\s+", " ", _normalize_project_record_token(value, limit=1000)).strip().lower()
+
+
+def _is_query_cli_chat_session_id(value: Any) -> bool:
+    return _normalize_project_record_token(value, limit=120).lower().startswith("query-cli.")
+
+
+def _parse_project_record_datetime(value: Any) -> float | None:
+    normalized = _normalize_project_record_token(value, limit=40)
+    if not normalized:
+        return None
+    candidate = normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _project_requirement_record_usernames(record: dict[str, Any]) -> set[str]:
+    usernames: set[str] = set()
+    for round_item in record.get("rounds") or []:
+        if not isinstance(round_item, dict):
+            continue
+        task_tree = round_item.get("taskTree") if isinstance(round_item.get("taskTree"), dict) else {}
+        username = _normalize_project_record_token(task_tree.get("username"), limit=80)
+        if username:
+            usernames.add(username)
+    return usernames
+
+
+def _project_requirement_record_chat_session_id(record: dict[str, Any]) -> str:
+    for key in ("detailRound", "currentRound", "latestRound"):
+        round_item = record.get(key)
+        if not isinstance(round_item, dict):
+            continue
+        chat_session_id = _normalize_project_record_token(round_item.get("chatSessionId"), limit=120)
+        if chat_session_id:
+            return chat_session_id
+    for round_item in record.get("rounds") or []:
+        if not isinstance(round_item, dict):
+            continue
+        chat_session_id = _normalize_project_record_token(round_item.get("chatSessionId"), limit=120)
+        if chat_session_id:
+            return chat_session_id
+    return ""
+
+
+def _project_requirement_record_timestamp(record: dict[str, Any]) -> float | None:
+    for key in ("createdAt", "updatedAt"):
+        parsed = _parse_project_record_datetime(record.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _dedupe_query_cli_requirement_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(records) < 2:
+        return records
+
+    duplicate_window_seconds = 15 * 60
+    grouped_by_goal: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        goal_key = _normalize_project_requirement_goal_key(record.get("rootGoal"))
+        if not goal_key:
+            continue
+        grouped_by_goal.setdefault(goal_key, []).append(record)
+
+    dropped_ids: set[str] = set()
+    for grouped_records in grouped_by_goal.values():
+        if len(grouped_records) < 2:
+            continue
+        query_cli_records = [
+            record
+            for record in grouped_records
+            if _is_query_cli_chat_session_id(_project_requirement_record_chat_session_id(record))
+        ]
+        formal_records = [
+            record
+            for record in grouped_records
+            if not _is_query_cli_chat_session_id(_project_requirement_record_chat_session_id(record))
+        ]
+        if not query_cli_records or not formal_records:
+            continue
+        for query_cli_record in query_cli_records:
+            query_cli_id = _normalize_project_record_token(query_cli_record.get("id"), limit=80)
+            if not query_cli_id:
+                continue
+            query_cli_timestamp = _project_requirement_record_timestamp(query_cli_record)
+            query_cli_usernames = _project_requirement_record_usernames(query_cli_record)
+            if query_cli_timestamp is None:
+                continue
+            for formal_record in formal_records:
+                formal_timestamp = _project_requirement_record_timestamp(formal_record)
+                if formal_timestamp is None:
+                    continue
+                formal_usernames = _project_requirement_record_usernames(formal_record)
+                if (
+                    query_cli_usernames
+                    and formal_usernames
+                    and not query_cli_usernames.intersection(formal_usernames)
+                ):
+                    continue
+                if abs(formal_timestamp - query_cli_timestamp) <= duplicate_window_seconds:
+                    dropped_ids.add(query_cli_id)
+                    break
+
+    if not dropped_ids:
+        return records
+    return [
+        record
+        for record in records
+        if _normalize_project_record_token(record.get("id"), limit=80) not in dropped_ids
+    ]
+
+
 def _collect_all_project_related_memories(project: ProjectConfig) -> list[Any]:
     memories, trajectory_memories = _collect_project_related_memories(project)
     return [*memories, *trajectory_memories]
@@ -5247,9 +5369,20 @@ def _build_project_requirement_records(
         ),
         reverse=True,
     )
+    records = _dedupe_query_cli_requirement_records(records)
+    visible_task_session_ids = {
+        _normalize_project_record_token(round_item.get("sessionId") or round_item.get("id"), limit=80)
+        for record in records
+        for round_item in (record.get("rounds") or [])
+        if isinstance(round_item, dict)
+    }
     return {
         "items": records[:safe_limit],
-        "task_sessions": task_sessions,
+        "task_sessions": [
+            item
+            for item in task_sessions
+            if _normalize_project_record_token(item.get("id"), limit=80) in visible_task_session_ids
+        ],
     }
 
 
@@ -9898,6 +10031,8 @@ async def _consolidate_project_experience_rules(
     project: ProjectConfig,
     *,
     auth_payload: dict,
+    provider_id: str = "",
+    model_name: str = "",
 ) -> tuple[ProjectConfig, list[str], list[str], list[str]]:
     existing_rule_ids = _normalize_project_experience_rule_ids(
         getattr(project, "experience_rule_ids", []) or []
@@ -9941,6 +10076,8 @@ async def _consolidate_project_experience_rules(
                 for rule in rules_in_group
             ],
             auth_payload=auth_payload,
+            provider_id=provider_id,
+            model_name=model_name,
             max_cards=1,
         )
         merged_card = {
@@ -9977,7 +10114,7 @@ async def _consolidate_project_experience_rules(
             redundant_id = str(getattr(redundant_rule, "id", "") or "").strip()
             if not redundant_id or redundant_id == merged_rule.id:
                 continue
-            if _projects_binding_experience_rule(redundant_id):
+            if _projects_binding_experience_rule(redundant_id, exclude_project_id=project.id):
                 continue
             if rule_store.delete(redundant_id):
                 deleted_rule_ids.append(redundant_id)
@@ -10521,6 +10658,7 @@ async def migrate_project_experience_rules_to_development(
 @router.post("/{project_id}/experience-rules/consolidate")
 async def consolidate_project_experience_rules(
     project_id: str,
+    req: ProjectExperienceRuleConsolidateReq | None = None,
     auth_payload: dict = Depends(require_auth),
 ):
     _ensure_permission(auth_payload, "menu.projects")
@@ -10528,6 +10666,8 @@ async def consolidate_project_experience_rules(
     updated_project, consolidated_rule_ids, unchanged_rule_ids, deleted_rule_ids = await _consolidate_project_experience_rules(
         project,
         auth_payload=auth_payload,
+        provider_id=str(req.provider_id or "").strip() if req else "",
+        model_name=str(req.model_name or "").strip() if req else "",
     )
     return {
         "status": "completed",

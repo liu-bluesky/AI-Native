@@ -775,6 +775,11 @@ class ProjectExperienceSummaryReq(BaseModel):
     experience_scope: Literal["development", "project"] = "development"
 
 
+class ProjectExperienceRuleConsolidateReq(BaseModel):
+    provider_id: str = ""
+    model_name: str = ""
+
+
 class ProjectExperienceRuleUpdateReq(BaseModel):
     title: str
     content: str

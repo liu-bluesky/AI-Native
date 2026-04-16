@@ -2754,7 +2754,7 @@ def test_project_experience_consolidate_route_keeps_distinct_topics(tmp_path, mo
         )
     )
 
-    response = client.post("/api/projects/proj-1/experience-rules/consolidate")
+    response = client.post("/api/projects/proj-1/experience-rules/consolidate", json={})
 
     assert response.status_code == 200
     payload = response.json()
@@ -2762,6 +2762,148 @@ def test_project_experience_consolidate_route_keeps_distinct_topics(tmp_path, mo
     assert payload["deleted_rule_ids"] == []
     assert payload["remaining_rule_count"] == 2
     assert sorted(payload["experience_rule_ids"]) == sorted([table_rule.id, dialog_rule.id])
+
+
+def test_project_experience_consolidate_route_merges_duplicate_topics_with_selected_model(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores import mcp_bridge
+    from stores.json.project_store import ProjectConfig
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    temp_rule_store = mcp_bridge._rules_mod.RuleStore(tmp_path / "experience-rules-consolidate-llm")
+    monkeypatch.setattr(projects_router, "rule_store", temp_rule_store)
+
+    table_rule_a = mcp_bridge.Rule(
+        id=temp_rule_store.new_id(),
+        domain="开发经验",
+        title="开发经验 · 表格高度自适应撑满",
+        content=projects_router._render_experience_rule_content(
+            {
+                "title": "表格高度自适应撑满",
+                "topic_key": "table-height-fill",
+                "domain": "frontend",
+                "keywords": ["表格", "高度", "撑满"],
+                "applicable_when": ["列表页需要用表格占满剩余空间"],
+                "signals": ["表格底部留白"],
+                "root_causes": ["容器高度链路不完整"],
+                "recommended_actions": ["建立页面容器到表格区域的高度链路并确保撑满"],
+                "anti_patterns": ["只给表格固定高度"],
+                "verification": ["窗口变化后表格仍撑满内容区"],
+            }
+        ),
+        created_by="tester",
+    )
+    table_rule_b = mcp_bridge.Rule(
+        id=temp_rule_store.new_id(),
+        domain="开发经验",
+        title="开发经验 · 表格撑满剩余高度",
+        content=projects_router._render_experience_rule_content(
+            {
+                "title": "表格撑满剩余高度",
+                "topic_key": "table-height-fill",
+                "domain": "frontend",
+                "keywords": ["表格", "剩余高度"],
+                "applicable_when": ["管理台表格需要自适应区域高度"],
+                "signals": ["切换窗口后表格没有跟着撑满"],
+                "root_causes": ["中间容器缺少 flex 或 min-height 约束"],
+                "recommended_actions": ["使用 flex 链路让表格区域持续撑满剩余高度"],
+                "anti_patterns": ["让内容区自然撑开导致表格高度不稳定"],
+                "verification": ["切换窗口尺寸后仍无底部空白"],
+            }
+        ),
+        created_by="tester",
+    )
+    dialog_rule = mcp_bridge.Rule(
+        id=temp_rule_store.new_id(),
+        domain="开发经验",
+        title="开发经验 · 弹窗关闭后重置表单",
+        content=projects_router._render_experience_rule_content(
+            {
+                "title": "弹窗关闭后重置表单",
+                "topic_key": "dialog-form-reset",
+                "domain": "frontend",
+                "keywords": ["弹窗", "表单", "重置"],
+                "applicable_when": ["弹窗承载新增或编辑表单"],
+                "signals": ["再次打开仍残留上次输入"],
+                "root_causes": ["关闭时未重置表单状态"],
+                "recommended_actions": ["关闭弹窗时统一重置表单和校验状态"],
+                "anti_patterns": ["依赖手工逐字段清空"],
+                "verification": ["重复打开弹窗不残留上次表单值"],
+            }
+        ),
+        created_by="tester",
+    )
+    for rule in (table_rule_a, table_rule_b, dialog_rule):
+        temp_rule_store.save(rule)
+    project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            created_by="tester",
+            experience_rule_ids=[table_rule_a.id, table_rule_b.id, dialog_rule.id],
+        )
+    )
+
+    class _FakeLlmService:
+        def get_provider_raw(self, provider_id, **kwargs):
+            if provider_id != "provider-1":
+                return None
+            return {
+                "id": "provider-1",
+                "enabled": True,
+                "default_model": "glm-test",
+                "models": ["glm-test"],
+            }
+
+        async def chat_completion(self, provider_id, model_name, messages, temperature=0.2, max_tokens=1024, timeout=45):
+            assert provider_id == "provider-1"
+            assert model_name == "glm-test"
+            assert isinstance(messages, list) and messages
+            return {
+                "content": json.dumps(
+                    {
+                        "cards": [
+                            {
+                                "title": "表格高度自适应撑满",
+                                "topic_key": "table-height-fill",
+                                "domain": "frontend",
+                                "keywords": ["表格", "高度", "撑满", "flex"],
+                                "applicable_when": ["列表页或管理台表格需要占满剩余空间"],
+                                "signals": ["表格底部留白", "切换窗口后未持续撑满"],
+                                "root_causes": ["容器高度链路不完整", "中间容器缺少 flex 或 min-height 约束"],
+                                "recommended_actions": ["建立页面容器到表格区域的 flex 高度链路并确保持续撑满"],
+                                "anti_patterns": ["只给表格固定高度", "让内容区自然撑开导致高度不稳定"],
+                                "verification": ["切换窗口尺寸后表格区域仍无底部空白"],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            }
+
+    monkeypatch.setattr(
+        "services.llm_provider_service.get_llm_provider_service",
+        lambda: _FakeLlmService(),
+    )
+
+    response = client.post(
+        "/api/projects/proj-1/experience-rules/consolidate",
+        json={"provider_id": "provider-1", "model_name": "glm-test"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["consolidated_rule_ids"]) == 1
+    assert payload["remaining_rule_count"] == 2
+    assert len(payload["deleted_rule_ids"]) == 1
+    merged_rule = temp_rule_store.get(payload["consolidated_rule_ids"][0])
+    assert merged_rule is not None
+    assert "确保持续撑满" in merged_rule.content
+    assert "固定高度" in merged_rule.content
 
 
 def test_project_experience_rule_resolve_route_returns_only_relevant_rules(tmp_path, monkeypatch):
@@ -5177,6 +5319,7 @@ def test_query_mcp_bind_project_context_stores_session_context_and_task_tree(mon
     registered_resources = {}
     session_contexts = {}
     ensure_calls = []
+    rebind_calls = []
 
     class DummyMCP:
         def tool(self, *args, **kwargs):
@@ -5241,6 +5384,11 @@ def test_query_mcp_bind_project_context_stores_session_context_and_task_tree(mon
     )
     monkeypatch.setattr(
         task_tree_svc,
+        "rebind_task_tree_chat_session",
+        lambda **kwargs: rebind_calls.append(kwargs) or None,
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
         "serialize_task_tree",
         lambda session: {
             "root_goal": session["root_goal"],
@@ -5270,8 +5418,106 @@ def test_query_mcp_bind_project_context_stores_session_context_and_task_tree(mon
     assert result["task_tree"]["root_goal"] == "修复 CLI 对话任务树"
     assert session_contexts["transport-123"]["project_id"] == "proj-1"
     assert session_contexts["transport-123"]["chat_session_id"] == "chat-123"
+    assert rebind_calls == [
+        {
+            "project_id": "proj-1",
+            "username": "admin",
+            "from_chat_session_id": "transport-123",
+            "to_chat_session_id": "chat-123",
+            "root_goal": "修复 CLI 对话任务树",
+        }
+    ]
     assert ensure_calls[0]["username"] == "admin"
     assert ensure_calls[0]["chat_session_id"] == "chat-123"
+
+
+def test_query_mcp_bind_project_context_rebinds_query_cli_shadow_session(monkeypatch):
+    import services.project_chat_task_tree as task_tree_svc
+    from contextvars import ContextVar
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+
+    registered_tools = {}
+    session_contexts = {}
+    ensure_calls = []
+    rebind_calls = []
+
+    class DummyMCP:
+        def tool(self, *args, **kwargs):
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        def resource(self, uri: str, *args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    monkeypatch.setattr(query_mcp_svc, "FastMCP", lambda *args, **kwargs: DummyMCP())
+    monkeypatch.setattr(
+        query_mcp_svc,
+        "project_store",
+        type(
+            "DummyProjectStore",
+            (),
+            {
+                "get": staticmethod(lambda project_id: type("DummyProject", (), {"id": project_id, "name": "项目一"})()),
+                "list_all": staticmethod(lambda: []),
+                "list_members": staticmethod(lambda project_id: []),
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "ensure_task_tree",
+        lambda **kwargs: ensure_calls.append(kwargs) or kwargs,
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "rebind_task_tree_chat_session",
+        lambda **kwargs: rebind_calls.append(kwargs) or {"id": "tts-shadow-1"},
+    )
+    monkeypatch.setattr(
+        task_tree_svc,
+        "serialize_task_tree",
+        lambda session: {
+            "root_goal": session["root_goal"],
+            "chat_session_id": session["chat_session_id"],
+        },
+    )
+
+    username_ctx = ContextVar("query_user_shadow_rebind", default="")
+    session_ctx = ContextVar("query_session_shadow_rebind", default="")
+    username_ctx.set("admin")
+    session_ctx.set("query-cli.proj-1.admin.req-1")
+
+    query_mcp_svc.create_query_mcp(
+        current_key_owner_username_ctx=username_ctx,
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+
+    result = registered_tools["bind_project_context"](
+        "proj-1",
+        chat_session_id="cli.proj-1.20260416T075700.host01.1001.abc123",
+        root_goal="当前 的 项目 规则有哪些",
+    )
+
+    assert result["status"] == "bound"
+    assert result["chat_session_id"] == "cli.proj-1.20260416T075700.host01.1001.abc123"
+    assert result["shadow_task_tree_rebound"] is True
+    assert rebind_calls == [
+        {
+            "project_id": "proj-1",
+            "username": "admin",
+            "from_chat_session_id": "query-cli.proj-1.admin.req-1",
+            "to_chat_session_id": "cli.proj-1.20260416T075700.host01.1001.abc123",
+            "root_goal": "当前 的 项目 规则有哪些",
+        }
+    ]
+    assert ensure_calls[0]["chat_session_id"] == "cli.proj-1.20260416T075700.host01.1001.abc123"
 
 
 def test_query_mcp_bind_project_context_without_active_session_creates_detached_task_tree(monkeypatch):
