@@ -9167,15 +9167,59 @@ async function fetchChatTaskTree(
 
 async function restoreOngoingTaskFromServer(projectId, options = {}) {
   const normalizedProjectId = String(projectId || "").trim();
-  const taskSessionId = restoreTaskTreeSession(normalizedProjectId);
-  currentWorkSessionId.value = taskSessionId
-    ? restoreWorkSession(normalizedProjectId)
-    : "";
-  if (!normalizedProjectId || !taskSessionId) {
+  currentWorkSessionId.value = "";
+  if (!normalizedProjectId) {
     return null;
   }
   taskTreeLoading.value = true;
   try {
+    const ongoing = await api.get(
+      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/task-tree/ongoing`,
+    );
+    const ongoingTaskTree = normalizeTaskTreePayload(ongoing?.task_tree);
+    const ongoingChatSessionId = String(
+      ongoing?.chat_session_id || ongoingTaskTree?.chat_session_id || "",
+    ).trim();
+    if (
+      ongoing?.can_continue &&
+      ongoingTaskTree?.id &&
+      ongoingChatSessionId &&
+      !isTaskTreeArchivedOrDone(ongoingTaskTree)
+    ) {
+      currentChatSessionId.value = ongoingChatSessionId;
+      rememberChatSession(normalizedProjectId, ongoingChatSessionId);
+      rememberTaskTreeSession(normalizedProjectId, ongoingTaskTree.id);
+      applyTaskTreePayload(ongoingTaskTree);
+      const ongoingSessionId = String(
+        ongoing?.session_id || ongoing?.work_session?.session_id || "",
+      ).trim();
+      if (ongoingSessionId) {
+        currentWorkSessionId.value = ongoingSessionId;
+        rememberWorkSession(normalizedProjectId, ongoingSessionId);
+      } else {
+        clearWorkSessionMemory(normalizedProjectId);
+      }
+      const workSession =
+        normalizeWorkSessionSummary(ongoing?.work_session) ||
+        (await syncOngoingWorkSessionFromTaskTree(
+          normalizedProjectId,
+          ongoingTaskTree,
+          { silent: true },
+        ));
+      return {
+        chatSessionId: ongoingChatSessionId,
+        taskTree: ongoingTaskTree,
+        workSession,
+      };
+    }
+
+    const taskSessionId = restoreTaskTreeSession(normalizedProjectId);
+    currentWorkSessionId.value = taskSessionId
+      ? restoreWorkSession(normalizedProjectId)
+      : "";
+    if (!taskSessionId) {
+      return null;
+    }
     const data = await api.get(
       `/projects/${encodeURIComponent(normalizedProjectId)}/chat/task-tree`,
       {

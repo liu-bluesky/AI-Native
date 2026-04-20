@@ -50,6 +50,34 @@ def get_project_detail_runtime(project_id: str) -> dict:
         if str(item or "").strip()
     ]
     payload["ui_rule_bindings"] = project_ui_rule_summary(project_id, limit=100)
+    payload["workflow_skill_ids"] = [
+        str(item or "").strip()
+        for item in (getattr(project, "workflow_skill_ids", []) or [])
+        if str(item or "").strip()
+    ]
+    payload["workflow_skill_bindings"] = []
+    for skill_id in payload["workflow_skill_ids"]:
+        skill = skill_store.get(skill_id)
+        payload["workflow_skill_bindings"].append(
+            {
+                "id": skill_id,
+                "name": str(getattr(skill, "name", "") or skill_id).strip(),
+                "description": str(getattr(skill, "description", "") or "").strip(),
+                "mcp_enabled": bool(getattr(skill, "mcp_enabled", False)) if skill else False,
+            }
+        )
+    default_skill_id = str(getattr(project, "default_workflow_skill_id", "") or "").strip()
+    payload["default_workflow_skill_id"] = default_skill_id
+    if default_skill_id:
+        default_skill = skill_store.get(default_skill_id)
+        payload["default_workflow_skill"] = {
+            "id": default_skill_id,
+            "name": str(getattr(default_skill, "name", "") or default_skill_id).strip(),
+            "description": str(getattr(default_skill, "description", "") or "").strip(),
+            "mcp_enabled": bool(getattr(default_skill, "mcp_enabled", False)) if default_skill else False,
+        }
+    else:
+        payload["default_workflow_skill"] = None
     return payload
 
 
@@ -273,7 +301,11 @@ def search_project_context_runtime(
     }
 
     if scope_value in {"all", "project"}:
-        from routers.projects import _resolve_project_experience_rule_bindings
+        from routers.projects import (
+            _resolve_project_experience_rule_bindings,
+            _resolve_project_workflow_skill_bindings,
+            _resolve_project_default_workflow_skill,
+        )
 
         project_ui_rules = project_ui_rule_summary(project_id, limit=limit_value)
         project_experience_rules = _resolve_project_experience_rule_bindings(project)
@@ -298,6 +330,16 @@ def search_project_context_runtime(
             ],
             "experience_rule_bindings": project_experience_rules,
             "experience_rule_count": len(project_experience_rules),
+            "workflow_skill_ids": [
+                str(item or "").strip()
+                for item in (getattr(project, "workflow_skill_ids", []) or [])
+                if str(item or "").strip()
+            ],
+            "workflow_skill_bindings": _resolve_project_workflow_skill_bindings(project),
+            "default_workflow_skill_id": str(
+                getattr(project, "default_workflow_skill_id", "") or ""
+            ).strip(),
+            "default_workflow_skill": _resolve_project_default_workflow_skill(project),
         }
 
     if scope_value in {"all", "members"}:

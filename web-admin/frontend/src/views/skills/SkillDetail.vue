@@ -130,8 +130,8 @@
       <section class="meta-panel meta-panel-wide">
         <div class="panel-head">
           <div>
-            <h4>安装到员工</h4>
-            <p class="panel-desc">技能只和员工绑定；项目只是员工的使用范围，不是技能绑定对象。</p>
+            <h4>启用与绑定</h4>
+            <p class="panel-desc">系统技能保留在技能库中，可启用到项目、绑定到员工，或设为项目默认工作流技能。</p>
           </div>
           <el-button text type="primary" :loading="targetLoading" @click="refreshInstallTargets">
             刷新目标
@@ -157,6 +157,23 @@
                   />
                 </el-select>
               </el-form-item>
+              <el-form-item label="项目">
+                <el-select
+                  v-model="installForm.project_id"
+                  filterable
+                  clearable
+                  placeholder="选择要启用技能的项目"
+                  style="width: 100%"
+                  @change="handleProjectChange"
+                >
+                  <el-option
+                    v-for="item in projectOptions"
+                    :key="item.id"
+                    :label="`${item.name} (${item.id})`"
+                    :value="item.id"
+                  />
+                </el-select>
+              </el-form-item>
             </el-form>
             <div v-if="contextHintText" class="activation-context">
               {{ contextHintText }}
@@ -169,18 +186,39 @@
               <span class="activation-card__meta">{{ employeeSkillStatusMeta }}</span>
             </div>
             <div class="activation-hint">
-              说明：安装会同步写入员工技能清单。若你是在项目聊天里使用该员工，项目侧会通过“员工已加入项目”这层关系间接获得该技能。
+              说明：启用到项目会写入项目工作流技能索引；绑定到员工会同步写入员工技能清单。项目不复制技能文件。
+            </div>
+            <div class="activation-card">
+              <span class="activation-card__label">项目工作流状态</span>
+              <strong>{{ projectWorkflowStatusLabel }}</strong>
+              <span class="activation-card__meta">{{ projectWorkflowStatusMeta }}</span>
             </div>
           </div>
         </div>
         <div class="activation-actions">
+          <el-button
+            :loading="projectActionLoading"
+            :disabled="!installForm.project_id"
+            @click="enableProjectWorkflowSkill"
+          >
+            启用到项目
+          </el-button>
           <el-button
             type="primary"
             :loading="installing"
             :disabled="!installForm.employee_id"
             @click="installSkillFlow"
           >
-            安装到员工
+            绑定到员工
+          </el-button>
+          <el-button
+            type="success"
+            plain
+            :loading="projectActionLoading"
+            :disabled="!installForm.project_id"
+            @click="setDefaultProjectWorkflowSkill"
+          >
+            设为默认工作流技能
           </el-button>
         </div>
       </section>
@@ -328,12 +366,16 @@ const refreshingProxy = ref(false)
 const targetLoading = ref(false)
 const employeeBindingLoading = ref(false)
 const installing = ref(false)
+const projectActionLoading = ref(false)
+const projectWorkflowLoading = ref(false)
 const skill = reactive({})
 const packageLoading = ref(false)
 const fileLoading = ref(false)
 const packageTree = ref([])
 const employeeOptions = ref([])
+const projectOptions = ref([])
 const employeeBindings = ref([])
+const projectWorkflowState = ref(null)
 const activeFilePath = ref('')
 const activeFile = reactive({
   path: '',
@@ -344,6 +386,7 @@ const activeFile = reactive({
 })
 const installForm = reactive({
   employee_id: '',
+  project_id: '',
 })
 const chatContext = reactive({
   is_settings_route: false,
@@ -388,6 +431,35 @@ const employeeSkillStatusMeta = computed(() => {
   return `员工资料里已绑定该技能${tools ? `，默认启用 ${tools} 个工具` : ''}`
 })
 
+const projectWorkflowStatusLabel = computed(() => {
+  if (!installForm.project_id) return '待选择项目'
+  if (projectWorkflowLoading.value) return '检查中'
+  const state = projectWorkflowState.value || {}
+  const skillId = String(skill.id || '').trim()
+  const bindings = Array.isArray(state.workflow_skill_bindings)
+    ? state.workflow_skill_bindings
+    : []
+  const matched = bindings.find((item) => String(item?.id || '').trim() === skillId)
+  if (!matched) return '未启用'
+  if (String(state.default_workflow_skill_id || '').trim() === skillId || matched.is_default) {
+    return '默认工作流技能'
+  }
+  return '已启用'
+})
+
+const projectWorkflowStatusMeta = computed(() => {
+  if (!installForm.project_id) return '先选择目标项目。'
+  if (projectWorkflowLoading.value) return '正在读取项目工作流技能索引。'
+  const state = projectWorkflowState.value || {}
+  const bindings = Array.isArray(state.workflow_skill_bindings)
+    ? state.workflow_skill_bindings
+    : []
+  if (!bindings.length) return '当前项目还没有启用工作流技能。'
+  const defaultSkillId = String(state.default_workflow_skill_id || '').trim()
+  if (defaultSkillId) return `默认工作流技能：${defaultSkillId}`
+  return `已启用 ${bindings.length} 个项目工作流技能。`
+})
+
 const contextHintText = computed(() => {
   if (!chatContext.is_settings_route) return ''
   if (!chatContext.project_id) return '当前位于聊天设置页，但没有识别到项目上下文。'
@@ -397,7 +469,7 @@ const contextHintText = computed(() => {
   if (chatContext.selected_employee_ids.length > 1) {
     return `当前聊天已选择 ${chatContext.selected_employee_ids.length} 个员工，请手动选择一个员工安装。`
   }
-  return '当前聊天未锁定单个员工，请手动选择一个员工。'
+  return '当前聊天已识别项目上下文；可直接启用项目工作流技能，或继续选择员工做员工绑定。'
 })
 
 async function fetchDetail() {
@@ -415,8 +487,12 @@ async function fetchDetail() {
 async function fetchInstallTargets() {
   targetLoading.value = true
   try {
-    const employeesRes = await api.get('/employees').catch(() => ({ employees: [] }))
+    const [employeesRes, projectsRes] = await Promise.all([
+      api.get('/employees').catch(() => ({ employees: [] })),
+      api.get('/projects').catch(() => ({ projects: [] })),
+    ])
     employeeOptions.value = Array.isArray(employeesRes?.employees) ? employeesRes.employees : []
+    projectOptions.value = Array.isArray(projectsRes?.projects) ? projectsRes.projects : []
   } finally {
     targetLoading.value = false
   }
@@ -455,6 +531,7 @@ async function hydrateChatContext() {
     return
   }
   chatContext.project_id = projectId
+  installForm.project_id = projectId
   try {
     const data = await api.get(`/projects/${encodeURIComponent(projectId)}/chat/settings`)
     const selectedEmployeeIds = normalizeSelectedEmployeeIds(data?.settings || {})
@@ -464,8 +541,10 @@ async function hydrateChatContext() {
       chatContext.auto_selected_employee_id = selectedEmployeeIds[0]
       await fetchEmployeeBindings(selectedEmployeeIds[0])
     }
+    await fetchProjectWorkflowState(projectId)
   } catch {
     chatContext.selected_employee_ids = []
+    await fetchProjectWorkflowState(projectId)
   }
 }
 
@@ -486,10 +565,30 @@ async function fetchEmployeeBindings(employeeId = installForm.employee_id) {
   }
 }
 
+async function fetchProjectWorkflowState(projectId = installForm.project_id) {
+  const normalizedProjectId = String(projectId || '').trim()
+  if (!normalizedProjectId) {
+    projectWorkflowState.value = null
+    return
+  }
+  projectWorkflowLoading.value = true
+  try {
+    const data = await api.get(`/projects/${encodeURIComponent(normalizedProjectId)}/workflow-skills`)
+    projectWorkflowState.value = data || null
+  } catch {
+    projectWorkflowState.value = null
+  } finally {
+    projectWorkflowLoading.value = false
+  }
+}
+
 function refreshInstallTargets() {
   void fetchInstallTargets()
   if (installForm.employee_id) {
     void fetchEmployeeBindings()
+  }
+  if (installForm.project_id) {
+    void fetchProjectWorkflowState()
   }
   if (chatContext.is_settings_route) {
     void hydrateChatContext()
@@ -500,6 +599,11 @@ function handleEmployeeChange(value) {
   installForm.employee_id = String(value || '').trim()
   chatContext.auto_selected_employee_id = ''
   void fetchEmployeeBindings()
+}
+
+function handleProjectChange(value) {
+  installForm.project_id = String(value || '').trim()
+  void fetchProjectWorkflowState()
 }
 
 function proxyDeclarationLabel(row) {
@@ -656,6 +760,56 @@ async function installSkillFlow() {
     ElMessage.error(err?.detail || err?.message || '安装失败')
   } finally {
     installing.value = false
+  }
+}
+
+async function enableProjectWorkflowSkill() {
+  const projectId = String(installForm.project_id || '').trim()
+  const skillId = String(skill.id || '').trim()
+  if (!projectId) {
+    ElMessage.warning('请选择项目')
+    return
+  }
+  if (!skillId) {
+    ElMessage.warning('技能信息未加载完成')
+    return
+  }
+  try {
+    projectActionLoading.value = true
+    await api.post(`/projects/${encodeURIComponent(projectId)}/workflow-skills`, {
+      skill_id: skillId,
+    })
+    await fetchProjectWorkflowState(projectId)
+    ElMessage.success('已启用到项目')
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || '项目启用失败')
+  } finally {
+    projectActionLoading.value = false
+  }
+}
+
+async function setDefaultProjectWorkflowSkill() {
+  const projectId = String(installForm.project_id || '').trim()
+  const skillId = String(skill.id || '').trim()
+  if (!projectId) {
+    ElMessage.warning('请选择项目')
+    return
+  }
+  if (!skillId) {
+    ElMessage.warning('技能信息未加载完成')
+    return
+  }
+  try {
+    projectActionLoading.value = true
+    await api.put(`/projects/${encodeURIComponent(projectId)}/workflow-skills/default`, {
+      skill_id: skillId,
+    })
+    await fetchProjectWorkflowState(projectId)
+    ElMessage.success('已设为默认工作流技能')
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || '设置默认工作流技能失败')
+  } finally {
+    projectActionLoading.value = false
   }
 }
 

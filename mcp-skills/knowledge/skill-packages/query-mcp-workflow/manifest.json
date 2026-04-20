@@ -1,0 +1,13 @@
+{
+  "name": "Query MCP Workflow",
+  "description": "统一查询 MCP 工作流稳定化技能。用于指导 AI 在需求开始、续跑、执行和验证阶段按 MCP 查询、任务树、工作轨迹和后端校验链路闭环执行。",
+  "version": "1.0.0",
+  "tags": [
+    "system-skill",
+    "query-mcp",
+    "workflow",
+    "task-tree",
+    "stability"
+  ],
+  "mcp_service": "query-center-project"
+}

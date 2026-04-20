@@ -22,6 +22,8 @@ class ProjectConfig:
     type: str = "mixed"
     ui_rule_ids: list[str] = field(default_factory=list)
     experience_rule_ids: list[str] = field(default_factory=list)
+    workflow_skill_ids: list[str] = field(default_factory=list)
+    default_workflow_skill_id: str = ""
     mcp_instruction: str = ""
     workspace_path: str = ""
     ai_entry_file: str = ""

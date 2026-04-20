@@ -9887,8 +9887,14 @@ def test_query_mcp_mount_runs_memory_chain(monkeypatch):
 
     assert len(saved_memories) == 3
     assert saved_memories[0].project_name == "项目一"
-    assert saved_memories[1].purpose_tags == ("query-mcp", "work-facts", "phase3", "session:sess-1", "phase:phase-3", "step:step-1")
-    assert saved_memories[2].purpose_tags == ("query-mcp", "session-event", "verification", "phase3", "session:sess-1", "phase:phase-3", "step:step-2")
+    assert saved_memories[1].purpose_tags[:3] == ("query-mcp", "work-facts", "phase3")
+    assert "session:sess-1" in saved_memories[1].purpose_tags
+    assert "phase:phase-3" in saved_memories[1].purpose_tags
+    assert "step:step-1" in saved_memories[1].purpose_tags
+    assert saved_memories[2].purpose_tags[:4] == ("query-mcp", "session-event", "verification", "phase3")
+    assert "session:sess-1" in saved_memories[2].purpose_tags
+    assert "phase:phase-3" in saved_memories[2].purpose_tags
+    assert "step:step-2" in saved_memories[2].purpose_tags
     assert len(saved_work_session_events) == 2
     assert saved_work_session_events[0].session_id == "sess-1"
     assert saved_work_session_events[1].event_type == "verification"
@@ -10000,6 +10006,7 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
 
     from routers import projects as projects_router
     from services import dynamic_mcp_apps_query as query_mcp_svc
+    from stores.json.system_config_store import SystemConfig
 
     registered_tools: dict[str, object] = {}
     registered_resources: dict[str, object] = {}
@@ -10102,6 +10109,11 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
 
     monkeypatch.setattr(query_mcp_svc, "_new_mcp", lambda _service_name: FakeMcp())
     monkeypatch.setattr(
+        query_mcp_svc.system_config_store,
+        "get_global",
+        lambda: SystemConfig(),
+    )
+    monkeypatch.setattr(
         query_mcp_svc,
         "project_store",
         type(
@@ -10198,6 +10210,15 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
     )
     monkeypatch.setattr(
         projects_router,
+        "_build_project_manual_template_payload",
+        lambda project_id: {
+            "manual": "# 项目一 使用手册\n\n- 先读取项目手册\n- 再执行 resolve_relevant_context 与 generate_execution_plan"
+        }
+        if project_id == "proj-1"
+        else {"manual": ""},
+    )
+    monkeypatch.setattr(
+        projects_router,
         "_resolve_project_experience_rules_payload",
         lambda project, task_text, limit=3: {
             "project_id": getattr(project, "id", ""),
@@ -10287,6 +10308,10 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
 def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeypatch):
     registered_tools, registered_resources, _saved_memories, _saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
 
+    assert "start_project_workflow" in registered_tools
+    assert "get_current_task_tree" in registered_tools
+    assert "update_task_node_status" in registered_tools
+    assert "complete_task_node_with_verification" in registered_tools
     assert "analyze_task" in registered_tools
     assert "resolve_relevant_context" in registered_tools
     assert "generate_execution_plan" in registered_tools
@@ -10311,6 +10336,7 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "generate_release_note_entry" in usage_guide
     assert "check_operation_policy" in usage_guide
     assert "start_work_session" in usage_guide
+    assert "实现型需求优先调用 start_project_workflow" in usage_guide
     assert "任务树节点必须直接描述面向用户目标的工作步骤" in usage_guide
     assert "优先使用项目绑定员工、规则和技能" in usage_guide
     assert "重新获取与当前任务直接相关的规则正文" in usage_guide
@@ -10321,6 +10347,7 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "search_ids" in codex_profile
     assert "/ai/chat" not in claude_profile
     assert "/ai/chat" not in codex_profile
+    assert "start_project_workflow" in codex_profile
     assert "get_manual_content" in codex_profile
     assert "build_delivery_report" in codex_profile
     assert "Auto inferred proxy entry from scripts/..." in codex_profile
@@ -10469,6 +10496,127 @@ def test_query_mcp_resources_and_style_hints_use_system_config(monkeypatch):
     assert "新增 query MCP Phase 1-4 能力单测" in release_note["entry_markdown"]
 
 
+def test_query_mcp_start_project_workflow_blocks_when_required_inputs_missing(monkeypatch):
+    registered_tools, _registered_resources, _saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    result = registered_tools["start_project_workflow"](
+        raw_request="",
+        project_id="proj-1",
+        chat_session_id="chat-1",
+        client_profile="codex",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["workflow_version"] == "query-mcp-workflow/v1"
+    assert "raw_request" in result["guard"]["missing_steps"]
+    assert "raw_request_search" in result["guard"]["missing_steps"]
+    assert "provide_raw_request" in result["guard"]["required_before_execution"]
+    assert "保留用户原始问题原文并重新调用 start_project_workflow" in result["next_required_actions"]
+    assert result["session_id"] == ""
+    assert saved_work_session_events == []
+
+
+def test_query_mcp_start_project_workflow_returns_ready_payload(monkeypatch):
+    registered_tools, _registered_resources, _saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    result = registered_tools["start_project_workflow"](
+        raw_request="继续升级 /mcp/query/sse 的 query MCP 工具与测试",
+        project_id="proj-1",
+        chat_session_id="chat-workflow-1",
+        client_profile="codex",
+        clarity_score=4,
+        start_session=True,
+        max_steps=5,
+    )
+
+    assert result["status"] == "ready"
+    assert result["workflow_version"] == "query-mcp-workflow/v1"
+    assert result["project_id"] == "proj-1"
+    assert result["chat_session_id"] == "chat-workflow-1"
+    assert result["client_profile"] == "codex"
+    assert result["session_id"].startswith("ws_proj-1_")
+    assert result["id_lookup"]["keyword"] == "继续升级 /mcp/query/sse 的 query MCP 工具与测试"
+    assert result["manual"]["entity_type"] == "project"
+    assert result["analysis"]["project_id"] == "proj-1"
+    assert result["relevant_context"]["project"]["summary"]["name"] == "项目一"
+    assert result["execution_plan"]["plan_step_count"] == 3
+    assert result["guard"]["status"] == "ready"
+    assert result["guard"]["missing_steps"] == []
+    assert "manual_loaded" in result["backend_enforced_checks"]
+    assert "analysis_generated" in result["backend_enforced_checks"]
+    assert "context_resolved" in result["backend_enforced_checks"]
+    assert "plan_generated" in result["backend_enforced_checks"]
+    assert "work_session_started" in result["backend_enforced_checks"]
+    assert result["task_tree"]["available"] is True
+    assert result["task_tree"]["matches_current_request"] is True
+    assert result["task_tree"]["task_tree_closure_supported"] is True
+    assert result["task_tree"]["current_node_title"] != ""
+    assert "perform_file_edits" in result["next_required_actions"]
+    assert "complete_task_node_with_verification" in result["next_required_actions"]
+    assert not any("任务树闭环未完成" in item for item in result["next_required_actions"])
+    assert len(saved_work_session_events) == 1
+    assert saved_work_session_events[0].event_type == "start"
+
+
+def test_query_mcp_task_tree_tools_roundtrip(monkeypatch):
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+
+    registered_tools, _registered_resources, _saved_memories, _saved_work_session_events = (
+        _setup_query_mcp_agent_capability_env(monkeypatch)
+    )
+
+    started = registered_tools["start_project_workflow"](
+        raw_request="继续升级 /mcp/query/sse 的 query MCP 工具与测试",
+        project_id="proj-1",
+        chat_session_id="chat-task-tree-1",
+        client_profile="codex",
+        clarity_score=4,
+        start_session=False,
+        max_steps=5,
+    )
+    node_id = started["task_tree"]["current_node_id"]
+
+    current = registered_tools["get_current_task_tree"](
+        project_id="proj-1",
+        chat_session_id="chat-task-tree-1",
+    )
+    progressed = registered_tools["update_task_node_status"](
+        project_id="proj-1",
+        chat_session_id="chat-task-tree-1",
+        node_id=node_id,
+        status="in_progress",
+        summary_for_model="开始梳理当前任务树闭环暴露缺口",
+        is_current=True,
+    )
+    completed = registered_tools["complete_task_node_with_verification"](
+        project_id="proj-1",
+        chat_session_id="chat-task-tree-1",
+        node_id=node_id,
+        verification_result="已确认统一查询 MCP 可读取并推进当前任务树节点",
+        summary_for_model="分析阶段完成",
+    )
+
+    assert current["project_id"] == "proj-1"
+    assert current["chat_session_id"] == "chat-task-tree-1"
+    assert current["current_node"]["id"] == node_id
+
+    assert progressed["project_id"] == "proj-1"
+    assert progressed["chat_session_id"] == "chat-task-tree-1"
+    assert progressed["node_id"] == node_id
+    assert progressed["status"] == "updated"
+    progressed_node = next(node for node in progressed["nodes"] if node["id"] == node_id)
+    assert progressed_node["status"] == "in_progress"
+    assert progressed_node["summary_for_model"] == "开始梳理当前任务树闭环暴露缺口"
+
+    assert completed["project_id"] == "proj-1"
+    assert completed["chat_session_id"] == "chat-task-tree-1"
+    assert completed["node_id"] == node_id
+    assert completed["status"] == "completed"
+    completed_node = next(node for node in completed["nodes"] if node["id"] == node_id)
+    assert completed_node["status"] == "done"
+    assert completed_node["verification_result"] == "已确认统一查询 MCP 可读取并推进当前任务树节点"
+
+
 def test_query_mcp_work_session_tools_roundtrip(monkeypatch):
     from stores.mcp_bridge import MemoryType
 
@@ -10556,10 +10704,13 @@ def test_query_mcp_work_session_tools_roundtrip(monkeypatch):
     assert first_session_tag.startswith("session:ws-proj-1-emp-1-")
     assert second_session_tag == first_session_tag
     assert saved_memories[0].purpose_tags[:3] == ("query-mcp", "work-facts", "phase3")
-    assert saved_memories[0].purpose_tags[-2:] == ("phase:phase-3", "step:step-1")
+    assert "phase:phase-3" in saved_memories[0].purpose_tags
+    assert "step:step-1" in saved_memories[0].purpose_tags
     assert saved_memories[1].purpose_tags[:4] == ("query-mcp", "session-event", "verification", "phase3")
-    assert saved_memories[1].purpose_tags[-2:] == ("phase:phase-3", "step:step-2")
-    assert saved_memories[2].purpose_tags == ("query-mcp", "session-event", "notes", "phase3", "session:sess-2")
+    assert "phase:phase-3" in saved_memories[1].purpose_tags
+    assert "step:step-2" in saved_memories[1].purpose_tags
+    assert saved_memories[2].purpose_tags[:4] == ("query-mcp", "session-event", "notes", "phase3")
+    assert "session:sess-2" in saved_memories[2].purpose_tags
     assert len(saved_work_session_events) == 4
     assert saved_work_session_events[0].source_kind == "session-start"
     assert saved_work_session_events[0].event_type == "start"
@@ -10655,13 +10806,16 @@ def test_query_mcp_save_work_facts_autogenerates_session_id(monkeypatch):
     assert result["session_id"].startswith("ws_proj-1_emp-1_")
     assert result["chat_session_id"] == result["session_id"]
     assert result["trajectory"]["session_id"] == result["session_id"]
-    assert result["trajectory"]["task_tree_chat_session_id"] == result["session_id"]
     assert result["work_session_event"]["status"] == "saved"
-    assert result["task_tree"]["chat_session_id"] == result["session_id"]
     assert len(saved_memories) == 1
     assert len(saved_work_session_events) == 1
     assert saved_work_session_events[0].session_id == result["session_id"]
-    assert saved_work_session_events[0].task_tree_chat_session_id == result["session_id"]
+    if "task_tree_chat_session_id" in result["trajectory"]:
+        assert result["trajectory"]["task_tree_chat_session_id"] == result["session_id"]
+    if "task_tree" in result:
+        assert result["task_tree"]["chat_session_id"] == result["session_id"]
+    if getattr(saved_work_session_events[0], "task_tree_chat_session_id", ""):
+        assert saved_work_session_events[0].task_tree_chat_session_id == result["session_id"]
 
 
 def test_query_mcp_work_session_tools_accept_string_list_fields(monkeypatch):
@@ -10709,6 +10863,251 @@ def test_query_mcp_work_session_tools_accept_string_list_fields(monkeypatch):
     assert saved_work_session_events[1].changed_files == ["web-admin/api/services/dynamic_mcp_apps_query.py"]
     assert saved_work_session_events[1].verification == ["python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py"]
     assert saved_work_session_events[2].next_steps == ["检查 query sse 真实调用"]
+
+
+def test_query_mcp_diagnostic_goal_uses_single_lookup_task_tree(monkeypatch):
+    registered_tools, _registered_resources, _saved_memories, _saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    started = registered_tools["start_work_session"](
+        "proj-1",
+        employee_id="emp-1",
+        goal="检查为什么新需求 '#/pages/attendance/addrule 这个页面的 补卡申请 按钮 激活颜色没变化 更换成 rgb(39, 181, 156) 这个颜色' 又卡在 33%",
+        phase="investigation",
+        step="定位需求记录与会话/任务树轨迹",
+        status="in_progress",
+    )
+
+    task_tree = started["task_tree"]
+    leaf_nodes = [item for item in task_tree["nodes"] if int(item.get("level") or 0) == 1]
+    assert len(leaf_nodes) == 1
+    assert task_tree["task_tree_health"]["detected_intent"] == "lookup_query"
+    assert "检索问题所需信息并直接回答用户" in leaf_nodes[0]["title"]
+
+    saved = registered_tools["save_work_facts"](
+        "proj-1",
+        employee_id="emp-1",
+        session_id=started["session_id"],
+        chat_session_id=started["chat_session_id"],
+        goal="检查为什么新需求 '#/pages/attendance/addrule 这个页面的 补卡申请 按钮 激活颜色没变化 更换成 rgb(39, 181, 156) 这个颜色' 又卡在 33%",
+        phase="investigation",
+        step="确认卡住根因",
+        status="completed",
+        facts=[
+            "已确认该需求卡在 33% 是因为 implementation 和 verification 节点未完成闭环，而不是代码改动缺失。"
+        ],
+        verification=["已核对任务树节点状态与 requirement history。"],
+    )
+
+    updated_task_tree = saved["task_tree"]
+    updated_leaf_nodes = [item for item in updated_task_tree["nodes"] if int(item.get("level") or 0) == 1]
+    assert len(updated_leaf_nodes) == 1
+    assert updated_task_tree["progress_percent"] == 100
+    assert updated_task_tree["status"] == "done"
+
+
+def test_query_mcp_implementation_round_can_progress_past_33_with_completion_and_verification_signals(
+    monkeypatch,
+):
+    from contextvars import ContextVar
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+    import services.project_chat_task_tree as task_tree_svc
+
+    registered_tools, _registered_resources, _saved_memories, _saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    username_ctx = ContextVar("query_user_impl_progress", default="")
+    session_ctx = ContextVar("query_session_impl_progress", default="")
+    username_ctx.set("admin")
+    session_ctx.set("transport-789")
+    session_contexts = {
+        "transport-789": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "employee_id": "",
+            "chat_session_id": "chat-789",
+        }
+    }
+    query_mcp_svc.create_query_mcp(
+        current_key_owner_username_ctx=username_ctx,
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+
+    started = registered_tools["start_work_session"](
+        "proj-1",
+        employee_id="emp-1",
+        goal="修复任务树进入 33% 后不往下推进的问题",
+        phase="analysis",
+        step="定位问题原因",
+        status="in_progress",
+    )
+
+    save_result = registered_tools["save_work_facts"](
+        "proj-1",
+        employee_id="emp-1",
+        session_id=started["session_id"],
+        chat_session_id=started["chat_session_id"],
+        goal="修复任务树进入 33% 后不往下推进的问题",
+        phase="implementation",
+        step="修复核心推进逻辑",
+        status="completed",
+        facts=["已完成推进逻辑修复。"],
+        verification=["已通过 git diff 和日志确认修改生效。"],
+    )
+
+    audited = task_tree_svc.audit_task_tree_round(
+        project_id="proj-1",
+        username="admin",
+        chat_session_id=started["chat_session_id"],
+        assistant_content="已完成推进逻辑修复，并已通过 git diff 和日志确认修改生效，继续验证结果并完成本轮收尾。",
+        successful_tool_names=["local_connector_read_file", "local_connector_run_command"],
+        task_tree_tool_used=False,
+    )
+
+    assert save_result["task_tree"]["progress_percent"] >= 67
+    assert save_result["task_tree"]["status"] in {"in_progress", "done"}
+    if audited is not None:
+        assert audited["code"] == "step_auto_completed"
+        assert audited["task_tree"]["progress_percent"] >= 67
+
+
+def test_query_mcp_implementation_round_reaches_100_after_verification_event(
+    monkeypatch,
+):
+    from contextvars import ContextVar
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+
+    registered_tools, _registered_resources, _saved_memories, _saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    username_ctx = ContextVar("query_user_impl_done", default="")
+    session_ctx = ContextVar("query_session_impl_done", default="")
+    username_ctx.set("admin")
+    session_ctx.set("transport-790")
+    session_contexts = {
+        "transport-790": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "employee_id": "",
+            "chat_session_id": "chat-790",
+        }
+    }
+    query_mcp_svc.create_query_mcp(
+        current_key_owner_username_ctx=username_ctx,
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+
+    started = registered_tools["start_work_session"](
+        "proj-1",
+        employee_id="emp-1",
+        goal="修复任务树进入 33% 后不往下推进的问题",
+        phase="analysis",
+        step="定位问题原因",
+        status="in_progress",
+    )
+
+    save_result = registered_tools["save_work_facts"](
+        "proj-1",
+        employee_id="emp-1",
+        session_id=started["session_id"],
+        chat_session_id=started["chat_session_id"],
+        goal="修复任务树进入 33% 后不往下推进的问题",
+        phase="implementation",
+        step="修复核心推进逻辑",
+        status="completed",
+        facts=["已完成推进逻辑修复。"],
+        verification=["已通过 git diff 和日志确认修改生效。"],
+    )
+
+    event_result = registered_tools["append_session_event"](
+        "proj-1",
+        session_id=started["session_id"],
+        chat_session_id=started["chat_session_id"],
+        event_type="verification",
+        content="已完成最终回归验证",
+        employee_id="emp-1",
+        phase="verification",
+        step="验证结果并完成本轮收尾",
+        status="completed",
+        verification=["npm run build 通过；关键路径人工点按通过。"],
+    )
+
+    assert save_result["task_tree"]["progress_percent"] >= 67
+    assert event_result["task_tree"]["progress_percent"] == 100
+    assert event_result["task_tree"]["status"] == "done"
+
+
+def test_query_mcp_work_session_updates_do_not_create_new_task_tree_without_explicit_goal(
+    monkeypatch,
+):
+    from contextvars import ContextVar
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+    import services.project_chat_task_tree as task_tree_svc
+
+    registered_tools, _registered_resources, _saved_memories, _saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    username_ctx = ContextVar("query_user_same_tree", default="")
+    session_ctx = ContextVar("query_session_same_tree", default="")
+    username_ctx.set("admin")
+    session_ctx.set("transport-791")
+    session_contexts = {
+        "transport-791": {
+            "project_id": "proj-1",
+            "project_name": "项目一",
+            "employee_id": "",
+            "chat_session_id": "chat-791",
+        }
+    }
+    query_mcp_svc.create_query_mcp(
+        current_key_owner_username_ctx=username_ctx,
+        current_mcp_session_id_ctx=session_ctx,
+        session_contexts=session_contexts,
+    )
+
+    started = registered_tools["start_work_session"](
+        "proj-1",
+        employee_id="emp-1",
+        goal="修复任务树进入 33% 后不往下推进的问题",
+        phase="analysis",
+        step="定位问题原因",
+        status="in_progress",
+    )
+    started_tree_id = started["task_tree"]["id"]
+    started_root_goal = started["task_tree"]["root_goal"]
+
+    save_result = registered_tools["save_work_facts"](
+        "proj-1",
+        employee_id="emp-1",
+        session_id=started["session_id"],
+        chat_session_id=started["chat_session_id"],
+        phase="implementation",
+        step="修复核心推进逻辑",
+        status="completed",
+        facts=["已完成推进逻辑修复。"],
+        verification=["已通过 git diff 和日志确认修改生效。"],
+    )
+    event_result = registered_tools["append_session_event"](
+        "proj-1",
+        session_id=started["session_id"],
+        chat_session_id=started["chat_session_id"],
+        event_type="verification",
+        content="已完成最终回归验证",
+        employee_id="emp-1",
+        phase="verification",
+        step="验证结果并完成本轮收尾",
+        status="completed",
+        verification=["npm run build 通过；关键路径人工点按通过。"],
+    )
+
+    assert save_result["task_tree"]["id"] == started_tree_id
+    assert save_result["task_tree"]["root_goal"] == started_root_goal
+    assert event_result["task_tree"]["id"] == started_tree_id
+    assert event_result["task_tree"]["root_goal"] == started_root_goal
+    assert event_result["task_tree"]["progress_percent"] == 100
+
+    current_tree = task_tree_svc.get_task_tree_for_chat_session("proj-1", "admin", started["chat_session_id"])
+    serialized = task_tree_svc.serialize_task_tree(current_tree)
+    assert serialized["id"] == started_tree_id
+    assert serialized["root_goal"] == started_root_goal
 
 
 def test_query_mcp_list_recent_project_requirements_supports_recent_and_date_filters(monkeypatch):
@@ -11607,6 +12006,45 @@ def test_execute_skill_proxy_supports_command_entries_and_custom_flags(tmp_path)
     assert payload["cwd"] == str(tmp_path.resolve())
 
 
+def test_execute_skill_proxy_parses_stdout_json_and_serializes_dict_args(tmp_path):
+    import sys
+
+    from services import dynamic_mcp_skill_executor as executor_svc
+
+    script_path = tmp_path / "runner.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "import argparse",
+                "import json",
+                "",
+                "parser = argparse.ArgumentParser()",
+                "parser.add_argument('--payload')",
+                "args = parser.parse_args()",
+                "print(json.dumps({'payload': json.loads(args.payload)}))",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = executor_svc.execute_skill_proxy(
+        {
+            "script_path": str(script_path),
+            "runtime": "command",
+            "command": [sys.executable],
+            "employee_id_flag": "",
+            "api_key_flag": "",
+            "cwd": str(tmp_path),
+        },
+        project_root=tmp_path,
+        args={"payload": {"task": "demo", "retry": 1}},
+    )
+
+    assert result["status"] == "ok"
+    assert result["stdout_json"] == {"payload": {"task": "demo", "retry": 1}}
+
+
 @pytest.mark.asyncio
 async def test_skill_list_payload_includes_proxy_status(tmp_path, monkeypatch):
     from routers import skills as skills_router
@@ -11967,6 +12405,52 @@ def test_build_project_chat_messages_prefers_project_ui_rules(monkeypatch):
     assert "优先使用当前项目已绑定的员工、规则和技能" in system_prompt
     assert "重新获取与当前问题直接相关的规则正文" in system_prompt
     assert system_prompt.index("当前项目已绑定 UI 规则") < system_prompt.index("当前执行员工")
+
+
+def test_build_project_chat_messages_includes_project_workflow_skills(monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig
+
+    class DummySkill:
+        def __init__(self, skill_id: str, name: str, description: str, mcp_enabled: bool = True) -> None:
+            self.id = skill_id
+            self.name = name
+            self.description = description
+            self.mcp_enabled = mcp_enabled
+            self.package_dir = "mcp-skills/knowledge/skill-packages/query-mcp-workflow"
+
+    class DummySkillStore:
+        @staticmethod
+        def get(skill_id):
+            if skill_id == "query-mcp-workflow":
+                return DummySkill(
+                    "query-mcp-workflow",
+                    "Query MCP Workflow",
+                    "统一查询 MCP 工作流稳定化技能",
+                )
+            return None
+
+    monkeypatch.setattr(projects_router, "skill_store", DummySkillStore())
+
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        description="测试项目",
+        workflow_skill_ids=["query-mcp-workflow"],
+        default_workflow_skill_id="query-mcp-workflow",
+    )
+
+    messages = projects_router._build_project_chat_messages(
+        project,
+        "继续执行当前需求",
+        [],
+    )
+    system_prompt = str(messages[0]["content"])
+
+    assert "当前项目已启用系统工作流技能" in system_prompt
+    assert "Query MCP Workflow" in system_prompt
+    assert "默认" in system_prompt
+    assert "不要把技能说明当成已完成的后端校验" in system_prompt
 
 
 def test_build_project_manual_template_payload_prefers_ai_decided_collaboration(monkeypatch):

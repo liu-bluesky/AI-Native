@@ -128,7 +128,11 @@ _SYSTEM_PATH_PREFIXES = (
     "~/.ssh",
 )
 _QUERY_TOOL_NAMES = {
+    "start_project_workflow",
     "bind_project_context",
+    "get_current_task_tree",
+    "update_task_node_status",
+    "complete_task_node_with_verification",
     "search_ids",
     "get_content",
     "get_manual_content",
@@ -2309,7 +2313,8 @@ def build_query_client_profile_text(client_name: str) -> str:
         title = "Codex"
         focus = [
             "- 定位: 适合以代码任务拆解、补丁实现和结构化交付为主的开发型 CLI。",
-            "- 推荐链路: query://usage-guide -> query://client-profile/codex -> search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan -> check_operation_policy -> start_work_session -> build_delivery_report。",
+            "- 推荐链路: query://usage-guide -> query://client-profile/codex -> start_project_workflow -> check_operation_policy -> save_work_facts/append_session_event -> build_delivery_report。",
+            "- 固定入口: 优先调用 `start_project_workflow`，不要手动拼接 search_ids / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan 这一整串前置步骤。",
             "- 接入约束: `description`、项目说明和“当前项目”文字不会自动绑定任务树；URL 或首轮工具参数里必须显式出现 `project_id`，需要续接时再补 `chat_session_id` 或 `bind_project_context(...)`。",
             "- 接入约束: 如果当前 CLI 没有活跃 MCP session，只要显式传了 `project_id + chat_session_id`，`bind_project_context(...)` 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 `chat_session_id`。",
             "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`。",
@@ -2392,10 +2397,11 @@ def build_query_usage_guide_text() -> str:
         "# Unified Query MCP\n\n"
         "- 统一入口路径: /mcp/query\n"
         "- 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹、需求历史查询和交付报告能力。\n"
-        "- 推荐工具: bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory\n"
+        "- 推荐工具: start_project_workflow / bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory\n"
         "\n"
         "## 最少执行规则\n"
         "1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。\n"
+        "1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。\n"
         "2. MCP 配置里的 description、项目说明、\"当前项目\" 这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文，以及 bind_project_context(...) 写入的 MCP 会话绑定。\n"
         "3. 若接入地址缺少 project_id，或需要续接任务树但缺少 chat_session_id，首轮立即调用 bind_project_context(project_id, chat_session_id?, root_goal?)；不要只依赖 description 里的项目说明。\n"
         "4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。\n"
@@ -2718,6 +2724,24 @@ def create_query_mcp(
             }
         return serialize_task_tree(session)
 
+    def _ensure_or_reuse_query_task_tree(
+        *,
+        project_id: str,
+        chat_session_id: str = "",
+        root_goal: str = "",
+    ) -> dict | None:
+        root_goal_value = _normalize_text(root_goal, 1000)
+        if root_goal_value:
+            return _ensure_query_task_tree(
+                root_goal=root_goal_value,
+                project_id=project_id,
+                chat_session_id=chat_session_id,
+            )
+        return _get_existing_query_task_tree(
+            project_id=project_id,
+            chat_session_id=chat_session_id,
+        )
+
     def _resolve_task_tree_context() -> tuple[str, str]:
         username = ""
         if current_key_owner_username_ctx is not None:
@@ -2736,6 +2760,13 @@ def create_query_mcp(
             bound_context.get("chat_session_id"),
             120,
         ) or _normalize_text(fallback_chat_session_id, 120)
+
+    def _resolve_query_project_id(explicit_project_id: str = "") -> str:
+        bound_context = _current_query_session_context()
+        return _normalize_text(explicit_project_id, 120) or _normalize_text(
+            bound_context.get("project_id"),
+            120,
+        )
 
     def _select_query_task_tree_node(
         payload: dict[str, Any] | None,
@@ -2791,11 +2822,25 @@ def create_query_mcp(
                 return 1
             return 0
 
+        if normalized_phase:
+            phase_matched_nodes = [
+                node for node in candidate_nodes
+                if phase_match_score(node) > 0
+            ]
+            unfinished_phase_nodes = [
+                node for node in phase_matched_nodes
+                if _normalize_status(node.get("status")) != "done"
+            ]
+            if unfinished_phase_nodes:
+                candidate_nodes = unfinished_phase_nodes
+            elif phase_matched_nodes:
+                candidate_nodes = phase_matched_nodes
+
         ranked = sorted(
             candidate_nodes,
             key=lambda node: (
-                step_match_score(node),
                 phase_match_score(node),
+                step_match_score(node),
                 1 if _normalize_status(node.get("status")) != "done" else 0,
                 1 if _normalize_text(node.get("id"), 80) == current_node_id else 0,
                 -int(node.get("level") or 0),
@@ -2849,6 +2894,30 @@ def create_query_mcp(
             ),
             "task_node_id": _normalize_text(selected_node.get("id"), 80),
             "task_node_title": _normalize_text(selected_node.get("title"), 200),
+        }
+
+    def _fallback_query_task_tree_binding(
+        *,
+        task_tree_payload: dict | None,
+        chat_session_id: str = "",
+    ) -> dict[str, str]:
+        if not isinstance(task_tree_payload, dict):
+            return {}
+        current_node = (
+            task_tree_payload.get("current_node")
+            if isinstance(task_tree_payload.get("current_node"), dict)
+            else {}
+        )
+        return {
+            "task_tree_session_id": _normalize_text(task_tree_payload.get("id"), 80),
+            "task_tree_chat_session_id": _normalize_text(
+                task_tree_payload.get("source_chat_session_id")
+                or task_tree_payload.get("chat_session_id")
+                or chat_session_id,
+                120,
+            ),
+            "task_node_id": _normalize_text(current_node.get("id"), 80),
+            "task_node_title": _normalize_text(current_node.get("title"), 200),
         }
 
     def _synthesize_task_tree_summary(content: str, step: str = "", goal: str = "") -> str:
@@ -2936,6 +3005,15 @@ def create_query_mcp(
             return None
         from services.project_chat_task_tree import get_task_tree_for_chat_session, update_task_node, serialize_task_tree
 
+        def _finalize_serialized_payload(payload: dict | None) -> dict | None:
+            if not isinstance(payload, dict):
+                return payload
+            progress_percent = int(payload.get("progress_percent") or 0)
+            if _normalize_status(payload.get("status")) == "pending" and progress_percent > 0:
+                payload = dict(payload)
+                payload["status"] = "in_progress"
+            return payload
+
         session = get_task_tree_for_chat_session(
             normalized_project_id,
             username,
@@ -2982,6 +3060,29 @@ def create_query_mcp(
             )
             if root_node is None or _normalize_status(root_node.get("status")) == "done":
                 return updated_session
+            if (
+                _normalize_status(root_node.get("status")) == "pending"
+                and any(_normalize_status(node.get("status")) != "pending" for node in leaf_nodes)
+            ):
+                updated_session = update_task_node(
+                    project_id=normalized_project_id,
+                    username=username,
+                    chat_session_id=normalized_chat_session_id,
+                    node_id=_normalize_text(root_node.get("id"), 80),
+                    status="in_progress",
+                    summary_for_model=_normalize_text(
+                        serialized_session.get("root_goal") or serialized_session.get("title"),
+                        1000,
+                    ),
+                )
+                serialized_session = serialize_task_tree(updated_session) or {}
+                nodes = serialized_session.get("nodes") if isinstance(serialized_session.get("nodes"), list) else []
+                root_node = next(
+                    (node for node in nodes if not _normalize_text(node.get("parent_id"), 80)),
+                    None,
+                )
+                if root_node is None or _normalize_status(root_node.get("status")) == "done":
+                    return updated_session
             root_summary = _normalize_text(
                 summary_for_model,
                 1000,
@@ -3043,7 +3144,7 @@ def create_query_mcp(
                         allow_direct_completion=True,
                     )
                     session = finalize_root_if_ready(session)
-                    return serialize_task_tree(session)
+                    return _finalize_serialized_payload(serialize_task_tree(session))
             session = update_task_node(
                 project_id=normalized_project_id,
                 username=username,
@@ -3055,14 +3156,18 @@ def create_query_mcp(
                 is_current=True,
                 allow_direct_completion=True,
             )
-            return serialize_task_tree(session)
+            return _finalize_serialized_payload(serialize_task_tree(session))
         except ValueError:
             fallback_session = get_task_tree_for_chat_session(
                 normalized_project_id,
                 username,
                 normalized_chat_session_id,
             )
-            return serialize_task_tree(fallback_session) if fallback_session is not None else None
+            return (
+                _finalize_serialized_payload(serialize_task_tree(fallback_session))
+                if fallback_session is not None
+                else None
+            )
 
     def _audit_query_task_tree(
         *,
@@ -3137,6 +3242,382 @@ def create_query_mcp(
         if task_tree_payload is not None:
             payload["task_tree"] = task_tree_payload
         return payload
+
+    def _find_latest_work_session_id_for_chat_session(
+        *,
+        project_id: str,
+        chat_session_id: str,
+    ) -> str:
+        project_id_value = _normalize_text(project_id, 120)
+        chat_session_id_value = _normalize_text(chat_session_id, 120)
+        if not (project_id_value and chat_session_id_value):
+            return ""
+        try:
+            events = work_session_store.list_events(
+                project_id=project_id_value,
+                session_id="",
+                query="",
+                limit=50,
+            )
+        except Exception:
+            return ""
+        for item in events or []:
+            if _normalize_text(getattr(item, "task_tree_chat_session_id", ""), 120) != chat_session_id_value:
+                continue
+            session_id_value = _normalize_text(getattr(item, "session_id", ""), 160)
+            if session_id_value:
+                return session_id_value
+        return ""
+
+    def _build_query_workflow_guard(
+        *,
+        raw_request: str,
+        project_id: str,
+        chat_session_id: str,
+        clarity_score: int,
+        clarity_threshold: int,
+        manual_loaded: bool,
+        analysis_generated: bool,
+        context_resolved: bool,
+        plan_generated: bool,
+        work_session_started: bool,
+        task_tree_ready: bool,
+        task_tree_matches_request: bool,
+    ) -> dict:
+        missing_steps: list[str] = []
+        required_before_execution: list[str] = []
+        backend_enforced_checks: list[str] = []
+
+        raw_request_value = _normalize_text(raw_request, 2000)
+        project_id_value = _normalize_text(project_id, 120)
+        chat_session_id_value = _normalize_text(chat_session_id, 120)
+
+        if raw_request_value:
+            backend_enforced_checks.extend(["raw_request_present", "raw_request_search"])
+        else:
+            missing_steps.extend(["raw_request", "raw_request_search"])
+            required_before_execution.extend(
+                ["provide_raw_request", "call_search_ids_with_raw_request"]
+            )
+
+        if project_id_value:
+            backend_enforced_checks.append("project_bound")
+        else:
+            missing_steps.append("project_id")
+            required_before_execution.append("provide_project_id")
+
+        if chat_session_id_value:
+            backend_enforced_checks.append("chat_session_bound")
+        else:
+            missing_steps.append("chat_session_id")
+            required_before_execution.append("provide_chat_session_id")
+
+        if manual_loaded:
+            backend_enforced_checks.append("manual_loaded")
+        elif project_id_value:
+            missing_steps.append("project_manual")
+            required_before_execution.append("load_project_manual")
+
+        if analysis_generated:
+            backend_enforced_checks.append("analysis_generated")
+        elif raw_request_value and project_id_value:
+            missing_steps.append("analysis")
+            required_before_execution.append("generate_analysis")
+
+        if context_resolved:
+            backend_enforced_checks.append("context_resolved")
+        elif raw_request_value and project_id_value:
+            missing_steps.append("relevant_context")
+            required_before_execution.append("resolve_relevant_context")
+
+        if plan_generated:
+            backend_enforced_checks.append("plan_generated")
+        elif raw_request_value and project_id_value:
+            missing_steps.append("execution_plan")
+            required_before_execution.append("generate_execution_plan")
+
+        if work_session_started:
+            backend_enforced_checks.append("work_session_started")
+
+        if task_tree_ready:
+            backend_enforced_checks.append("task_tree_bound")
+        elif project_id_value and chat_session_id_value:
+            missing_steps.append("task_tree_binding")
+            required_before_execution.append("bind_project_context")
+
+        if task_tree_matches_request:
+            backend_enforced_checks.append("task_tree_matches_request")
+        elif task_tree_ready:
+            missing_steps.append("fresh_chat_session_id")
+            required_before_execution.append("create_new_chat_session_id_and_rebind")
+
+        missing_steps = list(dict.fromkeys(missing_steps))
+        required_before_execution = list(dict.fromkeys(required_before_execution))
+        backend_enforced_checks = list(dict.fromkeys(backend_enforced_checks))
+
+        if missing_steps:
+            return {
+                "status": "blocked",
+                "missing_steps": missing_steps,
+                "blocked_reason": "缺少项目绑定、原始问题登记或关键前置步骤，不能进入实现。",
+                "required_before_execution": required_before_execution,
+                "clarity_score": clarity_score,
+                "clarity_threshold": clarity_threshold,
+            }, backend_enforced_checks
+
+        if clarity_score < clarity_threshold:
+            return {
+                "status": "needs_confirmation",
+                "missing_steps": [],
+                "blocked_reason": (
+                    f"当前需求清晰度为 {clarity_score}/{clarity_threshold}，"
+                    "需要先补齐目标、对象、范围或预期结果。"
+                ),
+                "required_before_execution": [
+                    "clarify_goal_scope_expected_result",
+                    "reinvoke_start_project_workflow",
+                ],
+                "clarity_score": clarity_score,
+                "clarity_threshold": clarity_threshold,
+            }, backend_enforced_checks
+
+        return {
+            "status": "ready",
+            "missing_steps": [],
+            "blocked_reason": "",
+            "required_before_execution": [],
+            "clarity_score": clarity_score,
+            "clarity_threshold": clarity_threshold,
+        }, backend_enforced_checks
+
+    def _start_project_workflow_payload(
+        *,
+        raw_request: str,
+        project_id: str = "",
+        chat_session_id: str = "",
+        client_profile: str = "codex",
+        employee_id: str = "",
+        clarity_score: int = 3,
+        start_session: bool = True,
+        session_id: str = "",
+        max_steps: int = 6,
+    ) -> dict:
+        raw_request_value = _normalize_text(raw_request, 2000)
+        project_id_value = _normalize_text(project_id, 120)
+        chat_session_id_value = _normalize_text(chat_session_id, 120)
+        employee_id_value = _normalize_text(employee_id, 120)
+        client_profile_value = _normalize_text(client_profile, 80) or "codex"
+        threshold = _query_mcp_clarity_confirm_threshold()
+        try:
+            clarity_value = max(1, min(int(clarity_score), 5))
+        except (TypeError, ValueError):
+            clarity_value = threshold
+        try:
+            max_steps_value = max(1, min(int(max_steps or 6), 10))
+        except (TypeError, ValueError):
+            max_steps_value = 6
+
+        lookup_payload = {
+            "keyword": raw_request_value,
+            "project_id": project_id_value,
+            "employee_id": employee_id_value,
+            "projects": [],
+            "employees": [],
+            "rules": [],
+        }
+        if raw_request_value:
+            lookup_payload = search_ids(
+                keyword=raw_request_value,
+                project_id=project_id_value,
+                employee_id=employee_id_value,
+                limit=10,
+            )
+
+        manual_payload: dict = {}
+        manual_loaded = False
+        if project_id_value:
+            manual_payload = get_manual_content(project_id=project_id_value)
+            manual_loaded = not bool(manual_payload.get("error")) and bool(
+                _normalize_text(manual_payload.get("manual"), 200)
+            )
+
+        binding_payload: dict = {}
+        task_tree_payload: dict | None = None
+        task_tree_matches_request = False
+        if project_id_value and chat_session_id_value:
+            binding_payload = bind_project_context(
+                project_id=project_id_value,
+                chat_session_id=chat_session_id_value,
+                root_goal=raw_request_value,
+            )
+            if isinstance(binding_payload.get("task_tree"), dict):
+                task_tree_payload = binding_payload.get("task_tree")
+        elif project_id_value:
+            task_tree_payload = _get_existing_query_task_tree(
+                project_id=project_id_value,
+                chat_session_id=chat_session_id_value,
+            )
+
+        if task_tree_payload is None and project_id_value and chat_session_id_value and raw_request_value:
+            task_tree_payload = _ensure_or_reuse_query_task_tree(
+                project_id=project_id_value,
+                chat_session_id=chat_session_id_value,
+                root_goal=raw_request_value,
+            )
+
+        current_node = (
+            task_tree_payload.get("current_node")
+            if isinstance((task_tree_payload or {}).get("current_node"), dict)
+            else {}
+        )
+        task_tree_goal = _normalize_text(
+            (task_tree_payload or {}).get("root_goal") or (task_tree_payload or {}).get("title"),
+            1000,
+        )
+        task_tree_matches_request = bool(
+            task_tree_goal and raw_request_value and task_tree_goal == raw_request_value
+        )
+
+        analysis_payload = (
+            _analyze_task_payload(
+                raw_request_value,
+                project_id=project_id_value,
+                employee_id=employee_id_value,
+            )
+            if raw_request_value
+            else {}
+        )
+        relevant_context_payload = (
+            _resolve_relevant_context_payload(
+                raw_request_value,
+                project_id=project_id_value,
+                employee_id=employee_id_value,
+                limit=min(max_steps_value, 10),
+            )
+            if raw_request_value
+            else {}
+        )
+        execution_plan_payload = (
+            _generate_execution_plan_payload(
+                raw_request_value,
+                project_id=project_id_value,
+                employee_id=employee_id_value,
+                max_steps=max_steps_value,
+            )
+            if raw_request_value
+            else {}
+        )
+
+        resolved_session_id = _normalize_text(session_id, 160)
+        session_result: dict = {}
+        latest_session_id = ""
+        if project_id_value and chat_session_id_value:
+            latest_session_id = _find_latest_work_session_id_for_chat_session(
+                project_id=project_id_value,
+                chat_session_id=chat_session_id_value,
+            )
+        if not resolved_session_id:
+            resolved_session_id = latest_session_id
+        if (
+            start_session
+            and not resolved_session_id
+            and raw_request_value
+            and project_id_value
+            and chat_session_id_value
+            and clarity_value >= threshold
+        ):
+            session_result = start_work_session(
+                project_id=project_id_value,
+                employee_id=employee_id_value,
+                goal=raw_request_value,
+                title=raw_request_value[:120],
+                chat_session_id=chat_session_id_value,
+                phase="analysis",
+                step="start_project_workflow",
+                status="started",
+            )
+            if not session_result.get("error"):
+                resolved_session_id = _normalize_text(session_result.get("session_id"), 160)
+
+        task_tree_available = isinstance(task_tree_payload, dict)
+        guard, backend_checks = _build_query_workflow_guard(
+            raw_request=raw_request_value,
+            project_id=project_id_value,
+            chat_session_id=chat_session_id_value,
+            clarity_score=clarity_value,
+            clarity_threshold=threshold,
+            manual_loaded=manual_loaded,
+            analysis_generated=bool(analysis_payload),
+            context_resolved=bool(relevant_context_payload),
+            plan_generated=bool(execution_plan_payload),
+            work_session_started=bool(resolved_session_id),
+            task_tree_ready=task_tree_available,
+            task_tree_matches_request=task_tree_matches_request,
+        )
+
+        status = _normalize_text(guard.get("status"), 40) or "blocked"
+        if status == "blocked":
+            next_required_actions = [
+                "补齐 project_id 和 chat_session_id 后重新调用 start_project_workflow"
+            ]
+            if "raw_request" in (guard.get("missing_steps") or []):
+                next_required_actions.insert(0, "保留用户原始问题原文并重新调用 start_project_workflow")
+        elif status == "needs_confirmation":
+            next_required_actions = [
+                "先确认目标、对象、范围和预期结果",
+                "确认后使用同一 raw_request/project_id/chat_session_id 重新调用 start_project_workflow",
+            ]
+        else:
+            next_required_actions = [
+                "mark_current_task_node_in_progress",
+                "perform_file_edits",
+                "run_targeted_verification",
+            ]
+            if not {"get_current_task_tree", "update_task_node_status", "complete_task_node_with_verification"}.issubset(_QUERY_TOOL_NAMES):
+                next_required_actions.append("任务树闭环未完成：当前宿主未暴露任务树推进工具")
+            else:
+                next_required_actions.append("complete_task_node_with_verification")
+
+        task_tree_summary = {
+            "available": task_tree_available,
+            "task_tree_closure_supported": {
+                "get_current_task_tree",
+                "update_task_node_status",
+                "complete_task_node_with_verification",
+            }.issubset(_QUERY_TOOL_NAMES),
+            "matches_current_request": task_tree_matches_request,
+            "id": _normalize_text((task_tree_payload or {}).get("id"), 80),
+            "current_node_id": _normalize_text(current_node.get("id"), 80),
+            "current_node_title": _normalize_text(current_node.get("title"), 200),
+            "current_node_status": _normalize_text(current_node.get("status"), 40),
+            "chat_session_id": _normalize_text(
+                (task_tree_payload or {}).get("chat_session_id"),
+                120,
+            ),
+            "root_goal": task_tree_goal,
+        }
+
+        return {
+            "status": status,
+            "project_id": project_id_value,
+            "chat_session_id": chat_session_id_value,
+            "session_id": resolved_session_id,
+            "workflow_version": "query-mcp-workflow/v1",
+            "client_profile": client_profile_value,
+            "clarity_score": clarity_value,
+            "clarity_threshold": threshold,
+            "id_lookup": lookup_payload,
+            "manual": manual_payload,
+            "analysis": analysis_payload,
+            "relevant_context": relevant_context_payload,
+            "execution_plan": execution_plan_payload,
+            "task_tree": task_tree_summary,
+            "task_tree_binding": binding_payload,
+            "work_session": session_result,
+            "guard": guard,
+            "next_required_actions": next_required_actions,
+            "backend_enforced_checks": backend_checks,
+        }
 
     def _get_content_payload(
         project_id: str = "",
@@ -3328,6 +3809,197 @@ def create_query_mcp(
             include_project_rules=True,
             include_employee_skills=True,
             include_employee_rules=True,
+        )
+
+    @mcp.tool()
+    def get_current_task_tree(project_id: str = "", chat_session_id: str = "") -> dict:
+        """读取当前项目 / 会话绑定的任务树。"""
+
+        project_id_value = _resolve_query_project_id(project_id)
+        chat_session_id_value = _resolve_query_chat_session_id(chat_session_id)
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        if not chat_session_id_value:
+            return {"error": "chat_session_id is required"}
+
+        from services.project_chat_task_tree import get_task_tree_tool_payload
+
+        username, _ = _resolve_task_tree_context()
+        payload = get_task_tree_tool_payload(
+            project_id=project_id_value,
+            username=username,
+            chat_session_id=chat_session_id_value,
+        )
+        if payload.get("error"):
+            return {
+                **payload,
+                "project_id": project_id_value,
+                "chat_session_id": chat_session_id_value,
+            }
+        payload["project_id"] = project_id_value
+        payload["chat_session_id"] = _normalize_text(
+            payload.get("chat_session_id"),
+            120,
+        ) or chat_session_id_value
+        return payload
+
+    @mcp.tool()
+    def update_task_node_status(
+        project_id: str = "",
+        node_id: str = "",
+        status: str = "",
+        chat_session_id: str = "",
+        summary_for_model: str = "",
+        verification_result: str = "",
+        is_current: bool | None = None,
+    ) -> dict:
+        """推进任务树节点状态。"""
+
+        project_id_value = _resolve_query_project_id(project_id)
+        chat_session_id_value = _resolve_query_chat_session_id(chat_session_id)
+        node_id_value = _normalize_text(node_id, 80)
+        status_value = _normalize_text(status, 40)
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        if not chat_session_id_value:
+            return {"error": "chat_session_id is required"}
+        if not node_id_value:
+            return {"error": "node_id is required"}
+        if not status_value:
+            return {"error": "status is required"}
+
+        from services.project_chat_task_tree import update_task_tree_node_tool_payload
+
+        username, _ = _resolve_task_tree_context()
+        try:
+            payload = update_task_tree_node_tool_payload(
+                project_id=project_id_value,
+                username=username,
+                chat_session_id=chat_session_id_value,
+                node_id=node_id_value,
+                status=status_value,
+                verification_result=_normalize_text(verification_result, 2000),
+                summary_for_model=_normalize_text(summary_for_model, 1000),
+                is_current=is_current,
+            )
+        except ValueError as exc:
+            return {
+                "error": str(exc),
+                "project_id": project_id_value,
+                "chat_session_id": chat_session_id_value,
+                "node_id": node_id_value,
+                "status": status_value,
+            }
+        if isinstance(payload, dict):
+            payload["project_id"] = project_id_value
+            payload["chat_session_id"] = _normalize_text(
+                payload.get("chat_session_id"),
+                120,
+            ) or chat_session_id_value
+        return payload
+
+    @mcp.tool()
+    def complete_task_node_with_verification(
+        project_id: str = "",
+        node_id: str = "",
+        verification_result: str = "",
+        chat_session_id: str = "",
+        summary_for_model: str = "",
+        is_current: bool | None = None,
+    ) -> dict:
+        """完成任务树节点并写入验证结果。"""
+
+        project_id_value = _resolve_query_project_id(project_id)
+        chat_session_id_value = _resolve_query_chat_session_id(chat_session_id)
+        node_id_value = _normalize_text(node_id, 80)
+        verification_result_value = _normalize_text(verification_result, 2000)
+        if not project_id_value:
+            return {"error": "project_id is required"}
+        if not chat_session_id_value:
+            return {"error": "chat_session_id is required"}
+        if not node_id_value:
+            return {"error": "node_id is required"}
+        if not verification_result_value:
+            return {"error": "verification_result is required"}
+
+        from services.project_chat_task_tree import archive_task_tree, serialize_task_tree, update_task_node
+
+        username, _ = _resolve_task_tree_context()
+        try:
+            session = update_task_node(
+                project_id=project_id_value,
+                username=username,
+                chat_session_id=chat_session_id_value,
+                node_id=node_id_value,
+                status="done",
+                verification_result=verification_result_value,
+                summary_for_model=_normalize_text(summary_for_model, 1000),
+                is_current=is_current,
+                allow_direct_completion=True,
+            )
+        except ValueError as exc:
+            return {
+                "error": str(exc),
+                "project_id": project_id_value,
+                "chat_session_id": chat_session_id_value,
+                "node_id": node_id_value,
+            }
+
+        if _normalize_status(getattr(session, "status", "")) == "done":
+            archived_session = archive_task_tree(
+                session,
+                reason="completed_task_closed",
+                delete_current=True,
+            )
+            archived_payload = serialize_task_tree(archived_session) or {}
+            return {
+                "status": "completed",
+                "project_id": project_id_value,
+                "node_id": node_id_value,
+                "task_tree": None,
+                "history_task_tree": archived_payload,
+                "history_session_id": str(archived_payload.get("id") or "").strip(),
+                "chat_session_id": _normalize_text(session.chat_session_id, 80),
+                "source_chat_session_id": _normalize_text(
+                    archived_payload.get("source_chat_session_id") or session.chat_session_id,
+                    80,
+                ),
+            }
+
+        payload = serialize_task_tree(session) or {}
+        payload["status"] = "completed"
+        payload["project_id"] = project_id_value
+        payload["node_id"] = node_id_value
+        payload["chat_session_id"] = _normalize_text(
+            payload.get("chat_session_id"),
+            120,
+        ) or chat_session_id_value
+        return payload
+
+    @mcp.tool()
+    def start_project_workflow(
+        raw_request: str = "",
+        project_id: str = "",
+        chat_session_id: str = "",
+        client_profile: str = "codex",
+        employee_id: str = "",
+        clarity_score: int = 3,
+        start_session: bool = True,
+        session_id: str = "",
+        max_steps: int = 6,
+    ) -> dict:
+        """固定入口：统一完成项目绑定、分析、上下文聚合、执行计划与 guard 校验。"""
+
+        return _start_project_workflow_payload(
+            raw_request=raw_request,
+            project_id=project_id,
+            chat_session_id=chat_session_id,
+            client_profile=client_profile,
+            employee_id=employee_id,
+            clarity_score=clarity_score,
+            start_session=start_session,
+            session_id=session_id,
+            max_steps=max_steps,
         )
 
     @mcp.tool()
@@ -3558,6 +4230,11 @@ def create_query_mcp(
             phase=phase,
             step=step,
         )
+        if not task_tree_binding:
+            task_tree_binding = _fallback_query_task_tree_binding(
+                task_tree_payload=task_tree_payload,
+                chat_session_id=chat_session_id_value,
+            )
         trajectory = _structured_trajectory_payload(
             kind="session-start",
             session_id=session_id_value,
@@ -3628,8 +4305,12 @@ def create_query_mcp(
             employee_id=employee_id,
         )
         chat_session_id_value = _resolve_query_chat_session_id(chat_session_id) or session_id_value
-        _ensure_query_task_tree(
-            root_goal=_normalize_text(goal) or _normalize_text(step) or fact_items[0],
+        _ensure_or_reuse_query_task_tree(
+            project_id=project_id,
+            chat_session_id=chat_session_id_value,
+            root_goal=goal,
+        )
+        existing_task_tree_payload = _get_existing_query_task_tree(
             project_id=project_id,
             chat_session_id=chat_session_id_value,
         )
@@ -3639,6 +4320,11 @@ def create_query_mcp(
             phase=phase,
             step=step,
         )
+        if not task_tree_binding:
+            task_tree_binding = _fallback_query_task_tree_binding(
+                task_tree_payload=existing_task_tree_payload,
+                chat_session_id=chat_session_id_value,
+            )
         trajectory = _structured_trajectory_payload(
             kind="work-facts",
             session_id=session_id_value,
@@ -3735,8 +4421,12 @@ def create_query_mcp(
         if not content_value:
             return {"error": "content is required"}
         chat_session_id_value = _resolve_query_chat_session_id(chat_session_id) or session_id_value
-        _ensure_query_task_tree(
-            root_goal=_normalize_text(goal) or _normalize_text(step) or content_value,
+        _ensure_or_reuse_query_task_tree(
+            project_id=project_id,
+            chat_session_id=chat_session_id_value,
+            root_goal=goal,
+        )
+        existing_task_tree_payload = _get_existing_query_task_tree(
             project_id=project_id,
             chat_session_id=chat_session_id_value,
         )
@@ -3746,6 +4436,11 @@ def create_query_mcp(
             phase=phase,
             step=step,
         )
+        if not task_tree_binding:
+            task_tree_binding = _fallback_query_task_tree_binding(
+                task_tree_payload=existing_task_tree_payload,
+                chat_session_id=chat_session_id_value,
+            )
         trajectory = _structured_trajectory_payload(
             kind="session-event",
             session_id=session_id_value,
@@ -4190,13 +4885,29 @@ def create_query_mcp(
             include_missing=False,
             rule_limit=30,
         )
-        return {
+        result = {
             "project_id": project_id_value,
             "project_name": str(getattr(project, "name", "") or ""),
             "items": items,
             "total": len(items),
             "project_mcp_path": f"/mcp/projects/{project_id_value}",
         }
+        member_names = [
+            _normalize_text(item.get("name"), 80)
+            for item in items
+            if _normalize_text(item.get("name"), 80)
+        ]
+        if member_names:
+            task_tree_audit = _audit_query_task_tree(
+                project_id=project_id_value,
+                assistant_content=(
+                    f"已获取项目成员列表，共 {len(items)} 名。 成员包括：{ '、'.join(member_names) }。"
+                ),
+                successful_tool_names=["list_project_members"],
+            )
+            if task_tree_audit is not None:
+                result["task_tree_audit"] = task_tree_audit
+        return result
 
     @mcp.tool()
     def get_project_runtime_context(project_id: str) -> dict:

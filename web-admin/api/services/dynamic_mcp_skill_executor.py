@@ -23,7 +23,15 @@ def build_cli_args(payload: dict) -> list[str]:
             continue
         if isinstance(value, list):
             for item in value:
+                if item is None:
+                    continue
+                if isinstance(item, dict):
+                    argv.extend((flag, json.dumps(item, ensure_ascii=False)))
+                    continue
                 argv.extend((flag, str(item)))
+            continue
+        if isinstance(value, dict):
+            argv.extend((flag, json.dumps(value, ensure_ascii=False)))
             continue
         argv.extend((flag, str(value)))
     return argv
@@ -51,6 +59,19 @@ def _append_context_flag(cmd: list[str], flag_name: str, value: str) -> None:
     flag = str(flag_name or "").strip()
     if flag and value:
         cmd.extend([flag, value])
+
+
+def _parse_stdout_json(stdout: str) -> dict | list | None:
+    text = str(stdout or "").strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return None
+    if isinstance(payload, (dict, list)):
+        return payload
+    return None
 
 
 def execute_skill_proxy(
@@ -113,7 +134,7 @@ def execute_skill_proxy(
             "command": cmd,
         }
 
-    return {
+    response = {
         "status": "ok" if result.returncode == 0 else "error",
         "exit_code": result.returncode,
         "stdout": result.stdout,
@@ -121,3 +142,7 @@ def execute_skill_proxy(
         "command": cmd,
         "cwd": cwd,
     }
+    stdout_json = _parse_stdout_json(result.stdout)
+    if stdout_json is not None:
+        response["stdout_json"] = stdout_json
+    return response

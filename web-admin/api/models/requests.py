@@ -252,6 +252,8 @@ class ProjectCreateReq(BaseModel):
     type: Literal["image", "storyboard_video", "mixed"] = "mixed"
     ui_rule_ids: list[str] = []
     experience_rule_ids: list[str] = []
+    workflow_skill_ids: list[str] = []
+    default_workflow_skill_id: str = ""
     mcp_instruction: str = ""
     workspace_path: str = ""
     ai_entry_file: str = ""
@@ -265,11 +267,17 @@ class ProjectUpdateReq(BaseModel):
     type: Literal["image", "storyboard_video", "mixed"] | None = None
     ui_rule_ids: list[str] | None = None
     experience_rule_ids: list[str] | None = None
+    workflow_skill_ids: list[str] | None = None
+    default_workflow_skill_id: str | None = None
     mcp_instruction: str | None = None
     workspace_path: str | None = None
     ai_entry_file: str | None = None
     mcp_enabled: bool | None = None
     feedback_upgrade_enabled: bool | None = None
+
+
+class ProjectWorkflowSkillUpdateReq(BaseModel):
+    skill_id: str
 
 
 class ProjectMaterialAssetCreateReq(BaseModel):

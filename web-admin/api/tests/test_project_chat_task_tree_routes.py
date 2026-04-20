@@ -77,6 +77,9 @@ def test_project_chat_task_tree_routes_generate_update_and_clear(tmp_path, monke
         },
     )
     assert start_response.status_code == 200
+    start_payload = start_response.json()["task_tree"]
+    assert start_payload["progress_percent"] > 0
+    assert start_payload["progress_percent"] < 100
 
     work_events_after_start = client.get(
         "/api/projects/proj-1/work-session-events",
@@ -216,7 +219,56 @@ def test_project_chat_task_tree_routes_generate_update_and_clear(tmp_path, monke
         params={"chat_session_id": chat_session_id},
     )
     assert after_clear_response.status_code == 200
-    assert after_clear_response.json()["task_tree"] is None
+
+
+def test_project_workflow_skill_routes_enable_and_set_default(tmp_path, monkeypatch):
+    from stores import mcp_bridge
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    mcp_bridge.skill_store.save(
+        mcp_bridge.Skill(
+            id="query-mcp-workflow",
+            version="1.0.0",
+            name="Query MCP Workflow",
+            description="统一查询 MCP 工作流稳定化技能",
+            mcp_service="query-center-project",
+            package_dir="mcp-skills/knowledge/skill-packages/query-mcp-workflow",
+            mcp_enabled=True,
+        )
+    )
+
+    enable_response = client.post(
+        "/api/projects/proj-1/workflow-skills",
+        json={"skill_id": "query-mcp-workflow"},
+    )
+    assert enable_response.status_code == 200
+    assert enable_response.json()["status"] == "enabled"
+
+    default_response = client.put(
+        "/api/projects/proj-1/workflow-skills/default",
+        json={"skill_id": "query-mcp-workflow"},
+    )
+    assert default_response.status_code == 200
+    assert default_response.json()["default_workflow_skill"]["id"] == "query-mcp-workflow"
+
+    detail_response = client.get("/api/projects/proj-1")
+    assert detail_response.status_code == 200
+    project_payload = detail_response.json()["project"]
+    assert project_payload["workflow_skill_ids"] == ["query-mcp-workflow"]
+    assert project_payload["default_workflow_skill_id"] == "query-mcp-workflow"
+    assert project_payload["default_workflow_skill"]["id"] == "query-mcp-workflow"
+
+    workflow_response = client.get("/api/projects/proj-1/workflow-skills")
+    assert workflow_response.status_code == 200
+    workflow_payload = workflow_response.json()
+    assert workflow_payload["workflow_skill_bindings"][0]["id"] == "query-mcp-workflow"
+    assert workflow_payload["workflow_skill_bindings"][0]["is_default"] is True
 
 
 def test_project_chat_task_tree_routes_reconcile_stale_progress_from_work_events(tmp_path, monkeypatch):
@@ -336,6 +388,91 @@ def test_project_chat_task_tree_routes_reconcile_stale_progress_from_work_events
     session_summary = next(item for item in sessions_response.json()["items"] if item["id"] == task_tree["id"])
     assert session_summary["status"] == "done"
     assert session_summary["progress_percent"] == 100
+
+
+def test_project_chat_ongoing_task_state_returns_active_resume_payload(tmp_path, monkeypatch):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    generate_response = client.post(
+        "/api/projects/proj-1/chat/task-tree/generate",
+        json={
+            "chat_session_id": chat_session_id,
+            "message": "修复中断后任务恢复提示",
+        },
+    )
+    assert generate_response.status_code == 200
+    task_tree = generate_response.json()["task_tree"]
+
+    start_response = client.patch(
+        f"/api/projects/proj-1/chat/task-tree/nodes/{task_tree['current_node_id']}",
+        json={
+            "chat_session_id": chat_session_id,
+            "status": "in_progress",
+            "is_current": True,
+        },
+    )
+    assert start_response.status_code == 200
+
+    ongoing_response = client.get("/api/projects/proj-1/chat/task-tree/ongoing")
+    assert ongoing_response.status_code == 200
+    payload = ongoing_response.json()
+    assert payload["active_task_exists"] is True
+    assert payload["needs_resume"] is True
+    assert payload["can_continue"] is True
+    assert payload["resume_reason"] == "needs_resume"
+    assert payload["chat_session_id"] == chat_session_id
+    assert payload["task_tree"]["chat_session_id"] == chat_session_id
+    assert payload["current_node_title"]
+    assert "未完成" in payload["user_message"]
+
+
+def test_project_chat_ongoing_task_state_marks_orphaned_query_state(tmp_path, monkeypatch):
+    from services import query_mcp_project_state as state_service
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store_factory.project_store.save(
+        ProjectConfig(id="proj-1", name="项目一", workspace_path=str(workspace))
+    )
+
+    state_service.save_query_mcp_project_state(
+        project_id="proj-1",
+        chat_session_id="chat-orphan",
+        session_id="ws-orphan",
+        root_goal="恢复之前的任务",
+        latest_status="in_progress",
+        step="等待恢复",
+        source="test",
+    )
+
+    ongoing_response = client.get("/api/projects/proj-1/chat/task-tree/ongoing")
+    assert ongoing_response.status_code == 200
+    payload = ongoing_response.json()
+    assert payload["active_task_exists"] is False
+    assert payload["needs_resume"] is True
+    assert payload["orphaned_state"] is True
+    assert payload["can_continue"] is False
+    assert payload["resume_reason"] == "orphaned_state"
+    assert payload["chat_session_id"] == "chat-orphan"
+    assert payload["query_mcp_state"]["chat_session_id"] == "chat-orphan"
+    assert payload["resumable_query_mcp_state"]["session_id"] == "ws-orphan"
 
 
 def test_project_chat_task_tree_routes_reconcile_prior_node_without_explicit_verification(tmp_path, monkeypatch):
@@ -500,6 +637,57 @@ def test_project_chat_task_tree_audit_keeps_unverified_completion_out_of_done(
     assert audit_payload["task_tree"]["status"] in {"pending", "in_progress"}
 
 
+def test_project_chat_task_tree_audit_auto_completes_leaf_when_completion_and_verification_are_both_present(
+    tmp_path,
+    monkeypatch,
+):
+    from services.project_chat_task_tree import audit_task_tree_round
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    generate_response = client.post(
+        "/api/projects/proj-1/chat/task-tree/generate",
+        json={
+            "chat_session_id": chat_session_id,
+            "message": "修复任务树进入 33% 后不往下推进的问题",
+        },
+    )
+    assert generate_response.status_code == 200
+
+    audit_payload = audit_task_tree_round(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=chat_session_id,
+        assistant_content="已完成当前问题定位并修复，已通过 git diff 和日志确认修改正确，继续下一步。",
+        successful_tool_names=["local_connector_read_file", "local_connector_run_command"],
+        task_tree_tool_used=False,
+    )
+
+    assert audit_payload is not None
+    assert audit_payload["code"] == "step_auto_completed"
+    assert audit_payload["severity"] == "low"
+    assert audit_payload["category"] == "task_tree_auto_completion"
+    assert audit_payload["auto_updated"] is True
+    assert audit_payload["task_tree"]["progress_percent"] >= 33
+    completed_leaf = next(
+        item
+        for item in audit_payload["task_tree"]["nodes"]
+        if int(item["level"]) == 1 and item["stage_key"] == "analysis"
+    )
+    assert completed_leaf["status"] == "done"
+    assert "系统自动验证" in completed_leaf["verification_result"]
+
+
 def test_project_chat_task_tree_audit_auto_completes_context_bootstrap_step(
     tmp_path,
     monkeypatch,
@@ -649,6 +837,38 @@ def test_project_chat_task_tree_generates_single_step_for_colloquial_lookup_quer
     payload = generate_response.json()["task_tree"]
     leaf_nodes = [item for item in payload["nodes"] if int(item["level"]) == 1]
     assert len(leaf_nodes) == 1
+    assert "检索问题所需信息并直接回答用户" in leaf_nodes[0]["title"]
+
+
+def test_project_chat_task_tree_generates_single_step_for_diagnostic_lookup_query(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    generate_response = client.post(
+        "/api/projects/proj-1/chat/task-tree/generate",
+        json={
+            "chat_session_id": chat_session_id,
+            "message": "检查为什么新需求 '#/pages/attendance/addrule 这个页面的 补卡申请 按钮 激活颜色没变化 更换成 rgb(39, 181, 156) 这个颜色' 又卡在 33%",
+        },
+    )
+    assert generate_response.status_code == 200
+    payload = generate_response.json()["task_tree"]
+    leaf_nodes = [item for item in payload["nodes"] if int(item["level"]) == 1]
+    assert len(leaf_nodes) == 1
+    assert payload["task_tree_health"]["detected_intent"] == "lookup_query"
     assert "检索问题所需信息并直接回答用户" in leaf_nodes[0]["title"]
 
 

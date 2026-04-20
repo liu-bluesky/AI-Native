@@ -2671,9 +2671,7 @@ onMounted(() => {
 
 .hero {
   display: flex;
-  position: sticky;
-  top: 12px;
-  z-index: 30;
+  position: relative;
   justify-content: space-between;
   gap: 24px;
   align-items: flex-start;
@@ -2789,6 +2787,14 @@ onMounted(() => {
   gap: 16px;
   margin-top: 16px;
   align-items: start;
+}
+
+.content-grid--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.content-grid--single .content-aside {
+  grid-column: 1 / -1;
 }
 
 .content-main,

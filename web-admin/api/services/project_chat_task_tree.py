@@ -12,6 +12,10 @@ from core.deps import (
     task_tree_evolution_store,
     work_session_store,
 )
+from services.query_mcp_project_state import (
+    load_query_mcp_project_state,
+    load_resumable_query_mcp_project_state,
+)
 from services.dynamic_mcp_apps_query import _generate_execution_plan_payload
 from stores.json.project_chat_task_store import (
     ProjectChatTaskNode,
@@ -108,8 +112,19 @@ _LOOKUP_QUERY_GOAL_TERMS = (
     "查询",
     "谁",
 )
+_DIAGNOSTIC_LOOKUP_PATTERNS = (
+    "为什么卡在",
+    "为什么卡到",
+    "为什么会卡在",
+    "为什么会卡到",
+    "检查为什么",
+    "排查为什么",
+    "定位为什么",
+    "排查原因",
+    "定位原因",
+    "原因是什么",
+)
 _NON_LOOKUP_QUERY_GOAL_TERMS = (
-    "为什么",
     "怎么",
     "如何",
     "bug",
@@ -437,6 +452,22 @@ def _merge_summary_for_model(existing: str, note: str) -> str:
     return f"{normalized_note}\n{normalized_existing}"[:1000]
 
 
+def _build_audit_completion_verification(
+    *,
+    assistant_content: str,
+    successful_tool_names: list[str],
+    current_node: dict[str, Any],
+) -> str:
+    excerpt = _strip_embedded_task_tree_markup(assistant_content)
+    node_title = _normalize_text(current_node.get("title"), 200) or "当前节点"
+    parts = [f"系统自动验证：检测到“{node_title}”已具备完成与验证证据。"]
+    if successful_tool_names:
+        parts.append(f"执行证据：{'、'.join(successful_tool_names[:4])}")
+    if excerpt:
+        parts.append(f"回答摘要：{_normalize_text(excerpt, 300)}")
+    return _normalize_text(" ".join(parts), 2000)
+
+
 def _is_context_bootstrap_node(node: dict[str, Any]) -> bool:
     haystack = "\n".join(
         [
@@ -462,6 +493,8 @@ def _is_lookup_query_goal(text: str) -> bool:
     normalized = _normalize_text(text, 400).lower()
     if not normalized:
         return False
+    if any(pattern in normalized for pattern in _DIAGNOSTIC_LOOKUP_PATTERNS):
+        return True
     if any(term in normalized for term in _NON_LOOKUP_QUERY_GOAL_TERMS):
         return False
     if normalized.endswith(("?", "？")):
@@ -480,7 +513,13 @@ def _build_lookup_query_plan_step(task_text: str) -> dict[str, str]:
             "若信息不足，明确缺失项。"
         ),
         "reason": "该问题属于查询型需求，不需要拆成实现或协作开发步骤。",
-    }
+}
+
+_LEAF_PROGRESS_WEIGHTS = {
+    "done": 1.0,
+    "verifying": 0.66,
+    "in_progress": 0.34,
+}
 
 
 def _extract_route_path(text: str) -> str:
@@ -1166,6 +1205,15 @@ def _build_default_verification_items(is_root: bool = False) -> list[str]:
     ]
 
 
+def _calculate_progress_percent(leaf_nodes: list[ProjectChatTaskNode]) -> int:
+    if not leaf_nodes:
+        return 0
+    progress_units = 0.0
+    for node in leaf_nodes:
+        progress_units += _LEAF_PROGRESS_WEIGHTS.get(_normalize_status(node.status), 0.0)
+    return min(100, max(0, int(round((progress_units / len(leaf_nodes)) * 100))))
+
+
 def _preorder_candidates(root_nodes: list[ProjectChatTaskNode], children_by_parent: dict[str, list[ProjectChatTaskNode]]) -> list[ProjectChatTaskNode]:
     ordered: list[ProjectChatTaskNode] = []
 
@@ -1482,8 +1530,7 @@ def _recompute_session(session: ProjectChatTaskSession) -> ProjectChatTaskSessio
         for node in nodes_by_id.values()
         if not children_by_parent.get(node.id)
     ]
-    done_leaf_nodes = [node for node in leaf_nodes if node.status == "done"]
-    normalized.progress_percent = int(round((len(done_leaf_nodes) / max(len(leaf_nodes), 1)) * 100))
+    normalized.progress_percent = _calculate_progress_percent(leaf_nodes)
     root_statuses = [root.status for root in root_nodes]
     if root_statuses and all(status == "done" for status in root_statuses):
         normalized.status = "done"
@@ -2063,6 +2110,169 @@ def serialize_task_tree(session: ProjectChatTaskSession | None) -> dict[str, Any
     }
 
 
+def _normalize_query_state_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    source = payload if isinstance(payload, dict) else {}
+    return {
+        "chat_session_id": _normalize_text(source.get("chat_session_id"), 80),
+        "session_id": _normalize_text(source.get("session_id"), 80),
+        "root_goal": _normalize_text(source.get("root_goal"), 300),
+        "latest_status": _normalize_text(source.get("latest_status"), 80).lower(),
+        "phase": _normalize_text(source.get("phase"), 80),
+        "step": _normalize_text(source.get("step"), 200),
+        "updated_at": _normalize_text(source.get("updated_at"), 80),
+    }
+
+
+def _build_task_tree_work_session_summary(
+    session: ProjectChatTaskSession | None,
+) -> dict[str, Any] | None:
+    if session is None:
+        return None
+    normalized = _load_reconciled_task_tree_session(session)
+    if normalized is None:
+        return None
+    task_tree_session_id = _normalize_text(normalized.id, 80)
+    task_tree_chat_session_id = _normalize_text(
+        normalized.source_chat_session_id or normalized.chat_session_id,
+        80,
+    )
+    events = work_session_store.list_events(
+        project_id=normalized.project_id,
+        task_tree_session_id=task_tree_session_id,
+        task_tree_chat_session_id=task_tree_chat_session_id,
+        limit=200,
+    )
+    latest_event = events[0] if events else None
+    session_id = _normalize_text(getattr(latest_event, "session_id", ""), 80) or _task_tree_work_session_id(normalized)
+    latest_status = _normalize_text(getattr(latest_event, "status", ""), 40).lower() or _normalize_status(normalized.status)
+    return {
+        "session_id": session_id,
+        "latest_status": latest_status,
+        "phase": _normalize_text(getattr(latest_event, "phase", ""), 80),
+        "step": _normalize_text(getattr(latest_event, "step", ""), 200),
+        "updated_at": _normalize_text(
+            getattr(latest_event, "updated_at", ""),
+            80,
+        )
+        or _normalize_text(normalized.updated_at, 80),
+        "event_total": len(events),
+    }
+
+
+def build_ongoing_task_resume_state(project_id: str, username: str) -> dict[str, Any]:
+    normalized_project_id = _normalize_text(project_id, 80)
+    normalized_username = _normalize_text(username, 80)
+    latest_session = get_latest_task_tree_for_user(normalized_project_id, normalized_username)
+    latest_payload = serialize_task_tree(latest_session)
+    active_task_tree: dict[str, Any] | None = None
+    latest_is_archived = False
+    if isinstance(latest_payload, dict):
+        latest_is_archived = bool(latest_payload.get("is_archived")) or _normalize_status(
+            latest_payload.get("status")
+        ) == "done"
+        if not latest_is_archived:
+            active_task_tree = latest_payload
+
+    query_state = _normalize_query_state_payload(
+        load_query_mcp_project_state(normalized_project_id)
+    )
+    resumable_query_state = _normalize_query_state_payload(
+        load_resumable_query_mcp_project_state(normalized_project_id)
+    )
+    resumable_chat_session_id = _normalize_text(
+        resumable_query_state.get("chat_session_id"),
+        80,
+    )
+    resumable_session = (
+        get_task_tree_for_chat_session(
+            normalized_project_id,
+            normalized_username,
+            resumable_chat_session_id,
+        )
+        if resumable_chat_session_id
+        else None
+    )
+    resumable_task_tree = serialize_task_tree(resumable_session)
+    if active_task_tree is None and isinstance(resumable_task_tree, dict):
+        resumable_is_archived = bool(resumable_task_tree.get("is_archived")) or _normalize_status(
+            resumable_task_tree.get("status")
+        ) == "done"
+        if not resumable_is_archived:
+            active_task_tree = resumable_task_tree
+
+    work_session = _build_task_tree_work_session_summary(latest_session)
+    if active_task_tree is not None:
+        active_chat_session_id = _normalize_text(active_task_tree.get("chat_session_id"), 80)
+        active_session = get_task_tree_for_chat_session(
+            normalized_project_id,
+            normalized_username,
+            active_chat_session_id,
+        )
+        work_session = _build_task_tree_work_session_summary(active_session) or work_session
+
+    active_task_exists = isinstance(active_task_tree, dict)
+    orphaned_state = bool(resumable_query_state) and not isinstance(resumable_task_tree, dict)
+    archived = bool(latest_is_archived and not active_task_exists)
+    needs_resume = active_task_exists or orphaned_state
+    can_continue = active_task_exists
+    resume_reason = "idle"
+    user_message = "当前没有需要恢复的进行中任务。"
+    next_action = "start_new_task"
+
+    if orphaned_state and not active_task_exists:
+        resume_reason = "orphaned_state"
+        user_message = "检测到未完成工作轨迹，但当前聊天未挂回任务树，需要先修复绑定后再继续执行。"
+        next_action = "repair_task_binding"
+    elif active_task_exists:
+        resume_reason = "needs_resume"
+        current_node_title = _normalize_text(
+            (active_task_tree.get("current_node") or {}).get("title"),
+            200,
+        )
+        user_message = (
+            f"检测到上次任务未完成，当前停留在“{current_node_title}”，可以继续执行。"
+            if current_node_title
+            else "检测到上次任务未完成，可以继续沿用当前任务树执行。"
+        )
+        next_action = "resume_current_node"
+    elif archived:
+        resume_reason = "archived"
+        user_message = "最近一轮任务已完成归档，本次应新建任务。"
+        next_action = "start_new_task"
+
+    if active_task_exists and isinstance(active_task_tree, dict):
+        chat_session_id = _normalize_text(active_task_tree.get("chat_session_id"), 80)
+        task_tree_session_id = _normalize_text(active_task_tree.get("id"), 80)
+        current_node = active_task_tree.get("current_node") or {}
+    else:
+        chat_session_id = resumable_chat_session_id
+        task_tree_session_id = ""
+        current_node = {}
+
+    return {
+        "project_id": normalized_project_id,
+        "username": normalized_username,
+        "active_task_exists": active_task_exists,
+        "needs_resume": needs_resume,
+        "archived": archived,
+        "orphaned_state": orphaned_state,
+        "can_continue": can_continue,
+        "resume_reason": resume_reason,
+        "next_action": next_action,
+        "user_message": user_message,
+        "chat_session_id": chat_session_id,
+        "task_tree_session_id": task_tree_session_id,
+        "current_node_id": _normalize_text(current_node.get("id"), 80),
+        "current_node_title": _normalize_text(current_node.get("title"), 200),
+        "session_id": _normalize_text((work_session or {}).get("session_id"), 80)
+        or _normalize_text(resumable_query_state.get("session_id"), 80),
+        "task_tree": active_task_tree,
+        "work_session": work_session,
+        "query_mcp_state": query_state,
+        "resumable_query_mcp_state": resumable_query_state,
+    }
+
+
 def build_task_tree_prompt(session: ProjectChatTaskSession | None) -> str:
     if session is None:
         return ""
@@ -2362,6 +2572,7 @@ def audit_task_tree_round(
     suggested_status = "verifying" if (completion_signal or verification_signal) else "in_progress"
     auto_updated = False
     auto_completed_bootstrap = False
+    auto_completed_current_step = False
     if not normalized_task_tree_tool_used:
         if (
             "search_project_context" in non_task_tree_tool_names
@@ -2385,6 +2596,45 @@ def audit_task_tree_round(
             )
             auto_updated = True
             auto_completed_bootstrap = True
+        elif (
+            completion_signal
+            and verification_signal
+            and non_task_tree_tool_names
+            and not _is_lookup_query_goal(session.root_goal or session.title)
+            and any(
+                item not in _LOOKUP_QUERY_NON_ANSWER_TOOL_NAMES
+                and item not in _TASK_TREE_INTERNAL_PLAN_TOOL_NAMES
+                for item in non_task_tree_tool_names
+            )
+        ):
+            child_nodes = [
+                item
+                for item in (serialized_before.get("nodes") or [])
+                if isinstance(item, dict)
+                and _normalize_text(item.get("parent_id"), 80) == current_node_id
+            ]
+            if not child_nodes:
+                completion_verification = _build_audit_completion_verification(
+                    assistant_content=assistant_content,
+                    successful_tool_names=non_task_tree_tool_names,
+                    current_node=current_node_before,
+                )
+                completion_summary = _merge_summary_for_model(
+                    current_node_before.get("summary_for_model") or "",
+                    "系统审计：检测到当前节点已具备完成与验证证据，自动完成该节点并继续推进。",
+                )
+                session = update_task_node(
+                    project_id=normalized_project_id,
+                    username=normalized_username,
+                    chat_session_id=normalized_chat_session_id,
+                    node_id=current_node_id,
+                    status="done",
+                    verification_result=completion_verification,
+                    summary_for_model=completion_summary,
+                    allow_direct_completion=True,
+                )
+                auto_updated = True
+                auto_completed_current_step = True
         elif _should_promote_status(current_status, suggested_status):
             audit_summary = (
                 "系统审计：检测到本轮已有执行进展，但未写入完成验证，暂不自动推荐完成。"
@@ -2440,6 +2690,9 @@ def audit_task_tree_round(
     elif auto_completed_bootstrap:
         code = "bootstrap_step_auto_completed"
         message = "检测到本轮已完成项目上下文预检，系统已自动完成当前上下文节点并推进到下一节点。"
+    elif auto_completed_current_step:
+        code = "step_auto_completed"
+        message = "检测到本轮已同时给出完成与验证证据，系统已自动完成当前节点并推进任务树。"
     elif completion_signal and current_status_after != "done":
         code = "completion_unverified"
         message = "检测到本轮存在完成表述，但当前节点还没有完成验证，系统未自动推荐完成。"
@@ -2490,6 +2743,11 @@ def audit_task_tree_round(
         category = "context_bootstrap"
         recommended_action = "无需手动回退，继续按新的当前节点执行。"
         evidence.append("系统已自动完成上下文预检节点。")
+    elif code == "step_auto_completed":
+        severity = "low"
+        category = "task_tree_auto_completion"
+        recommended_action = "无需手动补当前节点状态，继续执行下一节点或直接收尾。"
+        evidence.append("系统已自动完成当前执行节点。")
     elif code == "completion_unverified":
         severity = "high"
         category = "verification_guard"

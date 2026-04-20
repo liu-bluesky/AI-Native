@@ -55,6 +55,7 @@ from services.project_voice_service import get_project_voice_service
 from services.project_chat_task_tree import (
     audit_task_tree_round,
     archive_task_tree,
+    build_ongoing_task_resume_state,
     ensure_task_tree,
     get_latest_task_tree_for_user,
     get_task_tree_by_session_id,
@@ -103,6 +104,7 @@ from models.requests import (
     ProjectChatTaskNodeUpdateReq,
     ProjectChatTaskTreeGenerateReq,
     ProjectCreateReq,
+    ProjectWorkflowSkillUpdateReq,
     ProjectMaterialAssetCreateReq,
     ProjectMaterialAssetUpdateReq,
     StudioAudioPayloadReq,
@@ -415,6 +417,14 @@ def _serialize_project(
         getattr(project, "experience_rule_ids", []) or []
     )
     data["experience_rule_bindings"] = _resolve_project_experience_rule_bindings(project)
+    data["workflow_skill_ids"] = _normalize_project_workflow_skill_ids(
+        getattr(project, "workflow_skill_ids", []) or []
+    )
+    data["workflow_skill_bindings"] = _resolve_project_workflow_skill_bindings(project)
+    data["default_workflow_skill_id"] = _normalize_project_default_workflow_skill_id(
+        getattr(project, "default_workflow_skill_id", "")
+    )
+    data["default_workflow_skill"] = _resolve_project_default_workflow_skill(project)
     data["has_mcp_instruction"] = bool(str(getattr(project, "mcp_instruction", "") or "").strip())
     data["has_workspace_path"] = bool(str(getattr(project, "workspace_path", "") or "").strip())
     data["has_ai_entry_file"] = bool(str(getattr(project, "ai_entry_file", "") or "").strip())
@@ -2652,6 +2662,76 @@ def _resolve_project_experience_rule_bindings(
     return bindings
 
 
+def _normalize_project_workflow_skill_ids(values: Any) -> list[str]:
+    return _normalize_text_list(values, limit=120)
+
+
+def _normalize_project_default_workflow_skill_id(value: Any) -> str:
+    return str(value or "").strip()[:120]
+
+
+def _serialize_project_workflow_skill(skill_id: str, *, is_default: bool = False) -> dict[str, Any]:
+    skill = skill_store.get(skill_id)
+    if skill is None:
+        return {
+            "id": skill_id,
+            "name": f"{skill_id}（技能不存在）",
+            "description": "",
+            "mcp_service": "",
+            "tags": [],
+            "mcp_enabled": False,
+            "is_default": is_default,
+            "exists": False,
+        }
+    return {
+        "id": str(getattr(skill, "id", "") or skill_id),
+        "name": str(getattr(skill, "name", "") or skill_id),
+        "description": str(getattr(skill, "description", "") or ""),
+        "mcp_service": str(getattr(skill, "mcp_service", "") or ""),
+        "tags": list(getattr(skill, "tags", ()) or ()),
+        "mcp_enabled": bool(getattr(skill, "mcp_enabled", False)),
+        "package_dir": str(getattr(skill, "package_dir", "") or ""),
+        "is_default": is_default,
+        "exists": True,
+    }
+
+
+def _resolve_project_workflow_skill_bindings(project: ProjectConfig | None) -> list[dict[str, Any]]:
+    if project is None:
+        return []
+    default_skill_id = _normalize_project_default_workflow_skill_id(
+        getattr(project, "default_workflow_skill_id", "")
+    )
+    bindings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for skill_id in _normalize_project_workflow_skill_ids(
+        getattr(project, "workflow_skill_ids", []) or []
+    ):
+        if skill_id in seen:
+            continue
+        seen.add(skill_id)
+        bindings.append(
+            _serialize_project_workflow_skill(
+                skill_id,
+                is_default=bool(default_skill_id and skill_id == default_skill_id),
+            )
+        )
+    if default_skill_id and default_skill_id not in seen:
+        bindings.append(_serialize_project_workflow_skill(default_skill_id, is_default=True))
+    return bindings
+
+
+def _resolve_project_default_workflow_skill(project: ProjectConfig | None) -> dict[str, Any] | None:
+    if project is None:
+        return None
+    skill_id = _normalize_project_default_workflow_skill_id(
+        getattr(project, "default_workflow_skill_id", "")
+    )
+    if not skill_id:
+        return None
+    return _serialize_project_workflow_skill(skill_id, is_default=True)
+
+
 def _collect_rule_domains(rule_bindings: list[dict[str, str]]) -> list[str]:
     seen: set[str] = set()
     domains: list[str] = []
@@ -3564,6 +3644,21 @@ def _build_project_chat_messages(
 
     tool_names = [t.get("tool_name", "") for t in (tools or [])] if tools else []
     tool_list_text = f"可用工具({len(tool_names)}个): {', '.join(tool_names)}" if tool_names else "当前无可用工具"
+    workflow_skill_bindings = _resolve_project_workflow_skill_bindings(project)
+    workflow_skill_prompt = ""
+    if workflow_skill_bindings:
+        workflow_lines: list[str] = []
+        for item in workflow_skill_bindings:
+            label = "默认" if bool(item.get("is_default")) else "启用"
+            workflow_lines.append(
+                f"- [{label}] {item.get('name') or item.get('id')} "
+                f"({item.get('id')}): {str(item.get('description') or '').strip() or '-'}"
+            )
+        workflow_skill_prompt = (
+            "当前项目已启用系统工作流技能。处理需求时，应优先按这些技能约定执行，"
+            "但不要把技能说明当成已完成的后端校验；仍需真实调用 MCP/工具并写入验证结果。\n"
+            + "\n".join(workflow_lines)
+        )
 
     base_prompt = (custom_system_prompt or "").strip()
     if not base_prompt:
@@ -3596,6 +3691,7 @@ def _build_project_chat_messages(
         order_hint,
         style_hint,
         skill_resource_prompt,
+        workflow_skill_prompt,
         multi_employee_prompt,
         task_tree_prompt,
     )
@@ -7947,6 +8043,10 @@ async def create_project(req: ProjectCreateReq, auth_payload: dict = Depends(req
         type=_normalize_project_type(req.type),
         ui_rule_ids=_normalize_project_ui_rule_ids(req.ui_rule_ids),
         experience_rule_ids=_normalize_project_experience_rule_ids(req.experience_rule_ids),
+        workflow_skill_ids=_normalize_project_workflow_skill_ids(req.workflow_skill_ids),
+        default_workflow_skill_id=_normalize_project_default_workflow_skill_id(
+            req.default_workflow_skill_id
+        ),
         mcp_instruction=_normalize_project_mcp_instruction_for_save(req.mcp_instruction),
         workspace_path=_normalize_workspace_path_for_save(req.workspace_path),
         ai_entry_file=_normalize_ai_entry_file_for_save(req.ai_entry_file),
@@ -7974,6 +8074,123 @@ async def get_project(project_id: str, auth_payload: dict = Depends(require_auth
     _ensure_permission(auth_payload, "menu.projects")
     project = _ensure_project_access(project_id, auth_payload)
     return {"project": _serialize_project(project, auth_payload)}
+
+
+def _ensure_workflow_skill_exists(skill_id: str):
+    normalized_skill_id = _normalize_project_default_workflow_skill_id(skill_id)
+    if not normalized_skill_id:
+        raise HTTPException(400, "skill_id is required")
+    skill = skill_store.get(normalized_skill_id)
+    if skill is None:
+        raise HTTPException(404, f"Skill {normalized_skill_id} not found")
+    return skill
+
+
+@router.get("/{project_id}/workflow-skills")
+async def list_project_workflow_skills(project_id: str, auth_payload: dict = Depends(require_auth)):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_access(project_id, auth_payload)
+    return {
+        "project_id": project.id,
+        "workflow_skill_ids": _normalize_project_workflow_skill_ids(
+            getattr(project, "workflow_skill_ids", []) or []
+        ),
+        "default_workflow_skill_id": _normalize_project_default_workflow_skill_id(
+            getattr(project, "default_workflow_skill_id", "")
+        ),
+        "workflow_skill_bindings": _resolve_project_workflow_skill_bindings(project),
+        "default_workflow_skill": _resolve_project_default_workflow_skill(project),
+    }
+
+
+@router.post("/{project_id}/workflow-skills")
+async def enable_project_workflow_skill(
+    project_id: str,
+    req: ProjectWorkflowSkillUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    skill = _ensure_workflow_skill_exists(req.skill_id)
+    skill_id = str(getattr(skill, "id", "") or req.skill_id).strip()
+    workflow_skill_ids = _normalize_project_workflow_skill_ids(
+        getattr(project, "workflow_skill_ids", []) or []
+    )
+    changed = False
+    if skill_id not in workflow_skill_ids:
+        workflow_skill_ids.append(skill_id)
+        changed = True
+    if changed:
+        project.workflow_skill_ids = workflow_skill_ids
+        project.updated_at = _now_iso()
+        project_store.save(project)
+    return {
+        "status": "enabled" if changed else "no_change",
+        "project_id": project.id,
+        "skill_id": skill_id,
+        "workflow_skill_bindings": _resolve_project_workflow_skill_bindings(project),
+    }
+
+
+@router.put("/{project_id}/workflow-skills/default")
+async def set_project_default_workflow_skill(
+    project_id: str,
+    req: ProjectWorkflowSkillUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    skill = _ensure_workflow_skill_exists(req.skill_id)
+    skill_id = str(getattr(skill, "id", "") or req.skill_id).strip()
+    workflow_skill_ids = _normalize_project_workflow_skill_ids(
+        getattr(project, "workflow_skill_ids", []) or []
+    )
+    if skill_id not in workflow_skill_ids:
+        workflow_skill_ids.append(skill_id)
+    project.workflow_skill_ids = workflow_skill_ids
+    project.default_workflow_skill_id = skill_id
+    project.updated_at = _now_iso()
+    project_store.save(project)
+    return {
+        "status": "updated",
+        "project_id": project.id,
+        "skill_id": skill_id,
+        "workflow_skill_bindings": _resolve_project_workflow_skill_bindings(project),
+        "default_workflow_skill": _resolve_project_default_workflow_skill(project),
+    }
+
+
+@router.delete("/{project_id}/workflow-skills/{skill_id}")
+async def disable_project_workflow_skill(
+    project_id: str,
+    skill_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    normalized_skill_id = _normalize_project_default_workflow_skill_id(skill_id)
+    workflow_skill_ids = _normalize_project_workflow_skill_ids(
+        getattr(project, "workflow_skill_ids", []) or []
+    )
+    next_skill_ids = [item for item in workflow_skill_ids if item != normalized_skill_id]
+    default_skill_id = _normalize_project_default_workflow_skill_id(
+        getattr(project, "default_workflow_skill_id", "")
+    )
+    changed = next_skill_ids != workflow_skill_ids
+    if default_skill_id == normalized_skill_id:
+        project.default_workflow_skill_id = ""
+        changed = True
+    if changed:
+        project.workflow_skill_ids = next_skill_ids
+        project.updated_at = _now_iso()
+        project_store.save(project)
+    return {
+        "status": "disabled" if changed else "no_change",
+        "project_id": project.id,
+        "skill_id": normalized_skill_id,
+        "workflow_skill_bindings": _resolve_project_workflow_skill_bindings(project),
+        "default_workflow_skill": _resolve_project_default_workflow_skill(project),
+    }
 
 
 @router.get("/{project_id}/materials")
@@ -9339,6 +9556,14 @@ def _apply_project_update(project_id: str, req: ProjectUpdateReq, auth_payload: 
         updates["experience_rule_ids"] = _normalize_project_experience_rule_ids(
             updates.get("experience_rule_ids")
         )
+    if "workflow_skill_ids" in updates:
+        updates["workflow_skill_ids"] = _normalize_project_workflow_skill_ids(
+            updates.get("workflow_skill_ids")
+        )
+    if "default_workflow_skill_id" in updates:
+        updates["default_workflow_skill_id"] = _normalize_project_default_workflow_skill_id(
+            updates.get("default_workflow_skill_id")
+        )
     updates["updated_at"] = _now_iso()
     updated = replace(project, **updates)
     project_store.save(updated)
@@ -9642,6 +9867,17 @@ async def get_project_chat_task_tree(
         session
     )
     return {"task_tree": payload}
+
+
+@router.get("/{project_id}/chat/task-tree/ongoing")
+async def get_project_chat_ongoing_task_state(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    return build_ongoing_task_resume_state(project_id, username)
 
 
 @router.get("/{project_id}/chat/task-tree/evolution-summary")
@@ -13132,6 +13368,19 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
     project_experience_rules_text = (
         "\n".join(project_experience_rule_lines) if project_experience_rule_lines else "无"
     )
+    project_workflow_skill_bindings = _resolve_project_workflow_skill_bindings(project)
+    project_workflow_skill_lines: list[str] = []
+    for item in project_workflow_skill_bindings:
+        skill_id = str(item.get("id") or "").strip() or "-"
+        name = str(item.get("name") or skill_id).strip() or skill_id
+        description = str(item.get("description") or "").strip() or "暂无描述"
+        default_label = "默认工作流技能" if bool(item.get("is_default")) else "已启用"
+        project_workflow_skill_lines.append(
+            f"- {name} (`{skill_id}`): {default_label}。{description}"
+        )
+    project_workflow_skills_text = (
+        "\n".join(project_workflow_skill_lines) if project_workflow_skill_lines else "无"
+    )
     employee_template_lines: list[str] = []
     for item in member_items:
         employee = item["employee"]
@@ -13236,6 +13485,14 @@ save_project_memory({{
 ## 项目共享技能索引（写手册时不要只写技能名，需结合下面信息展开）
 
 {skills_text}
+
+## 项目工作流技能（系统内置技能索引）
+
+- 工作流技能来自系统技能库，启用到项目后由后端写入项目技能索引，AI 可通过项目 MCP 上下文查询到。
+- 这里不要求用户下载技能包到项目本地，也不要求每个项目复制一份技能文件。
+- 若存在默认工作流技能，处理需求时先按默认工作流技能约束执行；但仍必须通过工具调用、任务树状态和验证结果完成闭环。
+
+{project_workflow_skills_text}
 
 ## 项目规则领域概览（仅用于快速筛选，不可替代具体规则）
 
