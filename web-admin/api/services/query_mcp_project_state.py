@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +10,8 @@ from typing import Any
 from core.deps import project_store
 
 _STATE_DIR = Path(".ai-employee") / "query-mcp"
-_CURRENT_SESSION_FILE = "current-session.json"
+_ACTIVE_SESSIONS_DIR = "active-sessions"
+_LEGACY_CURRENT_SESSION_FILE = "current-session.json"
 _LEGACY_JSON_POINTER_FILES = ("current-work-session.json", "current-query-session.json")
 _LEGACY_TEXT_POINTER_FILES = {
     "chat_session_id": ("chat_session_id.txt", "chat_session_id"),
@@ -108,6 +110,13 @@ def _state_root(project_id: str = "", workspace_path: str = "") -> Path | None:
     return None
 
 
+def _active_session_path(chat_session_id: str, project_id: str = "", workspace_path: str = "") -> Path | None:
+    state_root = _state_root(project_id, workspace_path)
+    if state_root is None:
+        return None
+    return state_root / _ACTIVE_SESSIONS_DIR / f"{_safe_name(chat_session_id)}.json"
+
+
 def _active_state_path(project_id: str, workspace_path: str = "") -> Path | None:
     state_root = _state_root(project_id, workspace_path)
     if state_root is None:
@@ -123,11 +132,53 @@ def _session_state_path(project_id: str, chat_session_id: str, workspace_path: s
     return state_root / "session-history" / file_name
 
 
-def _current_session_path(project_id: str = "", workspace_path: str = "") -> Path | None:
+def _legacy_current_session_path(project_id: str = "", workspace_path: str = "") -> Path | None:
     state_root = _state_root(project_id, workspace_path)
     if state_root is None:
         return None
-    return state_root / _CURRENT_SESSION_FILE
+    return state_root / _LEGACY_CURRENT_SESSION_FILE
+
+
+def _is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def _extract_pid_from_chat_session_id(chat_session_id: str) -> int:
+    parts = chat_session_id.split(".")
+    for part in parts:
+        if part.isdigit() and len(part) >= 2:
+            return int(part)
+    return 0
+
+
+def _load_latest_active_session(project_id: str, workspace_path: str = "") -> dict[str, Any]:
+    state_root = _state_root(project_id, workspace_path)
+    if state_root is None:
+        return {}
+    sessions_dir = state_root / _ACTIVE_SESSIONS_DIR
+    if not sessions_dir.exists():
+        return {}
+    project_id_value = _normalize_text(project_id, 120)
+    best_payload: dict[str, Any] = {}
+    best_updated_at = ""
+    for path in sessions_dir.glob("*.json"):
+        payload = _read_json(path)
+        if not payload:
+            continue
+        payload_project_id = _normalize_text(payload.get("project_id"), 120)
+        if payload_project_id and payload_project_id != project_id_value:
+            continue
+        updated_at = _normalize_text(payload.get("updated_at"), 80)
+        if updated_at >= best_updated_at:
+            best_payload = payload
+            best_updated_at = updated_at
+    return best_payload
 
 
 def _read_json(path: Path | None) -> dict[str, Any]:
@@ -245,7 +296,15 @@ def load_current_query_mcp_session(project_id: str, workspace_path: str = "") ->
     project_id_value = _normalize_text(project_id, 120)
     if not project_id_value:
         return {}
-    current_payload = _read_json(_current_session_path(project_id_value, workspace_path))
+    current_payload = _load_latest_active_session(project_id_value, workspace_path)
+    if not current_payload:
+        legacy_payload = _read_json(_legacy_current_session_path(project_id_value, workspace_path))
+        legacy_project_id = _normalize_text(legacy_payload.get("project_id"), 120)
+        if legacy_project_id and legacy_project_id != project_id_value:
+            legacy_payload = {}
+        elif legacy_payload and not legacy_project_id:
+            legacy_payload = {**legacy_payload, "project_id": project_id_value}
+        current_payload = legacy_payload
     current_project_id = _normalize_text(current_payload.get("project_id"), 120)
     if current_project_id and current_project_id != project_id_value:
         current_payload = {}
@@ -312,13 +371,13 @@ def persist_query_mcp_local_state(
         return {}
     active_path = _active_state_path(project_id_value, workspace_path)
     session_path = _session_state_path(project_id_value, chat_session_id_value, workspace_path)
-    current_path = _current_session_path(project_id_value, workspace_path)
-    if active_path is None or session_path is None or current_path is None:
+    active_session_path = _active_session_path(chat_session_id_value, project_id_value, workspace_path)
+    if active_path is None or session_path is None or active_session_path is None:
         return {}
     existing = _merge_state_payloads(
+        _read_json(active_session_path),
         _read_json(session_path),
         _read_json(active_path),
-        _read_json(current_path),
         _load_legacy_pointer_state(project_id_value, workspace_path),
     )
     payload = {
@@ -345,9 +404,9 @@ def persist_query_mcp_local_state(
         "source": _normalize_text(source, 120) or _normalize_text(existing.get("source"), 120),
         "updated_at": _now_iso(),
     }
-    _write_json(active_path, payload)
+    _write_json(active_session_path, payload)
     _write_json(session_path, payload)
-    _write_json(current_path, payload)
+    _write_json(active_path, payload)
     return _normalize_state_payload(payload)
 
 

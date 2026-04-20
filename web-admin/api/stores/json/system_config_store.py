@@ -21,6 +21,130 @@ DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT = (
     "基于员工职责、目标、技能建议和 prompts.chat MCP 相关能力，为员工自动补全 1 到 3 条可直接落地的执行规则。"
     "优先生成问题排查、输出规范、风险控制、技术选型相关规则；规则内容必须具体、可执行、可绑定。"
 )
+DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = """你已接入统一查询 MCP。
+
+详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：
+- `query://usage-guide`
+- `query://client-profile/codex`
+
+强制接入步骤：
+1. 先读取 `query://usage-guide`；当前是 Codex CLI 时，再读取 `query://client-profile/codex`。
+2. 首轮必须把用户原始问题原文传给 `search_ids(keyword="<用户原始问题>")`，不要只写“当前项目”这类代称。
+3. 不要依赖 description、项目说明或“当前项目”文字做绑定；如需项目绑定或续接任务树，显式调用 `bind_project_context(...)`。
+4. 需要项目或规则上下文时，先读取 `get_manual_content(project_id=...)`，再按需继续查询规则或成员。
+5. 实现型需求必须先走 `analyze_task -> resolve_relevant_context -> generate_execution_plan`，再进入执行与验证。
+6. 当前全局清晰度确认阈值为 {{clarity_threshold}}/5；先按 1-5 分估计用户需求清晰度。
+7. 若目标、对象、范围和预期结果足够清晰，且清晰度分数 >= {{clarity_threshold}}，直接处理，不主动要求确认计划。
+8. 若清晰度分数 < {{clarity_threshold}}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认后不要重复确认；查询型、客服型问题不要默认升级成计划审批流程。
+9. 长任务先调用 `start_work_session` 获取 `session_id`，后续复用同一个 `chat_session_id/session_id`，并用 `save_work_facts`、`append_session_event` 维护轨迹。
+10. 如宿主支持任务树，`bind_project_context(...)` 后立刻读取 `get_current_task_tree`，核对 `root_goal/title/current_node` 是否属于当前问题；若明显属于旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。
+11. 真正进入执行前，再读取一次 `get_current_task_tree` 确认当前节点；开始节点用 `update_task_node_status`，完成节点必须用 `complete_task_node_with_verification` 补验证结果后再结束。
+12. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。
+
+当前接入上下文：
+{{project_context_block}}
+{{chat_session_block}}
+- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。
+- 若当前还没有 `session_id`，调用 `start_work_session` 后也要立刻持久化；中断恢复顺序固定为 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)`。
+- 若项目工作区不可解析，再退回当前 CLI 自己的本地存储；不要新写 `current-session.json`、`chat_session_id.txt`、`session_id.txt`、`session.env` 这类 legacy 文件。
+
+回答要求：
+- 先基于 MCP 查询结果回答，不要把猜测写成事实。
+- 若信息来自 MCP，尽量保留对应的项目 / 员工 / 规则 ID，方便追溯。
+- 若入口文件或宿主系统还有额外约束，优先遵守宿主入口文件约定。"""
+DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = """# Unified Query MCP
+
+- 统一入口路径: /mcp/query
+- 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹、需求历史查询和交付报告能力。
+- 推荐工具: bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory
+
+## 最少执行规则
+1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。
+2. MCP 配置里的 description、项目说明和“当前项目”这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文，以及 bind_project_context(...) 写入的 MCP 会话绑定。
+3. 若接入地址缺少 project_id，或需要续接任务树但缺少 chat_session_id，首轮立即调用 bind_project_context(project_id, chat_session_id?, root_goal?)；不要只依赖 description 里的项目说明。
+4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。
+4.0 如果 direct CLI fallback 已先生成临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话调用 bind_project_context(...) 时，系统会自动把影子任务树迁到正式会话；但最佳实践仍然是首轮就传稳定 chat_session_id。
+4.1 每个 CLI 会话都应持久化自己生成的 chat_session_id；如能解析项目工作区，优先写到项目目录 .ai-employee/query-mcp/，否则再退回 CLI 自己的本地存储。同一轮任务固定复用，只有新开的并行 CLI 或全新任务才重新生成。
+4.2 query-mcp 本地持久化必须使用唯一文件规范：每进程会话文件为 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每个 CLI 进程写自己的独立文件，避免多进程冲突）；项目级权威状态文件为 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。除兼容历史数据时只读外，禁止新写 `current-session.json`、`chat_session_id.txt`、`session_id.txt`、`chat_session_id`、`session_id`、`session.env`、`current-query-session.json`、`current-work-session.json` 这类分叉文件。
+5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。
+6. 首轮查询必须把用户原始问题原文放进 search_ids(keyword="<用户原始问题>")；不要只写“当前项目”“这个规则”“项目手册”这类代称。
+7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。
+7.0 项目型问题优先使用项目绑定员工、规则和技能；先判断项目内现成能力能否闭环，只有项目能力不足时才自行补足。
+7.0.1 每次新请求进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文；不要只看规则标题，也不要把无关规则机械带入当前问题。
+7.0.2 {{clarity_threshold_line}}
+7.0.3 {{clarity_direct_line}}
+7.0.4 {{clarity_confirm_line}}
+7.0.5 {{clarity_repeat_line}}
+7.1 记忆检索不是每轮固定步骤；仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，再调用 recall_project_memory 或 recall_employee_memory。
+7.2 同一任务轮若已生成任务树并进入执行，后续默认依赖当前会话、任务树和工作轨迹，不要重复检索同一批项目记忆。
+8. 实现型需求必须遵守任务树闭环：先 analyze_task -> resolve_relevant_context -> generate_execution_plan，再 get_current_task_tree 确认节点；执行中用 update_task_node_status 回写状态，完成时必须 complete_task_node_with_verification 填写验证结果。
+9. 只有所有计划节点完成且验证结果齐全后，当前需求才算结束；执行中不得提前写“最终结论”。
+10. 查询型问题（谁 / 哪些 / 多少 / 从哪里）保持单检索节点，不要误拆成实现步骤；检索完成后应让任务树归档。
+11. 如用户在“已完成”后发现问题，必须重新起一轮修复计划，并继续回写轨迹与验证；不得直接覆盖上一轮结论。
+
+## 任务树与绑定约束
+- 任务树与记忆必须使用同一条聊天会话线索；记录项目记忆、工作事实或会话事件时，应复用当前 chat_session_id / session_id，不得把任务树和记忆拆成两条无关轨迹。
+- 同一条用户提问在统一查询 MCP 下只允许沉淀 1 条项目级问题记忆，并绑定 1 棵任务树；start_work_session / save_work_facts / append_session_event 等续跑工具不得再生成新的“用户问题”记忆或新的任务树。
+- 需要沉淀对话结论时，除最终答案外，还应保证后续可从记忆详情回看该轮规划、执行节点和验证结果。
+- 任务树节点必须直接描述面向用户目标的工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 等内部检索/规划工具直接当成节点标题。
+- 候选代理工具、脚本路径和类似“Auto inferred proxy entry from scripts/... ”的描述，只能作为内部工具信息，不得直接展示为任务树节点。
+- `bind_project_context(...)` 后如已返回任务树，或宿主支持 `get_current_task_tree`，必须立刻校验 `root_goal/title/current_node` 是否属于当前用户原始问题；若明显属于旧问题，说明当前 `chat_session_id` 挂错了任务树，应立即改用新的 `chat_session_id` 重新绑定。
+- 不允许跳过节点状态回写直接口头宣布完成；开始节点用 `update_task_node_status`，完成节点用 `complete_task_node_with_verification`，父节点完成前必须补齐自己的整体验证结果。
+- 若当前宿主未暴露任务树读取/推进工具，只能说明“无法完成任务树执行闭环”，不得把缺失能力包装成已闭环。
+
+## 高层能力
+- analyze_task: 对用户原始任务做结构化理解。
+- resolve_relevant_context: 聚合相关项目成员、规则、工具和上下文。
+- generate_execution_plan: 输出执行步骤骨架，用于生成真正的任务计划。
+- get_current_task_tree / update_task_node_status / complete_task_node_with_verification: 用于读取、推进和验证任务树节点。
+
+## 策略与执行能力
+- classify_command_risk: 判断命令风险等级。
+- check_workspace_scope: 校验路径是否位于工作区内。
+- resolve_execution_mode: 判断该走 local connector、项目工具还是仅保留查询。
+- check_operation_policy: 输出允许 / 拦截 / 需确认结论。
+- resolve_project_experience_rules: 按任务文本从项目经验规则中按需加载相关经验卡片，避免无关经验占用上下文。
+- execute_project_collaboration: 统一编排入口（项目协作），但是否单人主责、是否需要多人协作以及如何拆分，仍由 AI 结合项目手册、员工手册、规则和工具自主判断，不预设固定行业分工模板。
+- 若需要手动编排项目执行，再继续调用 list_project_members / get_project_runtime_context / resolve_project_experience_rules / list_project_proxy_tools / invoke_project_skill_tool。
+
+## 工作轨迹与恢复
+- 多轮任务先 start_work_session；后续复用同一个 chat_session_id / session_id，并用 save_work_facts、append_session_event、resume_work_session、summarize_checkpoint 维护轨迹。
+- start_work_session 可返回服务端生成的 session_id；save_work_facts 和 append_session_event 支持附带 session_id、phase、step、changed_files、verification、risks、next_steps 等结构化轨迹字段；resume_work_session / summarize_checkpoint 会聚合这些字段，直接输出阶段、步骤、文件、验证、风险和下一步。
+- 每个新聊天窗口的首轮有效对话，如用户未显式提供 session_id，应优先调用 start_work_session 获取服务端 session_id，再在本窗口后续所有 save_work_facts / append_session_event / resume_work_session / summarize_checkpoint 中复用同一个值；如果未先调用，save_work_facts 也会自动补生成一个。
+- 建议把客户端自生成的 chat_session_id 和 start_work_session 返回的 session_id 一起持久化；如能解析项目工作区，优先通过统一状态服务写入 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`，否则再退回 CLI 自己的本地存储。这样 CLI 中断后可以直接恢复同一条任务树和工作轨迹。
+- start_work_session 会立即写入一条 started 事件建立正式工作轨迹；首次拿到 session_id 后，仍建议尽快调用一次 save_work_facts 补充任务摘要、阶段和文件信息。若既不调用 start_work_session，也不写 save_work_facts / append_session_event，而只写 save_project_memory，会出现“有项目记忆但无正式工作轨迹”的情况。
+- 缺少活跃 MCP session 的 CLI / bridge 场景下，也必须显式传入并持续复用同一个 chat_session_id；否则容易出现“轨迹已写入，但当前主视图没有挂到任务树”的错觉。
+- 推荐的中断恢复顺序是：先从本地恢复 chat_session_id 和 session_id，再调用 bind_project_context(...)，然后依次调用 resume_work_session(...)、summarize_checkpoint(...)，最后按当前任务树继续执行；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。
+- 如需回答“最近做了哪些需求”“某个需求什么时候改过”“按日期查需求变更”，可调用 list_recent_project_requirements / get_requirement_history；它们会优先读取 work_session_store，命中不足时回退项目记忆。
+- 如宿主需要展示任务树演化摘要，可按需读取 /api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...。
+
+## 记忆与交付
+- recall_project_memory / recall_employee_memory 只在新需求开始、续跑恢复、修复旧问题或明显需要历史经验时使用；不要把记忆检索当成每个计划节点的固定前置动作。
+- 同一任务轮若已生成任务树并进入执行，后续优先依赖当前会话、任务树和工作轨迹；除非用户明确要求沿用历史方案或当前上下文明显不足，否则不要重复 recall。
+- save_project_memory 只在补充稳定结论或关键决策时使用；不要在同一需求的每个中间步骤重复补记。如宿主已启用自动记忆快照，仅在入口未覆盖自动记忆或需要补一条稳定结论时再额外保存。
+- build_delivery_report 用于结构化汇总本轮交付；generate_release_note_entry 用于生成更新日志条目。
+- 可读取 query://client-profile/claude-code 或 query://client-profile/codex 作为客户端接入画像。
+
+## 说明
+- 本入口仍以查询与聚合优先；如宿主支持多 MCP，复杂执行场景仍优先直连对应 project MCP。
+- 本入口已暴露 save_project_memory，可通过 project_id 直接写入项目对话内容；save_employee_memory 仍不暴露。如宿主系统已启用自动记忆，入口层仍会自动记录问题快照。"""
+DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE = """# {{client_title}} Client Profile
+
+{{focus_lines}}"""
+DEFAULT_CHAT_STYLE_HINTS = {
+    "concise": {
+        "style_hint": "输出风格：简洁，避免冗长。",
+        "order_hint": "回答顺序：先给结论再给步骤。",
+    },
+    "balanced": {
+        "style_hint": "输出风格：平衡，先结论后关键步骤。",
+        "order_hint": "回答顺序：先给结论再给步骤。",
+    },
+    "detailed": {
+        "style_hint": "输出风格：详细，覆盖关键前提、步骤与风险。",
+        "order_hint": "回答顺序：先给结论再给步骤。",
+    },
+}
 
 
 def default_employee_external_skill_sites() -> list[dict[str, object]]:
@@ -313,6 +437,29 @@ def normalize_query_mcp_public_base_url(value: object) -> str:
         return ""
     normalized_path = str(parsed.path or "").strip().rstrip("/")
     return urlunsplit((parsed.scheme, parsed.netloc, normalized_path, "", ""))
+
+
+def normalize_query_mcp_clarity_confirm_threshold(value: object) -> int:
+    try:
+        threshold = int(value or 3)
+    except (TypeError, ValueError):
+        threshold = 3
+    return max(1, min(5, threshold))
+
+
+def normalize_chat_style_hints(value: object) -> dict[str, dict[str, str]]:
+    normalized: dict[str, dict[str, str]] = {}
+    source = value if isinstance(value, dict) else {}
+    for key, defaults in DEFAULT_CHAT_STYLE_HINTS.items():
+        raw_item = source.get(key) if isinstance(source, dict) else {}
+        item = raw_item if isinstance(raw_item, dict) else {}
+        normalized[key] = {
+            "style_hint": str(item.get("style_hint") or defaults["style_hint"]).strip()[:500]
+            or defaults["style_hint"],
+            "order_hint": str(item.get("order_hint") or defaults["order_hint"]).strip()[:500]
+            or defaults["order_hint"],
+        }
+    return normalized
 
 
 def default_system_mcp_config() -> dict[str, object]:
@@ -700,6 +847,11 @@ class SystemConfig:
     )
     public_changelog: str = ""
     query_mcp_public_base_url: str = ""
+    query_mcp_clarity_confirm_threshold: int = 3
+    query_mcp_bootstrap_prompt_template: str = DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE
+    query_mcp_usage_guide_template: str = DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE
+    query_mcp_client_profile_template: str = DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE
+    chat_style_hints: dict[str, object] = field(default_factory=lambda: deepcopy(DEFAULT_CHAT_STYLE_HINTS))
     skill_registry_sources: dict[str, object] = field(
         default_factory=default_skill_registry_sources
     )
@@ -724,6 +876,19 @@ class SystemConfig:
         self.query_mcp_public_base_url = normalize_query_mcp_public_base_url(
             self.query_mcp_public_base_url
         )
+        self.query_mcp_clarity_confirm_threshold = normalize_query_mcp_clarity_confirm_threshold(
+            self.query_mcp_clarity_confirm_threshold
+        )
+        self.query_mcp_bootstrap_prompt_template = str(
+            self.query_mcp_bootstrap_prompt_template or DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE
+        ).strip()[:24000] or DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE
+        self.query_mcp_usage_guide_template = str(
+            self.query_mcp_usage_guide_template or DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE
+        ).strip()[:32000] or DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE
+        self.query_mcp_client_profile_template = str(
+            self.query_mcp_client_profile_template or DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE
+        ).strip()[:12000] or DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE
+        self.chat_style_hints = normalize_chat_style_hints(self.chat_style_hints)
         self.employee_auto_rule_generation_max_count = max(
             1, min(6, self.employee_auto_rule_generation_max_count)
         )

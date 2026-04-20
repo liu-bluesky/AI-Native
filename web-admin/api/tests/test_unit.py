@@ -2505,6 +2505,7 @@ def _build_project_api_test_client(tmp_path, monkeypatch, auth_payload):
     for proxy_name in (
         "project_store",
         "role_store",
+        "project_experience_summary_store",
         "project_material_store",
         "project_studio_export_store",
         "employee_store",
@@ -2520,6 +2521,10 @@ def _build_project_api_test_client(tmp_path, monkeypatch, auth_payload):
 
 def test_project_experience_summary_route_merges_existing_rule_and_clears_records(tmp_path, monkeypatch):
     from routers import projects as projects_router
+    from services.project_experience_summary_service import (
+        ProjectExperienceSummaryBackgroundService,
+    )
+    from stores import factory as store_factory
     from stores import mcp_bridge
     from stores.json.project_store import ProjectConfig
 
@@ -2610,6 +2615,53 @@ def test_project_experience_summary_route_merges_existing_rule_and_clears_record
                         ensure_ascii=False,
                     )
                 }
+            if self.call_count == 2:
+                return {
+                    "content": json.dumps(
+                        {
+                            "cards": [
+                                {
+                                    "topic_key": "login-form",
+                                    "decision": "accept",
+                                    "confidence": 0.95,
+                                    "issues": [],
+                                    "evidence_links": [
+                                        {
+                                            "record_id": "record-1",
+                                            "snippet_index": 0,
+                                            "reason": "源记录明确指向登录表单提交态问题",
+                                        }
+                                    ],
+                                    "revised_card": {
+                                        "title": "登录表单流程",
+                                        "topic_key": "login-form",
+                                        "domain": "frontend",
+                                        "keywords": ["登录", "表单", "提交"],
+                                        "applicable_when": ["开发登录页面"],
+                                        "signals": ["错误提示不一致"],
+                                        "root_causes": ["错误态未统一管理"],
+                                        "recommended_actions": ["统一错误提示与按钮禁用态"],
+                                        "anti_patterns": ["请求结束前允许重复提交"],
+                                        "verification": ["错误提示回归测试"],
+                                    },
+                                    "allow_upsert": True,
+                                    "allow_clear_records": True,
+                                    "covered_record_ids": ["record-1"],
+                                }
+                            ],
+                            "summary": {
+                                "accepted_count": 1,
+                                "revised_count": 0,
+                                "rejected_count": 0,
+                                "uncovered_record_ids": [],
+                                "allow_upsert": True,
+                                "allow_clear_requirement_records": True,
+                                "blocking_reasons": [],
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                }
             return {
                 "content": json.dumps(
                     {
@@ -2678,9 +2730,29 @@ def test_project_experience_summary_route_merges_existing_rule_and_clears_record
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["created_rule_ids"] == []
-    assert payload["updated_rule_ids"] == [existing_rule.id]
-    assert payload["clear_result"]["deleted_count"] == 1
+    assert payload["status"] == "created"
+    job_id = payload["job"]["id"]
+    assert payload["job"]["status"] == "queued"
+    assert payload["job"]["source_record_ids"] == ["record-1"]
+
+    list_response = client.get("/api/projects/proj-1/experience-summary-jobs")
+    assert list_response.status_code == 200
+    assert list_response.json()["current_job"]["id"] == job_id
+
+    worker = ProjectExperienceSummaryBackgroundService(
+        project_store=project_store,
+        project_experience_summary_store=store_factory.project_experience_summary_store,
+        poll_interval_seconds=999,
+    )
+    asyncio.run(worker.run_pending_once())
+
+    get_response = client.get(f"/api/projects/proj-1/experience-summary-jobs/{job_id}")
+    assert get_response.status_code == 200
+    job_payload = get_response.json()["job"]
+    assert job_payload["status"] == "completed"
+    assert job_payload["created_rule_ids"] == []
+    assert job_payload["updated_rule_ids"] == [existing_rule.id]
+    assert job_payload["clear_result"]["deleted_count"] == 1
     project = project_store.get("proj-1")
     assert project is not None
     assert project.experience_rule_ids == [existing_rule.id]
@@ -2688,6 +2760,161 @@ def test_project_experience_summary_route_merges_existing_rule_and_clears_record
     assert updated_rule is not None
     assert "统一 pending 状态" in updated_rule.content
     assert "统一错误提示与按钮禁用态" in updated_rule.content
+
+
+def test_project_experience_summary_route_rejects_meta_system_rules(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from services.project_experience_summary_service import (
+        ProjectExperienceSummaryBackgroundService,
+    )
+    from stores import factory as store_factory
+    from stores.json.project_store import ProjectConfig
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+
+    project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="测试项目",
+            created_by="tester",
+        )
+    )
+
+    class _FakeLlmService:
+        def get_provider_raw(self, provider_id, **kwargs):
+            return {
+                "id": provider_id,
+                "enabled": True,
+                "default_model": "glm-test",
+                "models": ["glm-test"],
+            }
+
+        async def chat_completion(self, provider_id, model_name, messages, **kwargs):
+            user_prompt = messages[-1]["content"]
+            if "请评审下面的候选经验卡片" in user_prompt:
+                return {
+                    "content": json.dumps(
+                        {
+                            "cards": [
+                                {
+                                    "topic_key": "manual-review-gate",
+                                    "decision": "accept",
+                                    "confidence": 0.95,
+                                    "issues": [],
+                                    "evidence_links": [
+                                        {
+                                            "record_id": "record-1",
+                                            "snippet_index": 0,
+                                            "reason": "记录提到了人工审核门",
+                                        }
+                                    ],
+                                    "revised_card": {
+                                        "title": "为 AI 生成内容增加人工审核门",
+                                        "topic_key": "manual-review-gate",
+                                        "domain": "workflow",
+                                        "keywords": ["人工审核", "审核门", "review dialog"],
+                                        "applicable_when": ["系统会自动生成知识卡片"],
+                                        "signals": ["需要新增审核门"],
+                                        "root_causes": ["系统缺少审核流程"],
+                                        "recommended_actions": ["增加 review dialog 和审核状态机"],
+                                        "anti_patterns": ["生成后直接发布到规则库"],
+                                        "verification": ["验证 draft 不会进入规则库"],
+                                    },
+                                    "allow_upsert": True,
+                                    "allow_clear_records": False,
+                                    "covered_record_ids": ["record-1"],
+                                }
+                            ],
+                            "summary": {
+                                "accepted_count": 1,
+                                "revised_count": 0,
+                                "rejected_count": 0,
+                                "uncovered_record_ids": [],
+                                "allow_upsert": True,
+                                "allow_clear_requirement_records": False,
+                                "blocking_reasons": [],
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                }
+            return {
+                "content": json.dumps(
+                    {
+                        "cards": [
+                            {
+                                "title": "为 AI 生成内容增加人工审核门",
+                                "topic_key": "manual-review-gate",
+                                "domain": "workflow",
+                                "keywords": ["人工审核", "审核门", "review dialog"],
+                                "applicable_when": ["系统会自动生成知识卡片"],
+                                "signals": ["需要新增审核门"],
+                                "root_causes": ["系统缺少审核流程"],
+                                "recommended_actions": ["增加 review dialog 和审核状态机"],
+                                "anti_patterns": ["生成后直接发布到规则库"],
+                                "verification": ["验证 draft 不会进入规则库"],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            }
+
+    monkeypatch.setattr(
+        "services.llm_provider_service.get_llm_provider_service",
+        lambda: _FakeLlmService(),
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "_build_project_requirement_records",
+        lambda project, **kwargs: {
+            "items": [
+                {
+                    "id": "record-1",
+                    "rootGoal": "给经验沉淀流程增加审核门",
+                    "summaryText": "生成内容直接入库，需要增加 review dialog 和审核状态机",
+                    "currentFocus": "补审核门",
+                    "actorLabel": "产品",
+                    "roundDigest": "当前轮次",
+                    "detailRound": {"recordKind": "requirement"},
+                }
+            ]
+        },
+    )
+
+    response = client.post(
+        "/api/projects/proj-1/experience-summary-jobs",
+        json={
+            "provider_id": "provider-1",
+            "model_name": "glm-test",
+            "record_ids": ["record-1"],
+            "clear_requirement_records": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "created"
+    job_id = payload["job"]["id"]
+
+    worker = ProjectExperienceSummaryBackgroundService(
+        project_store=project_store,
+        project_experience_summary_store=store_factory.project_experience_summary_store,
+        poll_interval_seconds=999,
+    )
+    asyncio.run(worker.run_pending_once())
+
+    get_response = client.get(f"/api/projects/proj-1/experience-summary-jobs/{job_id}")
+    assert get_response.status_code == 200
+    job_payload = get_response.json()["job"]
+    assert job_payload["status"] == "review_blocked"
+    assert job_payload["approved_card_count"] == 0
+    assert job_payload["created_rule_ids"] == []
+    assert "开发工作经验" in job_payload["review_result"]["cards"][0]["issues"][-1]["message"]
 
 
 def test_project_experience_consolidate_route_keeps_distinct_topics(tmp_path, monkeypatch):
@@ -3707,6 +3934,42 @@ def test_system_config_patch_supports_dictionaries(tmp_path, monkeypatch):
     detail_response = client.get("/api/dictionaries/llm_image_styles")
     assert detail_response.status_code == 200
     assert detail_response.json()["default_value"] == "anime"
+
+
+def test_system_config_patch_supports_query_mcp_clarity_threshold(tmp_path, monkeypatch):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in (
+        "role_store",
+        "system_config_store",
+        "project_store",
+        "project_material_store",
+        "project_studio_export_store",
+    ):
+        getattr(store_factory, proxy_name)._instance = None
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: {"sub": "tester", "role": "admin"}
+    client = TestClient(app)
+
+    response = client.patch(
+        "/api/system-config",
+        json={"query_mcp_clarity_confirm_threshold": 9},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["config"]["query_mcp_clarity_confirm_threshold"] == 5
+    assert (
+        store_factory.system_config_store.get_global().query_mcp_clarity_confirm_threshold
+        == 5
+    )
 
 
 def test_system_config_redacts_voice_allowlists_for_non_admin_readers(tmp_path, monkeypatch):
@@ -7415,6 +7678,10 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
     assert "save_project_memory" in query_usage_guide
     assert "任务树节点必须直接描述面向用户目标的工作步骤" in query_usage_guide
     assert "Auto inferred proxy entry from scripts/..." in query_usage_guide
+    assert "当前全局清晰度确认阈值为" in query_usage_guide
+    assert "清晰度分数 >=" in query_usage_guide
+    assert "清晰度分数 <" in query_usage_guide
+    assert "/ai/chat" not in query_usage_guide
 
     import sys
     import types
@@ -7969,13 +8236,13 @@ def test_query_mcp_project_state_persists_under_project_hidden_dir(tmp_path, mon
 
     active_path = workspace / ".ai-employee" / "query-mcp" / "active" / "proj-1.json"
     history_path = workspace / ".ai-employee" / "query-mcp" / "session-history" / "proj-1__chat-1.json"
-    current_path = workspace / ".ai-employee" / "query-mcp" / "current-session.json"
+    active_session_path = workspace / ".ai-employee" / "query-mcp" / "active-sessions" / "chat-1.json"
 
     assert saved["chat_session_id"] == "chat-1"
     assert saved["session_id"] == "ws-proj-1"
     assert active_path.exists() is True
     assert history_path.exists() is True
-    assert current_path.exists() is True
+    assert active_session_path.exists() is True
     assert state_service.load_query_mcp_project_state("proj-1")["session_id"] == "ws-proj-1"
     assert state_service.load_current_query_mcp_session("proj-1")["chat_session_id"] == "chat-1"
     assert state_service.load_resumable_query_mcp_project_state("proj-1")["chat_session_id"] == "chat-1"
@@ -8034,6 +8301,7 @@ def test_query_mcp_project_state_reads_legacy_pointer_files_without_new_legacy_w
     assert loaded["chat_session_id"] == "legacy-chat-1"
     assert loaded["session_id"] == "legacy-ws-1"
     assert (state_root / "current-session.json").exists() is False
+    assert (state_root / "active-sessions").exists() is False
 
 
 def test_query_mcp_proxy_app_direct_cli_reuses_persisted_project_chat_session_across_instances(
@@ -10046,18 +10314,62 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "任务树节点必须直接描述面向用户目标的工作步骤" in usage_guide
     assert "优先使用项目绑定员工、规则和技能" in usage_guide
     assert "重新获取与当前任务直接相关的规则正文" in usage_guide
+    assert "/ai/chat" not in usage_guide
     assert "save_work_facts" in claude_profile
     assert "任务树节点必须描述面向用户目标的真实工作步骤" in claude_profile
     assert "优先使用项目绑定员工、规则和技能" in claude_profile
     assert "search_ids" in codex_profile
+    assert "/ai/chat" not in claude_profile
+    assert "/ai/chat" not in codex_profile
     assert "get_manual_content" in codex_profile
     assert "build_delivery_report" in codex_profile
     assert "Auto inferred proxy entry from scripts/..." in codex_profile
+    assert "查询型、客服型问题" in codex_profile
     assert "优先使用项目绑定员工、规则和技能" in codex_profile
     assert "重新获取与当前任务直接相关的规则正文" in codex_profile
     assert "analyze_task" in generic_profile
     assert "节点必须直接对应用户目标" in generic_profile
     assert "优先使用项目绑定员工、规则和技能" in generic_profile
+
+
+def test_query_mcp_resources_and_style_hints_use_system_config(monkeypatch):
+    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.runtime import prompt_assembler
+    from stores.json.system_config_store import SystemConfig
+
+    registered_tools, registered_resources, _saved_memories, _saved_work_session_events = (
+        _setup_query_mcp_agent_capability_env(monkeypatch)
+    )
+    custom_config = SystemConfig(
+        query_mcp_usage_guide_template="Guide {{clarity_threshold_line}}",
+        query_mcp_client_profile_template="# {{client_title }}\n{{focus_lines}}".replace("{{client_title }}", "{{client_title}}"),
+        chat_style_hints={
+            "concise": {
+                "style_hint": "简洁风格提示",
+                "order_hint": "简洁顺序提示",
+            },
+            "balanced": {
+                "style_hint": "平衡风格提示",
+                "order_hint": "平衡顺序提示",
+            },
+            "detailed": {
+                "style_hint": "详细风格提示",
+                "order_hint": "详细顺序提示",
+            },
+        },
+    )
+    monkeypatch.setattr(query_mcp_svc.system_config_store, "get_global", lambda: custom_config)
+    monkeypatch.setattr(prompt_assembler.system_config_store, "get_global", lambda: custom_config)
+
+    usage_guide = registered_resources["query://usage-guide"]()
+    codex_profile = registered_resources["query://client-profile/codex"]()
+    style_hint, order_hint = prompt_assembler.resolve_chat_style_hints("balanced")
+
+    assert usage_guide == "Guide 当前全局清晰度确认阈值为 3/5；处理前先按 1-5 分估计用户需求清晰度。"
+    assert codex_profile.startswith("# Codex")
+    assert "search_ids" in codex_profile
+    assert style_hint == "平衡风格提示"
+    assert order_hint == "平衡顺序提示"
 
     analysis = registered_tools["analyze_task"](
         "继续升级 /mcp/query/sse，必须补测试并更新 docs/总结文档.md",

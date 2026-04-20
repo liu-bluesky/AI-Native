@@ -177,7 +177,10 @@
       "Bash(sleep 3 && curl -s http://localhost:8000/api/metrics/stats | python -m json.tool)",
       "Bash(lsof -ti:8000 | xargs kill -9 2>/dev/null; echo \"已清理端口 8000\")",
       "Bash(python -m py_compile agent_orchestrator.py conversation_manager.py tool_executor.py observability.py redis_client.py routers/projects.py 2>&1)",
-      "Bash(python -m py_compile agent_orchestrator.py routers/projects.py)"
+      "Bash(python -m py_compile agent_orchestrator.py routers/projects.py)",
+      "Bash(python -m pytest tests/test_unit.py -k \"query_mcp_project_state\" -x -v)",
+      "mcp__ide__getDiagnostics",
+      "Bash(python -m pytest tests/test_unit.py -k \"query_mcp\" -x -v)"
     ]
   }
 }

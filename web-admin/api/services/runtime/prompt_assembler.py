@@ -4,18 +4,27 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from core.deps import system_config_store
+
 
 def resolve_chat_style_hints(
     answer_style: str = "concise",
     *,
     prefer_conclusion_first: bool = True,
 ) -> tuple[str, str]:
-    style_hint = {
-        "concise": "输出风格：简洁，避免冗长。",
-        "balanced": "输出风格：平衡，先结论后关键步骤。",
-        "detailed": "输出风格：详细，覆盖关键前提、步骤与风险。",
-    }.get(str(answer_style or "concise").strip().lower(), "输出风格：简洁，避免冗长。")
-    order_hint = "回答顺序：先给结论再给步骤。" if prefer_conclusion_first else "回答顺序：按自然推理顺序给出。"
+    normalized_style = str(answer_style or "concise").strip().lower() or "concise"
+    config = system_config_store.get_global()
+    style_hints = getattr(config, "chat_style_hints", {}) or {}
+    selected = style_hints.get(normalized_style) if isinstance(style_hints, dict) else None
+    if not isinstance(selected, dict):
+        selected = (
+            style_hints.get("concise")
+            if isinstance(style_hints, dict) and isinstance(style_hints.get("concise"), dict)
+            else {}
+        )
+    style_hint = str(selected.get("style_hint") or "输出风格：简洁，避免冗长。").strip()
+    default_order_hint = str(selected.get("order_hint") or "回答顺序：先给结论再给步骤。").strip()
+    order_hint = default_order_hint if prefer_conclusion_first else "回答顺序：按自然推理顺序给出。"
     return style_hint, order_hint
 
 

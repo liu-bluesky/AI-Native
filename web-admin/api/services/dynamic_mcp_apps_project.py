@@ -256,7 +256,6 @@ def create_project_mcp(
             "- 外部 MCP 工具的参数以远端工具 schema 为准，先用 list_external_mcp_tools 查看。",
             "- 若需要统一入口自动生成或续接任务树，必须保证当前会话已绑定稳定的 chat_session_id；缺失时先走 bind_project_context。",
             "- 项目记忆、工作轨迹和任务树应复用同一条 chat_session_id / session_id；沉淀记忆后应能回看该轮规划和验证，不允许彼此脱节。",
-            "- /ai/chat 页面只展示仍在进行中的任务树；已完成或已归档任务树只作为历史记录查看，不继续占用当前会话视图。",
             "",
             "## 当前项目能力概览",
             f"- 项目级 UI 规则数: {len(ui_rule_bindings)}",
@@ -281,7 +280,7 @@ def create_project_mcp(
                     "- 开始执行节点时，先调用 `update_task_node_status` 标记为 `in_progress` 或 `verifying`。",
                     "- 完成节点时，必须调用 `complete_task_node_with_verification` 填写验证结果；未验证不得标记为 `done`。",
                     "- 若本轮已有执行进展但没有回写任务树，系统会把节点保留在继续执行或验证中，而不是直接自动推荐完成。",
-                    "- `/ai/chat` 只展示当前仍在进行中的任务树；已完成任务树应归档到项目历史，不继续在当前聊天主区域展示。",
+                    "- 宿主展示层应只把活动任务树作为当前会话主任务展示；已完成任务树应归档到历史记录中展示。",
                 ]
             )
         if display_path:

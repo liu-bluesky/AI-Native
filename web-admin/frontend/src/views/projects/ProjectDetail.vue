@@ -188,6 +188,12 @@
                   </div>
                   <div v-if="canManageProject" class="block-header__actions">
                     <el-button
+                      v-if="lastExperienceSummaryResult"
+                      size="small"
+                      @click="showExperienceReviewDialog = true"
+                      >查看最近评审</el-button
+                    >
+                    <el-button
                       v-if="hasLegacyProjectExperienceRules"
                       size="small"
                       :loading="experienceRuleMigrating"
@@ -217,6 +223,30 @@
                   :closable="false"
                   show-icon
                 />
+                <div v-if="experienceSummaryActiveJob" class="experience-summary-job-panel">
+                  <div class="experience-summary-job-panel__header">
+                    <div>
+                      <div class="experience-summary-job-panel__title">当前正在总结开发经验</div>
+                      <div class="experience-summary-job-panel__meta">
+                        <span>{{ experienceSummaryActiveJob.status_label || "处理中" }}</span>
+                        <span>{{ experienceSummaryActiveJob.stage_label || "后台执行中" }}</span>
+                        <span v-if="experienceSummaryActiveJob.updated_at">
+                          {{ formatRelativeTime(experienceSummaryActiveJob.updated_at) }} 更新
+                        </span>
+                      </div>
+                    </div>
+                    <el-tag effect="plain" type="warning">
+                      {{ Number(experienceSummaryActiveJob.progress || 0) }}%
+                    </el-tag>
+                  </div>
+                  <div class="experience-summary-job-panel__message">
+                    {{
+                      experienceSummaryActiveJob.status_message
+                        || "后台正在处理这次经验总结；刷新页面后也会继续显示当前进度。"
+                    }}
+                  </div>
+                  <el-progress :percentage="Number(experienceSummaryActiveJob.progress || 0)" />
+                </div>
                 <div v-if="boundExperienceRules.length" class="ui-rule-list">
                   <div
                     v-for="rule in boundExperienceRules"
@@ -228,6 +258,7 @@
                       <span>{{ rule.id }}</span>
                       <span>{{ rule.domain || "项目经验" }}</span>
                       <span>{{ rule.systemSource === "project_experience" ? "项目私有" : "开发经验" }}</span>
+                      <span v-if="rule.updatedAt" :title="rule.updatedAt">更新于 {{ formatRelativeTime(rule.updatedAt) }}</span>
                     </div>
                     <p v-if="rule.preview" class="experience-rule-card__preview">
                       {{ rule.preview }}
@@ -1081,7 +1112,7 @@
       v-model="showExperienceSummaryDialog"
       title="选择总结模型"
       :description="experienceSummaryDialogDescription"
-      confirm-text="开启总结经验工作流"
+      :confirm-text="experienceSummaryDialogConfirmText"
       :internal-providers="experienceProviderOptions"
       :loading="experienceProvidersLoading || experienceSummaryLoading"
       :provider-id="experienceSummaryProviderId"
@@ -1089,7 +1120,25 @@
       @update:provider-id="experienceSummaryProviderId = $event"
       @update:model-name="experienceSummaryModelName = $event"
       @confirm="handleConfirmExperienceSummary"
-    />
+    >
+      <template #default>
+        <div class="experience-summary-review-mode">
+          <div class="experience-summary-review-mode__copy">
+            <div class="experience-summary-review-mode__eyebrow">Review Mode</div>
+            <strong>人工复核开关</strong>
+            <p>
+              自动模式会在评审通过且覆盖完整时清理原始记录。人工复核模式会保留原始记录，并弹出本次评审详情供人工确认。
+            </p>
+          </div>
+          <el-switch
+            v-model="experienceSummaryManualReviewEnabled"
+            inline-prompt
+            active-text="开"
+            inactive-text="关"
+          />
+        </div>
+      </template>
+    </ModelProviderPickerDialog>
     <ModelProviderPickerDialog
       v-model="showExperienceConsolidateDialog"
       title="选择汇总模型"
@@ -1103,6 +1152,231 @@
       @update:model-name="experienceSummaryModelName = $event"
       @confirm="handleConfirmConsolidateExperienceRules"
     />
+
+    <el-dialog
+      v-model="showExperienceReviewDialog"
+      class="experience-review-dialog"
+      width="960px"
+      top="6vh"
+    >
+      <template #header>
+        <div class="memory-detail-dialog__header">
+          <div>
+            <div class="memory-detail-dialog__eyebrow">Experience Review</div>
+            <h3>本次经验评审结果</h3>
+          </div>
+          <div class="memory-detail-dialog__header-tags">
+            <el-tag effect="plain" :type="getExperienceSummaryStatusTagType(lastExperienceSummaryResult?.status)">
+              {{ getExperienceSummaryStatusLabel(lastExperienceSummaryResult?.status) }}
+            </el-tag>
+            <el-tag effect="plain" :type="experienceSummaryManualReviewRequired ? 'warning' : 'success'">
+              {{ experienceSummaryManualReviewRequired ? "人工复核" : "自动评审" }}
+            </el-tag>
+          </div>
+        </div>
+      </template>
+      <div v-if="lastExperienceSummaryResult" class="experience-review-shell">
+        <section class="experience-review-hero">
+          <div class="experience-review-hero__copy">
+            <div class="memory-detail-dialog__eyebrow">Summary</div>
+            <h4>{{ project.name || projectId || "当前项目" }}</h4>
+            <p>{{ experienceReviewHeadline }}</p>
+          </div>
+          <div class="experience-review-hero__stats">
+            <div class="experience-review-stat">
+              <span>源记录</span>
+              <strong>{{ lastExperienceSummaryResult?.source_record_count || 0 }}</strong>
+            </div>
+            <div class="experience-review-stat">
+              <span>候选卡片</span>
+              <strong>{{ lastExperienceSummaryResult?.candidate_card_count || 0 }}</strong>
+            </div>
+            <div class="experience-review-stat">
+              <span>通过入库</span>
+              <strong>{{ experienceReviewSummary.approved_card_count || 0 }}</strong>
+            </div>
+            <div class="experience-review-stat">
+              <span>清理记录</span>
+              <strong>{{ lastExperienceSummaryResult?.clear_result?.deleted_count || 0 }}</strong>
+            </div>
+          </div>
+        </section>
+
+        <el-alert
+          :title="experienceReviewBannerTitle"
+          :type="experienceReviewBannerType"
+          :description="experienceReviewBannerDescription"
+          :closable="false"
+          show-icon
+        />
+
+        <section v-if="experienceReviewBlockingReasons.length" class="experience-review-section">
+          <div class="experience-review-section__header">
+            <div>
+              <div class="memory-detail-dialog__eyebrow">Blocking Reasons</div>
+              <h4>阻断与保留原因</h4>
+            </div>
+          </div>
+          <div class="experience-review-list">
+            <div
+              v-for="(reason, index) in experienceReviewBlockingReasons"
+              :key="`reason-${index}`"
+              class="experience-review-list__item"
+            >
+              {{ reason }}
+            </div>
+          </div>
+        </section>
+
+        <section class="experience-review-section">
+          <div class="experience-review-section__header">
+            <div>
+              <div class="memory-detail-dialog__eyebrow">Card Decisions</div>
+              <h4>候选卡片评审</h4>
+            </div>
+          </div>
+          <div v-if="experienceReviewCards.length" class="experience-review-card-list">
+            <article
+              v-for="card in experienceReviewCards"
+              :key="card.topic_key || card.reviewed_card?.topic_key || card.revised_card?.topic_key"
+              class="experience-review-card"
+            >
+              <div class="experience-review-card__head">
+                <div>
+                  <h5>{{ getExperienceReviewDisplayCard(card)?.title || card.topic_key || "未命名卡片" }}</h5>
+                  <p>{{ getExperienceReviewDisplayCard(card)?.topic_key || card.topic_key || "-" }}</p>
+                </div>
+                <div class="experience-review-card__head-tags">
+                  <el-tag effect="plain" :type="getExperienceReviewDecisionTagType(card.decision)">
+                    {{ getExperienceReviewDecisionLabel(card.decision) }}
+                  </el-tag>
+                  <el-tag effect="plain" type="info">
+                    置信度 {{ formatExperienceReviewConfidence(card.confidence) }}
+                  </el-tag>
+                  <el-tag
+                    v-if="card.allow_upsert"
+                    effect="plain"
+                    type="success"
+                  >
+                    可入库
+                  </el-tag>
+                </div>
+              </div>
+
+              <div class="experience-review-card__meta">
+                <span>覆盖记录：{{ (card.covered_record_ids || []).length }}</span>
+                <span>证据链接：{{ (card.evidence_links || []).length }}</span>
+                <span>问题数：{{ (card.issues || []).length }}</span>
+              </div>
+
+              <div v-if="card.covered_record_ids?.length" class="experience-review-chip-group">
+                <span
+                  v-for="recordId in card.covered_record_ids"
+                  :key="`${card.topic_key}-${recordId}`"
+                  class="experience-review-chip"
+                >
+                  {{ recordId }}
+                </span>
+              </div>
+
+              <div v-if="card.evidence_links?.length" class="experience-review-chip-group">
+                <span
+                  v-for="(link, index) in card.evidence_links"
+                  :key="`${card.topic_key}-evidence-${index}`"
+                  class="experience-review-chip experience-review-chip--muted"
+                >
+                  {{ link.record_id }} / 片段 {{ Number(link.snippet_index || 0) + 1 }}
+                </span>
+              </div>
+
+              <div v-if="card.issues?.length" class="experience-review-issue-list">
+                <div
+                  v-for="(issue, index) in card.issues"
+                  :key="`${card.topic_key}-issue-${index}`"
+                  class="experience-review-issue"
+                >
+                  <el-tag size="small" effect="plain" :type="getExperienceReviewIssueTagType(issue.severity)">
+                    {{ String(issue.severity || "major").toUpperCase() }}
+                  </el-tag>
+                  <span>{{ issue.message || issue.code || "未返回问题说明" }}</span>
+                </div>
+              </div>
+
+              <div v-if="getExperienceReviewDisplayCard(card)" class="experience-review-card__body">
+                <div class="experience-review-card__section">
+                  <span>适用场景</span>
+                  <p>
+                    {{
+                      (getExperienceReviewDisplayCard(card)?.applicable_when || []).join(" / ")
+                        || "未返回适用场景"
+                    }}
+                  </p>
+                </div>
+                <div class="experience-review-card__section">
+                  <span>推荐做法</span>
+                  <ul>
+                    <li
+                      v-for="(item, index) in (getExperienceReviewDisplayCard(card)?.recommended_actions || [])"
+                      :key="`${card.topic_key}-action-${index}`"
+                    >
+                      {{ item }}
+                    </li>
+                  </ul>
+                </div>
+                <div class="experience-review-card__section">
+                  <span>验证方式</span>
+                  <ul>
+                    <li
+                      v-for="(item, index) in (getExperienceReviewDisplayCard(card)?.verification || [])"
+                      :key="`${card.topic_key}-verification-${index}`"
+                    >
+                      {{ item }}
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </article>
+          </div>
+          <el-empty v-else description="当前没有返回可展示的评审卡片" :image-size="56" />
+        </section>
+
+        <section v-if="experienceReviewSourceRecords.length" class="experience-review-section">
+          <div class="experience-review-section__header">
+            <div>
+              <div class="memory-detail-dialog__eyebrow">Source Records</div>
+              <h4>评审参考记录</h4>
+            </div>
+          </div>
+          <div class="experience-review-source-list">
+            <article
+              v-for="record in experienceReviewSourceRecords"
+              :key="record.record_id"
+              class="experience-review-source-card"
+            >
+              <div class="experience-review-source-card__head">
+                <strong>{{ record.record_id }}</strong>
+                <span>{{ record.current_focus || "当前无聚焦节点" }}</span>
+              </div>
+              <p>{{ record.root_goal || record.summary_text || "未返回目标摘要" }}</p>
+              <div v-if="record.evidence_snippets?.length" class="experience-review-source-card__snippets">
+                <div
+                  v-for="(snippet, index) in record.evidence_snippets"
+                  :key="`${record.record_id}-snippet-${index}`"
+                  class="experience-review-source-card__snippet"
+                >
+                  <span>片段 {{ index + 1 }}</span>
+                  <small>{{ snippet }}</small>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+      </div>
+      <el-empty v-else description="当前还没有可展示的评审结果" :image-size="56" />
+      <template #footer>
+        <el-button @click="showExperienceReviewDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="showExperienceRuleEditDialog"
@@ -1703,7 +1977,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
@@ -1755,12 +2029,15 @@ const showEditDialog = ref(false);
 const showManualDialog = ref(false);
 const showExperienceSummaryDialog = ref(false);
 const showExperienceConsolidateDialog = ref(false);
+const showExperienceReviewDialog = ref(false);
 const showExperienceRuleEditDialog = ref(false);
 const manualDialogTitle = ref("项目手册");
 const manualLoading = ref(false);
 const generatedManual = ref("");
 const experienceProvidersLoading = ref(false);
 const experienceSummaryLoading = ref(false);
+const experienceSummaryManualReviewEnabled = ref(false);
+const experienceSummaryActiveJob = ref(null);
 const experienceRuleMigrating = ref(false);
 const experienceRuleConsolidating = ref(false);
 const experienceRuleEditingLoading = ref(false);
@@ -1769,6 +2046,7 @@ const experienceRuleEditSaving = ref(false);
 const experienceProviderOptions = ref([]);
 const experienceSummaryProviderId = ref("");
 const experienceSummaryModelName = ref("");
+const lastExperienceSummaryResult = ref(null);
 const editingExperienceRuleId = ref("");
 const deletingExperienceRuleId = ref("");
 const experienceRuleEditForm = ref({
@@ -1885,10 +2163,20 @@ const uiRuleForm = ref({
   rule_ids: [],
 });
 
+let experienceSummaryPollingTimer = 0;
+
 function resetProjectScopedState() {
+  stopExperienceSummaryPolling();
   project.value = {};
   projectUsers.value = [];
   members.value = [];
+  lastExperienceSummaryResult.value = null;
+  experienceSummaryActiveJob.value = null;
+  experienceSummaryLoading.value = false;
+  experienceSummaryManualReviewEnabled.value = false;
+  showExperienceSummaryDialog.value = false;
+  showExperienceConsolidateDialog.value = false;
+  showExperienceReviewDialog.value = false;
   projectMemories.value = [];
   projectMemoryTotal.value = 0;
   projectMemoryHasMore.value = false;
@@ -3397,6 +3685,7 @@ const boundExperienceRules = computed(() => {
       preview: String(item.preview || "").trim(),
       experienceScope: String(item.experience_scope || "").trim(),
       systemSource: String(item.system_source || "").trim(),
+      updatedAt: String(item.updated_at || "").trim(),
     }));
   }
   return normalizeStringList(project.value?.experience_rule_ids || []).map((ruleId) => ({
@@ -3424,8 +3713,15 @@ const experienceSummaryDialogDescription = computed(() => {
   const scopeText = selectedCount
     ? `将优先总结已选中的 ${selectedCount} 条需求记录`
     : `将总结当前筛选结果中的 ${targetCount} 条需求记录`;
-  return `${scopeText}，生成可复用开发经验卡片，写入开发经验库，并把当前项目绑定到对应规则，成功后会清空这批记录。`;
+  if (experienceSummaryManualReviewEnabled.value) {
+    return `${scopeText}，只沉淀可复用的开发工作经验，不沉淀“新增审核门/新增平台流程”这类系统改造需求；入库后会保留原始记录，等待人工复核。`;
+  }
+  return `${scopeText}，只沉淀可复用的开发工作经验，不沉淀“新增审核门/新增平台流程”这类系统改造需求；评审通过且覆盖完整后才会自动清空原始记录。`;
 });
+
+const experienceSummaryDialogConfirmText = computed(() => (
+  experienceSummaryManualReviewEnabled.value ? "开启人工复核流程" : "开启总结经验工作流"
+));
 
 const experienceConsolidateDialogDescription = computed(() => {
   const totalCount = boundExperienceRules.value.length;
@@ -3443,6 +3739,228 @@ const hasActiveRequirementRecordFilters = computed(() =>
   ),
 );
 
+const experienceSummaryManualReviewRequired = computed(() => (
+  Boolean(lastExperienceSummaryResult.value?.manual_review_required)
+));
+
+const experienceReviewSummary = computed(() => {
+  const summary = lastExperienceSummaryResult.value?.review_result?.summary;
+  return summary && typeof summary === "object" ? summary : {};
+});
+
+const experienceReviewCards = computed(() => {
+  const cards = lastExperienceSummaryResult.value?.review_result?.cards;
+  return Array.isArray(cards) ? cards : [];
+});
+
+const experienceReviewSourceRecords = computed(() => {
+  const records = lastExperienceSummaryResult.value?.review_result?.records;
+  return Array.isArray(records) ? records : [];
+});
+
+const experienceReviewBlockingReasons = computed(() => {
+  const reasons = experienceReviewSummary.value?.blocking_reasons;
+  return Array.isArray(reasons) ? reasons.filter(Boolean) : [];
+});
+
+const experienceReviewHeadline = computed(() => {
+  const approvedCount = Number(experienceReviewSummary.value?.approved_card_count || 0);
+  const totalCount = Number(lastExperienceSummaryResult.value?.candidate_card_count || 0);
+  if (experienceSummaryManualReviewRequired.value) {
+    return `本次有 ${approvedCount}/${totalCount} 张候选卡片通过入库门禁，原始记录已保留，等待人工复核。`;
+  }
+  if (String(lastExperienceSummaryResult.value?.status || "") === "review_blocked") {
+    return `本次 ${totalCount} 张候选卡片都没有通过最终门禁，系统没有写入经验库。`;
+  }
+  if (String(lastExperienceSummaryResult.value?.status || "") === "partial_completed") {
+    return `本次已写入 ${approvedCount} 张经验卡片，但仍有源记录未覆盖或未满足清理条件，因此保留了原始记录。`;
+  }
+  return `本次已写入 ${approvedCount} 张经验卡片，并完成原始记录清理。`;
+});
+
+const experienceReviewBannerType = computed(() => {
+  if (String(lastExperienceSummaryResult.value?.status || "") === "review_blocked") {
+    return "warning";
+  }
+  if (experienceSummaryManualReviewRequired.value) {
+    return "info";
+  }
+  if (String(lastExperienceSummaryResult.value?.status || "") === "partial_completed") {
+    return "warning";
+  }
+  return "success";
+});
+
+const experienceReviewBannerTitle = computed(() => {
+  if (String(lastExperienceSummaryResult.value?.status || "") === "review_blocked") {
+    return "评审未通过，未入库也未清理原记录";
+  }
+  if (experienceSummaryManualReviewRequired.value) {
+    return "人工复核模式已开启";
+  }
+  if (String(lastExperienceSummaryResult.value?.status || "") === "partial_completed") {
+    return "已完成入库，但保留原始记录";
+  }
+  return "评审通过，经验沉淀完成";
+});
+
+const experienceReviewBannerDescription = computed(() => {
+  if (String(lastExperienceSummaryResult.value?.status || "") === "review_blocked") {
+    return experienceReviewBlockingReasons.value[0] || "请根据下方问题修正卡片后再重试。";
+  }
+  const autoClearEligible = Boolean(experienceReviewSummary.value?.allow_clear_requirement_records);
+  if (experienceSummaryManualReviewRequired.value) {
+    return autoClearEligible
+      ? "当前卡片已满足自动清理条件，但因为人工复核开关开启，系统保留了原始记录。"
+      : "当前卡片已入库，但系统保留了原始记录，便于你先检查评审结果。";
+  }
+  if (String(lastExperienceSummaryResult.value?.status || "") === "partial_completed") {
+    return experienceReviewBlockingReasons.value[0] || "请先处理未覆盖记录或阻断问题，再决定是否再次执行清理。";
+  }
+  return "当前结果已经完成评审、入库和记录清理，可以直接复用这些经验规则。";
+});
+
+function normalizeExperienceSummaryJob(job) {
+  return job && typeof job === "object" ? { ...job } : null;
+}
+
+function isExperienceSummaryJobActive(job) {
+  const normalized = String(job?.status || "").trim().toLowerCase();
+  return normalized === "queued" || normalized === "processing";
+}
+
+function stopExperienceSummaryPolling() {
+  if (experienceSummaryPollingTimer) {
+    window.clearTimeout(experienceSummaryPollingTimer);
+    experienceSummaryPollingTimer = 0;
+  }
+}
+
+function notifyExperienceSummaryCompletion(result) {
+  const createdCount = Array.isArray(result?.created_rule_ids) ? result.created_rule_ids.length : 0;
+  const updatedCount = Array.isArray(result?.updated_rule_ids) ? result.updated_rule_ids.length : 0;
+  const clearCount = Number(result?.clear_result?.deleted_count || 0);
+  const blockingReasons = Array.isArray(result?.review_result?.summary?.blocking_reasons)
+    ? result.review_result.summary.blocking_reasons.filter(Boolean)
+    : [];
+  const blockingText = blockingReasons.length ? `：${blockingReasons[0]}` : "";
+  if (result?.status === "review_blocked") {
+    ElMessage.warning(`经验评审未通过，未入库也未清理记录${blockingText}`);
+    return;
+  }
+  if (result?.manual_review_required) {
+    ElMessage.success(
+      `经验已入库：新增 ${createdCount} 条，更新 ${updatedCount} 条；已保留原记录等待人工复核`,
+    );
+    return;
+  }
+  if (result?.status === "partial_completed") {
+    ElMessage.warning(
+      `经验已入库：新增 ${createdCount} 条，更新 ${updatedCount} 条；原记录未清理${blockingText}`,
+    );
+    return;
+  }
+  ElMessage.success(
+    `经验总结完成：新增 ${createdCount} 条，更新 ${updatedCount} 条，清空 ${clearCount} 条记录`,
+  );
+}
+
+async function finalizeExperienceSummaryJob(job, options = {}) {
+  const {
+    refreshData = true,
+    showDialog = false,
+    notify = false,
+  } = options;
+  stopExperienceSummaryPolling();
+  experienceSummaryActiveJob.value = null;
+  experienceSummaryLoading.value = false;
+  lastExperienceSummaryResult.value = job || null;
+  if (refreshData) {
+    await Promise.all([
+      fetchProject(projectId.value),
+      refreshRequirementRecords(),
+    ]);
+  }
+  if (showDialog && job) {
+    showExperienceReviewDialog.value = true;
+  }
+  if (notify && job) {
+    notifyExperienceSummaryCompletion(job);
+  }
+}
+
+async function pollExperienceSummaryJob(targetProjectId = projectId.value, jobId = "") {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  const effectiveJobId = String(jobId || experienceSummaryActiveJob.value?.id || "").trim();
+  if (!effectiveProjectId || !effectiveJobId) {
+    stopExperienceSummaryPolling();
+    return;
+  }
+  try {
+    const data = await api.get(`/projects/${effectiveProjectId}/experience-summary-jobs/${effectiveJobId}`);
+    if (effectiveProjectId !== projectId.value) return;
+    const job = normalizeExperienceSummaryJob(data?.job);
+    if (!job) {
+      stopExperienceSummaryPolling();
+      return;
+    }
+    if (isExperienceSummaryJobActive(job)) {
+      experienceSummaryActiveJob.value = job;
+      experienceSummaryLoading.value = true;
+      stopExperienceSummaryPolling();
+      experienceSummaryPollingTimer = window.setTimeout(() => {
+        void pollExperienceSummaryJob(effectiveProjectId, effectiveJobId);
+      }, 1500);
+      return;
+    }
+    await finalizeExperienceSummaryJob(job, {
+      refreshData: true,
+      showDialog: true,
+      notify: true,
+    });
+  } catch (err) {
+    if (effectiveProjectId !== projectId.value) return;
+    experienceSummaryLoading.value = false;
+    stopExperienceSummaryPolling();
+    ElMessage.error(err?.detail || err?.message || "获取总结任务进度失败");
+  }
+}
+
+async function restoreExperienceSummaryJob(targetProjectId = projectId.value) {
+  const effectiveProjectId = String(targetProjectId || "").trim();
+  if (!effectiveProjectId) return;
+  try {
+    const data = await api.get(`/projects/${effectiveProjectId}/experience-summary-jobs`, {
+      params: { limit: 10 },
+    });
+    if (effectiveProjectId !== projectId.value) return;
+    const currentJob = normalizeExperienceSummaryJob(data?.current_job);
+    const latestJob = normalizeExperienceSummaryJob(data?.latest_job);
+    if (currentJob && isExperienceSummaryJobActive(currentJob)) {
+      experienceSummaryActiveJob.value = currentJob;
+      experienceSummaryLoading.value = true;
+      lastExperienceSummaryResult.value = null;
+      stopExperienceSummaryPolling();
+      experienceSummaryPollingTimer = window.setTimeout(() => {
+        void pollExperienceSummaryJob(effectiveProjectId, currentJob.id);
+      }, 1200);
+      return;
+    }
+    stopExperienceSummaryPolling();
+    experienceSummaryActiveJob.value = null;
+    experienceSummaryLoading.value = false;
+    if (latestJob) {
+      lastExperienceSummaryResult.value = latestJob;
+    }
+  } catch (err) {
+    if (effectiveProjectId !== projectId.value) return;
+    experienceSummaryActiveJob.value = null;
+    experienceSummaryLoading.value = false;
+    stopExperienceSummaryPolling();
+    ElMessage.error(err?.detail || err?.message || "恢复总结任务状态失败");
+  }
+}
+
 function normalizeStringList(values) {
   return Array.from(
     new Set(
@@ -3451,6 +3969,20 @@ function normalizeStringList(values) {
         .filter(Boolean),
     ),
   );
+}
+
+function formatRelativeTime(isoString) {
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return "";
+  const diff = Date.now() - date.getTime();
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} 天前`;
+  return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function stripExperienceRuleTitlePrefix(value) {
@@ -5074,6 +5606,7 @@ async function refresh(targetProjectId = projectId.value) {
   loading.value = true;
   try {
     await fetchProject(effectiveProjectId);
+    await restoreExperienceSummaryJob(effectiveProjectId);
     await ensureProjectTabData(route.query.tab || activeProjectTab.value, effectiveProjectId, {
       force: true,
     });
@@ -5195,6 +5728,61 @@ async function openExperienceSummaryDialog() {
     return;
   }
   showExperienceSummaryDialog.value = true;
+}
+
+function getExperienceSummaryStatusLabel(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "completed") return "已完成";
+  if (normalized === "partial_completed") return "部分完成";
+  if (normalized === "review_blocked") return "评审阻断";
+  return "待处理";
+}
+
+function getExperienceSummaryStatusTagType(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "completed") return "success";
+  if (normalized === "partial_completed") return "warning";
+  if (normalized === "review_blocked") return "danger";
+  return "info";
+}
+
+function getExperienceReviewDecisionLabel(decision) {
+  const normalized = String(decision || "").trim().toLowerCase();
+  if (normalized === "accept") return "接受";
+  if (normalized === "revise") return "修订后接受";
+  if (normalized === "reject") return "拒绝";
+  return "未判定";
+}
+
+function getExperienceReviewDecisionTagType(decision) {
+  const normalized = String(decision || "").trim().toLowerCase();
+  if (normalized === "accept") return "success";
+  if (normalized === "revise") return "warning";
+  if (normalized === "reject") return "danger";
+  return "info";
+}
+
+function getExperienceReviewIssueTagType(severity) {
+  const normalized = String(severity || "").trim().toLowerCase();
+  if (normalized === "blocker") return "danger";
+  if (normalized === "major") return "warning";
+  return "info";
+}
+
+function formatExperienceReviewConfidence(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "0%";
+  return `${Math.round(numeric * 100)}%`;
+}
+
+function getExperienceReviewDisplayCard(card) {
+  if (card?.reviewed_card && typeof card.reviewed_card === "object") {
+    return card.reviewed_card;
+  }
+  if (card?.revised_card && typeof card.revised_card === "object") {
+    return card.revised_card;
+  }
+  return null;
 }
 
 async function openExperienceRuleEditDialog(rule) {
@@ -5498,9 +6086,13 @@ async function handleConfirmExperienceSummary() {
     ElMessage.warning(getExperienceSummaryUnavailableMessage());
     return;
   }
+  const manualReviewEnabled = Boolean(experienceSummaryManualReviewEnabled.value);
+  const confirmText = manualReviewEnabled
+    ? `本次会总结 ${targetRecordIds.length} 条需求记录，先完成模型评审和经验入库，但会保留原始记录等待人工复核。是否继续？`
+    : `本次会总结 ${targetRecordIds.length} 条需求记录，生成可复用的开发经验规则。只有评审通过且覆盖完整时，才会清空这批记录。是否继续？`;
   try {
     await ElMessageBox.confirm(
-      `本次会总结 ${targetRecordIds.length} 条需求记录，生成可复用的开发经验规则，并在成功后清空这批记录。是否继续？`,
+      confirmText,
       "开启开发经验沉淀",
       {
         type: "warning",
@@ -5516,20 +6108,28 @@ async function handleConfirmExperienceSummary() {
       provider_id: String(experienceSummaryProviderId.value || "").trim(),
       model_name: String(experienceSummaryModelName.value || "").trim(),
       record_ids: targetRecordIds,
-      clear_requirement_records: true,
+      clear_requirement_records: !manualReviewEnabled,
       experience_scope: "development",
+      review_mode: manualReviewEnabled ? "manual" : "auto",
     });
-    await Promise.all([fetchProject(), refreshRequirementRecords()]);
-    const createdCount = Array.isArray(data?.created_rule_ids) ? data.created_rule_ids.length : 0;
-    const updatedCount = Array.isArray(data?.updated_rule_ids) ? data.updated_rule_ids.length : 0;
-    const clearCount = Number(data?.clear_result?.deleted_count || 0);
-    ElMessage.success(
-      `经验总结完成：新增 ${createdCount} 条，更新 ${updatedCount} 条，清空 ${clearCount} 条记录`,
-    );
+    const job = normalizeExperienceSummaryJob(data?.job);
+    if (!job?.id) {
+      throw new Error("总结任务创建成功，但未返回任务信息");
+    }
+    lastExperienceSummaryResult.value = null;
+    experienceSummaryActiveJob.value = job;
+    showExperienceSummaryDialog.value = false;
+    showExperienceReviewDialog.value = false;
+    stopExperienceSummaryPolling();
+    experienceSummaryPollingTimer = window.setTimeout(() => {
+      void pollExperienceSummaryJob(projectId.value, job.id);
+    }, 1200);
+    ElMessage.success("总结任务已创建，后台处理中；刷新页面后也可以继续查看进度");
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "总结经验失败");
-  } finally {
+    experienceSummaryActiveJob.value = null;
     experienceSummaryLoading.value = false;
+    stopExperienceSummaryPolling();
+    ElMessage.error(err?.detail || err?.message || "总结经验失败");
   }
 }
 
@@ -5700,6 +6300,10 @@ async function removeProjectUser(row) {
 
 onMounted(async () => {
   await fetchRuntimeOrigin();
+});
+
+onBeforeUnmount(() => {
+  stopExperienceSummaryPolling();
 });
 </script>
 
@@ -6118,6 +6722,43 @@ onMounted(async () => {
 
 .section-alert {
   margin-bottom: 16px;
+}
+
+.experience-summary-job-panel {
+  margin-bottom: 16px;
+  padding: 16px 18px;
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(255, 251, 235, 0.92), rgba(255, 255, 255, 0.74));
+}
+
+.experience-summary-job-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.experience-summary-job-panel__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.experience-summary-job-panel__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #9a3412;
+}
+
+.experience-summary-job-panel__message {
+  margin: 12px 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #7c2d12;
 }
 
 .block-header__actions {
@@ -7192,6 +7833,308 @@ code {
   overflow-x: auto;
 }
 
+.experience-summary-review-mode {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 20px;
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.experience-summary-review-mode__copy {
+  display: grid;
+  gap: 6px;
+}
+
+.experience-summary-review-mode__eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #0f766e;
+}
+
+.experience-summary-review-mode__copy strong {
+  color: #0f172a;
+  line-height: 1.4;
+}
+
+.experience-summary-review-mode__copy p {
+  margin: 0;
+  color: #64748b;
+  line-height: 1.65;
+  font-size: 13px;
+}
+
+:deep(.experience-review-dialog) {
+  width: min(960px, calc(100vw - 28px)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 34px;
+  background:
+    radial-gradient(circle at top left, rgba(125, 211, 252, 0.18), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.9));
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+  backdrop-filter: blur(24px);
+}
+
+:deep(.experience-review-dialog .el-dialog__header) {
+  margin-right: 0;
+  padding: 26px 28px 0;
+}
+
+:deep(.experience-review-dialog .el-dialog__body) {
+  padding: 18px 28px 12px;
+}
+
+:deep(.experience-review-dialog .el-dialog__footer) {
+  padding: 0 28px 28px;
+}
+
+.experience-review-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.experience-review-hero,
+.experience-review-section {
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(20px);
+}
+
+.experience-review-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.9fr);
+  gap: 18px;
+  padding: 24px;
+}
+
+.experience-review-hero__copy h4 {
+  margin: 10px 0 12px;
+  font-size: clamp(24px, 3vw, 32px);
+  line-height: 1.15;
+  color: #0f172a;
+}
+
+.experience-review-hero__copy p {
+  margin: 0;
+  color: #475569;
+  line-height: 1.7;
+}
+
+.experience-review-hero__stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.experience-review-stat {
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 22px;
+  background: rgba(248, 250, 252, 0.86);
+}
+
+.experience-review-stat span,
+.experience-review-card__section span,
+.experience-review-source-card__snippet span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.experience-review-stat strong {
+  display: block;
+  color: #0f172a;
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.experience-review-section {
+  padding: 22px 24px;
+}
+
+.experience-review-section__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.experience-review-section__header h4 {
+  margin: 8px 0 0;
+  font-size: 22px;
+  line-height: 1.2;
+  color: #0f172a;
+}
+
+.experience-review-list,
+.experience-review-card-list,
+.experience-review-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.experience-review-list__item,
+.experience-review-card,
+.experience-review-source-card {
+  padding: 16px 18px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 24px;
+  background: rgba(248, 250, 252, 0.88);
+}
+
+.experience-review-list__item {
+  color: #475569;
+  line-height: 1.7;
+}
+
+.experience-review-card__head,
+.experience-review-source-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.experience-review-card__head h5,
+.experience-review-source-card__head strong {
+  margin: 0;
+  color: #0f172a;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.experience-review-card__head p,
+.experience-review-source-card__head span {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.experience-review-card__head-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.experience-review-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+  color: #7c8aa0;
+  font-size: 12px;
+}
+
+.experience-review-chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.experience-review-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  color: #334155;
+  font-size: 12px;
+}
+
+.experience-review-chip--muted {
+  color: #64748b;
+}
+
+.experience-review-issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.experience-review-issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  color: #334155;
+  line-height: 1.65;
+}
+
+.experience-review-card__body {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.experience-review-card__section {
+  padding: 14px 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.experience-review-card__section p,
+.experience-review-source-card p {
+  margin: 0;
+  color: #475569;
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+.experience-review-card__section ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #334155;
+  line-height: 1.7;
+}
+
+.experience-review-source-card {
+  display: grid;
+  gap: 12px;
+}
+
+.experience-review-source-card__snippets {
+  display: grid;
+  gap: 10px;
+}
+
+.experience-review-source-card__snippet {
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.experience-review-source-card__snippet small {
+  display: block;
+  color: #475569;
+  line-height: 1.7;
+  word-break: break-word;
+}
+
 @media (max-width: 980px) {
   .project-detail-page {
     padding-top: 18px;
@@ -7209,6 +8152,10 @@ code {
 
   .project-hero__heading h3 {
     max-width: none;
+  }
+
+  .experience-review-hero {
+    grid-template-columns: 1fr;
   }
 
   .project-hero__stats {
@@ -7297,6 +8244,17 @@ code {
   .block-header {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .experience-summary-review-mode,
+  .experience-review-card__head,
+  .experience-review-source-card__head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .experience-review-hero__stats {
+    grid-template-columns: 1fr;
   }
 
   .toolbar-actions {

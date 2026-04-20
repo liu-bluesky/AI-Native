@@ -2080,6 +2080,7 @@ def build_task_tree_prompt(session: ProjectChatTaskSession | None) -> str:
         "当你开始某个节点时，优先调用 update_task_node_status 标记为 in_progress 或 verifying。",
         "当你完成某个节点时，必须调用 complete_task_node_with_verification 写入验证结果后再完成节点。",
         "如需确认当前任务结构或节点 ID，先调用 get_current_task_tree。",
+        "如果当前任务树的总目标、标题或当前节点与本轮用户原始问题明显不一致，说明你挂到了旧任务树；此时不要继续执行，应改用新的 chat_session_id 重新绑定后再开始。",
     ]
     if _is_lookup_query_goal(normalized.root_goal or normalized.title):
         lines.append("该目标属于查询型问题，应优先检索并直接回答；不要额外拆成实现、协作开发或无关规则节点。")

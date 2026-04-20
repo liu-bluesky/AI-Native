@@ -29,10 +29,13 @@ from stores.json.system_config_store import (
     DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
     DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT,
     DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT,
+    DEFAULT_CHAT_STYLE_HINTS,
     normalize_employee_external_skill_sites,
     normalize_public_contact_channels,
     normalize_public_changelog,
+    normalize_chat_style_hints,
     normalize_query_mcp_public_base_url,
+    normalize_query_mcp_clarity_confirm_threshold,
     normalize_dictionaries,
     normalize_skill_registry_sources,
     normalize_system_mcp_config,
@@ -552,6 +555,11 @@ async def patch_system_config(
         "global_assistant_idle_timeout_sec",
         "public_contact_channels",
         "query_mcp_public_base_url",
+        "query_mcp_clarity_confirm_threshold",
+        "query_mcp_bootstrap_prompt_template",
+        "query_mcp_usage_guide_template",
+        "query_mcp_client_profile_template",
+        "chat_style_hints",
         "skill_registry_sources",
         "dictionaries",
         "mcp_config",
@@ -838,6 +846,33 @@ async def patch_system_config(
                 "query_mcp_public_base_url must be an absolute http(s) URL without query or fragment",
             )
         updates["query_mcp_public_base_url"] = normalized_base_url
+
+    if "query_mcp_clarity_confirm_threshold" in updates:
+        updates["query_mcp_clarity_confirm_threshold"] = (
+            normalize_query_mcp_clarity_confirm_threshold(
+                updates["query_mcp_clarity_confirm_threshold"]
+            )
+        )
+
+    if "query_mcp_bootstrap_prompt_template" in updates:
+        updates["query_mcp_bootstrap_prompt_template"] = (
+            str(updates["query_mcp_bootstrap_prompt_template"] or "").strip()[:24000]
+        )
+
+    if "query_mcp_usage_guide_template" in updates:
+        updates["query_mcp_usage_guide_template"] = (
+            str(updates["query_mcp_usage_guide_template"] or "").strip()[:32000]
+        )
+
+    if "query_mcp_client_profile_template" in updates:
+        updates["query_mcp_client_profile_template"] = (
+            str(updates["query_mcp_client_profile_template"] or "").strip()[:12000]
+        )
+
+    if "chat_style_hints" in updates:
+        if not isinstance(updates["chat_style_hints"], dict):
+            raise HTTPException(400, "chat_style_hints must be a JSON object")
+        updates["chat_style_hints"] = normalize_chat_style_hints(updates["chat_style_hints"])
 
     if "skill_registry_sources" in updates:
         updates["skill_registry_sources"] = normalize_skill_registry_sources(

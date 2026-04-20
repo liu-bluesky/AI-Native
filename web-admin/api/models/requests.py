@@ -646,6 +646,11 @@ class SystemConfigUpdateReq(BaseModel):
     global_assistant_idle_timeout_sec: int | None = None
     public_contact_channels: list[dict[str, Any]] | None = None
     query_mcp_public_base_url: str | None = None
+    query_mcp_clarity_confirm_threshold: int | None = None
+    query_mcp_bootstrap_prompt_template: str | None = None
+    query_mcp_usage_guide_template: str | None = None
+    query_mcp_client_profile_template: str | None = None
+    chat_style_hints: dict[str, Any] | None = None
     skill_registry_sources: dict[str, Any] | None = None
     dictionaries: dict[str, Any] | None = None
     mcp_config: dict[str, Any] | None = None
@@ -773,6 +778,9 @@ class ProjectExperienceSummaryReq(BaseModel):
     clear_requirement_records: bool = True
     max_cards: int = Field(default=5, ge=1, le=8)
     experience_scope: Literal["development", "project"] = "development"
+    review_mode: Literal["auto", "manual"] = "auto"
+    min_review_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+    max_evidence_snippets_per_record: int = Field(default=2, ge=1, le=4)
 
 
 class ProjectExperienceRuleConsolidateReq(BaseModel):

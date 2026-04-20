@@ -10,7 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import get_settings
 from core.db_migrations import run_postgres_migrations
-from core.deps import project_material_store, project_store, project_studio_export_store
+from core.deps import (
+    project_experience_summary_store,
+    project_material_store,
+    project_store,
+    project_studio_export_store,
+)
 from routers import (
     agent_templates,
     changelog_entries,
@@ -44,6 +49,9 @@ from services.dynamic_mcp_runtime import (
     rule_mcp_proxy_app,
     skill_mcp_proxy_app,
 )
+from services.project_experience_summary_service import (
+    ProjectExperienceSummaryBackgroundService,
+)
 from services.studio_export_service import StudioExportBackgroundService
 
 
@@ -63,12 +71,20 @@ def create_app() -> FastAPI:
             api_data_dir=settings.api_data_dir,
             poll_interval_seconds=settings.studio_export_worker_poll_seconds,
         )
+        experience_summary_worker = ProjectExperienceSummaryBackgroundService(
+            project_store=project_store,
+            project_experience_summary_store=project_experience_summary_store,
+            poll_interval_seconds=settings.studio_export_worker_poll_seconds,
+        )
         app.state.studio_export_worker = worker
+        app.state.project_experience_summary_worker = experience_summary_worker
         if settings.studio_export_worker_enabled:
             worker.start()
+            experience_summary_worker.start()
         try:
             yield
         finally:
+            await experience_summary_worker.stop()
             await worker.stop()
 
     app = FastAPI(title="AI Employee Factory", version="0.1.0", lifespan=lifespan)

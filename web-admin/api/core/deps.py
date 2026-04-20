@@ -14,6 +14,7 @@ from stores.factory import (
     local_connector_store,
     project_chat_store,
     project_chat_task_store,
+    project_experience_summary_store,
     project_material_store,
     project_studio_export_store,
     project_store,

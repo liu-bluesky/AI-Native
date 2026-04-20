@@ -943,6 +943,92 @@
                 统一 MCP 接入弹窗会优先使用这里生成 `query-center` 的 SSE / HTTP 地址。留空时，后端会继续按当前请求的 Host 与转发头自动推断。
               </div>
             </el-form-item>
+
+            <el-form-item label="统一查询 MCP 清晰度确认阈值">
+              <el-input-number
+                v-model="form.query_mcp_clarity_confirm_threshold"
+                :min="1"
+                :max="5"
+                :step="1"
+              />
+              <div class="field-desc">
+                宿主会按 1-5 估计需求清晰度；分数低于该阈值，或存在多种合理理解时，先确认再执行。阈值越高越谨慎，默认 3。
+              </div>
+            </el-form-item>
+
+            <el-form-item label="CLI Bootstrap 提示词模板">
+              <el-input
+                v-model="form.query_mcp_bootstrap_prompt_template"
+                type="textarea"
+                :rows="10"
+                resize="vertical"
+                placeholder="用于生成对外 CLI 的引导提示词模板。支持 {{clarity_threshold}} / {{project_context_block}} / {{chat_session_block}}。"
+              />
+              <div class="field-desc">
+                用于 `/query-mcp/runtime` 返回的 `cli_prompt`。建议保留 `{{clarity_threshold}}`、`{{project_context_block}}`、`{{chat_session_block}}` 三个变量。
+              </div>
+            </el-form-item>
+
+            <el-form-item label="Usage Guide 模板">
+              <el-input
+                v-model="form.query_mcp_usage_guide_template"
+                type="textarea"
+                :rows="10"
+                resize="vertical"
+                placeholder="用于生成 query://usage-guide 的模板。支持清晰度相关占位符。"
+              />
+              <div class="field-desc">
+                用于生成 `query://usage-guide`。建议保留 `{{clarity_threshold_line}}`、`{{clarity_direct_line}}`、`{{clarity_confirm_line}}`、`{{clarity_repeat_line}}`。
+              </div>
+            </el-form-item>
+
+            <el-form-item label="Client Profile 模板">
+              <el-input
+                v-model="form.query_mcp_client_profile_template"
+                type="textarea"
+                :rows="6"
+                resize="vertical"
+                placeholder="用于生成 query://client-profile/* 的模板。支持 {{client_title}} / {{focus_lines}}。"
+              />
+              <div class="field-desc">
+                当前各客户端的差异化内容仍由后端组装，模板只负责最终外层结构。建议保留 `{{client_title}}` 和 `{{focus_lines}}`。
+              </div>
+            </el-form-item>
+
+            <div class="employee-skill-site-card voice-config-card">
+              <div class="voice-config-section__head">
+                <div class="employee-skill-site-card__title">回答风格提示</div>
+                <div class="switch-desc">
+                  控制运行时 `concise / balanced / detailed` 三档回答风格的提示文案。
+                </div>
+              </div>
+
+              <div
+                v-for="styleKey in ['concise', 'balanced', 'detailed']"
+                :key="styleKey"
+                class="employee-skill-site-card"
+              >
+                <div class="employee-skill-site-card__title">{{ styleKey }}</div>
+                <div class="employee-skill-site-card__grid">
+                  <el-form-item label="风格提示">
+                    <el-input
+                      v-model="form.chat_style_hints[styleKey].style_hint"
+                      type="textarea"
+                      :rows="2"
+                      resize="vertical"
+                    />
+                  </el-form-item>
+                  <el-form-item label="结论优先顺序提示">
+                    <el-input
+                      v-model="form.chat_style_hints[styleKey].order_hint"
+                      type="textarea"
+                      :rows="2"
+                      resize="vertical"
+                    />
+                  </el-form-item>
+                </div>
+              </div>
+            </div>
           </el-form>
 
           <div class="editor-shell">
@@ -1154,6 +1240,77 @@ const DEFAULT_SKILL_REGISTRY_SOURCES = {
 const DEFAULT_PUBLIC_CONTACT_CHANNELS = [];
 const DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT =
   "基于员工职责、目标、技能建议和 prompts.chat MCP 相关能力，为员工自动补全 1 到 3 条可直接落地的执行规则。优先生成问题排查、输出规范、风险控制、技术选型相关规则；规则内容必须具体、可执行、可绑定。";
+const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MCP。
+
+详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：
+- \`query://usage-guide\`
+- \`query://client-profile/codex\`
+
+强制接入步骤：
+1. 先读取 \`query://usage-guide\`；当前是 Codex CLI 时，再读取 \`query://client-profile/codex\`。
+2. 首轮必须把用户原始问题原文传给 \`search_ids(keyword="<用户原始问题>")\`，不要只写“当前项目”这类代称。
+3. 不要依赖 description、项目说明或“当前项目”文字做绑定；如需项目绑定或续接任务树，显式调用 \`bind_project_context(...)\`。
+4. 需要项目或规则上下文时，先读取 \`get_manual_content(project_id=...)\`，再按需继续查询规则或成员。
+5. 实现型需求必须先走 \`analyze_task -> resolve_relevant_context -> generate_execution_plan\`，再进入执行与验证。
+6. 当前全局清晰度确认阈值为 {{clarity_threshold}}/5；先按 1-5 分估计用户需求清晰度。
+7. 若目标、对象、范围和预期结果足够清晰，且清晰度分数 >= {{clarity_threshold}}，直接处理，不主动要求确认计划。
+8. 若清晰度分数 < {{clarity_threshold}}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认后不要重复确认；查询型、客服型问题不要默认升级成计划审批流程。
+9. 长任务先调用 \`start_work_session\` 获取 \`session_id\`，后续复用同一个 \`chat_session_id/session_id\`，并用 \`save_work_facts\`、\`append_session_event\` 维护轨迹。
+10. 如宿主支持任务树，\`bind_project_context(...)\` 后立刻读取 \`get_current_task_tree\`，核对 \`root_goal/title/current_node\` 是否属于当前问题；若明显属于旧任务树，停止复用当前 \`chat_session_id\`，改为新建并持久化新的 \`chat_session_id\` 后重新绑定。
+11. 真正进入执行前，再读取一次 \`get_current_task_tree\` 确认当前节点；开始节点用 \`update_task_node_status\`，完成节点必须用 \`complete_task_node_with_verification\` 补验证结果后再结束。
+12. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。
+
+当前接入上下文：
+{{project_context_block}}
+{{chat_session_block}}
+- \`chat_session_id\` 生成后要立即持久化；优先写项目目录 \`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json\`，并同步维护 \`.ai-employee/query-mcp/active/<project_id>.json\` 与 \`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json\`。
+- 若当前还没有 \`session_id\`，调用 \`start_work_session\` 后也要立刻持久化；中断恢复顺序固定为 \`bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)\`。
+- 若项目工作区不可解析，再退回当前 CLI 自己的本地存储；不要新写 \`current-session.json\`、\`chat_session_id.txt\`、\`session_id.txt\`、\`session.env\` 这类 legacy 文件。
+
+回答要求：
+- 先基于 MCP 查询结果回答，不要把猜测写成事实。
+- 若信息来自 MCP，尽量保留对应的项目 / 员工 / 规则 ID，方便追溯。
+- 若入口文件或宿主系统还有额外约束，优先遵守宿主入口文件约定。`;
+const DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = `# Unified Query MCP
+
+- 统一入口路径: /mcp/query
+- 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹、需求历史查询和交付报告能力。
+- 推荐工具: bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory
+
+## 最少执行规则
+1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。
+2. MCP 配置里的 description、项目说明和“当前项目”这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文，以及 bind_project_context(...) 写入的 MCP 会话绑定。
+3. 若接入地址缺少 project_id，或需要续接任务树但缺少 chat_session_id，首轮立即调用 bind_project_context(project_id, chat_session_id?, root_goal?)；不要只依赖 description 里的项目说明。
+4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。
+4.0 如果 direct CLI fallback 已先生成临时 \`query-cli.*\` 会话，后续再用显式 \`cli.*\` 会话调用 bind_project_context(...) 时，系统会自动把影子任务树迁到正式会话；但最佳实践仍然是首轮就传稳定 chat_session_id。
+4.1 每个 CLI 会话都应持久化自己生成的 chat_session_id；如能解析项目工作区，优先写到项目目录 .ai-employee/query-mcp/，否则再退回 CLI 自己的本地存储。同一轮任务固定复用，只有新开的并行 CLI 或全新任务才重新生成。
+4.2 query-mcp 本地持久化必须使用唯一文件规范：每进程会话文件为 \`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json\`（每个 CLI 进程写自己的独立文件，避免多进程冲突）；项目级权威状态文件为 \`.ai-employee/query-mcp/active/<project_id>.json\` 与 \`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json\`。除兼容历史数据时只读外，禁止新写 \`current-session.json\`、\`chat_session_id.txt\`、\`session_id.txt\`、\`chat_session_id\`、\`session_id\`、\`session.env\`、\`current-query-session.json\`、\`current-work-session.json\` 这类分叉文件。
+5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。
+6. 首轮查询必须把用户原始问题原文放进 search_ids(keyword="<用户原始问题>")；不要只写“当前项目”“这个规则”“项目手册”这类代称。
+7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。
+7.0 项目型问题优先使用项目绑定员工、规则和技能；先判断项目内现成能力能否闭环，只有项目能力不足时才自行补足。
+7.0.1 每次新请求进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文；不要只看规则标题，也不要把无关规则机械带入当前问题。
+7.0.2 {{clarity_threshold_line}}
+7.0.3 {{clarity_direct_line}}
+7.0.4 {{clarity_confirm_line}}
+7.0.5 {{clarity_repeat_line}}`;
+const DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE = `# {{client_title}} Client Profile
+
+{{focus_lines}}`;
+const DEFAULT_CHAT_STYLE_HINTS = {
+  concise: {
+    style_hint: "输出风格：简洁，避免冗长。",
+    order_hint: "回答顺序：先给结论再给步骤。",
+  },
+  balanced: {
+    style_hint: "输出风格：平衡，先结论后关键步骤。",
+    order_hint: "回答顺序：先给结论再给步骤。",
+  },
+  detailed: {
+    style_hint: "输出风格：详细，覆盖关键前提、步骤与风险。",
+    order_hint: "回答顺序：先给结论再给步骤。",
+  },
+};
 const EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS = [
   {
     label: "prompts.chat curated 规则源",
@@ -1263,6 +1420,13 @@ const form = ref({
   global_assistant_idle_timeout_sec: 5,
   public_contact_channels: cloneConfig(DEFAULT_PUBLIC_CONTACT_CHANNELS),
   query_mcp_public_base_url: "",
+  query_mcp_clarity_confirm_threshold: 3,
+  query_mcp_bootstrap_prompt_template:
+    DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE,
+  query_mcp_usage_guide_template: DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE,
+  query_mcp_client_profile_template:
+    DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE,
+  chat_style_hints: cloneConfig(DEFAULT_CHAT_STYLE_HINTS),
   skill_registry_sources: cloneConfig(DEFAULT_SKILL_REGISTRY_SOURCES),
   mcp_config_text: JSON.stringify(DEFAULT_MCP_CONFIG, null, 2),
 });
@@ -1559,6 +1723,23 @@ function normalizeStringList(value) {
     : [];
 }
 
+function normalizeChatStyleHints(value) {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const normalized = {};
+  for (const [key, defaults] of Object.entries(DEFAULT_CHAT_STYLE_HINTS)) {
+    const item =
+      source[key] && typeof source[key] === "object" && !Array.isArray(source[key])
+        ? source[key]
+        : {};
+    normalized[key] = {
+      style_hint: String(item.style_hint || defaults.style_hint).trim(),
+      order_hint: String(item.order_hint || defaults.order_hint).trim(),
+    };
+  }
+  return normalized;
+}
+
 function addEmployeeExternalSkillSite() {
   form.value.employee_external_skill_sites = [
     ...normalizeEmployeeExternalSkillSites(form.value.employee_external_skill_sites),
@@ -1809,6 +1990,26 @@ function applyConfigToForm(config, options = {}) {
       payload.public_contact_channels,
     ),
     query_mcp_public_base_url: String(payload.query_mcp_public_base_url || ""),
+    query_mcp_clarity_confirm_threshold: Math.max(
+      1,
+      Math.min(
+        5,
+        Number(payload.query_mcp_clarity_confirm_threshold || 3) || 3,
+      ),
+    ),
+    query_mcp_bootstrap_prompt_template: String(
+      payload.query_mcp_bootstrap_prompt_template ||
+        DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE,
+    ),
+    query_mcp_usage_guide_template: String(
+      payload.query_mcp_usage_guide_template ||
+        DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE,
+    ),
+    query_mcp_client_profile_template: String(
+      payload.query_mcp_client_profile_template ||
+        DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE,
+    ),
+    chat_style_hints: normalizeChatStyleHints(payload.chat_style_hints),
     skill_registry_sources: normalizeSkillRegistrySources(
       payload.skill_registry_sources,
     ),
@@ -2394,6 +2595,26 @@ async function saveConfig() {
       query_mcp_public_base_url: String(
         form.value.query_mcp_public_base_url || "",
       ).trim(),
+      query_mcp_clarity_confirm_threshold: Math.max(
+        1,
+        Math.min(
+          5,
+          Number(form.value.query_mcp_clarity_confirm_threshold || 3) || 3,
+        ),
+      ),
+      query_mcp_bootstrap_prompt_template: String(
+        form.value.query_mcp_bootstrap_prompt_template ||
+          DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE,
+      ),
+      query_mcp_usage_guide_template: String(
+        form.value.query_mcp_usage_guide_template ||
+          DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE,
+      ),
+      query_mcp_client_profile_template: String(
+        form.value.query_mcp_client_profile_template ||
+          DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE,
+      ),
+      chat_style_hints: normalizeChatStyleHints(form.value.chat_style_hints),
       skill_registry_sources: normalizeSkillRegistrySources(
         form.value.skill_registry_sources,
       ),

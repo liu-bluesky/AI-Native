@@ -139,6 +139,142 @@ def test_project_mcp_activity_blocks_non_admin_and_prunes_stale(tmp_path, monkey
     assert blocked_response.status_code == 403
 
 
+def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monkeypatch):
+    client, _, _ = _build_project_mcp_monitor_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+
+    response = client.get(
+        "/api/projects/query-mcp/runtime",
+        params={
+            "project_id": "proj-1",
+            "chat_session_id": "chat-session-1",
+        },
+    )
+
+    assert response.status_code == 200
+    runtime = response.json()["runtime"]
+    assert "project_id=proj-1" in runtime["sse_url"]
+    assert "chat_session_id=chat-session-1" in runtime["sse_url"]
+    assert "project_id=proj-1" in runtime["http_url"]
+    assert "chat_session_id=chat-session-1" in runtime["http_url"]
+    assert runtime["prompt_mode"] == "bootstrap"
+    assert runtime["clarity_confirm_threshold"] == 3
+    assert runtime["bootstrap_resources"] == [
+        "query://usage-guide",
+        "query://client-profile/codex",
+    ]
+    assert runtime["bootstrap_checklist"] == [
+        "read query://usage-guide",
+        "read query://client-profile/codex",
+        "generate and persist chat_session_id",
+        "bind_project_context with project_id/chat_session_id/root_goal",
+        "get_current_task_tree and verify the bound tree matches the current request",
+        "search_ids with raw user question",
+        "get_manual_content before rule-specific execution",
+        "score request clarity from 1-5; ask for confirmation only when clarity is below 3 or the request is ambiguous",
+        "analyze_task -> resolve_relevant_context -> generate_execution_plan",
+        "update_task_node_status on node start and complete_task_node_with_verification on node finish",
+        "start_work_session and persist session_id for long tasks",
+    ]
+    assert "query://usage-guide" in runtime["cli_prompt"]
+    assert "query://client-profile/codex" in runtime["cli_prompt"]
+    assert "默认项目: `proj-1`" in runtime["cli_prompt"]
+    assert "chat_session_id=chat-session-1" in runtime["cli_prompt"]
+    assert "start_work_session" in runtime["cli_prompt"]
+    assert "当前全局清晰度确认阈值为 3/5" in runtime["cli_prompt"]
+    assert "清晰度分数 >= 3" in runtime["cli_prompt"]
+    assert "清晰度分数 < 3" in runtime["cli_prompt"]
+    assert "停止复用当前 `chat_session_id`" in runtime["cli_prompt"]
+    assert "complete_task_node_with_verification" in runtime["cli_prompt"]
+    assert ".ai-employee/query-mcp/active-sessions/<chat_session_id>.json" in runtime["cli_prompt"]
+    assert "# Unified Query MCP" not in runtime["cli_prompt"]
+
+
+def test_query_mcp_runtime_uses_system_clarity_threshold(tmp_path, monkeypatch):
+    client, _, _ = _build_project_mcp_monitor_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+
+    patch_response = client.patch(
+        "/api/system-config",
+        json={"query_mcp_clarity_confirm_threshold": 5},
+    )
+    assert patch_response.status_code == 200
+    assert patch_response.json()["config"]["query_mcp_clarity_confirm_threshold"] == 5
+
+    response = client.get(
+        "/api/projects/query-mcp/runtime",
+        params={"project_id": "proj-1", "chat_session_id": "chat-session-1"},
+    )
+
+    assert response.status_code == 200
+    runtime = response.json()["runtime"]
+    assert runtime["clarity_confirm_threshold"] == 5
+    assert (
+        "score request clarity from 1-5; ask for confirmation only when clarity is below 5 or the request is ambiguous"
+        in runtime["bootstrap_checklist"]
+    )
+    assert "当前全局清晰度确认阈值为 5/5" in runtime["cli_prompt"]
+    assert "清晰度分数 >= 5" in runtime["cli_prompt"]
+
+
+def test_query_mcp_runtime_uses_configured_bootstrap_template(tmp_path, monkeypatch):
+    client, _, _ = _build_project_mcp_monitor_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+
+    patch_response = client.patch(
+        "/api/system-config",
+        json={
+            "query_mcp_bootstrap_prompt_template": "BOOT {{clarity_threshold}} | {{project_context_block}} | {{chat_session_block}}",
+        },
+    )
+    assert patch_response.status_code == 200
+
+    response = client.get(
+        "/api/projects/query-mcp/runtime",
+        params={"project_id": "proj-1", "chat_session_id": "chat-session-1"},
+    )
+    assert response.status_code == 200
+    runtime = response.json()["runtime"]
+    assert runtime["cli_prompt"].startswith("BOOT 3 |")
+    assert "默认项目: `proj-1`" in runtime["cli_prompt"]
+    assert "chat_session_id=chat-session-1" in runtime["cli_prompt"]
+
+
+def test_project_manual_template_avoids_frontend_route_specific_wording(tmp_path, monkeypatch):
+    from stores import factory as store_factory
+    from stores.json.project_store import ProjectConfig
+
+    client, _, _ = _build_project_mcp_monitor_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+    store_factory.project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            description="测试项目",
+            created_by="admin",
+        )
+    )
+
+    response = client.get("/api/projects/proj-1/manual-template")
+
+    assert response.status_code == 200
+    manual = response.json()["manual"]
+    assert "/ai/chat" not in manual
+    assert "当前宿主前端只展示当前仍在进行中的任务树" in manual
+
+
 def test_project_mcp_proxy_tracks_runtime_presence(monkeypatch):
     import asyncio
 

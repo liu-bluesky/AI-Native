@@ -53,6 +53,8 @@
         </el-form-item>
       </el-form>
 
+      <slot />
+
       <div v-if="currentSelectionText" class="picker-current">
         当前选择：{{ currentSelectionText }}
       </div>

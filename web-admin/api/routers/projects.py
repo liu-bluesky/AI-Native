@@ -35,7 +35,7 @@ from core.redis_client import get_redis_client
 from core.auth import decode_token
 from core.config import get_api_data_dir, get_project_root, get_settings
 from core.redis_client import get_redis_client
-from core.deps import employee_store, external_mcp_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_store, project_chat_task_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_session_store
+from core.deps import employee_store, external_mcp_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_store, project_chat_task_store, project_experience_summary_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_session_store
 from services.feedback_service import get_feedback_service
 from services.global_assistant_service import (
     build_global_assistant_builtin_tools,
@@ -126,6 +126,7 @@ from models.requests import (
     WorkspaceFilePickReq,
 )
 from stores.json.project_chat_store import ProjectChatMessage
+from stores.json.project_experience_summary_store import ProjectExperienceSummaryJob
 from stores.json.project_material_store import ProjectMaterialAsset
 from stores.json.project_studio_export_store import ProjectStudioExportJob
 from stores.json.project_store import ProjectConfig, ProjectMember, ProjectUserMember, _now_iso
@@ -173,6 +174,28 @@ _DEVELOPMENT_EXPERIENCE_RULE_DOMAIN = "开发经验"
 _DEVELOPMENT_EXPERIENCE_RULE_TITLE_PREFIX = "开发经验 · "
 _EXPERIENCE_SCOPE_PROJECT = "project"
 _EXPERIENCE_SCOPE_DEVELOPMENT = "development"
+_EXPERIENCE_REVIEW_DECISIONS = {"accept", "revise", "reject"}
+_EXPERIENCE_REVIEW_ISSUE_SEVERITIES = {"blocker", "major", "minor"}
+_DEVELOPMENT_EXPERIENCE_META_KEYWORDS = {
+    "经验卡片",
+    "经验规则",
+    "规则库",
+    "知识库",
+    "prompt",
+    "topic_key",
+    "审核门",
+    "review ui",
+    "review dialog",
+    "manual review",
+    "in_review",
+    "approved",
+    "rejected",
+    "draft",
+    "上下文注入",
+    "规则注入",
+    "模型选择",
+    "发布控制",
+}
 _EXPERIENCE_QUERY_STOPWORDS = {
     "一个",
     "开发",
@@ -284,6 +307,34 @@ _PROJECT_STUDIO_EXPORT_STATUS_LABELS = {
     "failed": "失败",
     "canceled": "已取消",
 }
+_PROJECT_EXPERIENCE_SUMMARY_STATUS_VALUES = {
+    "queued",
+    "processing",
+    "completed",
+    "partial_completed",
+    "review_blocked",
+    "failed",
+}
+_PROJECT_EXPERIENCE_SUMMARY_STATUS_LABELS = {
+    "queued": "排队中",
+    "processing": "处理中",
+    "completed": "已完成",
+    "partial_completed": "部分完成",
+    "review_blocked": "评审阻断",
+    "failed": "失败",
+}
+_PROJECT_EXPERIENCE_SUMMARY_STAGE_LABELS = {
+    "queued": "等待执行",
+    "summarizing": "总结候选经验",
+    "reviewing": "模型评审",
+    "upserting_rules": "写入规则",
+    "clearing_records": "清理记录",
+    "completed": "已完成",
+    "partial_completed": "部分完成",
+    "review_blocked": "评审阻断",
+    "failed": "执行失败",
+}
+_PROJECT_EXPERIENCE_SUMMARY_ACTIVE_STATUSES = {"queued", "processing"}
 _PROJECT_STUDIO_EXPORT_SOURCE_TYPE_LABELS = {
     "studio_export": "正式导出",
     "studio_draft": "制作草稿",
@@ -456,6 +507,17 @@ def _normalize_studio_export_status(value: Any) -> str:
     raise HTTPException(
         400,
         f"studio export status must be one of {sorted(_PROJECT_STUDIO_EXPORT_STATUS_VALUES)}",
+    )
+
+
+def _normalize_project_experience_summary_status(value: Any) -> str:
+    normalized = str(value or "").strip().lower() or "queued"
+    if normalized in _PROJECT_EXPERIENCE_SUMMARY_STATUS_VALUES:
+        return normalized
+    raise HTTPException(
+        400,
+        "experience summary status must be one of "
+        f"{sorted(_PROJECT_EXPERIENCE_SUMMARY_STATUS_VALUES)}",
     )
 
 
@@ -1688,6 +1750,18 @@ def _serialize_project_studio_export_job(job: ProjectStudioExportJob) -> dict[st
     return payload
 
 
+def _serialize_project_experience_summary_job(job: ProjectExperienceSummaryJob) -> dict[str, Any]:
+    payload = asdict(job)
+    payload["status_label"] = _PROJECT_EXPERIENCE_SUMMARY_STATUS_LABELS.get(job.status, job.status)
+    payload["stage_label"] = _PROJECT_EXPERIENCE_SUMMARY_STAGE_LABELS.get(
+        job.stage,
+        job.stage or payload["status_label"],
+    )
+    payload["is_active"] = job.status in _PROJECT_EXPERIENCE_SUMMARY_ACTIVE_STATUSES
+    payload["is_terminal"] = not payload["is_active"]
+    return payload
+
+
 def _filter_project_material_assets(
     items: list[ProjectMaterialAsset],
     *,
@@ -2466,6 +2540,13 @@ def _normalize_experience_rule_scope(value: Any) -> str:
     return _EXPERIENCE_SCOPE_DEVELOPMENT
 
 
+def _normalize_experience_review_mode(value: Any) -> str:
+    normalized = _normalize_project_record_token(value, limit=40).lower()
+    if normalized == "manual":
+        return "manual"
+    return "auto"
+
+
 def _experience_rule_domain_for_scope(scope: str) -> str:
     return (
         _PROJECT_EXPERIENCE_RULE_DOMAIN
@@ -2563,6 +2644,7 @@ def _resolve_project_experience_rule_bindings(
                 if experience_scope == _EXPERIENCE_SCOPE_PROJECT
                 else "development_experience"
             ),
+            "updated_at": str(getattr(rule, "updated_at", "") or ""),
         }
         if include_content:
             payload["content"] = content
@@ -6360,17 +6442,108 @@ async def get_global_assistant_speech_runtime(
     return {"runtime": _build_global_speech_runtime(auth_payload)}
 
 
+def _build_query_mcp_cli_prompt(
+    *,
+    project_id: str = "",
+    chat_session_id: str = "",
+    clarity_confirm_threshold: int = 3,
+) -> str:
+    config = system_config_store.get_global()
+    template = str(
+        getattr(config, "query_mcp_bootstrap_prompt_template", "") or ""
+    ).strip()
+    normalized_project_id = str(project_id or "").strip()
+    normalized_chat_session_id = str(chat_session_id or "").strip()
+    try:
+        normalized_clarity_threshold = max(1, min(5, int(clarity_confirm_threshold or 3)))
+    except (TypeError, ValueError):
+        normalized_clarity_threshold = 3
+    project_context_block = ""
+    if normalized_project_id:
+        project_context_block = "\n".join(
+            [
+                f"- 默认项目: `{normalized_project_id}`",
+                f"- 建议把 URL 默认上下文里的 `project_id` 固定为 `{normalized_project_id}`。",
+                f"- 涉及当前项目时，首轮优先使用 `search_ids(keyword=\"<用户原始问题>\", project_id=\"{normalized_project_id}\")`。",
+                f"- 若要创建或续接当前项目任务树，优先显式调用 `bind_project_context(project_id=\"{normalized_project_id}\", chat_session_id=\"<聊天会话ID>\", root_goal=\"<用户原始问题>\")`。",
+            ]
+        )
+    else:
+        project_context_block = (
+            "- 当前未预设默认项目；若任务明显属于某个项目，先用 `search_ids` 定位项目 ID，再调用 `bind_project_context(...)`。"
+        )
+    chat_session_block = (
+        f"- 当前页面已有 `chat_session_id={normalized_chat_session_id}`；仅在明确要续接当前任务树时复用，否则新开的并行 CLI 应重新生成自己的 `chat_session_id`。"
+        if normalized_chat_session_id
+        else "- 若当前是新开的 CLI 会话且 URL 未附带 `chat_session_id`，先生成新的 `chat_session_id`，再调用 `bind_project_context(...)`。"
+    )
+    if template:
+        return (
+            template.replace("{{clarity_threshold}}", str(normalized_clarity_threshold))
+            .replace("{{project_context_block}}", project_context_block)
+            .replace("{{chat_session_block}}", chat_session_block)
+            .strip()
+        )
+    sections = [
+        "你已接入统一查询 MCP。",
+        "",
+        "详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：",
+        "- `query://usage-guide`",
+        "- `query://client-profile/codex`",
+        "",
+        "强制接入步骤：",
+        "1. 先读取 `query://usage-guide`；当前是 Codex CLI 时，再读取 `query://client-profile/codex`。",
+        "2. 首轮必须把用户原始问题原文传给 `search_ids(keyword=\"<用户原始问题>\")`，不要只写“当前项目”这类代称。",
+        "3. 不要依赖 description、项目说明或“当前项目”文字做绑定；如需项目绑定或续接任务树，显式调用 `bind_project_context(...)`。",
+        "4. 需要项目或规则上下文时，先读取 `get_manual_content(project_id=...)`，再按需继续查询规则或成员。",
+        "5. 实现型需求必须先走 `analyze_task -> resolve_relevant_context -> generate_execution_plan`，再进入执行与验证。",
+        f"6. 当前全局清晰度确认阈值为 {normalized_clarity_threshold}/5；先按 1-5 分估计用户需求清晰度。",
+        f"7. 若目标、对象、范围和预期结果足够清晰，且清晰度分数 >= {normalized_clarity_threshold}，直接处理，不主动要求确认计划。",
+        f"8. 若清晰度分数 < {normalized_clarity_threshold}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认后不要重复确认；查询型、客服型问题不要默认升级成计划审批流程。",
+        "9. 长任务先调用 `start_work_session` 获取 `session_id`，后续复用同一个 `chat_session_id/session_id`，并用 `save_work_facts`、`append_session_event` 维护轨迹。",
+        "10. 如宿主支持任务树，`bind_project_context(...)` 后立刻读取 `get_current_task_tree`，核对 `root_goal/title/current_node` 是否属于当前问题；若明显属于旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。",
+        "11. 真正进入执行前，再读取一次 `get_current_task_tree` 确认当前节点；开始节点用 `update_task_node_status`，完成节点必须用 `complete_task_node_with_verification` 补验证结果后再结束。",
+        "12. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。",
+        "",
+        "当前接入上下文：",
+    ]
+    sections.extend(project_context_block.splitlines())
+    sections.append(chat_session_block)
+    sections.extend(
+        [
+            "- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。",
+            "- 若当前还没有 `session_id`，调用 `start_work_session` 后也要立刻持久化；中断恢复顺序固定为 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)`。",
+            "- 若项目工作区不可解析，再退回当前 CLI 自己的本地存储；不要新写 `current-session.json`、`chat_session_id.txt`、`session_id.txt`、`session.env` 这类 legacy 文件。",
+            "",
+            "回答要求：",
+            "- 先基于 MCP 查询结果回答，不要把猜测写成事实。",
+            "- 若信息来自 MCP，尽量保留对应的项目 / 员工 / 规则 ID，方便追溯。",
+            "- 若入口文件或宿主系统还有额外约束，优先遵守宿主入口文件约定。",
+        ]
+    )
+    return "\n".join(sections).strip()
+
+
 @router.get("/query-mcp/runtime")
 async def get_query_mcp_runtime(
     request: Request,
     project_id: str = Query("", description="项目 ID"),
+    chat_session_id: str = Query("", description="聊天会话 ID"),
 ):
     params = {"key": "YOUR_API_KEY"}
     normalized_project_id = str(project_id or "").strip()
+    normalized_chat_session_id = str(chat_session_id or "").strip()
     if normalized_project_id:
         params["project_id"] = normalized_project_id
+    if normalized_chat_session_id:
+        params["chat_session_id"] = normalized_chat_session_id
     query_string = urlencode(params)
     config = system_config_store.get_global()
+    clarity_confirm_threshold = getattr(
+        config,
+        "query_mcp_clarity_confirm_threshold",
+        3,
+    )
     origin = (
         str(getattr(config, "query_mcp_public_base_url", "") or "").strip().rstrip("/")
         or _resolve_request_origin(request)
@@ -6381,6 +6554,30 @@ async def get_query_mcp_runtime(
             "server_name": "query-center",
             "sse_url": _build_absolute_runtime_url(origin, f"/mcp/query/sse?{query_string}"),
             "http_url": _build_absolute_runtime_url(origin, f"/mcp/query/mcp?{query_string}"),
+            "prompt_mode": "bootstrap",
+            "bootstrap_resources": [
+                "query://usage-guide",
+                "query://client-profile/codex",
+            ],
+            "bootstrap_checklist": [
+                "read query://usage-guide",
+                "read query://client-profile/codex",
+                "generate and persist chat_session_id",
+                "bind_project_context with project_id/chat_session_id/root_goal",
+                "get_current_task_tree and verify the bound tree matches the current request",
+                "search_ids with raw user question",
+                "get_manual_content before rule-specific execution",
+                f"score request clarity from 1-5; ask for confirmation only when clarity is below {clarity_confirm_threshold} or the request is ambiguous",
+                "analyze_task -> resolve_relevant_context -> generate_execution_plan",
+                "update_task_node_status on node start and complete_task_node_with_verification on node finish",
+                "start_work_session and persist session_id for long tasks",
+            ],
+            "clarity_confirm_threshold": clarity_confirm_threshold,
+            "cli_prompt": _build_query_mcp_cli_prompt(
+                project_id=normalized_project_id,
+                chat_session_id=normalized_chat_session_id,
+                clarity_confirm_threshold=clarity_confirm_threshold,
+            ),
         }
     }
 
@@ -9723,6 +9920,37 @@ def _extract_json_object_from_text(text: str) -> dict[str, Any]:
     return payload
 
 
+def _coerce_float_simple(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_experience_card_payload(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    title = _normalize_project_record_token(item.get("title"), limit=120)
+    topic_key = _normalize_experience_topic_key(item.get("topic_key") or title)
+    if not title or not topic_key:
+        return None
+    domain = _normalize_domain(str(item.get("domain") or "").strip()) or "general"
+    if domain not in {"frontend", "backend", "product", "testing", "workflow", "general"}:
+        domain = "general"
+    return {
+        "title": title,
+        "topic_key": topic_key,
+        "domain": domain,
+        "keywords": _normalize_experience_list(item.get("keywords"), item_limit=60),
+        "applicable_when": _normalize_experience_list(item.get("applicable_when")),
+        "signals": _normalize_experience_list(item.get("signals")),
+        "root_causes": _normalize_experience_list(item.get("root_causes")),
+        "recommended_actions": _normalize_experience_list(item.get("recommended_actions")),
+        "anti_patterns": _normalize_experience_list(item.get("anti_patterns")),
+        "verification": _normalize_experience_list(item.get("verification")),
+    }
+
+
 def _build_project_experience_source_lines(records: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     for index, record in enumerate(records, start=1):
@@ -9771,8 +9999,11 @@ def _build_project_experience_summary_messages(
         "3. 若问题只出现一次且不可复用，可以忽略，不必强行产出。\n"
         "4. topic_key 要稳定、短、可用于后续合并，例如 login-form、permission-routing。\n"
         "5. domain 只允许 frontend/backend/product/testing/workflow/general。\n"
-        "6. keywords、applicable_when、signals、root_causes、recommended_actions、anti_patterns、verification 都输出数组。\n"
-        "7. 输出 JSON 结构：\n"
+        "6. 只允许沉淀开发工作经验，例如状态管理、接口契约、数据一致性、缓存、并发、幂等、表单交互、错误处理、测试回归、日志排查等。\n"
+        "7. 明确排除系统或平台改造需求：不要输出“增加人工审核门”“新增 review dialog”“给规则库加状态机”“给知识库加发布流程”“优化 prompt / topic_key / 规则注入”这类元能力建设卡片。\n"
+        "8. 如果某条记录的核心是‘系统需要新增一个机制/流程/模块’，而不是‘开发中反复出现的工作模式与坑’，则直接忽略，不要生成卡片。\n"
+        "9. keywords、applicable_when、signals、root_causes、recommended_actions、anti_patterns、verification 都输出数组。\n"
+        "10. 输出 JSON 结构：\n"
         "{\n"
         '  "cards": [\n'
         "    {\n"
@@ -9805,33 +10036,452 @@ def _normalize_experience_cards(payload: dict[str, Any], *, max_cards: int) -> l
     cards: list[dict[str, Any]] = []
     seen_topics: set[str] = set()
     for item in raw_cards:
-        if not isinstance(item, dict):
+        normalized = _normalize_experience_card_payload(item)
+        if normalized is None:
             continue
-        title = _normalize_project_record_token(item.get("title"), limit=120)
-        topic_key = _normalize_experience_topic_key(item.get("topic_key") or title)
-        if not title or not topic_key or topic_key in seen_topics:
+        topic_key = normalized["topic_key"]
+        if topic_key in seen_topics:
             continue
         seen_topics.add(topic_key)
-        domain = _normalize_domain(str(item.get("domain") or "").strip()) or "general"
-        if domain not in {"frontend", "backend", "product", "testing", "workflow", "general"}:
-            domain = "general"
-        cards.append(
-            {
-                "title": title,
-                "topic_key": topic_key,
-                "domain": domain,
-                "keywords": _normalize_experience_list(item.get("keywords"), item_limit=60),
-                "applicable_when": _normalize_experience_list(item.get("applicable_when")),
-                "signals": _normalize_experience_list(item.get("signals")),
-                "root_causes": _normalize_experience_list(item.get("root_causes")),
-                "recommended_actions": _normalize_experience_list(item.get("recommended_actions")),
-                "anti_patterns": _normalize_experience_list(item.get("anti_patterns")),
-                "verification": _normalize_experience_list(item.get("verification")),
-            }
-        )
+        cards.append(normalized)
         if len(cards) >= max_cards:
             break
     return cards
+
+
+def _build_project_experience_evidence_snippets(
+    record: dict[str, Any],
+    *,
+    max_snippets: int,
+) -> list[str]:
+    snippets: list[str] = []
+    seen: set[str] = set()
+
+    def append_candidate(value: Any, *, limit: int = 220) -> None:
+        text = _normalize_project_record_token(value, limit=limit)
+        key = text.lower()
+        if not text or key in seen:
+            return
+        seen.add(key)
+        snippets.append(text)
+
+    append_candidate(record.get("summaryText"), limit=260)
+    append_candidate(record.get("currentFocus"), limit=180)
+    append_candidate(record.get("rootGoal"), limit=260)
+    detail_round = record.get("detailRound") if isinstance(record.get("detailRound"), dict) else {}
+    append_candidate(detail_round.get("title"), limit=180)
+    append_candidate(detail_round.get("summaryText"), limit=260)
+    append_candidate(detail_round.get("currentNodeTitle"), limit=180)
+
+    rounds = record.get("rounds") if isinstance(record.get("rounds"), list) else []
+    for round_item in reversed(rounds[-3:]):
+        if not isinstance(round_item, dict):
+            continue
+        append_candidate(round_item.get("summaryText"), limit=260)
+        append_candidate(round_item.get("title"), limit=180)
+        append_candidate(round_item.get("currentNodeTitle"), limit=180)
+
+    return snippets[:max(1, max_snippets)]
+
+
+def _collect_existing_experience_cards_for_review(
+    project: ProjectConfig,
+    *,
+    experience_scope: str,
+) -> list[dict[str, Any]]:
+    normalized_scope = _normalize_experience_rule_scope(experience_scope)
+    items: list[dict[str, Any]] = []
+    seen_rule_ids: set[str] = set()
+
+    def append_rule(rule: Rule | None) -> None:
+        if rule is None:
+            return
+        rule_id = _normalize_project_record_token(getattr(rule, "id", ""), limit=80)
+        if not rule_id or rule_id in seen_rule_ids:
+            return
+        seen_rule_ids.add(rule_id)
+        items.append(
+            {
+                "rule_id": rule_id,
+                **_build_experience_card_from_rule(rule, experience_scope=normalized_scope),
+            }
+        )
+
+    for rule_id in _normalize_project_experience_rule_ids(getattr(project, "experience_rule_ids", []) or []):
+        append_rule(rule_store.get(rule_id))
+    if normalized_scope == _EXPERIENCE_SCOPE_DEVELOPMENT:
+        for rule in _build_global_experience_rule_topic_index(experience_scope=normalized_scope).values():
+            append_rule(rule)
+    return items
+
+
+def _build_project_experience_review_payload(
+    project: ProjectConfig,
+    *,
+    records: list[dict[str, Any]],
+    candidate_cards: list[dict[str, Any]],
+    existing_cards: list[dict[str, Any]],
+    max_evidence_snippets_per_record: int,
+) -> dict[str, Any]:
+    normalized_records: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        record_id = _normalize_project_record_token(record.get("id"), limit=80)
+        if not record_id:
+            continue
+        normalized_records.append(
+            {
+                "record_id": record_id,
+                "root_goal": _normalize_project_record_token(record.get("rootGoal"), limit=260),
+                "summary_text": _normalize_project_record_token(record.get("summaryText"), limit=320),
+                "current_focus": _normalize_project_record_token(record.get("currentFocus"), limit=180),
+                "evidence_snippets": _build_project_experience_evidence_snippets(
+                    record,
+                    max_snippets=max_evidence_snippets_per_record,
+                ),
+            }
+        )
+    normalized_candidates = _normalize_experience_cards(
+        {"cards": candidate_cards},
+        max_cards=max(1, len(candidate_cards) or 1),
+    )
+    normalized_existing: list[dict[str, Any]] = []
+    for item in existing_cards:
+        normalized = _normalize_experience_card_payload(item)
+        if normalized is None:
+            continue
+        normalized_existing.append(
+            {
+                "rule_id": _normalize_project_record_token(item.get("rule_id"), limit=80),
+                **normalized,
+            }
+        )
+    return {
+        "project_name": project.name,
+        "records": normalized_records,
+        "candidate_cards": normalized_candidates,
+        "existing_cards": normalized_existing,
+    }
+
+
+def _build_project_experience_review_messages(
+    project: ProjectConfig,
+    *,
+    review_payload: dict[str, Any],
+) -> list[dict[str, str]]:
+    source_block = json.dumps(review_payload, ensure_ascii=False, indent=2)
+    system_prompt = (
+        "你是资深软件团队的经验卡片评审员。"
+        "你的任务不是重新总结需求，而是评审候选经验卡片是否满足入库标准。"
+        "输出必须是 JSON 对象，不要输出 Markdown 代码块。"
+    )
+    user_prompt = (
+        f"项目名称：{project.name}\n"
+        "请评审下面的候选经验卡片。\n"
+        "评审标准：\n"
+        "1. 每张卡片只能保留一个稳定主题，不能把多个问题混成一条。\n"
+        "2. 经验必须去项目化，不能包含项目名、人员名、路径、一次性背景。\n"
+        "3. 推荐做法必须具体、可执行，不能只有空泛原则。\n"
+        "4. 验证方式必须可操作，不能只写“测试一下”“确认无误”。\n"
+        "5. 每张卡片都必须能被源记录证据支持。\n"
+        "6. development 经验卡片只能保留开发工作经验，不得把平台机制、规则治理、审核门、发布流、prompt/模型/知识库治理当作经验入库。\n"
+        "7. 若卡片核心是在要求系统新增能力、流程、页面、状态机或平台门禁，而不是总结开发工作模式，必须 reject，并给出 not_work_experience 或 meta_system_rule 类问题。\n"
+        "8. 若与已有同 topic_key 经验冲突，优先保留更具体、约束更强、可验证的表达。\n"
+        "9. decision 只允许 accept / revise / reject。\n"
+        "10. revise 表示允许修正后入库；reject 表示本张卡片不能入库。\n"
+        "11. 只有在 covered_record_ids 足够明确时，allow_clear_records 才能为 true。\n"
+        "12. 不要省略任何 candidate_cards 的评审结论。\n"
+        "输出 JSON 结构：\n"
+        "{\n"
+        '  "cards": [\n'
+        "    {\n"
+        '      "topic_key": "stable-topic-key",\n'
+        '      "decision": "accept",\n'
+        '      "confidence": 0.86,\n'
+        '      "issues": [{"severity": "major", "code": "issue_code", "message": "问题说明"}],\n'
+        '      "evidence_links": [{"record_id": "rec_xxx", "snippet_index": 0, "reason": "证据说明"}],\n'
+        '      "revised_card": {"title": "经验标题", "topic_key": "stable-topic-key", "domain": "frontend", "keywords": [], "applicable_when": [], "signals": [], "root_causes": [], "recommended_actions": [], "anti_patterns": [], "verification": []},\n'
+        '      "allow_upsert": true,\n'
+        '      "allow_clear_records": false,\n'
+        '      "covered_record_ids": ["rec_xxx"]\n'
+        "    }\n"
+        "  ],\n"
+        '  "summary": {\n'
+        '    "accepted_count": 0,\n'
+        '    "revised_count": 0,\n'
+        '    "rejected_count": 0,\n'
+        '    "uncovered_record_ids": [],\n'
+        '    "allow_upsert": false,\n'
+        '    "allow_clear_requirement_records": false,\n'
+        '    "blocking_reasons": []\n'
+        "  }\n"
+        "}\n\n"
+        "源记录、候选卡片与已有卡片如下：\n"
+        f"{source_block}"
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def _normalize_experience_review_result(
+    payload: dict[str, Any],
+    *,
+    candidate_cards: list[dict[str, Any]],
+    source_records: list[dict[str, Any]],
+    min_confidence: float,
+    experience_scope: str,
+) -> dict[str, Any]:
+    normalized_candidates = _normalize_experience_cards(
+        {"cards": candidate_cards},
+        max_cards=max(1, len(candidate_cards) or 1),
+    )
+    candidate_by_topic = {item["topic_key"]: item for item in normalized_candidates}
+    valid_record_ids = [
+        _normalize_project_record_token(item.get("id"), limit=80)
+        for item in source_records
+        if isinstance(item, dict)
+    ]
+    valid_record_ids = [item for item in valid_record_ids if item]
+    valid_record_id_set = set(valid_record_ids)
+    raw_cards = payload.get("cards") if isinstance(payload, dict) else []
+    if not isinstance(raw_cards, list):
+        raw_cards = []
+
+    cards: list[dict[str, Any]] = []
+    seen_topics: set[str] = set()
+
+    for item in raw_cards:
+        if not isinstance(item, dict):
+            continue
+        topic_key = _normalize_experience_topic_key(
+            item.get("topic_key")
+            or ((item.get("revised_card") or {}).get("topic_key") if isinstance(item.get("revised_card"), dict) else "")
+            or ((item.get("revised_card") or {}).get("title") if isinstance(item.get("revised_card"), dict) else "")
+        )
+        if not topic_key or topic_key in seen_topics or topic_key not in candidate_by_topic:
+            continue
+        seen_topics.add(topic_key)
+        decision = str(item.get("decision") or "").strip().lower()
+        if decision not in _EXPERIENCE_REVIEW_DECISIONS:
+            decision = "reject"
+        confidence = max(0.0, min(1.0, _coerce_float_simple(item.get("confidence"), 0.0)))
+
+        issues: list[dict[str, Any]] = []
+        raw_issues = item.get("issues") if isinstance(item.get("issues"), list) else []
+        for raw_issue in raw_issues:
+            if not isinstance(raw_issue, dict):
+                continue
+            severity = str(raw_issue.get("severity") or "").strip().lower()
+            if severity not in _EXPERIENCE_REVIEW_ISSUE_SEVERITIES:
+                severity = "major"
+            message = _normalize_project_record_token(
+                raw_issue.get("message") or raw_issue.get("reason"),
+                limit=220,
+            )
+            if not message:
+                continue
+            issues.append(
+                {
+                    "severity": severity,
+                    "code": _normalize_project_record_token(raw_issue.get("code"), limit=80) or "review_issue",
+                    "message": message,
+                }
+            )
+
+        evidence_links: list[dict[str, Any]] = []
+        raw_evidence_links = item.get("evidence_links") if isinstance(item.get("evidence_links"), list) else []
+        for raw_link in raw_evidence_links:
+            if not isinstance(raw_link, dict):
+                continue
+            record_id = _normalize_project_record_token(raw_link.get("record_id"), limit=80)
+            if not record_id or record_id not in valid_record_id_set:
+                continue
+            try:
+                snippet_index = max(0, int(raw_link.get("snippet_index") or 0))
+            except (TypeError, ValueError):
+                snippet_index = 0
+            evidence_links.append(
+                {
+                    "record_id": record_id,
+                    "snippet_index": snippet_index,
+                    "reason": _normalize_project_record_token(raw_link.get("reason"), limit=180),
+                }
+            )
+
+        revised_card = _normalize_experience_card_payload(item.get("revised_card"))
+        candidate_card = candidate_by_topic[topic_key]
+        reviewed_card: dict[str, Any] | None = None
+        if decision == "accept":
+            reviewed_card = candidate_card
+        elif decision == "revise":
+            reviewed_card = revised_card
+
+        covered_record_ids: list[str] = []
+        seen_record_ids: set[str] = set()
+        raw_covered_record_ids = item.get("covered_record_ids") if isinstance(item.get("covered_record_ids"), list) else []
+        for raw_record_id in raw_covered_record_ids:
+            record_id = _normalize_project_record_token(raw_record_id, limit=80)
+            if not record_id or record_id not in valid_record_id_set or record_id in seen_record_ids:
+                continue
+            seen_record_ids.add(record_id)
+            covered_record_ids.append(record_id)
+
+        blocker_exists = any(issue["severity"] == "blocker" for issue in issues)
+        if decision == "accept" and reviewed_card is None:
+            blocker_exists = True
+            issues.append(
+                {
+                    "severity": "blocker",
+                    "code": "missing_candidate_card",
+                    "message": "评审标记为 accept，但未找到可入库的候选卡片。",
+                }
+            )
+        if decision == "revise" and reviewed_card is None:
+            blocker_exists = True
+            issues.append(
+                {
+                    "severity": "blocker",
+                    "code": "missing_revised_card",
+                    "message": "评审标记为 revise，但没有返回可入库的 revised_card。",
+                }
+            )
+        if reviewed_card is not None and _experience_card_contains_meta_system_rule(
+            reviewed_card,
+            experience_scope=experience_scope,
+        ):
+            blocker_exists = True
+            issues.append(
+                {
+                    "severity": "blocker",
+                    "code": "not_work_experience",
+                    "message": "该卡片更像平台机制或系统改造需求，不属于开发工作经验，已阻止入库。",
+                }
+            )
+
+        allow_upsert = (
+            decision in {"accept", "revise"}
+            and reviewed_card is not None
+            and confidence >= min_confidence
+            and not blocker_exists
+        )
+        allow_clear_records = bool(allow_upsert and covered_record_ids and bool(item.get("allow_clear_records")))
+
+        cards.append(
+            {
+                "topic_key": topic_key,
+                "decision": decision,
+                "confidence": confidence,
+                "issues": issues,
+                "evidence_links": evidence_links,
+                "revised_card": revised_card,
+                "reviewed_card": reviewed_card,
+                "allow_upsert": allow_upsert,
+                "allow_clear_records": allow_clear_records,
+                "covered_record_ids": covered_record_ids,
+            }
+        )
+
+    for topic_key in candidate_by_topic:
+        if topic_key in seen_topics:
+            continue
+        cards.append(
+            {
+                "topic_key": topic_key,
+                "decision": "reject",
+                "confidence": 0.0,
+                "issues": [
+                    {
+                        "severity": "blocker",
+                        "code": "missing_review_decision",
+                        "message": "模型没有返回该经验卡片的评审结论。",
+                    }
+                ],
+                "evidence_links": [],
+                "revised_card": None,
+                "reviewed_card": None,
+                "allow_upsert": False,
+                "allow_clear_records": False,
+                "covered_record_ids": [],
+            }
+        )
+
+    covered_record_ids = {
+        record_id
+        for item in cards
+        if item["allow_upsert"]
+        for record_id in item["covered_record_ids"]
+    }
+    uncovered_record_ids = [record_id for record_id in valid_record_ids if record_id not in covered_record_ids]
+    approved_cards = [
+        item["reviewed_card"]
+        for item in cards
+        if item["allow_upsert"] and isinstance(item.get("reviewed_card"), dict)
+    ]
+    raw_summary = payload.get("summary") if isinstance(payload, dict) else {}
+    blocking_reasons = _normalize_experience_list(
+        (raw_summary.get("blocking_reasons") if isinstance(raw_summary, dict) else []),
+        item_limit=220,
+        max_items=8,
+    )
+    if not approved_cards:
+        blocking_reasons = _normalize_experience_list(
+            [*blocking_reasons, "没有通过评审的经验卡片，已阻止入库。"],
+            item_limit=220,
+            max_items=8,
+        )
+    if uncovered_record_ids:
+        blocking_reasons = _normalize_experience_list(
+            [
+                *blocking_reasons,
+                f"仍有 {len(uncovered_record_ids)} 条源记录未被通过评审的经验卡片覆盖，已阻止清理原始记录。",
+            ],
+            item_limit=220,
+            max_items=8,
+        )
+    allow_upsert = bool(approved_cards)
+    allow_clear_requirement_records = allow_upsert and not uncovered_record_ids and all(
+        item["allow_clear_records"] for item in cards if item["allow_upsert"]
+    )
+    return {
+        "cards": cards,
+        "approved_cards": approved_cards,
+        "summary": {
+            "accepted_count": sum(1 for item in cards if item["decision"] == "accept"),
+            "revised_count": sum(1 for item in cards if item["decision"] == "revise"),
+            "rejected_count": sum(1 for item in cards if item["decision"] == "reject"),
+            "approved_card_count": len(approved_cards),
+            "uncovered_record_ids": uncovered_record_ids,
+            "allow_upsert": allow_upsert,
+            "allow_clear_requirement_records": allow_clear_requirement_records,
+            "blocking_reasons": blocking_reasons,
+        },
+    }
+
+
+def _experience_card_contains_meta_system_rule(card: dict[str, Any], *, experience_scope: str) -> bool:
+    if _normalize_experience_rule_scope(experience_scope) != _EXPERIENCE_SCOPE_DEVELOPMENT:
+        return False
+    if not isinstance(card, dict):
+        return False
+    haystack_parts: list[str] = [str(card.get("title") or "").strip().lower()]
+    for key in (
+        "keywords",
+        "applicable_when",
+        "signals",
+        "root_causes",
+        "recommended_actions",
+        "anti_patterns",
+        "verification",
+    ):
+        values = card.get(key)
+        if not isinstance(values, list):
+            continue
+        haystack_parts.extend(str(item or "").strip().lower() for item in values)
+    haystack = " ".join(part for part in haystack_parts if part)
+    return any(keyword in haystack for keyword in _DEVELOPMENT_EXPERIENCE_META_KEYWORDS)
 
 
 def _parse_experience_rule_content(content: str) -> dict[str, Any]:
@@ -10218,6 +10868,60 @@ async def _summarize_project_experience_cards(
     return cards
 
 
+async def _review_project_experience_cards(
+    project: ProjectConfig,
+    *,
+    records: list[dict[str, Any]],
+    candidate_cards: list[dict[str, Any]],
+    auth_payload: dict,
+    provider_id: str = "",
+    model_name: str = "",
+    experience_scope: str,
+    min_confidence: float,
+    max_evidence_snippets_per_record: int,
+) -> dict[str, Any]:
+    from services.llm_provider_service import get_llm_provider_service
+
+    review_payload = _build_project_experience_review_payload(
+        project,
+        records=records,
+        candidate_cards=candidate_cards,
+        existing_cards=_collect_existing_experience_cards_for_review(
+            project,
+            experience_scope=experience_scope,
+        ),
+        max_evidence_snippets_per_record=max_evidence_snippets_per_record,
+    )
+    resolved_provider_id, resolved_model_name = _resolve_project_experience_llm_target(
+        project,
+        auth_payload=auth_payload,
+        provider_id=provider_id,
+        model_name=model_name,
+    )
+    llm_service = get_llm_provider_service()
+    result = await llm_service.chat_completion(
+        resolved_provider_id,
+        resolved_model_name,
+        _build_project_experience_review_messages(project, review_payload=review_payload),
+        temperature=0.1,
+        max_tokens=2600,
+        timeout=90,
+    )
+    try:
+        payload = _extract_json_object_from_text(result.get("content") or "")
+    except ValueError as exc:
+        raise HTTPException(502, f"经验规则评审结果解析失败: {exc}") from exc
+    normalized_result = _normalize_experience_review_result(
+        payload,
+        candidate_cards=candidate_cards,
+        source_records=records,
+        min_confidence=max(0.0, min(1.0, float(min_confidence))),
+        experience_scope=experience_scope,
+    )
+    normalized_result["records"] = review_payload.get("records") or []
+    return normalized_result
+
+
 def _resolve_project_experience_llm_target(
     project: ProjectConfig,
     *,
@@ -10544,15 +11248,11 @@ def _migrate_project_experience_rules_to_development(
     return updated_project, created_rule_ids, updated_rule_ids, deleted_rule_ids
 
 
-@router.post("/{project_id}/experience-summary-jobs")
-async def summarize_project_experience(
-    project_id: str,
-    req: ProjectExperienceSummaryReq,
-    auth_payload: dict = Depends(require_auth),
-):
-    _ensure_permission(auth_payload, "menu.projects")
-    project = _ensure_project_manage_access(project_id, auth_payload)
-    experience_scope = _normalize_experience_rule_scope(req.experience_scope)
+def _resolve_project_experience_summary_target_records(
+    project: ProjectConfig,
+    *,
+    record_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
     payload = _build_project_requirement_records(
         project,
         limit=_PROJECT_EXPERIENCE_SUMMARY_RECORD_LIMIT,
@@ -10562,68 +11262,149 @@ async def summarize_project_experience(
         all_records = []
     requested_ids = [
         _normalize_project_record_token(item, limit=80)
-        for item in (req.record_ids or [])
+        for item in (record_ids or [])
     ]
     requested_ids = [item for item in requested_ids if item]
-    target_records = all_records
-    if requested_ids:
-        selected_id_set = set(requested_ids)
-        target_records = [
-            item for item in all_records
-            if _normalize_project_record_token(item.get("id"), limit=80) in selected_id_set
-        ]
+    if not requested_ids:
+        return [item for item in all_records if isinstance(item, dict)]
+    selected_id_set = set(requested_ids)
+    return [
+        item
+        for item in all_records
+        if isinstance(item, dict)
+        and _normalize_project_record_token(item.get("id"), limit=80) in selected_id_set
+    ]
+
+
+def _build_project_experience_summary_job(
+    project: ProjectConfig,
+    req: ProjectExperienceSummaryReq,
+    *,
+    auth_payload: dict,
+) -> ProjectExperienceSummaryJob:
+    experience_scope = _normalize_experience_rule_scope(req.experience_scope)
+    review_mode = _normalize_experience_review_mode(req.review_mode)
+    target_records = _resolve_project_experience_summary_target_records(
+        project,
+        record_ids=req.record_ids,
+    )
     if not target_records:
         raise HTTPException(400, "没有可用于总结的需求记录")
-
-    cards = await _summarize_project_experience_cards(
-        project,
+    now = _now_iso()
+    return ProjectExperienceSummaryJob(
+        id=project_experience_summary_store.new_id(),
+        project_id=project.id,
+        status="queued",
+        progress=0,
+        stage="queued",
+        status_message="任务已创建，等待后台执行",
         provider_id=str(req.provider_id or "").strip(),
         model_name=str(req.model_name or "").strip(),
-        records=target_records,
-        max_cards=int(req.max_cards or 5),
-        auth_payload=auth_payload,
-    )
-    updated_project, created_rule_ids, updated_rule_ids = await _upsert_project_experience_rules(
-        project,
-        cards,
-        auth_payload=auth_payload,
+        review_mode=review_mode,
         experience_scope=experience_scope,
-        provider_id=str(req.provider_id or "").strip(),
-        model_name=str(req.model_name or "").strip(),
-    )
-
-    clear_result: dict[str, Any] | None = None
-    if req.clear_requirement_records:
-        clear_result = await batch_delete_project_requirement_records(
-            project_id,
-            ProjectRequirementRecordBatchDeleteReq(
-                record_ids=[
-                    _normalize_project_record_token(item.get("id"), limit=80)
-                    for item in target_records
-                ]
-            ),
-            auth_payload,
-        )
-
-    return {
-        "status": "completed",
-        "project_id": updated_project.id,
-        "project_name": updated_project.name,
-        "source_record_ids": [
+        clear_requirement_records_requested=bool(req.clear_requirement_records),
+        clear_requirement_records_executed=False,
+        manual_review_required=review_mode == "manual",
+        requested_record_ids=[
+            _normalize_project_record_token(item, limit=80)
+            for item in (req.record_ids or [])
+            if _normalize_project_record_token(item, limit=80)
+        ],
+        source_record_ids=[
             _normalize_project_record_token(item.get("id"), limit=80)
             for item in target_records
+            if _normalize_project_record_token(item.get("id"), limit=80)
         ],
-        "source_record_count": len(target_records),
-        "created_rule_ids": created_rule_ids,
-        "updated_rule_ids": updated_rule_ids,
-        "experience_rule_ids": _normalize_project_experience_rule_ids(
-            getattr(updated_project, "experience_rule_ids", []) or []
-        ),
-        "experience_rule_bindings": _resolve_project_experience_rule_bindings(updated_project),
-        "clear_result": clear_result,
-        "provider_id": str(req.provider_id or "").strip(),
-        "model_name": str(req.model_name or "").strip(),
-        "experience_scope": experience_scope,
+        source_records=target_records,
+        source_record_count=len(target_records),
+        max_cards=int(req.max_cards or 5),
+        min_review_confidence=float(req.min_review_confidence),
+        max_evidence_snippets_per_record=int(req.max_evidence_snippets_per_record or 2),
+        created_by=_normalize_material_text(auth_payload.get("sub"), limit=120),
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _summarize_project_experience_jobs(items: list[ProjectExperienceSummaryJob]) -> dict[str, int]:
+    return {
+        "total": len(items),
+        "queued_count": sum(1 for item in items if item.status == "queued"),
+        "processing_count": sum(1 for item in items if item.status == "processing"),
+        "completed_count": sum(1 for item in items if item.status == "completed"),
+        "partial_completed_count": sum(1 for item in items if item.status == "partial_completed"),
+        "review_blocked_count": sum(1 for item in items if item.status == "review_blocked"),
+        "failed_count": sum(1 for item in items if item.status == "failed"),
+    }
+
+
+@router.get("/{project_id}/experience-summary-jobs")
+async def list_project_experience_summary_jobs(
+    project_id: str,
+    status: str = Query(""),
+    active_only: bool = Query(False),
+    limit: int = Query(20, ge=1, le=100),
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    normalized_status = ""
+    if str(status or "").strip():
+        normalized_status = _normalize_project_experience_summary_status(status)
+    items = project_experience_summary_store.list_by_project(
+        project_id,
+        status=normalized_status,
+        limit=limit,
+    )
+    if active_only:
+        items = [
+            item for item in items
+            if item.status in _PROJECT_EXPERIENCE_SUMMARY_ACTIVE_STATUSES
+        ]
+    current_job = next(
+        (item for item in items if item.status in _PROJECT_EXPERIENCE_SUMMARY_ACTIVE_STATUSES),
+        None,
+    )
+    latest_job = items[0] if items else None
+    return {
+        "items": [_serialize_project_experience_summary_job(item) for item in items],
+        "current_job": _serialize_project_experience_summary_job(current_job) if current_job else None,
+        "latest_job": _serialize_project_experience_summary_job(latest_job) if latest_job else None,
+        "summary": _summarize_project_experience_jobs(items),
+    }
+
+
+@router.get("/{project_id}/experience-summary-jobs/{job_id}")
+async def get_project_experience_summary_job(
+    project_id: str,
+    job_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_access(project_id, auth_payload)
+    job = project_experience_summary_store.get(project_id, job_id)
+    if job is None:
+        raise HTTPException(404, f"Experience summary job {job_id} not found")
+    return {"job": _serialize_project_experience_summary_job(job)}
+
+
+@router.post("/{project_id}/experience-summary-jobs")
+async def create_project_experience_summary_job(
+    project_id: str,
+    req: ProjectExperienceSummaryReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    project = _ensure_project_manage_access(project_id, auth_payload)
+    job = _build_project_experience_summary_job(
+        project,
+        req,
+        auth_payload=auth_payload,
+    )
+    project_experience_summary_store.save(job)
+    return {
+        "status": "created",
+        "job": _serialize_project_experience_summary_job(job),
     }
 
 
@@ -12390,7 +13171,7 @@ def _build_project_manual_template_payload(project_id: str) -> dict[str, Any]:
 - 同一个聊天里出现下一条新需求时，系统会基于新的需求重新生成一棵活动任务树；历史归档记录仍可在项目详情的任务推进列表查看。
 - 若本轮已经产生执行进展，但没有回写任务树，系统会保留节点在 `in_progress` 或 `verifying`，不会直接自动推荐完成。
 - 查询型问题若已完成检索并给出明确答案，系统会自动补齐验证并归档，避免任务树停留在 `0%` 或 `67%`。
-- `/ai/chat` 页面只展示当前仍在进行中的任务树；已完成或已归档任务树不应继续作为当前任务显示。
+- 当前宿主前端只展示当前仍在进行中的任务树；已完成或已归档任务树不应继续作为当前任务显示。
 """
         task_tree_workflow_line = "\n5. 如当前项目聊天已启用任务树，进入实现前先读取 `get_current_task_tree`；每完成一步都要写回节点状态与验证结果，未验证不得标记完成。"
 
@@ -12535,7 +13316,7 @@ save_project_memory({{
 - 每次有效对话都要留下项目记忆；自动记录未覆盖时，必须手动补记。
 - 结构化结论和关键决策建议额外补一条高质量记忆，便于后续复用。
 - 若本轮存在任务树，记忆详情必须能回看该轮规划、节点状态和验证结果；不要把任务树和记忆拆成两条互相无法追溯的记录。
-- `/ai/chat` 只展示当前进行中的任务树；查看历史任务应去项目历史或记忆详情，不应继续占据当前聊天任务区域。
+- 当前宿主前端只展示当前进行中的任务树；查看历史任务应去项目历史或记忆详情，不应继续占据当前任务区域。
 - 不要把领域名直接当作规则正文。
 
 ### 事实边界
