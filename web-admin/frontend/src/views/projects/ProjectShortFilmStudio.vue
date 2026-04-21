@@ -1996,6 +1996,10 @@ import {
   readVideoDurationFromUrl,
   resolveMaterialResourceUrl,
 } from "@/utils/project-materials.js";
+import {
+  getStoredProjectContextId,
+  setStoredProjectContextId,
+} from "@/utils/desktop-shell.js";
 
 const route = useRoute();
 const STUDIO_DRAFT_STORAGE_PREFIX = "studio.workbench.draft";
@@ -2639,13 +2643,21 @@ function buildCharacterGenerateForm() {
   };
 }
 
-const projectId = computed(() => String(route.query.project_id || "").trim());
+const projectId = computed(() =>
+  String(route.query.project_id || "").trim() || getStoredProjectContextId(),
+);
 const requestedStudioDraftJobId = computed(() =>
   String(route.query.draft_job_id || "").trim(),
 );
 const requestedStudioExportJobId = computed(() =>
   String(route.query.export_job_id || "").trim(),
 );
+
+watch(projectId, (value) => {
+  const normalizedProjectId = String(value || "").trim();
+  if (!normalizedProjectId) return;
+  setStoredProjectContextId(normalizedProjectId);
+});
 
 const activeStep = ref("script");
 const scriptFileInputRef = ref(null);

@@ -308,13 +308,23 @@
 
               <div class="voice-config-divider" />
 
-              <div class="voice-config-section">
-                <div class="voice-config-section__head">
-                  <div class="employee-skill-site-card__title">问题求解</div>
-                  <div class="switch-desc">
-                    为全局助手回答系统问题单独指定对话模型，这组模型和语音转写模型分开管理。
+                <div class="voice-config-section">
+                  <div class="voice-config-section__head">
+                    <div class="employee-skill-site-card__title">问题求解</div>
+                    <div class="switch-desc">
+                      为全局助手回答系统问题单独指定对话模型，这组模型和语音转写模型分开管理。
+                    </div>
                   </div>
-                </div>
+
+                  <div class="switch-card">
+                    <div>
+                      <div class="switch-title">启用全局助手悬浮窗</div>
+                      <div class="switch-desc">
+                        关闭后，页面右下角的全局助手入口和悬浮弹框都会隐藏，语音与欢迎语也不会主动启动。
+                      </div>
+                    </div>
+                    <el-switch v-model="form.global_assistant_enabled" />
+                  </div>
 
                 <el-alert
                   v-if="!globalAssistantChatProviderOptions.length"
@@ -1409,6 +1419,7 @@ const form = ref({
   voice_output_provider_id: "",
   voice_output_model_name: "",
   voice_output_voice: "",
+  global_assistant_enabled: true,
   global_assistant_greeting_enabled: true,
   global_assistant_greeting_text: DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
   global_assistant_chat_provider_id: "",
@@ -1959,6 +1970,7 @@ function applyConfigToForm(config, options = {}) {
     voice_output_provider_id: String(payload.voice_output_provider_id || ""),
     voice_output_model_name: String(payload.voice_output_model_name || ""),
     voice_output_voice: String(payload.voice_output_voice || ""),
+    global_assistant_enabled: payload.global_assistant_enabled !== false,
     global_assistant_greeting_enabled:
       payload.global_assistant_greeting_enabled !== false,
     global_assistant_greeting_text: String(
@@ -2561,6 +2573,7 @@ async function saveConfig() {
       voice_output_provider_id: String(form.value.voice_output_provider_id || ""),
       voice_output_model_name: String(form.value.voice_output_model_name || ""),
       voice_output_voice: String(form.value.voice_output_voice || "").trim(),
+      global_assistant_enabled: Boolean(form.value.global_assistant_enabled),
       global_assistant_greeting_enabled: Boolean(
         form.value.global_assistant_greeting_enabled,
       ),
@@ -2624,6 +2637,13 @@ async function saveConfig() {
       preservePrompt: true,
       preserveMcpConfig: true,
     });
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("system-config-updated", {
+          detail: { config: data?.config || {} },
+        }),
+      );
+    }
     await Promise.all([
       refreshMcpSkills(),
       fetchGlobalAssistantChatOptions(),

@@ -35,6 +35,23 @@
                   : "缺少 project_id"
               }}
             </div>
+            <div class="creation-workspace__project-actions">
+              <button
+                type="button"
+                class="creation-workspace__project-action"
+                @click="openProjectList"
+              >
+                切换项目
+              </button>
+              <button
+                type="button"
+                class="creation-workspace__project-action"
+                :disabled="!projectId"
+                @click="openProjectChat"
+              >
+                AI 对话
+              </button>
+            </div>
           </div>
 
           <nav class="creation-workspace__nav">
@@ -67,11 +84,18 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
+import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
+import {
+  getStoredProjectContextId,
+  setStoredProjectContextId,
+} from "@/utils/desktop-shell.js";
 
 const route = useRoute();
 const router = useRouter();
 
-const projectId = computed(() => String(route.query.project_id || "").trim());
+const projectId = computed(() =>
+  String(route.query.project_id || "").trim() || getStoredProjectContextId(),
+);
 const project = ref({});
 
 const navItems = computed(() => [
@@ -134,18 +158,71 @@ async function fetchProject() {
   }
 }
 
+function ensureProjectQuery() {
+  const routeProjectId = String(route.query.project_id || "").trim();
+  const currentProjectId = projectId.value;
+  if (!currentProjectId || routeProjectId === currentProjectId) return;
+  void router.replace({
+    path: route.path,
+    query: {
+      ...route.query,
+      project_id: currentProjectId,
+    },
+  });
+}
+
 function openNav(item) {
+  if (projectId.value) {
+    setStoredProjectContextId(projectId.value);
+  }
   void router.push({
     path: item.path,
     query: projectId.value ? { project_id: projectId.value } : {},
   });
 }
 
+function openProjectList() {
+  void openRouteInDesktop(router, "/projects", {
+    mode: "focus-or-open",
+    appId: "projects",
+    title: "项目",
+    eyebrow: "Project Space",
+    summary: "返回项目列表并切换当前工作项目。",
+  });
+}
+
+function openProjectChat() {
+  const currentProjectId = String(projectId.value || "").trim();
+  if (!currentProjectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  void openRouteInDesktop(
+    router,
+    { path: "/ai/chat", query: { project_id: currentProjectId } },
+    {
+      mode: "focus-or-open",
+      appId: "chat",
+      title: "AI 对话",
+      eyebrow: "AI Workspace",
+      summary: "围绕当前项目继续处理 AI 对话与协作任务。",
+    },
+  );
+}
+
 watch(projectId, () => {
+  if (projectId.value) {
+    setStoredProjectContextId(projectId.value);
+  }
+  ensureProjectQuery();
   void fetchProject();
 });
 
 onMounted(() => {
+  if (projectId.value) {
+    setStoredProjectContextId(projectId.value);
+  }
+  ensureProjectQuery();
   void fetchProject();
 });
 </script>
@@ -330,6 +407,30 @@ onMounted(() => {
   font-size: 12px;
   line-height: 1.75;
   word-break: break-all;
+}
+
+.creation-workspace__project-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.creation-workspace__project-action {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(226, 232, 240, 0.88);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.84);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.creation-workspace__project-action:disabled {
+  opacity: 0.46;
+  cursor: not-allowed;
 }
 
 .creation-workspace__nav {

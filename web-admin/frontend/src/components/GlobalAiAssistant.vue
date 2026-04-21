@@ -452,6 +452,7 @@ import {
   ensureAssistantBrowserBridgeInstalled,
   executeAssistantBrowserToolCall,
 } from "@/utils/assistant-browser-bridge.js";
+import { isEmbeddedDesktopApp } from "@/utils/desktop-app-bridge.js";
 import { createGlobalAssistantWsClient } from "@/utils/ws-chat.js";
 
 const FALLBACK_OPEN_WIDTH = 1080;
@@ -469,6 +470,7 @@ const SPEECH_PREVIEW_MESSAGE_ID = "__speech_preview__";
 const SPEECH_AUDIO_CACHE_LIMIT = 24;
 const SPEECH_VOICE_RETRY_DELAY_MS = 700;
 const SPEECH_VOICE_MAX_RETRIES = 6;
+const SYSTEM_CONFIG_UPDATED_EVENT = "system-config-updated";
 const ASSISTANT_FAB_DRAG_THRESHOLD_PX = 6;
 const ASSISTANT_FAB_DESKTOP_OFFSET_PX = 20;
 const ASSISTANT_FAB_MOBILE_OFFSET_PX = 12;
@@ -608,6 +610,7 @@ const speechAudioBlobCache = new Map();
 const speechAudioPendingRequests = new Map();
 const speechStreamingProgress = new Map();
 const suppressedAutoPlayMessageIds = new Set();
+const globalAssistantEnabled = ref(true);
 const VOICE_TARGET_SAMPLE_RATE = 16000;
 const VOICE_FLUSH_INTERVAL_MS = 180;
 const VOICE_MIN_CHUNK_MS = 220;
@@ -1051,7 +1054,9 @@ const voiceUiState = computed(() => {
 const shouldRender = computed(() => {
   authStateVersion.value;
   if (!getStoredToken()) return false;
+  if (isEmbeddedDesktopApp()) return false;
   if (HIDDEN_PATHS.has(normalizedRoutePath.value)) return false;
+  if (!globalAssistantEnabled.value) return false;
   return hasPermission("menu.ai.chat");
 });
 
@@ -2565,6 +2570,11 @@ async function initializeAssistant() {
     messages.value = [];
     typedDraftText.value = "";
     currentChatSessionId.value = "";
+    await fetchAssistantConfig();
+    if (!globalAssistantEnabled.value) {
+      teardownAssistant();
+      return;
+    }
     await Promise.all([fetchVoiceRuntime(), fetchSpeechRuntime(), refreshVoiceInputDevices()]);
     if (!String(currentChatSessionId.value || "").trim()) {
       currentChatSessionId.value = createEphemeralSessionId();
@@ -2574,6 +2584,17 @@ async function initializeAssistant() {
     errorText.value = err?.detail || err?.message || "初始化失败";
   } finally {
     bootstrapping.value = false;
+  }
+}
+
+async function fetchAssistantConfig() {
+  try {
+    const data = await api.get("/system-config");
+    const config =
+      data?.config && typeof data.config === "object" ? data.config : {};
+    globalAssistantEnabled.value = config.global_assistant_enabled !== false;
+  } catch {
+    globalAssistantEnabled.value = true;
   }
 }
 
@@ -2588,6 +2609,7 @@ async function fetchVoiceRuntime() {
       available: Boolean(runtime.available),
       mode: String(runtime.mode || "").trim(),
       reason: String(runtime.reason || "").trim(),
+      global_assistant_enabled: runtime.global_assistant_enabled !== false,
       provider_id: String(runtime.provider_id || "").trim(),
       provider_name: String(runtime.provider_name || "").trim(),
       model_name: String(runtime.model_name || "").trim(),
@@ -2604,6 +2626,7 @@ async function fetchVoiceRuntime() {
         Math.min(30, Number(runtime.idle_timeout_sec || 5) || 5),
       ),
     };
+    globalAssistantEnabled.value = runtime.global_assistant_enabled !== false;
   } catch (err) {
     voiceRuntime.value = {
       enabled: false,
@@ -2613,6 +2636,7 @@ async function fetchVoiceRuntime() {
         err?.detail || err?.message,
         "语音能力加载失败",
       ),
+      global_assistant_enabled: true,
       greeting_enabled: false,
       greeting_text: DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
       transcription_prompt: DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT,
@@ -4520,6 +4544,7 @@ function teardownAssistant() {
   messages.value = [];
   currentChatSessionId.value = "";
   typedDraftText.value = "";
+  panelOpen.value = false;
   settingsDialogOpen.value = false;
   panelFullscreen.value = false;
   voiceRuntime.value = {
@@ -4527,6 +4552,7 @@ function teardownAssistant() {
     available: false,
     mode: "",
     reason: "",
+    global_assistant_enabled: globalAssistantEnabled.value,
     greeting_enabled: false,
     greeting_text: DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
     transcription_prompt: DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT,
@@ -4644,8 +4670,24 @@ watch(
   },
 );
 
+function handleSystemConfigUpdated(event) {
+  const config =
+    event?.detail?.config && typeof event.detail.config === "object"
+      ? event.detail.config
+      : {};
+  globalAssistantEnabled.value = config.global_assistant_enabled !== false;
+  if (!globalAssistantEnabled.value) {
+    teardownAssistant();
+    return;
+  }
+  if (getStoredToken()) {
+    void initializeAssistant();
+  }
+}
+
 onMounted(() => {
   window.addEventListener("resize", handleAssistantFabWindowResize);
+  window.addEventListener(SYSTEM_CONFIG_UPDATED_EVENT, handleSystemConfigUpdated);
   if (!shouldRender.value) return;
   ensureAssistantBrowserBridgeInstalled();
   selectedVoiceInputDeviceId.value = normalizeVoiceInputSelectionValue(
@@ -4667,6 +4709,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener(SYSTEM_CONFIG_UPDATED_EVENT, handleSystemConfigUpdated);
   stopSpeechVoiceRetry();
   if (window.navigator?.mediaDevices?.removeEventListener) {
     window.navigator.mediaDevices.removeEventListener("devicechange", refreshVoiceInputDevices);

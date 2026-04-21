@@ -7,41 +7,17 @@
     ]"
   >
     <div class="project-detail-shell">
-      <section class="project-hero">
-        <div class="project-hero__copy">
-          <div class="project-hero__eyebrow">Project Settings</div>
-          <div class="project-hero__signals">
-            <el-tag
-              v-for="item in projectHeroSignals"
-              :key="item.key"
-              size="small"
-              effect="plain"
-              :type="item.type"
-            >
-              {{ item.label }}
-            </el-tag>
-          </div>
-          <div class="project-hero__heading">
-            <h3>{{ project.name || "项目详情" }}</h3>
-            <p>{{ projectHeroDescription }}</p>
-          </div>
-          <div v-if="!isMemoryTabActive" class="project-hero__stats">
-            <div
-              v-for="item in projectHeroStats"
-              :key="item.label"
-              class="project-hero__stats-card"
-            >
-              <span>{{ item.label }}</span>
-              <strong>{{ item.value }}</strong>
-            </div>
-          </div>
-        </div>
-        <div class="project-hero__panel">
-          <div class="project-hero__panel-copy">
-            <div class="project-hero__panel-eyebrow">Quick Actions</div>
-            <h4>{{ projectHeroPanelTitle }}</h4>
-            <p>{{ projectHeroPanelDescription }}</p>
-          </div>
+      <ProjectAppHeader
+        eyebrow="Project Workspace"
+        :title="project.name || '项目详情'"
+        :description="projectHeroDescription"
+        panel-eyebrow="Action Console"
+        panel-title="桌面操作"
+        panel-description="把项目详情当作桌面中的独立应用窗口，主动作和维护动作都集中在右侧面板。"
+        :badges="projectHeroSignals"
+        :stats="projectHeroStats"
+      >
+        <template #actions>
           <div class="project-hero__actions">
             <div class="project-hero__actions-primary">
               <el-button v-if="canOpenProjectChat" type="primary" @click="openProjectChat"
@@ -64,21 +40,19 @@
                 @click="showProjectManual"
                 >使用手册</el-button
               >
-              <el-button @click="$router.push('/projects')">返回列表</el-button>
+              <el-button @click="openProjectList">返回列表</el-button>
               <el-button @click="refresh">刷新</el-button>
             </div>
           </div>
-        </div>
-      </section>
+        </template>
+      </ProjectAppHeader>
 
-      <section class="project-detail-tabs-shell">
-        <div class="project-detail-tabs-shell__header">
-          <div>
-            <div class="block-eyebrow">Workspace</div>
-            <h4>同一路由内切换项目设置</h4>
-          </div>
-          <p>把概览、协作和记忆收进同一层 tabs，减少在列表和详情之间反复返回。</p>
-        </div>
+      <ProjectAppSection
+        eyebrow="Workspace"
+        title="项目工作区"
+        description="概览、协作设置、需求记录和 MCP 接入都作为这个项目应用里的不同工作页签。"
+        class="project-detail-tabs-shell"
+      >
 
         <el-tabs v-model="activeProjectTab" class="project-detail-tabs">
           <el-tab-pane name="overview">
@@ -92,25 +66,16 @@
             </template>
 
             <div class="project-detail-tab-pane">
-              <div v-if="project.id" class="block block--overview">
-                <div class="block-header">
-                  <div>
-                    <div class="block-eyebrow">Overview</div>
-                    <h4>项目概览</h4>
-                  </div>
-                </div>
+              <ProjectWorkspaceBlock
+                v-if="project.id"
+                eyebrow="Overview"
+                title="项目概览"
+                block-class="block--overview"
+              >
                 <el-descriptions :column="2" border class="project-descriptions">
                   <el-descriptions-item label="项目 ID">{{
                     project.id
                   }}</el-descriptions-item>
-                  <el-descriptions-item label="项目名称">{{
-                    project.name
-                  }}</el-descriptions-item>
-                  <el-descriptions-item label="项目类型">
-                    <el-tag :type="getProjectTypeTagType(project.type)">
-                      {{ getProjectTypeLabel(project.type) }}
-                    </el-tag>
-                  </el-descriptions-item>
                   <el-descriptions-item label="创建人">{{
                     project.created_by || "-"
                   }}</el-descriptions-item>
@@ -128,16 +93,6 @@
                   >
                     {{ project.ai_entry_file || "-" }}
                   </el-descriptions-item>
-                  <el-descriptions-item label="MCP">
-                    <el-tag :type="project.mcp_enabled ? 'success' : 'info'">
-                      {{ project.mcp_enabled ? "开启" : "关闭" }}
-                    </el-tag>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="反馈升级">
-                    <el-tag :type="project.feedback_upgrade_enabled ? 'success' : 'info'">
-                      {{ project.feedback_upgrade_enabled ? "开启" : "关闭" }}
-                    </el-tag>
-                  </el-descriptions-item>
                   <el-descriptions-item label="描述" :span="2">{{
                     project.description || "-"
                   }}</el-descriptions-item>
@@ -145,14 +100,10 @@
                     project.mcp_instruction || "-"
                   }}</el-descriptions-item>
                 </el-descriptions>
-              </div>
+              </ProjectWorkspaceBlock>
 
-              <div class="block">
-                <div class="block-header">
-                  <div>
-                    <div class="block-eyebrow">UI Rules</div>
-                    <h4>UI 规则绑定</h4>
-                  </div>
+              <ProjectWorkspaceBlock eyebrow="UI Rules" title="UI 规则绑定">
+                <template #actions>
                   <el-button
                     type="primary"
                     size="small"
@@ -160,7 +111,7 @@
                     @click="openUiRuleDialog"
                     >编辑绑定</el-button
                   >
-                </div>
+                </template>
                 <el-alert
                   class="section-alert"
                   title="项目聊天会优先注入这里绑定的 UI 规则，优先级高于员工个人规则。"
@@ -178,14 +129,10 @@
                   </div>
                 </div>
                 <el-empty v-else description="当前项目未绑定 UI 规则" :image-size="60" />
-              </div>
+              </ProjectWorkspaceBlock>
 
-              <div class="block">
-                <div class="block-header">
-                  <div>
-                    <div class="block-eyebrow">Experience Rules</div>
-                    <h4>经验规则</h4>
-                  </div>
+              <ProjectWorkspaceBlock eyebrow="Experience Rules" title="经验规则">
+                <template #actions>
                   <div v-if="canManageProject" class="block-header__actions">
                     <el-button
                       v-if="lastExperienceSummaryResult"
@@ -215,7 +162,7 @@
                       >总结为开发经验</el-button
                     >
                   </div>
-                </div>
+                </template>
                 <el-alert
                   class="section-alert"
                   title="这里展示项目引用的经验规则；当前默认会把需求记录沉淀为可复用的开发经验，并把项目绑定到对应规则。"
@@ -284,7 +231,7 @@
                   </div>
                 </div>
                 <el-empty v-else description="当前项目还没有沉淀经验规则" :image-size="60" />
-              </div>
+              </ProjectWorkspaceBlock>
             </div>
           </el-tab-pane>
 
@@ -299,12 +246,8 @@
             </template>
 
             <div class="project-detail-tab-pane">
-              <div class="block">
-                <div class="block-header">
-                  <div>
-                    <div class="block-eyebrow">Access</div>
-                    <h4>可见用户</h4>
-                  </div>
+              <ProjectWorkspaceBlock eyebrow="Access" title="可见用户">
+                <template #actions>
                   <el-button
                     type="primary"
                     size="small"
@@ -312,7 +255,7 @@
                     @click="openAddUserDialog"
                     >添加用户</el-button
                   >
-                </div>
+                </template>
 
                 <el-table :data="pagedProjectUsers" stripe class="section-table">
                   <el-table-column prop="username" label="用户名" width="180" />
@@ -365,14 +308,10 @@
                 </div>
 
                 <el-empty v-if="!projectUsers.length" description="暂无可见用户" />
-              </div>
+              </ProjectWorkspaceBlock>
 
-              <div class="block">
-                <div class="block-header">
-                  <div>
-                    <div class="block-eyebrow">Members</div>
-                    <h4>成员管理</h4>
-                  </div>
+              <ProjectWorkspaceBlock eyebrow="Members" title="成员管理">
+                <template #actions>
                   <el-button
                     type="primary"
                     size="small"
@@ -380,7 +319,7 @@
                     @click="openAddMember"
                     >添加成员</el-button
                   >
-                </div>
+                </template>
 
                 <el-table :data="pagedMembers" stripe class="section-table">
                   <el-table-column prop="employee_id" label="员工 ID" width="150" />
@@ -448,7 +387,7 @@
                 </div>
 
                 <el-empty v-if="!members.length" description="暂无成员" />
-              </div>
+              </ProjectWorkspaceBlock>
             </div>
           </el-tab-pane>
 
@@ -463,12 +402,13 @@
               </template>
 
             <div class="project-detail-tab-pane">
-              <div class="block block--memory-primary">
-                <div class="block-header block-header--memory">
-                  <div>
-                    <div class="block-eyebrow">Requirement Records</div>
-                    <h4>需求记录</h4>
-                  </div>
+              <ProjectWorkspaceBlock
+                eyebrow="Requirement Records"
+                title="需求记录"
+                block-class="block--memory-primary"
+                header-class="block-header--memory"
+              >
+                <template #actions>
                   <div class="toolbar-actions">
                     <el-tag size="small" effect="plain" :type="taskTreeStorageBackendTagType">
                       {{ taskTreeStorageBackendLabel }}
@@ -482,18 +422,11 @@
                       刷新映射
                     </el-button>
                   </div>
-                </div>
-                <div class="memory-overview-strip">
-                  <div
-                    v-for="item in memoryOverviewItems"
-                    :key="item.label"
-                    class="memory-overview-card"
-                  >
-                    <span>{{ item.label }}</span>
-                    <strong>{{ item.value }}</strong>
-                    <small>{{ item.meta }}</small>
-                  </div>
-                </div>
+                </template>
+                <ProjectWorkspaceMetricStrip
+                  :items="memoryOverviewItems"
+                  variant="accent"
+                />
                 <div v-if="requirementRecords.length" class="memory-health-shell">
                   <div class="memory-health-shell__head">
                     <div>
@@ -502,18 +435,9 @@
                     </div>
                     <p>这里不再只做分类统计，直接给出继续处理、重建任务树和清空入口。</p>
                   </div>
-                  <div class="memory-health-strip">
-                    <div
-                      v-for="item in taskActionOverviewItems"
-                      :key="item.label"
-                      class="memory-health-card"
-                      :class="`is-${item.tone}`"
-                    >
-                      <span>{{ item.label }}</span>
-                      <strong>{{ item.value }}</strong>
-                      <small>{{ item.meta }}</small>
-                    </div>
-                  </div>
+                  <ProjectWorkspaceMetricStrip
+                    :items="taskActionOverviewItems"
+                  />
                   <div v-if="taskActionItems.length" class="memory-health-grid">
                     <article
                       v-for="item in taskActionItems"
@@ -588,277 +512,153 @@
                     :image-size="56"
                   />
                 </div>
-                <div class="memory-toolbar-shell">
-                  <div class="memory-toolbar-shell__copy">
-                    <p>
-                      这里按“需求主记录 + 计划节点 + 进展记录”统一展示。未完成的需求只显示计划和状态，全部完成并验证后才显示最终结论。
-                    </p>
-                  </div>
-                  <div class="memory-filters">
-                    <el-input
-                      class="memory-filter-control memory-filter-control--search"
-                      v-model="memoryFilters.query"
-                      clearable
-                      placeholder="按内容关键词筛选"
-                      @keyup.enter="applyMemoryFilters"
-                    />
-                    <el-select
-                      class="memory-filter-control memory-filter-control--employee"
-                      v-model="memoryFilters.employeeId"
-                      clearable
-                      filterable
-                      placeholder="全部员工"
-                    >
-                      <el-option
-                        v-for="item in members"
-                        :key="item.employee_id"
-                        :label="`${item.employee_name || item.employee_id} (${item.employee_id})`"
-                        :value="item.employee_id"
+                <ProjectWorkspaceToolbar
+                  description="这里按“需求主记录 + 计划节点 + 进展记录”统一展示。未完成的需求只显示计划和状态，全部完成并验证后才显示最终结论。"
+                  :hint="memoryWindowHint"
+                  variant="panel"
+                >
+                  <template #controls>
+                    <div class="memory-filters">
+                      <el-input
+                        class="memory-filter-control memory-filter-control--search"
+                        v-model="memoryFilters.query"
+                        clearable
+                        placeholder="按内容关键词筛选"
+                        @keyup.enter="applyMemoryFilters"
                       />
-                    </el-select>
-                    <el-select
-                      class="memory-filter-control memory-filter-control--type"
-                      v-model="memoryFilters.type"
-                      clearable
-                      placeholder="全部类型"
-                    >
-                      <el-option
-                        v-for="item in memoryTypeOptions"
-                        :key="item.value"
-                        :label="item.label"
-                        :value="item.value"
-                      />
-                    </el-select>
-                    <el-select
-                      class="memory-filter-control memory-filter-control--limit"
-                      v-model="memoryFilters.limit"
-                    >
-                      <el-option
-                        v-for="size in memoryLimitOptions"
-                        :key="size"
-                        :label="`最近 ${size} 条`"
-                        :value="size"
-                      />
-                    </el-select>
-                  <div class="memory-filters__actions">
-                      <el-button
-                        type="primary"
-                        :loading="taskSessionsLoading"
-                        @click="applyMemoryFilters"
-                        >刷新结果</el-button
+                      <el-select
+                        class="memory-filter-control memory-filter-control--employee"
+                        v-model="memoryFilters.employeeId"
+                        clearable
+                        filterable
+                        placeholder="全部员工"
                       >
+                        <el-option
+                          v-for="item in members"
+                          :key="item.employee_id"
+                          :label="`${item.employee_name || item.employee_id} (${item.employee_id})`"
+                          :value="item.employee_id"
+                        />
+                      </el-select>
+                      <el-select
+                        class="memory-filter-control memory-filter-control--type"
+                        v-model="memoryFilters.type"
+                        clearable
+                        placeholder="全部类型"
+                      >
+                        <el-option
+                          v-for="item in memoryTypeOptions"
+                          :key="item.value"
+                          :label="item.label"
+                          :value="item.value"
+                        />
+                      </el-select>
+                      <el-select
+                        class="memory-filter-control memory-filter-control--limit"
+                        v-model="memoryFilters.limit"
+                      >
+                        <el-option
+                          v-for="size in memoryLimitOptions"
+                          :key="size"
+                          :label="`最近 ${size} 条`"
+                          :value="size"
+                        />
+                      </el-select>
+                      <div class="memory-filters__actions">
+                        <el-button
+                          type="primary"
+                          :loading="taskSessionsLoading"
+                          @click="applyMemoryFilters"
+                          >刷新结果</el-button
+                        >
+                        <el-button
+                          plain
+                          :loading="memoryLoading || workSessionLoading"
+                          @click="exportProjectMemories"
+                          >导出</el-button
+                        >
+                        <el-button :disabled="taskSessionsLoading" @click="resetMemoryFilters"
+                          >重置</el-button
+                        >
+                      </div>
+                    </div>
+                  </template>
+                </ProjectWorkspaceToolbar>
+                <ProjectWorkspaceToolbar
+                  v-if="canManageProject"
+                  variant="compact"
+                >
+                  <template #summary>
+                    <div class="requirement-record-toolbar__copy">
+                      <el-tag effect="plain" type="info">
+                        已选 {{ selectedRequirementRecordCount }} / {{ requirementRecords.length }}
+                      </el-tag>
+                      <span>删除全部仅作用于当前筛选结果。</span>
+                    </div>
+                  </template>
+                  <template #controls>
+                    <div class="requirement-record-toolbar__actions">
+                      <el-button
+                        v-if="canManageProject"
+                        type="primary"
+                        size="small"
+                        :loading="experienceSummaryLoading"
+                        :disabled="!requirementRecords.length || requirementRecordDeleting"
+                        @click="openExperienceSummaryDialog"
+                      >
+                        总结为开发经验
+                      </el-button>
+                      <el-button
+                        size="small"
+                        :disabled="!requirementRecords.length || requirementRecordDeleting"
+                        @click="toggleSelectAllRequirementRecords"
+                      >
+                        {{ allRequirementRecordsSelected ? "取消全选" : "全选当前结果" }}
+                      </el-button>
                       <el-button
                         plain
-                        :loading="memoryLoading || workSessionLoading"
-                        @click="exportProjectMemories"
-                        >导出</el-button
+                        type="danger"
+                        size="small"
+                        :loading="requirementRecordDeleting"
+                        :disabled="!selectedRequirementRecordCount"
+                        @click="handleBatchDeleteRequirementRecords"
                       >
-                      <el-button :disabled="taskSessionsLoading" @click="resetMemoryFilters"
-                        >重置</el-button
+                        删除所选
+                      </el-button>
+                      <el-button
+                        type="danger"
+                        size="small"
+                        :loading="requirementRecordDeleting"
+                        :disabled="!requirementRecords.length"
+                        @click="handleDeleteAllRequirementRecords"
                       >
+                        删除当前结果
+                      </el-button>
                     </div>
-                  </div>
-                  <div v-if="memoryWindowHint" class="memory-filters__hint">
-                    {{ memoryWindowHint }}
-                  </div>
-                </div>
-                <div
-                  v-if="canManageProject"
-                  class="requirement-record-toolbar"
-                >
-                  <div class="requirement-record-toolbar__copy">
-                    <el-tag effect="plain" type="info">
-                      已选 {{ selectedRequirementRecordCount }} / {{ requirementRecords.length }}
-                    </el-tag>
-                    <span>删除全部仅作用于当前筛选结果。</span>
-                  </div>
-                  <div class="requirement-record-toolbar__actions">
-                    <el-button
-                      v-if="canManageProject"
-                      type="primary"
-                      size="small"
-                      :loading="experienceSummaryLoading"
-                      :disabled="!requirementRecords.length || requirementRecordDeleting"
-                      @click="openExperienceSummaryDialog"
-                    >
-                      总结为开发经验
-                    </el-button>
-                    <el-button
-                      size="small"
-                      :disabled="!requirementRecords.length || requirementRecordDeleting"
-                      @click="toggleSelectAllRequirementRecords"
-                    >
-                      {{ allRequirementRecordsSelected ? "取消全选" : "全选当前结果" }}
-                    </el-button>
-                    <el-button
-                      plain
-                      type="danger"
-                      size="small"
-                      :loading="requirementRecordDeleting"
-                      :disabled="!selectedRequirementRecordCount"
-                      @click="handleBatchDeleteRequirementRecords"
-                    >
-                      删除所选
-                    </el-button>
-                    <el-button
-                      type="danger"
-                      size="small"
-                      :loading="requirementRecordDeleting"
-                      :disabled="!requirementRecords.length"
-                      @click="handleDeleteAllRequirementRecords"
-                    >
-                      删除当前结果
-                    </el-button>
-                  </div>
-                </div>
+                  </template>
+                </ProjectWorkspaceToolbar>
 
                 <div
                   class="requirement-records"
                   v-loading="taskSessionsLoading || taskTreeDetailsLoading"
                 >
-                  <article
+                  <RequirementRecordCard
                     v-for="record in pagedRequirementRecords"
                     :key="record.id"
                     :id="`requirement-record-${record.id}`"
-                    class="requirement-record"
-                    :class="{ 'requirement-record--expanded': isRequirementRecordExpanded(record) }"
-                  >
-                    <div class="requirement-record__hero">
-                      <div class="requirement-record__hero-copy">
-                        <div class="requirement-record__eyebrow">Requirement Chain</div>
-                        <h5>{{ record.rootGoal || "未命名需求" }}</h5>
-                        <p>{{ record.summaryText || record.currentFocus || record.completionGate }}</p>
-                      </div>
-                      <div class="requirement-record__hero-actions">
-                        <el-checkbox
-                          v-if="canManageProject"
-                          :model-value="isRequirementRecordSelected(record)"
-                          :disabled="requirementRecordDeleting"
-                          @change="toggleRequirementRecordSelection(record.id, $event)"
-                        >
-                          选择
-                        </el-checkbox>
-                        <el-tag :type="record.statusTagType">
-                          {{ record.statusLabel }}
-                        </el-tag>
-                        <el-button
-                          plain
-                          size="small"
-                          @click="toggleRequirementRecordExpansion(record)"
-                        >
-                          {{ isRequirementRecordExpanded(record) ? "收起详情" : "展开详情" }}
-                        </el-button>
-                        <el-button text @click="openRequirementRecordDetail(record)">
-                          查看整轮
-                        </el-button>
-                        <el-button
-                          v-if="canManageProject"
-                          type="danger"
-                          plain
-                          size="small"
-                          :loading="requirementRecordDeleting"
-                          @click="handleDeleteRequirementRecord(record)"
-                        >
-                          删除
-                        </el-button>
-                      </div>
-                    </div>
-
-                    <div class="requirement-record__supporting">
-                      <el-tag effect="plain" type="success">
-                        {{ Number(record.progressPercent || 0) }}%
-                      </el-tag>
-                      <el-tag
-                        v-if="record.repairRoundCount"
-                        effect="plain"
-                        type="warning"
-                      >
-                        {{ record.repairRoundCount }} 次修复
-                      </el-tag>
-                      <el-tag
-                        v-if="record.activeRoundCount"
-                        effect="plain"
-                        type="info"
-                      >
-                        {{ record.activeRoundCount }} 轮进行中
-                      </el-tag>
-                      <span>{{ record.actorLabel }}</span>
-                      <span>{{ record.roundDigest }}</span>
-                      <span>{{ formatDateTime(record.updatedAt || record.createdAt) }}</span>
-                    </div>
-
-                    <div class="requirement-record__lineage">
-                      <section class="requirement-record__lineage-item">
-                        <span>当前状态</span>
-                        <strong>{{ record.statusLabel }}</strong>
-                        <small>{{ record.summaryText || record.completionGate }}</small>
-                      </section>
-                      <section class="requirement-record__lineage-item">
-                        <span>当前轮次</span>
-                        <strong>
-                          {{
-                            record.detailRound
-                              ? `第 ${record.detailRound.roundIndex} 轮`
-                              : "等待建立轮次"
-                          }}
-                        </strong>
-                        <small>
-                          {{
-                            record.detailRound
-                              ? getRequirementRecordKindLabel(record.detailRound.recordKind)
-                              : "主需求轮次"
-                          }}
-                        </small>
-                      </section>
-                      <section class="requirement-record__lineage-item">
-                        <span>当前焦点</span>
-                        <strong>{{ record.currentFocus }}</strong>
-                        <small>
-                          {{
-                            `${record.progressDigest} · ${
-                              record.detailWorkSessionCount
-                                ? `${record.detailWorkSessionCount} 条轨迹`
-                                : "暂无轨迹"
-                            }`
-                          }}
-                        </small>
-                      </section>
-                    </div>
-
-                    <el-collapse-transition>
-                      <div
-                        v-show="isRequirementRecordExpanded(record)"
-                        class="requirement-record__detail-shell"
-                      >
-                        <div
-                          class="requirement-record__tree-board"
-                          v-loading="isRequirementRoundTaskTreeLoading(record.detailRound)"
-                        >
-                          <div class="requirement-record__detail-head">
-                            <div>
-                              <div class="requirement-record__detail-eyebrow">On Demand</div>
-                              <h6>任务树与执行细节</h6>
-                            </div>
-                            <p>点击节点再看工作细节和测试结果。</p>
-                          </div>
-                          <div class="requirement-record__tree-hint">
-                            当前只保留主链结构，详细过程统一收进节点弹窗，避免列表里堆太多文字。
-                          </div>
-                          <RequirementTreeNode
-                            v-if="record.detailRound?.rootNode"
-                            :node="record.detailRound.rootNode"
-                            :current-node-id="record.detailRound.currentNodeId"
-                            @select="openRequirementNodeDetail($event, record.detailRound)"
-                          />
-                          <el-empty
-                            v-else
-                            description="当前需求还没有可展示的任务树"
-                            :image-size="56"
-                          />
-                        </div>
-                      </div>
-                    </el-collapse-transition>
-                  </article>
+                    :record="record"
+                    :expanded="isRequirementRecordExpanded(record)"
+                    :selected="isRequirementRecordSelected(record)"
+                    :can-manage-project="canManageProject"
+                    :deleting="requirementRecordDeleting"
+                    :tree-loading="isRequirementRoundTaskTreeLoading(record.detailRound)"
+                    :round-kind-label="record.detailRound ? getRequirementRecordKindLabel(record.detailRound.recordKind) : ''"
+                    @toggle-expand="toggleRequirementRecordExpansion(record)"
+                    @open-detail="openRequirementRecordDetail(record)"
+                    @delete="handleDeleteRequirementRecord(record)"
+                    @toggle-select="toggleRequirementRecordSelection(record.id, $event)"
+                    @open-node-detail="openRequirementNodeDetail($event, record.detailRound)"
+                  />
 
                   <el-empty
                     v-if="!requirementRecords.length && !memoryLoading"
@@ -876,7 +676,7 @@
                     :page-sizes="[10, 20, 50]"
                   />
                 </div>
-              </div>
+              </ProjectWorkspaceBlock>
             </div>
           </el-tab-pane>
 
@@ -889,13 +689,7 @@
             </template>
 
             <div class="project-detail-tab-pane">
-              <div class="block">
-                <div class="block-header">
-                  <div>
-                    <div class="block-eyebrow">MCP</div>
-                    <h4>项目 MCP 地址</h4>
-                  </div>
-                </div>
+              <ProjectWorkspaceBlock eyebrow="MCP" title="项目 MCP 地址">
                 <el-descriptions :column="1" border class="project-descriptions">
                   <el-descriptions-item label="SSE">
                     <code>{{ projectMcpSseUrl }}</code>
@@ -904,11 +698,11 @@
                     <code>{{ projectMcpHttpUrl }}</code>
                   </el-descriptions-item>
                 </el-descriptions>
-              </div>
+              </ProjectWorkspaceBlock>
             </div>
           </el-tab-pane>
         </el-tabs>
-      </section>
+      </ProjectAppSection>
 
     <el-dialog v-model="showAddDialog" title="添加项目成员" width="520px">
       <el-form :model="addForm" label-width="100px">
@@ -1982,11 +1776,17 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import ModelProviderPickerDialog from "@/components/ModelProviderPickerDialog.vue";
-import RequirementTreeNode from "@/components/RequirementTreeNode.vue";
+import ProjectAppHeader from "@/components/project-workspace/ProjectAppHeader.vue";
+import ProjectAppSection from "@/components/project-workspace/ProjectAppSection.vue";
+import ProjectWorkspaceMetricStrip from "@/components/project-workspace/ProjectWorkspaceMetricStrip.vue";
+import ProjectWorkspaceBlock from "@/components/project-workspace/ProjectWorkspaceBlock.vue";
+import ProjectWorkspaceToolbar from "@/components/project-workspace/ProjectWorkspaceToolbar.vue";
+import RequirementRecordCard from "@/components/project-workspace/RequirementRecordCard.vue";
 import WorkSessionDetailPanel from "@/components/WorkSessionDetailPanel.vue";
 import { normalizeTaskTreeHealth } from "@/modules/task-tree-feedback/taskTreeFeedback";
 import api from "@/utils/api.js";
 import { formatDateTime } from "@/utils/date.js";
+import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import {
   pickWorkspaceDirectory as openWorkspaceDirectoryPicker,
   pickWorkspaceFile as openWorkspaceFilePicker,
@@ -1994,6 +1794,7 @@ import {
 } from "@/utils/workspace-picker.js";
 import { hasPermission } from "@/utils/permissions.js";
 import { buildRuntimeUrl, fetchConfiguredRuntimeOrigin } from "@/utils/runtime-url.js";
+import { setStoredProjectContextId } from "@/utils/desktop-shell.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -2279,20 +2080,10 @@ const taskTreeStorageBackendTagType = computed(() => {
 
 const isMemoryTabActive = computed(() => activeProjectTab.value === "memory");
 
-const projectHeroPanelTitle = computed(() =>
-  isMemoryTabActive.value ? "先看记忆，再决定是否下钻。" : "先进入项目，再做管理。",
-);
-
-const projectHeroPanelDescription = computed(() =>
-  isMemoryTabActive.value
-    ? "当前视图改为先看需求链和计划树，工作轨迹退到轮次详情里，避免主界面继续混用旧的记忆/轨迹模型。"
-    : "保留一个主操作，其余入口退到次级层，信息和动作不再挤在同一列里。",
-);
-
 const projectHeroDescription = computed(() => {
   const description = String(project.value?.description || "").trim();
   if (description) return description;
-  return `${getProjectTypeDescription(project.value?.type)} 当前页面用于整理成员、规则、需求记录与 MCP 配置。`;
+  return getProjectTypeDescription(project.value?.type);
 });
 
 const projectHeroSignals = computed(() => [
@@ -2306,10 +2097,26 @@ const projectHeroSignals = computed(() => [
     label: project.value?.mcp_enabled ? "MCP 已开启" : "MCP 未开启",
     type: project.value?.mcp_enabled ? "success" : "info",
   },
+]);
+
+const projectHeroStats = computed(() => [
   {
-    key: "feedback",
-    label: project.value?.feedback_upgrade_enabled ? "反馈升级开启" : "反馈升级关闭",
-    type: project.value?.feedback_upgrade_enabled ? "success" : "info",
+    key: "members",
+    label: "活跃成员",
+    value: projectMemberCount.value,
+    meta: "项目协作席位",
+  },
+  {
+    key: "users",
+    label: "可见用户",
+    value: projectUserCount.value,
+    meta: "当前访问范围",
+  },
+  {
+    key: "records",
+    label: "需求记录",
+    value: requirementRecords.value.length,
+    meta: isMemoryTabActive.value ? "当前已加载" : "切到需求记录页签后可细看",
   },
 ]);
 
@@ -2329,13 +2136,6 @@ const projectUserCount = computed(() => {
   }
   return Math.max(0, Number(project.value?.active_user_count ?? project.value?.user_count ?? 0));
 });
-
-function resolveDeferredCountLabel(value, unit, loaded, loadingState) {
-  if (loaded) {
-    return `${Math.max(0, Number(value || 0))} ${unit}`;
-  }
-  return loadingState ? "加载中" : "待加载";
-}
 
 const visibleProjectMemories = computed(() => {
   const grouped = new Map();
@@ -2359,35 +2159,6 @@ const visibleProjectMemories = computed(() => {
     .filter(Boolean)
     .sort((a, b) => String(b?.created_at || "").localeCompare(String(a?.created_at || "")));
 });
-
-const projectHeroStats = computed(() => [
-  {
-    label: "成员",
-    value: `${projectMemberCount.value} 名`,
-  },
-  {
-    label: "UI 规则",
-    value: `${boundUiRules.value.length} 条`,
-  },
-  {
-    label: "需求记录",
-    value: resolveDeferredCountLabel(
-      requirementRecords.value.length,
-      "条",
-      tabDataLoaded.value.memory,
-      memoryLoading.value || taskSessionsLoading.value || workSessionLoading.value,
-    ),
-  },
-  {
-    label: "工作轨迹",
-    value: resolveDeferredCountLabel(
-      projectWorkSessions.value.length,
-      "条",
-      tabDataLoaded.value.memory,
-      workSessionLoading.value,
-    ),
-  },
-]);
 
 const accessTabMeta = computed(() => `${projectUserCount.value} 用户 · ${projectMemberCount.value} 成员`);
 
@@ -3606,6 +3377,7 @@ watch(
       loading.value = false;
       return;
     }
+    setStoredProjectContextId(nextProjectId);
     await refresh(nextProjectId);
   },
   { immediate: true },
@@ -5637,9 +5409,12 @@ function openProjectChat(chatSessionId = "") {
   if (normalizedChatSessionId) {
     query.chat_session_id = normalizedChatSessionId;
   }
-  void router.push({
-    path: "/ai/chat",
-    query,
+  void openRouteInDesktop(router, { path: "/ai/chat", query }, {
+    mode: "new-window",
+    appId: "chat",
+    title: "AI 对话",
+    eyebrow: "AI Workspace",
+    summary: "项目对话作为独立应用窗口打开，可与项目详情并排处理。",
   });
 }
 
@@ -5649,7 +5424,23 @@ function openMaterialLibrary() {
     ElMessage.warning("当前项目 ID 无效");
     return;
   }
-  void router.push({ path: "/materials", query: { project_id: currentProjectId } });
+  void openRouteInDesktop(router, { path: "/materials", query: { project_id: currentProjectId } }, {
+    mode: "new-window",
+    appId: "materials",
+    title: "素材库",
+    eyebrow: "Asset Workspace",
+    summary: "项目素材库作为桌面应用窗口打开，和项目详情并行处理素材。",
+  });
+}
+
+function openProjectList() {
+  void openRouteInDesktop(router, "/projects", {
+    mode: "focus-or-open",
+    appId: "projects",
+    title: "项目",
+    eyebrow: "Project Space",
+    summary: "返回项目应用窗口，继续浏览项目列表。",
+  });
 }
 
 function openAddMember() {
@@ -6314,7 +6105,7 @@ onBeforeUnmount(() => {
   --project-detail-surface-radius: 28px;
   --project-detail-soft-border: rgba(15, 23, 42, 0.08);
   min-height: 100%;
-  padding: 24px 0 40px;
+  padding: 14px 0 32px;
   background:
     radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.16), transparent 26%),
     radial-gradient(circle at 82% 14%, rgba(103, 232, 249, 0.12), transparent 22%),
@@ -6325,63 +6116,19 @@ onBeforeUnmount(() => {
   width: calc(100% - (var(--project-detail-page-gutter) * 2));
   max-width: none;
   margin: 0 auto;
-}
-
-.project-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.52fr) minmax(280px, 0.88fr);
-  align-items: start;
-  gap: 18px;
-  padding: clamp(20px, 2.4vw, 28px);
-  margin-bottom: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  border-radius: 30px;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
-  backdrop-filter: blur(20px);
-}
-
-.project-hero__copy {
   display: flex;
-  flex: 1;
   flex-direction: column;
-  gap: 16px;
-  min-width: 0;
+  gap: 14px;
 }
 
-.project-hero__copy > * {
-  min-width: 0;
-}
-
-.project-hero__signals {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.project-hero__eyebrow,
 .block-eyebrow,
+.project-hero__eyebrow,
 .project-hero__panel-eyebrow {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: #7c8aa0;
-}
-
-.project-hero__heading {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.project-hero__heading h3 {
-  margin: 0;
-  max-width: 12ch;
-  font-size: clamp(26px, 3.6vw, 36px);
-  line-height: 1.04;
-  letter-spacing: -0.03em;
-  color: #0f172a;
 }
 
 .toolbar-actions {
@@ -6391,50 +6138,10 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-.project-hero__heading p {
-  max-width: 54ch;
-  margin: 0;
-  font-size: 14px;
-  line-height: 1.65;
-  color: #475569;
-}
-
-.project-hero__panel {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-  padding: 18px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at top left, rgba(125, 211, 252, 0.16), transparent 34%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(248, 250, 252, 0.84));
-}
-
-.project-hero__panel-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.project-hero__panel-copy h4 {
-  margin: 0;
-  font-size: 20px;
-  line-height: 1.15;
-  color: #0f172a;
-}
-
-.project-hero__panel-copy p {
-  margin: 0;
-  color: #475569;
-  line-height: 1.7;
-}
-
 .project-hero__actions {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .project-hero__actions-primary,
@@ -6445,7 +6152,7 @@ onBeforeUnmount(() => {
 }
 
 .project-hero__actions-primary {
-  padding-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.16);
 }
 
@@ -6453,84 +6160,8 @@ onBeforeUnmount(() => {
   margin-left: 0;
 }
 
-.project-hero__stats {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.project-hero__stats-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-height: 78px;
-  padding: 14px 16px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.78);
-}
-
-.project-hero__stats-card span {
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #7c8aa0;
-}
-
-.project-hero__stats-card strong {
-  font-size: clamp(18px, 1.8vw, 22px);
-  line-height: 1.15;
-  color: #0f172a;
-}
-
 .project-detail-tabs-shell {
-  padding: clamp(18px, 2vw, 28px);
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  border-radius: 30px;
-  background: rgba(255, 255, 255, 0.68);
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
-  backdrop-filter: blur(20px);
-}
-
-.project-detail-tabs-shell__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
-}
-
-.project-detail-tabs-shell__header h4 {
-  margin: 8px 0 0;
-  font-size: clamp(24px, 3vw, 30px);
-  line-height: 1.15;
-  color: #0f172a;
-}
-
-.project-detail-tabs-shell__header p {
-  max-width: 54ch;
-  margin: 0;
-  color: #475569;
-  line-height: 1.7;
-}
-
-.project-detail-page--memory-focus .project-hero {
-  gap: 20px;
-  padding: 24px 28px;
-}
-
-.project-detail-page--memory-focus .project-hero__heading h3 {
-  max-width: 14ch;
-}
-
-.project-detail-page--memory-focus .project-hero__panel {
-  background:
-    radial-gradient(circle at top left, rgba(125, 211, 252, 0.12), transparent 32%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.8));
-}
-
-.project-detail-page--memory-focus .project-detail-tabs-shell__header p {
-  max-width: 46ch;
+  margin-top: 0;
 }
 
 .project-detail-tabs {
@@ -6916,42 +6547,6 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
-.memory-overview-strip {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.memory-overview-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  padding: 14px 16px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 20px;
-  background: rgba(248, 250, 252, 0.78);
-}
-
-.memory-overview-card span {
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #7c8aa0;
-}
-
-.memory-overview-card strong {
-  color: #0f172a;
-  font-size: 20px;
-  line-height: 1.1;
-}
-
-.memory-overview-card small {
-  color: #64748b;
-  line-height: 1.5;
-}
-
 .memory-health-shell {
   margin-bottom: 16px;
   padding: 18px;
@@ -6985,63 +6580,16 @@ onBeforeUnmount(() => {
   text-align: right;
 }
 
-.memory-health-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.memory-health-card,
 .memory-health-highlight {
   border: 1px solid rgba(148, 163, 184, 0.14);
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.78);
 }
-
-.memory-health-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 14px 16px;
-}
-
-.memory-health-card.is-warning {
-  border-color: rgba(245, 158, 11, 0.24);
-  background: rgba(255, 251, 235, 0.9);
-}
-
-.memory-health-card.is-danger {
-  border-color: rgba(239, 68, 68, 0.2);
-  background: rgba(255, 247, 245, 0.92);
-}
-
-.memory-health-card.is-info {
-  border-color: rgba(56, 189, 248, 0.18);
-  background: rgba(248, 251, 255, 0.92);
-}
-
-.memory-health-card.is-success {
-  border-color: rgba(16, 185, 129, 0.18);
-  background: rgba(240, 253, 250, 0.92);
-}
-
-.memory-health-card span,
 .memory-health-highlight__eyebrow {
   font-size: 11px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #7c8aa0;
-}
-
-.memory-health-card strong {
-  color: #0f172a;
-  font-size: 20px;
-  line-height: 1.1;
-}
-
-.memory-health-card small {
-  color: #64748b;
-  line-height: 1.55;
 }
 
 .memory-health-grid {
@@ -7113,29 +6661,6 @@ onBeforeUnmount(() => {
   margin-top: 14px;
 }
 
-.memory-toolbar-shell {
-  margin-bottom: 18px;
-  padding: 16px 18px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 24px;
-  background: rgba(248, 250, 252, 0.82);
-}
-
-.memory-toolbar-shell__copy {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.memory-toolbar-shell__copy p {
-  max-width: 60ch;
-  margin: 0;
-  color: #475569;
-  line-height: 1.65;
-}
-
 .memory-filter-control {
   min-width: 0;
 }
@@ -7172,18 +6697,6 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
-.requirement-record-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
-  padding: 14px 16px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.82);
-}
-
 .requirement-record-toolbar__copy,
 .requirement-record-toolbar__actions {
   display: flex;
@@ -7207,188 +6720,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 18px;
-}
-
-.requirement-record {
-  padding: 18px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 28px;
-  background:
-    radial-gradient(circle at top left, rgba(125, 211, 252, 0.12), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.9));
-  transition:
-    border-color 180ms ease,
-    box-shadow 180ms ease,
-    transform 180ms ease;
-}
-
-.requirement-record--expanded {
-  border-color: rgba(14, 116, 144, 0.24);
-  box-shadow: 0 20px 38px rgba(14, 116, 144, 0.1);
-}
-
-.requirement-record__hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.requirement-record__hero-copy,
-.requirement-record__hero-actions,
-.requirement-record__lineage-item {
-  min-width: 0;
-}
-
-.requirement-record__eyebrow,
-.requirement-record__lineage-item span {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: #7c8aa0;
-}
-
-.requirement-record__hero-copy h5 {
-  margin: 8px 0 10px;
-  color: #0f172a;
-  font-size: clamp(20px, 2.4vw, 28px);
-  line-height: 1.18;
-}
-
-.requirement-record__hero-copy p {
-  margin: 0;
-  color: #475569;
-  line-height: 1.65;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.requirement-record__hero-actions {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.requirement-record__supporting {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 12px;
-  font-size: 12px;
-  color: #7c8aa0;
-}
-
-.requirement-record__supporting span {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(148, 163, 184, 0.14);
-}
-
-.requirement-record__lineage {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 16px;
-}
-
-.requirement-record__lineage-item {
-  padding: 14px 16px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 22px;
-  background: rgba(248, 250, 252, 0.84);
-}
-
-.requirement-record__lineage-item strong {
-  display: block;
-  color: #0f172a;
-  margin-top: 8px;
-  line-height: 1.45;
-  word-break: break-word;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.requirement-record__lineage-item small {
-  display: block;
-  margin-top: 8px;
-  color: #64748b;
-  line-height: 1.5;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.requirement-record__detail-shell {
-  margin-top: 16px;
-}
-
-.requirement-record__tree-board {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 16px;
-  padding: 20px 18px 16px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at top left, rgba(103, 232, 249, 0.1), transparent 32%),
-    linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.94));
-  overflow: visible;
-}
-
-.requirement-record__detail-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.requirement-record__detail-eyebrow {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: #0f766e;
-}
-
-.requirement-record__detail-head h6 {
-  margin: 8px 0 0;
-  color: #0f172a;
-  font-size: 18px;
-  line-height: 1.3;
-}
-
-.requirement-record__detail-head p {
-  margin: 0;
-  max-width: 26ch;
-  color: #64748b;
-  line-height: 1.6;
-  text-align: right;
-}
-
-.requirement-record__tree-hint {
-  width: 100%;
-  max-width: 720px;
-  padding: 12px 14px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.76);
-  color: #475569;
-  line-height: 1.6;
-  text-align: left;
 }
 
 :deep(.memory-detail-dialog) {
@@ -8137,13 +7468,13 @@ code {
 
 @media (max-width: 980px) {
   .project-detail-page {
-    padding-top: 18px;
+    padding-top: 12px;
   }
 
   .project-hero {
     grid-template-columns: 1fr;
-    gap: 18px;
-    padding: 22px 20px;
+    gap: 14px;
+    padding: 18px;
   }
 
   .project-detail-tabs-shell__header {
@@ -8180,37 +7511,10 @@ code {
     flex: 1 1 calc(50% - 4px);
   }
 
-  .requirement-record__hero {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .requirement-record-toolbar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
   .requirement-record-toolbar__copy,
   .requirement-record-toolbar__actions {
     width: 100%;
     justify-content: space-between;
-  }
-
-  .requirement-record__hero-actions {
-    justify-content: space-between;
-  }
-
-  .requirement-record__lineage {
-    grid-template-columns: 1fr;
-  }
-
-  .requirement-record__detail-head {
-    flex-direction: column;
-  }
-
-  .requirement-record__detail-head p {
-    max-width: none;
-    text-align: left;
   }
 
   .memory-detail-hero__meta-item {
@@ -8234,7 +7538,7 @@ code {
   }
 
   .project-hero__panel {
-    padding: 16px;
+    padding: 14px;
   }
 
   .project-detail-tabs-shell {
@@ -8292,10 +7596,6 @@ code {
     flex-direction: column;
   }
 
-  .memory-overview-strip {
-    grid-template-columns: 1fr;
-  }
-
   .memory-health-shell {
     padding: 14px;
     border-radius: 20px;
@@ -8310,7 +7610,6 @@ code {
     text-align: left;
   }
 
-  .memory-health-strip,
   .memory-health-grid {
     grid-template-columns: 1fr;
   }
@@ -8329,33 +7628,12 @@ code {
     flex-basis: 100%;
   }
 
-  .requirement-record {
-    padding: 16px;
-  }
-
-  .requirement-record__hero-actions {
-    flex-wrap: wrap;
-  }
-
-  .requirement-record__hero-actions :deep(.el-button) {
-    flex: 1 1 auto;
-  }
-
   .requirement-record-toolbar__actions :deep(.el-button) {
     flex: 1 1 auto;
   }
 
   .memory-filters__actions {
     justify-content: stretch;
-  }
-
-  .memory-toolbar-shell {
-    padding: 14px;
-    border-radius: 20px;
-  }
-
-  .memory-toolbar-shell__copy {
-    margin-bottom: 12px;
   }
 
   .memory-filters__actions :deep(.el-button) {

@@ -1,7 +1,7 @@
 import api from './api.js'
 import { persistAuthSession, syncStoredProfile } from './auth-storage.js'
 
-export function resolveSafeRedirectPath(rawValue, fallbackPath = '/ai/chat') {
+export function resolveSafeRedirectPath(rawValue, fallbackPath = '/workbench') {
   const value = Array.isArray(rawValue) ? rawValue[0] : rawValue
   const normalized = String(value || '').trim()
   if (!normalized.startsWith('/') || normalized.startsWith('//')) {

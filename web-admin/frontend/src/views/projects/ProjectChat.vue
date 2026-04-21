@@ -234,14 +234,17 @@
             </div>
           </div>
           <div
-            v-if="
-              ongoingTaskRestoreNotice &&
-              currentChatSessionId === ongoingTaskRestoreNotice.chat_session_id
-            "
+            v-if="ongoingTaskRestoreNotice"
             class="chat-restore-banner"
           >
             <div class="chat-restore-banner__copy">
-              <div class="chat-restore-banner__eyebrow">任务已恢复</div>
+              <div class="chat-restore-banner__eyebrow">
+                {{
+                  currentChatSessionId === ongoingTaskRestoreNotice.chat_session_id
+                    ? "任务已恢复"
+                    : "发现可恢复任务"
+                }}
+              </div>
               <div class="chat-restore-banner__title">
                 {{
                   ongoingTaskRestoreNotice.title || "已恢复进行中的任务"
@@ -272,6 +275,16 @@
             </div>
             <div class="chat-restore-banner__actions">
               <el-button
+                v-if="currentChatSessionId !== ongoingTaskRestoreNotice.chat_session_id"
+                size="small"
+                type="primary"
+                class="chat-restore-banner__button"
+                @click="resumeOngoingTaskFromNotice"
+              >
+                恢复任务
+              </el-button>
+              <el-button
+                v-else
                 size="small"
                 plain
                 class="chat-restore-banner__button"
@@ -1762,8 +1775,8 @@
             <div class="settings-center-brand">
               <div class="settings-center-brand__mark">AI</div>
               <div>
-                <div class="settings-center-brand__name">设置中心</div>
-                <div class="settings-center-brand__meta">对话与平台入口</div>
+                <div class="settings-center-brand__name">对话设置</div>
+                <div class="settings-center-brand__meta">仅作用于当前对话上下文</div>
               </div>
             </div>
             <el-button
@@ -1779,29 +1792,6 @@
             <div class="settings-center-sidebar__nav">
               <button
                 v-for="item in settingsInternalItems"
-                :key="item.id"
-                type="button"
-                class="settings-center-nav-item"
-                :class="{ 'is-active': activeSettingsPanel === item.id }"
-                @click="openSettingsCenter(item.id)"
-              >
-                <span class="settings-center-nav-item__row">
-                  <span class="settings-center-nav-item__label">{{
-                    item.label
-                  }}</span>
-                </span>
-                <span v-if="item.desc" class="settings-center-nav-item__desc">
-                  {{ item.desc }}
-                </span>
-              </button>
-            </div>
-          </div>
-
-          <div class="settings-center-nav-group">
-            <div class="settings-center-nav-group__title">平台入口</div>
-            <div class="settings-center-sidebar__nav">
-              <button
-                v-for="item in settingsRouteItems"
                 :key="item.id"
                 type="button"
                 class="settings-center-nav-item"
@@ -1844,24 +1834,18 @@
         <div class="settings-center-context-bar" ref="settingsContextBarRef">
           <div class="settings-center-context-bar__copy">
             <div class="settings-center-context-bar__title">
-              {{ activeSettingsPanelItem?.label || "设置" }}
+              {{ activeSettingsPanelMeta?.label || "设置" }}
             </div>
             <div
-              v-if="activeSettingsPanelItem?.desc"
+              v-if="activeSettingsPanelMeta?.desc"
               class="settings-center-context-bar__desc"
             >
-              {{ activeSettingsPanelItem.desc }}
+              {{ activeSettingsPanelMeta.desc }}
             </div>
             <div class="settings-center-context-bar__meta">
               <span>项目：{{ currentProjectLabel }}</span>
               <span>模式：系统对话</span>
-              <span>
-                面板：{{
-                  activeSettingsPanelItem?.kind === "route"
-                    ? "平台页面"
-                    : "对话配置"
-                }}
-              </span>
+              <span>面板：{{ activeSettingsPanelMeta?.contextLabel || "设置" }}</span>
             </div>
           </div>
           <div class="settings-center-context-bar__actions">
@@ -2705,13 +2689,10 @@
             </div>
           </div>
         </div>
-
-        <div
-          v-else
-          class="settings-center-stage__body settings-center-stage__body--inline"
-        >
-          <router-view class="settings-center-inline-page" />
+        <div v-else class="settings-center-stage__body">
+          <router-view />
         </div>
+
       </section>
     </div>
   </div>
@@ -2792,6 +2773,7 @@ import { extractTextFromFile } from "@/utils/file-extractor.js";
 import ComposerAssistBar from "@/components/ComposerAssistBar.vue";
 import { buildRuntimeUrl } from "@/utils/runtime-url.js";
 import { formatDateGroupLabel, formatRelativeDateTime } from "@/utils/date.js";
+import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import {
   buildModelTypeMetaMap,
   DEFAULT_MODEL_TYPE,
@@ -2821,6 +2803,7 @@ import {
   buildChatSettingsRoute,
   inferSettingsPanelFromPath,
   isChatSettingsRoutePath,
+  resolveSettingsAwarePanelPath,
   stripChatSettingsPrefix,
 } from "@/utils/chat-settings-route.js";
 
@@ -3055,160 +3038,25 @@ const SETTINGS_CENTER_ITEM_DEFS = [
     desc: "当前项目的 AI 对话运行参数",
     kind: "internal",
   },
-  {
-    id: "user-settings",
-    label: "用户设置",
-    desc: "当前账号默认 AI 与个人偏好",
-    kind: "route",
-    path: "/user/settings",
-  },
-  {
-    id: "system-config",
-    label: "系统配置",
-    desc: "全局系统开关与默认项",
-    kind: "route",
-    path: "/system/config",
-    permission: "menu.system.config",
-  },
-  {
-    id: "assistant-guide-modules",
-    label: "AI 助手导览",
-    desc: "维护助手系统导览模块，可通过角色权限分配",
-    kind: "route",
-    path: "/assistant-guide-modules",
-    permission: "menu.system.assistant_guide",
-  },
-  {
-    id: "changelog-entries",
-    label: "更新日志",
-    desc: "维护官网更新日志条目",
-    kind: "route",
-    path: "/changelog-entries",
-    permission: "menu.system.changelog",
-  },
-  {
-    id: "online-users",
-    label: "在线用户",
-    desc: "查看当前仍在线的账号与最近访问位置",
-    kind: "route",
-    path: "/online-users",
-    adminOnly: true,
-  },
-  {
-    id: "mcp-monitor",
-    label: "MCP 监控",
-    desc: "查看系统提供的 MCP 入口正在被谁接入和使用",
-    kind: "route",
-    path: "/mcp-monitor",
-    adminOnly: true,
-  },
-  {
-    id: "dictionaries",
-    label: "字典管理",
-    desc: "维护模型类型等全局字典",
-    kind: "route",
-    path: "/dictionaries",
-    permission: ["menu.system.dictionaries", "menu.system.config"],
-  },
-  {
-    id: "providers",
-    label: "模型供应商",
-    desc: "管理平台模型源",
-    kind: "route",
-    path: "/llm/providers",
-    permission: "menu.llm.providers",
-  },
-  {
-    id: "projects",
-    label: "项目管理",
-    desc: "查看和维护项目列表",
-    kind: "route",
-    path: "/projects",
-    permission: "menu.projects",
-  },
-  {
-    id: "agent-templates",
-    label: "智能体模板",
-    desc: "沉淀行业模板，再创建员工",
-    kind: "route",
-    path: "/agent-templates",
-    permission: "menu.employees",
-  },
-  {
-    id: "employees",
-    label: "员工管理",
-    desc: "管理员工与能力绑定",
-    kind: "route",
-    path: "/employees",
-    permission: "menu.employees",
-  },
-  {
-    id: "skills",
-    label: "技能目录",
-    desc: "维护可复用技能",
-    kind: "route",
-    path: "/skills",
-    permission: "menu.skills",
-  },
-  {
-    id: "rules",
-    label: "规则管理",
-    desc: "管理系统规则",
-    kind: "route",
-    path: "/rules",
-    permission: "menu.rules",
-  },
-  {
-    id: "users",
-    label: "用户管理",
-    desc: "账号与权限视图",
-    kind: "route",
-    path: "/users",
-    permission: "menu.users",
-  },
-  {
-    id: "roles",
-    label: "角色管理",
-    desc: "角色和权限配置",
-    kind: "route",
-    path: "/roles",
-    permission: "menu.roles",
-  },
-  {
-    id: "api-keys",
-    label: "API Key",
-    desc: "使用控制和密钥管理",
-    kind: "route",
-    path: "/usage/keys",
-    permission: "menu.usage.keys",
-  },
 ];
+const SETTINGS_CENTER_PANEL_META = {
+  chat: {
+    label: "对话设置",
+    desc: "当前项目的 AI 对话运行参数",
+    contextLabel: "对话配置",
+  },
+  projects: {
+    label: "项目详情",
+    desc: "查看当前项目的配置、成员、记忆和任务推进。",
+    contextLabel: "项目详情",
+  },
+};
 const ROLE_LABEL_MAP = {
   admin: "管理员",
   user: "普通用户",
 };
 const SETTINGS_GUIDE_REASON_MAP = {
   chat: "先把项目、执行员工、模型和工具预算收束到同一轮上下文里。",
-  "user-settings":
-    "这里决定你的默认 AI 来源和个人偏好，会影响日常进入对话时的默认落点。",
-  "system-config": "适合维护平台级默认值、功能开关和全局行为边界。",
-  "assistant-guide-modules":
-    "这里维护 AI 助手的系统导览模块，可通过角色权限按需开放给指定管理角色。",
-  "online-users": "只向超级管理员展示当前在线账号，便于判断后台活跃状态。",
-  "mcp-monitor":
-    "只向超级管理员展示系统 MCP 运行态，便于判断项目、员工、技能、规则和统一查询入口的在线使用情况。",
-  dictionaries: "当模型类型、字典项需要统一维护时，从这里集中处理。",
-  providers: "维护供应商与模型池，决定平台能用哪些 AI 入口。",
-  projects: "切回项目列表，确认当前上下文、成员边界和工作区归属。",
-  "agent-templates": "先沉淀标准模板，再批量复用到不同员工。",
-  employees:
-    "管理员工角色、技能绑定和提示词结构，是把对话结论落成资产的主入口。",
-  skills:
-    "维护和补充更新技能。需要推进项目前端、后端或数据库数据时，可以先在这里补齐复用能力，再回到对话执行。",
-  rules: "把稳定做法沉淀成规则，减少后续回答漂移。",
-  users: "用于查看账号、权限和成员可见范围。",
-  roles: "集中定义角色与权限，控制谁能看到哪些入口。",
-  "api-keys": "当需要做调用控制、额度分配或密钥轮换时优先来这里。",
 };
 
 function formatRoleLabel(roleId) {
@@ -3853,40 +3701,24 @@ const skillResourceDirectoryResolved = computed(() =>
   ).trim(),
 );
 const settingsCenterItems = computed(() =>
-  SETTINGS_CENTER_ITEM_DEFS.filter(
-    (item) =>
-      (!item.permission || hasPermission(item.permission)) &&
-      (!item.adminOnly || isSuperAdmin()),
-  ),
+  SETTINGS_CENTER_ITEM_DEFS,
 );
 const settingsInternalItems = computed(() =>
-  settingsCenterItems.value.filter((item) => item.kind === "internal"),
+  settingsCenterItems.value,
 );
-const settingsRouteItems = computed(() =>
-  settingsCenterItems.value.filter((item) => item.kind === "route"),
-);
-const activeSettingsPanelItem = computed(
-  () =>
-    settingsCenterItems.value.find(
-      (item) => item.id === String(activeSettingsPanel.value || "").trim(),
-    ) ||
-    settingsCenterItems.value[0] ||
-    null,
-);
+const activeSettingsPanelMeta = computed(() => {
+  const panelId = String(activeSettingsPanel.value || "").trim() || "chat";
+  return (
+    SETTINGS_CENTER_PANEL_META[panelId] ||
+    settingsCenterItems.value.find((item) => item.id === panelId) ||
+    SETTINGS_CENTER_PANEL_META.chat
+  );
+});
 const isSettingsCenterRoute = computed(() =>
   isChatSettingsRoutePath(route.path),
 );
 const roleAccessNarrative = computed(() => {
-  if (currentRoleId.value === "admin") {
-    return "你当前处于平台治理视角，可以同时调整对话策略、全局配置、模型供应商和角色权限。";
-  }
-  if (hasPermission("menu.projects") && hasPermission("menu.employees")) {
-    return "你当前偏向项目与员工协同视角，适合先在对话里验证方案，再去项目或员工入口做结构化落地。";
-  }
-  if (hasPermission("menu.projects")) {
-    return "你当前以项目协作为主，优先关注项目上下文、对话配置和个人默认 AI。";
-  }
-  return "你当前以个人使用视角为主，设置中心只展示你实际可访问的入口，避免把平台配置暴露给无关角色。";
+  return "这里仅调整当前对话上下文，不承载平台级菜单。";
 });
 const settingsMenuGuideEntries = computed(() =>
   settingsCenterItems.value.map((item) => ({
@@ -3959,18 +3791,15 @@ const settingsTourStepsResolved = computed(() => [
     placement: "right-start",
   },
   ...settingsMenuGuideEntries.value.map((item) => ({
-    title:
-      item.kind === "internal"
-        ? `${item.label}：当前项目会话配置`
-        : `${item.label}：菜单用途`,
+    title: `${item.label}：当前项目会话配置`,
     description: item.intro,
     target: () => resolveTourTarget(settingsSidebarRef),
     placement: "right-start",
   })),
   {
-    title: "先在这里改当前对话，再去平台页面",
+    title: "这里只改当前对话",
     description:
-      "建议先完成当前项目对话设置，再进入其他平台菜单。改完后回到 AI 对话立即验证，最容易看出配置是否真的生效。",
+      "这里不会再展示平台菜单。改完当前对话配置后，回到 AI 对话立即验证，最容易看出配置是否真的生效。",
     target: () => resolveTourTarget(settingsMainCardRef),
     placement: "left-start",
   },
@@ -7805,7 +7634,13 @@ function openCurrentMaterialLibrary() {
     ElMessage.warning("请先选择项目");
     return;
   }
-  void router.push({ path: "/materials", query: { project_id: projectId } });
+  void openRouteInDesktop(router, { path: "/materials", query: { project_id: projectId } }, {
+    mode: "new-window",
+    appId: "materials",
+    title: "素材库",
+    eyebrow: "Asset Workspace",
+    summary: "项目素材库作为桌面应用窗口打开，和 AI 对话并行处理素材。",
+  });
 }
 
 function openCurrentProjectDetail() {
@@ -7814,7 +7649,13 @@ function openCurrentProjectDetail() {
     ElMessage.warning("请先选择项目");
     return;
   }
-  void router.push(`/ai/chat/settings/projects/${encodeURIComponent(projectId)}`);
+  void openRouteInDesktop(router, `/projects/${encodeURIComponent(projectId)}`, {
+    mode: "new-window",
+    appId: "projects",
+    title: currentProjectLabel.value || "项目详情",
+    eyebrow: "Project Workspace",
+    summary: "项目详情作为独立桌面窗口打开，避免在 AI 对话窗口里吞掉上下文。",
+  });
 }
 
 async function deleteCurrentTaskTree() {
@@ -8411,28 +8252,15 @@ function syncSettingsRouteState() {
     activeSettingsPanel.value = "chat";
     return;
   }
-  const requestedPanel = inferSettingsPanelFromPath(route.path);
-  const matched =
-    settingsCenterItems.value.find((item) => item.id === requestedPanel) ||
-    settingsInternalItems.value[0] ||
-    settingsCenterItems.value[0] ||
-    null;
-  if (!matched) return;
-  activeSettingsPanel.value = matched.id;
-  if (matched.id !== requestedPanel) {
-    const targetPath = buildChatSettingsRoute(matched.path || "/chat");
-    if (route.path !== targetPath) {
-      void router.replace(targetPath);
-    }
-  }
+  activeSettingsPanel.value = inferSettingsPanelFromPath(route.path);
 }
 
 function openSettingsCenter(panelId = "chat") {
-  const normalized = String(panelId || "chat").trim() || "chat";
-  const matched = settingsCenterItems.value.find(
-    (item) => item.id === normalized,
+  const normalizedPanelId = String(panelId || "").trim() || "chat";
+  activeSettingsPanel.value = normalizedPanelId;
+  void router.push(
+    resolveSettingsAwarePanelPath(route.path, normalizedPanelId, "/chat"),
   );
-  void router.push(buildChatSettingsRoute(matched?.path || "/chat"));
 }
 
 function closeSettingsCenter() {
@@ -9186,26 +9014,30 @@ async function restoreOngoingTaskFromServer(projectId, options = {}) {
       ongoingChatSessionId &&
       !isTaskTreeArchivedOrDone(ongoingTaskTree)
     ) {
-      currentChatSessionId.value = ongoingChatSessionId;
-      rememberChatSession(normalizedProjectId, ongoingChatSessionId);
-      rememberTaskTreeSession(normalizedProjectId, ongoingTaskTree.id);
-      applyTaskTreePayload(ongoingTaskTree);
       const ongoingSessionId = String(
         ongoing?.session_id || ongoing?.work_session?.session_id || "",
       ).trim();
-      if (ongoingSessionId) {
-        currentWorkSessionId.value = ongoingSessionId;
-        rememberWorkSession(normalizedProjectId, ongoingSessionId);
-      } else {
-        clearWorkSessionMemory(normalizedProjectId);
-      }
       const workSession =
         normalizeWorkSessionSummary(ongoing?.work_session) ||
-        (await syncOngoingWorkSessionFromTaskTree(
-          normalizedProjectId,
-          ongoingTaskTree,
-          { silent: true },
-        ));
+        (ongoingSessionId
+          ? {
+              session_id: ongoingSessionId,
+              latest_status: "",
+              goal: "",
+              task_tree_session_id: String(ongoingTaskTree.id || "").trim(),
+              task_tree_chat_session_id: ongoingChatSessionId,
+              task_node_title: String(
+                ongoingTaskTree?.current_node?.title || "",
+              ).trim(),
+              updated_at: String(
+                ongoingTaskTree?.updated_at || ongoingTaskTree?.created_at || "",
+              ).trim(),
+              created_at: String(ongoingTaskTree?.created_at || "").trim(),
+              phases: [],
+              steps: [],
+            }
+          : null);
+      setOngoingTaskRestoreNotice(ongoingTaskTree, workSession);
       return {
         chatSessionId: ongoingChatSessionId,
         taskTree: ongoingTaskTree,
@@ -9214,9 +9046,6 @@ async function restoreOngoingTaskFromServer(projectId, options = {}) {
     }
 
     const taskSessionId = restoreTaskTreeSession(normalizedProjectId);
-    currentWorkSessionId.value = taskSessionId
-      ? restoreWorkSession(normalizedProjectId)
-      : "";
     if (!taskSessionId) {
       return null;
     }
@@ -9240,15 +9069,22 @@ async function restoreOngoingTaskFromServer(projectId, options = {}) {
       currentWorkSessionId.value = "";
       return null;
     }
-    currentChatSessionId.value = chatSessionId;
-    rememberChatSession(normalizedProjectId, chatSessionId);
-    rememberTaskTreeSession(normalizedProjectId, payload.id);
-    applyTaskTreePayload(payload);
-    const workSession = await syncOngoingWorkSessionFromTaskTree(
-      normalizedProjectId,
-      payload,
-      { silent: true },
-    );
+    const restoredWorkSessionId = restoreWorkSession(normalizedProjectId);
+    const workSession = restoredWorkSessionId
+      ? {
+          session_id: restoredWorkSessionId,
+          latest_status: "",
+          goal: "",
+          task_tree_session_id: String(payload.id || "").trim(),
+          task_tree_chat_session_id: chatSessionId,
+          task_node_title: String(payload?.current_node?.title || "").trim(),
+          updated_at: String(payload?.updated_at || payload?.created_at || "").trim(),
+          created_at: String(payload?.created_at || "").trim(),
+          phases: [],
+          steps: [],
+        }
+      : null;
+    setOngoingTaskRestoreNotice(payload, workSession);
     return {
       chatSessionId,
       taskTree: payload,
@@ -9267,6 +9103,20 @@ async function restoreOngoingTaskFromServer(projectId, options = {}) {
   } finally {
     taskTreeLoading.value = false;
   }
+}
+
+async function resumeOngoingTaskFromNotice() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(
+    ongoingTaskRestoreNotice.value?.chat_session_id || "",
+  ).trim();
+  if (!projectId || !chatSessionId) return;
+  if (chatLoading.value) {
+    ElMessage.warning("当前回答进行中，暂时不能恢复其他任务");
+    return;
+  }
+  await fetchChatHistory(projectId, chatSessionId);
+  await fetchChatTaskTree(projectId, chatSessionId, { silent: true });
 }
 
 async function openTaskTreePanel() {
@@ -9340,7 +9190,7 @@ function handleTaskTreeNodeClick(node) {
   syncTaskTreeDrafts(node);
 }
 
-async function fetchChatSessions(projectId, preferredSessionId = "") {
+async function fetchChatSessions(projectId, preferredSessionId = "", options = {}) {
   if (!projectId) {
     chatSessions.value = [];
     currentChatSessionId.value = "";
@@ -9356,13 +9206,28 @@ async function fetchChatSessions(projectId, preferredSessionId = "") {
       },
     );
     chatSessions.value = (data.sessions || []).map(normalizeChatSession);
-    const remembered = restoreChatSession(projectId);
+    const remembered =
+      options.useRemembered === false ? "" : restoreChatSession(projectId);
     const preferred = String(preferredSessionId || "").trim() || remembered;
-    const fallback = String(chatSessions.value[0]?.id || "").trim();
+    const excludedSessionIds = new Set(
+      (Array.isArray(options.excludeSessionIds)
+        ? options.excludeSessionIds
+        : []
+      )
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    );
+    const fallback = String(
+      chatSessions.value.find(
+        (item) => !excludedSessionIds.has(String(item?.id || "").trim()),
+      )?.id || "",
+    ).trim();
     const resolved =
       [preferred, fallback].find(
         (candidate) =>
-          candidate && chatSessions.value.some((item) => item.id === candidate),
+          candidate &&
+          !excludedSessionIds.has(candidate) &&
+          chatSessions.value.some((item) => item.id === candidate),
       ) || "";
     currentChatSessionId.value = resolved;
     rememberChatSession(projectId, resolved);
@@ -11265,7 +11130,13 @@ watch(selectedProjectId, async (value) => {
       : await restoreOngoingTaskFromServer(projectId, { silent: true });
     let chatSessionId = await fetchChatSessions(
       projectId,
-      routeChatSessionId || restoredTask?.chatSessionId || "",
+      routeChatSessionId || "",
+      {
+        excludeSessionIds: restoredTask?.chatSessionId
+          ? [restoredTask.chatSessionId]
+          : [],
+        useRemembered: Boolean(routeChatSessionId),
+      },
     );
     if (restoredTask?.chatSessionId) {
       const restoredChatSessionId = String(restoredTask.chatSessionId || "").trim();
@@ -11299,9 +11170,6 @@ watch(selectedProjectId, async (value) => {
           ...chatSessions.value.filter((item) => item.id !== restoredChatSessionId),
         ];
       }
-      chatSessionId = restoredChatSessionId;
-      currentChatSessionId.value = restoredChatSessionId;
-      rememberChatSession(projectId, restoredChatSessionId);
     }
     if (!chatSessionId) {
       const created = await createChatSession({ switchTo: true });
@@ -12407,14 +12275,8 @@ onUnmounted(() => {
 }
 
 .settings-chat-layout,
-.settings-center-context-bar,
-.settings-center-inline-page {
+.settings-center-context-bar {
   width: min(100%, var(--settings-center-max-width));
-}
-
-.settings-center-inline-page {
-  width: 100%;
-  max-width: none;
 }
 
 .settings-chat-layout {
@@ -15274,16 +15136,6 @@ onUnmounted(() => {
   align-items: stretch;
   overflow-y: auto;
   padding: 18px 0 28px;
-}
-
-.settings-center-stage__body--inline {
-  min-width: 0;
-  overflow: auto;
-  padding: 14px 0 28px;
-}
-
-.settings-center-inline-page {
-  min-width: 0;
 }
 
 .settings-tabs {

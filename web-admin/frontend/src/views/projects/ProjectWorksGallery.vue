@@ -149,14 +149,26 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/utils/api.js";
 import { resolveMaterialResourceUrl } from "@/utils/project-materials.js";
+import {
+  getStoredProjectContextId,
+  setStoredProjectContextId,
+} from "@/utils/desktop-shell.js";
 
 const route = useRoute();
 const router = useRouter();
 
-const projectId = computed(() => String(route.query.project_id || "").trim());
+const projectId = computed(() =>
+  String(route.query.project_id || "").trim() || getStoredProjectContextId(),
+);
 const works = ref([]);
 const loadingWorks = ref(false);
 const resultAssets = ref([]);
+
+watch(projectId, (value) => {
+  const normalizedProjectId = String(value || "").trim();
+  if (!normalizedProjectId) return;
+  setStoredProjectContextId(normalizedProjectId);
+});
 
 const draftWorks = computed(() =>
   works.value.filter(

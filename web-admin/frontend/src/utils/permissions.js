@@ -129,6 +129,7 @@ export function hasPermission(permissionKey) {
 export function pathPermission(path) {
   let currentPath = String(path || '').trim()
   if (!currentPath) return ''
+  currentPath = currentPath.split('#')[0]?.split('?')[0] || currentPath
   if (currentPath.startsWith(CHAT_SETTINGS_ROUTE_PREFIX)) {
     const stripped = currentPath.slice(CHAT_SETTINGS_ROUTE_PREFIX.length)
     currentPath = stripped.startsWith('/') ? stripped : `/${stripped}`
@@ -138,6 +139,11 @@ export function pathPermission(path) {
     (item) => currentPath === item.prefix || currentPath.startsWith(`${item.prefix}/`),
   )
   return matched?.permission || ''
+}
+
+export function canAccessPath(path) {
+  const permission = pathPermission(path)
+  return !permission || hasPermission(permission)
 }
 
 export function getFallbackPath() {

@@ -19,7 +19,6 @@ from services.dynamic_mcp_audit import (
 from services.project_mcp_presence import touch_project_mcp_presence as _touch_project_mcp_presence
 from services.project_chat_task_tree import audit_task_tree_round, ensure_task_tree
 from services.query_mcp_project_state import (
-    load_resumable_query_mcp_local_state,
     persist_query_mcp_local_state,
 )
 
@@ -762,9 +761,7 @@ class QueryMcpProxyApp:
             not session_id and method != "GET" and (is_streamable or is_sse)
         )
         direct_cli_context_key = ""
-        persisted_direct_state: dict[str, str] = {}
         if direct_cli_fallback_enabled and project_id_from_query:
-            persisted_direct_state = load_resumable_query_mcp_local_state(project_id_from_query)
             direct_cli_context_key = _build_direct_cli_context_key(
                 project_id_from_query,
                 key_owner_username=key_owner_username,
@@ -774,11 +771,6 @@ class QueryMcpProxyApp:
             if not chat_session_id:
                 chat_session_id = _normalize_text(
                     stored_direct_context.get("chat_session_id", ""),
-                    120,
-                )
-            if not chat_session_id:
-                chat_session_id = _normalize_text(
-                    persisted_direct_state.get("chat_session_id", ""),
                     120,
                 )
         direct_cli_chat_session_id = ""
@@ -831,11 +823,6 @@ class QueryMcpProxyApp:
             )
             if stored_chat_session_id:
                 direct_cli_chat_session_id = stored_chat_session_id
-            if not direct_cli_chat_session_id:
-                direct_cli_chat_session_id = _normalize_text(
-                    persisted_direct_state.get("chat_session_id", ""),
-                    120,
-                )
             if not direct_cli_chat_session_id:
                 direct_cli_chat_session_id = _build_query_cli_chat_session_id(
                     normalized_project_id,

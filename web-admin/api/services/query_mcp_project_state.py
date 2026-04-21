@@ -292,49 +292,61 @@ def _load_legacy_pointer_state(project_id: str, workspace_path: str = "") -> dic
     )
 
 
-def load_current_query_mcp_session(project_id: str, workspace_path: str = "") -> dict[str, Any]:
+def _payload_matches_chat_session(payload: dict[str, Any], chat_session_id: str) -> bool:
+    payload_chat_session_id = _normalize_text(payload.get("chat_session_id"), 200)
+    return bool(payload_chat_session_id and payload_chat_session_id == chat_session_id)
+
+
+def load_bound_query_mcp_session(
+    project_id: str,
+    chat_session_id: str,
+    workspace_path: str = "",
+) -> dict[str, Any]:
     project_id_value = _normalize_text(project_id, 120)
-    if not project_id_value:
+    chat_session_id_value = _normalize_text(chat_session_id, 200)
+    if not project_id_value or not chat_session_id_value:
         return {}
-    current_payload = _load_latest_active_session(project_id_value, workspace_path)
-    if not current_payload:
-        legacy_payload = _read_json(_legacy_current_session_path(project_id_value, workspace_path))
-        legacy_project_id = _normalize_text(legacy_payload.get("project_id"), 120)
-        if legacy_project_id and legacy_project_id != project_id_value:
-            legacy_payload = {}
-        elif legacy_payload and not legacy_project_id:
-            legacy_payload = {**legacy_payload, "project_id": project_id_value}
-        current_payload = legacy_payload
-    current_project_id = _normalize_text(current_payload.get("project_id"), 120)
-    if current_project_id and current_project_id != project_id_value:
-        current_payload = {}
-    elif current_payload and not current_project_id:
-        current_payload = {**current_payload, "project_id": project_id_value}
-    resolved_chat_session_id = _normalize_text(current_payload.get("chat_session_id"), 200)
-    return _merge_state_payloads(
-        current_payload,
-        _read_json(_session_state_path(project_id_value, resolved_chat_session_id, workspace_path))
-        if resolved_chat_session_id
-        else {},
-        _load_legacy_pointer_state(project_id_value, workspace_path),
+    payload = _merge_state_payloads(
+        _read_json(_active_session_path(chat_session_id_value, project_id_value, workspace_path)),
+        _read_json(_session_state_path(project_id_value, chat_session_id_value, workspace_path)),
     )
+    payload_project_id = _normalize_text(payload.get("project_id"), 120)
+    if payload_project_id and payload_project_id != project_id_value:
+        return {}
+    if not _payload_matches_chat_session(payload, chat_session_id_value):
+        return {}
+    if payload and not payload_project_id:
+        payload = {**payload, "project_id": project_id_value}
+    return _normalize_state_payload(payload)
+
+
+def load_current_query_mcp_session(
+    project_id: str,
+    workspace_path: str = "",
+    chat_session_id: str = "",
+) -> dict[str, Any]:
+    """Return only an explicitly bound MCP session.
+
+    Project-level active/history/legacy files are resumable hints, not a safe
+    current binding. Without a chat_session_id from the transport or caller,
+    treating the latest project file as current can attach a new window to an
+    old task tree.
+    """
+    if _normalize_text(chat_session_id, 200):
+        return load_bound_query_mcp_session(project_id, chat_session_id, workspace_path)
+    _ = project_id, workspace_path
+    return {}
 
 
 def load_query_mcp_local_state(project_id: str, workspace_path: str = "") -> dict[str, Any]:
     project_id_value = _normalize_text(project_id, 120)
     if not project_id_value:
         return {}
-    current_payload = load_current_query_mcp_session(project_id_value, workspace_path)
-    if current_payload:
-        return _merge_state_payloads(
-            current_payload,
-            _read_json(_active_state_path(project_id_value, workspace_path)),
-            _load_latest_history_payload(project_id_value, workspace_path),
-        )
-    active_payload = _read_json(_active_state_path(project_id_value, workspace_path))
-    history_payload = _load_latest_history_payload(project_id_value, workspace_path)
-    legacy_payload = _load_legacy_pointer_state(project_id_value, workspace_path)
-    return _merge_state_payloads(active_payload, history_payload, legacy_payload)
+    return _merge_state_payloads(
+        _read_json(_active_state_path(project_id_value, workspace_path)),
+        _load_latest_history_payload(project_id_value, workspace_path),
+        _load_legacy_pointer_state(project_id_value, workspace_path),
+    )
 
 
 def load_resumable_query_mcp_local_state(project_id: str, workspace_path: str = "") -> dict[str, Any]:
@@ -374,11 +386,17 @@ def persist_query_mcp_local_state(
     active_session_path = _active_session_path(chat_session_id_value, project_id_value, workspace_path)
     if active_path is None or session_path is None or active_session_path is None:
         return {}
+    active_payload = _read_json(active_path)
+    if not _payload_matches_chat_session(active_payload, chat_session_id_value):
+        active_payload = {}
+    legacy_payload = _load_legacy_pointer_state(project_id_value, workspace_path)
+    if not _payload_matches_chat_session(legacy_payload, chat_session_id_value):
+        legacy_payload = {}
     existing = _merge_state_payloads(
         _read_json(active_session_path),
         _read_json(session_path),
-        _read_json(active_path),
-        _load_legacy_pointer_state(project_id_value, workspace_path),
+        active_payload,
+        legacy_payload,
     )
     payload = {
         "project_id": project_id_value,

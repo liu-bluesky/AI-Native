@@ -834,6 +834,7 @@ class SystemConfig:
     voice_output_provider_id: str = ""
     voice_output_model_name: str = ""
     voice_output_voice: str = ""
+    global_assistant_enabled: bool = True
     global_assistant_greeting_enabled: bool = True
     global_assistant_greeting_text: str = DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT
     global_assistant_chat_provider_id: str = ""

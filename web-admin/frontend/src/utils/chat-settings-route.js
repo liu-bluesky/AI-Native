@@ -4,6 +4,7 @@ const SETTINGS_PANEL_TARGETS = [
   { panel: "chat", prefixes: ["/chat"] },
   { panel: "user-settings", prefixes: ["/user/settings"] },
   { panel: "system-config", prefixes: ["/system/config"] },
+  { panel: "desktop-wallpaper", prefixes: ["/desktop/background"] },
   { panel: "changelog-entries", prefixes: ["/changelog-entries"] },
   { panel: "work-sessions", prefixes: ["/work-sessions"] },
   { panel: "online-users", prefixes: ["/online-users"] },

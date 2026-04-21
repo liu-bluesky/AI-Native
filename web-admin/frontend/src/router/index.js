@@ -16,6 +16,10 @@ const routes = [
     component: () => import('../views/Layout.vue'),
     redirect: '/intro',
     children: [
+      { path: 'workbench', component: () => import('../views/desktop/DesktopWorkbench.vue') },
+      { path: 'settings-center', component: () => import('../views/desktop/SettingsLauncher.vue') },
+      { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
+      { path: 'desktop', redirect: '/workbench' },
       { path: 'ai/chat', component: () => import('../views/projects/ProjectChat.vue') },
       {
         path: 'ai/chat/settings',
@@ -25,6 +29,7 @@ const routes = [
           { path: 'chat', component: SettingsCenterChatStub },
           { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
           { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
+          { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
           { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
           { path: 'work-sessions', component: () => import('../views/system/WorkSessionManager.vue') },
           { path: 'online-users', component: () => import('../views/system/OnlineUserManager.vue'), meta: { superAdminOnly: true } },
@@ -97,13 +102,10 @@ const routes = [
       { path: 'rules/:id/edit', component: () => import('../views/rules/RuleEdit.vue') },
       { path: 'rules/:id', component: () => import('../views/rules/RuleDetail.vue') },
       { path: 'memory/:id', component: () => import('../views/memory/MemoryManager.vue') },
-      { path: 'personas', component: () => import('../views/personas/PersonaList.vue') },
-      { path: 'personas/create', component: () => import('../views/personas/PersonaCreate.vue') },
-      { path: 'personas/:id/edit', component: () => import('../views/personas/PersonaEdit.vue') },
-      { path: 'personas/:id', component: () => import('../views/personas/PersonaDetail.vue') },
       { path: 'sync/:id', component: () => import('../views/sync/SyncStatus.vue') },
       { path: 'usage/keys', component: () => import('../views/usage/ApiKeyList.vue') },
       { path: 'llm/providers', component: () => import('../views/llm/ModelProviderManager.vue') },
+      { path: 'market', component: () => import('../views/public/MarketPage.vue') },
       { path: 'evolution/:id', component: () => import('../views/evolution/EvolutionReport.vue') },
       { path: 'review/:id', component: () => import('../views/evolution/CandidateReview.vue') },
       { path: 'feedback/:id', component: () => import('../views/evolution/FeedbackTicketList.vue') },
@@ -141,6 +143,7 @@ router.beforeEach((to, from) => {
     !isChatSettingsRoutePath(to.path) &&
     to.path.startsWith('/') &&
     to.path !== '/ai/chat'
+    && to.path !== '/workbench'
   ) {
     const rewritten = resolveSettingsAwarePath(from.path, to.path, to.path)
     if (rewritten !== to.path) {

@@ -8244,7 +8244,8 @@ def test_query_mcp_project_state_persists_under_project_hidden_dir(tmp_path, mon
     assert history_path.exists() is True
     assert active_session_path.exists() is True
     assert state_service.load_query_mcp_project_state("proj-1")["session_id"] == "ws-proj-1"
-    assert state_service.load_current_query_mcp_session("proj-1")["chat_session_id"] == "chat-1"
+    assert state_service.load_current_query_mcp_session("proj-1") == {}
+    assert state_service.load_bound_query_mcp_session("proj-1", "chat-1")["chat_session_id"] == "chat-1"
     assert state_service.load_resumable_query_mcp_project_state("proj-1")["chat_session_id"] == "chat-1"
 
     state_service.save_query_mcp_project_state(
@@ -8304,7 +8305,54 @@ def test_query_mcp_project_state_reads_legacy_pointer_files_without_new_legacy_w
     assert (state_root / "active-sessions").exists() is False
 
 
-def test_query_mcp_proxy_app_direct_cli_reuses_persisted_project_chat_session_across_instances(
+def test_query_mcp_project_state_current_session_does_not_infer_project_history(tmp_path, monkeypatch):
+    from services import query_mcp_project_state as state_service
+
+    workspace = tmp_path / "history-workspace"
+    workspace.mkdir()
+
+    class DummyProjectStore:
+        @staticmethod
+        def get(project_id: str):
+            if project_id != "proj-1":
+                return None
+            return type(
+                "Project",
+                (),
+                {
+                    "workspace_path": str(workspace),
+                    "chat_settings": {},
+                },
+            )()
+
+    monkeypatch.setattr(state_service, "project_store", DummyProjectStore())
+
+    state_service.save_query_mcp_project_state(
+        project_id="proj-1",
+        chat_session_id="old-chat",
+        session_id="old-ws",
+        root_goal="旧窗口未完成任务",
+        latest_status="in_progress",
+    )
+
+    assert state_service.load_current_query_mcp_session("proj-1") == {}
+    assert state_service.load_bound_query_mcp_session("proj-1", "old-chat")["session_id"] == "old-ws"
+    assert state_service.load_bound_query_mcp_session("proj-1", "new-chat") == {}
+    assert state_service.load_resumable_query_mcp_project_state("proj-1")["chat_session_id"] == "old-chat"
+
+    new_saved = state_service.save_query_mcp_project_state(
+        project_id="proj-1",
+        chat_session_id="new-chat",
+        root_goal="新窗口任务",
+        latest_status="in_progress",
+    )
+
+    assert new_saved["chat_session_id"] == "new-chat"
+    assert new_saved.get("session_id", "") == ""
+    assert new_saved["root_goal"] == "新窗口任务"
+
+
+def test_query_mcp_proxy_app_direct_cli_does_not_reuse_persisted_project_chat_session_across_instances(
     tmp_path,
     monkeypatch,
 ):
@@ -8408,8 +8456,8 @@ def test_query_mcp_proxy_app_direct_cli_reuses_persisted_project_chat_session_ac
     assert second.status_code == 200
     second_chat_session_id = captured_task_tree_calls[-1]["chat_session_id"]
 
-    assert first_chat_session_id == second_chat_session_id
-    assert state_service.load_query_mcp_project_state("proj-1")["chat_session_id"] == first_chat_session_id
+    assert first_chat_session_id != second_chat_session_id
+    assert state_service.load_query_mcp_project_state("proj-1")["chat_session_id"] == second_chat_session_id
 
 
 def test_query_mcp_proxy_app_persists_work_session_id_into_project_state(tmp_path, monkeypatch):

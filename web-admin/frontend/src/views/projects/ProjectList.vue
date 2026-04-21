@@ -1,15 +1,74 @@
 <template>
-  <div v-loading="loading">
-    <div class="toolbar">
-      <h3>项目管理</h3>
-      <el-button v-if="showProjectCreateEntry" type="primary" size="small" @click="openCreate">
-        新建项目
-      </el-button>
-    </div>
+  <div v-loading="loading" class="project-list-page">
+    <ProjectAppHeader
+      eyebrow="Project Space"
+      title="项目桌面"
+      :description="projectListDescription"
+      panel-eyebrow="Quick Actions"
+      panel-title="项目入口"
+      panel-description="新建、筛选和进入详情都集中在这个桌面应用窗口中处理。"
+      :badges="projectListBadges"
+      :stats="projectListStats"
+    >
+      <template #actions>
+        <div class="project-list-hero-actions">
+          <el-button
+            v-if="showProjectCreateEntry"
+            type="primary"
+            @click="openCreate"
+          >
+            新建项目
+          </el-button>
+          <el-button plain @click="handleSearch">刷新列表</el-button>
+        </div>
+      </template>
+    </ProjectAppHeader>
 
-    <el-table :data="projects" stripe>
+    <ProjectAppSection
+      eyebrow="Workspace Browser"
+      title="项目列表"
+      description="把项目视作桌面里的独立应用条目，先快速筛选，再进入详情工作区。"
+      class="project-list-page__section"
+    >
+      <div class="filter-panel">
+        <div class="filter-panel__fields">
+          <el-input
+            v-model="filters.name"
+            clearable
+            placeholder="筛选项目名称"
+            @clear="handleSearch"
+            @keyup.enter="handleSearch"
+          />
+          <el-input
+            v-model="filters.createdBy"
+            clearable
+            placeholder="筛选创建人"
+            @clear="handleSearch"
+            @keyup.enter="handleSearch"
+          />
+        </div>
+        <div class="filter-panel__actions">
+          <el-button type="primary" plain @click="handleSearch">筛选</el-button>
+          <el-button @click="resetFilters">重置</el-button>
+        </div>
+      </div>
+
+      <div class="project-list-grid-metrics">
+        <article
+          v-for="item in projectListStats"
+          :key="item.key"
+          class="project-list-grid-metrics__item"
+        >
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+          <small>{{ item.meta }}</small>
+        </article>
+      </div>
+
+      <div class="project-list-table-shell">
+        <el-table :data="projects" stripe>
       <el-table-column prop="id" label="项目 ID" width="150" />
-      <el-table-column prop="name" label="项目名称" width="180" show-overflow-tooltip />
+      <el-table-column prop="name" label="项目名称" min-width="200" show-overflow-tooltip />
       <el-table-column label="项目类型" width="140" align="center">
         <template #default="{ row }">
           <el-tag :type="getProjectTypeTagType(row.type)">
@@ -92,9 +151,24 @@
           </el-dropdown>
         </template>
       </el-table-column>
-    </el-table>
+        </el-table>
+      </div>
 
-    <el-empty v-if="!projects.length && !loading" description="暂无项目" />
+      <div v-if="paginationTotal > 0" class="pagination-wrap">
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          background
+          layout="total, prev, pager, next, jumper, sizes"
+          :page-sizes="[10, 20, 50]"
+          :total="paginationTotal"
+          @current-change="handlePageChange"
+          @size-change="handlePageSizeChange"
+        />
+      </div>
+
+      <el-empty v-if="!projects.length && !loading" :description="emptyDescription" />
+    </ProjectAppSection>
 
     <el-dialog v-if="showProjectCreateEntry" v-model="showCreateDialog" title="新建项目" width="520px">
       <el-form :model="createForm" label-width="110px">
@@ -232,8 +306,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import ProjectAppHeader from '@/components/project-workspace/ProjectAppHeader.vue'
+import ProjectAppSection from '@/components/project-workspace/ProjectAppSection.vue'
 import UnifiedMcpAccessDialog from '@/components/UnifiedMcpAccessDialog.vue'
 import api from '@/utils/api.js'
+import { openRouteInDesktop } from '@/utils/desktop-app-bridge.js'
 import { hasPermission } from '@/utils/permissions.js'
 import {
   pickWorkspaceDirectory as openWorkspaceDirectoryPicker,
@@ -247,6 +324,13 @@ const loading = ref(false)
 const creating = ref(false)
 const updating = ref(false)
 const projects = ref([])
+const filters = ref({
+  name: '',
+  createdBy: '',
+})
+const currentPage = ref(1)
+const pageSize = ref(10)
+const paginationTotal = ref(0)
 const showProjectCreateEntry = computed(() => hasPermission('menu.projects'))
 const showProjectLocationFields = false
 const projectTypeOptions = [
@@ -301,6 +385,51 @@ const PROJECT_ACTIONS = [
   { key: 'delete', label: '删除', type: 'danger', requiresManage: true },
 ]
 
+const emptyDescription = computed(() => {
+  if (filters.value.name || filters.value.createdBy) {
+    return '暂无匹配项目'
+  }
+  return '暂无项目'
+})
+const projectListDescription = computed(() => {
+  if (filters.value.name || filters.value.createdBy) {
+    return '当前已切换到聚焦浏览模式，适合快速筛掉无关项目后进入对应工作区。'
+  }
+  return '这里统一承载项目创建、筛选、状态切换和进入详情的桌面工作流。'
+})
+const projectListBadges = computed(() => [
+  {
+    key: 'scope',
+    label: filters.value.name || filters.value.createdBy ? '筛选中' : '全部项目',
+    type: filters.value.name || filters.value.createdBy ? 'warning' : 'info',
+  },
+  {
+    key: 'create',
+    label: showProjectCreateEntry.value ? '可新建项目' : '只读浏览',
+    type: showProjectCreateEntry.value ? 'success' : 'info',
+  },
+])
+const projectListStats = computed(() => [
+  {
+    key: 'total',
+    label: '项目总数',
+    value: paginationTotal.value,
+    meta: '当前列表结果',
+  },
+  {
+    key: 'mcp',
+    label: 'MCP 已开',
+    value: projects.value.filter((item) => item.mcp_enabled).length,
+    meta: '便于直接接入桌面工作流',
+  },
+  {
+    key: 'manageable',
+    label: '可管理',
+    value: projects.value.filter((item) => canManageProject(item)).length,
+    meta: '当前账号可直接编辑',
+  },
+])
+
 function canManageProject(project) {
   return !!project?.can_manage
 }
@@ -323,6 +452,47 @@ function getPrimaryProjectActions(project) {
 
 function getOverflowProjectActions(project) {
   return getProjectActions(project).slice(3)
+}
+
+function buildProjectQueryParams() {
+  return {
+    page: currentPage.value,
+    page_size: pageSize.value,
+    name: String(filters.value.name || '').trim(),
+    created_by: String(filters.value.createdBy || '').trim(),
+  }
+}
+
+function normalizeProjectList(items) {
+  return (items || []).map((item) => ({
+    ...item,
+    type: normalizeProjectType(item.type),
+  }))
+}
+
+function handleSearch() {
+  currentPage.value = 1
+  void fetchProjects()
+}
+
+function resetFilters() {
+  filters.value = {
+    name: '',
+    createdBy: '',
+  }
+  currentPage.value = 1
+  void fetchProjects()
+}
+
+function handlePageChange(page) {
+  currentPage.value = page
+  void fetchProjects()
+}
+
+function handlePageSizeChange(size) {
+  pageSize.value = size
+  currentPage.value = 1
+  void fetchProjects()
 }
 
 function openCreate() {
@@ -376,7 +546,13 @@ function openEdit(project) {
 function handleProjectAction(project, actionKey) {
   switch (String(actionKey || '').trim()) {
     case 'detail':
-      void router.push(`/projects/${project.id}`)
+      void openRouteInDesktop(router, `/projects/${project.id}`, {
+        mode: 'new-window',
+        appId: 'projects',
+        title: project.name || '项目详情',
+        eyebrow: 'Project Workspace',
+        summary: '项目详情作为桌面中的独立应用窗口打开，可与列表、对话和素材库并行工作。',
+      })
       return
     case 'edit':
       openEdit(project)
@@ -488,15 +664,28 @@ function showMcpConfig(project) {
   showMcpDialog.value = true
 }
 
-async function fetchProjects() {
+async function fetchProjects(options = {}) {
+  const allowPageAdjust = options.allowPageAdjust !== false
   loading.value = true
   try {
-    const data = await api.get('/projects')
-    projects.value = (data.projects || []).map((item) => ({
-      ...item,
-      type: normalizeProjectType(item.type),
-    }))
+    const data = await api.get('/projects', {
+      params: buildProjectQueryParams(),
+    })
+    const nextProjects = normalizeProjectList(data.projects || [])
+    const nextTotal = Math.max(
+      0,
+      Number(data?.pagination?.total ?? data?.total ?? nextProjects.length),
+    )
+    paginationTotal.value = nextTotal
+    if (allowPageAdjust && nextTotal > 0 && !nextProjects.length && currentPage.value > 1) {
+      currentPage.value = Math.max(1, Math.ceil(nextTotal / pageSize.value))
+      await fetchProjects({ allowPageAdjust: false })
+      return
+    }
+    projects.value = nextProjects
   } catch {
+    projects.value = []
+    paginationTotal.value = 0
     ElMessage.error('加载项目失败')
   } finally {
     loading.value = false
@@ -534,6 +723,7 @@ async function createProject() {
     }
     ElMessage.success('项目创建成功')
     showCreateDialog.value = false
+    currentPage.value = 1
     await fetchProjects()
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || '创建失败')
@@ -575,15 +765,102 @@ onMounted(fetchProjects)
 </script>
 
 <style scoped>
-.toolbar {
+.project-list-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 0 32px;
+}
+
+.project-list-page__section {
+  margin-top: 0;
+}
+
+.project-list-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filter-panel {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   margin-bottom: 16px;
 }
 
-.toolbar h3 {
-  margin: 0;
+.filter-panel__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 240px));
+  gap: 12px;
+  flex: 1;
+}
+
+.filter-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.project-list-grid-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.project-list-grid-metrics__item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 20px;
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.project-list-grid-metrics__item span,
+.project-list-grid-metrics__item small {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.project-list-grid-metrics__item strong {
+  font-size: 24px;
+  line-height: 1.1;
+  color: #0f172a;
+}
+
+.project-list-table-shell {
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.project-list-table-shell :deep(.el-table),
+.project-list-table-shell :deep(.el-table__inner-wrapper) {
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+.project-list-table-shell :deep(.el-table th.el-table__cell) {
+  height: 54px;
+  background: rgba(248, 250, 252, 0.9);
+  color: #475569;
+}
+
+.project-list-table-shell :deep(.el-table td.el-table__cell) {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+.pagination-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
 }
 
 .project-type-option {
@@ -608,6 +885,21 @@ onMounted(fetchProjects)
   font-size: 12px;
   line-height: 1.5;
   color: #6b7280;
+}
+
+@media (max-width: 900px) {
+  .filter-panel {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filter-panel__fields {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-panel__actions {
+    justify-content: flex-end;
+  }
 }
 
 </style>

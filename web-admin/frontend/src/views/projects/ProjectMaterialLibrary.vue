@@ -25,6 +25,14 @@
           size="small"
           plain
           class="material-context-bar__action-button"
+          @click="openProjectList"
+        >
+          切换项目
+        </el-button>
+        <el-button
+          size="small"
+          plain
+          class="material-context-bar__action-button"
           @click="goBackToProject"
         >
           项目详情
@@ -662,7 +670,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import ProjectMaterialFormFields from "@/components/ProjectMaterialFormFields.vue";
 import api from "@/utils/api.js";
-import { buildChatSettingsRoute } from "@/utils/chat-settings-route.js";
+import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import { formatDateTime } from "@/utils/date.js";
 import {
   inferMaterialAssetTypeFromFile,
@@ -672,10 +680,16 @@ import {
   readVideoDurationFromUrl,
   resolveMaterialResourceUrl,
 } from "@/utils/project-materials.js";
+import {
+  getStoredProjectContextId,
+  setStoredProjectContextId,
+} from "@/utils/desktop-shell.js";
 
 const route = useRoute();
 const router = useRouter();
-const projectId = computed(() => String(route.query.project_id || "").trim());
+const projectId = computed(() =>
+  String(route.query.project_id || "").trim() || getStoredProjectContextId(),
+);
 const focusAssetId = computed(() => String(route.query.focus_asset_id || "").trim());
 
 const assetTypeOptions = MATERIAL_ASSET_TYPE_OPTIONS;
@@ -720,6 +734,12 @@ const summary = ref({
   storyboard_count: 0,
   video_count: 0,
   audio_count: 0,
+});
+
+watch(projectId, (value) => {
+  const normalizedProjectId = String(value || "").trim();
+  if (!normalizedProjectId) return;
+  setStoredProjectContextId(normalizedProjectId);
 });
 const filters = ref({
   query: "",
@@ -1950,7 +1970,23 @@ function goBackToProject() {
     ElMessage.warning("缺少项目 ID");
     return;
   }
-  void router.push(buildChatSettingsRoute(`/projects/${currentProjectId}`));
+  void openRouteInDesktop(router, `/projects/${currentProjectId}`, {
+    mode: "focus-or-open",
+    appId: "project-detail",
+    title: project.value?.name || "项目详情",
+    eyebrow: "Project Workspace",
+    summary: "回到当前项目详情窗口，继续处理项目配置与上下文。",
+  });
+}
+
+function openProjectList() {
+  void openRouteInDesktop(router, "/projects", {
+    mode: "focus-or-open",
+    appId: "projects",
+    title: "项目",
+    eyebrow: "Project Space",
+    summary: "返回项目列表窗口并切换当前工作项目。",
+  });
 }
 
 function openProjectChat() {
@@ -1959,10 +1995,20 @@ function openProjectChat() {
     ElMessage.warning("缺少项目 ID");
     return;
   }
-  void router.push({
-    path: "/ai/chat",
-    query: { project_id: currentProjectId },
-  });
+  void openRouteInDesktop(
+    router,
+    {
+      path: "/ai/chat",
+      query: { project_id: currentProjectId },
+    },
+    {
+      mode: "focus-or-open",
+      appId: "chat",
+      title: "AI 对话",
+      eyebrow: "AI Workspace",
+      summary: "围绕当前项目继续处理 AI 对话与协作任务。",
+    },
+  );
 }
 
 function openSourceChat(row) {
@@ -1980,7 +2026,13 @@ function openSourceChat(row) {
   if (messageId) {
     query.message_id = messageId;
   }
-  void router.push({ path: "/ai/chat", query });
+  void openRouteInDesktop(router, { path: "/ai/chat", query }, {
+    mode: "focus-or-open",
+    appId: "chat",
+    title: "AI 对话",
+    eyebrow: "AI Workspace",
+    summary: "打开来源对话，回看素材生成上下文。",
+  });
 }
 
 function openCreateDialog() {

@@ -6055,6 +6055,7 @@ def _derive_project_chat_memory_solve_status(answer: str) -> str:
 
 def _build_global_voice_runtime(auth_payload: dict) -> dict[str, Any]:
     config = system_config_store.get_global()
+    global_assistant_enabled = bool(getattr(config, "global_assistant_enabled", True))
     greeting_enabled = bool(getattr(config, "global_assistant_greeting_enabled", True))
     greeting_text = str(
         getattr(config, "global_assistant_greeting_text", "") or DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT
@@ -6068,12 +6069,27 @@ def _build_global_voice_runtime(auth_payload: dict) -> dict[str, Any]:
     idle_timeout_sec = int(
         getattr(config, "global_assistant_idle_timeout_sec", 5) or 5
     )
+    if not global_assistant_enabled:
+        return {
+            "enabled": False,
+            "available": False,
+            "mode": "",
+            "reason": "全局助手已关闭",
+            "global_assistant_enabled": False,
+            "greeting_enabled": False,
+            "greeting_text": greeting_text,
+            "transcription_prompt": transcription_prompt,
+            "wake_phrase": wake_phrase,
+            "idle_timeout_sec": idle_timeout_sec,
+        }
+
     if not bool(getattr(config, "voice_input_enabled", False)):
         return {
             "enabled": False,
             "available": False,
             "mode": "",
             "reason": "系统未开启语音输入",
+            "global_assistant_enabled": True,
             "greeting_enabled": greeting_enabled,
             "greeting_text": greeting_text,
             "transcription_prompt": transcription_prompt,
@@ -6089,6 +6105,7 @@ def _build_global_voice_runtime(auth_payload: dict) -> dict[str, Any]:
             "available": False,
             "mode": "",
             "reason": "系统语音模型未配置完整",
+            "global_assistant_enabled": True,
             "greeting_enabled": greeting_enabled,
             "greeting_text": greeting_text,
             "transcription_prompt": transcription_prompt,
@@ -7942,7 +7959,13 @@ def _build_project_meta_reply(project: ProjectConfig, selected_employee: dict[st
 
 
 @router.get("")
-async def list_projects(auth_payload: dict = Depends(require_auth)):
+async def list_projects(
+    auth_payload: dict = Depends(require_auth),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    name: str = Query(""),
+    created_by: str = Query(""),
+):
     _ensure_permission(auth_payload, "menu.projects")
     projects = project_store.list_all()
     project_ids = [str(getattr(item, "id", "") or "").strip() for item in projects if str(getattr(item, "id", "") or "").strip()]
@@ -7966,8 +7989,6 @@ async def list_projects(auth_payload: dict = Depends(require_auth)):
         for item in visible_projects
         if str(getattr(item, "id", "") or "").strip()
     ]
-    member_counts = project_store.list_member_counts(visible_project_ids)
-    user_counts = project_store.list_user_member_counts(visible_project_ids)
     creator_usernames = {
         str(getattr(item, "id", "") or "").strip(): str(getattr(item, "created_by", "") or "").strip()
         for item in visible_projects
@@ -7978,6 +7999,33 @@ async def list_projects(auth_payload: dict = Depends(require_auth)):
     ]
     if unresolved_creator_project_ids:
         creator_usernames.update(project_store.list_owner_usernames(unresolved_creator_project_ids))
+    normalized_name = str(name or "").strip().lower()
+    normalized_creator = str(created_by or "").strip().lower()
+    if normalized_name or normalized_creator:
+        visible_projects = [
+            item
+            for item in visible_projects
+            if (
+                (not normalized_name or normalized_name in str(getattr(item, "name", "") or "").strip().lower())
+                and (
+                    not normalized_creator
+                    or normalized_creator
+                    in str(
+                        creator_usernames.get(str(getattr(item, "id", "") or "").strip(), "")
+                    ).strip().lower()
+                )
+            )
+        ]
+    visible_project_ids = [
+        str(getattr(item, "id", "") or "").strip()
+        for item in visible_projects
+        if str(getattr(item, "id", "") or "").strip()
+    ]
+    member_counts = project_store.list_member_counts(visible_project_ids)
+    user_counts = project_store.list_user_member_counts(visible_project_ids)
+    total = len(visible_projects)
+    start = (page - 1) * page_size
+    paged_projects = visible_projects[start : start + page_size]
     return {
         "projects": [
             _serialize_project_list_item(
@@ -7988,8 +8036,14 @@ async def list_projects(auth_payload: dict = Depends(require_auth)):
                 creator_username=creator_usernames.get(item.id, ""),
                 current_member=membership_map.get(item.id),
             )
-            for item in visible_projects
-        ]
+            for item in paged_projects
+        ],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+        },
+        "total": total,
     }
 
 

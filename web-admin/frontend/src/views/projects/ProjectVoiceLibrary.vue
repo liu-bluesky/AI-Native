@@ -303,10 +303,16 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/utils/api.js";
 import { normalizeProviderModelConfigs } from "@/utils/llm-models.js";
 import { resolveMaterialResourceUrl } from "@/utils/project-materials.js";
+import {
+  getStoredProjectContextId,
+  setStoredProjectContextId,
+} from "@/utils/desktop-shell.js";
 
 const route = useRoute();
 
-const projectId = computed(() => String(route.query.project_id || "").trim());
+const projectId = computed(() =>
+  String(route.query.project_id || "").trim() || getStoredProjectContextId(),
+);
 const dialogVisible = ref(false);
 const dialogMode = ref("create");
 const editingVoiceId = ref("");
@@ -322,6 +328,12 @@ const providers = ref([]);
 const voices = ref([]);
 const previewAudioMap = reactive({});
 const previewAudioRefs = new Map();
+
+watch(projectId, (value) => {
+  const normalizedProjectId = String(value || "").trim();
+  if (!normalizedProjectId) return;
+  setStoredProjectContextId(normalizedProjectId);
+});
 
 const form = reactive({
   providerId: "",

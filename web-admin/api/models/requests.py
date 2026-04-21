@@ -644,6 +644,7 @@ class SystemConfigUpdateReq(BaseModel):
     voice_output_provider_id: str | None = None
     voice_output_model_name: str | None = None
     voice_output_voice: str | None = None
+    global_assistant_enabled: bool | None = None
     global_assistant_greeting_enabled: bool | None = None
     global_assistant_greeting_text: str | None = None
     global_assistant_chat_provider_id: str | None = None

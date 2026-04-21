@@ -545,6 +545,7 @@ async def patch_system_config(
         "voice_output_provider_id",
         "voice_output_model_name",
         "voice_output_voice",
+        "global_assistant_enabled",
         "global_assistant_greeting_enabled",
         "global_assistant_greeting_text",
         "global_assistant_chat_provider_id",

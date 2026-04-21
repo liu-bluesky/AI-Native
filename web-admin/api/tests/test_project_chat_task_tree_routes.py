@@ -437,6 +437,50 @@ def test_project_chat_ongoing_task_state_returns_active_resume_payload(tmp_path,
     assert "未完成" in payload["user_message"]
 
 
+def test_project_chat_ongoing_task_state_ignores_archived_done_task(tmp_path, monkeypatch):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    generate_response = client.post(
+        "/api/projects/proj-1/chat/task-tree/generate",
+        json={
+            "chat_session_id": chat_session_id,
+            "message": "当前项目做什么的",
+        },
+    )
+    assert generate_response.status_code == 200
+
+    from services.project_chat_task_tree import audit_task_tree_round
+
+    audit_payload = audit_task_tree_round(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=chat_session_id,
+        assistant_content="当前项目定位是 AI 对话和 AI 图片视频生成。",
+        successful_tool_names=["get_manual_content"],
+        task_tree_tool_used=False,
+    )
+    assert audit_payload["history_task_tree"]["status"] == "done"
+    assert audit_payload["history_task_tree"]["is_archived"] is True
+
+    ongoing_response = client.get("/api/projects/proj-1/chat/task-tree/ongoing")
+    assert ongoing_response.status_code == 200
+    payload = ongoing_response.json()
+    assert payload["active_task_exists"] is False
+    assert payload["can_continue"] is False
+    assert payload["task_tree"] is None
+
+
 def test_project_chat_ongoing_task_state_marks_orphaned_query_state(tmp_path, monkeypatch):
     from services import query_mcp_project_state as state_service
     from stores.json.project_store import ProjectConfig

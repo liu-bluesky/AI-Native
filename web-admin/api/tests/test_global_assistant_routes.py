@@ -1132,6 +1132,7 @@ def test_system_config_patch_accepts_global_assistant_greeting_fields(tmp_path, 
     response = client.patch(
         "/api/system-config",
         json={
+            "global_assistant_enabled": False,
             "global_assistant_greeting_enabled": False,
             "global_assistant_greeting_text": "你好，我来帮你处理当前页面。",
             "global_assistant_chat_provider_id": "provider-system",
@@ -1145,6 +1146,7 @@ def test_system_config_patch_accepts_global_assistant_greeting_fields(tmp_path, 
 
     assert response.status_code == 200
     config = response.json()["config"]
+    assert config["global_assistant_enabled"] is False
     assert config["global_assistant_greeting_enabled"] is False
     assert config["global_assistant_greeting_text"] == "你好，我来帮你处理当前页面。"
     assert config["global_assistant_chat_provider_id"] == "provider-system"
@@ -1153,6 +1155,34 @@ def test_system_config_patch_accepts_global_assistant_greeting_fields(tmp_path, 
     assert config["global_assistant_transcription_prompt"] == "只逐字转写。"
     assert config["global_assistant_wake_phrase"] == "测试助手"
     assert config["global_assistant_idle_timeout_sec"] == 9
+
+
+def test_global_assistant_voice_runtime_returns_disabled_when_global_assistant_is_off(
+    tmp_path,
+    monkeypatch,
+):
+    client, store_factory = _build_global_assistant_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    store_factory.system_config_store.patch_global(
+        {
+            "global_assistant_enabled": False,
+            "voice_input_enabled": True,
+            "voice_input_provider_id": "provider-stt",
+            "voice_input_model_name": "stt-model",
+        }
+    )
+
+    response = client.get("/api/projects/chat/global/voice-input/runtime")
+
+    assert response.status_code == 200
+    runtime = response.json()["runtime"]
+    assert runtime["global_assistant_enabled"] is False
+    assert runtime["enabled"] is False
+    assert runtime["available"] is False
+    assert runtime["reason"] == "全局助手已关闭"
 
 
 def test_system_config_global_assistant_chat_options_returns_text_models_only(
