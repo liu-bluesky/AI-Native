@@ -17,6 +17,7 @@
     @close-window="closeWindow"
     @minimize-window="minimizeWindow"
     @maximize-window="maximizeWindow"
+    @refresh-window="refreshWindow"
     @move-window="moveWindow"
     @resize-window="resizeWindow"
     @toggle-launcher="toggleLauncher"
@@ -678,6 +679,25 @@ function maximizeWindow(windowId) {
           restoredY: item.maximized ? item.restoredY : item.y,
           restoredWidth: item.maximized ? item.restoredWidth : item.width,
           restoredHeight: item.maximized ? item.restoredHeight : item.height,
+        }
+      : item,
+  );
+  focusWindow(targetId);
+}
+
+function refreshWindow(windowId) {
+  const targetId = String(windowId || "").trim();
+  if (!targetId) return;
+  const targetWindow = desktopWindows.value.find((item) => item.id === targetId);
+  if (!targetWindow) return;
+  desktopWindows.value = desktopWindows.value.map((item) =>
+    item.id === targetId
+      ? {
+          ...item,
+          embeddedUrl: buildEmbeddedAppUrl(item.sourcePath, {
+            windowId: item.id,
+            reloadKey: `${Date.now()}`,
+          }),
         }
       : item,
   );

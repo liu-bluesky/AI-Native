@@ -3,14 +3,30 @@
     <div class="workbench-app__ambient" aria-hidden="true" />
 
     <header class="workbench-app__hero">
-      <div>
+      <div class="workbench-app__hero-copy">
         <div class="workbench-app__eyebrow">AI Desktop</div>
-        <h1>从这里打开应用。</h1>
-        <p>工作台不再跳去某个页面，它是桌面里的总控应用。项目、素材、市场和设置中心都会以窗口方式运行，平台菜单统一收进设置中心。</p>
+        <h1>工作台现在直接看统计。</h1>
+        <p>这里不只负责打开应用，也负责快速进入关键观测入口。统计已经从设置区挪回工作台，方便直接判断 MCP 活跃度、会话推进和当前观测盲区。</p>
+        <div class="workbench-app__actions">
+          <button type="button" class="workbench-app__primary" @click="openApp('/ai/chat', 'chat')">
+            打开 AI 控制台
+          </button>
+          <button type="button" class="workbench-app__secondary" @click="openApp('/statistics', 'settings-statistics')">
+            打开统计
+          </button>
+        </div>
       </div>
-      <button type="button" class="workbench-app__primary" @click="openApp('/ai/chat', 'chat')">
-        打开 AI 控制台
-      </button>
+
+      <aside class="workbench-app__hero-panel">
+        <div class="workbench-app__hero-panel-label">New in Workbench</div>
+        <strong>把判断系统状态的入口放回主工作流。</strong>
+        <p>优先看哪条 MCP 链路在工作、哪些会话没有闭环、当前统计还缺什么。</p>
+        <ul class="workbench-app__hero-points">
+          <li>直接打开统计而不是先绕去设置中心</li>
+          <li>先看“有结论的数据”，再看原始明细</li>
+          <li>把数据盲区显式写出来，避免误判</li>
+        </ul>
+      </aside>
     </header>
 
     <div class="workbench-app__grid">
@@ -122,10 +138,15 @@ function pinApp(app) {
 .workbench-app__hero {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 360px);
+  align-items: stretch;
   gap: 24px;
   margin-bottom: 28px;
+}
+
+.workbench-app__hero-copy {
+  display: flex;
+  flex-direction: column;
 }
 
 .workbench-app__eyebrow {
@@ -154,11 +175,19 @@ function pinApp(app) {
 }
 
 .workbench-app__primary,
+.workbench-app__secondary,
 .workbench-app__card-main,
 .workbench-app__pin {
   border: 0;
   cursor: pointer;
   font: inherit;
+}
+
+.workbench-app__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 20px;
 }
 
 .workbench-app__primary {
@@ -169,6 +198,77 @@ function pinApp(app) {
   color: #fff;
   font-weight: 700;
   box-shadow: 0 18px 36px rgba(15, 23, 42, 0.16);
+}
+
+.workbench-app__secondary {
+  height: 46px;
+  padding: 0 18px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #0f172a;
+  font-weight: 700;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
+}
+
+.workbench-app__hero-panel {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(22px);
+}
+
+.workbench-app__hero-panel-label {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #c2410c;
+}
+
+.workbench-app__hero-panel strong {
+  color: #0f172a;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.workbench-app__hero-panel p {
+  max-width: none;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.workbench-app__hero-points {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: #475569;
+  font-size: 13px;
+}
+
+.workbench-app__hero-points li {
+  position: relative;
+  padding-left: 18px;
+}
+
+.workbench-app__hero-points li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #fb923c, #f97316);
+  box-shadow: 0 0 0 6px rgba(249, 115, 22, 0.12);
 }
 
 .workbench-app__grid {

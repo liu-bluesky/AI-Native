@@ -33,15 +33,33 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE TABLE IF NOT EXISTS usage_records (
     id TEXT PRIMARY KEY,
     employee_id TEXT NOT NULL,
+    scope_id TEXT NOT NULL DEFAULT '',
     api_key TEXT NOT NULL DEFAULT '',
     developer_name TEXT NOT NULL DEFAULT 'anonymous',
     event_type TEXT NOT NULL,
     tool_name TEXT NOT NULL DEFAULT '',
+    project_id TEXT NOT NULL DEFAULT '',
+    project_name TEXT NOT NULL DEFAULT '',
+    chat_session_id TEXT NOT NULL DEFAULT '',
+    request_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '',
+    duration_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+    error_message TEXT NOT NULL DEFAULT '',
+    provider_id TEXT NOT NULL DEFAULT '',
+    model_name TEXT NOT NULL DEFAULT '',
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
     client_ip TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_usage_employee ON usage_records(employee_id);
 CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_records(created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_project ON usage_records(project_id);
+CREATE INDEX IF NOT EXISTS idx_usage_request ON usage_records(request_id);
+CREATE INDEX IF NOT EXISTS idx_usage_status ON usage_records(status);
 """
 
 
@@ -62,7 +80,30 @@ def migrate(sqlite_path: Path, database_url: str) -> None:
         ).fetchall()
         sqlite_records = sqlite_conn.execute(
             """
-            SELECT id, employee_id, api_key, developer_name, event_type, tool_name, client_ip, created_at
+            SELECT
+                id,
+                employee_id,
+                COALESCE(scope_id, '') AS scope_id,
+                api_key,
+                developer_name,
+                event_type,
+                tool_name,
+                COALESCE(project_id, '') AS project_id,
+                COALESCE(project_name, '') AS project_name,
+                COALESCE(chat_session_id, '') AS chat_session_id,
+                COALESCE(request_id, '') AS request_id,
+                COALESCE(status, '') AS status,
+                COALESCE(duration_ms, 0) AS duration_ms,
+                COALESCE(error_message, '') AS error_message,
+                COALESCE(provider_id, '') AS provider_id,
+                COALESCE(model_name, '') AS model_name,
+                COALESCE(input_tokens, 0) AS input_tokens,
+                COALESCE(output_tokens, 0) AS output_tokens,
+                COALESCE(cached_input_tokens, 0) AS cached_input_tokens,
+                COALESCE(total_tokens, 0) AS total_tokens,
+                COALESCE(cost_usd, 0) AS cost_usd,
+                client_ip,
+                created_at
             FROM usage_records
             """
         ).fetchall()
@@ -94,18 +135,57 @@ def migrate(sqlite_path: Path, database_url: str) -> None:
                 cur.executemany(
                     """
                     INSERT INTO usage_records
-                        (id, employee_id, api_key, developer_name, event_type, tool_name, client_ip, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        (
+                            id,
+                            employee_id,
+                            scope_id,
+                            api_key,
+                            developer_name,
+                            event_type,
+                            tool_name,
+                            project_id,
+                            project_name,
+                            chat_session_id,
+                            request_id,
+                            status,
+                            duration_ms,
+                            error_message,
+                            provider_id,
+                            model_name,
+                            input_tokens,
+                            output_tokens,
+                            cached_input_tokens,
+                            total_tokens,
+                            cost_usd,
+                            client_ip,
+                            created_at
+                        )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (id) DO NOTHING
                     """,
                     [
                         (
                             row["id"],
                             row["employee_id"],
+                            row["scope_id"],
                             row["api_key"],
                             row["developer_name"],
                             row["event_type"],
                             row["tool_name"],
+                            row["project_id"],
+                            row["project_name"],
+                            row["chat_session_id"],
+                            row["request_id"],
+                            row["status"],
+                            row["duration_ms"],
+                            row["error_message"],
+                            row["provider_id"],
+                            row["model_name"],
+                            row["input_tokens"],
+                            row["output_tokens"],
+                            row["cached_input_tokens"],
+                            row["total_tokens"],
+                            row["cost_usd"],
                             row["client_ip"],
                             row["created_at"],
                         )

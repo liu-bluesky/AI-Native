@@ -1,8 +1,11 @@
 """Project MCP online presence tests."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class _FakePresenceRedis:
@@ -169,13 +172,16 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     assert runtime["bootstrap_checklist"] == [
         "read query://usage-guide",
         "read query://client-profile/codex",
+        "initialize local .ai-employee state in the current CLI workspace and ensure query-mcp-workflow is available there",
+        "treat project-local .ai-employee/skills/query-mcp-workflow as the default skill location; use mcp-skills/knowledge only when maintaining the workflow source repo",
         "generate and persist chat_session_id",
         "bind_project_context with project_id/chat_session_id/root_goal",
         "get_current_task_tree and verify the bound tree matches the current request",
-        "search_ids with raw user question",
+        "call search_ids only when IDs are missing, scope is ambiguous, or cross-project lookup is needed",
         "get_manual_content before rule-specific execution",
         "score request clarity from 1-5; ask for confirmation only when clarity is below 3 or the request is ambiguous",
         "analyze_task -> resolve_relevant_context -> generate_execution_plan",
+        "finish analysis, edits, verification, and local requirement/session recording before syncing task-tree or work-facts back to the server",
         "update_task_node_status on node start and complete_task_node_with_verification on node finish",
         "start_work_session and persist session_id for long tasks",
     ]
@@ -190,6 +196,11 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     assert "停止复用当前 `chat_session_id`" in runtime["cli_prompt"]
     assert "complete_task_node_with_verification" in runtime["cli_prompt"]
     assert ".ai-employee/query-mcp/active-sessions/<chat_session_id>.json" in runtime["cli_prompt"]
+    assert "显式初始化本地 `.ai-employee/`" in runtime["cli_prompt"]
+    assert "通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`" in runtime["cli_prompt"]
+    assert "只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时" in runtime["cli_prompt"]
+    assert "不能替代当前 CLI 工作区初始化" in runtime["cli_prompt"]
+    assert "仅在缺少明确的 `project_id` / `employee_id` / `rule_id`" in runtime["cli_prompt"]
     assert "# Unified Query MCP" not in runtime["cli_prompt"]
 
 
@@ -247,6 +258,166 @@ def test_query_mcp_runtime_uses_configured_bootstrap_template(tmp_path, monkeypa
     assert runtime["cli_prompt"].startswith("BOOT 3 |")
     assert "默认项目: `proj-1`" in runtime["cli_prompt"]
     assert "chat_session_id=chat-session-1" in runtime["cli_prompt"]
+
+
+def test_query_mcp_runtime_normalizes_legacy_bootstrap_template(tmp_path, monkeypatch):
+    client, _, _ = _build_project_mcp_monitor_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+
+    patch_response = client.patch(
+        "/api/system-config",
+        json={
+            "query_mcp_bootstrap_prompt_template": (
+                "你已接入统一查询 MCP。\n"
+                "6. 首轮必须把用户原始问题原文传给 `search_ids(keyword=\"<用户原始问题>\")`，不要只写“当前项目”这类代称。"
+            ),
+        },
+    )
+    assert patch_response.status_code == 200
+
+    response = client.get(
+        "/api/projects/query-mcp/runtime",
+        params={"project_id": "proj-1", "chat_session_id": "chat-session-1"},
+    )
+    assert response.status_code == 200
+    runtime = response.json()["runtime"]
+    assert "首轮必须把用户原始问题原文传给" not in runtime["cli_prompt"]
+    assert "仅在缺少明确的 `project_id` / `employee_id` / `rule_id`" in runtime["cli_prompt"]
+
+
+def test_query_mcp_runtime_normalizes_legacy_skill_source_line(tmp_path, monkeypatch):
+    client, _, _ = _build_project_mcp_monitor_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+
+    patch_response = client.patch(
+        "/api/system-config",
+        json={
+            "query_mcp_bootstrap_prompt_template": (
+                "HEAD\n"
+                "当前统一查询 MCP 工作流技能的服务端权威元数据位于 `mcp-skills/knowledge/skills/query-mcp-workflow.json`，技能包位于 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/`；核心文件优先读取 `SKILL.md` 与 `manifest.json`。若宿主或项目已提供本地同名技能目录，优先读取本地副本。\n"
+                "TAIL"
+            ),
+        },
+    )
+    assert patch_response.status_code == 200
+
+    response = client.get(
+        "/api/projects/query-mcp/runtime",
+        params={"project_id": "proj-1", "chat_session_id": "chat-session-1"},
+    )
+    assert response.status_code == 200
+    runtime = response.json()["runtime"]
+    assert "当前统一查询 MCP 工作流技能的服务端权威元数据位于" not in runtime["cli_prompt"]
+    assert "通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`" in runtime["cli_prompt"]
+    assert "只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时" in runtime["cli_prompt"]
+
+
+def test_query_mcp_runtime_upgrades_legacy_default_bootstrap_template(tmp_path, monkeypatch):
+    client, _, _ = _build_project_mcp_monitor_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+
+    legacy_template = """你已接入统一查询 MCP。
+
+详细规则不要直接内联到宿主提示词；但开始执行前必须按需读取这些资源：
+
+- `query://usage-guide`
+- `query://client-profile/codex`
+
+强制接入步骤：
+
+1. 先读取 `query://usage-guide`；当前是 Codex CLI 时，再读取 `query://client-profile/codex`。
+2. 仅在缺少明确的 `project_id` / `employee_id` / `rule_id`，或需要跨项目检索时，再调用 `search_ids(keyword="<用户原始问题>")`；已明确当前项目且在项目内执行时可直接读取上下文或进入本地实现，不要为满足流程机械检索。
+3. 不要依赖 description、项目说明或“当前项目”文字做绑定；如需项目绑定或续接任务树，显式调用 `bind_project_context(...)`。
+4. 需要项目或规则上下文时，先读取 `get_manual_content(project_id=...)`，再按需继续查询规则或成员。
+5. 实现型需求必须先走 `analyze_task -> resolve_relevant_context -> generate_execution_plan`，再进入执行与验证。
+6. 当前全局清晰度确认阈值为 3/5；先按 1-5 分估计用户需求清晰度。
+7. 若目标、对象、范围和预期结果足够清晰，且清晰度分数 >= 3，直接处理，不主动要求确认计划。
+8. 若清晰度分数 < 3、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认后不要重复确认；查询型、客服型问题不要默认升级成计划审批流程。
+9. 长任务先调用 `start_work_session` 获取 `session_id`，后续复用同一个 `chat_session_id/session_id`，并用 `save_work_facts`、`append_session_event` 维护轨迹。
+10. 如宿主支持任务树，`bind_project_context(...)` 后立刻读取 `get_current_task_tree`，核对 `root_goal/title/current_node` 是否属于当前问题；若明显属于旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。
+11. 真正进入执行前，再读取一次 `get_current_task_tree` 确认当前节点；开始节点用 `update_task_node_status`，完成节点必须用 `complete_task_node_with_verification` 补验证结果后再结束。
+12. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。
+
+当前接入上下文：
+
+- 默认项目: `proj-d16591a6`
+- 建议把 URL 默认上下文里的 `project_id` 固定为 `proj-d16591a6`。
+- 涉及当前项目时，若项目和对象已明确，可直接 `get_manual_content(project_id="proj-d16591a6")` 或进入 `start_project_workflow(...)`；仅在缺少 ID 或需要跨项目定位时，再调用 `search_ids(keyword="<用户原始问题>", project_id="proj-d16591a6")`。
+- 若要创建或续接当前项目任务树，优先显式调用 `bind_project_context(project_id="proj-d16591a6", chat_session_id="<聊天会话ID>", root_goal="<用户原始问题>")`。
+- 当前页面已有 `chat_session_id=chat-session-8635d55008c7`；仅在明确要续接当前任务树时复用，否则新开的并行 CLI 应重新生成自己的 `chat_session_id`。
+- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。
+- 若当前还没有 `session_id`，调用 `start_work_session` 后也要立刻持久化；中断恢复顺序固定为 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)`。
+- 若项目工作区不可解析，再退回当前 CLI 自己的本地存储；不要新写 `current-session.json`、`chat_session_id.txt`、`session_id.txt`、`session.env` 这类 legacy 文件。
+
+回答要求：
+
+- 先基于 MCP 查询结果回答，不要把猜测写成事实。
+- 若信息来自 MCP，尽量保留对应的项目 / 员工 / 规则 ID，方便追溯。
+- 若入口文件或宿主系统还有额外约束，优先遵守宿主入口文件约定。"""
+
+    patch_response = client.patch(
+        "/api/system-config",
+        json={"query_mcp_bootstrap_prompt_template": legacy_template},
+    )
+    assert patch_response.status_code == 200
+
+    response = client.get(
+        "/api/projects/query-mcp/runtime",
+        params={"project_id": "proj-1", "chat_session_id": "chat-session-1"},
+    )
+    assert response.status_code == 200
+    runtime = response.json()["runtime"]
+    assert "显式初始化本地 `.ai-employee/`" in runtime["cli_prompt"]
+    assert "当前任务先在项目本地推进" in runtime["cli_prompt"]
+    assert "不能替代当前 CLI 工作区初始化" in runtime["cli_prompt"]
+
+
+def test_query_mcp_prompt_surfaces_use_project_local_skill_wording():
+    expected_local_marker = ".ai-employee/skills/query-mcp-workflow/"
+    expected_source_marker = "mcp-skills/knowledge/skills/query-mcp-workflow.json"
+    expected_repo_marker = "只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时"
+
+    prompt_surface_files = [
+        "AGENTS.md",
+        "web-admin/api/stores/json/system_config_store.py",
+        "web-admin/api/routers/projects.py",
+        "web-admin/api/services/dynamic_mcp_apps_query.py",
+        "web-admin/frontend/src/views/system/SystemConfig.vue",
+        "web-admin/frontend/src/components/UnifiedMcpAccessDialog.vue",
+    ]
+    for relative_path in prompt_surface_files:
+        content = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        assert expected_local_marker in content, relative_path
+        assert expected_source_marker in content, relative_path
+        assert expected_repo_marker in content, relative_path
+
+    skill_package_content = (
+        REPO_ROOT / "mcp-skills/knowledge/skill-packages/query-mcp-workflow/SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert ".ai-employee/skills/query-mcp-workflow/" in skill_package_content
+    assert "system source repo" in skill_package_content
+
+
+def test_query_mcp_sync_rule_file_exists_in_rules_directory():
+    agents_content = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    rule_content = (REPO_ROOT / "rules/query-mcp-prompt-sync.md").read_text(encoding="utf-8")
+    assert "需求一开始就要在当前 CLI 工作区完成本地初始化、创建 requirement 与 canonical session 状态" in agents_content
+    assert "必须同步更新相关提示词入口、技能说明与回归测试" in rule_content
+    assert ".ai-employee/skills/query-mcp-workflow/" in rule_content
+    assert "mcp-skills/knowledge/skills/query-mcp-workflow.json" in rule_content
+    assert "每个需求都必须在开始时创建并持续更新本地 requirement" in rule_content
+    assert "远程服务写入只算 sync-back" in rule_content
+    assert "`sync_status`、`pending_outbox_count`" in rule_content
+    assert "web-admin/api/services/query_mcp_project_state.py" in rule_content
 
 
 def test_project_manual_template_avoids_frontend_route_specific_wording(tmp_path, monkeypatch):

@@ -1258,52 +1258,69 @@ const DEFAULT_QUERY_MCP_BOOTSTRAP_PROMPT_TEMPLATE = `你已接入统一查询 MC
 
 强制接入步骤：
 1. 先读取 \`query://usage-guide\`；当前是 Codex CLI 时，再读取 \`query://client-profile/codex\`。
-2. 首轮必须把用户原始问题原文传给 \`search_ids(keyword="<用户原始问题>")\`，不要只写“当前项目”这类代称。
-3. 不要依赖 description、项目说明或“当前项目”文字做绑定；如需项目绑定或续接任务树，显式调用 \`bind_project_context(...)\`。
-4. 需要项目或规则上下文时，先读取 \`get_manual_content(project_id=...)\`，再按需继续查询规则或成员。
-5. 实现型需求必须先走 \`analyze_task -> resolve_relevant_context -> generate_execution_plan\`，再进入执行与验证。
-6. 当前全局清晰度确认阈值为 {{clarity_threshold}}/5；先按 1-5 分估计用户需求清晰度。
-7. 若目标、对象、范围和预期结果足够清晰，且清晰度分数 >= {{clarity_threshold}}，直接处理，不主动要求确认计划。
-8. 若清晰度分数 < {{clarity_threshold}}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认后不要重复确认；查询型、客服型问题不要默认升级成计划审批流程。
-9. 长任务先调用 \`start_work_session\` 获取 \`session_id\`，后续复用同一个 \`chat_session_id/session_id\`，并用 \`save_work_facts\`、\`append_session_event\` 维护轨迹。
-10. 如宿主支持任务树，\`bind_project_context(...)\` 后立刻读取 \`get_current_task_tree\`，核对 \`root_goal/title/current_node\` 是否属于当前问题；若明显属于旧任务树，停止复用当前 \`chat_session_id\`，改为新建并持久化新的 \`chat_session_id\` 后重新绑定。
-11. 真正进入执行前，再读取一次 \`get_current_task_tree\` 确认当前节点；开始节点用 \`update_task_node_status\`，完成节点必须用 \`complete_task_node_with_verification\` 补验证结果后再结束。
-12. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。
+2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 \`.ai-employee/\`，至少确保 \`.ai-employee/skills/\`、\`.ai-employee/query-mcp/active-sessions/\`、\`.ai-employee/query-mcp/active/\`、\`.ai-employee/query-mcp/session-history/\` 与 \`.ai-employee/requirements/<project_id>/\` 可用。
+3. 再检查 \`.ai-employee/skills/query-mcp-workflow/\` 是否已存在；缺失时先通过 MCP 从服务端技能库同步或创建到当前工作区，已存在则直接复用，禁止重复创建。
+4. 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 \`.ai-employee/skills/query-mcp-workflow/\`；核心文件优先读取本地副本中的 \`SKILL.md\` 与 \`manifest.json\`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 \`mcp-skills/knowledge/skills/query-mcp-workflow.json\` 与 \`mcp-skills/knowledge/skill-packages/query-mcp-workflow/\` 作为回源比对位置。
+5. 若系统曾把 \`.ai-employee\` 或 \`query-mcp-workflow\` 隐式落到其他子目录，只能视为历史状态，不能替代当前 CLI 工作区初始化；当前入口仍要在当前工作区补齐。
+6. 若当前任务是更新工作流规范或技能包，优先在本地技能副本、提示词模板和同步策略上修改；只有本地缺失或需要回源比对时，才从服务端技能库同步。
+7. 实现型需求优先调用 \`start_project_workflow(...)\` 作为固定入口；若宿主暂不适合走固定入口，至少按 \`search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> generate_execution_plan\` 的顺序补齐前置步骤。
+8. 仅在缺少明确的 \`project_id\` / \`employee_id\` / \`rule_id\`，或需要跨项目检索时，再调用 \`search_ids(keyword="<用户原始问题>")\`；已明确当前项目且在项目内执行时可直接读取上下文或进入本地实现。
+9. 不要依赖 description、项目说明或“当前项目”文字做绑定；如需项目绑定或续接任务树，显式调用 \`bind_project_context(...)\`。
+10. 当前任务先在项目本地推进：先在工作区完成分析、改动、验证和本地记录，再通过 MCP 回写任务树、工作事实、交付结论或记忆到服务端。
+11. 每个需求必须维护 1 个本地 requirement 对象；项目工作区可解析时，写入 \`.ai-employee/requirements/<project_id>/<chat_session_id>.json\`。对象内至少保留 \`workflow_skill\`、\`record_path\`、\`storage_scope\`、\`task_tree\`、\`current_task_node\`、\`task_branches\`、\`history\` 等字段，避免只在服务端推进看不到本地状态。
+12. 当前全局清晰度确认阈值为 {{clarity_threshold}}/5；先按 1-5 分估计用户需求清晰度。
+13. 若目标、对象、范围和预期结果足够清晰，且清晰度分数 >= {{clarity_threshold}}，直接处理，不主动要求确认计划。
+14. 若清晰度分数 < {{clarity_threshold}}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认后不要重复确认；查询型、客服型问题不要默认升级成计划审批流程。
+15. 长任务先调用 \`start_work_session\` 获取 \`session_id\`，后续复用同一个 \`chat_session_id/session_id\`，并用 \`save_work_facts\`、\`append_session_event\` 维护轨迹。
+16. 如宿主支持任务树，\`bind_project_context(...)\` 后立刻读取 \`get_current_task_tree\`，核对 \`root_goal/title/current_node\` 是否属于当前问题；若明显属于旧任务树，停止复用当前 \`chat_session_id\`，改为新建并持久化新的 \`chat_session_id\` 后重新绑定。
+17. 真正进入执行前，再读取一次 \`get_current_task_tree\` 确认当前节点；开始节点用 \`update_task_node_status\`，完成节点必须用 \`complete_task_node_with_verification\` 补验证结果后再结束。
+18. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。
 
 当前接入上下文：
 {{project_context_block}}
 {{chat_session_block}}
 - \`chat_session_id\` 生成后要立即持久化；优先写项目目录 \`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json\`，并同步维护 \`.ai-employee/query-mcp/active/<project_id>.json\` 与 \`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json\`。
+- requirement 本地对象与 query-mcp canonical 状态要同时维护；不要只写 session 文件而缺失 \`.ai-employee/requirements/<project_id>/<chat_session_id>.json\`。
+- 如果自动 bootstrap 把状态写到了别的服务子目录，不能把它当成当前仓库根目录已初始化；入口提示词必须以当前 CLI 工作区为准重新核对。
 - 若当前还没有 \`session_id\`，调用 \`start_work_session\` 后也要立刻持久化；中断恢复顺序固定为 \`bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)\`。
 - 若项目工作区不可解析，再退回当前 CLI 自己的本地存储；不要新写 \`current-session.json\`、\`chat_session_id.txt\`、\`session_id.txt\`、\`session.env\` 这类 legacy 文件。
 
 回答要求：
-- 先基于 MCP 查询结果回答，不要把猜测写成事实。
+- 先基于 MCP 查询结果和本地技能内容回答，不要把猜测写成事实。
 - 若信息来自 MCP，尽量保留对应的项目 / 员工 / 规则 ID，方便追溯。
+- 若引用技能内容，优先注明技能 ID、包路径或本地目录位置，方便追溯。
 - 若入口文件或宿主系统还有额外约束，优先遵守宿主入口文件约定。`;
 const DEFAULT_QUERY_MCP_USAGE_GUIDE_TEMPLATE = `# Unified Query MCP
 
 - 统一入口路径: /mcp/query
 - 目标: 提供项目/员工/规则查询、任务分析、上下文聚合、执行规划、任务树推进、工作轨迹、需求历史查询和交付报告能力。
-- 推荐工具: bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory
+- 推荐工具: start_project_workflow / bind_project_context / search_ids / get_content / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan / get_current_task_tree / update_task_node_status / complete_task_node_with_verification / classify_command_risk / check_workspace_scope / resolve_execution_mode / check_operation_policy / start_work_session / save_work_facts / append_session_event / resume_work_session / summarize_checkpoint / list_recent_project_requirements / get_requirement_history / build_delivery_report / generate_release_note_entry / save_project_memory
 
 ## 最少执行规则
 1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。
+1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。
+1.2 统一查询工作流默认先检查项目本地 \`.ai-employee/skills/query-mcp-workflow/\`；若不存在，再从系统技能库同步或创建到本地；已存在则直接复用，禁止重复创建。
+1.3 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 \`.ai-employee/skills/query-mcp-workflow/\`；优先读取本地副本中的 \`SKILL.md\` 与 \`manifest.json\`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 \`mcp-skills/knowledge/skills/query-mcp-workflow.json\` 与 \`mcp-skills/knowledge/skill-packages/query-mcp-workflow/\` 作为回源比对位置。
 2. MCP 配置里的 description、项目说明和“当前项目”这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文，以及 bind_project_context(...) 写入的 MCP 会话绑定。
 3. 若接入地址缺少 project_id，或需要续接任务树但缺少 chat_session_id，首轮立即调用 bind_project_context(project_id, chat_session_id?, root_goal?)；不要只依赖 description 里的项目说明。
 4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。
 4.0 如果 direct CLI fallback 已先生成临时 \`query-cli.*\` 会话，后续再用显式 \`cli.*\` 会话调用 bind_project_context(...) 时，系统会自动把影子任务树迁到正式会话；但最佳实践仍然是首轮就传稳定 chat_session_id。
-4.1 每个 CLI 会话都应持久化自己生成的 chat_session_id；如能解析项目工作区，优先写到项目目录 .ai-employee/query-mcp/，否则再退回 CLI 自己的本地存储。同一轮任务固定复用，只有新开的并行 CLI 或全新任务才重新生成。
+4.1 每个 CLI 会话都应持久化自己生成的 chat_session_id；如能解析项目工作区，优先写到项目目录 \`.ai-employee/query-mcp/\`，否则再退回 CLI 自己的本地存储。同一轮任务固定复用，只有新开的并行 CLI 或全新任务才重新生成。
 4.2 query-mcp 本地持久化必须使用唯一文件规范：每进程会话文件为 \`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json\`（每个 CLI 进程写自己的独立文件，避免多进程冲突）；项目级权威状态文件为 \`.ai-employee/query-mcp/active/<project_id>.json\` 与 \`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json\`。除兼容历史数据时只读外，禁止新写 \`current-session.json\`、\`chat_session_id.txt\`、\`session_id.txt\`、\`chat_session_id\`、\`session_id\`、\`session.env\`、\`current-query-session.json\`、\`current-work-session.json\` 这类分叉文件。
+4.3 每个需求还必须单独维护 \`.ai-employee/requirements/<project_id>/<chat_session_id>.json\`；一条需求一个对象，不要把多个需求混写到同一聚合文件。
+4.4 requirement 对象应至少记录 \`workflow_skill\`、\`record_path\`、\`storage_scope\`、\`task_tree\`、\`current_task_node\`、\`task_branches\`、\`history\`，保证本地推进和服务端任务树都能追溯到同一条需求。
 5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。
-6. 首轮查询必须把用户原始问题原文放进 search_ids(keyword="<用户原始问题>")；不要只写“当前项目”“这个规则”“项目手册”这类代称。
+6. 仅在缺少明确的 project_id / employee_id / rule_id，或需要跨项目检索时，再调用 search_ids(keyword="<用户原始问题>")；已明确当前项目且在项目内执行时，可直接 get_manual_content、start_project_workflow 或进入本地实现。
 7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。
 7.0 项目型问题优先使用项目绑定员工、规则和技能；先判断项目内现成能力能否闭环，只有项目能力不足时才自行补足。
 7.0.1 每次新请求进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文；不要只看规则标题，也不要把无关规则机械带入当前问题。
-7.0.2 {{clarity_threshold_line}}
-7.0.3 {{clarity_direct_line}}
-7.0.4 {{clarity_confirm_line}}
-7.0.5 {{clarity_repeat_line}}`;
+7.0.2 实现型任务先在项目本地推进：先完成本地分析、改动、验证和 requirement 记录，再通过 MCP 回写任务树、工作事实、交付结论与记忆。
+7.0.3 {{clarity_threshold_line}}
+7.0.4 {{clarity_direct_line}}
+7.0.5 {{clarity_confirm_line}}
+7.0.6 {{clarity_repeat_line}}
+7.1 记忆检索不是每轮固定步骤；仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，再调用 recall_project_memory 或 recall_employee_memory。
+7.2 同一任务轮若已生成任务树并进入执行，后续默认依赖当前会话、任务树和工作轨迹，不要重复检索同一批项目记忆。`;
 const DEFAULT_QUERY_MCP_CLIENT_PROFILE_TEMPLATE = `# {{client_title}} Client Profile
 
 {{focus_lines}}`;

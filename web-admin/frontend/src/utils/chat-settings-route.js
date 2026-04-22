@@ -7,6 +7,7 @@ const SETTINGS_PANEL_TARGETS = [
   { panel: "desktop-wallpaper", prefixes: ["/desktop/background"] },
   { panel: "changelog-entries", prefixes: ["/changelog-entries"] },
   { panel: "work-sessions", prefixes: ["/work-sessions"] },
+  { panel: "statistics", prefixes: ["/statistics"] },
   { panel: "online-users", prefixes: ["/online-users"] },
   { panel: "mcp-monitor", prefixes: ["/mcp-monitor"] },
   { panel: "dictionaries", prefixes: ["/dictionaries"] },

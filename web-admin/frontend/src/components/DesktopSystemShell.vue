@@ -133,6 +133,16 @@
                 </div>
               </div>
               <div class="desktop-system__window-actions">
+                <button
+                  type="button"
+                  class="desktop-system__window-action"
+                  aria-label="刷新当前窗口"
+                  title="刷新当前窗口"
+                  @pointerdown.stop
+                  @click.stop="$emit('refresh-window', window.id)"
+                >
+                  ↻
+                </button>
                 <slot name="toolbar" :window="window" />
               </div>
             </div>
@@ -306,6 +316,7 @@ const emit = defineEmits([
   "close-window",
   "minimize-window",
   "maximize-window",
+  "refresh-window",
   "toggle-launcher",
   "move-window",
   "resize-window",
@@ -1551,6 +1562,32 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.desktop-system__window-action {
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(226, 232, 240, 0.88);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #475569;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    color 180ms ease,
+    background 180ms ease;
+}
+
+.desktop-system__window-action:hover {
+  transform: translateY(-1px);
+  color: #0f172a;
+  border-color: rgba(56, 189, 248, 0.26);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.08);
 }
 
 .desktop-system__window-handle {

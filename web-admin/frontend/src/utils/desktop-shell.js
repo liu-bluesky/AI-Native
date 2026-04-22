@@ -83,6 +83,7 @@ const DESKTOP_APP_ICON_THEMES = {
   "settings-system": ["#64748b", "#1e293b"],
   "settings-changelog": ["#fb923c", "#ea580c"],
   "settings-work-sessions": ["#38bdf8", "#2563eb"],
+  "settings-statistics": ["#f97316", "#ea580c"],
   "settings-dictionaries": ["#a78bfa", "#6d28d9"],
   "settings-providers": ["#06b6d4", "#0891b2"],
   "settings-api-keys": ["#fbbf24", "#d97706"],
@@ -445,6 +446,20 @@ const DESKTOP_APP_ITEMS = [
     category: "settings",
     categoryLabel: "设置应用",
     match: (path) => String(path || "").startsWith("/work-sessions"),
+  }),
+  createApp({
+    id: "settings-statistics",
+    label: "统计",
+    shortLabel: "ST",
+    path: "/statistics",
+    summary: "直接在工作台里看 MCP 活跃度、会话闭环和当前观测盲区。",
+    eyebrow: "Operations Insight",
+    width: 1220,
+    height: 820,
+    launcher: true,
+    category: "workspace",
+    categoryLabel: "工作应用",
+    match: (path) => String(path || "").startsWith("/statistics"),
   }),
   createApp({
     id: "settings-dictionaries",
@@ -843,6 +858,10 @@ export function buildEmbeddedAppUrl(pathname, options = {}) {
   const windowId = String(options.windowId || "").trim();
   if (windowId) {
     params.set("desktop_window_id", windowId);
+  }
+  const reloadKey = String(options.reloadKey || "").trim();
+  if (reloadKey) {
+    params.set("desktop_reload_key", reloadKey);
   }
   const rootQuery = params.toString();
   return `/${rootQuery ? `?${rootQuery}` : ""}#${routePath}`;

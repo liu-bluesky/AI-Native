@@ -13,6 +13,16 @@ import uuid
 from mcp.server.fastmcp import FastMCP
 
 from core.deps import employee_store, project_store, system_config_store, work_session_store
+from services.query_mcp_project_state import (
+    append_query_mcp_progress_outbox,
+    bootstrap_query_mcp_local_workspace,
+    delete_query_mcp_progress_outbox_entries,
+    load_query_mcp_progress_outbox,
+    load_query_mcp_requirement_record,
+    mark_query_mcp_outbox_work_session_event,
+    persist_query_mcp_local_state,
+    upsert_query_mcp_requirement_record,
+)
 from services.dynamic_mcp_context import (
     get_project_detail_runtime,
     get_project_employee_detail_runtime,
@@ -39,6 +49,7 @@ from stores.mcp_bridge import (
 from stores.json.work_session_store import WorkSessionEvent
 
 _FASTMCP_HOST = os.environ.get("FASTMCP_HOST", "0.0.0.0")
+_LOCAL_PROGRESS_TERMINAL_STATUSES = {"done", "completed", "archived", "closed"}
 
 _TASK_TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "mcp-upgrade": ("mcp", "query", "sse", "tool", "resource", "agent capability"),
@@ -1567,6 +1578,207 @@ def _save_work_session_event_record(
     return {"status": "saved", "event_id": event.id}
 
 
+def _local_progress_entry_to_item(entry: dict[str, object]) -> dict[str, object]:
+    trajectory = (
+        entry.get("trajectory")
+        if isinstance(entry.get("trajectory"), dict)
+        else {}
+    )
+    memory_type = _normalize_text(entry.get("memory_type"))
+    return {
+        "id": _normalize_text(entry.get("event_id")),
+        "employee_id": _normalize_text(entry.get("employee_id")),
+        "project_id": _normalize_text(entry.get("project_id")),
+        "project_name": _normalize_text(entry.get("project_name")),
+        "type": memory_type or MemoryType.KEY_EVENT.value,
+        "task_tree_session_id": _normalize_text(trajectory.get("task_tree_session_id")),
+        "task_tree_chat_session_id": _normalize_text(trajectory.get("task_tree_chat_session_id")),
+        "task_node_id": _normalize_text(trajectory.get("task_node_id")),
+        "task_node_title": _normalize_text(trajectory.get("task_node_title")),
+        "content": _normalize_text(entry.get("content"), 8000),
+        "created_at": _normalize_text(entry.get("created_at")),
+        "updated_at": _normalize_text(entry.get("updated_at")),
+        "trajectory": _structured_trajectory_payload(
+            kind=_normalize_text(trajectory.get("kind")),
+            session_id=_normalize_text(trajectory.get("session_id")),
+            task_tree_session_id=_normalize_text(trajectory.get("task_tree_session_id")),
+            task_tree_chat_session_id=_normalize_text(trajectory.get("task_tree_chat_session_id")),
+            task_node_id=_normalize_text(trajectory.get("task_node_id")),
+            task_node_title=_normalize_text(trajectory.get("task_node_title")),
+            event_type=_normalize_text(trajectory.get("event_type")),
+            phase=_normalize_text(trajectory.get("phase")),
+            step=_normalize_text(trajectory.get("step")),
+            status=_normalize_text(trajectory.get("status")),
+            goal=_normalize_text(trajectory.get("goal")),
+            changed_files=_coerce_list_text(trajectory.get("changed_files")),
+            verification=_coerce_list_text(trajectory.get("verification")),
+            risks=_coerce_list_text(trajectory.get("risks")),
+            next_steps=_coerce_list_text(trajectory.get("next_steps")),
+            facts=_coerce_list_text(trajectory.get("facts")),
+            content=_normalize_text(trajectory.get("content")),
+        ),
+    }
+
+
+def _collect_local_progress_records(
+    *,
+    project_id: str,
+    employee_id: str = "",
+    session_id: str = "",
+    chat_session_id: str = "",
+    limit: int = 200,
+) -> list[dict]:
+    try:
+        entries = load_query_mcp_progress_outbox(
+            _normalize_text(project_id),
+            chat_session_id=_normalize_text(chat_session_id),
+            session_id=_normalize_text(session_id),
+            limit=max(1, min(int(limit or 200), 500)),
+        )
+    except Exception:  # pragma: no cover - defensive fallback
+        return []
+    employee_id_value = _normalize_text(employee_id)
+    items: list[dict] = []
+    for entry in entries:
+        if employee_id_value and _normalize_text(entry.get("employee_id")) not in {"", employee_id_value}:
+            continue
+        items.append(_local_progress_entry_to_item(entry))
+    return items
+
+
+def _merge_progress_records(*record_groups: list[dict], limit: int = 200) -> list[dict]:
+    merged: list[dict] = []
+    seen_ids: set[str] = set()
+    for group in record_groups:
+        for item in group or []:
+            item_id = _normalize_text(item.get("id"), 120)
+            if item_id and item_id in seen_ids:
+                continue
+            if item_id:
+                seen_ids.add(item_id)
+            merged.append(item)
+    merged.sort(
+        key=lambda item: (
+            _item_modified_at(item),
+            _normalize_text(item.get("id"), 120),
+        ),
+        reverse=True,
+    )
+    try:
+        limit_value = max(1, min(int(limit or 200), 500))
+    except (TypeError, ValueError):
+        limit_value = 200
+    return merged[:limit_value]
+
+
+def _should_flush_local_progress(status: str) -> bool:
+    return _normalize_text(status, 80).lower() in _LOCAL_PROGRESS_TERMINAL_STATUSES
+
+
+def _sync_local_progress_entry(entry: dict[str, object]) -> dict[str, object]:
+    project_id_value = _normalize_text(entry.get("project_id"))
+    if not project_id_value:
+        return {"error": "project_id is required"}
+    content_value = _normalize_text(entry.get("content"), 8000)
+    trajectory = entry.get("trajectory") if isinstance(entry.get("trajectory"), dict) else {}
+    memory_type_value = _normalize_text(entry.get("memory_type"))
+    memory_type = (
+        MemoryType.LEARNED_PATTERN
+        if memory_type_value == MemoryType.LEARNED_PATTERN.value
+        else MemoryType.KEY_EVENT
+    )
+    purpose_tags = tuple(_coerce_list_text(entry.get("purpose_tags")))
+    memory_result = _save_project_memory_entries(
+        project_id=project_id_value,
+        employee_id=_normalize_text(entry.get("employee_id")),
+        content=content_value,
+        memory_type=memory_type,
+        importance=float(entry.get("importance") or 0.6),
+        project_name=_normalize_text(entry.get("project_name")),
+        purpose_tags=purpose_tags or ("query-mcp", "local-outbox"),
+    )
+    if memory_result.get("error"):
+        return {"error": memory_result.get("error"), "memory_result": memory_result}
+    work_session_event_id = _normalize_text(entry.get("work_session_event_id"))
+    if work_session_event_id:
+        work_session_event = {"status": "saved", "event_id": work_session_event_id}
+    else:
+        work_session_event = _save_work_session_event_record(
+            project_id=project_id_value,
+            project_name=_normalize_text(entry.get("project_name")),
+            employee_id=_normalize_text(entry.get("employee_id")),
+            trajectory=trajectory,
+        )
+        if work_session_event.get("status") == "error":
+            return {"error": work_session_event.get("detail") or "sync_work_session_event_failed", "memory_result": memory_result}
+    return {
+        "memory_result": memory_result,
+        "work_session_event": work_session_event,
+        "task_tree": None,
+    }
+
+
+def _flush_local_progress_outbox(
+    *,
+    project_id: str,
+    chat_session_id: str,
+) -> dict[str, object]:
+    entries = load_query_mcp_progress_outbox(
+        _normalize_text(project_id),
+        chat_session_id=_normalize_text(chat_session_id),
+        limit=500,
+        oldest_first=True,
+    )
+    if not entries:
+        return {
+            "status": "empty",
+            "synced_count": 0,
+            "memory_ids": [],
+            "saved_count": 0,
+            "work_session_event": {"status": "skipped", "reason": "outbox_empty"},
+            "task_tree": None,
+        }
+    synced_event_ids: list[str] = []
+    memory_ids: list[str] = []
+    skipped_employee_ids: list[str] = []
+    last_work_session_event: dict[str, object] = {"status": "skipped", "reason": "not_synced"}
+    task_tree_payload = None
+    sync_error = ""
+    for entry in entries:
+        synced = _sync_local_progress_entry(entry)
+        if synced.get("error"):
+            sync_error = _normalize_text(synced.get("error"), 400)
+            break
+        memory_result = synced.get("memory_result") if isinstance(synced.get("memory_result"), dict) else {}
+        memory_ids.extend(_coerce_list_text(memory_result.get("memory_ids")))
+        skipped_employee_ids.extend(_coerce_list_text(memory_result.get("skipped_employee_ids")))
+        last_work_session_event = synced.get("work_session_event") if isinstance(synced.get("work_session_event"), dict) else last_work_session_event
+        if synced.get("task_tree") is not None:
+            task_tree_payload = synced.get("task_tree")
+        event_id = _normalize_text(entry.get("event_id"), 80)
+        if event_id:
+            synced_event_ids.append(event_id)
+    if synced_event_ids:
+        delete_query_mcp_progress_outbox_entries(
+            _normalize_text(project_id),
+            chat_session_id=_normalize_text(chat_session_id),
+            event_ids=synced_event_ids,
+        )
+    status_value = "synced" if not sync_error else "partial"
+    if not synced_event_ids and sync_error:
+        status_value = "error"
+    return {
+        "status": status_value,
+        "synced_count": len(synced_event_ids),
+        "memory_ids": memory_ids,
+        "saved_count": len(memory_ids),
+        "skipped_employee_ids": skipped_employee_ids,
+        "work_session_event": last_work_session_event,
+        "task_tree": task_tree_payload,
+        "error": sync_error,
+    }
+
+
 def _work_session_event_to_item(event: WorkSessionEvent) -> dict:
     memory_type = (
         MemoryType.LEARNED_PATTERN.value
@@ -2318,9 +2530,12 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: `description`、项目说明和“当前项目”文字不会自动绑定任务树；URL 或首轮工具参数里必须显式出现 `project_id`，需要续接时再补 `chat_session_id` 或 `bind_project_context(...)`。",
             "- 接入约束: 如果当前 CLI 没有活跃 MCP session，只要显式传了 `project_id + chat_session_id`，`bind_project_context(...)` 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 `chat_session_id`。",
             "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`。",
+            "- 接入约束: 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；缺失时从系统技能库同步或创建到本地，已存在则直接复用，并优先读取本地副本。",
+            "- 接入约束: 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。",
             "- 接入约束: 每个 Codex CLI 会话都应先持久化自己生成的 `chat_session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Codex 自己的本地存储。同一进程整轮任务固定复用，只有新开的并行任务或全新需求才重新生成。",
             "- 接入约束: `query-mcp` 本地状态必须只写三类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立，避免多进程冲突）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；`current-session.json`、`chat_session_id.txt`、`session_id.txt`、`current-query-session.json`、`current-work-session.json`、`session.env` 等 legacy 文件只允许兼容读取，不允许新写。",
-            "- 查询约束: 首轮先把用户原始问题写进 `search_ids(keyword=\"<用户原始问题>\")`；项目型问题再读取 `get_manual_content(project_id=...)`，不要只写“当前项目”这类代称。",
+            "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`。",
+            "- 查询约束: 仅在缺少明确的 `project_id` / `employee_id` / `rule_id`，或需要跨项目检索时，再调用 `search_ids(keyword=\"<用户原始问题>\")`；当前项目和对象已明确时，可直接读取 `get_manual_content(project_id=...)` 或进入 `start_project_workflow(...)`。",
             f"- 交互约束: {clarity_threshold_line}",
             f"- 交互约束: {clarity_direct_line}",
             f"- 交互约束: {clarity_confirm_line}",
@@ -2328,6 +2543,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall_project_memory / recall_employee_memory。",
             "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
             "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
+            "- 工作流约束: 本地优先推进分析、改动、验证和 requirement 记录，再通过 MCP 回写任务树、工作事实与交付结论。",
             "- 任务树约束: 查询型问题保持单检索节点；实现型任务节点才写成分析、实现、验证这类面向目标的步骤。不要把内部检索工具、规则查询工具、候选代理工具或 `Auto inferred proxy entry from scripts/...` 这类描述直接当成节点。",
             "- 任务树约束: `bind_project_context(...)` 后如果宿主支持任务树，立刻调用 `get_current_task_tree` 核对 `root_goal/title/current_node` 是否属于当前用户原始问题；若明显挂到了旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。",
             "- 工作流约束: 用户提需求后先生成计划并挂到任务树，再按计划逐项推进；执行中不要把阶段性结果写成最终结论。",
@@ -2402,21 +2618,26 @@ def build_query_usage_guide_text() -> str:
         "## 最少执行规则\n"
         "1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。\n"
         "1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。\n"
+        "1.2 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；若不存在，再从系统技能库同步或创建到本地；已存在则直接复用，禁止重复创建。\n"
+        "1.3 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。\n"
         "2. MCP 配置里的 description、项目说明、\"当前项目\" 这类文字都不参与真正绑定；真正生效的是 URL 里的 project_id / chat_session_id 默认上下文，以及 bind_project_context(...) 写入的 MCP 会话绑定。\n"
         "3. 若接入地址缺少 project_id，或需要续接任务树但缺少 chat_session_id，首轮立即调用 bind_project_context(project_id, chat_session_id?, root_goal?)；不要只依赖 description 里的项目说明。\n"
         "4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。\n"
         "4.0 如果 direct CLI fallback 已先生成临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话调用 bind_project_context(...) 时，系统会自动把影子任务树迁到正式会话；但最佳实践仍然是首轮就传稳定 chat_session_id。\n"
         "4.1 每个 CLI 会话都应持久化自己生成的 chat_session_id；如能解析项目工作区，优先写到项目目录 .ai-employee/query-mcp/，否则再退回 CLI 自己的本地存储。同一轮任务固定复用，只有新开的并行 CLI 或全新任务才重新生成。\n"
         "4.2 query-mcp 本地持久化必须使用唯一文件规范：每进程会话文件为 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每个 CLI 进程写自己的独立文件，避免多进程冲突）；项目级权威状态文件为 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。除兼容历史数据时只读外，禁止新写 `current-session.json`、`chat_session_id.txt`、`session_id.txt`、`chat_session_id`、`session_id`、`session.env`、`current-query-session.json`、`current-work-session.json` 这类分叉文件。\n"
+        "4.3 每个需求还必须单独维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；一条需求一个对象，不要把多个需求混写到同一聚合文件。\n"
+        "4.4 requirement 对象应至少记录 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`，保证本地推进和服务端任务树都能追溯到同一条需求。\n"
         "5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。\n"
-        "6. 首轮查询必须把用户原始问题原文放进 search_ids(keyword=\"<用户原始问题>\")；不要只写“当前项目”“这个规则”“项目手册”这类代称。\n"
+        "6. 仅在缺少明确的 project_id / employee_id / rule_id，或需要跨项目检索时，再调用 search_ids(keyword=\"<用户原始问题>\")；已明确当前项目且在项目内执行时，可直接 get_manual_content、start_project_workflow 或进入本地实现。\n"
         "7. 需要规则或项目上下文时，先 get_manual_content，再按需调用 get_content；不要跳过 ID 定位直接臆造项目、员工、规则 ID。\n"
         "7.0 项目型问题优先使用项目绑定员工、规则和技能；先判断项目内现成能力能否闭环，只有项目能力不足时才自行补足。\n"
         "7.0.1 每次新请求进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文；不要只看规则标题，也不要把无关规则机械带入当前问题。\n"
-        f"7.0.2 {clarity_threshold_line}\n"
-        f"7.0.3 {clarity_direct_line}\n"
-        f"7.0.4 {clarity_confirm_line}\n"
-        f"7.0.5 {clarity_repeat_line}\n"
+        "7.0.2 实现型任务先在项目本地推进：先完成本地分析、改动、验证和 requirement 记录，再通过 MCP 回写任务树、工作事实、交付结论与记忆。\n"
+        f"7.0.3 {clarity_threshold_line}\n"
+        f"7.0.4 {clarity_direct_line}\n"
+        f"7.0.5 {clarity_confirm_line}\n"
+        f"7.0.6 {clarity_repeat_line}\n"
         "7.1 记忆检索不是每轮固定步骤；仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时，再调用 recall_project_memory 或 recall_employee_memory。\n"
         "7.2 同一任务轮若已生成任务树并进入执行，后续默认依赖当前会话、任务树和工作轨迹，不要重复检索同一批项目记忆。\n"
         "8. 实现型需求必须遵守任务树闭环：先 analyze_task -> resolve_relevant_context -> generate_execution_plan，再 get_current_task_tree 确认节点；执行中用 update_task_node_status 回写状态，完成时必须 complete_task_node_with_verification 填写验证结果。\n"
@@ -2453,7 +2674,7 @@ def build_query_usage_guide_text() -> str:
         "- 多轮任务先 start_work_session；后续复用同一个 chat_session_id / session_id，并用 save_work_facts、append_session_event、resume_work_session、summarize_checkpoint 维护轨迹。\n"
         "- start_work_session 可返回服务端生成的 session_id；save_work_facts 和 append_session_event 支持附带 session_id、phase、step、changed_files、verification、risks、next_steps 等结构化轨迹字段；resume_work_session / summarize_checkpoint 会聚合这些字段，直接输出阶段、步骤、文件、验证、风险和下一步。\n"
         "- 每个新聊天窗口的首轮有效对话，如用户未显式提供 session_id，应优先调用 start_work_session 获取服务端 session_id，再在本窗口后续所有 save_work_facts / append_session_event / resume_work_session / summarize_checkpoint 中复用同一个值；如果未先调用，save_work_facts 也会自动补生成一个。\n"
-        "- 建议把客户端自生成的 chat_session_id 和 start_work_session 返回的 session_id 一起持久化；如能解析项目工作区，优先通过统一状态服务写入 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`，否则再退回 CLI 自己的本地存储。这样 CLI 中断后可以直接恢复同一条任务树和工作轨迹。\n"
+        "- 建议把客户端自生成的 chat_session_id 和 start_work_session 返回的 session_id 一起持久化；如能解析项目工作区，优先通过统一状态服务写入 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`，并同步维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，否则再退回 CLI 自己的本地存储。这样 CLI 中断后可以直接恢复同一条任务树和工作轨迹。\n"
         "- start_work_session 会立即写入一条 started 事件建立正式工作轨迹；首次拿到 session_id 后，仍建议尽快调用一次 save_work_facts 补充任务摘要、阶段和文件信息。若既不调用 start_work_session，也不写 save_work_facts / append_session_event，而只写 save_project_memory，会出现“有项目记忆但无正式工作轨迹”的情况。\n"
         "- 缺少活跃 MCP session 的 CLI / bridge 场景下，也必须显式传入并持续复用同一个 chat_session_id；否则容易出现“轨迹已写入，但当前主视图没有挂到任务树”的错觉。\n"
         "- 推荐的中断恢复顺序是：先从本地恢复 chat_session_id 和 session_id，再调用 bind_project_context(...)，然后依次调用 resume_work_session(...)、summarize_checkpoint(...)，最后按当前任务树继续执行；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。\n"
@@ -2740,6 +2961,45 @@ def create_query_mcp(
         return _get_existing_query_task_tree(
             project_id=project_id,
             chat_session_id=chat_session_id,
+        )
+
+    def _load_query_task_tree_for_progress(
+        *,
+        project_id: str,
+        chat_session_id: str = "",
+        root_goal: str = "",
+    ) -> dict | None:
+        existing_task_tree_payload = _get_existing_query_task_tree(
+            project_id=project_id,
+            chat_session_id=chat_session_id,
+        )
+        if isinstance(existing_task_tree_payload, dict):
+            return existing_task_tree_payload
+
+        project_id_value = _normalize_text(project_id, 120)
+        chat_session_id_value = _normalize_text(chat_session_id, 120)
+        if not (project_id_value and chat_session_id_value):
+            return None
+
+        existing_requirement = load_query_mcp_requirement_record(
+            project_id_value,
+            chat_session_id=chat_session_id_value,
+        )
+        requirement_task_tree = (
+            existing_requirement.get("task_tree")
+            if isinstance(existing_requirement.get("task_tree"), dict)
+            else None
+        )
+        if requirement_task_tree:
+            return requirement_task_tree
+
+        root_goal_value = _normalize_text(root_goal, 1000)
+        if not root_goal_value:
+            return None
+        return _ensure_or_reuse_query_task_tree(
+            project_id=project_id_value,
+            chat_session_id=chat_session_id_value,
+            root_goal=root_goal_value,
         )
 
     def _resolve_task_tree_context() -> tuple[str, str]:
@@ -3395,6 +3655,7 @@ def create_query_mcp(
         raw_request: str,
         project_id: str = "",
         chat_session_id: str = "",
+        workspace_path: str = "",
         client_profile: str = "codex",
         employee_id: str = "",
         clarity_score: int = 3,
@@ -3405,6 +3666,7 @@ def create_query_mcp(
         raw_request_value = _normalize_text(raw_request, 2000)
         project_id_value = _normalize_text(project_id, 120)
         chat_session_id_value = _normalize_text(chat_session_id, 120)
+        workspace_path_value = _normalize_text(workspace_path, 1000)
         employee_id_value = _normalize_text(employee_id, 120)
         client_profile_value = _normalize_text(client_profile, 80) or "codex"
         threshold = _query_mcp_clarity_confirm_threshold()
@@ -3449,6 +3711,7 @@ def create_query_mcp(
                 project_id=project_id_value,
                 chat_session_id=chat_session_id_value,
                 root_goal=raw_request_value,
+                workspace_path=workspace_path_value,
             )
             if isinstance(binding_payload.get("task_tree"), dict):
                 task_tree_payload = binding_payload.get("task_tree")
@@ -3532,6 +3795,7 @@ def create_query_mcp(
                 goal=raw_request_value,
                 title=raw_request_value[:120],
                 chat_session_id=chat_session_id_value,
+                workspace_path=workspace_path_value,
                 phase="analysis",
                 step="start_project_workflow",
                 status="started",
@@ -3702,6 +3966,7 @@ def create_query_mcp(
         project_name: str = "",
         chat_session_id: str = "",
         root_goal: str = "",
+        workspace_path: str = "",
     ) -> dict:
         """绑定当前统一查询 MCP 会话到指定项目/聊天，并可选立即创建任务树。"""
 
@@ -3720,6 +3985,47 @@ def create_query_mcp(
             session_binding_key = str(current_mcp_session_id_ctx.get("") or "").strip()
         normalized_chat_session_id = _normalize_text(chat_session_id, 120) or session_binding_key
         root_goal_value = _normalize_text(root_goal, 1000)
+        workspace_path_value = _normalize_text(workspace_path, 1000)
+        local_bootstrap_payload = {}
+        local_state_payload = {}
+        task_tree_payload = None
+        if normalized_chat_session_id and root_goal_value:
+            from services.project_chat_task_tree import ensure_task_tree, serialize_task_tree
+
+            username, _ = _resolve_task_tree_context()
+            session = ensure_task_tree(
+                project_id=project_id_value,
+                username=username,
+                chat_session_id=normalized_chat_session_id,
+                root_goal=root_goal_value,
+            )
+            task_tree_payload = serialize_task_tree(session)
+        if normalized_chat_session_id:
+            local_bootstrap_payload = bootstrap_query_mcp_local_workspace(
+                project_id=project_id_value,
+                chat_session_id=normalized_chat_session_id,
+                workspace_path=workspace_path_value,
+                project_name=normalized_project_name,
+                root_goal=root_goal_value,
+                latest_status="bound",
+                phase="binding",
+                step="bind_project_context",
+                source="bind_project_context",
+                sync_status="idle",
+                task_tree_payload=task_tree_payload,
+            )
+            local_state_payload = persist_query_mcp_local_state(
+                project_id=project_id_value,
+                chat_session_id=normalized_chat_session_id,
+                workspace_path=workspace_path_value,
+                project_name=normalized_project_name,
+                root_goal=root_goal_value,
+                latest_status="bound",
+                phase="binding",
+                step="bind_project_context",
+                source="bind_project_context",
+                task_tree_payload=task_tree_payload,
+            )
 
         if not session_binding_key or session_contexts is None:
             if not normalized_chat_session_id:
@@ -3735,17 +4041,12 @@ def create_query_mcp(
                 "binding_mode": "detached",
                 "warning": "Active MCP session is unavailable; continue by explicitly reusing project_id and chat_session_id in subsequent calls.",
             }
-            if root_goal_value:
-                from services.project_chat_task_tree import ensure_task_tree, serialize_task_tree
-
-                username, _ = _resolve_task_tree_context()
-                session = ensure_task_tree(
-                    project_id=project_id_value,
-                    username=username,
-                    chat_session_id=normalized_chat_session_id,
-                    root_goal=root_goal_value,
-                )
-                payload["task_tree"] = serialize_task_tree(session)
+            if task_tree_payload is not None:
+                payload["task_tree"] = task_tree_payload
+            if local_bootstrap_payload:
+                payload["local_bootstrap"] = local_bootstrap_payload
+            if local_state_payload:
+                payload["local_state"] = local_state_payload
             return payload
 
         session_contexts[session_binding_key] = {
@@ -3777,17 +4078,12 @@ def create_query_mcp(
             if migrated_session is not None:
                 payload["shadow_task_tree_rebound"] = True
 
-        if root_goal_value:
-            from services.project_chat_task_tree import ensure_task_tree, serialize_task_tree
-
-            username, _ = _resolve_task_tree_context()
-            session = ensure_task_tree(
-                project_id=project_id_value,
-                username=username,
-                chat_session_id=normalized_chat_session_id,
-                root_goal=root_goal_value,
-            )
-            payload["task_tree"] = serialize_task_tree(session)
+        if task_tree_payload is not None:
+            payload["task_tree"] = task_tree_payload
+        if local_bootstrap_payload:
+            payload["local_bootstrap"] = local_bootstrap_payload
+        if local_state_payload:
+            payload["local_state"] = local_state_payload
         return payload
 
     @mcp.tool()
@@ -3981,6 +4277,7 @@ def create_query_mcp(
         raw_request: str = "",
         project_id: str = "",
         chat_session_id: str = "",
+        workspace_path: str = "",
         client_profile: str = "codex",
         employee_id: str = "",
         clarity_score: int = 3,
@@ -3994,6 +4291,7 @@ def create_query_mcp(
             raw_request=raw_request,
             project_id=project_id,
             chat_session_id=chat_session_id,
+            workspace_path=workspace_path,
             client_profile=client_profile,
             employee_id=employee_id,
             clarity_score=clarity_score,
@@ -4198,6 +4496,7 @@ def create_query_mcp(
         title: str = "",
         goal: str = "",
         chat_session_id: str = "",
+        workspace_path: str = "",
         phase: str = "",
         step: str = "",
         status: str = "started",
@@ -4219,10 +4518,39 @@ def create_query_mcp(
         )
         project_name_value = _resolve_project_name(project_id_value, project_name)
         chat_session_id_value = _resolve_query_chat_session_id(chat_session_id) or session_id_value
+        workspace_path_value = _normalize_text(workspace_path, 1000)
         task_tree_payload = _ensure_query_task_tree(
             root_goal=_normalize_text(goal) or _normalize_text(title) or _normalize_text(step),
             project_id=project_id_value,
             chat_session_id=chat_session_id_value,
+        )
+        local_bootstrap_payload = bootstrap_query_mcp_local_workspace(
+            project_id=project_id_value,
+            chat_session_id=chat_session_id_value,
+            workspace_path=workspace_path_value,
+            project_name=project_name_value,
+            session_id=session_id_value,
+            root_goal=_normalize_text(goal),
+            latest_status=_normalize_text(status) or "started",
+            phase=phase,
+            step=step,
+            source="start_work_session",
+            sync_status="idle",
+            task_tree_payload=task_tree_payload,
+        )
+        local_state_payload = persist_query_mcp_local_state(
+            project_id=project_id_value,
+            chat_session_id=chat_session_id_value,
+            workspace_path=workspace_path_value,
+            project_name=project_name_value,
+            employee_id=employee_id_value,
+            session_id=session_id_value,
+            root_goal=_normalize_text(goal),
+            latest_status=_normalize_text(status) or "started",
+            phase=phase,
+            step=step,
+            source="start_work_session",
+            task_tree_payload=task_tree_payload,
         )
         task_tree_binding = _resolve_query_task_tree_binding(
             project_id=project_id_value,
@@ -4272,6 +4600,10 @@ def create_query_mcp(
             "recommended_next_tool": "save_work_facts",
             "message": "Use this session_id for subsequent save_work_facts, append_session_event, resume_work_session and summarize_checkpoint calls.",
         }
+        if local_bootstrap_payload:
+            result["local_bootstrap"] = local_bootstrap_payload
+        if local_state_payload:
+            result["local_state"] = local_state_payload
         if task_tree_payload is not None:
             result["task_tree"] = task_tree_payload
         return result
@@ -4305,14 +4637,10 @@ def create_query_mcp(
             employee_id=employee_id,
         )
         chat_session_id_value = _resolve_query_chat_session_id(chat_session_id) or session_id_value
-        _ensure_or_reuse_query_task_tree(
+        existing_task_tree_payload = _load_query_task_tree_for_progress(
             project_id=project_id,
             chat_session_id=chat_session_id_value,
             root_goal=goal,
-        )
-        existing_task_tree_payload = _get_existing_query_task_tree(
-            project_id=project_id,
-            chat_session_id=chat_session_id_value,
         )
         task_tree_binding = _resolve_query_task_tree_binding(
             project_id=project_id,
@@ -4347,6 +4675,133 @@ def create_query_mcp(
             trajectory=trajectory,
         )
         rendered_with_session = _append_memory_chat_session(rendered, chat_session_id_value)
+        purpose_tags = _trajectory_purpose_tags(
+            base_tags=("query-mcp", "work-facts", "phase3"),
+            session_id=session_id_value,
+            phase=phase,
+            step=step,
+        )
+        local_entry = append_query_mcp_progress_outbox(
+            project_id=project_id,
+            project_name=project_name,
+            employee_id=employee_id,
+            chat_session_id=chat_session_id_value,
+            session_id=session_id_value,
+            root_goal=goal,
+            latest_status=status,
+            phase=phase,
+            step=step,
+            source_kind="work-facts",
+            memory_type=MemoryType.LEARNED_PATTERN.value,
+            content=rendered_with_session,
+            importance=importance,
+            purpose_tags=purpose_tags,
+            trajectory=trajectory,
+            task_tree_payload=existing_task_tree_payload,
+        )
+        if local_entry:
+            saved_work_session_event = _save_work_session_event_record(
+                project_id=project_id,
+                project_name=project_name,
+                employee_id=employee_id,
+                trajectory=trajectory,
+            )
+            mark_query_mcp_outbox_work_session_event(
+                project_id=project_id,
+                chat_session_id=chat_session_id_value,
+                event_id=_normalize_text(local_entry.get("event_id")),
+                work_session_event_id=_normalize_text(saved_work_session_event.get("event_id")),
+            )
+            result = {
+                "status": "saved",
+                "project_id": _normalize_text(project_id),
+                "project_name": _resolve_project_name(project_id, project_name),
+                "employee_ids": [_normalize_text(employee_id)] if _normalize_text(employee_id) else [],
+                "memory_ids": [],
+                "saved_count": 1,
+                "skipped_employee_ids": [],
+                "duplicate_skipped": False,
+                "type": MemoryType.LEARNED_PATTERN.value,
+                "scope": "local-outbox",
+                "importance": max(0.0, min(float(importance), 1.0)),
+                "project_mcp_path": f"/mcp/projects/{_normalize_text(project_id)}",
+                "session_id": session_id_value,
+                "chat_session_id": chat_session_id_value,
+                "trajectory": trajectory,
+                "work_session_event": saved_work_session_event,
+                "sync_status": "pending",
+                "storage": "local-outbox",
+                "local_event_id": _normalize_text(local_entry.get("event_id")),
+            }
+            if _should_flush_local_progress(status):
+                flush_result = _flush_local_progress_outbox(
+                    project_id=project_id,
+                    chat_session_id=chat_session_id_value,
+                )
+                result["sync_status"] = _normalize_text(flush_result.get("status"), 40) or "pending"
+                result["memory_ids"] = _coerce_list_text(flush_result.get("memory_ids"))
+                result["saved_count"] = max(result["saved_count"], int(flush_result.get("saved_count") or 0))
+                result["skipped_employee_ids"] = _coerce_list_text(flush_result.get("skipped_employee_ids"))
+                result["work_session_event"] = (
+                    flush_result.get("work_session_event")
+                    if isinstance(flush_result.get("work_session_event"), dict)
+                    else result["work_session_event"]
+                )
+                if flush_result.get("task_tree") is not None:
+                    result["task_tree"] = flush_result.get("task_tree")
+                elif _should_flush_local_progress(status):
+                    task_tree_payload = _sync_query_task_tree_from_structured_progress(
+                        project_id=project_id,
+                        status=status,
+                        content=rendered_with_session,
+                        phase=phase,
+                        step=step,
+                        goal=goal,
+                        verification=verification,
+                        chat_session_id=chat_session_id_value,
+                    )
+                    if task_tree_payload is None:
+                        task_tree_payload = _get_existing_query_task_tree(
+                            project_id=project_id,
+                            chat_session_id=chat_session_id_value,
+                        )
+                    if task_tree_payload is not None:
+                        result["task_tree"] = task_tree_payload
+                if flush_result.get("error"):
+                    result["sync_error"] = _normalize_text(flush_result.get("error"), 400)
+            else:
+                task_tree_payload = _sync_query_task_tree_from_structured_progress(
+                    project_id=project_id,
+                    status=status,
+                    content=rendered_with_session,
+                    phase=phase,
+                    step=step,
+                    goal=goal,
+                    verification=verification,
+                    chat_session_id=chat_session_id_value,
+                )
+                if task_tree_payload is None:
+                    task_tree_payload = _get_existing_query_task_tree(
+                        project_id=project_id,
+                        chat_session_id=chat_session_id_value,
+                    )
+                if task_tree_payload is not None:
+                    result["task_tree"] = task_tree_payload
+            if result.get("task_tree") is not None:
+                upsert_query_mcp_requirement_record(
+                    project_id=_normalize_text(project_id),
+                    project_name=_resolve_project_name(project_id, project_name),
+                    chat_session_id=chat_session_id_value,
+                    session_id=session_id_value,
+                    root_goal=goal,
+                    latest_status=status,
+                    phase=phase,
+                    step=step,
+                    source="save_work_facts",
+                    sync_status=_normalize_text(result.get("sync_status"), 40),
+                    task_tree_payload=result.get("task_tree"),
+                )
+            return result
         result = _save_project_memory_entries(
             project_id=project_id,
             employee_id=employee_id,
@@ -4354,12 +4809,7 @@ def create_query_mcp(
             memory_type=MemoryType.LEARNED_PATTERN,
             importance=importance,
             project_name=project_name,
-            purpose_tags=_trajectory_purpose_tags(
-                base_tags=("query-mcp", "work-facts", "phase3"),
-                session_id=session_id_value,
-                phase=phase,
-                step=step,
-            ),
+            purpose_tags=purpose_tags,
         )
         if not result.get("error"):
             result["session_id"] = session_id_value
@@ -4421,14 +4871,10 @@ def create_query_mcp(
         if not content_value:
             return {"error": "content is required"}
         chat_session_id_value = _resolve_query_chat_session_id(chat_session_id) or session_id_value
-        _ensure_or_reuse_query_task_tree(
+        existing_task_tree_payload = _load_query_task_tree_for_progress(
             project_id=project_id,
             chat_session_id=chat_session_id_value,
             root_goal=goal,
-        )
-        existing_task_tree_payload = _get_existing_query_task_tree(
-            project_id=project_id,
-            chat_session_id=chat_session_id_value,
         )
         task_tree_binding = _resolve_query_task_tree_binding(
             project_id=project_id,
@@ -4466,6 +4912,132 @@ def create_query_mcp(
             trajectory=trajectory,
         )
         rendered_with_session = _append_memory_chat_session(rendered, chat_session_id_value)
+        purpose_tags = _trajectory_purpose_tags(
+            base_tags=("query-mcp", "session-event", event_type_value, "phase3"),
+            session_id=session_id_value,
+            phase=phase,
+            step=step,
+        )
+        local_entry = append_query_mcp_progress_outbox(
+            project_id=project_id,
+            project_name=project_name,
+            employee_id=employee_id,
+            chat_session_id=chat_session_id_value,
+            session_id=session_id_value,
+            root_goal=goal,
+            latest_status=status,
+            phase=phase,
+            step=step,
+            source_kind="session-event",
+            memory_type=MemoryType.KEY_EVENT.value,
+            content=rendered_with_session,
+            importance=importance,
+            purpose_tags=purpose_tags,
+            trajectory=trajectory,
+            task_tree_payload=existing_task_tree_payload,
+        )
+        if local_entry:
+            saved_work_session_event = _save_work_session_event_record(
+                project_id=project_id,
+                project_name=project_name,
+                employee_id=employee_id,
+                trajectory=trajectory,
+            )
+            mark_query_mcp_outbox_work_session_event(
+                project_id=project_id,
+                chat_session_id=chat_session_id_value,
+                event_id=_normalize_text(local_entry.get("event_id")),
+                work_session_event_id=_normalize_text(saved_work_session_event.get("event_id")),
+            )
+            result = {
+                "status": "saved",
+                "project_id": _normalize_text(project_id),
+                "project_name": _resolve_project_name(project_id, project_name),
+                "employee_ids": [_normalize_text(employee_id)] if _normalize_text(employee_id) else [],
+                "memory_ids": [],
+                "saved_count": 1,
+                "skipped_employee_ids": [],
+                "duplicate_skipped": False,
+                "type": MemoryType.KEY_EVENT.value,
+                "scope": "local-outbox",
+                "importance": max(0.0, min(float(importance), 1.0)),
+                "project_mcp_path": f"/mcp/projects/{_normalize_text(project_id)}",
+                "chat_session_id": chat_session_id_value,
+                "trajectory": trajectory,
+                "work_session_event": saved_work_session_event,
+                "sync_status": "pending",
+                "storage": "local-outbox",
+                "local_event_id": _normalize_text(local_entry.get("event_id")),
+            }
+            if _should_flush_local_progress(status):
+                flush_result = _flush_local_progress_outbox(
+                    project_id=project_id,
+                    chat_session_id=chat_session_id_value,
+                )
+                result["sync_status"] = _normalize_text(flush_result.get("status"), 40) or "pending"
+                result["memory_ids"] = _coerce_list_text(flush_result.get("memory_ids"))
+                result["saved_count"] = max(result["saved_count"], int(flush_result.get("saved_count") or 0))
+                result["skipped_employee_ids"] = _coerce_list_text(flush_result.get("skipped_employee_ids"))
+                result["work_session_event"] = (
+                    flush_result.get("work_session_event")
+                    if isinstance(flush_result.get("work_session_event"), dict)
+                    else result["work_session_event"]
+                )
+                if flush_result.get("task_tree") is not None:
+                    result["task_tree"] = flush_result.get("task_tree")
+                elif _should_flush_local_progress(status):
+                    task_tree_payload = _sync_query_task_tree_from_structured_progress(
+                        project_id=project_id,
+                        status=status,
+                        content=rendered_with_session,
+                        phase=phase,
+                        step=step,
+                        goal=goal,
+                        verification=verification,
+                        chat_session_id=chat_session_id_value,
+                    )
+                    if task_tree_payload is None:
+                        task_tree_payload = _get_existing_query_task_tree(
+                            project_id=project_id,
+                            chat_session_id=chat_session_id_value,
+                        )
+                    if task_tree_payload is not None:
+                        result["task_tree"] = task_tree_payload
+                if flush_result.get("error"):
+                    result["sync_error"] = _normalize_text(flush_result.get("error"), 400)
+            else:
+                task_tree_payload = _sync_query_task_tree_from_structured_progress(
+                    project_id=project_id,
+                    status=status,
+                    content=rendered_with_session,
+                    phase=phase,
+                    step=step,
+                    goal=goal,
+                    verification=verification,
+                    chat_session_id=chat_session_id_value,
+                )
+                if task_tree_payload is None:
+                    task_tree_payload = _get_existing_query_task_tree(
+                        project_id=project_id,
+                        chat_session_id=chat_session_id_value,
+                    )
+                if task_tree_payload is not None:
+                    result["task_tree"] = task_tree_payload
+            if result.get("task_tree") is not None:
+                upsert_query_mcp_requirement_record(
+                    project_id=_normalize_text(project_id),
+                    project_name=_resolve_project_name(project_id, project_name),
+                    chat_session_id=chat_session_id_value,
+                    session_id=session_id_value,
+                    root_goal=goal,
+                    latest_status=status,
+                    phase=phase,
+                    step=step,
+                    source="append_session_event",
+                    sync_status=_normalize_text(result.get("sync_status"), 40),
+                    task_tree_payload=result.get("task_tree"),
+                )
+            return result
         result = _save_project_memory_entries(
             project_id=project_id,
             employee_id=employee_id,
@@ -4473,12 +5045,7 @@ def create_query_mcp(
             memory_type=MemoryType.KEY_EVENT,
             importance=importance,
             project_name=project_name,
-            purpose_tags=_trajectory_purpose_tags(
-                base_tags=("query-mcp", "session-event", event_type_value, "phase3"),
-                session_id=session_id_value,
-                phase=phase,
-                step=step,
-            ),
+            purpose_tags=purpose_tags,
         )
         if not result.get("error"):
             result["chat_session_id"] = chat_session_id_value
@@ -4529,6 +5096,17 @@ def create_query_mcp(
             query=query,
             limit=limit,
         )
+        local_structured_memories = _collect_local_progress_records(
+            project_id=project_id_value,
+            employee_id=employee_id,
+            session_id=session_id,
+            limit=limit,
+        )
+        structured_memories = _merge_progress_records(
+            local_structured_memories,
+            structured_memories,
+            limit=limit,
+        )
         if not structured_memories:
             memories = _collect_project_memories(
                 project_id=project_id_value,
@@ -4537,7 +5115,11 @@ def create_query_mcp(
                 query=query,
                 limit=limit,
             )
-            structured_memories = _structured_session_items(memories)
+            structured_memories = _merge_progress_records(
+                local_structured_memories,
+                _structured_session_items(memories),
+                limit=limit,
+            )
         session_filtered = _filter_session_memories(structured_memories, session_id=session_id)
         selected = session_filtered if session_filtered else structured_memories
         selected = _structured_session_items(selected)
@@ -4586,6 +5168,17 @@ def create_query_mcp(
             query="",
             limit=limit,
         )
+        local_structured_memories = _collect_local_progress_records(
+            project_id=project_id_value,
+            employee_id=employee_id,
+            session_id=session_id,
+            limit=limit,
+        )
+        structured_memories = _merge_progress_records(
+            local_structured_memories,
+            structured_memories,
+            limit=limit,
+        )
         if not structured_memories:
             memories = _collect_project_memories(
                 project_id=project_id_value,
@@ -4594,7 +5187,11 @@ def create_query_mcp(
                 query="",
                 limit=limit,
             )
-            structured_memories = _structured_session_items(memories)
+            structured_memories = _merge_progress_records(
+                local_structured_memories,
+                _structured_session_items(memories),
+                limit=limit,
+            )
         filtered = _filter_session_memories(structured_memories, session_id=session_id)
         selected = filtered if filtered else structured_memories
         selected = _structured_session_items(selected)

@@ -21,6 +21,7 @@ const PATH_PERMISSION_MAP = [
   { prefix: '/system/config', permission: 'menu.system.config' },
   { prefix: '/changelog-entries', permission: 'menu.system.changelog' },
   { prefix: '/work-sessions', permission: 'menu.system.work_sessions' },
+  { prefix: '/statistics', permission: 'menu.statistics' },
   { prefix: '/dictionaries', permission: ['menu.system.dictionaries', 'menu.system.config'] },
   { prefix: '/llm/providers', permission: 'menu.llm.providers' },
   { prefix: '/usage/keys', permission: 'menu.usage.keys' },
@@ -54,6 +55,7 @@ const FALLBACK_PATHS = [
   '/system/config',
   '/changelog-entries',
   '/work-sessions',
+  '/statistics',
   '/dictionaries',
   '/usage/keys',
 ]

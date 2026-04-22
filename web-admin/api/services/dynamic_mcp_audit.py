@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from typing import Any, Callable
 
 from core.deps import employee_store, project_store, usage_store
@@ -41,6 +42,12 @@ _EMPLOYEE_FIELD_KEYS = {
     "member",
 }
 
+_EMPLOYEE_ID_LIST_FIELD_KEYS = {
+    "selected_employee_ids",
+    "employee_ids",
+    "member_ids",
+}
+
 _CHAT_SESSION_FIELD_KEYS = {
     "chat_session_id",
     "chat_session",
@@ -60,8 +67,11 @@ _AUTO_CAPTURE_SKIP_TOOL_NAMES = {
 }
 
 
-def normalize_text(value: str) -> str:
-    return " ".join(str(value or "").split()).strip()
+def normalize_text(value: str, limit: int | None = None) -> str:
+    normalized = " ".join(str(value or "").split()).strip()
+    if isinstance(limit, int) and limit > 0:
+        return normalized[:limit]
+    return normalized
 
 
 def normalize_project_name(value: str) -> str:
@@ -145,6 +155,63 @@ def collect_project_values(node: object, key_hint: str = "") -> list[tuple[str, 
 
 def collect_employee_values(node: object, key_hint: str = "") -> list[tuple[str, str]]:
     return collect_field_values(node, _EMPLOYEE_FIELD_KEYS, key_hint)
+
+
+def collect_employee_id_candidates(node: object, key_hint: str = "") -> list[str]:
+    values: list[str] = []
+    if isinstance(node, dict):
+        for key, val in node.items():
+            key_name = str(key or "").strip().lower()
+            if isinstance(val, str):
+                normalized = normalize_text(val)
+                if (
+                    key_name in _EMPLOYEE_FIELD_KEYS
+                    or key_name in _EMPLOYEE_ID_LIST_FIELD_KEYS
+                ) and _looks_like_employee_id(normalized):
+                    values.append(normalized)
+            else:
+                values.extend(collect_employee_id_candidates(val, key_name))
+    elif isinstance(node, list):
+        for item in node:
+            values.extend(collect_employee_id_candidates(item, key_hint))
+    elif isinstance(node, str):
+        normalized = normalize_text(node)
+        if (
+            key_hint in _EMPLOYEE_FIELD_KEYS
+            or key_hint in _EMPLOYEE_ID_LIST_FIELD_KEYS
+        ) and _looks_like_employee_id(normalized):
+            values.append(normalized)
+    return values
+
+
+def resolve_attributed_employee_id(
+    tool_name: str,
+    tool_payload: dict[str, Any],
+    context: dict[str, str] | None = None,
+) -> str:
+    context_employee_id = normalize_text((context or {}).get("employee_id", ""))
+    if _looks_like_employee_id(context_employee_id):
+        return context_employee_id
+
+    parsed_payload = tool_payload.get("parsed_payload")
+    if not isinstance(parsed_payload, dict):
+        return ""
+
+    if tool_name == "invoke_project_skill_tool":
+        direct_employee_id = normalize_text(parsed_payload.get("employee_id", ""))
+        if _looks_like_employee_id(direct_employee_id):
+            return direct_employee_id
+        candidates = list(dict.fromkeys(collect_employee_id_candidates(parsed_payload)))
+        return candidates[0] if len(candidates) == 1 else ""
+
+    if tool_name == "execute_project_collaboration":
+        executed_calls = parsed_payload.get("executed_calls")
+        if not isinstance(executed_calls, list) or not executed_calls:
+            return ""
+        candidates = list(dict.fromkeys(collect_employee_id_candidates(executed_calls)))
+        return candidates[0] if len(candidates) == 1 else ""
+
+    return ""
 
 
 def collect_chat_session_values(node: object, key_hint: str = "") -> list[tuple[str, str]]:
@@ -701,6 +768,7 @@ def create_tracking_send(
     api_key: str,
     developer_name: str,
     session_keys: dict[str, tuple[str, str]],
+    usage_store_instance=None,
     session_contexts: dict[str, dict[str, str]] | None = None,
     session_context: dict[str, str] | None = None,
     request_state: dict[str, Any] | None = None,
@@ -742,8 +810,17 @@ def create_tracking_send(
     def _extract_tool_result_payload(rpc_payload: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(rpc_payload, dict):
             return None
+        rpc_error = rpc_payload.get("error")
         result = rpc_payload.get("result")
         if not isinstance(result, dict):
+            if isinstance(rpc_error, dict):
+                return {
+                    "is_error": True,
+                    "text": normalize_text(rpc_error.get("message") or rpc_error.get("data"), 1000),
+                    "result": {},
+                    "structured_content": None,
+                    "parsed_payload": rpc_error,
+                }
             return None
         content_text = join_text_nodes(result.get("content"))
         structured_content = result.get("structuredContent")
@@ -758,7 +835,7 @@ def create_tracking_send(
                 except Exception:
                     parsed_payload = None
         return {
-            "is_error": bool(result.get("isError")) or bool(rpc_payload.get("error")),
+            "is_error": bool(result.get("isError")) or bool(rpc_error),
             "text": content_text,
             "result": result,
             "structured_content": structured_content,
@@ -805,7 +882,7 @@ def create_tracking_send(
         elif (
             message.get("type") == "http.response.body"
             and not response_body_captured
-            and on_tool_result is not None
+            and (on_tool_result is not None or usage_store_instance is not None)
         ):
             body = message.get("body", b"")
             if body:
@@ -836,15 +913,62 @@ def create_tracking_send(
                                     metadata = request_calls.pop(index)
                         if not isinstance(metadata, dict):
                             continue
-                        maybe_awaitable = on_tool_result(
-                            str(metadata.get("method_name") or ""),
-                            str(metadata.get("tool_name") or ""),
-                            tool_payload,
-                            dict(metadata.get("context") or {}),
-                            dict(metadata),
-                        )
-                        if inspect.isawaitable(maybe_awaitable):
-                            await maybe_awaitable
+                        if usage_store_instance is not None and metadata.get("usage_event_id"):
+                            try:
+                                error_text = normalize_text(tool_payload.get("text"), 1000)
+                                lower_error_text = error_text.lower()
+                                status = "success"
+                                if bool(tool_payload.get("is_error")):
+                                    status = "timeout" if ("timeout" in lower_error_text or "timed out" in lower_error_text) else "failed"
+                                parsed_payload = tool_payload.get("parsed_payload")
+                                usage_payload = parsed_payload.get("usage") if isinstance(parsed_payload, dict) and isinstance(parsed_payload.get("usage"), dict) else {}
+                                provider_id = ""
+                                model_name = ""
+                                if isinstance(parsed_payload, dict):
+                                    provider_id = normalize_text(parsed_payload.get("provider_id"), 160)
+                                    model_name = normalize_text(parsed_payload.get("model_name"), 160)
+                                context_payload = dict(metadata.get("context") or {})
+                                attributed_employee_id = resolve_attributed_employee_id(
+                                    str(metadata.get("tool_name") or ""),
+                                    tool_payload,
+                                    context_payload,
+                                )
+                                if attributed_employee_id:
+                                    context_payload["employee_id"] = attributed_employee_id
+                                elapsed_ms = None
+                                started_monotonic = metadata.get("request_started_monotonic")
+                                if isinstance(started_monotonic, (int, float)):
+                                    elapsed_ms = round((time.monotonic() - float(started_monotonic)) * 1000, 1)
+                                usage_store_instance.finalize_event(
+                                    str(metadata.get("usage_event_id") or ""),
+                                    employee_id=str(context_payload.get("employee_id") or ""),
+                                    project_id=str(context_payload.get("project_id") or ""),
+                                    project_name=str(context_payload.get("project_name") or ""),
+                                    chat_session_id=str(context_payload.get("chat_session_id") or ""),
+                                    request_id=str(metadata.get("id") or ""),
+                                    status=status,
+                                    duration_ms=elapsed_ms,
+                                    error_message=error_text,
+                                    provider_id=provider_id,
+                                    model_name=model_name,
+                                    input_tokens=usage_payload.get("input_tokens"),
+                                    output_tokens=usage_payload.get("output_tokens"),
+                                    cached_input_tokens=usage_payload.get("cached_input_tokens"),
+                                    total_tokens=usage_payload.get("total_tokens"),
+                                    cost_usd=usage_payload.get("cost_usd"),
+                                )
+                            except Exception:
+                                pass
+                        if on_tool_result is not None:
+                            maybe_awaitable = on_tool_result(
+                                str(metadata.get("method_name") or ""),
+                                str(metadata.get("tool_name") or ""),
+                                tool_payload,
+                                dict(metadata.get("context") or {}),
+                                dict(metadata),
+                            )
+                            if inspect.isawaitable(maybe_awaitable):
+                                await maybe_awaitable
                     if request_state is not None:
                         request_state["rpc_calls"] = request_calls
                 except Exception:
@@ -867,6 +991,7 @@ def create_tracking_receive(
     on_context: Callable[[str, str, dict[str, str]], Any] | None = None,
     on_questions: Callable[[str, str, list[str], dict[str, str]], None] | None = None,
     request_state: dict[str, Any] | None = None,
+    transform_rpc_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ):
     request_body_buffer = bytearray()
     request_body_captured = False
@@ -886,7 +1011,25 @@ def create_tracking_receive(
         request_body_captured = True
         try:
             payload = json.loads(bytes(request_body_buffer))
-            rpc_payloads = payload if isinstance(payload, list) else [payload]
+            payload_changed = False
+            if isinstance(payload, list):
+                rpc_payloads = payload
+                if transform_rpc_payload is not None:
+                    for index, rpc_payload in enumerate(list(rpc_payloads)):
+                        if not isinstance(rpc_payload, dict):
+                            continue
+                        transformed_payload = transform_rpc_payload(rpc_payload)
+                        if isinstance(transformed_payload, dict) and transformed_payload is not rpc_payload:
+                            rpc_payloads[index] = transformed_payload
+                            payload_changed = True
+            else:
+                rpc_payloads = [payload]
+                if transform_rpc_payload is not None and isinstance(payload, dict):
+                    transformed_payload = transform_rpc_payload(payload)
+                    if isinstance(transformed_payload, dict) and transformed_payload is not payload:
+                        payload = transformed_payload
+                        rpc_payloads = [payload]
+                        payload_changed = True
             for rpc_payload in rpc_payloads:
                 if not isinstance(rpc_payload, dict):
                     continue
@@ -920,24 +1063,32 @@ def create_tracking_receive(
                 if request_state is not None:
                     request_calls = request_state.setdefault("rpc_calls", [])
                     if isinstance(request_calls, list):
-                        request_calls.append(
-                            {
-                                "id": rpc_payload.get("id"),
-                                "method_name": method_name,
-                                "tool_name": tool_name,
-                                "context": dict(merged_context),
-                                "questions": list(questions or []),
-                            }
-                        )
-                if method_name == "tools/call":
-                    usage_store.record_event(
-                        usage_scope_id,
-                        api_key,
-                        developer_name,
-                        "tool_call",
-                        tool_name=tool_name,
-                        client_ip=client_ip,
-                    )
+                        call_metadata = {
+                            "id": rpc_payload.get("id"),
+                            "method_name": method_name,
+                            "tool_name": tool_name,
+                            "context": dict(merged_context),
+                            "questions": list(questions or []),
+                        }
+                        if method_name == "tools/call":
+                            attributed_employee_id = str(merged_context.get("employee_id") or usage_scope_id).strip()
+                            event_id = usage_store.record_event(
+                                attributed_employee_id,
+                                api_key,
+                                developer_name,
+                                "tool_call",
+                                tool_name=tool_name,
+                                client_ip=client_ip,
+                                scope_id=usage_scope_id,
+                                project_id=str(merged_context.get("project_id") or ""),
+                                project_name=str(merged_context.get("project_name") or ""),
+                                chat_session_id=str(merged_context.get("chat_session_id") or ""),
+                                request_id=str(rpc_payload.get("id") or ""),
+                                status="started",
+                            )
+                            call_metadata["usage_event_id"] = event_id
+                            call_metadata["request_started_monotonic"] = time.monotonic()
+                        request_calls.append(call_metadata)
                 if any(merged_context.values()) and on_context is not None:
                     maybe_awaitable = on_context(method_name, tool_name, merged_context)
                     if inspect.isawaitable(maybe_awaitable):
@@ -948,6 +1099,13 @@ def create_tracking_receive(
                         await maybe_awaitable
         except Exception:
             pass
+        else:
+            if payload_changed:
+                return {
+                    **message,
+                    "body": json.dumps(payload).encode("utf-8"),
+                    "more_body": False,
+                }
         return message
 
     return tracking_receive

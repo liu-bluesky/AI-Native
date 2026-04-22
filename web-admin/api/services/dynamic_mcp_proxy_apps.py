@@ -14,6 +14,7 @@ from services.dynamic_mcp_audit import (
     create_tracking_receive,
     create_tracking_send,
     get_client_ip,
+    resolve_attributed_employee_id,
     save_auto_query_result_memory,
 )
 from services.project_mcp_presence import touch_project_mcp_presence as _touch_project_mcp_presence
@@ -204,8 +205,15 @@ def _resolve_chat_session_id(
         chat_session_id = chat_session_id or _normalize_text(
             stored.get("chat_session_id", ""),
             120,
-        )
+    )
     return chat_session_id or _normalize_text(session_id, 120)
+
+
+def _resolve_workspace_path(query: dict[str, list[str]]) -> str:
+    return _normalize_text(
+        ((query.get("workspace_path") or query.get("workspacePath") or [""])[0]),
+        1000,
+    )
 
 
 def _safe_session_token(value: object, *, default: str = "unknown", limit: int = 32) -> str:
@@ -419,7 +427,17 @@ class ProjectMcpProxyApp:
 
         usage_scope_id = f"project:{project_id}"
         if is_sse and method == "GET":
-            self._usage_store.record_event(usage_scope_id, api_key, developer_name, "connection", client_ip=client_ip)
+            self._usage_store.record_event(
+                usage_scope_id,
+                api_key,
+                developer_name,
+                "connection",
+                client_ip=client_ip,
+                scope_id=usage_scope_id,
+                project_id=str(project_id),
+                project_name=str(getattr(project, "name", "") or ""),
+                chat_session_id=((query.get("chat_session_id") or [""])[0]).strip(),
+            )
 
         tracking_send = create_tracking_send(
             send,
@@ -428,6 +446,7 @@ class ProjectMcpProxyApp:
             api_key=api_key,
             developer_name=developer_name,
             session_keys=self._session_keys,
+            usage_store_instance=self._usage_store,
         )
         tracking_receive = create_tracking_receive(
             receive,
@@ -603,7 +622,17 @@ class EmployeeMcpProxyApp:
             pass
 
         if is_sse and method == "GET":
-            self._usage_store.record_event(employee_id, api_key, developer_name, "connection", client_ip=client_ip)
+            self._usage_store.record_event(
+                employee_id,
+                api_key,
+                developer_name,
+                "connection",
+                client_ip=client_ip,
+                scope_id=f"employee:{employee_id}",
+                project_id=project_id_from_query,
+                project_name=project_name_from_query,
+                chat_session_id=session_id,
+            )
 
         tracking_send = create_tracking_send(
             send,
@@ -612,6 +641,7 @@ class EmployeeMcpProxyApp:
             api_key=api_key,
             developer_name=developer_name,
             session_keys=self._session_keys,
+            usage_store_instance=self._usage_store,
         )
 
         async def _handle_context(
@@ -752,6 +782,7 @@ class QueryMcpProxyApp:
         session_id = ((query.get("session_id") or [""])[0]).strip()
         request_token = uuid.uuid4().hex[:10]
         chat_session_id = _resolve_chat_session_id(query, session_id, self._session_contexts)
+        workspace_path_from_query = _resolve_workspace_path(query)
         project_id_from_query, project_name_from_query = _resolve_project_context(
             query,
             session_id,
@@ -917,9 +948,40 @@ class QueryMcpProxyApp:
                 developer_name,
                 "connection",
                 client_ip=client_ip,
+                scope_id=usage_scope_id,
+                project_id=project_id_from_query,
+                project_name=project_name_from_query,
+                chat_session_id=chat_session_id or session_id,
             )
 
         request_state: dict[str, Any] = {"rpc_calls": []}
+
+        def _inject_query_workspace_path(rpc_payload: dict[str, Any]) -> dict[str, Any]:
+            if not workspace_path_from_query:
+                return rpc_payload
+            if str(rpc_payload.get("method") or "").strip() != "tools/call":
+                return rpc_payload
+            params = rpc_payload.get("params")
+            if not isinstance(params, dict):
+                return rpc_payload
+            tool_name = _normalize_text(params.get("name"), 120)
+            if tool_name not in {"bind_project_context", "start_work_session", "start_project_workflow"}:
+                return rpc_payload
+            arguments = params.get("arguments")
+            if not isinstance(arguments, dict):
+                return rpc_payload
+            if _normalize_text(arguments.get("workspace_path"), 1000):
+                return rpc_payload
+            return {
+                **rpc_payload,
+                "params": {
+                    **params,
+                    "arguments": {
+                        **arguments,
+                        "workspace_path": workspace_path_from_query,
+                    },
+                },
+            }
 
         def _resolve_effective_chat_session_id(context: dict[str, str] | None = None) -> str:
             resolved = str((context or {}).get("chat_session_id") or chat_session_id).strip()
@@ -937,6 +999,49 @@ class QueryMcpProxyApp:
             metadata: dict[str, Any],
         ) -> None:
             parsed_payload = tool_payload.get("parsed_payload")
+            normalized_tool_name = _normalize_text(tool_name, 120)
+            attributed_employee_id = resolve_attributed_employee_id(
+                normalized_tool_name,
+                tool_payload,
+                context,
+            )
+            if attributed_employee_id:
+                resolved_context = {
+                    **(self._session_contexts.get(session_id) or {}),
+                    **(context or {}),
+                    "employee_id": attributed_employee_id,
+                }
+                if session_id:
+                    self._session_contexts[session_id] = {
+                        "project_id": str(resolved_context.get("project_id") or "").strip(),
+                        "project_name": str(resolved_context.get("project_name") or "").strip(),
+                        "employee_id": attributed_employee_id,
+                        "chat_session_id": str(resolved_context.get("chat_session_id") or "").strip(),
+                    }
+                elif direct_cli_context_key:
+                    stored_direct_context = self._session_contexts.get(direct_cli_context_key) or {}
+                    self._session_contexts[direct_cli_context_key] = {
+                        "project_id": str(
+                            resolved_context.get("project_id")
+                            or stored_direct_context.get("project_id")
+                            or project_id_from_query
+                            or ""
+                        ).strip(),
+                        "project_name": str(
+                            resolved_context.get("project_name")
+                            or stored_direct_context.get("project_name")
+                            or project_name_from_query
+                            or ""
+                        ).strip(),
+                        "employee_id": attributed_employee_id,
+                        "chat_session_id": str(
+                            resolved_context.get("chat_session_id")
+                            or stored_direct_context.get("chat_session_id")
+                            or chat_session_id
+                            or direct_cli_chat_session_id
+                            or ""
+                        ).strip(),
+                    }
             if isinstance(parsed_payload, dict):
                 task_tree_payload = (
                     parsed_payload.get("task_tree")
@@ -951,7 +1056,7 @@ class QueryMcpProxyApp:
                 _persist_project_local_state(
                     project_id=str((context or {}).get("project_id") or parsed_payload.get("project_id") or ""),
                     project_name=str((context or {}).get("project_name") or parsed_payload.get("project_name") or ""),
-                    employee_id=str((context or {}).get("employee_id") or parsed_payload.get("employee_id") or ""),
+                    employee_id=attributed_employee_id or str((context or {}).get("employee_id") or parsed_payload.get("employee_id") or ""),
                     chat_session_id=str(
                         parsed_payload.get("chat_session_id")
                         or task_tree_payload.get("chat_session_id")
@@ -983,7 +1088,6 @@ class QueryMcpProxyApp:
                 )
             if method_name != "tools/call":
                 return
-            normalized_tool_name = _normalize_text(tool_name, 120)
             if not normalized_tool_name or normalized_tool_name in _QUERY_TASK_TREE_AUDIT_SKIP_TOOLS:
                 return
             if bool(tool_payload.get("is_error")):
@@ -1044,6 +1148,7 @@ class QueryMcpProxyApp:
             api_key=api_key,
             developer_name=developer_name,
             session_keys=self._session_keys,
+            usage_store_instance=self._usage_store,
             session_contexts=self._session_contexts,
             session_context=initial_session_context,
             request_state=request_state,
@@ -1154,6 +1259,7 @@ class QueryMcpProxyApp:
             on_context=_handle_context,
             on_questions=_handle_questions,
             request_state=request_state,
+            transform_rpc_payload=_inject_query_workspace_path,
         )
 
         downstream_scope = _rewrite_downstream_scope(

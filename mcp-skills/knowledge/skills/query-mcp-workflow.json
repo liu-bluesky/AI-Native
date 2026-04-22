@@ -1,8 +1,8 @@
 {
   "id": "query-mcp-workflow",
-  "version": "1.0.0",
-  "name": "Query MCP Workflow",
-  "description": "统一查询 MCP 工作流稳定化技能",
+  "version": "1.1.0",
+  "name": "统一查询 MCP 工作流",
+  "description": "统一查询 MCP 工作流稳定化技能，支持“更新 / 使用”两类场景；通用场景优先使用项目根目录本地技能副本，仅在 system source repo 维护时回看源技能元数据与包目录。",
   "mcp_service": "query-center-project",
   "created_by": "",
   "share_scope": "private",
@@ -15,5 +15,5 @@
   "tags": [],
   "mcp_enabled": true,
   "created_at": "2026-04-20T10:03:18.680242+00:00",
-  "updated_at": "2026-04-20T10:03:18.680244+00:00"
+  "updated_at": "2026-04-22T03:55:00+00:00"
 }
