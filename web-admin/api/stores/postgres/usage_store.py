@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     error_message TEXT NOT NULL DEFAULT '',
     provider_id TEXT NOT NULL DEFAULT '',
     model_name TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -102,6 +103,7 @@ class UsageStorePostgres:
             cur.execute("ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS error_message TEXT NOT NULL DEFAULT ''")
             cur.execute("ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS provider_id TEXT NOT NULL DEFAULT ''")
             cur.execute("ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS model_name TEXT NOT NULL DEFAULT ''")
+            cur.execute("ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS prompt_version TEXT NOT NULL DEFAULT ''")
             cur.execute("ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS input_tokens INTEGER NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS output_tokens INTEGER NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS cached_input_tokens INTEGER NOT NULL DEFAULT 0")
@@ -187,6 +189,7 @@ class UsageStorePostgres:
         error_message: str = "",
         provider_id: str = "",
         model_name: str = "",
+        prompt_version: str = "",
         input_tokens: int = 0,
         output_tokens: int = 0,
         cached_input_tokens: int = 0,
@@ -214,6 +217,7 @@ class UsageStorePostgres:
                     error_message,
                     provider_id,
                     model_name,
+                    prompt_version,
                     input_tokens,
                     output_tokens,
                     cached_input_tokens,
@@ -221,7 +225,7 @@ class UsageStorePostgres:
                     cost_usd,
                     client_ip,
                     created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     event_id,
@@ -240,6 +244,7 @@ class UsageStorePostgres:
                     _normalize_text(error_message, 500),
                     _normalize_text(provider_id, 160),
                     _normalize_text(model_name, 160),
+                    _normalize_text(prompt_version, 160),
                     _safe_int(input_tokens),
                     _safe_int(output_tokens),
                     _safe_int(cached_input_tokens),
@@ -265,6 +270,7 @@ class UsageStorePostgres:
         error_message: str = "",
         provider_id: str = "",
         model_name: str = "",
+        prompt_version: str = "",
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         cached_input_tokens: int | None = None,
@@ -294,6 +300,7 @@ class UsageStorePostgres:
         add_text("error_message", error_message, 500)
         add_text("provider_id", provider_id, 160)
         add_text("model_name", model_name, 160)
+        add_text("prompt_version", prompt_version, 160)
         if duration_ms is not None:
             updates.append("duration_ms = %s")
             params.append(_safe_float(duration_ms))
@@ -400,18 +407,26 @@ class UsageStorePostgres:
             "recent": recent,
         }
 
-    def get_overview(self, days: int = 7) -> dict:
+    def get_overview(self, days: int = 7, project_id: str = "") -> dict:
         normalized_days = max(1, min(int(days or 7), 365))
         cutoff = datetime.now(timezone.utc) - timedelta(days=normalized_days)
-        params = (cutoff,)
+        normalized_project_id = _normalize_text(project_id, 120)
+        where_clauses = ["created_at >= %s"]
+        params: list[object] = [cutoff]
+        if normalized_project_id:
+            where_clauses.append("project_id = %s")
+            params.append(normalized_project_id)
+        where_sql = " AND ".join(where_clauses)
+        query_params = tuple(params)
 
         with self._conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
                     COUNT(*) AS total_events,
                     COUNT(*) FILTER (WHERE event_type = 'tool_call') AS tool_calls,
                     COUNT(*) FILTER (WHERE event_type = 'connection') AS connections,
+                    COUNT(*) FILTER (WHERE event_type = 'model_call') AS model_calls,
                     COUNT(DISTINCT developer_name) FILTER (WHERE developer_name != '') AS active_developers,
                     COUNT(DISTINCT employee_id) FILTER (WHERE employee_id LIKE 'emp-%%') AS active_employees,
                     COUNT(DISTINCT tool_name) FILTER (WHERE tool_name != '') AS active_tools,
@@ -427,18 +442,20 @@ class UsageStorePostgres:
                     SUM(cost_usd) AS total_cost_usd,
                     COUNT(DISTINCT provider_id) FILTER (WHERE provider_id != '') AS active_providers,
                     COUNT(DISTINCT model_name) FILTER (WHERE model_name != '') AS active_models,
+                    COUNT(DISTINCT prompt_version) FILTER (WHERE prompt_version != '') AS active_prompt_versions,
+                    COUNT(*) FILTER (WHERE prompt_version != '') AS prompt_version_records,
                     COUNT(DISTINCT scope_id) FILTER (WHERE scope_id != '') AS active_scopes,
                     COUNT(*) FILTER (WHERE scope_id = 'mcp:query') AS query_scope_events,
                     COUNT(*) FILTER (WHERE scope_id = 'mcp:query' AND event_type = 'tool_call') AS query_tool_calls
                 FROM usage_records
-                WHERE created_at >= %s
+                WHERE {where_sql}
                 """,
-                params,
+                query_params,
             )
             summary_row = cur.fetchone() or {}
 
             cur.execute(
-                """
+                f"""
                 SELECT
                     tool_name,
                     COUNT(*) AS cnt,
@@ -448,17 +465,17 @@ class UsageStorePostgres:
                     AVG(duration_ms) FILTER (WHERE duration_ms > 0) AS avg_duration_ms,
                     MAX(duration_ms) FILTER (WHERE duration_ms > 0) AS max_duration_ms
                 FROM usage_records
-                WHERE created_at >= %s AND event_type = 'tool_call' AND tool_name != ''
+                WHERE {where_sql} AND event_type = 'tool_call' AND tool_name != ''
                 GROUP BY tool_name
                 ORDER BY cnt DESC, tool_name ASC
                 LIMIT 10
                 """,
-                params,
+                query_params,
             )
             top_tools = [_normalize_row(row) for row in cur.fetchall()]
 
             cur.execute(
-                """
+                f"""
                 SELECT
                     employee_id,
                     COUNT(*) AS cnt,
@@ -467,17 +484,17 @@ class UsageStorePostgres:
                     COUNT(*) FILTER (WHERE status = 'timeout') AS timeout_calls,
                     AVG(duration_ms) FILTER (WHERE duration_ms > 0) AS avg_duration_ms
                 FROM usage_records
-                WHERE created_at >= %s AND employee_id LIKE 'emp-%%'
+                WHERE {where_sql} AND employee_id LIKE 'emp-%%'
                 GROUP BY employee_id
                 ORDER BY cnt DESC, employee_id ASC
                 LIMIT 10
                 """,
-                params,
+                query_params,
             )
             top_employees = [_normalize_row(row) for row in cur.fetchall()]
 
             cur.execute(
-                """
+                f"""
                 SELECT
                     scope_id,
                     COUNT(*) AS cnt,
@@ -490,30 +507,69 @@ class UsageStorePostgres:
                     COUNT(DISTINCT employee_id) FILTER (WHERE employee_id LIKE 'emp-%%') AS attributed_employee_count,
                     COUNT(DISTINCT project_id) FILTER (WHERE project_id != '') AS project_count
                 FROM usage_records
-                WHERE created_at >= %s AND scope_id != ''
+                WHERE {where_sql} AND scope_id != ''
                 GROUP BY scope_id
                 ORDER BY cnt DESC, scope_id ASC
                 LIMIT 10
                 """,
-                params,
+                query_params,
             )
             top_scopes = [_normalize_row(row) for row in cur.fetchall()]
 
             cur.execute(
-                """
+                f"""
                 SELECT developer_name, COUNT(*) AS cnt
                 FROM usage_records
-                WHERE created_at >= %s AND developer_name != ''
+                WHERE {where_sql} AND developer_name != ''
                 GROUP BY developer_name
                 ORDER BY cnt DESC, developer_name ASC
                 LIMIT 10
                 """,
-                params,
+                query_params,
             )
             top_developers = [_normalize_row(row) for row in cur.fetchall()]
 
             cur.execute(
-                """
+                f"""
+                SELECT provider_id, COUNT(*) AS cnt, SUM(total_tokens) AS total_tokens, SUM(cost_usd) AS total_cost_usd
+                FROM usage_records
+                WHERE {where_sql} AND provider_id != ''
+                GROUP BY provider_id
+                ORDER BY cnt DESC, provider_id ASC
+                LIMIT 8
+                """,
+                query_params,
+            )
+            top_providers = [_normalize_row(row) for row in cur.fetchall()]
+
+            cur.execute(
+                f"""
+                SELECT model_name, COUNT(*) AS cnt, SUM(total_tokens) AS total_tokens, SUM(cost_usd) AS total_cost_usd
+                FROM usage_records
+                WHERE {where_sql} AND model_name != ''
+                GROUP BY model_name
+                ORDER BY cnt DESC, model_name ASC
+                LIMIT 8
+                """,
+                query_params,
+            )
+            top_models = [_normalize_row(row) for row in cur.fetchall()]
+
+            cur.execute(
+                f"""
+                SELECT prompt_version, COUNT(*) AS cnt
+                FROM usage_records
+                WHERE {where_sql} AND prompt_version != ''
+                GROUP BY prompt_version
+                ORDER BY cnt DESC, prompt_version ASC
+                LIMIT 8
+                """,
+                query_params,
+            )
+            top_prompt_versions = [_normalize_row(row) for row in cur.fetchall()]
+
+            cur.execute(
+                f"""
                 SELECT
                     project_id,
                     project_name,
@@ -526,17 +582,17 @@ class UsageStorePostgres:
                     AVG(duration_ms) FILTER (WHERE event_type = 'tool_call' AND duration_ms > 0) AS avg_duration_ms,
                     MAX(created_at) AS last_seen_at
                 FROM usage_records
-                WHERE created_at >= %s AND project_id != ''
+                WHERE {where_sql} AND project_id != ''
                 GROUP BY project_id, project_name
                 ORDER BY cnt DESC, project_name ASC
                 LIMIT 10
                 """,
-                params,
+                query_params,
             )
             top_projects = [_normalize_row(row) for row in cur.fetchall()]
 
             cur.execute(
-                """
+                f"""
                 SELECT
                     TO_CHAR(DATE_TRUNC('day', created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS date,
                     COUNT(*) AS total_events,
@@ -546,23 +602,23 @@ class UsageStorePostgres:
                     COUNT(*) FILTER (WHERE event_type = 'tool_call' AND status IN ('failed', 'error')) AS failed_calls,
                     COUNT(*) FILTER (WHERE event_type = 'tool_call' AND status = 'timeout') AS timeout_calls
                 FROM usage_records
-                WHERE created_at >= %s
+                WHERE {where_sql}
                 GROUP BY DATE_TRUNC('day', created_at AT TIME ZONE 'UTC')
                 ORDER BY DATE_TRUNC('day', created_at AT TIME ZONE 'UTC') ASC
                 """,
-                params,
+                query_params,
             )
             daily = [_normalize_row(row) for row in cur.fetchall()]
 
             cur.execute(
-                """
+                f"""
                 SELECT *
                 FROM usage_records
-                WHERE created_at >= %s
+                WHERE {where_sql}
                 ORDER BY created_at DESC
                 LIMIT 20
                 """,
-                params,
+                query_params,
             )
             recent = [_normalize_row(row) for row in cur.fetchall()]
 
@@ -578,6 +634,7 @@ class UsageStorePostgres:
                 "total_events": int(summary_row.get("total_events") or 0),
                 "tool_calls": int(summary_row.get("tool_calls") or 0),
                 "connections": int(summary_row.get("connections") or 0),
+                "model_calls": int(summary_row.get("model_calls") or 0),
                 "active_developers": int(summary_row.get("active_developers") or 0),
                 "active_employees": int(summary_row.get("active_employees") or 0),
                 "active_tools": int(summary_row.get("active_tools") or 0),
@@ -592,13 +649,15 @@ class UsageStorePostgres:
                 "total_output_tokens": int(summary_row.get("total_output_tokens") or 0),
                 "total_cached_input_tokens": int(summary_row.get("total_cached_input_tokens") or 0),
                 "total_tokens": int(summary_row.get("total_tokens") or 0),
-                    "total_cost_usd": round(_safe_float(summary_row.get("total_cost_usd")), 4),
-                    "active_providers": int(summary_row.get("active_providers") or 0),
-                    "active_models": int(summary_row.get("active_models") or 0),
-                    "active_scopes": int(summary_row.get("active_scopes") or 0),
-                    "query_scope_events": int(summary_row.get("query_scope_events") or 0),
-                    "query_tool_calls": int(summary_row.get("query_tool_calls") or 0),
-                },
+                "total_cost_usd": round(_safe_float(summary_row.get("total_cost_usd")), 4),
+                "active_providers": int(summary_row.get("active_providers") or 0),
+                "active_models": int(summary_row.get("active_models") or 0),
+                "active_prompt_versions": int(summary_row.get("active_prompt_versions") or 0),
+                "prompt_version_records": int(summary_row.get("prompt_version_records") or 0),
+                "active_scopes": int(summary_row.get("active_scopes") or 0),
+                "query_scope_events": int(summary_row.get("query_scope_events") or 0),
+                "query_tool_calls": int(summary_row.get("query_tool_calls") or 0),
+            },
             "tool_health": {
                 "successful_calls": successful_tool_calls,
                 "failed_calls": failed_tool_calls,
@@ -649,6 +708,9 @@ class UsageStorePostgres:
                 for row in top_scopes
             ],
             "top_developers": top_developers,
+            "top_providers": top_providers,
+            "top_models": top_models,
+            "top_prompt_versions": top_prompt_versions,
             "top_projects": [
                 {
                     **row,

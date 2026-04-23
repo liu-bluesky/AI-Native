@@ -1022,11 +1022,37 @@
                   class="chat-textarea"
                 />
 
-                <ComposerAssistBar
-                  :actions="composerAssistActions"
-                  :active-action-id="activeComposerAssist"
-                  @toggle="toggleComposerAssist"
-                />
+                <div
+                  v-if="isSlashCommandMenuVisible"
+                  class="chat-slash-menu"
+                >
+                  <div class="chat-slash-menu__head">
+                    <span class="chat-slash-menu__title">可用命令</span>
+                    <span class="chat-slash-menu__summary">
+                      输入命令后回车发送，或先点选再补充内容
+                    </span>
+                  </div>
+                  <button
+                    v-for="(item, index) in filteredSlashCommands"
+                    :key="item.id"
+                    type="button"
+                    class="chat-slash-menu__item"
+                    :class="{ 'is-active': index === slashCommandHighlightIndex }"
+                    @mousedown.prevent="applySlashCommandSelection(item)"
+                  >
+                    <div class="chat-slash-menu__item-main">
+                      <span class="chat-slash-menu__command">
+                        {{ item.command }}
+                      </span>
+                      <span class="chat-slash-menu__label">
+                        {{ item.label }}
+                      </span>
+                    </div>
+                    <div class="chat-slash-menu__description">
+                      {{ item.description }}
+                    </div>
+                  </button>
+                </div>
 
                 <div class="input-footer">
                   <div class="footer-left">
@@ -2770,7 +2796,6 @@ import {
 } from "@element-plus/icons-vue";
 import { marked } from "marked";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
-import ComposerAssistBar from "@/components/ComposerAssistBar.vue";
 import { buildRuntimeUrl } from "@/utils/runtime-url.js";
 import { formatDateGroupLabel, formatRelativeDateTime } from "@/utils/date.js";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
@@ -2838,6 +2863,11 @@ const CODE_PREVIEW_ICON_HTML =
   '<span class="el-icon chat-code-block__icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><path fill="currentColor" d="M942.2 486.2C847.4 334.6 691 224 512 224S176.6 334.6 81.8 486.2a48.9 48.9 0 0 0 0 51.6C176.6 689.4 333 800 512 800s335.4-110.6 430.2-262.2a48.9 48.9 0 0 0 0-51.6M512 736c-147.8 0-279-88.5-363.1-224C233 376.5 364.2 288 512 288s279 88.5 363.1 224C791 647.5 659.8 736 512 736m0-352a128 128 0 1 0 0 256 128 128 0 0 0 0-256m0 192a64 64 0 1 1 0-128 64 64 0 0 1 0 128" /></svg></span>';
 const EMPLOYEE_DRAFT_BLOCK_RE = /```employee-draft\s*([\s\S]*?)```/i;
 const PREVIEWABLE_CODE_LANGUAGES = new Set(["vue", "html", "htm"]);
+const PROJECT_STATS_COMMAND = "/stats-report";
+const PROJECT_STATS_COMMAND_ALIASES = [];
+const PROJECT_STATS_REPORT_DAYS = 7;
+const STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX = "statistics_analysis_draft:";
+const STATISTICS_ANALYSIS_DRAFT_QUERY_KEY = "statistics_analysis_draft_key";
 
 function isPreviewableCodeBlock(content, language) {
   const normalizedLanguage = normalizeCodeLanguage(language);
@@ -4146,7 +4176,7 @@ const composerPlaceholder = computed(() =>
         : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
           ? "直接输入问题开始通用对话；如需项目上下文，再从顶部选择项目。"
           : "请先从顶部选择项目；如需快速创建员工，也可直接点击“创建员工”。"
-      : "输入你的问题，按 Enter 发送，Shift + Enter 换行。支持粘贴图片。",
+      : "输入你的问题，按 Enter 发送，Shift + Enter 换行。输入 / 可查看可用命令。",
 );
 const composerHintText = computed(() => {
   if (!hasAccessibleProjects.value) {
@@ -4166,7 +4196,7 @@ const composerHintText = computed(() => {
   if (activeComposerAssistMeta.value) {
     return `${activeComposerAssistMeta.value.label} 已激活，Enter 发送`;
   }
-  return "Enter 发送，Shift + Enter 换行";
+  return "Enter 发送，Shift + Enter 换行，/ 查看命令";
 });
 const shortThreadId = computed(() => {
   const value = String(externalAgentInfo.value.thread_id || "").trim();
@@ -4472,6 +4502,106 @@ const activeComposerAssistMeta = computed(
       (item) => item.id === String(activeComposerAssist.value || "").trim(),
     ) || null,
 );
+function buildAssistSlashCommand(actionId) {
+  const normalized = String(actionId || "").trim().toLowerCase();
+  if (!normalized) return "/";
+  if (normalized === "employee_create") return "/employee-create";
+  if (normalized === "prompt_search") return "/prompt-search";
+  if (normalized === "prompt_improve") return "/prompt-improve";
+  if (normalized === "skill_search") return "/skill-search";
+  return `/${normalized.replace(/_/g, "-")}`;
+}
+
+const composerSlashCommands = computed(() => {
+  const commands = [
+    {
+      id: "stats_report",
+      kind: "stats_report",
+      command: PROJECT_STATS_COMMAND,
+      aliases: PROJECT_STATS_COMMAND_ALIASES,
+      label: "项目统计报表",
+      description: "把当前项目统计 AI 报表注入聊天，让模型继续分析优化方向和升级重点。",
+      assistActionId: "",
+    },
+  ];
+  for (const action of composerAssistActions.value) {
+    commands.push({
+      id: `assist_${action.id}`,
+      kind: "assist",
+      command: buildAssistSlashCommand(action.id),
+      aliases: [],
+      label: String(action.label || "").trim() || "未命名命令",
+      description: String(
+        action.shortDesc || action.activeText || action.instruction || "",
+      ).trim(),
+      assistActionId: String(action.id || "").trim(),
+    });
+  }
+  return commands;
+});
+
+function normalizeSlashCommandToken(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function parseSlashCommandDraft(text) {
+  const raw = String(text || "");
+  const normalized = raw.replace(/^\s+/, "");
+  if (!normalized.startsWith("/")) return null;
+  const firstLine = normalized.split("\n")[0];
+  const match = firstLine.match(/^(\/[^\s]*)/);
+  if (!match) return null;
+  return {
+    token: normalizeSlashCommandToken(match[1]),
+    query: normalizeSlashCommandToken(match[1]).replace(/^\//, ""),
+    isCommandPhase: !/\s/.test(firstLine),
+  };
+}
+
+const messagesContainer = ref(null);
+const projectSwitcherRef = ref(null);
+const draftText = ref("");
+const slashCommandHighlightIndex = ref(0);
+const editorComposing = ref(false);
+const uploadFiles = ref([]);
+const inputFocused = ref(false);
+const isDragging = ref(false);
+
+const currentSlashDraftState = computed(() => parseSlashCommandDraft(draftText.value));
+const filteredSlashCommands = computed(() => {
+  const state = currentSlashDraftState.value;
+  if (!state?.isCommandPhase) return [];
+  const query = String(state.query || "").trim();
+  if (!query) {
+    return composerSlashCommands.value;
+  }
+  return composerSlashCommands.value.filter((item) => {
+    const haystacks = [
+      item.command,
+      ...(Array.isArray(item.aliases) ? item.aliases : []),
+      item.label,
+      item.description,
+    ]
+      .map((value) => normalizeSlashCommandToken(value))
+      .filter(Boolean);
+    return haystacks.some((value) => value.includes(query));
+  });
+});
+const isSlashCommandMenuVisible = computed(
+  () =>
+    Boolean(
+      inputFocused.value &&
+        currentSlashDraftState.value?.isCommandPhase &&
+        filteredSlashCommands.value.length,
+    ),
+);
+
+watch(
+  () => filteredSlashCommands.value.map((item) => item.id).join("|"),
+  () => {
+    slashCommandHighlightIndex.value = 0;
+  },
+);
 const projectToolNameOptions = computed(() =>
   projectToolModules.value
     .map((item) => String(item?.tool_name || "").trim())
@@ -4487,13 +4617,6 @@ const fileTypeOptions = computed(() =>
   ),
 );
 
-const messagesContainer = ref(null);
-const projectSwitcherRef = ref(null);
-const draftText = ref("");
-const editorComposing = ref(false);
-const uploadFiles = ref([]);
-const inputFocused = ref(false);
-const isDragging = ref(false);
 let autoSaveTimer = null;
 let lastAutoSavedFingerprint = "";
 let highlightedMessageTimer = null;
@@ -6802,6 +6925,62 @@ function routeChatTarget() {
   };
 }
 
+function consumeStatisticsAnalysisDraft(storageKey) {
+  const normalizedKey = String(storageKey || "").trim();
+  if (!normalizedKey || !normalizedKey.startsWith(STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX)) {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(normalizedKey);
+    if (!raw) return null;
+    window.localStorage.removeItem(normalizedKey);
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      prompt: String(parsed.prompt || "").trim(),
+      scope: String(parsed.scope || "").trim(),
+      project_id: String(parsed.project_id || "").trim(),
+      link: String(parsed.link || "").trim(),
+    };
+  } catch {
+    try {
+      window.localStorage.removeItem(normalizedKey);
+    } catch {
+      // ignore cleanup errors
+    }
+    return null;
+  }
+}
+
+async function focusChatComposerTextarea() {
+  await nextTick();
+  const textarea = chatComposerRef.value?.querySelector?.("textarea");
+  if (!textarea) return;
+  textarea.focus();
+  const textLength = String(textarea.value || "").length;
+  if (typeof textarea.setSelectionRange === "function") {
+    textarea.setSelectionRange(textLength, textLength);
+  }
+}
+
+async function applyStatisticsAnalysisDraftFromRoute() {
+  const draftKey = String(route.query[STATISTICS_ANALYSIS_DRAFT_QUERY_KEY] || "").trim();
+  if (!draftKey) return;
+  const payload = consumeStatisticsAnalysisDraft(draftKey);
+  const prompt = String(payload?.prompt || "").trim();
+  if (prompt) {
+    draftText.value = String(draftText.value || "").trim()
+      ? `${String(draftText.value || "").trim()}\n\n${prompt}`
+      : prompt;
+    scrollToBottom();
+    await focusChatComposerTextarea();
+    ElMessage.success("统计分析请求已填入输入框");
+  }
+  const nextQuery = { ...route.query };
+  delete nextQuery[STATISTICS_ANALYSIS_DRAFT_QUERY_KEY];
+  await router.replace({ query: nextQuery });
+}
+
 async function focusMessageById(messageId, options = {}) {
   const normalizedMessageId = String(messageId || "").trim();
   if (!normalizedMessageId) return false;
@@ -7003,6 +7182,97 @@ function clipText(text, maxChars) {
   if (!value) return "";
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}\n（内容已截断）`;
+}
+
+function resolveSlashCommand(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed.startsWith("/")) {
+    return null;
+  }
+  const match = trimmed.match(/^(\/[^\s]+)(?:\s+([\s\S]*))?$/);
+  if (!match) {
+    return null;
+  }
+  const token = normalizeSlashCommandToken(match[1]);
+  const prompt = String(match[2] || "").trim();
+  const entry =
+    composerSlashCommands.value.find((item) => {
+      const tokens = [item.command, ...(Array.isArray(item.aliases) ? item.aliases : [])];
+      return tokens.some((candidate) => normalizeSlashCommandToken(candidate) === token);
+    }) || null;
+  if (!entry) {
+    return null;
+  }
+  return {
+    entry,
+    token,
+    prompt,
+  };
+}
+
+function applySlashCommandSelection(item) {
+  if (!item?.command) return;
+  draftText.value = `${item.command} `;
+  slashCommandHighlightIndex.value = 0;
+}
+
+async function fetchProjectStatsAiReport(projectId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) {
+    throw new Error("缺少项目 ID，无法加载统计 AI 报表");
+  }
+  const response = await api.get("/statistics/overview", {
+    params: {
+      days: PROJECT_STATS_REPORT_DAYS,
+      project_id: normalizedProjectId,
+    },
+  });
+  const report = response?.ai_report || null;
+  const markdown = String(report?.markdown || "").trim();
+  if (!markdown) {
+    throw new Error("当前项目暂无可读取的统计 AI 报表");
+  }
+  return {
+    days: Number(response?.days || PROJECT_STATS_REPORT_DAYS),
+    summary: String(report?.summary || "").trim(),
+    conclusion: String(report?.conclusion || "").trim(),
+    markdown,
+  };
+}
+
+function buildProjectStatsCommandPrompt({
+  projectLabel,
+  commandPrompt,
+  reportDays,
+  reportSummary,
+  reportConclusion,
+  reportMarkdown,
+  docsText,
+  attachmentNames,
+}) {
+  const analysisRequest =
+    String(commandPrompt || "").trim() ||
+    "请基于这份报表判断当前项目最值得优先优化的 3 个方向，给出优先级、原因、预期收益，以及下一步建议补齐的统计项。";
+  const attachmentHint =
+    Array.isArray(attachmentNames) && attachmentNames.length
+      ? `补充附件：${attachmentNames.join("、")}。`
+      : "";
+  return [
+    `你现在在分析项目「${String(projectLabel || "当前项目").trim() || "当前项目"}」的统计 AI 报表。`,
+    `统计窗口：近 ${Number(reportDays || PROJECT_STATS_REPORT_DAYS)} 天。`,
+    reportSummary ? `报表摘要：${reportSummary}` : "",
+    reportConclusion ? `报表结论：${reportConclusion}` : "",
+    "",
+    "任务要求：",
+    analysisRequest,
+    attachmentHint,
+    docsText ? `补充材料：\n${docsText}` : "",
+    "",
+    "以下是当前项目统计 AI 报表：",
+    reportMarkdown,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function canSaveMessageAsMaterial(message) {
@@ -8081,6 +8351,29 @@ function handleEditorKeydown(event) {
     editorComposing.value ||
     Boolean(nativeEvent?.isComposing) ||
     Number(nativeEvent?.keyCode || 0) === 229;
+  if (isSlashCommandMenuVisible.value) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      slashCommandHighlightIndex.value =
+        (slashCommandHighlightIndex.value + 1) %
+        filteredSlashCommands.value.length;
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      slashCommandHighlightIndex.value =
+        (slashCommandHighlightIndex.value - 1 + filteredSlashCommands.value.length) %
+        filteredSlashCommands.value.length;
+      return;
+    }
+    if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey && !isImeComposing) {
+      event.preventDefault();
+      applySlashCommandSelection(
+        filteredSlashCommands.value[slashCommandHighlightIndex.value] || null,
+      );
+      return;
+    }
+  }
   if (event.key === "Enter" && !event.shiftKey && !isImeComposing) {
     event.preventDefault();
     void doSend();
@@ -8258,9 +8551,10 @@ function syncSettingsRouteState() {
 function openSettingsCenter(panelId = "chat") {
   const normalizedPanelId = String(panelId || "").trim() || "chat";
   activeSettingsPanel.value = normalizedPanelId;
-  void router.push(
-    resolveSettingsAwarePanelPath(route.path, normalizedPanelId, "/chat"),
-  );
+  const targetPath = isSettingsCenterRoute.value
+    ? resolveSettingsAwarePanelPath(route.path, normalizedPanelId, "/chat")
+    : buildChatSettingsRoute("/chat");
+  void router.push(targetPath);
 }
 
 function closeSettingsCenter() {
@@ -10778,15 +11072,52 @@ async function doSend() {
     }
   }
 
-  let userPrompt =
-    text ||
-    (attachmentNames.length
-      ? `我上传了附件：${attachmentNames.join("、")}。请先给我处理建议。`
-      : "");
-  if (docsText) {
-    userPrompt += `${docsText}\n\n请先给简要结论：最多 5 条，每条不超过 40 字。`;
+  const slashCommand = resolveSlashCommand(text);
+  const slashAssistAction =
+    slashCommand?.entry?.kind === "assist"
+      ? composerAssistActions.value.find(
+          (item) => item.id === slashCommand.entry.assistActionId,
+        ) || null
+      : null;
+  const effectiveAssistAction = slashAssistAction || activeComposerAssistMeta.value;
+  let userPrompt = "";
+  if (slashCommand?.entry?.kind === "stats_report") {
+    try {
+      const projectStatsReport = await fetchProjectStatsAiReport(
+        selectedProjectId.value,
+      );
+      userPrompt = buildProjectStatsCommandPrompt({
+        projectLabel: currentProjectLabel.value,
+        commandPrompt: slashCommand.prompt,
+        reportDays: projectStatsReport.days,
+        reportSummary: projectStatsReport.summary,
+        reportConclusion: projectStatsReport.conclusion,
+        reportMarkdown: projectStatsReport.markdown,
+        docsText,
+        attachmentNames,
+      });
+    } catch (err) {
+      ElMessage.error(err?.message || "项目统计 AI 报表加载失败");
+      return;
+    }
+  } else if (slashCommand?.entry?.kind === "assist") {
+    userPrompt =
+      slashCommand.prompt || String(slashAssistAction?.seedText || "").trim();
+    if (!userPrompt) {
+      ElMessage.warning("请在命令后补充内容");
+      return;
+    }
+  } else {
+    userPrompt =
+      text ||
+      (attachmentNames.length
+        ? `我上传了附件：${attachmentNames.join("、")}。请先给我处理建议。`
+        : "");
+    if (docsText) {
+      userPrompt += `${docsText}\n\n请先给简要结论：最多 5 条，每条不超过 40 字。`;
+    }
   }
-  const assistAction = activeComposerAssistMeta.value;
+  const assistAction = effectiveAssistAction;
   const assistToolNames = normalizeStringList(
     assistAction?.toolNames || [],
     20,
@@ -10835,10 +11166,15 @@ async function doSend() {
             projectChatSettings.value.auto_use_tools ??
             CHAT_SETTINGS_DEFAULTS.auto_use_tools,
           );
+  const displayUserMessageContent = slashCommand
+    ? slashCommand.prompt
+      ? `${slashCommand.entry.command} ${slashCommand.prompt}`
+      : `${slashCommand.entry.command} ${slashCommand.entry.label}`
+    : text || "（发送了附件）";
   const userMessage = {
     id: createLocalMessageId(),
     role: "user",
-    content: text || "（发送了附件）",
+    content: displayUserMessageContent,
     images: imageUrls,
     videos: [],
     attachments: attachmentNames,
@@ -11246,6 +11582,14 @@ watch(
   },
 );
 
+watch(
+  () => String(route.query[STATISTICS_ANALYSIS_DRAFT_QUERY_KEY] || "").trim(),
+  async (draftKey, previousKey) => {
+    if (!draftKey || draftKey === previousKey) return;
+    await applyStatisticsAnalysisDraftFromRoute();
+  },
+);
+
 onMounted(async () => {
   loading.value = true;
   window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
@@ -11270,6 +11614,7 @@ onMounted(async () => {
   if (!isSettingsCenterRoute.value) {
     void startChatTour(false);
   }
+  await applyStatisticsAnalysisDraftFromRoute();
   syncProjectSwitcherMenuWidth();
   window.addEventListener("resize", syncProjectSwitcherMenuWidth);
 });
@@ -15612,6 +15957,7 @@ onUnmounted(() => {
 }
 
 .chat-input-wrapper {
+  position: relative;
   width: 100%;
   max-width: none;
   border: 1px solid rgba(255, 255, 255, 0.8);
@@ -15639,26 +15985,95 @@ onUnmounted(() => {
   color: #a3a3a3;
 }
 
-.chat-input-wrapper :deep(.composer-assist) {
-  padding: 0 14px 6px;
-}
-
-.chat-input-wrapper :deep(.composer-assist-strip) {
+.chat-slash-menu {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: calc(100% + 10px);
+  z-index: 12;
+  display: grid;
   gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(18px);
 }
 
-.chat-input-wrapper :deep(.composer-assist-chip) {
-  border-radius: 999px;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  background: rgba(255, 255, 255, 0.66);
-  color: #475569;
-  min-height: 32px;
+.chat-slash-menu__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
 }
 
-.chat-input-wrapper :deep(.composer-assist-chip.is-active) {
-  border-color: rgba(56, 189, 248, 0.2);
-  background: rgba(240, 249, 255, 0.92);
+.chat-slash-menu__title {
   color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.chat-slash-menu__summary {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.chat-slash-menu__item {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.9);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease,
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.chat-slash-menu__item:hover,
+.chat-slash-menu__item.is-active {
+  border-color: rgba(56, 189, 248, 0.28);
+  background: rgba(240, 249, 255, 0.96);
+  box-shadow: 0 10px 24px rgba(14, 116, 144, 0.08);
+  transform: translateY(-1px);
+}
+
+.chat-slash-menu__item-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.chat-slash-menu__command {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  color: #0f172a;
+  font-family:
+    "SFMono-Regular", "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.chat-slash-menu__label {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-slash-menu__description {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .input-footer {
@@ -16499,7 +16914,9 @@ onUnmounted(() => {
 
 .chat-layout {
   position: relative;
-  min-height: 100%;
+  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   color: var(--page-text, #0f172a);
   background: var(
@@ -16551,11 +16968,11 @@ onUnmounted(() => {
   z-index: 1;
   width: 100%;
   height: 100%;
-  min-height: 100%;
+  min-height: 0;
   padding: 0 20px 20px;
   box-sizing: border-box;
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: hidden;
 }
 
 .chat-shell {
@@ -16581,6 +16998,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
+  max-height: 100%;
   min-height: 0;
   padding: 0;
   border: 0;
@@ -16978,6 +17396,12 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1120px) {
+  .chat-layout {
+    min-height: 100%;
+    height: auto;
+    overflow: visible;
+  }
+
   .settings-center-page {
     --settings-center-max-width: 100%;
     --settings-chat-sidebar-width: minmax(0, 1fr);
@@ -17005,7 +17429,10 @@ onUnmounted(() => {
   }
 
   .chat-main {
+    height: auto;
+    min-height: 0;
     padding: 0 14px 18px;
+    overflow: visible;
   }
 
   .chat-messages {

@@ -816,15 +816,60 @@ class LlmProviderService:
             "messages": normalized_messages,
             "max_tokens": normalized_max_tokens,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if tools:
             body["tools"] = tools
 
-        async for chunk in self._stream_request(endpoint, self._build_headers(provider), body, timeout):
+        async for chunk in self._stream_request(
+            endpoint,
+            self._build_headers(provider),
+            body,
+            timeout,
+            provider_id=provider_id,
+            model_name=chosen_model,
+        ):
             yield chunk
 
     @staticmethod
-    async def _stream_request(url: str, headers: dict[str, str], body: dict[str, Any], timeout: int = 120):
+    def _normalize_usage_payload(payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        prompt_tokens = payload.get("prompt_tokens", payload.get("input_tokens"))
+        completion_tokens = payload.get("completion_tokens", payload.get("output_tokens"))
+        cached_tokens = payload.get("cached_input_tokens")
+        if cached_tokens is None:
+            prompt_details = payload.get("prompt_tokens_details")
+            if isinstance(prompt_details, dict):
+                cached_tokens = prompt_details.get("cached_tokens", prompt_details.get("cached_input_tokens"))
+        total_tokens = payload.get("total_tokens")
+        if total_tokens in (None, ""):
+            try:
+                total_tokens = int(prompt_tokens or 0) + int(completion_tokens or 0) - int(cached_tokens or 0)
+            except (TypeError, ValueError):
+                total_tokens = payload.get("total_tokens")
+        normalized: dict[str, Any] = {}
+        for key, value in (
+            ("input_tokens", prompt_tokens),
+            ("output_tokens", completion_tokens),
+            ("cached_input_tokens", cached_tokens),
+            ("total_tokens", total_tokens),
+            ("cost_usd", payload.get("cost_usd", payload.get("cost"))),
+        ):
+            if value not in (None, ""):
+                normalized[key] = value
+        return normalized
+
+    @staticmethod
+    async def _stream_request(
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        timeout: int = 120,
+        *,
+        provider_id: str = "",
+        model_name: str = "",
+    ):
         import httpx
         import json
         import logging
@@ -912,6 +957,11 @@ class LlmProviderService:
                                 result["tool_calls"] = tool_calls
                             if finish_reason:
                                 result["finish_reason"] = finish_reason
+                            usage_payload = LlmProviderService._normalize_usage_payload(data.get("usage"))
+                            if usage_payload:
+                                result["usage"] = usage_payload
+                                result["provider_id"] = str(provider_id or "").strip()
+                                result["model_name"] = str(data.get("model") or model_name or "").strip()
 
                             if result:
                                 yield result

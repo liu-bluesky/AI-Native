@@ -66,6 +66,18 @@ _AUTO_CAPTURE_SKIP_TOOL_NAMES = {
     "save_project_memory",
 }
 
+_OBSERVABILITY_SEARCH_KEYS = (
+    "stdout_json",
+    "result",
+    "results",
+    "data",
+    "payload",
+    "response",
+    "metadata",
+    "structured_content",
+    "structuredContent",
+)
+
 
 def normalize_text(value: str, limit: int | None = None) -> str:
     normalized = " ".join(str(value or "").split()).strip()
@@ -109,6 +121,94 @@ def join_text_nodes(node: object) -> str:
     if not parts:
         return ""
     return "".join(parts)
+
+
+def _normalize_usage_payload(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+    prompt_tokens = payload.get("prompt_tokens", payload.get("input_tokens"))
+    completion_tokens = payload.get("completion_tokens", payload.get("output_tokens"))
+    cached_tokens = payload.get("cached_input_tokens")
+    if cached_tokens is None:
+        prompt_details = payload.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict):
+            cached_tokens = prompt_details.get("cached_tokens", prompt_details.get("cached_input_tokens"))
+    total_tokens = payload.get("total_tokens")
+    if total_tokens in (None, ""):
+        try:
+            total_tokens = int(prompt_tokens or 0) + int(completion_tokens or 0) - int(cached_tokens or 0)
+        except (TypeError, ValueError):
+            total_tokens = payload.get("total_tokens")
+    normalized: dict[str, object] = {}
+    for key, value in (
+        ("input_tokens", prompt_tokens),
+        ("output_tokens", completion_tokens),
+        ("cached_input_tokens", cached_tokens),
+        ("total_tokens", total_tokens),
+        ("cost_usd", payload.get("cost_usd", payload.get("cost"))),
+    ):
+        if value not in (None, ""):
+            normalized[key] = value
+    return normalized
+
+
+def _walk_nested_mappings(root: object) -> list[dict[str, Any]]:
+    queue: list[object] = [root]
+    seen: set[int] = set()
+    mappings: list[dict[str, Any]] = []
+    while queue:
+        node = queue.pop(0)
+        node_id = id(node)
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        if isinstance(node, dict):
+            mappings.append(node)
+            for key in _OBSERVABILITY_SEARCH_KEYS:
+                child = node.get(key)
+                if isinstance(child, (dict, list)):
+                    queue.append(child)
+            for child in node.values():
+                if isinstance(child, (dict, list)):
+                    queue.append(child)
+        elif isinstance(node, list):
+            for child in node:
+                if isinstance(child, (dict, list)):
+                    queue.append(child)
+    return mappings
+
+
+def extract_observability_payload(parsed_payload: object) -> dict[str, Any]:
+    provider_id = ""
+    model_name = ""
+    prompt_version = ""
+    usage: dict[str, object] = {}
+    for mapping in _walk_nested_mappings(parsed_payload):
+        if not provider_id:
+            provider_id = normalize_text(
+                mapping.get("provider_id") or mapping.get("provider") or mapping.get("providerId"),
+                160,
+            )
+        if not model_name:
+            model_name = normalize_text(
+                mapping.get("model_name") or mapping.get("model") or mapping.get("modelName"),
+                160,
+            )
+        if not prompt_version:
+            prompt_version = normalize_text(
+                mapping.get("prompt_version") or mapping.get("promptVersion"),
+                160,
+            )
+        if not usage:
+            usage = _normalize_usage_payload(mapping.get("usage"))
+        if usage and provider_id and model_name and prompt_version:
+            break
+    return {
+        "provider_id": provider_id,
+        "model_name": model_name,
+        "prompt_version": prompt_version,
+        "usage": usage,
+    }
 
 
 def collect_question_values(node: object, key_hint: str = "") -> list[tuple[str, str]]:
@@ -921,12 +1021,11 @@ def create_tracking_send(
                                 if bool(tool_payload.get("is_error")):
                                     status = "timeout" if ("timeout" in lower_error_text or "timed out" in lower_error_text) else "failed"
                                 parsed_payload = tool_payload.get("parsed_payload")
-                                usage_payload = parsed_payload.get("usage") if isinstance(parsed_payload, dict) and isinstance(parsed_payload.get("usage"), dict) else {}
-                                provider_id = ""
-                                model_name = ""
-                                if isinstance(parsed_payload, dict):
-                                    provider_id = normalize_text(parsed_payload.get("provider_id"), 160)
-                                    model_name = normalize_text(parsed_payload.get("model_name"), 160)
+                                observability = extract_observability_payload(parsed_payload)
+                                usage_payload = observability.get("usage") if isinstance(observability.get("usage"), dict) else {}
+                                provider_id = normalize_text(observability.get("provider_id"), 160)
+                                model_name = normalize_text(observability.get("model_name"), 160)
+                                prompt_version = normalize_text(observability.get("prompt_version"), 160)
                                 context_payload = dict(metadata.get("context") or {})
                                 attributed_employee_id = resolve_attributed_employee_id(
                                     str(metadata.get("tool_name") or ""),
@@ -951,6 +1050,7 @@ def create_tracking_send(
                                     error_message=error_text,
                                     provider_id=provider_id,
                                     model_name=model_name,
+                                    prompt_version=prompt_version,
                                     input_tokens=usage_payload.get("input_tokens"),
                                     output_tokens=usage_payload.get("output_tokens"),
                                     cached_input_tokens=usage_payload.get("cached_input_tokens"),

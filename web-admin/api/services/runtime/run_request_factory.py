@@ -41,4 +41,5 @@ def build_orchestrator_run_kwargs(
         payload["role_ids"] = list(role_ids)
     if global_assistant_bridge_handler is not None:
         payload["global_assistant_bridge_handler"] = global_assistant_bridge_handler
+    payload["prompt_version"] = str((runtime_context.metadata or {}).get("prompt_version") or "").strip()
     return payload

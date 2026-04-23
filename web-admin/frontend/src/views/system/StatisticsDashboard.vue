@@ -13,6 +13,7 @@
         </p>
         <div class="statistics-hero__meta">
           <span>统计窗口 {{ days }} 天</span>
+          <span>统计范围 {{ currentScopeLabel }}</span>
           <span>生成时间 {{ formatDateTime(data.generated_at) }}</span>
           <span>查看人 {{ data.viewer.username || "-" }}</span>
         </div>
@@ -26,12 +27,33 @@
         </div>
 
         <div class="statistics-hero__controls">
-          <el-select v-model="days" class="statistics-page__range" @change="refresh">
-            <el-option :value="7" label="近 7 天" />
-            <el-option :value="30" label="近 30 天" />
-            <el-option :value="90" label="近 90 天" />
-          </el-select>
-          <el-button @click="refresh">刷新</el-button>
+          <div class="statistics-hero__controls-main">
+            <el-select
+              v-model="selectedProjectScope"
+              class="statistics-page__project-scope"
+              filterable
+              clearable
+              :loading="projectScopeLoading"
+              placeholder="选择统计项目"
+            >
+              <el-option label="全局统计" value="" />
+              <el-option
+                v-for="item in normalizedProjectScopeOptions"
+                :key="item.value"
+                :label="item.recentLabel || item.label"
+                :value="item.value"
+              />
+            </el-select>
+            <el-select v-model="days" class="statistics-page__range" @change="refresh">
+              <el-option :value="7" label="近 7 天" />
+              <el-option :value="30" label="近 30 天" />
+              <el-option :value="90" label="近 90 天" />
+            </el-select>
+          </div>
+          <div class="statistics-hero__controls-actions">
+            <el-button plain @click="copyCurrentStatisticsLink">复制当前统计链接</el-button>
+            <el-button @click="refresh">刷新</el-button>
+          </div>
         </div>
 
         <div class="statistics-hero__flow">
@@ -54,6 +76,65 @@
         <strong class="summary-card__value">{{ card.value }}</strong>
         <small class="summary-card__hint">{{ card.hint }}</small>
       </article>
+    </section>
+
+    <section v-if="aiReport" class="panel-card panel-card--wide ai-report-panel">
+      <div class="panel-card__head">
+        <div class="panel-card__head-copy">
+          <div class="panel-card__eyebrow">AI Ready Report</div>
+          <h2 class="panel-card__title">给 AI 直接读取的数据报表</h2>
+        </div>
+        <div class="panel-card__actions">
+          <el-button size="small" @click="sendToAiAnalysis">发给 AI 分析</el-button>
+          <el-button size="small" @click="copyAiReport">复制 AI 报表</el-button>
+        </div>
+      </div>
+      <div class="ai-report-grid">
+        <article class="ai-report-block">
+          <span class="ai-report-block__label">摘要</span>
+          <p class="ai-report-block__summary">{{ aiReport.summary }}</p>
+          <p class="ai-report-block__summary ai-report-block__summary--muted">{{ aiReport.conclusion }}</p>
+          <div class="ai-report-kpis">
+            <span>能力覆盖 {{ aiReport.capability_coverage_percent || 0 }}%</span>
+            <span>{{ aiReportAnalysisMode.label || "结论待生成" }}</span>
+            <span>健康分 {{ aiReportKeyMetrics.health_score || 0 }}</span>
+            <span>活跃项目 {{ aiReportKeyMetrics.active_projects || 0 }}</span>
+            <span>活跃智能体 {{ aiReportKeyMetrics.active_agents || 0 }}</span>
+            <span>完成会话 {{ aiReportKeyMetrics.completed_sessions || 0 }}</span>
+            <span>工作完成率 {{ formatPercent(aiReportKeyMetrics.completion_rate) }}</span>
+            <span>项目集中度 {{ formatPercent(aiReportKeyMetrics.project_concentration_percent) }}</span>
+            <span>模型调用 {{ aiReportKeyMetrics.model_calls || 0 }}</span>
+            <span>总 token {{ aiReportKeyMetrics.total_tokens || 0 }}</span>
+            <span>总成本 ${{ Number(aiReportKeyMetrics.total_cost_usd || 0).toFixed(4) }}</span>
+          </div>
+        </article>
+        <article class="ai-report-block">
+          <span class="ai-report-block__label">AI 当前应重点关注</span>
+          <div v-if="aiReportFocusPoints.length" class="ai-focus-list">
+            <article v-for="item in aiReportFocusPoints" :key="item.key" class="ai-focus-item" :class="`is-${item.status || 'neutral'}`">
+              <strong>{{ item.title }}</strong>
+              <small>{{ item.evidence }}</small>
+              <p>{{ item.recommended_action }}</p>
+            </article>
+          </div>
+          <el-empty v-else description="暂无 AI 关注点" />
+        </article>
+        <article class="ai-report-block">
+          <span class="ai-report-block__label">建议 AI 下一步提问</span>
+          <div v-if="aiReportQuestions.length" class="ai-question-list">
+            <article v-for="question in aiReportQuestions" :key="question" class="ai-question-item">{{ question }}</article>
+          </div>
+          <el-empty v-else description="暂无建议提问" />
+        </article>
+      </div>
+      <div v-if="aiReportRequiredMetrics.length" class="ai-metric-gap-list">
+        <article v-for="item in aiReportRequiredMetrics" :key="item.key" class="ai-metric-gap-item">
+          <strong>{{ item.title }}</strong>
+          <small>{{ item.reason }}</small>
+        </article>
+      </div>
+      <pre v-if="aiReportStructuredPreview" class="ai-report-markdown">{{ aiReportStructuredPreview }}</pre>
+      <pre v-else-if="aiReportMarkdown" class="ai-report-markdown">{{ aiReportMarkdown }}</pre>
     </section>
 
     <section class="story-grid">
@@ -117,20 +198,12 @@
           </div>
           <div class="panel-card__tag">先看趋势，再看明细</div>
         </div>
-        <div v-if="usageDaily.length" class="trend-list">
-          <div v-for="item in usageDaily" :key="item.date" class="trend-row">
-            <div class="trend-row__meta">
-              <span class="trend-row__date">{{ item.date }}</span>
-              <strong class="trend-row__value">{{ item.total_events }}</strong>
-            </div>
-            <div class="trend-row__bar-shell">
-              <div class="trend-row__bar trend-row__bar--total" :style="{ width: `${item.totalPercent}%` }" />
-              <div class="trend-row__bar trend-row__bar--tool" :style="{ width: `${item.toolPercent}%` }" />
-            </div>
-            <div class="trend-row__tags">
-              <span>工具 {{ item.tool_calls }}</span>
-              <span>连接 {{ item.connections }}</span>
-            </div>
+        <div v-if="usageDaily.length" class="trend-chart">
+          <div ref="trendChartRef" class="trend-chart__canvas" />
+          <div class="trend-chart__summary">
+            <span>总交互 {{ usageSummary.total_events || 0 }}</span>
+            <span>工具 {{ usageSummary.tool_calls || 0 }}</span>
+            <span>连接 {{ usageSummary.connections || 0 }}</span>
           </div>
         </div>
         <el-empty v-else description="当前窗口内暂无 MCP 趋势数据" />
@@ -202,7 +275,7 @@
           <article v-for="item in projectActivityItems" :key="item.project_id || item.project_name" class="rank-list__item rank-list__item--tool">
             <div class="rank-list__meta">
               <div class="rank-list__meta-body">
-                <strong>{{ item.project_name || item.project_id }}</strong>
+                <strong>{{ item.display_name }}</strong>
                 <small>
                   归因 {{ item.cnt || 0 }}
                   <template v-if="item.session_count || item.active_entries">
@@ -223,13 +296,23 @@
         <el-empty v-else description="暂无项目活跃数据" />
       </article>
 
-      <article class="panel-card">
+      <article class="panel-card panel-card--wide">
         <div class="panel-card__head">
           <div>
-            <div class="panel-card__eyebrow">Work Sessions</div>
-            <h2 class="panel-card__title">工作会话推进</h2>
+            <div class="panel-card__eyebrow">Delivery Closure</div>
+            <h2 class="panel-card__title">工作会话闭环趋势</h2>
+          </div>
+          <div class="panel-card__tag">先看完成率，再看最近会话</div>
+        </div>
+        <div v-if="workSessionDaily.length" class="trend-chart trend-chart--closure">
+          <div ref="closureTrendChartRef" class="trend-chart__canvas" />
+          <div class="trend-chart__summary">
+            <span>完成率 {{ formatPercent(workCompletionRate) }}</span>
+            <span>闭环缺口 {{ workSessionSummary.closure_gap_sessions || 0 }}</span>
+            <span>阻塞率 {{ formatPercent(workSessionSummary.blocked_rate) }}</span>
           </div>
         </div>
+        <el-empty v-else description="当前窗口内暂无工作会话趋势数据" />
         <div class="session-summary-grid">
           <article v-for="card in workSessionCards" :key="card.label" class="session-summary-pill">
             <span>{{ card.label }}</span>
@@ -245,7 +328,7 @@
             :class="item.statusClass"
           >
             <div class="session-card__head">
-              <strong>{{ item.project_name }}</strong>
+              <strong>{{ item.display_name }}</strong>
               <span class="session-card__status">{{ item.statusLabel }}</span>
             </div>
             <div class="session-card__meta">
@@ -388,14 +471,30 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
+import * as echarts from "echarts/core";
+import { LineChart } from "echarts/charts";
+import { GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
 
 import api from "@/utils/api.js";
 import { formatDateTime } from "@/utils/date.js";
+import { useRoute, useRouter } from "vue-router";
+import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 
+echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+
+const RECENT_STATISTICS_PROJECTS_STORAGE_KEY = "statistics_recent_project_ids";
+const STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX = "statistics_analysis_draft";
+const STATISTICS_ANALYSIS_DRAFT_QUERY_KEY = "statistics_analysis_draft_key";
+const route = useRoute();
+const router = useRouter();
 const loading = ref(false);
+const projectScopeLoading = ref(false);
 const days = ref(7);
+const trendChartRef = ref(null);
+const closureTrendChartRef = ref(null);
 const data = ref({
   generated_at: "",
   viewer: {},
@@ -411,6 +510,7 @@ const data = ref({
   },
   work_sessions: {
     summary: {},
+    daily: [],
     recent: [],
     top_projects: [],
     top_employees: [],
@@ -434,12 +534,137 @@ const data = ref({
     flow: [],
   },
   blind_spots: [],
+  ai_report: null,
+});
+const projectScopeOptions = ref([]);
+const recentProjectIds = ref([]);
+
+function loadRecentProjectIds() {
+  try {
+    const raw = window.localStorage.getItem(RECENT_STATISTICS_PROJECTS_STORAGE_KEY);
+    const parsed = JSON.parse(raw || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 8);
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentProjectIds(items) {
+  try {
+    window.localStorage.setItem(
+      RECENT_STATISTICS_PROJECTS_STORAGE_KEY,
+      JSON.stringify(items.slice(0, 8)),
+    );
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function rememberRecentProject(projectId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return;
+  const nextItems = [
+    normalizedProjectId,
+    ...recentProjectIds.value.filter((item) => item !== normalizedProjectId),
+  ].slice(0, 8);
+  recentProjectIds.value = nextItems;
+  saveRecentProjectIds(nextItems);
+}
+
+function buildStatisticsAnalysisDraftStorageKey() {
+  return `${STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+const scopedProjectId = computed(() => String(route.query.project_id || "").trim());
+const selectedProjectScope = computed({
+  get() {
+    return scopedProjectId.value;
+  },
+  async set(value) {
+    const normalizedValue = String(value || "").trim();
+    const nextQuery = { ...route.query };
+    if (normalizedValue) {
+      nextQuery.project_id = normalizedValue;
+      rememberRecentProject(normalizedValue);
+    } else {
+      delete nextQuery.project_id;
+    }
+    await router.replace({ query: nextQuery });
+  },
+});
+const currentScopeLabel = computed(() => {
+  const scope = data.value?.scope || data.value?.ai_report?.scope || null;
+  const scopeProjectName = String(scope?.project_name || "").trim();
+  const scopeDisplayName = String(scope?.display_name || "").trim();
+  const topLevelProjectName = String(data.value?.project_name || "").trim();
+  if (scopeDisplayName) return scopeDisplayName;
+  if (scopeProjectName) return scopeProjectName;
+  if (topLevelProjectName) return topLevelProjectName;
+  if (scopedProjectId.value) return scopedProjectId.value;
+  return "全局统计";
+});
+const currentScopedProjectName = computed(() => {
+  const scope = data.value?.scope || data.value?.ai_report?.scope || null;
+  return String(scope?.project_name || data.value?.project_name || "").trim();
+});
+const normalizedProjectScopeOptions = computed(() => {
+  const items = Array.isArray(projectScopeOptions.value) ? projectScopeOptions.value : [];
+  const normalized = items
+    .map((item) => ({
+      value: String(item?.value || "").trim(),
+      label: String(item?.label || "").trim(),
+    }))
+    .filter((item) => item.value && item.label);
+  const selectedId = scopedProjectId.value;
+  const selectedName = currentScopedProjectName.value;
+  if (
+    selectedId &&
+    selectedName &&
+    !normalized.some((item) => item.value === selectedId)
+  ) {
+    normalized.unshift({ value: selectedId, label: selectedName });
+  }
+  const recentMap = new Map(recentProjectIds.value.map((item, index) => [item, index]));
+  return normalized
+    .map((item) => ({
+      ...item,
+      recentRank: recentMap.has(item.value) ? recentMap.get(item.value) : Number.POSITIVE_INFINITY,
+      recentLabel: recentMap.has(item.value) ? `${item.label} · 最近` : item.label,
+    }))
+    .sort((left, right) => {
+      if (left.recentRank !== right.recentRank) {
+        return left.recentRank - right.recentRank;
+      }
+      return left.label.localeCompare(right.label, "zh-CN");
+    });
 });
 
 const usageSummary = computed(() => data.value?.usage?.summary || {});
 const liveSummary = computed(() => data.value?.live_activity?.summary || {});
 const workSessionSummary = computed(() => data.value?.work_sessions?.summary || {});
 const toolHealthSummary = computed(() => data.value?.usage?.tool_health || {});
+const workCompletionRate = computed(() => Number(workSessionSummary.value.completion_rate || 0));
+
+function formatPercent(value) {
+  return `${Number(value || 0).toFixed(1)}%`;
+}
+
+const leadingProject = computed(() => {
+  const usageTop = Array.isArray(data.value?.usage?.top_projects) ? data.value.usage.top_projects[0] : null;
+  const workTop = Array.isArray(data.value?.work_sessions?.top_projects) ? data.value.work_sessions.top_projects[0] : null;
+  return usageTop || workTop || null;
+});
+
+const projectConcentrationPercent = computed(() => {
+  const leader = leadingProject.value;
+  const totalEvents = Number(usageSummary.value.total_events || 0);
+  const leaderEvents = Number(
+    leader?.cnt || leader?.event_count || leader?.active_entries || 0,
+  );
+  if (totalEvents <= 0) return 0;
+  return Math.round((leaderEvents / totalEvents) * 1000) / 10;
+});
 
 const summaryCards = computed(() => [
   {
@@ -448,19 +673,29 @@ const summaryCards = computed(() => [
     hint: `近 ${days.value} 天 · 工具 ${usageSummary.value.tool_calls || 0} / 连接 ${usageSummary.value.connections || 0}`,
   },
   {
-    label: "工具完成态",
+    label: "工具成功率",
     value: `${Number(usageSummary.value.tool_success_rate || 0).toFixed(0)}%`,
     hint: `完成 ${usageSummary.value.finalized_tool_calls || 0} · 异常 ${Number(usageSummary.value.failed_tool_calls || 0) + Number(usageSummary.value.timeout_tool_calls || 0)}`,
   },
   {
-    label: "项目归因",
-    value: usageSummary.value.active_projects || liveSummary.value.active_projects || 0,
-    hint: `Query 入口 ${usageSummary.value.query_scope_events || 0} · 在线 ${liveSummary.value.active_entries || 0}`,
+    label: "工作完成率",
+    value: formatPercent(workCompletionRate.value),
+    hint: `完成 ${workSessionSummary.value.completed_sessions || 0} · 进行中 ${workSessionSummary.value.in_progress_sessions || 0}`,
   },
   {
-    label: "工作会话",
-    value: workSessionSummary.value.total_sessions || 0,
-    hint: `进行中 ${workSessionSummary.value.in_progress_sessions || 0} · 完成 ${workSessionSummary.value.completed_sessions || 0}`,
+    label: "项目集中度",
+    value: formatPercent(projectConcentrationPercent.value),
+    hint: `${leadingProject.value?.project_name || leadingProject.value?.project_id || "暂无主项目"} · ${Number(leadingProject.value?.cnt || leadingProject.value?.event_count || 0)} / ${usageSummary.value.total_events || 0}`,
+  },
+  {
+    label: "活跃智能体",
+    value: usageSummary.value.active_employees || liveSummary.value.active_agents || workSessionSummary.value.active_employees || 0,
+    hint: `项目 ${usageSummary.value.active_projects || workSessionSummary.value.active_projects || liveSummary.value.active_projects || 0} · Query ${usageSummary.value.query_scope_events || 0}`,
+  },
+  {
+    label: "模型 / ROI",
+    value: `${usageSummary.value.active_models || 0} / ${usageSummary.value.active_prompt_versions || 0}`,
+    hint: `模型调用 ${usageSummary.value.model_calls || 0} · token ${usageSummary.value.total_tokens || 0} · $${Number(usageSummary.value.total_cost_usd || 0).toFixed(4)}`,
   },
 ]);
 
@@ -471,6 +706,27 @@ const healthLabel = computed(() => {
   return "能看见问题，但观测还偏弱";
 });
 
+const aiReport = computed(() => data.value?.ai_report || null);
+const aiReportAnalysisMode = computed(() => aiReport.value?.analysis_mode || aiReport.value?.measurement_position || {});
+const aiReportKeyMetrics = computed(() => aiReport.value?.key_metrics || aiReport.value?.snapshot || {});
+const aiReportFocusPoints = computed(() => {
+  if (Array.isArray(aiReport.value?.priority_focus)) return aiReport.value.priority_focus;
+  return Array.isArray(aiReport.value?.focus_points) ? aiReport.value.focus_points : [];
+});
+const aiReportQuestions = computed(() => {
+  if (Array.isArray(aiReport.value?.next_questions)) return aiReport.value.next_questions;
+  return Array.isArray(aiReport.value?.suggested_questions) ? aiReport.value.suggested_questions : [];
+});
+const aiReportRequiredMetrics = computed(() => {
+  if (Array.isArray(aiReport.value?.must_track_metrics)) return aiReport.value.must_track_metrics;
+  return Array.isArray(aiReport.value?.required_metrics) ? aiReport.value.required_metrics : [];
+});
+const aiReportMarkdown = computed(() => String(aiReport.value?.markdown || "").trim());
+const aiReportStructuredPreview = computed(() => {
+  const payload = aiReport.value?.structured_payload;
+  if (!payload || typeof payload !== "object") return "";
+  return JSON.stringify(payload, null, 2);
+});
 const highlightItems = computed(() => data.value?.insights?.highlights || []);
 const alertItems = computed(() => data.value?.insights?.alerts || []);
 const blindSpotItems = computed(() => data.value?.blind_spots || []);
@@ -484,6 +740,11 @@ const workSessionCards = computed(() => [
     label: "已完成",
     value: workSessionSummary.value.completed_sessions || 0,
     hint: "已经收尾并写回验证的会话",
+  },
+  {
+    label: "完成率",
+    value: formatPercent(workSessionSummary.value.completion_rate),
+    hint: `闭环缺口 ${workSessionSummary.value.closure_gap_sessions || 0}`,
   },
   {
     label: "阻塞",
@@ -521,17 +782,318 @@ const toolOverviewCards = computed(() => [
 
 const usageDaily = computed(() => {
   const daily = Array.isArray(data.value?.usage?.daily) ? data.value.usage.daily : [];
-  const maxTotal = daily.reduce((value, item) => Math.max(value, Number(item?.total_events || 0)), 0) || 1;
-  return daily.map((item) => {
-    const totalEvents = Number(item?.total_events || 0);
-    const toolCalls = Number(item?.tool_calls || 0);
-    return {
-      ...item,
-      totalPercent: Math.max(6, Math.round((totalEvents / maxTotal) * 100)),
-      toolPercent: Math.max(4, Math.round((toolCalls / maxTotal) * 100)),
-    };
-  });
+  return daily.map((item) => ({
+    ...item,
+    total_events: Number(item?.total_events || 0),
+    tool_calls: Number(item?.tool_calls || 0),
+    connections: Number(item?.connections || 0),
+  }));
 });
+
+const workSessionDaily = computed(() => {
+  const daily = Array.isArray(data.value?.work_sessions?.daily) ? data.value.work_sessions.daily : [];
+  return daily.map((item) => ({
+    ...item,
+    total_sessions: Number(item?.total_sessions || 0),
+    completed_sessions: Number(item?.completed_sessions || 0),
+    in_progress_sessions: Number(item?.in_progress_sessions || 0),
+    blocked_sessions: Number(item?.blocked_sessions || 0),
+    completion_rate: Number(item?.completion_rate || 0),
+  }));
+});
+
+let trendChart = null;
+let closureTrendChart = null;
+
+const trendChartOption = computed(() => {
+  const labels = usageDaily.value.map((item) => item.date || "");
+  const totalSeries = usageDaily.value.map((item) => item.total_events || 0);
+  const toolSeries = usageDaily.value.map((item) => item.tool_calls || 0);
+  const connectionSeries = usageDaily.value.map((item) => item.connections || 0);
+  return {
+    animationDuration: 400,
+    color: ["#f97316", "#2563eb", "#0f172a"],
+    grid: {
+      top: 42,
+      right: 16,
+      bottom: 24,
+      left: 16,
+      containLabel: true,
+    },
+    legend: {
+      top: 0,
+      icon: "circle",
+      itemWidth: 10,
+      itemHeight: 10,
+      textStyle: {
+        color: "#475569",
+        fontSize: 12,
+      },
+    },
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: "rgba(15, 23, 42, 0.92)",
+      borderWidth: 0,
+      textStyle: {
+        color: "#e2e8f0",
+      },
+    },
+    xAxis: {
+      type: "category",
+      boundaryGap: false,
+      data: labels,
+      axisLine: {
+        lineStyle: {
+          color: "rgba(148, 163, 184, 0.35)",
+        },
+      },
+      axisTick: {
+        show: false,
+      },
+      axisLabel: {
+        color: "#64748b",
+        fontSize: 11,
+      },
+    },
+    yAxis: {
+      type: "value",
+      splitNumber: 4,
+      axisLine: {
+        show: false,
+      },
+      axisTick: {
+        show: false,
+      },
+      axisLabel: {
+        color: "#64748b",
+        fontSize: 11,
+      },
+      splitLine: {
+        lineStyle: {
+          color: "rgba(148, 163, 184, 0.18)",
+        },
+      },
+    },
+    series: [
+      {
+        name: "总交互",
+        type: "line",
+        smooth: true,
+        symbol: "circle",
+        symbolSize: 8,
+        lineStyle: {
+          width: 3,
+        },
+        areaStyle: {
+          color: "rgba(249, 115, 22, 0.12)",
+        },
+        data: totalSeries,
+      },
+      {
+        name: "工具调用",
+        type: "line",
+        smooth: true,
+        symbol: "circle",
+        symbolSize: 7,
+        lineStyle: {
+          width: 2.5,
+        },
+        data: toolSeries,
+      },
+      {
+        name: "连接",
+        type: "line",
+        smooth: true,
+        symbol: "circle",
+        symbolSize: 6,
+        lineStyle: {
+          width: 2,
+          type: "dashed",
+        },
+        data: connectionSeries,
+      },
+    ],
+  };
+});
+
+const closureTrendChartOption = computed(() => {
+  const labels = workSessionDaily.value.map((item) => item.date || "");
+  const completedSeries = workSessionDaily.value.map((item) => item.completed_sessions || 0);
+  const progressSeries = workSessionDaily.value.map((item) => item.in_progress_sessions || 0);
+  const completionRateSeries = workSessionDaily.value.map((item) => item.completion_rate || 0);
+  return {
+    animationDuration: 400,
+    color: ["#16a34a", "#f97316", "#2563eb"],
+    grid: {
+      top: 42,
+      right: 18,
+      bottom: 24,
+      left: 16,
+      containLabel: true,
+    },
+    legend: {
+      top: 0,
+      icon: "circle",
+      itemWidth: 10,
+      itemHeight: 10,
+      textStyle: {
+        color: "#475569",
+        fontSize: 12,
+      },
+    },
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: "rgba(15, 23, 42, 0.92)",
+      borderWidth: 0,
+      textStyle: {
+        color: "#e2e8f0",
+      },
+    },
+    xAxis: {
+      type: "category",
+      boundaryGap: false,
+      data: labels,
+      axisLine: {
+        lineStyle: {
+          color: "rgba(148, 163, 184, 0.35)",
+        },
+      },
+      axisTick: {
+        show: false,
+      },
+      axisLabel: {
+        color: "#64748b",
+        fontSize: 11,
+      },
+    },
+    yAxis: [
+      {
+        type: "value",
+        splitNumber: 4,
+        axisLine: {
+          show: false,
+        },
+        axisTick: {
+          show: false,
+        },
+        axisLabel: {
+          color: "#64748b",
+          fontSize: 11,
+        },
+        splitLine: {
+          lineStyle: {
+            color: "rgba(148, 163, 184, 0.18)",
+          },
+        },
+      },
+      {
+        type: "value",
+        min: 0,
+        max: 100,
+        axisLine: {
+          show: false,
+        },
+        axisTick: {
+          show: false,
+        },
+        axisLabel: {
+          color: "#64748b",
+          fontSize: 11,
+          formatter: "{value}%",
+        },
+        splitLine: {
+          show: false,
+        },
+      },
+    ],
+    series: [
+      {
+        name: "已完成",
+        type: "line",
+        smooth: true,
+        symbol: "circle",
+        symbolSize: 8,
+        lineStyle: {
+          width: 3,
+        },
+        areaStyle: {
+          color: "rgba(22, 163, 74, 0.12)",
+        },
+        data: completedSeries,
+      },
+      {
+        name: "进行中",
+        type: "line",
+        smooth: true,
+        symbol: "circle",
+        symbolSize: 7,
+        lineStyle: {
+          width: 2.5,
+        },
+        data: progressSeries,
+      },
+      {
+        name: "完成率",
+        type: "line",
+        smooth: true,
+        yAxisIndex: 1,
+        symbol: "circle",
+        symbolSize: 6,
+        lineStyle: {
+          width: 2,
+          type: "dashed",
+        },
+        data: completionRateSeries,
+      },
+    ],
+  };
+});
+
+function disposeTrendChart() {
+  if (!trendChart) return;
+  trendChart.dispose();
+  trendChart = null;
+}
+
+function disposeClosureTrendChart() {
+  if (!closureTrendChart) return;
+  closureTrendChart.dispose();
+  closureTrendChart = null;
+}
+
+function resizeTrendChart() {
+  if (!trendChart) return;
+  trendChart.resize();
+}
+
+function resizeClosureTrendChart() {
+  if (!closureTrendChart) return;
+  closureTrendChart.resize();
+}
+
+async function renderTrendChart() {
+  await nextTick();
+  if (!usageDaily.value.length || !trendChartRef.value) {
+    disposeTrendChart();
+    return;
+  }
+  trendChart = echarts.getInstanceByDom(trendChartRef.value) || echarts.init(trendChartRef.value);
+  trendChart.setOption(trendChartOption.value, true);
+  trendChart.resize();
+}
+
+async function renderClosureTrendChart() {
+  await nextTick();
+  if (!workSessionDaily.value.length || !closureTrendChartRef.value) {
+    disposeClosureTrendChart();
+    return;
+  }
+  closureTrendChart =
+    echarts.getInstanceByDom(closureTrendChartRef.value) ||
+    echarts.init(closureTrendChartRef.value);
+  closureTrendChart.setOption(closureTrendChartOption.value, true);
+  closureTrendChart.resize();
+}
 
 function withPercent(list, key) {
   const items = Array.isArray(list) ? list : [];
@@ -557,6 +1119,22 @@ const runtimeHistogramItems = computed(() => {
     : [];
   return histograms.slice(0, 4);
 });
+
+const PROJECT_NAME_ALIASES = new Set([
+  "当前项目",
+  "<当前项目名>",
+]);
+
+function normalizeProjectName(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  if (PROJECT_NAME_ALIASES.has(normalized)) return "";
+  return normalized;
+}
+
+function resolveProjectDisplayName(projectName, projectId) {
+  return normalizeProjectName(projectName) || String(projectId || "").trim() || "未标记项目";
+}
 
 const entryScopeItems = computed(() => {
   const usageScopes = Array.isArray(data.value?.usage?.top_scopes) ? data.value.usage.top_scopes : [];
@@ -592,7 +1170,8 @@ const recentSessions = computed(() => {
       ...item,
       statusClass,
       statusLabel,
-      project_name: item?.project_name || item?.project_id || "未标记项目",
+      project_name: normalizeProjectName(item?.project_name),
+      display_name: resolveProjectDisplayName(item?.project_name, item?.project_id),
       stageLabel: [item?.phases?.[0], item?.steps?.[0]].filter(Boolean).join(" · ") || "阶段信息待补齐",
       verificationLabel: item?.verification?.[0] || "还没有写入验证说明",
     };
@@ -682,11 +1261,12 @@ const projectActivityItems = computed(() => {
   const merged = new Map();
 
   for (const row of usageProjects) {
-    const key = row?.project_id || row?.project_name;
+    const normalizedProjectName = normalizeProjectName(row?.project_name);
+    const key = row?.project_id || normalizedProjectName;
     if (!key) continue;
     merged.set(key, {
       project_id: row.project_id || "",
-      project_name: row.project_name || row.project_id || "未标记项目",
+      project_name: normalizedProjectName,
       cnt: Number(row.cnt || 0),
       session_count: 0,
       event_count: Number(row.tool_calls || row.cnt || 0),
@@ -697,11 +1277,12 @@ const projectActivityItems = computed(() => {
   }
 
   for (const row of workProjects) {
-    const key = row?.project_id || row?.project_name;
+    const normalizedProjectName = normalizeProjectName(row?.project_name);
+    const key = row?.project_id || normalizedProjectName;
     if (!key) continue;
     const existing = merged.get(key) || {
       project_id: row.project_id || "",
-      project_name: row.project_name || row.project_id || "未标记项目",
+      project_name: "",
       cnt: 0,
       session_count: 0,
       event_count: 0,
@@ -712,18 +1293,19 @@ const projectActivityItems = computed(() => {
     merged.set(key, {
       ...existing,
       project_id: existing.project_id || row.project_id || "",
-      project_name: existing.project_name || row.project_name || row.project_id || "未标记项目",
+      project_name: existing.project_name || normalizedProjectName,
       session_count: Number(row.session_count || 0),
       event_count: Math.max(Number(existing.event_count || 0), Number(row.event_count || 0)),
     });
   }
 
   for (const row of liveProjects) {
-    const key = row?.project_id || row?.project_name;
+    const normalizedProjectName = normalizeProjectName(row?.project_name);
+    const key = row?.project_id || normalizedProjectName;
     if (!key) continue;
     const existing = merged.get(key) || {
       project_id: row.project_id || "",
-      project_name: row.project_name || row.project_id || "未标记项目",
+      project_name: "",
       session_count: 0,
       event_count: 0,
       active_entries: 0,
@@ -733,7 +1315,7 @@ const projectActivityItems = computed(() => {
     merged.set(key, {
       ...existing,
       project_id: existing.project_id || row.project_id || "",
-      project_name: existing.project_name || row.project_name || row.project_id || "未标记项目",
+      project_name: existing.project_name || normalizedProjectName,
       active_entries: Number(row.active_entries || 0),
       developer_count: Number(row.developer_count || 0),
     });
@@ -743,6 +1325,7 @@ const projectActivityItems = computed(() => {
     [...merged.values()]
       .map((row) => ({
         ...row,
+        display_name: resolveProjectDisplayName(row.project_name, row.project_id),
         activity_score:
           Number(row.cnt || 0) +
           Number(row.event_count || 0) +
@@ -755,11 +1338,142 @@ const projectActivityItems = computed(() => {
   );
 });
 
+async function copyAiReport() {
+  const textToCopy = aiReportStructuredPreview.value || aiReportMarkdown.value;
+  if (!textToCopy) {
+    ElMessage.warning("当前没有可复制的 AI 报表");
+    return;
+  }
+  if (!navigator?.clipboard?.writeText) {
+    ElMessage.error("当前环境不支持剪贴板复制");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(textToCopy);
+    ElMessage.success("AI 报表已复制");
+  } catch (err) {
+    ElMessage.error(err?.message || "复制 AI 报表失败");
+  }
+}
+
+async function copyCurrentStatisticsLink() {
+  if (!navigator?.clipboard?.writeText) {
+    ElMessage.error("当前环境不支持剪贴板复制");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(window.location.href);
+    ElMessage.success("当前统计链接已复制");
+  } catch (err) {
+    ElMessage.error(err?.message || "复制统计链接失败");
+  }
+}
+
+function buildStatisticsAnalysisPrompt() {
+  const payload = aiReport.value?.structured_payload;
+  const scopeLabel = currentScopeLabel.value;
+  const link = window.location.href;
+  const serializedPayload = payload && typeof payload === "object"
+    ? JSON.stringify(payload, null, 2)
+    : aiReportMarkdown.value;
+  return [
+    `请基于下面这份统计数据，从运营大师视角分析当前系统最值得投入的优化方向。`,
+    `要求重点判断：`,
+    `1. 当前最该优先补的是归因链路、交付闭环、工具稳定性，还是 ROI 主链`,
+    `2. 给出未来两周最值得做的 3 条升级动作，并按收益 / 成本排序`,
+    `3. 明确哪些指标已经够用，哪些指标还是盲区`,
+    "",
+    `[统计范围] ${scopeLabel}`,
+    `[统计链接] ${link}`,
+    "",
+    `[结构化统计报表]`,
+    typeof serializedPayload === "string" && serializedPayload.trim().startsWith("{")
+      ? `\`\`\`json\n${serializedPayload}\n\`\`\``
+      : String(serializedPayload || "").trim(),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function persistStatisticsAnalysisDraft(prompt) {
+  const storageKey = buildStatisticsAnalysisDraftStorageKey();
+  const payload = {
+    prompt: String(prompt || "").trim(),
+    created_at: new Date().toISOString(),
+    source: "statistics-dashboard",
+    scope: currentScopeLabel.value,
+    project_id: scopedProjectId.value,
+    link: window.location.href,
+  };
+  window.localStorage.setItem(storageKey, JSON.stringify(payload));
+  return storageKey;
+}
+
+async function sendToAiAnalysis() {
+  if (!aiReport.value) {
+    ElMessage.warning("当前还没有可发送的 AI 报表");
+    return;
+  }
+  const prompt = buildStatisticsAnalysisPrompt();
+  if (!prompt.trim()) {
+    ElMessage.warning("当前报表内容为空，暂时无法发给 AI");
+    return;
+  }
+  const draftKey = persistStatisticsAnalysisDraft(prompt);
+  const query = {
+    [STATISTICS_ANALYSIS_DRAFT_QUERY_KEY]: draftKey,
+  };
+  if (scopedProjectId.value) {
+    query.project_id = scopedProjectId.value;
+  }
+  await openRouteInDesktop(
+    router,
+    { path: "/ai/chat", query },
+    {
+      mode: "new-window",
+      appId: "chat",
+      title: "AI 对话",
+      summary: `统计分析 · ${currentScopeLabel.value}`,
+      eyebrow: "Statistics Insight",
+    },
+  );
+  ElMessage.success("已把统计报表送到 AI 对话输入框");
+}
+
+async function fetchProjectScopes() {
+  projectScopeLoading.value = true;
+  try {
+    const response = await api.get("/projects", {
+      params: {
+        page: 1,
+        page_size: 100,
+      },
+    });
+    const projects = Array.isArray(response?.projects) ? response.projects : [];
+    projectScopeOptions.value = projects
+      .map((item) => ({
+        value: String(item?.id || "").trim(),
+        label: String(item?.name || item?.id || "").trim(),
+      }))
+      .filter((item) => item.value && item.label);
+  } catch (err) {
+    projectScopeOptions.value = [];
+    if (Number(err?.status || 0) !== 403) {
+      ElMessage.error(err?.message || "项目列表加载失败");
+    }
+  } finally {
+    projectScopeLoading.value = false;
+  }
+}
+
 async function refresh() {
   loading.value = true;
   try {
     const response = await api.get("/statistics/overview", {
-      params: { days: days.value },
+      params: {
+        days: days.value,
+        ...(scopedProjectId.value ? { project_id: scopedProjectId.value } : {}),
+      },
     });
     data.value = {
       ...data.value,
@@ -773,6 +1487,32 @@ async function refresh() {
 }
 
 onMounted(() => {
+  recentProjectIds.value = loadRecentProjectIds();
+  if (scopedProjectId.value) {
+    rememberRecentProject(scopedProjectId.value);
+  }
+  window.addEventListener("resize", resizeTrendChart);
+  window.addEventListener("resize", resizeClosureTrendChart);
+  fetchProjectScopes();
+  refresh();
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", resizeTrendChart);
+  window.removeEventListener("resize", resizeClosureTrendChart);
+  disposeTrendChart();
+  disposeClosureTrendChart();
+});
+
+watch(usageDaily, () => {
+  renderTrendChart();
+});
+
+watch(workSessionDaily, () => {
+  renderClosureTrendChart();
+});
+
+watch(scopedProjectId, () => {
   refresh();
 });
 </script>
@@ -788,6 +1528,10 @@ onMounted(() => {
     radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.16), transparent 26%),
     radial-gradient(circle at 82% 14%, rgba(103, 232, 249, 0.12), transparent 22%),
     linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%);
+}
+
+.statistics-page__project-scope {
+  width: 100%;
 }
 
 .statistics-page__ambient,
@@ -855,6 +1599,7 @@ onMounted(() => {
 .statistics-hero__copy {
   padding: 28px;
   border-radius: 34px;
+  min-width: 0;
 }
 
 .statistics-hero__eyebrow,
@@ -911,6 +1656,7 @@ onMounted(() => {
   background:
     radial-gradient(circle at top left, rgba(251, 146, 60, 0.12), transparent 38%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(248, 250, 252, 0.78));
+  min-width: 0;
 }
 
 .statistics-hero__score {
@@ -938,12 +1684,28 @@ onMounted(() => {
 }
 
 .statistics-hero__controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.statistics-hero__controls-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(116px, 132px);
+  gap: 10px;
+  min-width: 0;
+}
+
+.statistics-hero__controls-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
 }
 
 .statistics-page__range {
-  width: 124px;
+  width: 100%;
 }
 
 .statistics-hero__flow {
@@ -1035,6 +1797,23 @@ onMounted(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
+}
+
+.story-card__head > :first-child,
+.panel-card__head > :first-child,
+.panel-card__head-copy {
+  min-width: 0;
+  flex: 1 1 320px;
+}
+
+.panel-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  flex: 0 1 auto;
+  max-width: 100%;
 }
 
 .story-card__title,
@@ -1140,35 +1919,41 @@ onMounted(() => {
   background:
     radial-gradient(circle at top left, rgba(251, 146, 60, 0.08), transparent 32%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.92));
+  min-width: 0;
 }
 
 .panel-card--wide {
   grid-column: span 2;
 }
 
-.trend-list {
+.trend-chart {
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 
-.trend-row {
-  display: grid;
-  grid-template-columns: 118px minmax(0, 1fr) 126px;
-  gap: 12px;
-  align-items: center;
+.trend-chart--closure {
+  margin-bottom: 18px;
 }
 
-.trend-row__meta,
-.trend-row__tags {
-  display: grid;
-  gap: 2px;
-  color: #64748b;
+.trend-chart__canvas {
+  width: 100%;
+  height: 320px;
+}
+
+.trend-chart__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.trend-chart__summary span {
+  padding: 8px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
   font-size: 12px;
-}
-
-.trend-row__value {
-  color: #0f172a;
-  font-size: 20px;
+  font-weight: 700;
 }
 
 .trend-row__bar-shell,
@@ -1345,6 +2130,141 @@ onMounted(() => {
   margin-bottom: 16px;
 }
 
+.ai-report-panel {
+  display: grid;
+  gap: 18px;
+  margin-bottom: 28px;
+}
+
+.ai-report-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 14px;
+}
+
+.ai-report-block {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(255, 255, 255, 0.76);
+  min-width: 0;
+}
+
+.ai-report-block__label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.ai-report-block__summary {
+  margin: 0;
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.ai-report-block__summary--muted {
+  color: #475569;
+  font-size: 13px;
+}
+
+.ai-report-kpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-report-kpis span,
+.ai-question-item {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.92);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 100%;
+}
+
+.ai-focus-list,
+.ai-question-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ai-focus-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.92);
+  color: #334155;
+}
+
+.ai-focus-item strong {
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.ai-focus-item small,
+.ai-focus-item p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #475569;
+}
+
+.ai-focus-item.is-warning {
+  background: rgba(255, 247, 237, 0.92);
+}
+
+.ai-focus-item.is-good {
+  background: rgba(236, 253, 245, 0.92);
+}
+
+.ai-report-markdown {
+  margin: 0;
+  padding: 18px;
+  border-radius: 24px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.ai-metric-gap-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ai-metric-gap-item {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.ai-metric-gap-item strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.ai-metric-gap-item small {
+  color: #64748b;
+  line-height: 1.6;
+}
+
 .session-summary-pill,
 .live-grid__item,
 .runtime-grid__item {
@@ -1417,7 +2337,7 @@ onMounted(() => {
 
 .session-card p {
   margin: 0;
-  word-break: break-all;
+  word-break: break-word;
 }
 
 .runtime-columns {
@@ -1436,6 +2356,8 @@ onMounted(() => {
   .story-grid,
   .statistics-layout,
   .compact-split,
+  .ai-report-grid,
+  .ai-metric-gap-list,
   .summary-grid,
   .tool-overview-grid,
   .runtime-columns {
@@ -1452,24 +2374,71 @@ onMounted(() => {
     padding: 22px;
   }
 
+  .statistics-hero__controls {
+    grid-template-columns: 1fr;
+  }
+
+  .statistics-hero__controls-actions {
+    justify-content: flex-start;
+  }
+
   .statistics-hero__flow,
   .session-summary-grid,
   .live-grid,
   .runtime-grid,
+  .ai-metric-gap-list,
   .tool-overview-grid {
     grid-template-columns: 1fr 1fr;
   }
 
-  .trend-row {
-    grid-template-columns: 1fr;
+  .trend-chart__canvas {
+    height: 280px;
   }
 }
 
 @media (max-width: 680px) {
+  .statistics-page {
+    padding: 16px;
+  }
+
+  .statistics-hero__copy,
+  .statistics-hero__focus,
+  .story-card,
+  .panel-card,
+  .summary-card {
+    padding: 18px;
+    border-radius: 24px;
+  }
+
+  .statistics-hero__title {
+    max-width: none;
+    font-size: clamp(30px, 10vw, 42px);
+  }
+
+  .statistics-hero__score strong {
+    font-size: 48px;
+  }
+
+  .statistics-hero__controls-main {
+    grid-template-columns: 1fr;
+  }
+
+  .statistics-hero__controls-actions,
+  .panel-card__actions {
+    width: 100%;
+  }
+
+  .statistics-hero__controls-actions :deep(.el-button),
+  .panel-card__actions :deep(.el-button) {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+
   .statistics-hero__flow,
   .session-summary-grid,
   .live-grid,
   .runtime-grid,
+  .ai-metric-gap-list,
   .tool-overview-grid,
   .runtime-columns {
     grid-template-columns: 1fr;

@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     error_message TEXT NOT NULL DEFAULT '',
     provider_id TEXT NOT NULL DEFAULT '',
     model_name TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -97,6 +98,7 @@ class UsageStore:
             "error_message": "TEXT NOT NULL DEFAULT ''",
             "provider_id": "TEXT NOT NULL DEFAULT ''",
             "model_name": "TEXT NOT NULL DEFAULT ''",
+            "prompt_version": "TEXT NOT NULL DEFAULT ''",
             "input_tokens": "INTEGER NOT NULL DEFAULT 0",
             "output_tokens": "INTEGER NOT NULL DEFAULT 0",
             "cached_input_tokens": "INTEGER NOT NULL DEFAULT 0",
@@ -182,6 +184,7 @@ class UsageStore:
         error_message: str = "",
         provider_id: str = "",
         model_name: str = "",
+        prompt_version: str = "",
         input_tokens: int = 0,
         output_tokens: int = 0,
         cached_input_tokens: int = 0,
@@ -208,6 +211,7 @@ class UsageStore:
                 error_message,
                 provider_id,
                 model_name,
+                prompt_version,
                 input_tokens,
                 output_tokens,
                 cached_input_tokens,
@@ -215,7 +219,7 @@ class UsageStore:
                 cost_usd,
                 client_ip,
                 created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 event_id,
@@ -234,6 +238,7 @@ class UsageStore:
                 _normalize_text(error_message, 500),
                 _normalize_text(provider_id, 160),
                 _normalize_text(model_name, 160),
+                _normalize_text(prompt_version, 160),
                 _safe_int(input_tokens),
                 _safe_int(output_tokens),
                 _safe_int(cached_input_tokens),
@@ -260,6 +265,7 @@ class UsageStore:
         error_message: str = "",
         provider_id: str = "",
         model_name: str = "",
+        prompt_version: str = "",
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         cached_input_tokens: int | None = None,
@@ -289,6 +295,7 @@ class UsageStore:
         add_text("error_message", error_message, 500)
         add_text("provider_id", provider_id, 160)
         add_text("model_name", model_name, 160)
+        add_text("prompt_version", prompt_version, 160)
         if duration_ms is not None:
             updates.append("duration_ms = ?")
             params.append(_safe_float(duration_ms))
@@ -361,17 +368,25 @@ class UsageStore:
             "recent": [dict(r) for r in recent],
         }
 
-    def get_overview(self, days: int = 7) -> dict:
+    def get_overview(self, days: int = 7, project_id: str = "") -> dict:
         normalized_days = max(1, min(int(days or 7), 365))
         cutoff = (datetime.now(timezone.utc) - timedelta(days=normalized_days)).isoformat()
-        params = (cutoff,)
+        normalized_project_id = _normalize_text(project_id, 120)
+        where_clauses = ["created_at >= ?"]
+        params: list[object] = [cutoff]
+        if normalized_project_id:
+            where_clauses.append("project_id = ?")
+            params.append(normalized_project_id)
+        where_sql = " AND ".join(where_clauses)
+        query_params = tuple(params)
 
         summary_row = self._db.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) AS total_events,
                 SUM(CASE WHEN event_type = 'tool_call' THEN 1 ELSE 0 END) AS tool_calls,
                 SUM(CASE WHEN event_type = 'connection' THEN 1 ELSE 0 END) AS connections,
+                SUM(CASE WHEN event_type = 'model_call' THEN 1 ELSE 0 END) AS model_calls,
                 COUNT(DISTINCT CASE WHEN developer_name != '' THEN developer_name END) AS active_developers,
                 COUNT(DISTINCT CASE WHEN employee_id LIKE 'emp-%' THEN employee_id END) AS active_employees,
                 COUNT(DISTINCT CASE WHEN tool_name != '' THEN tool_name END) AS active_tools,
@@ -387,17 +402,19 @@ class UsageStore:
                 SUM(cost_usd) AS total_cost_usd,
                 COUNT(DISTINCT CASE WHEN provider_id != '' THEN provider_id END) AS active_providers,
                 COUNT(DISTINCT CASE WHEN model_name != '' THEN model_name END) AS active_models,
+                COUNT(DISTINCT CASE WHEN prompt_version != '' THEN prompt_version END) AS active_prompt_versions,
+                SUM(CASE WHEN prompt_version != '' THEN 1 ELSE 0 END) AS prompt_version_records,
                 COUNT(DISTINCT CASE WHEN scope_id != '' THEN scope_id END) AS active_scopes,
                 SUM(CASE WHEN scope_id = 'mcp:query' THEN 1 ELSE 0 END) AS query_scope_events,
                 SUM(CASE WHEN scope_id = 'mcp:query' AND event_type = 'tool_call' THEN 1 ELSE 0 END) AS query_tool_calls
             FROM usage_records
-            WHERE created_at >= ?
+            WHERE {where_sql}
             """,
-            params,
+            query_params,
         ).fetchone()
 
         by_tool_rows = self._db.execute(
-            """
+            f"""
             SELECT
                 tool_name,
                 COUNT(*) AS cnt,
@@ -407,15 +424,15 @@ class UsageStore:
                 AVG(CASE WHEN duration_ms > 0 THEN duration_ms END) AS avg_duration_ms,
                 MAX(CASE WHEN duration_ms > 0 THEN duration_ms ELSE 0 END) AS max_duration_ms
             FROM usage_records
-            WHERE created_at >= ? AND event_type = 'tool_call' AND tool_name != ''
+            WHERE {where_sql} AND event_type = 'tool_call' AND tool_name != ''
             GROUP BY tool_name
             ORDER BY cnt DESC, tool_name ASC
             LIMIT 10
             """,
-            params,
+            query_params,
         ).fetchall()
         by_employee_rows = self._db.execute(
-            """
+            f"""
             SELECT
                 employee_id,
                 COUNT(*) AS cnt,
@@ -424,15 +441,15 @@ class UsageStore:
                 SUM(CASE WHEN status = 'timeout' THEN 1 ELSE 0 END) AS timeout_calls,
                 AVG(CASE WHEN duration_ms > 0 THEN duration_ms END) AS avg_duration_ms
             FROM usage_records
-            WHERE created_at >= ? AND employee_id LIKE 'emp-%'
+            WHERE {where_sql} AND employee_id LIKE 'emp-%'
             GROUP BY employee_id
             ORDER BY cnt DESC, employee_id ASC
             LIMIT 10
             """,
-            params,
+            query_params,
         ).fetchall()
         by_scope_rows = self._db.execute(
-            """
+            f"""
             SELECT
                 scope_id,
                 COUNT(*) AS cnt,
@@ -445,26 +462,59 @@ class UsageStore:
                 COUNT(DISTINCT CASE WHEN employee_id LIKE 'emp-%' THEN employee_id END) AS attributed_employee_count,
                 COUNT(DISTINCT CASE WHEN project_id != '' THEN project_id END) AS project_count
             FROM usage_records
-            WHERE created_at >= ? AND scope_id != ''
+            WHERE {where_sql} AND scope_id != ''
             GROUP BY scope_id
             ORDER BY cnt DESC, scope_id ASC
             LIMIT 10
             """,
-            params,
+            query_params,
         ).fetchall()
         by_developer_rows = self._db.execute(
-            """
+            f"""
             SELECT developer_name, COUNT(*) AS cnt
             FROM usage_records
-            WHERE created_at >= ? AND developer_name != ''
+            WHERE {where_sql} AND developer_name != ''
             GROUP BY developer_name
             ORDER BY cnt DESC, developer_name ASC
             LIMIT 10
             """,
-            params,
+            query_params,
+        ).fetchall()
+        by_provider_rows = self._db.execute(
+            f"""
+            SELECT provider_id, COUNT(*) AS cnt, SUM(total_tokens) AS total_tokens, SUM(cost_usd) AS total_cost_usd
+            FROM usage_records
+            WHERE {where_sql} AND provider_id != ''
+            GROUP BY provider_id
+            ORDER BY cnt DESC, provider_id ASC
+            LIMIT 8
+            """,
+            query_params,
+        ).fetchall()
+        by_model_rows = self._db.execute(
+            f"""
+            SELECT model_name, COUNT(*) AS cnt, SUM(total_tokens) AS total_tokens, SUM(cost_usd) AS total_cost_usd
+            FROM usage_records
+            WHERE {where_sql} AND model_name != ''
+            GROUP BY model_name
+            ORDER BY cnt DESC, model_name ASC
+            LIMIT 8
+            """,
+            query_params,
+        ).fetchall()
+        by_prompt_version_rows = self._db.execute(
+            f"""
+            SELECT prompt_version, COUNT(*) AS cnt
+            FROM usage_records
+            WHERE {where_sql} AND prompt_version != ''
+            GROUP BY prompt_version
+            ORDER BY cnt DESC, prompt_version ASC
+            LIMIT 8
+            """,
+            query_params,
         ).fetchall()
         by_project_rows = self._db.execute(
-            """
+            f"""
             SELECT
                 project_id,
                 project_name,
@@ -477,15 +527,15 @@ class UsageStore:
                 AVG(CASE WHEN event_type = 'tool_call' AND duration_ms > 0 THEN duration_ms END) AS avg_duration_ms,
                 MAX(created_at) AS last_seen_at
             FROM usage_records
-            WHERE created_at >= ? AND project_id != ''
+            WHERE {where_sql} AND project_id != ''
             GROUP BY project_id, project_name
             ORDER BY cnt DESC, project_name ASC
             LIMIT 10
             """,
-            params,
+            query_params,
         ).fetchall()
         daily_rows = self._db.execute(
-            """
+            f"""
             SELECT
                 substr(created_at, 1, 10) AS date,
                 COUNT(*) AS total_events,
@@ -495,21 +545,21 @@ class UsageStore:
                 SUM(CASE WHEN event_type = 'tool_call' AND status IN ('failed', 'error') THEN 1 ELSE 0 END) AS failed_calls,
                 SUM(CASE WHEN event_type = 'tool_call' AND status = 'timeout' THEN 1 ELSE 0 END) AS timeout_calls
             FROM usage_records
-            WHERE created_at >= ?
+            WHERE {where_sql}
             GROUP BY substr(created_at, 1, 10)
             ORDER BY date ASC
             """,
-            params,
+            query_params,
         ).fetchall()
         recent_rows = self._db.execute(
-            """
+            f"""
             SELECT *
             FROM usage_records
-            WHERE created_at >= ?
+            WHERE {where_sql}
             ORDER BY created_at DESC
             LIMIT 20
             """,
-            params,
+            query_params,
         ).fetchall()
 
         successful_tool_calls = int(summary_row["successful_tool_calls"] or 0)
@@ -524,6 +574,7 @@ class UsageStore:
                 "total_events": int(summary_row["total_events"] or 0),
                 "tool_calls": int(summary_row["tool_calls"] or 0),
                 "connections": int(summary_row["connections"] or 0),
+                "model_calls": int(summary_row["model_calls"] or 0),
                 "active_developers": int(summary_row["active_developers"] or 0),
                 "active_employees": int(summary_row["active_employees"] or 0),
                 "active_tools": int(summary_row["active_tools"] or 0),
@@ -541,6 +592,8 @@ class UsageStore:
                 "total_cost_usd": round(_safe_float(summary_row["total_cost_usd"]), 4),
                 "active_providers": int(summary_row["active_providers"] or 0),
                 "active_models": int(summary_row["active_models"] or 0),
+                "active_prompt_versions": int(summary_row["active_prompt_versions"] or 0),
+                "prompt_version_records": int(summary_row["prompt_version_records"] or 0),
                 "active_scopes": int(summary_row["active_scopes"] or 0),
                 "query_scope_events": int(summary_row["query_scope_events"] or 0),
                 "query_tool_calls": int(summary_row["query_tool_calls"] or 0),
@@ -595,6 +648,9 @@ class UsageStore:
                 for row in by_scope_rows
             ],
             "top_developers": [dict(row) for row in by_developer_rows],
+            "top_providers": [dict(row) for row in by_provider_rows],
+            "top_models": [dict(row) for row in by_model_rows],
+            "top_prompt_versions": [dict(row) for row in by_prompt_version_rows],
             "top_projects": [
                 {
                     **dict(row),

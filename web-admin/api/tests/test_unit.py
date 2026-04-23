@@ -3537,7 +3537,17 @@ def test_project_work_session_routes_list_and_detail(tmp_path, monkeypatch):
 
     class FakeWorkSessionStore:
         @staticmethod
-        def list_events(project_id="", employee_id="", session_id="", query="", limit=200):
+        def list_events(
+            *,
+            project_id="",
+            employee_id="",
+            session_id="",
+            task_tree_session_id="",
+            task_tree_chat_session_id="",
+            task_node_id="",
+            query="",
+            limit=200,
+        ):
             keyword = str(query or "").strip().lower()
             filtered = []
             for item in events:
@@ -3546,6 +3556,15 @@ def test_project_work_session_routes_list_and_detail(tmp_path, monkeypatch):
                 if employee_id and item.employee_id != employee_id:
                     continue
                 if session_id and item.session_id != session_id:
+                    continue
+                if task_tree_session_id and getattr(item, "task_tree_session_id", "") != task_tree_session_id:
+                    continue
+                if (
+                    task_tree_chat_session_id
+                    and getattr(item, "task_tree_chat_session_id", "") != task_tree_chat_session_id
+                ):
+                    continue
+                if task_node_id and getattr(item, "task_node_id", "") != task_node_id:
                     continue
                 if keyword:
                     haystack = "\n".join(
@@ -4275,11 +4294,113 @@ async def test_create_tracking_send_attributes_query_employee_tool_calls():
                 "error_message": "",
                 "provider_id": "",
                 "model_name": "",
+                "prompt_version": "",
                 "input_tokens": 1,
                 "output_tokens": 2,
                 "cached_input_tokens": None,
                 "total_tokens": 3,
                 "cost_usd": None,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_tracking_send_extracts_nested_observability_payload():
+    from services.dynamic_mcp_audit import create_tracking_send
+
+    finalized_calls = []
+
+    class DummyUsageStore:
+        @staticmethod
+        def finalize_event(event_id, **kwargs):
+            finalized_calls.append((event_id, kwargs))
+            return True
+
+    async def _send(_message):
+        return None
+
+    tracking_send = create_tracking_send(
+        _send,
+        is_sse=False,
+        method="POST",
+        api_key="valid-key",
+        developer_name="tester",
+        session_keys={},
+        usage_store_instance=DummyUsageStore(),
+        request_state={
+            "rpc_calls": [
+                {
+                    "id": "rpc-2",
+                    "method_name": "tools/call",
+                    "tool_name": "invoke_project_skill_tool",
+                    "context": {
+                        "project_id": "proj-1",
+                        "project_name": "项目一",
+                        "employee_id": "emp-1",
+                        "chat_session_id": "chat-123",
+                    },
+                    "usage_event_id": "ur-2",
+                    "request_started_monotonic": 0.0,
+                }
+            ]
+        },
+    )
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "rpc-2",
+        "result": {
+            "structuredContent": {
+                "stdout_json": {
+                    "provider_id": "openai",
+                    "model_name": "gpt-4.1",
+                    "prompt_version": "planner-v2",
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 5,
+                        "prompt_tokens_details": {"cached_tokens": 2},
+                        "cost_usd": 0.1234,
+                    },
+                }
+            }
+        },
+    }
+
+    tracking_send_module = __import__("services.dynamic_mcp_audit", fromlist=["time"])
+    original_monotonic = tracking_send_module.time.monotonic
+    tracking_send_module.time.monotonic = lambda: 1.5
+    try:
+        await tracking_send(
+            {
+                "type": "http.response.body",
+                "body": json.dumps(payload).encode("utf-8"),
+                "more_body": False,
+            }
+        )
+    finally:
+        tracking_send_module.time.monotonic = original_monotonic
+
+    assert finalized_calls == [
+        (
+            "ur-2",
+            {
+                "employee_id": "emp-1",
+                "project_id": "proj-1",
+                "project_name": "项目一",
+                "chat_session_id": "chat-123",
+                "request_id": "rpc-2",
+                "status": "success",
+                "duration_ms": 1500.0,
+                "error_message": "",
+                "provider_id": "openai",
+                "model_name": "gpt-4.1",
+                "prompt_version": "planner-v2",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cached_input_tokens": 2,
+                "total_tokens": 13,
+                "cost_usd": 0.1234,
             },
         )
     ]
@@ -8037,7 +8158,17 @@ def test_query_mcp_proxy_app_handles_sse_and_streamable_routes(monkeypatch):
             return "tester" if api_key == "valid-key" else ""
 
         @staticmethod
-        def record_event(scope_id, api_key, developer_name, event_type, client_ip=""):
+        def record_event(*args, **kwargs):
+            scope_id = kwargs.get("scope_id")
+            api_key = kwargs.get("api_key")
+            developer_name = kwargs.get("developer_name")
+            event_type = kwargs.get("event_type")
+            client_ip = kwargs.get("client_ip", "")
+            if args:
+                scope_id = args[0] if len(args) > 0 else scope_id
+                api_key = args[1] if len(args) > 1 else api_key
+                developer_name = args[2] if len(args) > 2 else developer_name
+                event_type = args[3] if len(args) > 3 else event_type
             captured_connections.append(
                 {
                     "scope_id": scope_id,

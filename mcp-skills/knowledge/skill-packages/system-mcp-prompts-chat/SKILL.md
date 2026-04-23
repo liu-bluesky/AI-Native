@@ -26,29 +26,29 @@ description: 导入自系统 MCP 服务 prompts.chat，包含 tools 10 / prompts
 - search_skills: Search for Agent Skills by keyword. Returns matching skills with title, description, author, and file list. Use this to discover reusable AI agent capabilities for coding, analysis, automation, and more.
 
 ## Prompts
-- review-the-social-media-content: Review the social media content
-- neon-logo-design-for-streaming-platform: Create a circular neon logo with a minimalist play button inside a film strip frame. The design features an electric blue and hot pink gradient glow on a dark background, embodying a cyberpunk aesthetic. It's a centered geometric icon in a 
-- extract-a-writing-outline-from-scientific-content: Generate a detailed writing outline based on the principles and concepts described in complex scientific texts.
-- resume-customization-prompt-strategic-integrity: Customize your resume for each job, using a number of advanced AI logic elements.
-- project-builder: Project Builder
-- video-extractor-prompt: Video extractor prompt
-- video-review-and-teacher: Video review and teacher
-- ai-voice-assistant: This prompt is designed for an AI receptionist (e.g., via Vapi, Bland AI, or a website chatbot) for **your website**.
+- what-friendship-should-be-all-about: What friendship should be all about
+- building-a-community: Building a community
+- realistic-image-json-prompt: A JSON-based prompt for generating realistic images. This prompt allows users to specify various parameters and constraints to create detailed and lifelike images using AI technologies. It is ideal for artists, designers, and developers loo
+- suitable-sunglasses-using-gemini: provide an image and gemini suggest suitable sunglass frames
+- key-concepts-and-essential-definitions-for-exam: NotebookLM - Key Concepts and Essential Definitions for Exam
+- chain-of-thought-for-podcast-guest-analysis: This prompt guides you through a structured process to gather detailed information about your podcast guest and develop probing questions that may challenge them, ideally suited for the "Shadow Work" podcast.
+- augmented-reality-real-estate-staging: Use augmented reality to virtually stage real estate properties using user-provided images of staging inventory.
+- good-for-us: Good for us
+- rocket-launcher: Rocket launcher
+- create-a-can-simulation-in-python: create a a CAN simulation so when i run it i undertsand how CAN works crteate it in python
+- grant-finder: This prompt helps users find grants relevant to their needs by acting as a research assistant that identifies and suggests potential grant opportunities based on user criteria.
+- promptforge: PromptForge âï¸ is an advanced prompt optimization system designed to systematically analyze your prompts, identify weaknesses, and transform them into clearer, more precise, and more reliable versions.
 
-It focuses on their core value proposition: **Rigorous, reproducible, and non-negotiable analytical quality.**
-- build-an-interview-practice-app: Build an AI-powered Interview Preparation app as a single-page website using Streamlit (Python) or Next.js (JavaScript) in VS Code or Cursor. Integrate the OpenAI API, create a system prompt, and design prompts for interview preparation. Th
-- deep-investigation-agent: Agente de investigaÃ§Ã£o profunda para pesquisas complexas, sÃ­ntese de informaÃ§Ãµes, anÃ¡lise geopolÃ­tica e contextos acadÃªmicos. Cobre investigaÃ§Ãµes multi-hop, anÃ¡lise de vÃ­deos do YouTube sobre geopolÃ­tica, pesquisa com mÃºltipla
-- academic-research-writer: Skill completa para escrita e pesquisa acadÃªmica. Cobre todo o ciclo de vida de um trabalho acadÃªmico: planejamento, pesquisa, revisÃ£o de literatura, redaÃ§Ã£o, anÃ¡lise de dados, formataÃ§Ã£o de citaÃ§Ãµes (APA, MLA, Chicago, Vancouver)
-- xcode-mcp-for-pi-agent: Guidelines for efficient Xcode MCP tool usage via mcporter CLI. This skill should be used to understand when to use Xcode MCP tools vs standard tools. Xcode MCP consumes many tokens - use only for build, test, simulator, preview, and Source
-- class-prep: I want a prompt that can help be prepare my understanding and get comfortable with the learning input before class starting.
-- isc-class-12th-exam-paper-analyzer-and-evaluator: Analyze ISC Class 12th exam papers to generate infographics, scan for previous papers, and provide a personalized strategy.
-- code-generation-for-online-assessments: SOLVE THE QUESTION IN CPP, USING NAMESPACE STD, IN A SIMPLE BUT HIGHLY EFFICIENT WAY, AND PROVIDE IT WITH THIS RESTYLING:
-no comments, no space between operator and operand but proper margin and indentation, brackets open on the next line a
-- photo-enhancement-and-repair-with-transparent-background: upscale this photo and make it look amazing. make it transparent background. fix broken objects. make it good
-- improve: Improve
-- why-an-online-pdf-editor-is-essential-for-modern-workflows: https://flexfiles.io/en/pdf-editor
-- in-depth-paper-and-exam-prediction-analyzer: Analyze supplied exam papers and patterns to predict a comprehensive exam paper for future exams based on in-depth analysis of past papers and questions.
-- mine: Mine
+It goes beyond surface-level sugg
+- school-report-management-system-for-smp-negeri-7-sentani: Develop an application for SMP Negeri 7 Sentani where the Principal acts as the Master Admin and Class Teachers as Admins. The application manages school reports based on Kurikulum 2013, Kurikulum Merdeka, and Kurikulum Deep Learning. Key f
+- ee: âI want you to analyze the videos and images I upload and recreate the exact same style.
+Give me outputs like example voice, dialogue delivery, video style, dialogue delivery format, 4K aspect ratio exatra exatra, and all other stylistic 
+- financial-compliance-auditor: Review and ensure compliance of financial reports with capital markets regulations, focusing on neutrality, risk assessment, and legal completeness, outputting the final document in Turkish.
+- feynmans-nitpick-game: Feynmanâs Nitpicking" to convey the core idea
+- create-content-from-discord-blog-for-hazels-website: Generate site-specific content based on the Discord blog, tailored for Hazel's website.
+- lecturer: Act like uniksun lecturer
+- github-ssh-setup-for-students-existing-repository-clone-push-ready: Guide for students to configure GitHub SSH access, ensuring they can clone and push to an existing repository securely without needing GitHub passwords or tokens. Follow step-by-step instructions to verify SSH key setup and repository readi
+- setup-and-bootstrap-a-flutter-development-environment: Guide for setting up a comprehensive Flutter development environment and bootstrapping a production-ready Flutter project. Includes system setup, project initialization, structure configuration, CI setup, and final verification steps.
 
 ## Resources
 - none

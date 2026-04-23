@@ -25,6 +25,73 @@ _TASK_TREE_TOOL_NAMES = {
 }
 
 
+def _normalize_usage_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_usage_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _record_model_usage_event(
+    *,
+    project_id: str,
+    employee_id: str,
+    username: str,
+    chat_session_id: str,
+    provider_id: str,
+    model_name: str,
+    prompt_version: str,
+    duration_ms: float,
+    usage: dict[str, Any] | None,
+    request_id: str,
+) -> None:
+    try:
+        from core.deps import usage_store
+    except Exception:
+        return
+    normalized_provider_id = str(provider_id or "").strip()
+    normalized_model_name = str(model_name or "").strip()
+    usage_payload = usage if isinstance(usage, dict) else {}
+    if not (normalized_provider_id or normalized_model_name or usage_payload):
+        return
+    try:
+        usage_store.record_event(
+            employee_id,
+            "",
+            username or "anonymous",
+            "model_call",
+            client_ip="",
+            scope_id="llm:chat",
+            project_id=project_id,
+            chat_session_id=chat_session_id,
+            request_id=request_id,
+            status="success",
+            duration_ms=duration_ms,
+            provider_id=normalized_provider_id,
+            model_name=normalized_model_name,
+            prompt_version=str(prompt_version or "").strip(),
+            input_tokens=_normalize_usage_int(usage_payload.get("input_tokens")),
+            output_tokens=_normalize_usage_int(usage_payload.get("output_tokens")),
+            cached_input_tokens=_normalize_usage_int(usage_payload.get("cached_input_tokens")),
+            total_tokens=_normalize_usage_int(usage_payload.get("total_tokens")),
+            cost_usd=_normalize_usage_float(usage_payload.get("cost_usd")),
+        )
+    except Exception:
+        logger.warning(
+            "record_model_usage_event_failed",
+            project_id=project_id,
+            provider_id=normalized_provider_id,
+            model_name=normalized_model_name,
+        )
+
+
 def _is_image_url(value: Any) -> bool:
     text = str(value or "").strip()
     if not text:
@@ -499,6 +566,7 @@ class AgentOrchestrator:
         local_connector_workspace_path: str = "",
         local_connector_sandbox_mode: str = "workspace-write",
         global_assistant_bridge_handler: Any | None = None,
+        prompt_version: str = "",
     ) -> AsyncGenerator[dict, None]:
         start_time = time.time()
         metrics.inc_counter("conversation_started", {"project_id": project_id})
@@ -553,6 +621,10 @@ class AgentOrchestrator:
                 loop_count += 1
                 response_content = ""
                 tool_calls_buffer = {}
+                llm_call_started = time.monotonic()
+                llm_usage: dict[str, Any] = {}
+                llm_provider_id = str(provider_id or "").strip()
+                llm_model_name = str(model_name or "").strip()
 
                 logger.info("agent_loop_start", loop=loop_count, tools_count=len(tools), has_system_prompt=any(m.get("role") == "system" for m in messages))
 
@@ -574,6 +646,10 @@ class AgentOrchestrator:
                         break
 
                     if isinstance(chunk, dict):
+                        if isinstance(chunk.get("usage"), dict):
+                            llm_usage = dict(chunk["usage"])
+                            llm_provider_id = str(chunk.get("provider_id") or llm_provider_id).strip()
+                            llm_model_name = str(chunk.get("model_name") or llm_model_name).strip()
                         if "tool_calls" in chunk:
                             logger.info("tool_calls_chunk", tool_calls=chunk["tool_calls"])
                             for tc in chunk["tool_calls"]:
@@ -593,6 +669,19 @@ class AgentOrchestrator:
                             delta = chunk["content"]
                             response_content += delta
                             yield {"type": "delta", "content": delta}
+
+                _record_model_usage_event(
+                    project_id=project_id,
+                    employee_id=employee_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                    provider_id=llm_provider_id,
+                    model_name=llm_model_name,
+                    prompt_version=prompt_version,
+                    duration_ms=round((time.monotonic() - llm_call_started) * 1000, 1),
+                    usage=llm_usage,
+                    request_id=f"{session_id}:loop:{loop_count}",
+                )
 
                 logger.info("agent_loop_response", has_tool_calls=bool(tool_calls_buffer), response_length=len(response_content))
 
