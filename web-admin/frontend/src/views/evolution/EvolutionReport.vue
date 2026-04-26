@@ -26,7 +26,7 @@
       <el-table-column prop="confidence" label="置信度" width="100" />
       <el-table-column prop="risk_domain" label="风险域" width="100" />
       <el-table-column prop="status" label="状态" width="100" />
-      <el-table-column label="操作" width="100">
+      <el-table-column label="操作" min-width="100" class-name="table-action-column">
         <template #default="{ row }">
           <el-button text type="primary" @click="$router.push(`/review/${employeeId}?cid=${row.id}`)">
             审核

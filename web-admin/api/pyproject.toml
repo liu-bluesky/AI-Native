@@ -9,6 +9,7 @@ dependencies = [
     "pyjwt>=2.8",
     "python-multipart>=0.0.9",
     "fastmcp>=3.0",
+    "lark-oapi>=1.5.5",
     "psycopg[binary]>=3.2",
     "requests>=2.31",
     "redis[hiredis]>=5.0.0",

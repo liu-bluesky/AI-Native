@@ -96,6 +96,8 @@ def sort_tools_by_priority(
 def infer_tool_source(item: dict[str, Any]) -> str:
     tool_name = str(item.get("tool_name") or "").strip()
     module_type = str(item.get("module_type") or "").strip().lower()
+    if tool_name == "project_host_run_command":
+        return "local_host"
     if tool_name.startswith("local_connector_"):
         return "local_connector"
     if module_type == "external_mcp_tool":

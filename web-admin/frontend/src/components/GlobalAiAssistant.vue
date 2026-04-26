@@ -63,7 +63,9 @@
 
         <section class="assistant-call-entry" :class="voiceSurfaceStateClass">
           <div class="assistant-call-entry__copy">
-            <span class="assistant-call-entry__badge">{{ voiceUiState.label }}</span>
+            <span class="assistant-call-entry__badge">{{
+              voiceUiState.label
+            }}</span>
             <strong>实时通话</strong>
             <p>{{ voiceSettingsSummary }}</p>
           </div>
@@ -80,8 +82,12 @@
               @click="handleVoiceSettingsTrigger"
             >
               <span class="assistant-voice-trigger__body">
-                <el-icon class="assistant-voice-trigger__icon"><Microphone /></el-icon>
-                <span class="assistant-voice-trigger__label">{{ voiceActionLabel }}</span>
+                <el-icon class="assistant-voice-trigger__icon"
+                  ><Microphone
+                /></el-icon>
+                <span class="assistant-voice-trigger__label">{{
+                  voiceActionLabel
+                }}</span>
               </span>
             </el-button>
           </div>
@@ -90,7 +96,9 @@
         <div ref="messageContainerRef" class="assistant-messages">
           <div v-if="bootstrapping" class="assistant-empty">
             <strong>助手初始化中</strong>
-            <span>对话会缓存在当前浏览器，并按当前登录账号隔离，退出登录后自动清空。</span>
+            <span
+              >对话会缓存在当前浏览器，并按当前登录账号隔离，退出登录后自动清空。</span
+            >
           </div>
 
           <div
@@ -103,7 +111,9 @@
 
           <div v-else-if="!messages.length" class="assistant-empty">
             <strong>对话已就绪</strong>
-            <span>当前助手会参考真实系统快照，并恢复当前账号在本浏览器内的临时对话。</span>
+            <span
+              >当前助手会参考真实系统快照，并恢复当前账号在本浏览器内的临时对话。</span
+            >
           </div>
 
           <article
@@ -145,7 +155,9 @@
                 @click="toggleAssistantMessageSpeech(message)"
               >
                 <el-icon>
-                  <component :is="isSpeakingMessage(message) ? VideoPause : Headset" />
+                  <component
+                    :is="isSpeakingMessage(message) ? VideoPause : Headset"
+                  />
                 </el-icon>
               </button>
               <button
@@ -194,20 +206,58 @@
               </div>
             </div>
 
-            <el-input
-              v-model="typedDraftText"
-              type="textarea"
-              resize="none"
-              :autosize="{ minRows: 3, maxRows: panelFullscreen ? 10 : 6 }"
-              :maxlength="4000"
-              show-word-limit
-              :placeholder="composerPlaceholder"
-              :disabled="bootstrapping || loading"
-              @keydown="handleComposerKeydown"
-            />
+            <div class="assistant-command-composer">
+              <el-input
+                v-model="typedDraftText"
+                type="textarea"
+                resize="none"
+                :autosize="{ minRows: 3, maxRows: panelFullscreen ? 10 : 6 }"
+                :maxlength="4000"
+                show-word-limit
+                :placeholder="composerPlaceholder"
+                :disabled="bootstrapping || loading"
+                @keydown="handleComposerKeydown"
+              />
+
+              <div
+                v-if="isAssistantSlashMenuVisible"
+                class="assistant-slash-menu"
+              >
+                <div class="assistant-slash-menu__head">
+                  <span class="assistant-slash-menu__title">可用命令</span>
+                  <span class="assistant-slash-menu__summary">
+                    点击命令后补充内容，或直接回车选择
+                  </span>
+                </div>
+                <button
+                  v-for="(item, index) in filteredAssistantSlashCommands"
+                  :key="item.id"
+                  type="button"
+                  class="assistant-slash-menu__item"
+                  :class="{
+                    'is-active': index === assistantSlashCommandHighlightIndex,
+                  }"
+                  @mousedown.prevent="applyAssistantSlashCommandSelection(item)"
+                >
+                  <div class="assistant-slash-menu__item-main">
+                    <span class="assistant-slash-menu__command">
+                      {{ item.command }}
+                    </span>
+                    <span class="assistant-slash-menu__label">
+                      {{ item.label }}
+                    </span>
+                  </div>
+                  <div class="assistant-slash-menu__description">
+                    {{ item.description }}
+                  </div>
+                </button>
+              </div>
+            </div>
 
             <div class="assistant-input-card__footer">
-              <span class="assistant-input-card__hint">{{ typedComposerHint }}</span>
+              <span class="assistant-input-card__hint">{{
+                typedComposerHint
+              }}</span>
               <div class="assistant-input-card__actions">
                 <el-button
                   text
@@ -215,6 +265,14 @@
                   @click="clearAssistantConversation"
                 >
                   清空对话
+                </el-button>
+                <el-button
+                  text
+                  :loading="workLogLoadingProjects"
+                  :disabled="bootstrapping"
+                  @click="openWorkLogDialog"
+                >
+                  工作日志
                 </el-button>
                 <el-button
                   :type="loading ? 'danger' : 'primary'"
@@ -235,156 +293,229 @@
       class="assistant-settings-dialog"
       width="min(720px, calc(100vw - 24px))"
       top="8vh"
-      :z-index="3600"
       append-to-body
       destroy-on-close
       title="语音设置"
     >
       <div class="assistant-settings-layout assistant-settings-layout--dialog">
-          <section class="assistant-settings-group assistant-settings-group--status">
-            <div class="assistant-settings-group__head">
-              <div>
-                <h4>实时通话状态</h4>
-                <p>{{ voiceSettingsSummary }}</p>
-              </div>
-              <div class="assistant-settings-group__actions assistant-settings-group__actions--hint">
-                在主面板中开启或关闭
-              </div>
+        <section
+          class="assistant-settings-group assistant-settings-group--status"
+        >
+          <div class="assistant-settings-group__head">
+            <div>
+              <h4>实时通话状态</h4>
+              <p>{{ voiceSettingsSummary }}</p>
             </div>
-
-            <div class="assistant-voice-live" :class="voiceSurfaceStateClass">
-              <div class="assistant-voice-live__meta">
-                <span class="assistant-voice-live__badge">{{ voiceUiState.label }}</span>
-                <span class="assistant-voice-live__countdown">{{ fabVoiceSubLabel }}</span>
-              </div>
-              <div class="assistant-voice-live__text">
-                {{ voiceDraftPreviewText }}
-              </div>
-              <div class="assistant-voice-meter assistant-voice-meter--inline">
-                <div class="assistant-voice-meter__track">
-                  <div
-                    class="assistant-voice-meter__fill"
-                    :style="{ width: `${voiceMeterPercent}%` }"
-                  />
-                </div>
-                <span class="assistant-voice-meter__text">
-                  {{ voiceMeterHint }}
-                </span>
-              </div>
-            </div>
-
-            <div v-if="voiceDeviceWarningText" class="assistant-voice-warning">
-              {{ voiceDeviceWarningText }}
-            </div>
-          </section>
-
-          <section class="assistant-settings-group">
-            <div class="assistant-settings-group__head">
-              <div>
-                <h4>回复播报声音</h4>
-                <p>
-                  {{
-                    backendSpeechPlaybackEnabled
-                      ? "当前助手已切到系统级语音播报，音色由系统设置统一控制。"
-                      : "从当前浏览器可用的人声里选择一个更顺耳的音色。"
-                  }}
-                </p>
-              </div>
-              <div class="assistant-settings-group__actions">
-                <el-button
-                  v-if="!backendSpeechPlaybackEnabled"
-                  text
-                  type="primary"
-                  :loading="speechVoiceLoading"
-                  :disabled="!browserSpeechPlaybackSupported()"
-                  @click="refreshSpeechVoiceOptions({ forceRetry: true })"
-                >
-                  重新读取
-                </el-button>
-                <el-button
-                  v-else
-                  text
-                  type="primary"
-                  :loading="speechRuntimeLoading"
-                  @click="fetchSpeechRuntime"
-                >
-                  刷新配置
-                </el-button>
-                <el-button
-                  text
-                  type="primary"
-                  :disabled="!assistantSpeechPlaybackSupported()"
-                  @click="previewSelectedSpeechVoice"
-                >
-                  {{ speakingMessageId === SPEECH_PREVIEW_MESSAGE_ID ? "停止试听" : "试听声音" }}
-                </el-button>
-              </div>
-            </div>
-
-            <el-alert
-              v-if="backendSpeechPlaybackEnabled"
-              title="当前已启用系统级语音播报"
-              type="success"
-              :closable="false"
-              show-icon
+            <div
+              class="assistant-settings-group__actions assistant-settings-group__actions--hint"
             >
-              <template #default>
-                <div class="assistant-settings-group__alert-body">
-                  <div>供应商：{{ speechRuntime.provider_name || speechRuntime.provider_id || "未命名供应商" }}</div>
-                  <div>模型：{{ speechRuntime.model_name || "未配置" }}</div>
-                  <div>音色：{{ speechRuntime.voice || "未配置" }}</div>
-                </div>
-              </template>
-            </el-alert>
+              在主面板中开启或关闭
+            </div>
+          </div>
 
-            <el-alert
-              v-else-if="browserSpeechPlaybackSupported() && !speechVoiceOptions.length"
-              title="当前浏览器还没有返回可用播报声音"
-              type="warning"
-              :closable="false"
-              show-icon
-            >
-              <template #default>
-                <div class="assistant-settings-group__alert-body">
-                  <div>这份列表来自浏览器和系统内置语音，不是后台模型配置。</div>
-                  <div>可以先点“重新读取”；如果还是为空，请到操作系统里安装或启用中文朗读声音后重开浏览器。</div>
-                </div>
-              </template>
-            </el-alert>
+          <div class="assistant-voice-live" :class="voiceSurfaceStateClass">
+            <div class="assistant-voice-live__meta">
+              <span class="assistant-voice-live__badge">{{
+                voiceUiState.label
+              }}</span>
+              <span class="assistant-voice-live__countdown">{{
+                fabVoiceSubLabel
+              }}</span>
+            </div>
+            <div class="assistant-voice-live__text">
+              {{ voiceDraftPreviewText }}
+            </div>
+            <div class="assistant-voice-meter assistant-voice-meter--inline">
+              <div class="assistant-voice-meter__track">
+                <div
+                  class="assistant-voice-meter__fill"
+                  :style="{ width: `${voiceMeterPercent}%` }"
+                />
+              </div>
+              <span class="assistant-voice-meter__text">
+                {{ voiceMeterHint }}
+              </span>
+            </div>
+          </div>
 
-            <el-alert
-              v-else-if="!browserSpeechPlaybackSupported()"
-              title="当前浏览器暂不支持语音播放设置"
-              type="warning"
-              :closable="false"
-              show-icon
-            />
+          <div v-if="voiceDeviceWarningText" class="assistant-voice-warning">
+            {{ voiceDeviceWarningText }}
+          </div>
+        </section>
 
-            <template v-else-if="!backendSpeechPlaybackEnabled">
-              <el-select
-                v-model="selectedSpeechVoiceUri"
-                class="assistant-settings-group__select"
-                placeholder="选择回复播报声音"
+        <section class="assistant-settings-group">
+          <div class="assistant-settings-group__head">
+            <div>
+              <h4>回复播报声音</h4>
+              <p>
+                {{
+                  backendSpeechPlaybackEnabled
+                    ? "当前助手已切到系统级语音播报，音色由系统设置统一控制。"
+                    : "从当前浏览器可用的人声里选择一个更顺耳的音色。"
+                }}
+              </p>
+            </div>
+            <div class="assistant-settings-group__actions">
+              <el-button
+                v-if="!backendSpeechPlaybackEnabled"
+                text
+                type="primary"
+                :loading="speechVoiceLoading"
+                :disabled="!browserSpeechPlaybackSupported()"
+                @click="refreshSpeechVoiceOptions({ forceRetry: true })"
               >
-                <el-option
-                  label="跟随浏览器推荐中文声音"
-                  value=""
-                />
-                <el-option
-                  v-for="item in speechVoiceOptions"
-                  :key="item.voiceURI"
-                  :label="item.label"
-                  :value="item.voiceURI"
-                />
-              </el-select>
-              <div class="assistant-settings-group__desc">
-                当前选择：{{ selectedSpeechVoiceLabel }}
+                重新读取
+              </el-button>
+              <el-button
+                v-else
+                text
+                type="primary"
+                :loading="speechRuntimeLoading"
+                @click="fetchSpeechRuntime"
+              >
+                刷新配置
+              </el-button>
+              <el-button
+                text
+                type="primary"
+                :disabled="!assistantSpeechPlaybackSupported()"
+                @click="previewSelectedSpeechVoice"
+              >
+                {{
+                  speakingMessageId === SPEECH_PREVIEW_MESSAGE_ID
+                    ? "停止试听"
+                    : "试听声音"
+                }}
+              </el-button>
+            </div>
+          </div>
+
+          <el-alert
+            v-if="backendSpeechPlaybackEnabled"
+            title="当前已启用系统级语音播报"
+            type="success"
+            :closable="false"
+            show-icon
+          >
+            <template #default>
+              <div class="assistant-settings-group__alert-body">
+                <div>
+                  供应商：{{
+                    speechRuntime.provider_name ||
+                    speechRuntime.provider_id ||
+                    "未命名供应商"
+                  }}
+                </div>
+                <div>模型：{{ speechRuntime.model_name || "未配置" }}</div>
+                <div>音色：{{ speechRuntime.voice || "未配置" }}</div>
               </div>
             </template>
-          </section>
+          </el-alert>
 
-          <AssistantVoiceDiagnosticsPanel />
+          <el-alert
+            v-else-if="
+              browserSpeechPlaybackSupported() && !speechVoiceOptions.length
+            "
+            title="当前浏览器还没有返回可用播报声音"
+            type="warning"
+            :closable="false"
+            show-icon
+          >
+            <template #default>
+              <div class="assistant-settings-group__alert-body">
+                <div>这份列表来自浏览器和系统内置语音，不是后台模型配置。</div>
+                <div>
+                  可以先点“重新读取”；如果还是为空，请到操作系统里安装或启用中文朗读声音后重开浏览器。
+                </div>
+              </div>
+            </template>
+          </el-alert>
+
+          <el-alert
+            v-else-if="!browserSpeechPlaybackSupported()"
+            title="当前浏览器暂不支持语音播放设置"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
+
+          <template v-else-if="!backendSpeechPlaybackEnabled">
+            <el-select
+              v-model="selectedSpeechVoiceUri"
+              class="assistant-settings-group__select"
+              placeholder="选择回复播报声音"
+            >
+              <el-option label="跟随浏览器推荐中文声音" value="" />
+              <el-option
+                v-for="item in speechVoiceOptions"
+                :key="item.voiceURI"
+                :label="item.label"
+                :value="item.voiceURI"
+              />
+            </el-select>
+            <div class="assistant-settings-group__desc">
+              当前选择：{{ selectedSpeechVoiceLabel }}
+            </div>
+          </template>
+        </section>
+
+        <AssistantVoiceDiagnosticsPanel />
       </div>
+    </el-dialog>
+
+    <el-dialog
+      v-model="workLogDialogOpen"
+      class="assistant-work-log-dialog"
+      width="min(860px, calc(100vw - 24px))"
+      top="7vh"
+      :z-index="3620"
+      append-to-body
+      destroy-on-close
+      title="生成项目工作日志"
+    >
+      <div class="assistant-work-log">
+        <ElementEasyForm
+          ref="workLogFormRef"
+          :form-json="workLogFormJson"
+          class="assistant-work-log__easy-form"
+        />
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          :title="workLogDynamicFormHint"
+        />
+        <section v-if="workLogOutputText" class="assistant-work-log__result">
+          <div class="assistant-work-log__result-head">
+            <strong>生成内容</strong>
+            <el-button text @click="copyWorkLogOutput">复制</el-button>
+          </div>
+          <el-input
+            v-model="workLogOutputText"
+            type="textarea"
+            resize="vertical"
+            :autosize="{ minRows: 10, maxRows: 18 }"
+          />
+        </section>
+      </div>
+      <template #footer>
+        <div class="assistant-work-log__footer">
+          <el-button @click="workLogDialogOpen = false">关闭</el-button>
+          <el-button
+            :disabled="!workLogOutputText"
+            @click="insertWorkLogIntoDraft"
+          >
+            填入输入框
+          </el-button>
+          <el-button
+            type="primary"
+            :loading="workLogGenerating"
+            @click="generateWorkLogContent"
+          >
+            {{ workLogFormModel.use_ai_summary ? "生成并总结" : "生成日志" }}
+          </el-button>
+        </div>
+      </template>
     </el-dialog>
 
     <div class="assistant-fab-shell" :style="assistantFabShellStyle">
@@ -410,7 +541,9 @@
         <span class="assistant-fab__meter">
           <span
             class="assistant-fab__meter-fill"
-            :style="{ transform: `scaleX(${Math.max(0.08, voiceMeterPercent / 100)})` }"
+            :style="{
+              transform: `scaleX(${Math.max(0.08, voiceMeterPercent / 100)})`,
+            }"
           />
         </span>
       </button>
@@ -424,6 +557,7 @@ import {
   nextTick,
   onBeforeUnmount,
   onMounted,
+  reactive,
   ref,
   watch,
 } from "vue";
@@ -438,6 +572,8 @@ import {
   VideoPause,
 } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { ElementEasyForm } from "element-easy-form";
+import "element-easy-form/dist/style.css";
 
 import AssistantVoiceDiagnosticsPanel from "@/components/AssistantVoiceDiagnosticsPanel.vue";
 import api from "@/utils/api.js";
@@ -454,13 +590,15 @@ import {
 } from "@/utils/assistant-browser-bridge.js";
 import { isEmbeddedDesktopApp } from "@/utils/desktop-app-bridge.js";
 import { createGlobalAssistantWsClient } from "@/utils/ws-chat.js";
+import { buildTaskTitle, createTask, parseTaskCreationCommand } from "@/utils/task-store.js";
 
 const FALLBACK_OPEN_WIDTH = 1080;
 const GLOBAL_ASSISTANT_STORAGE_PREFIX = "global_ai_assistant.";
 const ASSISTANT_CHAT_CACHE_STORAGE_SUFFIX = "chat-cache";
 const VOICE_INPUT_DEVICE_STORAGE_SUFFIX = "voice-device-id";
 const VOICE_INPUT_DEFAULT_VALUE = "__browser_default__";
-const LEGACY_VOICE_INPUT_DEVICE_STORAGE_KEY = "global-ai-assistant-voice-device-id";
+const LEGACY_VOICE_INPUT_DEVICE_STORAGE_KEY =
+  "global-ai-assistant-voice-device-id";
 const SPEECH_VOICE_STORAGE_SUFFIX = "speech-voice-uri";
 const LEGACY_SPEECH_VOICE_STORAGE_KEY = "global-ai-assistant-speech-voice-uri";
 const SPEECH_AUTO_PLAY_STORAGE_SUFFIX = "speech-auto-play";
@@ -483,6 +621,21 @@ const DIRECT_ROUTE_COMMANDS = [
     label: "市场",
     aliases: ["市场", "市场页", "能力市场", "官网市场", "官网市场页"],
   },
+  {
+    path: "/tasks",
+    label: "任务",
+    aliases: ["任务", "任务页", "任务模块", "任务中心", "待办", "待办事项"],
+  },
+];
+const ASSISTANT_SLASH_COMMANDS = [
+  {
+    id: "create_task",
+    command: "/创建任务",
+    aliases: ["/task", "/todo", "/任务"],
+    label: "创建任务",
+    description: "把后续文字创建为任务，并打开任务模块",
+    kind: "create_task",
+  },
 ];
 
 const route = useRoute();
@@ -498,15 +651,65 @@ const wsConnected = ref(false);
 const panelOpen = ref(resolveInitialPanelOpen());
 const panelFullscreen = ref(false);
 const settingsDialogOpen = ref(false);
+const workLogDialogOpen = ref(false);
 const typedDraftText = ref("");
+const assistantSlashCommandHighlightIndex = ref(0);
 const voiceDraftText = ref("");
 const messageContainerRef = ref(null);
+const workLogFormRef = ref(null);
+const workLogFormModel = reactive({
+  project_ids: [],
+  report_type: "weekly",
+  date_range: resolveDefaultWorkLogDateRange("weekly"),
+  log_template: "leadership_work_plan",
+  include_details: false,
+  use_ai_summary: true,
+  summary_focus: "resolved_work_plan",
+  extra_notes: "",
+});
 const assistantFabRef = ref(null);
 const speakingMessageId = ref("");
 const speechVoiceOptions = ref([]);
 const selectedSpeechVoiceUri = ref("");
 const autoPlayAssistantSpeech = ref(false);
 const speechVoiceLoading = ref(false);
+const workLogLoadingProjects = ref(false);
+const workLogGenerating = ref(false);
+const workLogOutputText = ref("");
+const workLogProjectOptions = ref([]);
+const workLogReportTypeOptions = [
+  { label: "日报", value: "daily" },
+  { label: "周报", value: "weekly" },
+  { label: "月报", value: "monthly" },
+];
+const workLogTemplateOptions = [
+  { label: "领导周报（解决内容）", value: "leadership_work_plan" },
+  { label: "研发进展汇报", value: "engineering_summary" },
+  { label: "项目管理简报", value: "project_briefing" },
+  { label: "风险阻塞复盘", value: "risk_review" },
+  { label: "交付验收记录", value: "delivery_acceptance" },
+];
+const workLogSummaryFocusOptions = [
+  { label: "解决内容 / 本周计划 / 下周计划", value: "resolved_work_plan" },
+  { label: "进展 / 风险 / 下一步", value: "progress_risks_next_steps" },
+  { label: "完成事项优先", value: "completed_first" },
+  { label: "风险阻塞优先", value: "risks_first" },
+  { label: "交付验证优先", value: "verification_first" },
+];
+const WORK_LOG_MESSAGE_Z_INDEX = 4600;
+const workLogDynamicFormHint = computed(() => {
+  const template = resolveWorkLogTemplateLabel(workLogFormModel.log_template);
+  const mode = workLogFormModel.use_ai_summary
+    ? "并调用大模型总结"
+    : "仅生成结构化草稿";
+  return `当前按“${template}”动态生成参数表单，优先从需求记录反推本周解决内容和后续计划，选择项目、时间范围和补充模板后会${mode}。`;
+});
+const workLogFormJson = computed(() => ({
+  rowAttrs: { gutter: 16 },
+  formAttrs: { "label-position": "top", "status-icon": true },
+  model: workLogFormModel,
+  schema: buildWorkLogFormSchema(),
+}));
 const isListening = ref(false);
 const voiceStatusText = ref("");
 const voiceUiStage = ref("idle");
@@ -658,7 +861,8 @@ const voiceGreetingEnabled = computed(
 const voiceGreetingText = computed(
   () =>
     String(
-      voiceRuntime.value?.greeting_text || DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
+      voiceRuntime.value?.greeting_text ||
+        DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
     ).trim() || DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
 );
 const voiceTranscriptionPrompt = computed(
@@ -669,7 +873,8 @@ const voiceTranscriptionPrompt = computed(
     ).trim() || DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT,
 );
 const voiceWakePhrase = computed(
-  () => String(voiceRuntime.value?.wake_phrase || "你好助手").trim() || "你好助手",
+  () =>
+    String(voiceRuntime.value?.wake_phrase || "你好助手").trim() || "你好助手",
 );
 const voiceIdleTimeoutMs = computed(() => {
   const timeoutSec = Number(voiceRuntime.value?.idle_timeout_sec || 5) || 5;
@@ -706,10 +911,13 @@ const selectedVoiceInputDeviceLabel = computed(() => {
 });
 const voiceDeviceWarningText = computed(() => {
   const label = String(
-    voiceActiveTrackInfo.value?.label || selectedVoiceInputDeviceLabel.value || "",
+    voiceActiveTrackInfo.value?.label ||
+      selectedVoiceInputDeviceLabel.value ||
+      "",
   ).trim();
   if (!label) return "";
-  const suspiciousVirtualDevice = /(virtual|oray|loopback|blackhole|soundflower|vb-audio|aggregate)/i;
+  const suspiciousVirtualDevice =
+    /(virtual|oray|loopback|blackhole|soundflower|vb-audio|aggregate)/i;
   if (suspiciousVirtualDevice.test(label)) {
     return "当前浏览器正在使用虚拟音频输入，不是耳机麦克风。请先到系统声音输入或关闭远控/虚拟声卡后再重试。";
   }
@@ -769,24 +977,70 @@ const voiceActiveTrackDetailRows = computed(() =>
     (item) => !["实际音轨", "采样率", "声道数"].includes(item.label),
   ),
 );
-const composerPlaceholder = computed(() =>
-  "输入问题，回车发送",
+function parseAssistantSlashDraft(value) {
+  const draftValue = String(value || "").trimStart();
+  if (!draftValue.startsWith("/")) return null;
+  const firstLine = draftValue.split(/\n/)[0] || "";
+  const match = firstLine.match(/^(\/[^\s]*)/);
+  if (!match) return null;
+  return {
+    token: normalizeAssistantSlashToken(match[1]),
+    query: normalizeAssistantSlashToken(match[1]).replace(/^\//, ""),
+    isCommandPhase: !/\s/.test(firstLine),
+  };
+}
+const currentAssistantSlashDraftState = computed(() =>
+  parseAssistantSlashDraft(typedDraftText.value),
 );
+const filteredAssistantSlashCommands = computed(() => {
+  const state = currentAssistantSlashDraftState.value;
+  if (!state?.isCommandPhase) return [];
+  const query = String(state.query || "").trim();
+  if (!query) return ASSISTANT_SLASH_COMMANDS;
+  return ASSISTANT_SLASH_COMMANDS.filter((item) => {
+    const haystacks = [
+      item.command,
+      ...(Array.isArray(item.aliases) ? item.aliases : []),
+      item.label,
+      item.description,
+    ]
+      .map((value) => normalizeAssistantSlashToken(value).replace(/^\//, ""))
+      .filter(Boolean);
+    return haystacks.some((value) => value.includes(query));
+  });
+});
+const isAssistantSlashMenuVisible = computed(
+  () =>
+    !bootstrapping.value &&
+    !loading.value &&
+    Boolean(currentAssistantSlashDraftState.value?.isCommandPhase) &&
+    filteredAssistantSlashCommands.value.length > 0,
+);
+watch(
+  () => filteredAssistantSlashCommands.value.map((item) => item.id).join("|"),
+  () => {
+    assistantSlashCommandHighlightIndex.value = 0;
+  },
+);
+const composerPlaceholder = computed(() => "输入问题，或输入 / 选择命令");
 const typedComposerHint = computed(() => {
   if (isVoiceExecutionPending.value) {
     return "当前指令执行中，请等待完成后再说下一句";
   }
   if (loading.value) return "AI 正在回复中";
+  if (isAssistantSlashMenuVisible.value) return "↑↓ 选择命令，Enter 应用";
   return isListening.value
     ? `实时通话保持待机中，说“${voiceWakePhrase.value}”即可唤醒`
-    : "Enter 发送，Shift + Enter 换行";
+    : "Enter 发送，Shift + Enter 换行，输入 / 可选择命令";
 });
-const isVoiceExecutionPending = computed(() => isListening.value && loading.value);
+const isVoiceExecutionPending = computed(
+  () => isListening.value && loading.value,
+);
 const hasVoiceDraft = computed(() =>
   Boolean(String(voiceDraftText.value || "").trim()),
 );
-const voiceConversationDraftText = computed(
-  () => String(voiceDraftText.value || "").trim(),
+const voiceConversationDraftText = computed(() =>
+  String(voiceDraftText.value || "").trim(),
 );
 const shouldShowVoiceDraftMessage = computed(
   () =>
@@ -816,11 +1070,14 @@ const voiceDraftPreviewText = computed(() => {
   return "实时通话已关闭，可在上方重新开启。";
 });
 const voiceAutoSendHint = computed(() => {
-  if (!voiceAutoSendCountdownMs.value || voiceWakeState.value !== "active") return "";
+  if (!voiceAutoSendCountdownMs.value || voiceWakeState.value !== "active")
+    return "";
   return `${Math.max(1, Math.ceil(voiceAutoSendCountdownMs.value / 1000))}s 后回待机`;
 });
 const voiceDeviceSummary = computed(() => {
-  const activeTrackLabel = String(voiceActiveTrackInfo.value?.label || "").trim();
+  const activeTrackLabel = String(
+    voiceActiveTrackInfo.value?.label || "",
+  ).trim();
   if (activeTrackLabel) return `当前设备：${activeTrackLabel}`;
   return `当前设备：${selectedVoiceInputDeviceLabel.value}`;
 });
@@ -884,7 +1141,10 @@ const fabVoiceSubLabel = computed(() => {
     return "当前指令执行中，完成后会自动回到待机";
   }
   if (isListening.value && voiceWakeState.value === "active") {
-    return voiceAutoSendHint.value || `一句说完自动发送，${voiceIdleTimeoutMs.value / 1000}s 无新内容后待机`;
+    return (
+      voiceAutoSendHint.value ||
+      `一句说完自动发送，${voiceIdleTimeoutMs.value / 1000}s 无新内容后待机`
+    );
   }
   if (isListening.value) {
     return `说“${voiceWakePhrase.value}”唤醒`;
@@ -1031,7 +1291,8 @@ const voiceUiState = computed(() => {
       tone: "success",
       label: "识别完成",
       detail:
-        String(voiceStatusText.value || "").trim() || "文字已准备好，将直接进入发送流程。",
+        String(voiceStatusText.value || "").trim() ||
+        "文字已准备好，将直接进入发送流程。",
     };
   }
   if (voiceUiStage.value === "error") {
@@ -1039,7 +1300,8 @@ const voiceUiState = computed(() => {
       tone: "danger",
       label: "录音失败",
       detail:
-        String(voiceStatusText.value || "").trim() || "请检查麦克风权限后重试。",
+        String(voiceStatusText.value || "").trim() ||
+        "请检查麦克风权限后重试。",
     };
   }
   return {
@@ -1099,7 +1361,9 @@ const headerSummary = computed(() => {
 });
 const voiceSettingsSummary = computed(() => {
   if (!voiceRuntimeAvailable.value) {
-    return String(voiceRuntime.value?.reason || "当前账号暂时不能使用实时通话。").trim();
+    return String(
+      voiceRuntime.value?.reason || "当前账号暂时不能使用实时通话。",
+    ).trim();
   }
   if (voiceGreetingStarting.value) {
     return "正在播放欢迎语，结束后会自动开始实时通话。";
@@ -1117,10 +1381,15 @@ const voiceSettingsSummary = computed(() => {
 });
 const selectedSpeechVoiceLabel = computed(() => {
   if (backendSpeechPlaybackEnabled.value) {
-    const providerName = String(speechRuntime.value?.provider_name || "系统配置").trim();
+    const providerName = String(
+      speechRuntime.value?.provider_name || "系统配置",
+    ).trim();
     const modelName = String(speechRuntime.value?.model_name || "").trim();
     const voice = String(speechRuntime.value?.voice || "").trim();
-    return [providerName, modelName, voice].filter(Boolean).join(" · ") || "系统配置播报音色";
+    return (
+      [providerName, modelName, voice].filter(Boolean).join(" · ") ||
+      "系统配置播报音色"
+    );
   }
   const selected = speechVoiceOptions.value.find(
     (item) => item.voiceURI === selectedSpeechVoiceUri.value,
@@ -1129,21 +1398,25 @@ const selectedSpeechVoiceLabel = computed(() => {
   return "跟随浏览器推荐中文声音";
 });
 const autoPlayAssistantSpeechToggleTitle = computed(() =>
-  autoPlayAssistantSpeech.value ? "点击关闭回复自动播报" : "点击开启回复自动播报",
+  autoPlayAssistantSpeech.value
+    ? "点击关闭回复自动播报"
+    : "点击开启回复自动播报",
 );
 const canClearAssistantConversation = computed(() =>
   Boolean(
     messages.value.length ||
-      String(typedDraftText.value || "").trim() ||
-      String(voiceDraftText.value || "").trim() ||
-      String(currentChatSessionId.value || "").trim(),
+    String(typedDraftText.value || "").trim() ||
+    String(voiceDraftText.value || "").trim() ||
+    String(currentChatSessionId.value || "").trim(),
   ),
 );
 
 function resolveAssistantStorageScope() {
   if (typeof window === "undefined") return "";
   const profile = getStoredAuthProfile();
-  const username = String(profile?.username || "").trim().toLowerCase();
+  const username = String(profile?.username || "")
+    .trim()
+    .toLowerCase();
   if (!username) return "";
   return encodeURIComponent(username);
 }
@@ -1238,7 +1511,9 @@ function resolveDefaultAssistantFabPosition(rect = null) {
 }
 
 function loadStoredAssistantFabPosition() {
-  const rawValue = loadAssistantStorageValue(ASSISTANT_FAB_POSITION_STORAGE_SUFFIX);
+  const rawValue = loadAssistantStorageValue(
+    ASSISTANT_FAB_POSITION_STORAGE_SUFFIX,
+  );
   if (!rawValue) return null;
   try {
     const parsed = JSON.parse(rawValue);
@@ -1305,7 +1580,9 @@ function canAttemptGreetingAutoPlayOnVisit() {
 
 function loadAssistantCache() {
   if (typeof window === "undefined") return null;
-  const storageKey = buildAssistantStorageKey(ASSISTANT_CHAT_CACHE_STORAGE_SUFFIX);
+  const storageKey = buildAssistantStorageKey(
+    ASSISTANT_CHAT_CACHE_STORAGE_SUFFIX,
+  );
   if (!storageKey) return null;
   const raw = String(window.localStorage?.getItem(storageKey) || "").trim();
   if (!raw) return null;
@@ -1530,7 +1807,8 @@ function handleVoiceSettingsTrigger() {
       voiceStartAfterGreetingTimer = null;
       voiceGreetingStarting.value = false;
       if (!shouldRender.value) return;
-      if (isListening.value || isStoppingVoiceInput.value || loading.value) return;
+      if (isListening.value || isStoppingVoiceInput.value || loading.value)
+        return;
       void startVoiceInput({ activate: true });
     }, greetingDelayMs);
     return;
@@ -1610,15 +1888,14 @@ function applySpeechVoiceOptions(normalizedVoices) {
   speechVoiceOptions.value = normalizedVoices;
   if (
     selectedSpeechVoiceUri.value &&
-    normalizedVoices.some((item) => item.voiceURI === selectedSpeechVoiceUri.value)
+    normalizedVoices.some(
+      (item) => item.voiceURI === selectedSpeechVoiceUri.value,
+    )
   ) {
     return;
   }
   const stored = loadStoredSpeechVoiceUri();
-  if (
-    stored &&
-    normalizedVoices.some((item) => item.voiceURI === stored)
-  ) {
+  if (stored && normalizedVoices.some((item) => item.voiceURI === stored)) {
     selectedSpeechVoiceUri.value = stored;
     return;
   }
@@ -1627,7 +1904,10 @@ function applySpeechVoiceOptions(normalizedVoices) {
 
 function scheduleSpeechVoiceRetry() {
   if (typeof window === "undefined") return;
-  if (speechVoiceRetryTimer || speechVoiceRetryCount >= SPEECH_VOICE_MAX_RETRIES) {
+  if (
+    speechVoiceRetryTimer ||
+    speechVoiceRetryCount >= SPEECH_VOICE_MAX_RETRIES
+  ) {
     speechVoiceLoading.value = false;
     return;
   }
@@ -1656,7 +1936,9 @@ function refreshSpeechVoiceOptions(options = {}) {
   const voices = Array.isArray(window.speechSynthesis.getVoices())
     ? window.speechSynthesis.getVoices()
     : [];
-  const normalizedVoices = sortSpeechVoiceOptions(normalizeSpeechVoiceOptions(voices));
+  const normalizedVoices = sortSpeechVoiceOptions(
+    normalizeSpeechVoiceOptions(voices),
+  );
   applySpeechVoiceOptions(normalizedVoices);
   if (normalizedVoices.length) {
     stopSpeechVoiceRetry();
@@ -1713,7 +1995,8 @@ function clearActiveSpeechPlaybackInterrupt(handler = null) {
 }
 
 function registerActiveSpeechPlaybackInterrupt(handler) {
-  activeSpeechPlaybackInterrupt = typeof handler === "function" ? handler : null;
+  activeSpeechPlaybackInterrupt =
+    typeof handler === "function" ? handler : null;
   return activeSpeechPlaybackInterrupt;
 }
 
@@ -1764,6 +2047,16 @@ function normalizeSpeechAudioBlob(payload) {
   return payload instanceof Blob
     ? payload
     : new Blob([payload], { type: "audio/wav" });
+}
+
+async function requestSystemSpeechPlayback(text) {
+  const normalizedText = String(text || "").trim();
+  if (!normalizedText) {
+    throw new Error("语音内容为空");
+  }
+  return api.post("/projects/chat/global/voice-output/system-speech", {
+    text: normalizedText,
+  });
 }
 
 async function fetchSpeechAudioBlob(text) {
@@ -1950,48 +2243,7 @@ async function playSpeechSegmentViaBrowser(segment, playbackToken) {
 
 async function playSpeechSegmentViaBackend(segment, playbackToken) {
   suspendVoiceListeningForAssistantSpeech();
-  const audioBlob = await fetchSpeechAudioBlob(segment.text);
-  if (speechPlaybackToken !== playbackToken) {
-    resumeVoiceListeningAfterAssistantSpeech();
-    return;
-  }
-  const objectUrl = URL.createObjectURL(audioBlob);
-  const audio = new Audio(objectUrl);
-  speechAudioElement = audio;
-  speechAudioObjectUrl = objectUrl;
-  await new Promise((resolve, reject) => {
-    let settled = false;
-    const finalizeResolve = () => {
-      if (settled) return;
-      settled = true;
-      clearActiveSpeechPlaybackInterrupt(interruptPlayback);
-      resolve();
-    };
-    const finalizeReject = (error) => {
-      if (settled) return;
-      settled = true;
-      clearActiveSpeechPlaybackInterrupt(interruptPlayback);
-      reject(error);
-    };
-    const interruptPlayback = registerActiveSpeechPlaybackInterrupt(() => {
-      cleanupAssistantAudioPlayback();
-      finalizeResolve();
-    });
-    audio.onended = () => {
-      cleanupAssistantAudioPlayback();
-      finalizeResolve();
-    };
-    audio.onerror = () => {
-      cleanupAssistantAudioPlayback();
-      finalizeReject(new Error("语音播放失败，请稍后重试"));
-    };
-    void audio.play().catch((err) => {
-      cleanupAssistantAudioPlayback();
-      finalizeReject(
-        err instanceof Error ? err : new Error("语音播放失败，请稍后重试"),
-      );
-    });
-  });
+  await requestSystemSpeechPlayback(segment.text);
   if (speechPlaybackToken === playbackToken) {
     resumeVoiceListeningAfterAssistantSpeech();
   }
@@ -2057,17 +2309,24 @@ function enqueueSpeechSegments(messageId, segments) {
 }
 
 function scheduleStreamingAssistantSpeech(message, options = {}) {
-  if (!autoPlayAssistantSpeech.value || !assistantSpeechPlaybackSupported()) return;
+  if (!autoPlayAssistantSpeech.value || !assistantSpeechPlaybackSupported())
+    return;
   const messageId = String(message?.id || "").trim();
   if (!messageId || suppressedAutoPlayMessageIds.has(messageId)) return;
   const content = String(message?.content || "");
   if (!content.trim()) return;
-  const progress = speechStreamingProgress.get(messageId) || { consumedLength: 0 };
+  const progress = speechStreamingProgress.get(messageId) || {
+    consumedLength: 0,
+  };
   const remaining = content.slice(Number(progress.consumedLength || 0));
   if (!remaining) return;
-  const { segments, consumedLength } = consumeSpeakableSpeechSegments(remaining, options);
+  const { segments, consumedLength } = consumeSpeakableSpeechSegments(
+    remaining,
+    options,
+  );
   if (!consumedLength || !segments.length) return;
-  const nextConsumedLength = Number(progress.consumedLength || 0) + consumedLength;
+  const nextConsumedLength =
+    Number(progress.consumedLength || 0) + consumedLength;
   if (Boolean(options?.flush) && nextConsumedLength >= content.length) {
     speechStreamingProgress.delete(messageId);
   } else {
@@ -2127,51 +2386,28 @@ async function playAssistantSpeechViaBackend(message, options = {}) {
   const text = String(message?.content || "").trim();
   if (!text) return;
   const playbackToken = speechPlaybackToken + 1;
-  let interruptPlayback = null;
   stopAssistantSpeech();
   speechPlaybackToken = playbackToken;
   speakingMessageId.value = String(message.id || "").trim();
   try {
     suspendVoiceListeningForAssistantSpeech();
-    const audioBlob =
-      (options?.preferGreetingCache ? await fetchGreetingAudioBlob() : null) ||
-      (await fetchSpeechAudioBlob(text));
+    await requestSystemSpeechPlayback(text);
     if (speechPlaybackToken !== playbackToken) {
       resumeVoiceListeningAfterAssistantSpeech();
       return;
     }
-    const objectUrl = URL.createObjectURL(audioBlob);
-    const audio = new Audio(objectUrl);
-    speechAudioElement = audio;
-    speechAudioObjectUrl = objectUrl;
-    interruptPlayback = registerActiveSpeechPlaybackInterrupt(() => {
-      cleanupAssistantAudioPlayback();
-      speakingMessageId.value = "";
-      resumeVoiceListeningAfterAssistantSpeech();
-    });
-    audio.onended = () => {
-      if (speechPlaybackToken !== playbackToken) return;
-      clearActiveSpeechPlaybackInterrupt(interruptPlayback);
-      cleanupAssistantAudioPlayback();
-      speakingMessageId.value = "";
-      resumeVoiceListeningAfterAssistantSpeech();
-    };
-    audio.onerror = () => {
-      if (speechPlaybackToken !== playbackToken) return;
-      clearActiveSpeechPlaybackInterrupt(interruptPlayback);
-      cleanupAssistantAudioPlayback();
-      speakingMessageId.value = "";
-      resumeVoiceListeningAfterAssistantSpeech();
-      ElMessage.warning("语音播放失败，请稍后重试");
-    };
-    await audio.play();
-  } catch (err) {
-    if (speechPlaybackToken !== playbackToken) return;
-    clearActiveSpeechPlaybackInterrupt(interruptPlayback);
-    cleanupAssistantAudioPlayback();
     speakingMessageId.value = "";
     resumeVoiceListeningAfterAssistantSpeech();
-    ElMessage.warning(err?.detail || err?.message || "语音播放失败，请稍后重试");
+    if (!options?.silent) {
+      ElMessage.success("已提交系统后台播报");
+    }
+  } catch (err) {
+    if (speechPlaybackToken !== playbackToken) return;
+    speakingMessageId.value = "";
+    resumeVoiceListeningAfterAssistantSpeech();
+    ElMessage.warning(
+      err?.detail || err?.message || "系统后台播报失败，请稍后重试",
+    );
   }
 }
 
@@ -2352,10 +2588,15 @@ async function refreshVoiceInputDevices({ preserveSelection = true } = {}) {
       return;
     }
     let nextSelectedId = preserveSelection
-      ? String(selectedVoiceInputDeviceId.value || loadStoredVoiceInputDeviceId()).trim()
+      ? String(
+          selectedVoiceInputDeviceId.value || loadStoredVoiceInputDeviceId(),
+        ).trim()
       : VOICE_INPUT_DEFAULT_VALUE;
-    const matched = audioInputs.find((item) => item.deviceId === nextSelectedId);
-    const suspiciousVirtualDevice = /(virtual|oray|loopback|blackhole|soundflower|vb-audio|aggregate)/i;
+    const matched = audioInputs.find(
+      (item) => item.deviceId === nextSelectedId,
+    );
+    const suspiciousVirtualDevice =
+      /(virtual|oray|loopback|blackhole|soundflower|vb-audio|aggregate)/i;
     const hasNonVirtualAlternative = audioInputs.some(
       (item) => !suspiciousVirtualDevice.test(String(item.label || "").trim()),
     );
@@ -2575,7 +2816,11 @@ async function initializeAssistant() {
       teardownAssistant();
       return;
     }
-    await Promise.all([fetchVoiceRuntime(), fetchSpeechRuntime(), refreshVoiceInputDevices()]);
+    await Promise.all([
+      fetchVoiceRuntime(),
+      fetchSpeechRuntime(),
+      refreshVoiceInputDevices(),
+    ]);
     if (!String(currentChatSessionId.value || "").trim()) {
       currentChatSessionId.value = createEphemeralSessionId();
     }
@@ -2620,7 +2865,8 @@ async function fetchVoiceRuntime() {
       transcription_prompt:
         String(runtime.transcription_prompt || "").trim() ||
         DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT,
-      wake_phrase: String(runtime.wake_phrase || "你好助手").trim() || "你好助手",
+      wake_phrase:
+        String(runtime.wake_phrase || "你好助手").trim() || "你好助手",
       idle_timeout_sec: Math.max(
         3,
         Math.min(30, Number(runtime.idle_timeout_sec || 5) || 5),
@@ -2664,7 +2910,9 @@ async function fetchSpeechRuntime() {
       model_name: String(runtime.model_name || "").trim(),
       voice: String(runtime.voice || "").trim(),
       greeting_audio_available: Boolean(runtime.greeting_audio_available),
-      greeting_audio_signature: String(runtime.greeting_audio_signature || "").trim(),
+      greeting_audio_signature: String(
+        runtime.greeting_audio_signature || "",
+      ).trim(),
     };
   } catch (err) {
     speechRuntime.value = {
@@ -2737,11 +2985,7 @@ function findRecentGreetingMessage(text) {
 
 function maybeRunInitialGreetingOnVisit() {
   const greetingText = voiceGreetingText.value;
-  if (
-    !voiceGreetingEnabled.value ||
-    !greetingText ||
-    loadGreetingSeenState()
-  ) {
+  if (!voiceGreetingEnabled.value || !greetingText || loadGreetingSeenState()) {
     return;
   }
   appendAssistantGreetingMessage(greetingText, {
@@ -2986,25 +3230,28 @@ async function handleSocketMessage(eventData) {
   }
 
   if (eventType === "done") {
-    const nextContent = String(eventData?.content || "").trim();
-    const nextRow = {
-      ...row,
-      content: row.content || nextContent,
-      status: "",
-      isStreaming: false,
-      images: mergeUrlList(row.images, eventData?.images),
-      videos: mergeUrlList(row.videos, eventData?.videos),
-    };
-    messages.value[index] = nextRow;
-    pending.resolve(nextRow);
-    pendingRequests.delete(requestId);
-    syncPendingRequestUiState();
-    if (isListening.value && !voiceListeningSuspendedBySpeech.value) {
-      enterVoiceStandbyMode();
-    }
-    scrollToBottom();
-    if (autoPlayAssistantSpeech.value && nextRow.content) {
-      scheduleStreamingAssistantSpeech(nextRow, { flush: true });
+    try {
+      const nextContent = String(eventData?.content || "").trim();
+      const nextRow = {
+        ...row,
+        content: row.content || nextContent,
+        status: "",
+        isStreaming: false,
+        images: mergeUrlList(row.images, eventData?.images),
+        videos: mergeUrlList(row.videos, eventData?.videos),
+      };
+      messages.value[index] = nextRow;
+      if (isListening.value && !voiceListeningSuspendedBySpeech.value) {
+        enterVoiceStandbyMode();
+      }
+      if (autoPlayAssistantSpeech.value && nextRow.content) {
+        scheduleStreamingAssistantSpeech(nextRow, { flush: true });
+      }
+    } finally {
+      pending.resolve(row);
+      pendingRequests.delete(requestId);
+      syncPendingRequestUiState();
+      scrollToBottom();
     }
     return;
   }
@@ -3066,7 +3313,10 @@ async function handleVoiceSocketMessage(eventData, eventType, requestId) {
 
   if (eventType === "voice_ready") {
     voiceUiStage.value = "listening";
-    if (voiceRequestedStartMode.value === "active" || voiceWakeState.value === "active") {
+    if (
+      voiceRequestedStartMode.value === "active" ||
+      voiceWakeState.value === "active"
+    ) {
       enterVoiceActiveMode();
     } else {
       enterVoiceStandbyMode();
@@ -3182,9 +3432,73 @@ async function handleVoiceSocketMessage(eventData, eventType, requestId) {
 }
 
 function handleComposerKeydown(event) {
+  if (isAssistantSlashMenuVisible.value) {
+    const commands = filteredAssistantSlashCommands.value;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      assistantSlashCommandHighlightIndex.value =
+        (assistantSlashCommandHighlightIndex.value + 1) % commands.length;
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      assistantSlashCommandHighlightIndex.value =
+        (assistantSlashCommandHighlightIndex.value - 1 + commands.length) %
+        commands.length;
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      const selected =
+        commands[assistantSlashCommandHighlightIndex.value] || commands[0];
+      if (selected) {
+        event.preventDefault();
+        applyAssistantSlashCommandSelection(selected);
+        return;
+      }
+    }
+    if (event.key === "Escape") {
+      assistantSlashCommandHighlightIndex.value = 0;
+      typedDraftText.value = "";
+      return;
+    }
+  }
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
   event.preventDefault();
   void sendCurrentDraft();
+}
+
+function normalizeAssistantSlashToken(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function resolveAssistantSlashCommand(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed.startsWith("/")) return null;
+  const match = trimmed.match(/^(\/[^\s]+)(?:\s+([\s\S]*))?$/);
+  if (!match) return null;
+  const token = normalizeAssistantSlashToken(match[1]);
+  const prompt = String(match[2] || "").trim();
+  const entry =
+    ASSISTANT_SLASH_COMMANDS.find((item) => {
+      const tokens = [item.command, ...(Array.isArray(item.aliases) ? item.aliases : [])];
+      return tokens.some(
+        (candidate) => normalizeAssistantSlashToken(candidate) === token,
+      );
+    }) || null;
+  if (!entry) return null;
+  return { entry, token, prompt };
+}
+
+function applyAssistantSlashCommandSelection(item) {
+  if (!item?.command) return;
+  typedDraftText.value = `${item.command} `;
+  assistantSlashCommandHighlightIndex.value = 0;
+  nextTick(() => {
+    const textarea = document.querySelector(".assistant-command-composer textarea");
+    if (textarea && typeof textarea.focus === "function") {
+      textarea.focus();
+    }
+  });
 }
 
 async function sendCurrentDraft() {
@@ -3204,7 +3518,30 @@ async function submitVoiceDraft() {
 async function sendMessage(rawText, options = {}) {
   const text = String(rawText || "").trim();
   if (!text || loading.value) return;
-  if (await tryHandleDirectRouteCommand(text, options)) return;
+  const slashCommand = resolveAssistantSlashCommand(text);
+  if (slashCommand?.entry?.kind === "create_task") {
+    if (!slashCommand.prompt) {
+      ElMessage.warning("请在 /创建任务 后输入任务内容");
+      return;
+    }
+    if (
+      await tryHandleTaskCreationCommand(`创建任务 ${slashCommand.prompt}`, {
+        ...options,
+        displayText: text,
+      })
+    ) {
+      typedDraftText.value = "";
+      return;
+    }
+  }
+  if (await tryHandleTaskCreationCommand(text, options)) {
+    typedDraftText.value = "";
+    return;
+  }
+  if (await tryHandleDirectRouteCommand(text, options)) {
+    typedDraftText.value = "";
+    return;
+  }
 
   let sessionId = String(currentChatSessionId.value || "").trim();
   if (!sessionId) {
@@ -3249,28 +3586,37 @@ async function sendMessage(rawText, options = {}) {
   const requestId = createLocalMessageId();
   try {
     const client = await ensureWsClient();
-    await new Promise((resolve, reject) => {
-      pendingRequests.set(requestId, {
-        requestId,
-        resolve,
-        reject,
-        sessionId,
-        assistantMessageId: assistantMessage.id,
-      });
-      syncPendingRequestUiState();
-      client.send({
-        request_id: requestId,
-        message_id: userMessage.id,
-        assistant_message_id: assistantMessage.id,
-        chat_session_id: sessionId,
-        chat_mode: "system",
-        chat_surface: "global-assistant",
-        message: text,
-        history,
-        route_path: normalizedRoutePath.value,
-        route_title: currentRouteLabel.value,
-      });
-    });
+    const PENDING_TIMEOUT_MS = 5 * 60 * 1000;
+    await Promise.race([
+      new Promise((resolve, reject) => {
+        pendingRequests.set(requestId, {
+          requestId,
+          resolve,
+          reject,
+          sessionId,
+          assistantMessageId: assistantMessage.id,
+        });
+        syncPendingRequestUiState();
+        client.send({
+          request_id: requestId,
+          message_id: userMessage.id,
+          assistant_message_id: assistantMessage.id,
+          chat_session_id: sessionId,
+          chat_mode: "system",
+          chat_surface: "global-assistant",
+          message: text,
+          history,
+          route_path: normalizedRoutePath.value,
+          route_title: currentRouteLabel.value,
+        });
+      }),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("请求超时，请重试")),
+          PENDING_TIMEOUT_MS,
+        ),
+      ),
+    ]);
   } catch (err) {
     speechStreamingProgress.delete(assistantMessage.id);
     suppressedAutoPlayMessageIds.delete(assistantMessage.id);
@@ -3436,7 +3782,10 @@ async function playVoiceReadyPromptTone() {
     shouldCloseAfterPlayback = true;
   }
   try {
-    if (typeof audioContext.resume === "function" && audioContext.state === "suspended") {
+    if (
+      typeof audioContext.resume === "function" &&
+      audioContext.state === "suspended"
+    ) {
       await audioContext.resume();
     }
     const now = Number(audioContext.currentTime || 0);
@@ -3466,12 +3815,20 @@ async function playVoiceReadyPromptTone() {
         oscillatorB.disconnect();
         gainNode.disconnect();
       } catch {}
-      if (shouldCloseAfterPlayback && audioContext && typeof audioContext.close === "function") {
+      if (
+        shouldCloseAfterPlayback &&
+        audioContext &&
+        typeof audioContext.close === "function"
+      ) {
         void audioContext.close().catch(() => {});
       }
     };
   } catch {
-    if (shouldCloseAfterPlayback && audioContext && typeof audioContext.close === "function") {
+    if (
+      shouldCloseAfterPlayback &&
+      audioContext &&
+      typeof audioContext.close === "function"
+    ) {
       void audioContext.close().catch(() => {});
     }
   }
@@ -3649,7 +4006,9 @@ function appendVoiceVadActiveFrame(frame) {
 }
 
 function startVoiceVadUtterance(frame, sampleRate) {
-  voiceVadActiveFrames = voiceVadPreRollFrames.map((item) => cloneVoiceFrame(item));
+  voiceVadActiveFrames = voiceVadPreRollFrames.map((item) =>
+    cloneVoiceFrame(item),
+  );
   voiceVadActiveSampleCount = voiceVadActiveFrames.reduce(
     (sum, item) => sum + item.length,
     0,
@@ -3698,7 +4057,9 @@ async function transcribeVoiceVadUtterance(samples, sourceSampleRate) {
     Number(sourceSampleRate || VOICE_TARGET_SAMPLE_RATE),
     VOICE_TARGET_SAMPLE_RATE,
   );
-  const pcmBytes = float32ToPcm16Bytes(normalizeVoiceSamples(normalizedSamples));
+  const pcmBytes = float32ToPcm16Bytes(
+    normalizeVoiceSamples(normalizedSamples),
+  );
   if (!pcmBytes.length) return "";
   const formData = new FormData();
   formData.append(
@@ -3709,7 +4070,10 @@ async function transcribeVoiceVadUtterance(samples, sourceSampleRate) {
   formData.append("language", "zh");
   formData.append("prompt", voiceTranscriptionPrompt.value);
   formData.append("is_final", "true");
-  const payload = await api.post("/projects/chat/global/voice-input/transcriptions", formData);
+  const payload = await api.post(
+    "/projects/chat/global/voice-input/transcriptions",
+    formData,
+  );
   return sanitizeVoiceTranscriptText(payload?.text || "");
 }
 
@@ -3780,14 +4144,62 @@ function resolveDirectRouteCommand(text) {
         normalized === `切到${aliasCanonical}` ||
         normalized === `切换到${aliasCanonical}` ||
         normalized === `${aliasCanonical}打开` ||
-        navigationVerb.test(normalized) &&
-          normalized.replace(navigationVerb, "") === aliasCanonical
+        (navigationVerb.test(normalized) &&
+          normalized.replace(navigationVerb, "") === aliasCanonical)
       ) {
         return item;
       }
     }
   }
   return null;
+}
+
+async function tryHandleTaskCreationCommand(text, options = {}) {
+  const taskInput = parseTaskCreationCommand(text);
+  if (!taskInput?.description) return false;
+  const normalizedText = String(options?.displayText || text || "").trim();
+  if (options?.openPanel !== false) {
+    panelOpen.value = true;
+  }
+  if (options?.recordConversation !== false && normalizedText) {
+    messages.value.push(
+      normalizeMessage({
+        id: createLocalMessageId(),
+        role: "user",
+        content: normalizedText,
+        created_at: new Date().toISOString(),
+      }),
+    );
+  }
+  const task = createTask({
+    title: buildTaskTitle(taskInput.description),
+    description: taskInput.description,
+    source: "global-assistant",
+  });
+  try {
+    if (String(route.path || "").trim() !== "/tasks") {
+      await router.push("/tasks");
+    }
+  } catch {}
+  const assistantText = `已创建任务“${task.title}”，并打开任务模块。`;
+  if (options?.recordConversation !== false) {
+    messages.value.push(
+      normalizeMessage({
+        id: createLocalMessageId(),
+        role: "assistant",
+        content: assistantText,
+        created_at: new Date().toISOString(),
+      }),
+    );
+  }
+  if (isListening.value) {
+    enterVoiceStandbyMode();
+    voiceStatusText.value = `${assistantText} 说“${voiceWakePhrase.value}”即可继续。`;
+  } else {
+    ElMessage.success(assistantText);
+  }
+  scrollToBottom();
+  return true;
 }
 
 async function tryHandleDirectRouteCommand(text, options = {}) {
@@ -3835,6 +4247,693 @@ async function tryHandleDirectRouteCommand(text, options = {}) {
   }
   scrollToBottom();
   return true;
+}
+
+function formatDateValue(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function resolveDefaultWorkLogDateRange(type = "daily") {
+  const end = new Date();
+  const start = new Date(end);
+  const normalizedType = String(type || "daily")
+    .trim()
+    .toLowerCase();
+  if (normalizedType === "weekly") {
+    start.setDate(end.getDate() - 6);
+  } else if (normalizedType === "monthly") {
+    start.setMonth(end.getMonth() - 1);
+    start.setDate(start.getDate() + 1);
+  }
+  return [formatDateValue(start), formatDateValue(end)];
+}
+
+function resolveWorkLogTypeLabel(type) {
+  const normalized = String(type || "daily")
+    .trim()
+    .toLowerCase();
+  if (normalized === "weekly") return "周报";
+  if (normalized === "monthly") return "月报";
+  return "日报";
+}
+
+function resolveWorkLogTemplateLabel(type) {
+  const normalized = String(type || "engineering_summary").trim();
+  return (
+    workLogTemplateOptions.find((item) => item.value === normalized)?.label ||
+    "领导周报（解决内容）"
+  );
+}
+
+function resolveWorkLogSummaryFocusLabel(type) {
+  const normalized = String(type || "progress_risks_next_steps").trim();
+  return (
+    workLogSummaryFocusOptions.find((item) => item.value === normalized)
+      ?.label || "解决内容 / 本周计划 / 下周计划"
+  );
+}
+
+function buildWorkLogSelectChildren(options) {
+  return options.map((item) => ({
+    componentName: "ElOption",
+    attrs: {
+      label: item.label,
+      value: item.value,
+    },
+  }));
+}
+
+function buildWorkLogProjectOptions() {
+  return workLogProjectOptions.value.map((item) => ({
+    label: item.name || item.id,
+    value: item.id,
+  }));
+}
+
+function showWorkLogMessage(type, message) {
+  ElMessage({
+    type,
+    message,
+    zIndex: WORK_LOG_MESSAGE_Z_INDEX,
+    customClass: "assistant-work-log-message",
+  });
+}
+
+function buildWorkLogFormSchema() {
+  return [
+    {
+      label: "选择项目",
+      prop: "project_ids",
+      componentName: "ElSelect",
+      colAttrs: { span: 24 },
+      attrs: {
+        class: "assistant-work-log__field",
+        multiple: true,
+        filterable: true,
+        clearable: true,
+        "collapse-tags": true,
+        "collapse-tags-tooltip": true,
+        loading: workLogLoadingProjects.value,
+        teleported: true,
+        "popper-class":
+          "assistant-work-log-popper assistant-work-log-select-popper",
+        "no-data-text": "暂无可选项目",
+        placeholder: "请选择一个或多个项目",
+      },
+      events: [
+        {
+          prop: "visibleChange",
+          defaultValue:
+            "function(config, model, visible){ if (visible && window.__globalAiAssistantWorkLogLoadProjects) window.__globalAiAssistantWorkLogLoadProjects(true); }",
+        },
+      ],
+      rules: [
+        {
+          required: true,
+          type: "array",
+          min: 1,
+          message: "请选择项目",
+          trigger: "change",
+        },
+      ],
+      children: buildWorkLogSelectChildren(buildWorkLogProjectOptions()),
+    },
+    {
+      label: "日志类型",
+      prop: "report_type",
+      componentName: "ElSelect",
+      colAttrs: { xs: 24, sm: 12 },
+      attrs: {
+        class: "assistant-work-log__field",
+        placeholder: "请选择日志类型",
+        teleported: true,
+        "popper-class":
+          "assistant-work-log-popper assistant-work-log-select-popper",
+      },
+      events: [
+        {
+          prop: "change",
+          defaultValue:
+            "function(config, model, value){ if (window.__globalAiAssistantWorkLogTypeChange) window.__globalAiAssistantWorkLogTypeChange(value); }",
+        },
+      ],
+      rules: [{ required: true, message: "请选择日志类型", trigger: "change" }],
+      children: buildWorkLogSelectChildren(workLogReportTypeOptions),
+    },
+    {
+      label: "时间范围",
+      prop: "date_range",
+      componentName: "ElDatePicker",
+      colAttrs: { xs: 24, sm: 12 },
+      attrs: {
+        class: "assistant-work-log__field",
+        type: "daterange",
+        "value-format": "YYYY-MM-DD",
+        "start-placeholder": "开始日期",
+        "end-placeholder": "结束日期",
+        "range-separator": "至",
+        teleported: true,
+        "popper-class":
+          "assistant-work-log-popper assistant-work-log-date-popper",
+      },
+      rules: [
+        {
+          required: true,
+          type: "array",
+          min: 2,
+          message: "请选择时间范围",
+          trigger: "change",
+        },
+      ],
+    },
+    {
+      label: "参数补充模板",
+      prop: "log_template",
+      componentName: "ElSelect",
+      colAttrs: { xs: 24, sm: 12 },
+      attrs: {
+        class: "assistant-work-log__field",
+        placeholder: "请选择模板",
+        teleported: true,
+        "popper-class":
+          "assistant-work-log-popper assistant-work-log-select-popper",
+      },
+      children: buildWorkLogSelectChildren(workLogTemplateOptions),
+    },
+    {
+      label: "总结重点",
+      prop: "summary_focus",
+      componentName: "ElSelect",
+      colAttrs: { xs: 24, sm: 12 },
+      attrs: {
+        class: "assistant-work-log__field",
+        placeholder: "请选择总结重点",
+        teleported: true,
+        "popper-class":
+          "assistant-work-log-popper assistant-work-log-select-popper",
+      },
+      children: buildWorkLogSelectChildren(workLogSummaryFocusOptions),
+    },
+    {
+      label: "保留验证/轨迹明细",
+      prop: "include_details",
+      componentName: "ElSwitch",
+      colAttrs: { xs: 24, sm: 12 },
+      attrs: {
+        "active-text": "包含明细",
+        "inactive-text": "领导摘要",
+      },
+    },
+    {
+      label: "使用大模型总结",
+      prop: "use_ai_summary",
+      componentName: "ElSwitch",
+      colAttrs: { xs: 24, sm: 12 },
+      attrs: {
+        "active-text": "开启",
+        "inactive-text": "关闭",
+      },
+    },
+    {
+      label: "补充说明",
+      prop: "extra_notes",
+      componentName: "ElInput",
+      colAttrs: { span: 24 },
+      attrs: {
+        class: "assistant-work-log__field",
+        type: "textarea",
+        rows: 3,
+        maxlength: 500,
+        "show-word-limit": true,
+        placeholder: "可选：补充本次日志重点、汇报对象、输出口径或特殊参数",
+      },
+    },
+  ];
+}
+
+function resolveWorkLogProjectItems(payload) {
+  if (Array.isArray(payload?.projects)) return payload.projects;
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.items)) return payload.items;
+  return [];
+}
+
+async function loadWorkLogProjects(force = false) {
+  if (
+    (!force && workLogProjectOptions.value.length) ||
+    workLogLoadingProjects.value
+  )
+    return;
+  workLogLoadingProjects.value = true;
+  try {
+    const projectsPayload = await api.get("/projects");
+    let items = resolveWorkLogProjectItems(projectsPayload);
+    if (!items.length) {
+      const metaPayload = await api.get("/work-sessions/meta");
+      items = resolveWorkLogProjectItems(metaPayload);
+    }
+    if (!items.length) {
+      const fallbackProjectId = String(
+        localStorage.getItem("project_id") || "",
+      ).trim();
+      if (fallbackProjectId && fallbackProjectId !== "default") {
+        items = [{ id: fallbackProjectId, name: fallbackProjectId }];
+      }
+    }
+    workLogProjectOptions.value = items;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "加载项目列表失败");
+  } finally {
+    workLogLoadingProjects.value = false;
+  }
+}
+
+async function openWorkLogDialog() {
+  workLogDialogOpen.value = true;
+  await loadWorkLogProjects();
+}
+
+function handleWorkLogReportTypeChange(type) {
+  workLogFormModel.date_range = resolveDefaultWorkLogDateRange(type);
+}
+
+function normalizeWorkLogFormValue(rawValue) {
+  const value = rawValue && typeof rawValue === "object" ? rawValue : {};
+  const reportType = ["daily", "weekly", "monthly"].includes(value.report_type)
+    ? value.report_type
+    : "daily";
+  const range =
+    Array.isArray(value.date_range) && value.date_range.length >= 2
+      ? value.date_range
+          .slice(0, 2)
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+      : resolveDefaultWorkLogDateRange(reportType);
+  return {
+    project_ids: Array.isArray(value.project_ids)
+      ? value.project_ids
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+      : [],
+    report_type: reportType,
+    date_range:
+      range.length >= 2 ? range : resolveDefaultWorkLogDateRange(reportType),
+    log_template: String(value.log_template || "leadership_work_plan").trim(),
+    include_details: value.include_details === true,
+    use_ai_summary: value.use_ai_summary !== false,
+    summary_focus: String(value.summary_focus || "resolved_work_plan").trim(),
+    extra_notes: String(value.extra_notes || "").trim(),
+  };
+}
+
+function inWorkLogDateRange(value, startDate, endDate) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  const datePart = raw.slice(0, 10);
+  return datePart >= startDate && datePart <= endDate;
+}
+
+function pickFirstText(value, fallback = "") {
+  if (Array.isArray(value)) {
+    return (
+      value.map((item) => String(item || "").trim()).find(Boolean) || fallback
+    );
+  }
+  return String(value || "").trim() || fallback;
+}
+
+function formatWorkLogList(values, emptyText = "暂无") {
+  const items = Array.isArray(values)
+    ? values.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (!items.length) return `- ${emptyText}`;
+  return items
+    .slice(0, 8)
+    .map((item) => `- ${item}`)
+    .join("\n");
+}
+
+function summarizeWorkLogSession(session) {
+  const goal = String(session?.goal || "").trim();
+  const latestStatus = String(
+    session?.latest_status || session?.status || "",
+  ).trim();
+  const latestStep = pickFirstText(
+    session?.steps,
+    String(session?.latest_step || "").trim(),
+  );
+  const updatedAt = String(
+    session?.updated_at || session?.created_at || "",
+  ).slice(0, 16);
+  return [
+    goal || String(session?.session_id || "未命名工作"),
+    latestStatus ? `状态：${latestStatus}` : "",
+    latestStep ? `步骤：${latestStep}` : "",
+    updatedAt ? `更新时间：${updatedAt}` : "",
+  ]
+    .filter(Boolean)
+    .join("；");
+}
+
+async function fetchWorkLogSessions(projectId, startDate, endDate) {
+  const data = await api.get(
+    `/projects/${encodeURIComponent(projectId)}/work-sessions`,
+    {
+      params: {
+        limit: 200,
+      },
+    },
+  );
+  return Array.isArray(data?.items)
+    ? data.items.filter((item) =>
+        inWorkLogDateRange(
+          item?.updated_at || item?.created_at,
+          startDate,
+          endDate,
+        ),
+      )
+    : [];
+}
+
+function resolveWorkLogRequirementRound(record) {
+  if (!record || typeof record !== "object") return {};
+  if (record.currentRound && typeof record.currentRound === "object")
+    return record.currentRound;
+  if (record.latestRound && typeof record.latestRound === "object")
+    return record.latestRound;
+  if (record.detailRound && typeof record.detailRound === "object")
+    return record.detailRound;
+  const rounds = Array.isArray(record.rounds) ? record.rounds : [];
+  return rounds[rounds.length - 1] || {};
+}
+
+function resolveWorkLogRequirementTime(record) {
+  const round = resolveWorkLogRequirementRound(record);
+  return String(
+    record?.updatedAt ||
+      record?.createdAt ||
+      round?.updatedAt ||
+      round?.createdAt ||
+      "",
+  ).trim();
+}
+
+function inWorkLogRequirementDateRange(record, startDate, endDate) {
+  return inWorkLogDateRange(
+    resolveWorkLogRequirementTime(record),
+    startDate,
+    endDate,
+  );
+}
+
+async function fetchWorkLogRequirementRecords(projectId, startDate, endDate) {
+  const data = await api.get(
+    `/projects/${encodeURIComponent(projectId)}/requirement-records`,
+    {
+      params: {
+        limit: 300,
+      },
+    },
+  );
+  return Array.isArray(data?.items)
+    ? data.items.filter((item) =>
+        inWorkLogRequirementDateRange(item, startDate, endDate),
+      )
+    : [];
+}
+
+function normalizeWorkLogPlainText(value, fallback = "") {
+  return (
+    String(value || "")
+      .replace(/`[^`]+`/g, "")
+      .replace(/[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+/g, "")
+      .replace(/\b(?:ws|tts|ttn|chat-session|proj)-[A-Za-z0-9_-]+\b/g, "")
+      .replace(/\s+/g, " ")
+      .trim() || fallback
+  );
+}
+
+function dedupeWorkLogItems(values, limit = 8) {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : [])
+    .map((item) => normalizeWorkLogPlainText(item))
+    .filter((item) => {
+      if (!item || seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    })
+    .slice(0, limit);
+}
+
+function isWorkLogCompletedStatus(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  return ["done", "completed", "success", "closed", "archived"].includes(
+    normalized,
+  );
+}
+
+function summarizeWorkLogRequirement(record) {
+  const round = resolveWorkLogRequirementRound(record);
+  const workSessions = Array.isArray(round?.workSessions)
+    ? round.workSessions
+    : [];
+  const status = String(round?.status || record?.status || "pending").trim();
+  const displayStatus = String(
+    round?.displayStatus || record?.status || status,
+  ).trim();
+  const isFinalized =
+    Boolean(round?.isFinalized) || isWorkLogCompletedStatus(status);
+  const rootGoal = normalizeWorkLogPlainText(
+    record?.rootGoal || round?.rootGoal || record?.title,
+    "未命名需求",
+  );
+  const summary = normalizeWorkLogPlainText(
+    record?.summaryText ||
+      round?.summaryText ||
+      record?.currentFocus ||
+      round?.currentNodeTitle,
+  );
+  const nextSteps = workSessions.flatMap((item) =>
+    Array.isArray(item?.next_steps) ? item.next_steps : [],
+  );
+  const risks = workSessions.flatMap((item) =>
+    Array.isArray(item?.risks) ? item.risks : [],
+  );
+  const verification = workSessions.flatMap((item) =>
+    Array.isArray(item?.verification) ? item.verification : [],
+  );
+  const outcome =
+    summary && summary !== rootGoal ? `${rootGoal}：${summary}` : rootGoal;
+  return {
+    rootGoal,
+    outcome,
+    status: displayStatus || status,
+    isFinalized,
+    risks: dedupeWorkLogItems(risks, 4),
+    verification: dedupeWorkLogItems(verification, 4),
+    nextSteps: dedupeWorkLogItems(nextSteps, 4),
+  };
+}
+
+function buildProjectWorkLogSection(project, sessions, options) {
+  const requirementRecords = Array.isArray(options.requirementRecords)
+    ? options.requirementRecords
+    : [];
+  const requirements = requirementRecords.map((item) =>
+    summarizeWorkLogRequirement(item),
+  );
+  const completedRequirements = requirements.filter((item) => item.isFinalized);
+  const activeRequirements = requirements.filter((item) => !item.isFinalized);
+  const completedSessions = sessions.filter((item) =>
+    isWorkLogCompletedStatus(item?.latest_status || item?.status),
+  );
+  const activeSessions = sessions.filter(
+    (item) => !completedSessions.includes(item),
+  );
+  const solvedItems = completedRequirements.length
+    ? completedRequirements.map((item) => item.outcome)
+    : completedSessions.map((item) =>
+        normalizeWorkLogPlainText(item?.goal || summarizeWorkLogSession(item)),
+      );
+  const activeItems = activeRequirements.length
+    ? activeRequirements.map((item) => item.outcome)
+    : activeSessions.map((item) =>
+        normalizeWorkLogPlainText(item?.goal || summarizeWorkLogSession(item)),
+      );
+  const risks = dedupeWorkLogItems([
+    ...requirements.flatMap((item) => item.risks),
+    ...sessions.flatMap((item) =>
+      Array.isArray(item?.risks) ? item.risks : [],
+    ),
+  ]);
+  const verification = dedupeWorkLogItems([
+    ...requirements.flatMap((item) => item.verification),
+    ...sessions.flatMap((item) =>
+      Array.isArray(item?.verification) ? item.verification : [],
+    ),
+  ]);
+  const nextSteps = dedupeWorkLogItems([
+    ...requirements.flatMap((item) => item.nextSteps),
+    ...sessions.flatMap((item) =>
+      Array.isArray(item?.next_steps) ? item.next_steps : [],
+    ),
+    ...activeItems.map((item) => `继续推进：${item}`),
+  ]);
+  const solvedCount = solvedItems.length;
+  const activeCount = activeItems.length;
+  const detailLines = options.include_details
+    ? `\n\n验证/交付依据：\n${formatWorkLogList(verification, "暂无验证记录")}\n\n轨迹明细：\n${formatWorkLogList(
+        sessions.map((item) => summarizeWorkLogSession(item)),
+        "当前时间范围内暂无工作会话",
+      )}`
+    : "";
+  return `## ${project.name || project.id}\n项目ID：${project.id}\n\n本周工作计划（由需求记录反推）：围绕 ${solvedCount + activeCount} 项需求推进，其中已解决/交付 ${solvedCount} 项，持续推进 ${activeCount} 项。\n\n本周解决了什么：\n${formatWorkLogList(
+    solvedItems,
+    "本周暂无已闭环问题",
+  )}\n\n本周仍在推进：\n${formatWorkLogList(
+    activeItems,
+    "暂无进行中事项",
+  )}\n\n风险与阻塞：\n${formatWorkLogList(risks, "暂无需要领导协调的阻塞")}\n\n下周计划：\n${formatWorkLogList(nextSteps, "延续本周未完成事项并按业务反馈收口")}${detailLines}`;
+}
+
+function buildWorkLogDraftText(formValue, reportTitle, sections) {
+  return [
+    `# ${reportTitle}`,
+    `生成时间：${formatRelativeDateTime(new Date().toISOString())}`,
+    `参数补充模板：${resolveWorkLogTemplateLabel(formValue.log_template)}`,
+    `总结重点：${resolveWorkLogSummaryFocusLabel(formValue.summary_focus)}`,
+    `输出口径：面向领导，默认不展开技术文件、命令、会话编号和执行轨迹，只说明解决了什么问题、本周计划完成情况、风险阻塞和下周计划。`,
+    formValue.extra_notes ? `补充说明：${formValue.extra_notes}` : "",
+    ...sections,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function buildWorkLogAiPrompt(formValue, reportTitle, draftText) {
+  return [
+    `请基于以下项目需求记录和工作轨迹，生成一份${reportTitle}。`,
+    `输出模板：${resolveWorkLogTemplateLabel(formValue.log_template)}。`,
+    `总结重点：${resolveWorkLogSummaryFocusLabel(formValue.summary_focus)}。`,
+    "核心目标：领导不需要看具体代码、文件、命令、工具、会话 ID 或执行过程，只需要看本周解决了哪些问题、哪些计划仍在推进、是否有需要协调的风险、下周准备做什么。",
+    "请按需求标题和处理结论反推“本周工作计划/完成情况”：把技术动作改写成业务可读的解决内容，例如“修复某页面加载异常”“完成某功能联动”“优化某流程体验”。",
+    "输出要求：保留项目 ID；每个项目最多 3-6 条要点；不要堆砌“暂无验证记录”；无风险时写“暂无需要领导协调的阻塞”；除非用户打开明细开关，否则不要输出文件路径、接口路径、测试命令、MCP 工具名、session_id、task_node_id。",
+    "建议结构：本周解决了什么 / 本周仍在推进 / 风险阻塞 / 下周计划。语言要像给领导看的周报，而不是研发过程流水账。",
+    formValue.extra_notes ? `额外口径：${formValue.extra_notes}` : "",
+    "原始结构化草稿如下：",
+    draftText,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+async function summarizeWorkLogWithAi(formValue, reportTitle, draftText) {
+  let sessionId = String(currentChatSessionId.value || "").trim();
+  if (!sessionId) {
+    sessionId = createEphemeralSessionId();
+    currentChatSessionId.value = sessionId;
+  }
+  const payload = await api.post("/projects/chat/global", {
+    message: buildWorkLogAiPrompt(formValue, reportTitle, draftText),
+    chat_session_id: sessionId,
+    chat_mode: "system",
+    chat_surface: "global-assistant",
+    route_path: normalizedRoutePath.value,
+    route_title: currentRouteLabel.value,
+    history: toHistoryRows(messages.value),
+    temperature: 0.2,
+    answer_style: "concise",
+    prefer_conclusion_first: true,
+  });
+  return String(payload?.content || "").trim();
+}
+
+async function generateWorkLogContent() {
+  if (!workLogFormRef.value) return;
+  workLogGenerating.value = true;
+  try {
+    await workLogFormRef.value.validate();
+    const formValue = normalizeWorkLogFormValue(workLogFormModel);
+    const [startDate, endDate] = formValue.date_range;
+    const selectedProjects = workLogProjectOptions.value.filter((item) =>
+      formValue.project_ids.includes(item.id),
+    );
+    if (!selectedProjects.length) {
+      ElMessage.warning("请至少选择一个项目");
+      return;
+    }
+    const sections = [];
+    for (const project of selectedProjects) {
+      const sessions = await fetchWorkLogSessions(
+        project.id,
+        startDate,
+        endDate,
+      );
+      let requirementRecords = [];
+      try {
+        requirementRecords = await fetchWorkLogRequirementRecords(
+          project.id,
+          startDate,
+          endDate,
+        );
+      } catch (err) {
+        console.warn("load work log requirement records failed", err);
+      }
+      sections.push(
+        buildProjectWorkLogSection(project, sessions, {
+          ...formValue,
+          requirementRecords,
+        }),
+      );
+    }
+    const reportTitle = `${resolveWorkLogTypeLabel(formValue.report_type)}｜${startDate} 至 ${endDate}`;
+    const draftText = buildWorkLogDraftText(formValue, reportTitle, sections);
+    if (formValue.use_ai_summary) {
+      const summary = await summarizeWorkLogWithAi(
+        formValue,
+        reportTitle,
+        draftText,
+      );
+      workLogOutputText.value = summary || draftText;
+      showWorkLogMessage(
+        "success",
+        summary ? "工作日志已由大模型总结" : "已生成结构化工作日志",
+      );
+    } else {
+      workLogOutputText.value = draftText;
+      showWorkLogMessage("success", "工作日志已生成");
+    }
+  } catch (err) {
+    if (err !== false) {
+      showWorkLogMessage("error", err?.detail || err?.message || "生成工作日志失败");
+    }
+  } finally {
+    workLogGenerating.value = false;
+  }
+}
+
+async function copyWorkLogOutput() {
+  const text = String(workLogOutputText.value || "").trim();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    showWorkLogMessage("success", "已复制工作日志");
+  } catch {
+    showWorkLogMessage("error", "复制失败，请手动复制");
+  }
+}
+
+function insertWorkLogIntoDraft() {
+  const text = String(workLogOutputText.value || "").trim();
+  if (!text) return;
+  typedDraftText.value = text;
+  workLogDialogOpen.value = false;
+  panelOpen.value = true;
 }
 
 function mergeVoiceTranscriptText(currentText, nextText) {
@@ -3889,14 +4988,21 @@ function detectWakePhraseFromTranscript(text) {
     normalized,
   ).slice(-96);
   const wakeCanonical = canonicalizeVoiceTranscriptText(voiceWakePhrase.value);
-  const bufferCanonical = canonicalizeVoiceTranscriptText(voiceWakeScanBuffer.value);
+  const bufferCanonical = canonicalizeVoiceTranscriptText(
+    voiceWakeScanBuffer.value,
+  );
   if (!wakeCanonical) {
     return { matched: false, remainder: "", heardText: normalized };
   }
   let matchedIndex = bufferCanonical.lastIndexOf(wakeCanonical);
   if (matchedIndex < 0 && wakeCanonical.length >= 4) {
-    const wakePrefix = wakeCanonical.slice(0, Math.ceil(wakeCanonical.length / 2));
-    const wakeSuffix = wakeCanonical.slice(Math.floor(wakeCanonical.length / 2));
+    const wakePrefix = wakeCanonical.slice(
+      0,
+      Math.ceil(wakeCanonical.length / 2),
+    );
+    const wakeSuffix = wakeCanonical.slice(
+      Math.floor(wakeCanonical.length / 2),
+    );
     const prefixIndex = bufferCanonical.lastIndexOf(wakePrefix);
     if (prefixIndex >= 0) {
       const suffixIndex = bufferCanonical.indexOf(
@@ -4423,7 +5529,10 @@ async function startVoiceInput(options = {}) {
       const cloned = new Float32Array(channelData);
       trackVoiceFrameMetrics(cloned);
       updateVoiceMeterLevel(cloned);
-      processVoiceVadFrame(cloned, Number(voiceAudioContext?.sampleRate || VOICE_TARGET_SAMPLE_RATE));
+      processVoiceVadFrame(
+        cloned,
+        Number(voiceAudioContext?.sampleRate || VOICE_TARGET_SAMPLE_RATE),
+      );
     };
     voiceSourceNode.connect(voiceProcessorNode);
     voiceProcessorNode.connect(voiceMuteNode);
@@ -4686,8 +5795,13 @@ function handleSystemConfigUpdated(event) {
 }
 
 onMounted(() => {
+  window.__globalAiAssistantWorkLogLoadProjects = loadWorkLogProjects;
+  window.__globalAiAssistantWorkLogTypeChange = handleWorkLogReportTypeChange;
   window.addEventListener("resize", handleAssistantFabWindowResize);
-  window.addEventListener(SYSTEM_CONFIG_UPDATED_EVENT, handleSystemConfigUpdated);
+  window.addEventListener(
+    SYSTEM_CONFIG_UPDATED_EVENT,
+    handleSystemConfigUpdated,
+  );
   if (!shouldRender.value) return;
   ensureAssistantBrowserBridgeInstalled();
   selectedVoiceInputDeviceId.value = normalizeVoiceInputSelectionValue(
@@ -4696,10 +5810,16 @@ onMounted(() => {
   selectedSpeechVoiceUri.value = loadStoredSpeechVoiceUri();
   autoPlayAssistantSpeech.value = loadStoredAutoPlayAssistantSpeech();
   if (window.navigator?.mediaDevices?.addEventListener) {
-    window.navigator.mediaDevices.addEventListener("devicechange", refreshVoiceInputDevices);
+    window.navigator.mediaDevices.addEventListener(
+      "devicechange",
+      refreshVoiceInputDevices,
+    );
   }
   if (window.speechSynthesis?.addEventListener) {
-    window.speechSynthesis.addEventListener("voiceschanged", refreshSpeechVoiceOptions);
+    window.speechSynthesis.addEventListener(
+      "voiceschanged",
+      refreshSpeechVoiceOptions,
+    );
   }
   refreshSpeechVoiceOptions({ forceRetry: true });
   nextTick(() => {
@@ -4709,13 +5829,31 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener(SYSTEM_CONFIG_UPDATED_EVENT, handleSystemConfigUpdated);
+  if (window.__globalAiAssistantWorkLogLoadProjects === loadWorkLogProjects) {
+    delete window.__globalAiAssistantWorkLogLoadProjects;
+  }
+  if (
+    window.__globalAiAssistantWorkLogTypeChange ===
+    handleWorkLogReportTypeChange
+  ) {
+    delete window.__globalAiAssistantWorkLogTypeChange;
+  }
+  window.removeEventListener(
+    SYSTEM_CONFIG_UPDATED_EVENT,
+    handleSystemConfigUpdated,
+  );
   stopSpeechVoiceRetry();
   if (window.navigator?.mediaDevices?.removeEventListener) {
-    window.navigator.mediaDevices.removeEventListener("devicechange", refreshVoiceInputDevices);
+    window.navigator.mediaDevices.removeEventListener(
+      "devicechange",
+      refreshVoiceInputDevices,
+    );
   }
   if (window.speechSynthesis?.removeEventListener) {
-    window.speechSynthesis.removeEventListener("voiceschanged", refreshSpeechVoiceOptions);
+    window.speechSynthesis.removeEventListener(
+      "voiceschanged",
+      refreshSpeechVoiceOptions,
+    );
   }
   window.removeEventListener("resize", handleAssistantFabWindowResize);
   stopAssistantFabDrag();
@@ -5022,22 +6160,41 @@ onBeforeUnmount(() => {
   padding: 16px;
   border-radius: 22px;
   border: 1px solid rgba(148, 163, 184, 0.2);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.98),
+    rgba(248, 250, 252, 0.94)
+  );
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 .assistant-input-card--voice {
   background:
-    radial-gradient(circle at top right, rgba(14, 165, 233, 0.14), transparent 34%),
+    radial-gradient(
+      circle at top right,
+      rgba(14, 165, 233, 0.14),
+      transparent 34%
+    ),
     linear-gradient(180deg, rgba(241, 245, 249, 0.98), rgba(226, 232, 240, 0.9));
 }
 
 .assistant-input-card--call {
   background:
-    radial-gradient(circle at top right, rgba(14, 165, 233, 0.18), transparent 30%),
-    radial-gradient(circle at bottom left, rgba(15, 118, 110, 0.14), transparent 32%),
-    linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(226, 232, 240, 0.92));
+    radial-gradient(
+      circle at top right,
+      rgba(14, 165, 233, 0.18),
+      transparent 30%
+    ),
+    radial-gradient(
+      circle at bottom left,
+      rgba(15, 118, 110, 0.14),
+      transparent 32%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(248, 250, 252, 0.98),
+      rgba(226, 232, 240, 0.92)
+    );
 }
 
 .assistant-input-card__head {
@@ -5090,6 +6247,89 @@ onBeforeUnmount(() => {
 .assistant-input-card__hint {
   color: #64748b;
   font-size: 12px;
+}
+
+.assistant-command-composer {
+  position: relative;
+  min-width: 0;
+}
+
+.assistant-slash-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 4;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
+}
+
+.assistant-slash-menu__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 4px 6px;
+}
+
+.assistant-slash-menu__title {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.assistant-slash-menu__summary {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.assistant-slash-menu__item {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  border: none;
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: #334155;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.assistant-slash-menu__item:hover,
+.assistant-slash-menu__item.is-active {
+  background: rgba(14, 165, 233, 0.1);
+  color: #0f172a;
+}
+
+.assistant-slash-menu__item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.assistant-slash-menu__command {
+  color: #0f766e;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.assistant-slash-menu__label {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.assistant-slash-menu__description {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .assistant-voice-diagnostics {
@@ -5459,8 +6699,16 @@ onBeforeUnmount(() => {
 
 .assistant-settings-group--status {
   background:
-    radial-gradient(circle at top right, rgba(14, 165, 233, 0.14), transparent 34%),
-    linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(241, 245, 249, 0.94));
+    radial-gradient(
+      circle at top right,
+      rgba(14, 165, 233, 0.14),
+      transparent 34%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(248, 250, 252, 0.98),
+      rgba(241, 245, 249, 0.94)
+    );
 }
 
 .assistant-fab-shell {
@@ -5487,8 +6735,16 @@ onBeforeUnmount(() => {
 
 .assistant-fab-shell::before {
   background:
-    linear-gradient(160deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.34)),
-    radial-gradient(circle at top right, rgba(103, 232, 249, 0.22), transparent 48%);
+    linear-gradient(
+      160deg,
+      rgba(255, 255, 255, 0.78),
+      rgba(255, 255, 255, 0.34)
+    ),
+    radial-gradient(
+      circle at top right,
+      rgba(103, 232, 249, 0.22),
+      transparent 48%
+    );
   border: 1px solid rgba(255, 255, 255, 0.74);
   box-shadow:
     0 18px 42px rgba(15, 23, 42, 0.08),
@@ -5500,8 +6756,16 @@ onBeforeUnmount(() => {
 .assistant-fab-shell::after {
   inset: -14px;
   background:
-    radial-gradient(circle at 24% 20%, rgba(56, 189, 248, 0.22), transparent 34%),
-    radial-gradient(circle at 82% 76%, rgba(103, 232, 249, 0.18), transparent 30%);
+    radial-gradient(
+      circle at 24% 20%,
+      rgba(56, 189, 248, 0.22),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 82% 76%,
+      rgba(103, 232, 249, 0.18),
+      transparent 30%
+    );
   filter: blur(18px);
   opacity: 0.9;
   z-index: -3;
@@ -5523,7 +6787,12 @@ onBeforeUnmount(() => {
       rgba(255, 255, 255, calc(0.9 - var(--assistant-fab-level) * 0.24)),
       transparent 48%
     ),
-    linear-gradient(155deg, rgba(255, 255, 255, 0.92) 0%, rgba(235, 246, 252, 0.88) 52%, rgba(225, 239, 248, 0.92) 100%);
+    linear-gradient(
+      155deg,
+      rgba(255, 255, 255, 0.92) 0%,
+      rgba(235, 246, 252, 0.88) 52%,
+      rgba(225, 239, 248, 0.92) 100%
+    );
   color: #0f172a;
   box-shadow:
     0 24px 54px rgba(15, 23, 42, 0.1),
@@ -5596,8 +6865,17 @@ onBeforeUnmount(() => {
 
 .assistant-fab.is-error {
   background:
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.88), transparent 46%),
-    linear-gradient(155deg, rgba(255, 247, 247, 0.96) 0%, rgba(254, 226, 226, 0.9) 52%, rgba(255, 228, 230, 0.94) 100%);
+    radial-gradient(
+      circle at top left,
+      rgba(255, 255, 255, 0.88),
+      transparent 46%
+    ),
+    linear-gradient(
+      155deg,
+      rgba(255, 247, 247, 0.96) 0%,
+      rgba(254, 226, 226, 0.9) 52%,
+      rgba(255, 228, 230, 0.94) 100%
+    );
   border-color: rgba(252, 165, 165, 0.92);
   color: #7f1d1d;
 }
@@ -5651,8 +6929,16 @@ onBeforeUnmount(() => {
   inset: 10px;
   border-radius: 28px;
   background:
-    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.74), transparent 36%),
-    radial-gradient(circle at 80% 78%, rgba(103, 232, 249, calc(0.08 + var(--assistant-fab-level) * 0.16)), transparent 34%),
+    radial-gradient(
+      circle at 22% 18%,
+      rgba(255, 255, 255, 0.74),
+      transparent 36%
+    ),
+    radial-gradient(
+      circle at 80% 78%,
+      rgba(103, 232, 249, calc(0.08 + var(--assistant-fab-level) * 0.16)),
+      transparent 34%
+    ),
     linear-gradient(180deg, rgba(255, 255, 255, 0.36), transparent 70%);
   opacity: 0.92;
   animation: assistantFabGlow 8.8s ease-in-out infinite;
@@ -5732,6 +7018,69 @@ onBeforeUnmount(() => {
 
 :deep(.assistant-settings-dialog .el-dialog__body) {
   padding-top: 8px;
+}
+
+:deep(.assistant-work-log-dialog .el-dialog__body) {
+  padding-top: 8px;
+}
+
+:deep(.assistant-work-log-dialog) {
+  overflow: visible;
+}
+
+:deep(.assistant-work-log-dialog .el-dialog__body) {
+  overflow: visible;
+}
+
+:global(.assistant-work-log-popper) {
+  z-index: 4300 !important;
+}
+
+:global(.assistant-work-log-popper.el-select__popper),
+:global(.assistant-work-log-popper.el-picker__popper) {
+  z-index: 4300 !important;
+}
+
+:global(.assistant-work-log-message) {
+  z-index: 4600 !important;
+}
+
+.assistant-work-log {
+  display: grid;
+  gap: 14px;
+}
+
+.assistant-work-log__easy-form :deep(.el-form) {
+  width: 100%;
+}
+
+.assistant-work-log__easy-form :deep(.el-row) {
+  row-gap: 2px;
+}
+
+.assistant-work-log__field {
+  width: 100%;
+}
+
+.assistant-work-log__result {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.assistant-work-log__result-head,
+.assistant-work-log__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.assistant-work-log__result-head {
+  justify-content: space-between;
 }
 
 .assistant-settings-group {

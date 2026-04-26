@@ -468,6 +468,7 @@ class ProjectChatReq(BaseModel):
     route_title: str = ""
     chat_mode: str = "system"
     chat_surface: str = "main-chat"
+    source_context: dict[str, Any] = {}
     local_connector_id: str = ""
     connector_workspace_path: str = ""
     connector_sandbox_mode: str | None = None
@@ -502,10 +503,39 @@ class ProjectChatReq(BaseModel):
     task_tree_auto_generate: bool | None = None
 
 
+class ProjectChatSessionCreateReq(BaseModel):
+    title: str = ""
+    source_type: str = ""
+    platform: str = ""
+    connector_id: str = ""
+    external_chat_id: str = ""
+    external_chat_name: str = ""
+    group_name: str = ""
+    thread_key: str = ""
+    source_context: dict[str, Any] = {}
+
+
+class ProjectChatSessionUpdateReq(BaseModel):
+    title: str | None = None
+    source_type: str = ""
+    platform: str = ""
+    connector_id: str = ""
+    external_chat_id: str = ""
+    external_chat_name: str = ""
+    group_name: str = ""
+    thread_key: str = ""
+    source_context: dict[str, Any] | None = None
+
+
 class ProjectChatHistoryTruncateReq(BaseModel):
     chat_session_id: str = ""
     message_id: str = ""
     system_prompt: str | None = None
+
+
+class ProjectChatRuntimeSnapshotUpdateReq(BaseModel):
+    chat_session_id: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProjectChatSettingsUpdateReq(BaseModel):
@@ -581,6 +611,10 @@ class WorkspaceFilePickReq(BaseModel):
     title: str = "选择文件"
 
 
+class ExternalUrlOpenReq(BaseModel):
+    url: str = ""
+
+
 class ProjectAiEntryFileUpdateReq(BaseModel):
     ai_entry_file: str = ""
 
@@ -621,6 +655,11 @@ class LocalConnectorLlmSharingUpdateReq(BaseModel):
     llm_shared_with_roles: list[str] = []
 
 
+class CliPluginInstallReq(BaseModel):
+    plugin_id: str
+    timeout_sec: int = 1800
+
+
 class SystemConfigUpdateReq(BaseModel):
     enable_project_manual_generation: bool | None = None
     enable_employee_manual_generation: bool | None = None
@@ -653,6 +692,8 @@ class SystemConfigUpdateReq(BaseModel):
     global_assistant_transcription_prompt: str | None = None
     global_assistant_wake_phrase: str | None = None
     global_assistant_idle_timeout_sec: int | None = None
+    bot_platform_connectors: list[dict[str, Any]] | None = None
+    feishu_bot_long_connection_worker_enabled: bool | None = None
     public_contact_channels: list[dict[str, Any]] | None = None
     query_mcp_public_base_url: str | None = None
     query_mcp_clarity_confirm_threshold: int | None = None
@@ -665,8 +706,39 @@ class SystemConfigUpdateReq(BaseModel):
     mcp_config: dict[str, Any] | None = None
 
 
+class BotConnectorCollectionReq(BaseModel):
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class GlobalAssistantSpeechReq(BaseModel):
     text: str = Field(default="", max_length=4000)
+
+
+class GlobalAssistantTaskReq(BaseModel):
+    id: str = ""
+    title: str = ""
+    description: str = ""
+    status: Literal["todo", "doing", "done"] = "todo"
+    source: str = "manual"
+    task_type: str = "generic"
+    listen_enabled: bool = True
+    trigger_phrases: list[str] = Field(default_factory=list)
+    triggers: list[dict[str, Any]] = Field(default_factory=list)
+    actions: list[dict[str, Any]] = Field(default_factory=list)
+    next_run_at: str = ""
+
+
+class GlobalAssistantTaskUpdateReq(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    status: Literal["todo", "doing", "done"] | None = None
+    source: str | None = None
+    task_type: str | None = None
+    listen_enabled: bool | None = None
+    trigger_phrases: list[str] | None = None
+    triggers: list[dict[str, Any]] | None = None
+    actions: list[dict[str, Any]] | None = None
+    next_run_at: str | None = None
 
 
 class ReviewReq(BaseModel):

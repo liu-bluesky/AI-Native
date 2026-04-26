@@ -185,7 +185,7 @@
               <el-table-column prop="title" label="规则标题" min-width="280" show-overflow-tooltip />
               <el-table-column prop="domain" label="领域" width="160" show-overflow-tooltip />
               <el-table-column prop="id" label="规则 ID" min-width="150" show-overflow-tooltip />
-              <el-table-column label="操作" width="78" fixed="right">
+              <el-table-column label="操作" min-width="78" fixed="right" class-name="table-action-column">
                 <template #default="{ row }">
                   <el-button text type="danger" @click="removeSelectedRule(row.id)">移除</el-button>
                 </template>

@@ -15,6 +15,7 @@ def _build_project_chat_task_tree_test_client(tmp_path, monkeypatch, auth_payloa
     core_config._file_env_values.cache_clear()
     for proxy_name in (
         "role_store",
+        "bot_connector_store",
         "system_config_store",
         "project_store",
         "project_chat_store",

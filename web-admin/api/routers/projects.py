@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import io
 import json
 import mimetypes
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -20,9 +22,9 @@ from dataclasses import asdict, replace
 from collections.abc import AsyncIterator
 from tempfile import NamedTemporaryFile
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -35,7 +37,7 @@ from core.redis_client import get_redis_client
 from core.auth import decode_token
 from core.config import get_api_data_dir, get_project_root, get_settings
 from core.redis_client import get_redis_client
-from core.deps import employee_store, external_mcp_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_store, project_chat_task_store, project_experience_summary_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_session_store
+from core.deps import employee_store, external_mcp_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_runtime_store, project_chat_store, project_chat_task_store, project_experience_summary_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_session_store
 from services.feedback_service import get_feedback_service
 from services.global_assistant_service import (
     build_global_assistant_builtin_tools,
@@ -51,7 +53,19 @@ from services.llm_chat_parameter_catalog import (
     normalize_chat_parameter_value,
 )
 from services.llm_model_type_catalog import DEFAULT_MODEL_TYPE
+from services.project_host_command_service import (
+    PROJECT_HOST_RUN_COMMAND_TOOL_NAME,
+    build_project_host_command_tools,
+    run_project_host_command,
+)
 from services.project_voice_service import get_project_voice_service
+from services.system_speech_service import enqueue_system_speech
+from services.global_assistant_task_service import (
+    delete_global_assistant_task,
+    list_global_assistant_tasks,
+    update_global_assistant_task,
+    upsert_global_assistant_task,
+)
 from services.project_chat_task_tree import (
     audit_task_tree_round,
     archive_task_tree,
@@ -90,7 +104,12 @@ from services.runtime.tool_registry import (
     summarize_effective_tools as summarize_effective_tools_via_registry,
 )
 from services.runtime.runtime_resolver import build_chat_runtime_context
+from services.project_chat_realtime_service import (
+    register_project_chat_ws,
+    unregister_project_chat_ws,
+)
 from services.task_tree_guard.task_tree_evolution import build_task_tree_evolution_summary
+from services.bot_connector_service import list_bot_connectors
 from models.requests import (
     ProjectAiEntryFileUpdateReq,
     ProjectExperienceRuleConsolidateReq,
@@ -100,6 +119,9 @@ from models.requests import (
     ProjectRequirementRecordBatchDeleteReq,
     ProjectChatHistoryTruncateReq,
     ProjectChatReq,
+    ProjectChatSessionCreateReq,
+    ProjectChatSessionUpdateReq,
+    ProjectChatRuntimeSnapshotUpdateReq,
     ProjectChatSettingsUpdateReq,
     ProjectChatTaskNodeUpdateReq,
     ProjectChatTaskTreeGenerateReq,
@@ -124,6 +146,9 @@ from models.requests import (
     ProjectUserAddReq,
     ProjectUpdateReq,
     GlobalAssistantSpeechReq,
+    GlobalAssistantTaskReq,
+    GlobalAssistantTaskUpdateReq,
+    ExternalUrlOpenReq,
     WorkspaceDirectoryPickReq,
     WorkspaceFilePickReq,
 )
@@ -3178,6 +3203,8 @@ def _resolve_chat_llm_service_runtime(
 
 def _project_tool_display_name(tool_name: str) -> str:
     normalized = str(tool_name or "").strip()
+    if normalized == PROJECT_HOST_RUN_COMMAND_TOOL_NAME:
+        return "当前电脑执行命令"
     if normalized == "query_project_rules":
         return "查询项目规则"
     if normalized == "query_project_members":
@@ -3200,6 +3227,8 @@ def _project_tool_display_name(tool_name: str) -> str:
 def _build_project_related_mcp_modules(project_id: str) -> list[dict[str, Any]]:
     from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
 
+    project = project_store.get(project_id)
+    project_workspace_path = str(getattr(project, "workspace_path", "") or "").strip()
     candidates = _project_chat_employee_candidates(project_id)
     employee_name_map = {
         str(item.get("id") or ""): str(item.get("name") or item.get("id") or "")
@@ -3207,7 +3236,10 @@ def _build_project_related_mcp_modules(project_id: str) -> list[dict[str, Any]]:
         if str(item.get("id") or "")
     }
     modules: list[dict[str, Any]] = []
-    for tool in list_project_proxy_tools_runtime(project_id, ""):
+    available_tools = list_project_proxy_tools_runtime(project_id, "") + build_project_host_command_tools(
+        project_workspace_path
+    )
+    for tool in available_tools:
         tool_name = str(tool.get("tool_name") or "").strip()
         if not tool_name:
             continue
@@ -3398,11 +3430,11 @@ def _collect_runtime_tools(
     enabled_tool_names: list[str] | None,
     explicit_tool_filter: bool,
     tool_priority: list[str] | None,
+    project_workspace_path: str = "",
 ) -> list[dict[str, Any]]:
     from services.dynamic_mcp_runtime import list_project_external_tools_runtime, list_project_proxy_tools_runtime
 
-    _ = explicit_tool_filter
-    return collect_project_runtime_tools_via_registry(
+    project_tools = collect_project_runtime_tools_via_registry(
         project_id,
         selected_employee_ids=selected_employee_ids,
         enabled_tool_names=enabled_tool_names,
@@ -3413,6 +3445,13 @@ def _collect_runtime_tools(
         ),
         list_external_tools=list_project_external_tools_runtime,
     )
+    host_tools = build_project_host_command_tools(project_workspace_path)
+    host_tools = _filter_project_tools_by_names(
+        host_tools,
+        enabled_tool_names,
+        explicit_filter=explicit_tool_filter,
+    )
+    return _sort_tools_by_priority(project_tools + host_tools, tool_priority)
 
 
 def _summarize_effective_tools(
@@ -3600,6 +3639,160 @@ def _build_multi_employee_collaboration_prompt(
     return "\n" + "\n".join(lines)
 
 
+def _build_url_fetch_prompt(
+    user_message: str,
+    tools: list[dict[str, Any]] | None,
+) -> str:
+    message = str(user_message or "").strip()
+    if not message:
+        return ""
+    available_tool_names = {
+        str(item.get("tool_name") or "").strip()
+        for item in (tools or [])
+        if isinstance(item, dict)
+    }
+    if "project_host_run_command" not in available_tool_names:
+        return ""
+    matched_urls = re.findall(r"https?://[^\s)>\"']+", message, flags=re.IGNORECASE)
+    normalized_urls: list[str] = []
+    seen: set[str] = set()
+    for item in matched_urls[:5]:
+        value = str(item or "").strip().rstrip(".,;:!?")
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized_urls.append(value)
+    if not normalized_urls:
+        return ""
+    return (
+        "当前用户消息包含外部链接。不要把链接文本当成你已经读取过的文档内容，也不要仅因为当前没有专用网页工具就停止执行。\n"
+        "处理要求：\n"
+        "1. 先调用 `project_host_run_command` 抓取链接正文，例如使用 `curl -L --fail --silent --show-error '<URL>'`。\n"
+        "2. 基于抓取到的正文再提取安装命令、参数或步骤；不要把猜测写成事实。\n"
+        "3. 若正文里给出可执行命令，并且用户意图是安装、配置、运行或排查，就继续调用 `project_host_run_command` 执行，不要只返回说明。\n"
+        "4. 若命令会出现交互确认，优先补成非交互形式再执行。\n"
+        "本轮待优先读取的 URL：\n- "
+        + "\n- ".join(normalized_urls)
+    )
+
+
+def _build_host_command_execution_prompt(
+    user_message: str,
+    tools: list[dict[str, Any]] | None,
+) -> str:
+    message = str(user_message or "").strip()
+    if not message:
+        return ""
+    available_tool_names = {
+        str(item.get("tool_name") or "").strip()
+        for item in (tools or [])
+        if isinstance(item, dict)
+    }
+    if PROJECT_HOST_RUN_COMMAND_TOOL_NAME not in available_tool_names:
+        return ""
+    return (
+        "当前可用 `project_host_run_command`，它会在这台电脑上直接执行命令。\n"
+        "执行要求：\n"
+        "1. 只要用户意图是让你在当前电脑安装、配置、运行、登录验证、查看状态、列出数据、读取 CLI 输出或返回实际执行结果，优先直接执行，不要只返回命令教程。\n"
+        "2. 对只读查询或低风险命令（如 version、status、list、get、cat、ls、pwd）默认直接执行，并把关键输出写回正文。\n"
+        "3. 对安装、初始化、登录、排障这类命令，如果用户已经明确要求你处理，也继续直接执行；除非确实被浏览器授权、人工确认、账号验证码或权限限制阻塞。\n"
+        "4. 只有在真实阻塞存在时，才告诉用户需要他做什么；不要因为可以口头说明就提前停在“你现在执行下面命令”。\n"
+        "5. 回答时要给出本轮实际执行过的命令、关键 stdout/stderr、当前状态和下一步，而不是仅给建议。"
+    )
+
+
+def _extract_project_chat_http_urls(user_message: str, *, max_urls: int = 3) -> list[str]:
+    message = str(user_message or "").strip()
+    if not message:
+        return []
+    matched_urls = re.findall(r"https?://[^\s)>\"']+", message, flags=re.IGNORECASE)
+    normalized_urls: list[str] = []
+    seen: set[str] = set()
+    for item in matched_urls:
+        value = str(item or "").strip().rstrip(".,;:!?")
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized_urls.append(value)
+        if len(normalized_urls) >= max(1, max_urls):
+            break
+    return normalized_urls
+
+
+def _truncate_project_chat_url_content(value: str, *, max_chars: int = 6000) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    half = max(120, max_chars // 2)
+    omitted = len(text) - half * 2
+    return f"{text[:half]}\n... [truncated {omitted} chars] ...\n{text[-half:]}"
+
+
+def _build_project_chat_url_fetch_command(url: str) -> str:
+    return f"curl -L --fail --silent --show-error {shlex.quote(str(url or '').strip())}"
+
+
+async def _maybe_enrich_project_chat_message_with_url_content(
+    user_message: str,
+    tools: list[dict[str, Any]] | None,
+    *,
+    host_workspace_path: str = "",
+) -> str:
+    message = str(user_message or "").strip()
+    if not message:
+        return message
+    available_tool_names = {
+        str(item.get("tool_name") or "").strip()
+        for item in (tools or [])
+        if isinstance(item, dict)
+    }
+    if PROJECT_HOST_RUN_COMMAND_TOOL_NAME not in available_tool_names:
+        return message
+    urls = _extract_project_chat_http_urls(message)
+    if not urls:
+        return message
+
+    fetched_sections: list[str] = []
+    failed_sections: list[str] = []
+    for url in urls:
+        result = await run_in_threadpool(
+            run_project_host_command,
+            workspace_path=str(host_workspace_path or "").strip(),
+            command=_build_project_chat_url_fetch_command(url),
+            cwd="",
+            timeout_sec=25,
+            max_output_chars=24000,
+        )
+        stdout = _truncate_project_chat_url_content(str((result or {}).get("stdout") or ""))
+        stderr = _truncate_project_chat_url_content(str((result or {}).get("stderr") or ""))
+        if bool((result or {}).get("ok")) and stdout:
+            fetched_sections.append(f"[URL] {url}\n{stdout}")
+            continue
+        error_message = (
+            str((result or {}).get("error") or "").strip()
+            or stderr
+            or "抓取结果为空"
+        )
+        failed_sections.append(f"- {url}: {error_message}")
+
+    if not fetched_sections and not failed_sections:
+        return message
+
+    sections = [message]
+    if fetched_sections:
+        sections.append(
+            "【系统已自动抓取的外部链接正文】\n" + "\n\n".join(fetched_sections)
+        )
+    if failed_sections:
+        sections.append(
+            "【系统自动抓取失败】\n" + "\n".join(failed_sections)
+        )
+    sections.append(
+        "请优先基于以上自动抓取内容继续执行。若正文中包含安装、配置、运行或排障命令，继续实际执行，不要只返回说明。"
+    )
+    return "\n\n".join(str(item).strip() for item in sections if str(item).strip())
+
+
 def _build_project_chat_messages(
     project: ProjectConfig,
     user_message: str,
@@ -3615,6 +3808,7 @@ def _build_project_chat_messages(
     workspace_path: str = "",
     skill_resource_directory: str = "",
     employee_coordination_mode: str = "auto",
+    source_context: dict[str, str] | None = None,
     task_tree_prompt: str = "",
 ) -> list[dict[str, Any]]:
     workspace_info = ""
@@ -3645,6 +3839,11 @@ def _build_project_chat_messages(
 
     tool_names = [t.get("tool_name", "") for t in (tools or [])] if tools else []
     tool_list_text = f"可用工具({len(tool_names)}个): {', '.join(tool_names)}" if tool_names else "当前无可用工具"
+    url_fetch_prompt = _build_url_fetch_prompt(user_message, tools)
+    host_command_execution_prompt = _build_host_command_execution_prompt(
+        user_message,
+        tools,
+    )
     workflow_skill_bindings = _resolve_project_workflow_skill_bindings(project)
     workflow_skill_prompt = ""
     if workflow_skill_bindings:
@@ -3684,16 +3883,20 @@ def _build_project_chat_messages(
         if coordination_mode == "auto"
         else ""
     )
+    source_context_prompt = _build_project_chat_source_context_prompt(source_context or {})
     system_prompt = join_prompt_sections(
         base_prompt,
         workspace_info,
         ai_entry_info,
         tool_list_text,
+        url_fetch_prompt,
+        host_command_execution_prompt,
         order_hint,
         style_hint,
         skill_resource_prompt,
         workflow_skill_prompt,
         multi_employee_prompt,
+        source_context_prompt,
         task_tree_prompt,
     )
     project_ui_rule_bindings = _resolve_project_ui_rule_bindings(project, include_content=True)
@@ -4012,6 +4215,255 @@ def _build_project_chat_done_payload(
         project_id=project_id,
         task_tree_payload=task_tree_payload,
     )
+
+
+def _format_project_chat_runtime_failure(exc: Exception) -> tuple[str, str, str]:
+    raw_message = str(exc or "").strip() or "未知错误"
+    normalized = raw_message.lower()
+    if "http 502" in normalized and (
+        "llm stream request failed" in normalized
+        or "llm request failed" in normalized
+        or "bad gateway" in normalized
+    ):
+        summary = "上游模型服务暂时不可用（HTTP 502）"
+        content = (
+            "上游模型服务暂时不可用（HTTP 502 Bad Gateway），这轮对话已结束，你可以直接重试。"
+            "\n如果持续出现，请检查当前 provider、base_url 和模型配置。"
+            f"\n原始错误：{raw_message}"
+        )
+        return summary, content, raw_message
+    if "llm stream request failed" in normalized or "llm request failed" in normalized:
+        summary = "模型服务请求失败"
+        content = (
+            "模型服务请求失败，这轮对话已结束，你可以直接重试。"
+            f"\n原始错误：{raw_message}"
+        )
+        return summary, content, raw_message
+    summary = "对话执行失败"
+    content = f"对话失败：{raw_message}"
+    return summary, content, raw_message
+
+
+def _build_project_chat_failure_done_payload(
+    *,
+    exc: Exception,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    provider_id: str = "",
+    model_name: str = "",
+) -> tuple[dict[str, Any], str]:
+    summary, content, raw_message = _format_project_chat_runtime_failure(exc)
+    payload = _build_project_chat_done_payload(
+        content=content,
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        provider_id=provider_id,
+        model_name=model_name,
+    )
+    payload["completed_reason"] = "runtime_error"
+    payload["guard_reason"] = "runtime_error"
+    payload["guard_message"] = summary
+    payload["error_message"] = raw_message
+    return payload, content
+
+
+def _project_chat_tool_progress_label(payload: dict[str, Any]) -> str:
+    tool_name = str(payload.get("tool_name") or "工具").strip() or "工具"
+    tool_index = int(payload.get("tool_index") or 0)
+    tool_count = int(payload.get("tool_count") or 0)
+    if tool_index > 0 and tool_count > 0:
+        return f"{tool_name} ({tool_index}/{tool_count})"
+    return tool_name
+
+
+def _summarize_project_chat_completion(payload: dict[str, Any]) -> tuple[str, str]:
+    guard_reason = str(
+        payload.get("guard_reason") or payload.get("completed_reason") or ""
+    ).strip()
+    guard_message = str(payload.get("guard_message") or "").strip()
+    if guard_message:
+        return "blocked", guard_message
+    normalized_reason = guard_reason.lower()
+    if not normalized_reason or normalized_reason in {"completed", "done"}:
+        return "completed", "本轮执行已结束"
+    summary_map = {
+        "cancelled": "执行已取消",
+        "max_loops": "达到最大处理轮次",
+        "tool_budget_exceeded": "达到工具调用上限",
+        "repeated_tool_signature": "重复工具调用已被拦截",
+        "tool_only_loops": "连续工具循环已被拦截",
+    }
+    return "blocked", summary_map.get(normalized_reason, "本轮执行已结束")
+
+
+def _build_project_chat_operation_event(
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    event_type = str(payload.get("type") or "").strip().lower()
+    if not event_type or event_type == "operation_event":
+        return None
+
+    request_id = str(payload.get("request_id") or "").strip()
+    chat_session_id = str(payload.get("chat_session_id") or "").strip()
+
+    operation: dict[str, Any] | None = None
+    if event_type == "start":
+        operation = {
+            "operation_id": f"request:{request_id or chat_session_id or 'active'}",
+            "kind": "request",
+            "title": "本轮执行",
+            "summary": "已开始，正在处理中",
+            "detail": "",
+            "phase": "running",
+        }
+    elif event_type == "tool_start":
+        operation = {
+            "operation_id": (
+                f"tool:{str(payload.get('tool_name') or 'tool').strip() or 'tool'}:"
+                f"{int(payload.get('tool_index') or 0)}"
+            ),
+            "kind": "tool",
+            "title": _project_chat_tool_progress_label(payload),
+            "summary": "正在调用工具",
+            "detail": str(payload.get("command") or payload.get("arguments_preview") or "").strip(),
+            "phase": "running",
+        }
+    elif event_type == "tool_result":
+        blocked = bool(payload.get("blocked"))
+        error_text = str(payload.get("error") or "").strip()
+        detail = error_text or str(
+            payload.get("stdout_preview")
+            or payload.get("output_preview")
+            or payload.get("stderr_preview")
+            or ""
+        ).strip()
+        phase = "blocked" if blocked else "failed" if error_text else "completed"
+        summary = (
+            "工具执行受阻"
+            if blocked
+            else "工具执行失败"
+            if error_text
+            else "工具执行完成"
+        )
+        operation = {
+            "operation_id": (
+                f"tool:{str(payload.get('tool_name') or 'tool').strip() or 'tool'}:"
+                f"{int(payload.get('tool_index') or 0)}"
+            ),
+            "kind": "tool",
+            "title": _project_chat_tool_progress_label(payload),
+            "summary": summary,
+            "detail": detail,
+            "phase": phase,
+        }
+    elif event_type == "approval_required":
+        operation = {
+            "operation_id": f"approval:{str(payload.get('approval_id') or request_id or chat_session_id or 'active').strip()}",
+            "kind": "approval",
+            "title": str(payload.get("title") or "操作审批").strip() or "操作审批",
+            "summary": "等待你确认后继续",
+            "detail": str(payload.get("message") or "").strip(),
+            "phase": "waiting_user",
+            "action_type": "approve",
+        }
+    elif event_type == "approval_resolved":
+        approved = bool(payload.get("approved"))
+        operation = {
+            "operation_id": f"approval:{str(payload.get('approval_id') or request_id or chat_session_id or 'active').strip()}",
+            "kind": "approval",
+            "title": str(payload.get("title") or "操作审批").strip() or "操作审批",
+            "summary": "已批准，继续执行" if approved else "已拒绝，本次取消",
+            "detail": "",
+            "phase": "completed" if approved else "blocked",
+        }
+    elif event_type == "terminal_mirror_started":
+        session_key = str(payload.get("session_id") or chat_session_id or "active").strip()
+        workspace_path = str(payload.get("workspace_path") or "").strip()
+        command = str(payload.get("command") or "").strip()
+        operation = {
+            "operation_id": f"terminal:{session_key}",
+            "kind": "terminal",
+            "title": "项目终端",
+            "summary": "已连接并接管后续交互",
+            "detail": " · ".join(
+                part for part in [workspace_path and f"cwd={workspace_path}", command and f"cmd={command}"] if part
+            ),
+            "phase": "running",
+            "action_type": "enter_text",
+        }
+    elif event_type == "terminal_mirror_stopped":
+        exit_code = payload.get("exit_code")
+        operation = {
+            "operation_id": f"terminal:{str(payload.get('session_id') or chat_session_id or 'active').strip()}",
+            "kind": "terminal",
+            "title": "项目终端",
+            "summary": (
+                "终端会话已停止"
+                if exit_code is None
+                else f"终端已结束 · exit={exit_code}"
+            ),
+            "detail": "",
+            "phase": (
+                "completed"
+                if exit_code is None or int(exit_code or 0) == 0
+                else "failed"
+            ),
+        }
+    elif event_type == "terminal_approval_required":
+        operation = {
+            "operation_id": f"approval:{str(payload.get('key') or chat_session_id or 'terminal').strip()}",
+            "kind": "approval",
+            "title": str(payload.get("title") or "终端审批").strip() or "终端审批",
+            "summary": "等待你确认后继续",
+            "detail": str(payload.get("description") or payload.get("message") or "").strip(),
+            "phase": "waiting_user",
+            "action_type": "approve",
+        }
+    elif event_type == "auto_continue":
+        operation = {
+            "operation_id": f"request:{request_id or chat_session_id or 'active'}",
+            "kind": "request",
+            "title": "本轮执行",
+            "summary": "系统已自动继续执行",
+            "detail": str(payload.get("message") or "").strip(),
+            "phase": "running",
+        }
+    elif event_type == "done":
+        phase, summary = _summarize_project_chat_completion(payload)
+        operation = {
+            "operation_id": f"request:{request_id or chat_session_id or 'active'}",
+            "kind": "request",
+            "title": "本轮执行",
+            "summary": summary,
+            "detail": str(payload.get("content") or "").strip(),
+            "phase": phase,
+        }
+    elif event_type == "error":
+        operation = {
+            "operation_id": f"request:{request_id or chat_session_id or 'active'}",
+            "kind": "request",
+            "title": "本轮执行",
+            "summary": "执行失败",
+            "detail": str(payload.get("message") or "未知错误").strip(),
+            "phase": "failed",
+        }
+
+    if not operation:
+        return None
+
+    result = {
+        "type": "operation_event",
+        **operation,
+    }
+    if request_id:
+        result["request_id"] = request_id
+    if chat_session_id:
+        result["chat_session_id"] = chat_session_id
+    return result
 
 
 def _build_global_chat_messages(
@@ -5574,6 +6026,211 @@ def _serialize_project_user_member(member: ProjectUserMember) -> dict[str, Any]:
     }
 
 
+_PROJECT_CHAT_SOURCE_TYPES = {"group_message", "private_message", "manual_ai_chat", "group_analysis"}
+_PROJECT_CHAT_PLATFORM_ALIASES = {
+    "lark": "feishu",
+    "飞书": "feishu",
+    "微信": "wechat",
+    "企微": "wechat",
+    "企业微信": "wechat",
+}
+_PROJECT_CHAT_PLATFORM_LABELS = {
+    "feishu": "飞书",
+    "wechat": "微信/企微",
+    "qq": "QQ",
+}
+
+
+def _normalize_project_chat_context_text(value: Any, limit: int = 160) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _normalize_project_chat_platform(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    normalized = _PROJECT_CHAT_PLATFORM_ALIASES.get(normalized, normalized)
+    return normalized[:40]
+
+
+def _normalize_project_chat_source_type(value: Any, fallback: str = "") -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in _PROJECT_CHAT_SOURCE_TYPES:
+        return normalized
+    fallback_normalized = str(fallback or "").strip().lower()
+    return fallback_normalized if fallback_normalized in _PROJECT_CHAT_SOURCE_TYPES else ""
+
+
+def _project_chat_platform_label(platform: Any) -> str:
+    normalized = _normalize_project_chat_platform(platform)
+    return _PROJECT_CHAT_PLATFORM_LABELS.get(normalized, normalized or "外部平台")
+
+
+def _project_chat_source_context_from_raw(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    context = dict(raw.get("source_context") or {}) if isinstance(raw.get("source_context"), dict) else {}
+    for key in (
+        "source_type",
+        "platform",
+        "connector_id",
+        "external_chat_id",
+        "external_chat_name",
+        "group_name",
+        "external_message_id",
+        "sender_id",
+        "sender_name",
+        "thread_key",
+    ):
+        if key in raw and raw.get(key) not in (None, ""):
+            context[key] = raw.get(key)
+    return context
+
+
+def _resolve_project_chat_connector_id(project_id: str, platform: str, explicit_connector_id: str = "") -> str:
+    normalized_explicit = _normalize_project_chat_context_text(explicit_connector_id, 120)
+    if normalized_explicit:
+        return normalized_explicit
+    normalized_platform = _normalize_project_chat_platform(platform)
+    if not normalized_platform:
+        return ""
+    candidates: list[dict[str, Any]] = []
+    for item in list_bot_connectors():
+        if _normalize_project_chat_platform(item.get("platform")) != normalized_platform:
+            continue
+        if not bool(item.get("enabled", True)):
+            continue
+        candidates.append(dict(item))
+    candidates.sort(key=lambda item: 0 if str(item.get("project_id") or "").strip() == str(project_id or "").strip() else 1)
+    return _normalize_project_chat_context_text((candidates[0] if candidates else {}).get("id"), 120)
+
+
+def _build_project_chat_thread_key(context: dict[str, str]) -> str:
+    explicit = _normalize_project_chat_context_text(context.get("thread_key"), 240)
+    if explicit:
+        return explicit
+    platform = _normalize_project_chat_platform(context.get("platform"))
+    connector_id = _normalize_project_chat_context_text(context.get("connector_id"), 120)
+    external_chat_id = _normalize_project_chat_context_text(context.get("external_chat_id"), 200)
+    external_chat_name = _normalize_project_chat_context_text(context.get("external_chat_name"), 200)
+    if platform and connector_id and external_chat_id:
+        return f"{platform}:{connector_id}:chat:{external_chat_id}"[:240]
+    seed = "|".join([platform, connector_id, external_chat_name])
+    if not seed.strip("|"):
+        return ""
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+    return f"manual:{platform or 'platform'}:{connector_id or 'connector'}:{digest}"[:240]
+
+
+def _normalize_project_chat_source_context(raw: Any, *, project_id: str = "", default_source_type: str = "") -> dict[str, str]:
+    context = _project_chat_source_context_from_raw(raw)
+    has_context_hint = any(
+        str(context.get(key) or "").strip()
+        for key in (
+            "source_type",
+            "platform",
+            "connector_id",
+            "external_chat_id",
+            "external_chat_name",
+            "group_name",
+            "external_message_id",
+            "sender_id",
+            "sender_name",
+            "thread_key",
+        )
+    )
+    if not has_context_hint:
+        return {}
+    platform = _normalize_project_chat_platform(context.get("platform"))
+    external_chat_name = _normalize_project_chat_context_text(
+        context.get("external_chat_name") or context.get("group_name"),
+        200,
+    )
+    external_chat_id = _normalize_project_chat_context_text(context.get("external_chat_id"), 200)
+    connector_id = _resolve_project_chat_connector_id(
+        project_id,
+        platform,
+        _normalize_project_chat_context_text(context.get("connector_id"), 120),
+    )
+    source_type = _normalize_project_chat_source_type(context.get("source_type"), default_source_type)
+    if not any([platform, connector_id, external_chat_id, external_chat_name, source_type]):
+        return {}
+    normalized = {
+        "source_type": source_type or "manual_ai_chat",
+        "platform": platform,
+        "connector_id": connector_id,
+        "external_chat_id": external_chat_id,
+        "external_chat_name": external_chat_name,
+        "external_message_id": _normalize_project_chat_context_text(context.get("external_message_id"), 200),
+        "sender_id": _normalize_project_chat_context_text(context.get("sender_id"), 200),
+        "sender_name": _normalize_project_chat_context_text(context.get("sender_name"), 120),
+        "thread_key": _normalize_project_chat_context_text(context.get("thread_key"), 240),
+    }
+    normalized["thread_key"] = _build_project_chat_thread_key(normalized)
+    return {key: value for key, value in normalized.items() if value}
+
+
+def _project_chat_session_context(item: Any) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in {
+            "source_type": _normalize_project_chat_source_type(getattr(item, "source_type", "")),
+            "platform": _normalize_project_chat_platform(getattr(item, "platform", "")),
+            "connector_id": _normalize_project_chat_context_text(getattr(item, "connector_id", ""), 120),
+            "external_chat_id": _normalize_project_chat_context_text(getattr(item, "external_chat_id", ""), 200),
+            "external_chat_name": _normalize_project_chat_context_text(getattr(item, "external_chat_name", ""), 200),
+            "thread_key": _normalize_project_chat_context_text(getattr(item, "thread_key", ""), 240),
+        }.items()
+        if value
+    }
+
+
+def _resolve_project_chat_request_source_context(
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    req_context: Any,
+) -> dict[str, str]:
+    explicit = _normalize_project_chat_source_context(
+        req_context,
+        project_id=project_id,
+        default_source_type="manual_ai_chat",
+    )
+    if explicit:
+        return explicit
+    session = project_chat_store.get_session(project_id, username, chat_session_id)
+    return _project_chat_session_context(session) if session is not None else {}
+
+
+def _build_project_chat_source_context_prompt(context: dict[str, str]) -> str:
+    if not context:
+        return ""
+    platform = _normalize_project_chat_platform(context.get("platform"))
+    lines = [
+        "当前 AI 对话已关联一个外部会话上下文。",
+        f"- platform: {_project_chat_platform_label(platform)} ({platform or '-'})",
+        f"- connector_id: {context.get('connector_id') or '-'}",
+        f"- external_chat_id: {context.get('external_chat_id') or '未解析'}",
+        f"- external_chat_name: {context.get('external_chat_name') or '-'}",
+        f"- source_type: {context.get('source_type') or '-'}",
+        f"- thread_key: {context.get('thread_key') or '-'}",
+        "当用户说“这个群”“群里”“该群上下文”时，默认指向上述外部会话；不要把不同群或不同 thread_key 的内容混在一起。",
+    ]
+    if context.get("external_chat_name") and not context.get("external_chat_id"):
+        lines.append("当前只有用户提供的群名称，尚未拿到平台稳定群 ID；涉及精确同步、查历史消息或回群发送时，需要先通过机器人事件或平台 API 解析稳定 ID。")
+    return "\n".join(lines)
+
+
+def _build_project_chat_session_title(title: str, context: dict[str, str]) -> str:
+    explicit = str(title or "").strip()
+    if explicit:
+        return explicit[:80]
+    external_chat_name = str(context.get("external_chat_name") or "").strip()
+    if external_chat_name:
+        return f"{_project_chat_platform_label(context.get('platform'))}群：{external_chat_name}"[:80]
+    if context.get("platform"):
+        return f"{_project_chat_platform_label(context.get('platform'))}群对话"
+    return "新对话"
+
+
 def _append_chat_record(
     *,
     project_id: str,
@@ -5586,12 +6243,13 @@ def _append_chat_record(
     attachments: list[str] | None = None,
     images: list[str] | None = None,
     videos: list[str] | None = None,
-) -> None:
+    source_context: dict[str, Any] | None = None,
+) -> ProjectChatMessage | None:
     text = str(content or "").strip()
     if not text:
-        return
+        return None
     try:
-        project_chat_store.append_message(
+        return project_chat_store.append_message(
             ProjectChatMessage(
                 id=str(message_id or "").strip(),
                 project_id=project_id,
@@ -5600,13 +6258,22 @@ def _append_chat_record(
                 content=text,
                 chat_session_id=str(chat_session_id or "").strip(),
                 display_mode=str(display_mode or "").strip(),
+                source_type=str((source_context or {}).get("source_type") or "").strip(),
+                platform=str((source_context or {}).get("platform") or "").strip(),
+                connector_id=str((source_context or {}).get("connector_id") or "").strip(),
+                external_chat_id=str((source_context or {}).get("external_chat_id") or "").strip(),
+                external_chat_name=str((source_context or {}).get("external_chat_name") or "").strip(),
+                external_message_id=str((source_context or {}).get("external_message_id") or "").strip(),
+                sender_id=str((source_context or {}).get("sender_id") or "").strip(),
+                sender_name=str((source_context or {}).get("sender_name") or "").strip(),
+                thread_key=str((source_context or {}).get("thread_key") or "").strip(),
                 attachments=attachments or [],
                 images=images or [],
                 videos=videos or [],
             )
         )
     except Exception:
-        pass
+        return None
 
 
 def _resolve_project_memory_target_employee_ids(
@@ -6707,6 +7374,99 @@ async def get_query_mcp_runtime(
     }
 
 
+@router.post("/chat/global/voice-output/system-speech")
+async def play_global_assistant_system_speech(
+    req: GlobalAssistantSpeechReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    text = str(req.text or "").strip()[:4000]
+    if not text:
+        raise HTTPException(400, "text is required")
+    result = await enqueue_system_speech(
+        text,
+        owner_username=_current_username(auth_payload),
+        role_ids=_current_role_ids(auth_payload),
+        source="global-assistant",
+        require_enabled=True,
+    )
+    if not bool(result.get("queued")):
+        raise HTTPException(503, str(result.get("reason") or "系统后台播报暂时不可用"))
+    return {"status": "queued", **result}
+
+
+@router.get("/chat/global/tasks")
+async def list_global_assistant_task_items(
+    auth_payload: dict = Depends(require_auth),
+    x_project_id: str | None = Header(None),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    tasks = list_global_assistant_tasks(
+        username=_current_username(auth_payload),
+        project_id=str(x_project_id or "").strip(),
+    )
+    return {"tasks": tasks}
+
+
+@router.post("/chat/global/tasks")
+async def upsert_global_assistant_task_item(
+    req: GlobalAssistantTaskReq,
+    auth_payload: dict = Depends(require_auth),
+    x_project_id: str | None = Header(None),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    description = str(req.description or req.title or "").strip()
+    if not description:
+        raise HTTPException(400, "description is required")
+    try:
+        task = upsert_global_assistant_task(
+            username=_current_username(auth_payload),
+            project_id=str(x_project_id or "").strip(),
+            task=req.model_dump(),
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"task": task}
+
+
+@router.put("/chat/global/tasks/{task_id}")
+async def update_global_assistant_task_item(
+    task_id: str,
+    req: GlobalAssistantTaskUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+    x_project_id: str | None = Header(None),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    updates = {key: value for key, value in req.model_dump().items() if value is not None}
+    try:
+        task = update_global_assistant_task(
+            username=_current_username(auth_payload),
+            project_id=str(x_project_id or "").strip(),
+            task_id=task_id,
+            updates=updates,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if task is None:
+        raise HTTPException(404, "task not found")
+    return {"task": task}
+
+
+@router.delete("/chat/global/tasks/{task_id}")
+async def delete_global_assistant_task_item(
+    task_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    deleted = delete_global_assistant_task(
+        username=_current_username(auth_payload),
+        task_id=task_id,
+    )
+    if not deleted:
+        raise HTTPException(404, "task not found")
+    return {"status": "deleted"}
+
+
 @router.post("/chat/global/voice-output/speech")
 async def generate_global_assistant_speech(
     req: GlobalAssistantSpeechReq,
@@ -7261,6 +8021,11 @@ async def ws_global_assistant_chat(websocket: WebSocket):
     async def handle_request(payload: dict):
         nonlocal active_tasks, cancel_events
         request_id = str(payload.get("request_id") or "").strip()
+        assistant_message_id = str(payload.get("assistant_message_id") or "").strip()
+        raw_chat_session_id = str(payload.get("chat_session_id") or "").strip()
+        chat_session_id = raw_chat_session_id
+        provider_id = ""
+        model_name = ""
         if str(payload.get("type") or "").strip().lower() == "ping":
             await websocket.send_json({"type": "pong", "request_id": request_id})
             return
@@ -7463,13 +8228,14 @@ async def ws_global_assistant_chat(websocket: WebSocket):
         except asyncio.CancelledError:
             pass
         except Exception as exc:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "request_id": request_id,
-                    "message": str(exc),
-                }
-            )
+            with contextlib.suppress(Exception):
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "request_id": request_id,
+                        "message": str(exc),
+                    }
+                )
         finally:
             if "conv_manager" in locals() and "session_id" in locals():
                 try:
@@ -7853,6 +8619,36 @@ def _pick_file_via_native_dialog(
     raise RuntimeError("当前服务端环境不支持原生文件选择器，或运行在无桌面界面的 headless 模式")
 
 
+def _open_external_url_via_native_app(url: str) -> None:
+    normalized = str(url or "").strip()
+    if not normalized:
+        raise ValueError("url is required")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("only http/https URLs are supported")
+
+    if sys.platform == "darwin":
+        result = subprocess.run(["open", normalized], capture_output=True, text=True)
+    elif sys.platform.startswith("win"):
+        escaped = normalized.replace("'", "''")
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", f"Start-Process '{escaped}'"],
+            capture_output=True,
+            text=True,
+        )
+    else:
+        if shutil.which("xdg-open"):
+            result = subprocess.run(["xdg-open", normalized], capture_output=True, text=True)
+        elif shutil.which("gio"):
+            result = subprocess.run(["gio", "open", normalized], capture_output=True, text=True)
+        else:
+            raise RuntimeError("当前服务端环境不支持原生浏览器打开，或运行在无桌面界面的 headless 模式")
+
+    if result.returncode != 0:
+        message = str(result.stderr or result.stdout or "").strip()
+        raise RuntimeError(message or "原生浏览器打开失败")
+
+
 def _chunk_text(content: str, chunk_size: int = 42) -> list[str]:
     text = str(content or "")
     if not text:
@@ -7890,13 +8686,14 @@ def _build_tool_probe_reply(
     *,
     explicit_filter: bool,
 ) -> str:
-    from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
-
-    tools = list_project_proxy_tools_runtime(project_id, employee_id)
-    tools = _filter_project_tools_by_names(
-        tools,
-        enabled_project_tool_names,
-        explicit_filter=explicit_filter,
+    project = project_store.get(project_id)
+    tools = _collect_runtime_tools(
+        project_id,
+        selected_employee_ids=[employee_id] if employee_id else [],
+        enabled_tool_names=enabled_project_tool_names,
+        explicit_tool_filter=explicit_filter,
+        tool_priority=[],
+        project_workspace_path=str(getattr(project, "workspace_path", "") or "").strip(),
     )
     available_names = [
         str(item.get("tool_name") or "").strip()
@@ -8076,6 +8873,24 @@ async def pick_workspace_directory(
     if not selected:
         return {"path": "", "cancelled": True, "source": "native_dialog"}
     return {"path": selected, "cancelled": False, "source": "native_dialog"}
+
+
+@router.post("/external-url/open")
+async def open_external_url(
+    req: ExternalUrlOpenReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_any_permission(auth_payload, ["menu.projects", "menu.ai.chat"])
+    normalized_url = str(req.url or "").strip()
+    if not normalized_url:
+        raise HTTPException(400, "url is required")
+    try:
+        await run_in_threadpool(_open_external_url_via_native_app, normalized_url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(501, str(exc)) from exc
+    return {"opened": True, "url": normalized_url, "source": "native_app"}
 
 
 @router.post("/workspace-file/pick")
@@ -9662,6 +10477,10 @@ async def delete_project(project_id: str, auth_payload: dict = Depends(require_a
         project_chat_store.clear_project(project_id)
     except Exception:
         pass
+    try:
+        project_chat_runtime_store.clear_project(project_id)
+    except Exception:
+        pass
     return {"status": "deleted", "project_id": project_id}
 
 
@@ -9878,10 +10697,124 @@ def _serialize_chat_session(item: Any) -> dict[str, Any]:
         "title": str(getattr(item, "title", "新对话") or "新对话"),
         "preview": str(getattr(item, "preview", "") or ""),
         "message_count": int(getattr(item, "message_count", 0) or 0),
+        "source_type": str(getattr(item, "source_type", "") or ""),
+        "platform": str(getattr(item, "platform", "") or ""),
+        "connector_id": str(getattr(item, "connector_id", "") or ""),
+        "external_chat_id": str(getattr(item, "external_chat_id", "") or ""),
+        "external_chat_name": str(getattr(item, "external_chat_name", "") or ""),
+        "thread_key": str(getattr(item, "thread_key", "") or ""),
+        "source_context": _project_chat_session_context(item),
         "created_at": str(getattr(item, "created_at", "") or ""),
         "updated_at": str(getattr(item, "updated_at", "") or ""),
         "last_message_at": str(getattr(item, "last_message_at", "") or ""),
     }
+
+
+def _project_chat_realtime_session_payload(
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+) -> dict[str, Any] | None:
+    session = project_chat_store.get_session(
+        str(project_id or "").strip(),
+        str(username or "").strip(),
+        str(chat_session_id or "").strip(),
+    )
+    if session is None:
+        return None
+    return _serialize_chat_session(session)
+
+
+async def publish_project_chat_record_realtime(
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    message: ProjectChatMessage | dict[str, Any] | None,
+) -> None:
+    if message is None:
+        return
+    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+
+    message_payload = asdict(message) if hasattr(message, "__dataclass_fields__") else dict(message)
+    normalized_session_id = str(
+        chat_session_id or message_payload.get("chat_session_id") or ""
+    ).strip()
+    await publish_project_chat_realtime_event(
+        {
+            "type": "chat_message_created",
+            "project_id": str(project_id or "").strip(),
+            "username": str(username or "").strip(),
+            "chat_session_id": normalized_session_id,
+            "message": message_payload,
+            "session": _project_chat_realtime_session_payload(
+                project_id,
+                username,
+                normalized_session_id,
+            ),
+        }
+    )
+
+
+async def publish_project_chat_session_realtime(
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    status: str = "",
+    message: str = "",
+) -> None:
+    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+
+    normalized_session_id = str(chat_session_id or "").strip()
+    await publish_project_chat_realtime_event(
+        {
+            "type": "chat_session_updated",
+            "project_id": str(project_id or "").strip(),
+            "username": str(username or "").strip(),
+            "chat_session_id": normalized_session_id,
+            "status": str(status or "").strip(),
+            "message": str(message or "").strip(),
+            "session": _project_chat_realtime_session_payload(
+                project_id,
+                username,
+                normalized_session_id,
+            ),
+        }
+    )
+
+
+async def publish_project_chat_group_status_realtime(
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    status: str,
+    message: str,
+    source_context: dict[str, Any] | None = None,
+) -> None:
+    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+
+    normalized_session_id = str(chat_session_id or "").strip()
+    await publish_project_chat_realtime_event(
+        {
+            "type": "group_chat_status",
+            "project_id": str(project_id or "").strip(),
+            "username": str(username or "").strip(),
+            "chat_session_id": normalized_session_id,
+            "status": str(status or "").strip(),
+            "message": str(message or "").strip(),
+            "source_context": _normalize_project_chat_source_context(
+                source_context or {},
+                project_id=project_id,
+            ),
+            "session": _project_chat_realtime_session_payload(
+                project_id,
+                username,
+                normalized_session_id,
+            ),
+        }
+    )
 
 
 @router.get("/{project_id}/chat/settings")
@@ -12181,6 +13114,61 @@ async def list_project_chat_history(
     return {"messages": [asdict(item) for item in records]}
 
 
+@router.get("/{project_id}/chat/runtime")
+async def get_project_chat_runtime_snapshot(
+    project_id: str,
+    chat_session_id: str = "",
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    snapshot = project_chat_runtime_store.get_snapshot(
+        project_id,
+        username,
+        str(chat_session_id or "").strip(),
+    )
+    return {"snapshot": snapshot}
+
+
+@router.put("/{project_id}/chat/runtime")
+async def update_project_chat_runtime_snapshot(
+    project_id: str,
+    req: ProjectChatRuntimeSnapshotUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    chat_session_id = str(req.chat_session_id or "").strip()
+    if not chat_session_id:
+        raise HTTPException(400, "chat_session_id is required")
+    snapshot = project_chat_runtime_store.save_snapshot(
+        project_id,
+        username,
+        chat_session_id,
+        req.payload,
+    )
+    return {"status": "saved", "snapshot": snapshot}
+
+
+@router.delete("/{project_id}/chat/runtime")
+async def delete_project_chat_runtime_snapshot(
+    project_id: str,
+    chat_session_id: str = "",
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    removed = project_chat_runtime_store.delete_snapshot(
+        project_id,
+        username,
+        str(chat_session_id or "").strip(),
+    )
+    return {"status": "cleared", "removed_count": int(removed)}
+
+
 @router.delete("/{project_id}/chat/history")
 async def clear_project_chat_history(
     project_id: str,
@@ -12192,6 +13180,11 @@ async def clear_project_chat_history(
     username = _current_username(auth_payload)
     normalized_chat_session_id = str(chat_session_id or "").strip()
     removed = project_chat_store.clear_messages(
+        project_id,
+        username,
+        normalized_chat_session_id,
+    )
+    project_chat_runtime_store.delete_snapshot(
         project_id,
         username,
         normalized_chat_session_id,
@@ -12222,6 +13215,11 @@ async def truncate_project_chat_history(
     )
     if removed <= 0:
         raise HTTPException(404, "message not found in chat session")
+    project_chat_runtime_store.delete_snapshot(
+        project_id,
+        username,
+        str(req.chat_session_id or "").strip(),
+    )
     return {"status": "truncated", "removed_count": int(removed)}
 
 
@@ -12241,13 +13239,144 @@ async def list_project_chat_sessions(
 @router.post("/{project_id}/chat/sessions")
 async def create_project_chat_session(
     project_id: str,
+    req: ProjectChatSessionCreateReq | None = Body(default=None),
     auth_payload: dict = Depends(require_auth),
 ):
     _ensure_permission(auth_payload, "menu.ai.chat")
     _ensure_project_access(project_id, auth_payload)
     username = _current_username(auth_payload)
-    item = project_chat_store.create_session(project_id, username, "新对话")
+    payload = req or ProjectChatSessionCreateReq()
+    source_context = _normalize_project_chat_source_context(
+        payload.model_dump(),
+        project_id=project_id,
+        default_source_type="manual_ai_chat",
+    )
+    title = _build_project_chat_session_title(str(payload.title or ""), source_context)
+    item = project_chat_store.create_session(
+        project_id,
+        username,
+        title,
+        source_context=source_context,
+    )
+    await publish_project_chat_session_realtime(
+        project_id=project_id,
+        username=username,
+        chat_session_id=item.id,
+        status="created",
+        message="群对话已创建" if source_context.get("platform") else "对话已创建",
+    )
     return {"session": _serialize_chat_session(item)}
+
+
+@router.patch("/{project_id}/chat/sessions/{chat_session_id}")
+async def update_project_chat_session(
+    project_id: str,
+    chat_session_id: str,
+    req: ProjectChatSessionUpdateReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    normalized_session_id = str(chat_session_id or "").strip()
+    if not normalized_session_id or normalized_session_id == "legacy":
+        raise HTTPException(400, "chat_session_id is invalid")
+    current = project_chat_store.get_session(project_id, username, normalized_session_id)
+    if current is None:
+        raise HTTPException(404, "chat session not found")
+    payload = req or ProjectChatSessionUpdateReq()
+    raw_context = payload.source_context if isinstance(payload.source_context, dict) else payload.model_dump()
+    source_context = _normalize_project_chat_source_context(
+        raw_context,
+        project_id=project_id,
+        default_source_type=str(getattr(current, "source_type", "") or "manual_ai_chat"),
+    )
+    if not source_context:
+        source_context = _project_chat_session_context(current)
+    explicit_title = payload.title if payload.title is not None else None
+    title = str(explicit_title).strip()[:80] if explicit_title is not None else None
+    item = project_chat_store.update_session(
+        project_id,
+        username,
+        normalized_session_id,
+        title=title,
+        source_context=source_context,
+    )
+    if item is None:
+        raise HTTPException(404, "chat session not found")
+    await publish_project_chat_session_realtime(
+        project_id=project_id,
+        username=username,
+        chat_session_id=item.id,
+        status="updated",
+        message="群对话已更新" if _project_chat_session_context(item).get("platform") else "对话已更新",
+    )
+    return {"session": _serialize_chat_session(item)}
+
+
+@router.post("/{project_id}/chat/sessions/{chat_session_id}/resolve-source")
+async def resolve_project_chat_session_source(
+    project_id: str,
+    chat_session_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    from services.feishu_bot_service import get_feishu_connector, resolve_feishu_chat_by_name
+
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    normalized_session_id = str(chat_session_id or "").strip()
+    if not normalized_session_id or normalized_session_id == "legacy":
+        raise HTTPException(400, "chat_session_id is invalid")
+    current = project_chat_store.get_session(project_id, username, normalized_session_id)
+    if current is None:
+        raise HTTPException(404, "chat session not found")
+    source_context = _project_chat_session_context(current)
+    platform = _normalize_project_chat_platform(source_context.get("platform"))
+    if platform != "feishu":
+        raise HTTPException(400, "当前只支持解析飞书群 ID")
+    if source_context.get("external_chat_id"):
+        return {"session": _serialize_chat_session(current), "resolved": False, "message": "当前群 ID 已解析"}
+    connector_id = str(source_context.get("connector_id") or "").strip()
+    external_chat_name = str(source_context.get("external_chat_name") or "").strip()
+    if not connector_id or not external_chat_name:
+        raise HTTPException(400, "请先选择机器人并填写群名称")
+    connector = get_feishu_connector(connector_id)
+    if connector is None or not bool(connector.get("enabled", True)):
+        raise HTTPException(404, "飞书机器人连接器不存在或未启用")
+    try:
+        chat = resolve_feishu_chat_by_name(connector, external_chat_name)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+    next_context = _normalize_project_chat_source_context(
+        {
+            **source_context,
+            "source_type": source_context.get("source_type") or "group_message",
+            "platform": "feishu",
+            "connector_id": connector_id,
+            "external_chat_id": chat.get("chat_id") or "",
+            "external_chat_name": chat.get("name") or external_chat_name,
+            "thread_key": "",
+        },
+        project_id=project_id,
+        default_source_type=source_context.get("source_type") or "group_message",
+    )
+    item = project_chat_store.update_session(
+        project_id,
+        username,
+        normalized_session_id,
+        source_context=next_context,
+    )
+    if item is None:
+        raise HTTPException(404, "chat session not found")
+    await publish_project_chat_session_realtime(
+        project_id=project_id,
+        username=username,
+        chat_session_id=item.id,
+        status="linked",
+        message="当前飞书群已链接工作群",
+    )
+    return {"session": _serialize_chat_session(item), "resolved": True, "chat": chat}
 
 
 @router.websocket("/{project_id}/chat/ws")
@@ -12271,6 +13400,11 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
 
     await websocket.accept()
     username = _current_username(auth_payload)
+    await register_project_chat_ws(
+        project_id=project_id,
+        username=username,
+        websocket=websocket,
+    )
     await websocket.send_json(
         {
             "type": "ready",
@@ -12281,6 +13415,232 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
 
     active_tasks: dict[str, asyncio.Task] = {}
     cancel_events: dict[str, asyncio.Event] = {}
+    terminal_streams: dict[str, dict[str, Any]] = {}
+
+    async def _send_project_chat_event(payload: dict[str, Any]) -> None:
+        await websocket.send_json(payload)
+        operation_event = _build_project_chat_operation_event(payload)
+        if operation_event:
+            await websocket.send_json(operation_event)
+
+    def _terminal_stream_key(chat_session_id: str) -> str:
+        return str(chat_session_id or "").strip()
+
+    async def _close_terminal_stream_binding(chat_session_id: str) -> None:
+        binding = terminal_streams.pop(_terminal_stream_key(chat_session_id), None)
+        if not binding:
+            return
+        queue = binding.get("queue")
+        session_id = str(binding.get("session_id") or "").strip()
+        task = binding.get("task")
+        try:
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        finally:
+            if session_id:
+                from services.project_host_terminal_service import (
+                    detach_project_host_terminal_listener,
+                )
+
+                detach_project_host_terminal_listener(session_id, queue)
+
+    async def _stream_project_terminal_events(
+        *,
+        session_id: str,
+        queue: asyncio.Queue[dict[str, Any]],
+        chat_session_id: str,
+    ) -> None:
+        from services.project_host_terminal_service import (
+            detach_project_host_terminal_listener,
+        )
+
+        try:
+            while True:
+                event = await queue.get()
+                event_type = str(event.get("type") or "").strip().lower()
+                if event_type == "chunk":
+                    await _send_project_chat_event(
+                        {
+                            "type": "terminal_mirror_chunk",
+                            "chat_mode": "host_terminal",
+                            "session_id": session_id,
+                            "thread_id": session_id,
+                            "chat_session_id": chat_session_id,
+                            "content": str(event.get("content") or ""),
+                        }
+                    )
+                    continue
+                if event_type == "exit":
+                    await _send_project_chat_event(
+                        {
+                            "type": "terminal_mirror_stopped",
+                            "chat_mode": "host_terminal",
+                            "session_id": session_id,
+                            "thread_id": session_id,
+                            "chat_session_id": chat_session_id,
+                            "exit_code": event.get("exit_code"),
+                        }
+                    )
+                    break
+        except asyncio.CancelledError:
+            raise
+        finally:
+            detach_project_host_terminal_listener(session_id, queue)
+            current = terminal_streams.get(_terminal_stream_key(chat_session_id))
+            if current and str(current.get("session_id") or "").strip() == session_id:
+                terminal_streams.pop(_terminal_stream_key(chat_session_id), None)
+
+    async def _handle_terminal_mirror_start(payload: dict[str, Any]) -> None:
+        from services.project_host_terminal_service import (
+            attach_project_host_terminal_listener,
+            get_project_host_terminal_session,
+            start_or_attach_project_host_terminal,
+        )
+
+        chat_session_id = _require_project_chat_session_id(payload.get("chat_session_id"))
+        initial_command = str(payload.get("initial_command") or "").strip()
+        attach_only = bool(payload.get("attach_only"))
+        await _close_terminal_stream_binding(chat_session_id)
+        session = get_project_host_terminal_session(
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+        )
+        started_payload: dict[str, Any]
+        if session is None:
+            if attach_only:
+                await _send_project_chat_event(
+                    {
+                        "type": "terminal_mirror_stopped",
+                        "chat_mode": "host_terminal",
+                        "chat_session_id": chat_session_id,
+                        "session_id": "",
+                        "thread_id": "",
+                        "reason": "not_running",
+                    }
+                )
+                return
+            started_payload = await start_or_attach_project_host_terminal(
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                workspace_path=str(project.workspace_path or "").strip(),
+                initial_command=initial_command,
+            )
+            session_id = str(started_payload.get("session_id") or "").strip()
+        else:
+            session_id = session.session_id
+            started_payload = {
+                "session_id": session_id,
+                "workspace_path": session.workspace_path,
+                "attached_existing": True,
+                "command": initial_command,
+            }
+            if initial_command:
+                from services.project_host_terminal_service import (
+                    write_project_host_terminal_input,
+                )
+
+                await write_project_host_terminal_input(
+                    session_id,
+                    f"{initial_command}\r",
+                )
+
+        queue, history_events = attach_project_host_terminal_listener(session_id)
+        task = asyncio.create_task(
+            _stream_project_terminal_events(
+                session_id=session_id,
+                queue=queue,
+                chat_session_id=chat_session_id,
+            )
+        )
+        terminal_streams[_terminal_stream_key(chat_session_id)] = {
+            "session_id": session_id,
+            "queue": queue,
+            "task": task,
+        }
+        await _send_project_chat_event(
+            {
+                "type": "terminal_mirror_started",
+                "chat_mode": "host_terminal",
+                "session_id": session_id,
+                "thread_id": session_id,
+                "chat_session_id": chat_session_id,
+                "workspace_path": str(started_payload.get("workspace_path") or "").strip(),
+                "command": str(started_payload.get("command") or "").strip(),
+                "attached_existing": bool(started_payload.get("attached_existing")),
+            }
+        )
+        for event in history_events:
+            event_type = str(event.get("type") or "").strip().lower()
+            if event_type == "chunk":
+                await _send_project_chat_event(
+                    {
+                        "type": "terminal_mirror_chunk",
+                        "chat_mode": "host_terminal",
+                        "session_id": session_id,
+                        "thread_id": session_id,
+                        "chat_session_id": chat_session_id,
+                        "content": str(event.get("content") or ""),
+                    }
+                )
+            elif event_type == "exit":
+                await _send_project_chat_event(
+                    {
+                        "type": "terminal_mirror_stopped",
+                        "chat_mode": "host_terminal",
+                        "session_id": session_id,
+                        "thread_id": session_id,
+                        "chat_session_id": chat_session_id,
+                        "exit_code": event.get("exit_code"),
+                    }
+                )
+
+    async def _handle_terminal_mirror_input(payload: dict[str, Any]) -> None:
+        from services.project_host_terminal_service import (
+            get_project_host_terminal_session,
+            write_project_host_terminal_input,
+        )
+
+        chat_session_id = _require_project_chat_session_id(payload.get("chat_session_id"))
+        session = get_project_host_terminal_session(
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+        )
+        if session is None:
+            raise ValueError("terminal session is not running")
+        await write_project_host_terminal_input(
+            session.session_id,
+            str(payload.get("content") or ""),
+        )
+
+    async def _handle_terminal_mirror_stop(payload: dict[str, Any]) -> None:
+        from services.project_host_terminal_service import (
+            get_project_host_terminal_session,
+            stop_project_host_terminal,
+        )
+
+        chat_session_id = _require_project_chat_session_id(payload.get("chat_session_id"))
+        session = get_project_host_terminal_session(
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+        )
+        await _close_terminal_stream_binding(chat_session_id)
+        if session is not None:
+            await stop_project_host_terminal(session.session_id)
+        await _send_project_chat_event(
+            {
+                "type": "terminal_mirror_stopped",
+                "chat_mode": "host_terminal",
+                "chat_session_id": chat_session_id,
+                "session_id": str(getattr(session, "session_id", "") or "").strip(),
+                "thread_id": str(getattr(session, "session_id", "") or "").strip(),
+            }
+        )
 
     async def handle_request(payload: dict):
         nonlocal active_tasks, cancel_events
@@ -12297,7 +13657,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         try:
             req = ProjectChatReq.model_validate(payload)
         except Exception as exc:
-            await websocket.send_json({"type": "error", "request_id": request_id, "message": f"Invalid payload: {str(exc)}"})
+            await _send_project_chat_event({"type": "error", "request_id": request_id, "message": f"Invalid payload: {str(exc)}"})
             return
         chat_surface = _normalize_project_chat_surface(req.chat_surface)
         allow_requirement_record = _allow_project_chat_requirement_record(chat_surface)
@@ -12307,15 +13667,21 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         normalized_images = _normalize_image_inputs(req.images)
         attachment_names = [str(name or "").strip() for name in (req.attachment_names or []) if str(name or "").strip()]
         if not user_message and not normalized_images and not attachment_names:
-            await websocket.send_json({"type": "error", "request_id": request_id, "message": "message is required"})
+            await _send_project_chat_event({"type": "error", "request_id": request_id, "message": "message is required"})
             return
 
         effective_user_message = user_message
         try:
             chat_session_id = _require_project_chat_session_id(req.chat_session_id)
         except ValueError as exc:
-            await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
+            await _send_project_chat_event({"type": "error", "request_id": request_id, "message": str(exc)})
             return
+        source_context = _resolve_project_chat_request_source_context(
+            project_id,
+            username,
+            chat_session_id,
+            req.source_context,
+        )
         if not effective_user_message and attachment_names:
             effective_user_message = f"我上传了附件：{', '.join(attachment_names)}。请先给我处理建议。"
         elif not effective_user_message and normalized_images:
@@ -12326,6 +13692,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             message_id=str(req.message_id or "").strip(),
             chat_session_id=chat_session_id,
             attachments=attachment_names, images=normalized_images,
+            source_context=source_context,
         )
 
         cancel_event = asyncio.Event()
@@ -12356,7 +13723,17 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             ).strip()
             if _is_project_meta_query(effective_user_message):
                 direct_answer = _build_project_meta_reply(project, selected_employee, candidates)
-                await websocket.send_json(
+                direct_done_payload = _build_project_chat_done_payload(
+                    content=direct_answer,
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                    provider_id="",
+                    model_name="direct-project-meta",
+                    successful_tool_names=["direct-project-meta"],
+                )
+                direct_done_payload["request_id"] = request_id
+                await _send_project_chat_event(
                     _build_project_chat_start_payload(
                         request_id=request_id,
                         project_id=project_id,
@@ -12368,17 +13745,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         task_tree_payload=task_tree_payload,
                     )
                 )
-                direct_done_payload = _build_project_chat_done_payload(
-                    content=direct_answer,
-                    project_id=project_id,
-                    username=username,
-                    chat_session_id=chat_session_id,
-                    provider_id="",
-                    model_name="direct-project-meta",
-                    successful_tool_names=["direct-project-meta"],
-                )
-                direct_done_payload["request_id"] = request_id
-                await websocket.send_json(
+                await _send_project_chat_event(
                     direct_done_payload
                 )
                 _append_chat_record(
@@ -12410,7 +13777,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     enabled_tool_names,
                     explicit_filter=explicit_tool_filter,
                 )
-                await websocket.send_json(
+                await _send_project_chat_event(
                     _build_project_chat_start_payload(
                         request_id=request_id,
                         project_id=project_id,
@@ -12432,7 +13799,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     successful_tool_names=["direct-tool-probe"],
                 )
                 direct_done_payload["request_id"] = request_id
-                await websocket.send_json(
+                await _send_project_chat_event(
                     direct_done_payload
                 )
                 _append_chat_record(
@@ -12457,7 +13824,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
 
             if _is_mcp_modules_query(effective_user_message):
                 direct_answer = _build_mcp_modules_reply(project_id)
-                await websocket.send_json(
+                await _send_project_chat_event(
                     _build_project_chat_start_payload(
                         request_id=request_id,
                         project_id=project_id,
@@ -12479,7 +13846,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     successful_tool_names=["direct-mcp-modules"],
                 )
                 direct_done_payload["request_id"] = request_id
-                await websocket.send_json(
+                await _send_project_chat_event(
                     direct_done_payload
                 )
                 _append_chat_record(
@@ -12520,7 +13887,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 model_name=model_name,
             )
             if model_parameter_mode in {"image", "video"}:
-                await websocket.send_json(
+                await _send_project_chat_event(
                     _build_project_chat_start_payload(
                         request_id=request_id,
                         project_id=project_id,
@@ -12553,7 +13920,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         allow_requirement_record=allow_requirement_record,
                     )
                     done_payload["request_id"] = request_id
-                    await websocket.send_json(done_payload)
+                    await _send_project_chat_event(done_payload)
                 except Exception as exc:
                     _append_chat_record(
                         project_id=project_id,
@@ -12563,7 +13930,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         message_id=assistant_message_id,
                         chat_session_id=chat_session_id,
                     )
-                    await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
+                    await _send_project_chat_event({"type": "error", "request_id": request_id, "message": str(exc)})
                 return
 
             max_tokens = _resolve_chat_max_tokens(runtime_settings.get("max_tokens"))
@@ -12585,6 +13952,12 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     enabled_tool_names=enabled_tool_names,
                     explicit_tool_filter=explicit_tool_filter,
                     tool_priority=list(runtime_settings.get("tool_priority") or []),
+                    project_workspace_path=str(project.workspace_path or "").strip(),
+                )
+                effective_user_message = await _maybe_enrich_project_chat_message_with_url_content(
+                    effective_user_message,
+                    tools,
+                    host_workspace_path=str(project.workspace_path or "").strip(),
                 )
             (
                 local_connector_tools,
@@ -12610,6 +13983,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 workspace_path=effective_workspace_path,
                 skill_resource_directory=req.skill_resource_directory,
                 employee_coordination_mode=str(runtime_settings.get("employee_coordination_mode") or "auto"),
+                source_context=source_context,
                 task_tree_prompt=task_tree_prompt,
             )
             runtime_context = build_chat_runtime_context(
@@ -12619,6 +13993,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 employee_id=employee_id_val,
                 selected_employee_ids=selected_employee_ids,
                 workspace_path=effective_workspace_path,
+                host_workspace_path=str(project.workspace_path or "").strip(),
                 skill_resource_directory=req.skill_resource_directory,
                 chat_surface=chat_surface,
                 history=req.history,
@@ -12634,10 +14009,10 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             )
 
         except Exception as exc:
-            await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
+            await _send_project_chat_event({"type": "error", "request_id": request_id, "message": str(exc)})
             return
 
-        await websocket.send_json(
+        await _send_project_chat_event(
             _build_project_chat_start_payload(
                 request_id=request_id,
                 project_id=project_id,
@@ -12724,7 +14099,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 if event_type == "error":
                     stream_error = str(outgoing.get("message") or "未知错误")
                 outgoing["request_id"] = request_id
-                await websocket.send_json(outgoing)
+                await _send_project_chat_event(outgoing)
 
             if stream_error:
                 _append_chat_record(
@@ -12769,17 +14144,48 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     allow_requirement_record=allow_requirement_record,
                 )
         except asyncio.CancelledError:
-            pass
+            if cancel_event.is_set():
+                cancelled_payload = _build_project_chat_done_payload(
+                    content="[已停止]",
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id or raw_chat_session_id,
+                    provider_id=provider_id,
+                    model_name=model_name,
+                )
+                cancelled_payload["request_id"] = request_id
+                _append_chat_record(
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content="[已停止]",
+                    message_id=assistant_message_id,
+                    chat_session_id=chat_session_id or raw_chat_session_id,
+                )
+                with contextlib.suppress(Exception):
+                    await _send_project_chat_event(cancelled_payload)
+            else:
+                pass
         except Exception as exc:
+            done_payload, persisted_failure = _build_project_chat_failure_done_payload(
+                exc=exc,
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                provider_id=provider_id,
+                model_name=model_name,
+            )
+            done_payload["request_id"] = request_id
             _append_chat_record(
                 project_id=project_id,
                 username=username,
                 role="assistant",
-                content=f"对话失败：{str(exc)}",
+                content=persisted_failure,
                 message_id=assistant_message_id,
                 chat_session_id=chat_session_id,
             )
-            await websocket.send_json({"type": "error", "request_id": request_id, "message": str(exc)})
+            with contextlib.suppress(Exception):
+                await _send_project_chat_event(done_payload)
         finally:
             cancel_events.pop(request_id, None)
             active_tasks.pop(request_id, None)
@@ -12788,7 +14194,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         try:
             payload = await websocket.receive_json()
             if not isinstance(payload, dict):
-                await websocket.send_json({"type": "error", "message": "Invalid payload type"})
+                await _send_project_chat_event({"type": "error", "message": "Invalid payload type"})
                 continue
                 
             request_id = str(payload.get("request_id") or "").strip()
@@ -12796,6 +14202,45 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             if payload_type == "cancel":
                 if request_id in cancel_events:
                     cancel_events[request_id].set()
+                task = active_tasks.get(request_id)
+                if task is not None and not task.done():
+                    task.cancel()
+                continue
+            if payload_type == "terminal_mirror_start":
+                try:
+                    await _handle_terminal_mirror_start(payload)
+                except Exception as exc:
+                    await _send_project_chat_event(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "message": str(exc),
+                        }
+                    )
+                continue
+            if payload_type == "terminal_mirror_input":
+                try:
+                    await _handle_terminal_mirror_input(payload)
+                except Exception as exc:
+                    await _send_project_chat_event(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "message": str(exc),
+                        }
+                    )
+                continue
+            if payload_type == "terminal_mirror_stop":
+                try:
+                    await _handle_terminal_mirror_stop(payload)
+                except Exception as exc:
+                    await _send_project_chat_event(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "message": str(exc),
+                        }
+                    )
                 continue
 
             task = asyncio.create_task(handle_request(payload))
@@ -12807,9 +14252,16 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 ev.set()
             for t in active_tasks.values():
                 t.cancel()
+            for chat_session_id in list(terminal_streams.keys()):
+                await _close_terminal_stream_binding(chat_session_id)
+            await unregister_project_chat_ws(
+                project_id=project_id,
+                username=username,
+                websocket=websocket,
+            )
             break
         except Exception:
-            await websocket.send_json({"type": "error", "message": "Invalid JSON payload"})
+            await _send_project_chat_event({"type": "error", "message": "Invalid JSON payload"})
             continue
 
 @router.post("/{project_id}/chat/stream")
@@ -12838,6 +14290,12 @@ async def stream_project_chat(
         chat_session_id = _require_project_chat_session_id(req.chat_session_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    source_context = _resolve_project_chat_request_source_context(
+        project_id,
+        username,
+        chat_session_id,
+        req.source_context,
+    )
     if not effective_user_message and attachment_names:
         effective_user_message = f"我上传了附件：{', '.join(attachment_names)}。请先给我处理建议。"
     elif not effective_user_message and normalized_images:
@@ -12852,6 +14310,7 @@ async def stream_project_chat(
         chat_session_id=chat_session_id,
         attachments=attachment_names,
         images=normalized_images,
+        source_context=source_context,
     )
 
     runtime_settings = _resolve_chat_runtime_settings(req, project)
@@ -13111,15 +14570,23 @@ async def stream_project_chat(
                 )
                 yield _sse_payload("message", done_payload)
             except Exception as exc:
+                done_payload, persisted_failure = _build_project_chat_failure_done_payload(
+                    exc=exc,
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                    provider_id=provider_id,
+                    model_name=model_name,
+                )
                 _append_chat_record(
                     project_id=project_id,
                     username=username,
                     role="assistant",
-                    content=f"对话失败：{str(exc)}",
+                    content=persisted_failure,
                     message_id=assistant_message_id,
                     chat_session_id=chat_session_id,
                 )
-                yield _sse_payload("message", {"type": "error", "message": str(exc)})
+                yield _sse_payload("message", done_payload)
 
         return StreamingResponse(
             media_event_stream(),
@@ -13149,6 +14616,12 @@ async def stream_project_chat(
             enabled_tool_names=enabled_tool_names,
             explicit_tool_filter=explicit_tool_filter,
             tool_priority=list(runtime_settings.get("tool_priority") or []),
+            project_workspace_path=str(project.workspace_path or "").strip(),
+        )
+        effective_user_message = await _maybe_enrich_project_chat_message_with_url_content(
+            effective_user_message,
+            tools,
+            host_workspace_path=str(project.workspace_path or "").strip(),
         )
 
     effective_workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
@@ -13180,6 +14653,7 @@ async def stream_project_chat(
         workspace_path=effective_workspace_path,
         skill_resource_directory=req.skill_resource_directory,
         employee_coordination_mode=str(runtime_settings.get("employee_coordination_mode") or "auto"),
+        source_context=source_context,
         task_tree_prompt=task_tree_prompt,
     )
     runtime_context = build_chat_runtime_context(
@@ -13189,6 +14663,7 @@ async def stream_project_chat(
         employee_id=employee_id_val,
         selected_employee_ids=selected_employee_ids,
         workspace_path=effective_workspace_path,
+        host_workspace_path=str(project.workspace_path or "").strip(),
         skill_resource_directory=req.skill_resource_directory,
         chat_surface=chat_surface,
         history=req.history,
@@ -13335,15 +14810,23 @@ async def stream_project_chat(
                     allow_requirement_record=allow_requirement_record,
                 )
         except Exception as exc:
+            done_payload, persisted_failure = _build_project_chat_failure_done_payload(
+                exc=exc,
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                provider_id=provider_id,
+                model_name=model_name,
+            )
             _append_chat_record(
                 project_id=project_id,
                 username=username,
                 role="assistant",
-                content=f"对话失败：{str(exc)}",
+                content=persisted_failure,
                 message_id=assistant_message_id,
                 chat_session_id=chat_session_id,
             )
-            yield _sse_payload("message", {"type": "error", "message": str(exc)})
+            yield _sse_payload("message", done_payload)
 
     return StreamingResponse(
         event_stream(),

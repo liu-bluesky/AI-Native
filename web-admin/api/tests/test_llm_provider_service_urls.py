@@ -110,3 +110,31 @@ def test_llm_provider_service_extracts_video_artifacts_from_payload():
             },
         }
     ]
+
+
+def test_llm_provider_service_summarizes_html_gateway_errors():
+    raw = """
+    <!DOCTYPE html>
+    <html>
+      <head><title>502 Bad Gateway</title></head>
+      <body>gateway error</body>
+    </html>
+    """
+
+    summary, diagnostic = LlmProviderService._summarize_http_error_response(
+        raw,
+        content_type="text/html; charset=utf-8",
+    )
+
+    assert summary == "upstream returned an HTML error page (502 Bad Gateway)"
+    assert "gateway error" in diagnostic
+
+
+def test_llm_provider_service_summarizes_json_errors():
+    summary, diagnostic = LlmProviderService._summarize_http_error_response(
+        '{"error":{"message":"missing required scope(s): im:message.send_as_user"}}',
+        content_type="application/json",
+    )
+
+    assert summary == "missing required scope(s): im:message.send_as_user"
+    assert "missing required scope" in diagnostic

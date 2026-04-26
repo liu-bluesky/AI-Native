@@ -46,7 +46,7 @@
       <el-table-column label="创建时间" width="220">
         <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="80" fixed="right">
+      <el-table-column label="操作" min-width="80" fixed="right" class-name="table-action-column">
         <template #default="{ row }">
           <el-button text type="danger" size="small" @click="handleDelete(row.id)">删除</el-button>
         </template>

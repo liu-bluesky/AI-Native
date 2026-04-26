@@ -163,7 +163,7 @@
         <el-table-column label="可执行规则" min-width="320" show-overflow-tooltip>
           <template #default="{ row }">{{ row.executable_rule_content || '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="360" fixed="right">
+        <el-table-column label="操作" min-width="360" fixed="right" class-name="table-action-column">
           <template #default="{ row }">
             <el-button
               v-for="action in getPrimaryCandidateActions(row)"

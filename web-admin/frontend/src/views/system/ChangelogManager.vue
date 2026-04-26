@@ -74,7 +74,7 @@
             {{ formatDateTime(row.updated_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" min-width="180" fixed="right" class-name="table-action-column">
           <template #default="{ row }">
             <el-button v-if="canUpdate" text type="primary" @click="openEditDialog(row)">编辑</el-button>
             <el-button v-if="canDelete" text type="danger" @click="deleteEntry(row)">删除</el-button>

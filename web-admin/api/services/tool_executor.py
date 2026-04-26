@@ -18,6 +18,7 @@ class ToolExecutor:
         allowed_tool_names: list[str] | None = None,
         local_connector: Any | None = None,
         local_connector_workspace_path: str = "",
+        host_workspace_path: str = "",
         local_connector_sandbox_mode: str = "workspace-write",
         global_assistant_bridge_handler: Any | None = None,
     ):
@@ -50,6 +51,7 @@ class ToolExecutor:
         }
         self._local_connector = local_connector
         self._local_connector_workspace_path = str(local_connector_workspace_path or "").strip()
+        self._host_workspace_path = str(host_workspace_path or "").strip()
         self._local_connector_sandbox_mode = (
             str(local_connector_sandbox_mode or "workspace-write").strip()
             or "workspace-write"
@@ -75,9 +77,10 @@ class ToolExecutor:
         attempt = 0
         while True:
             try:
+                effective_timeout = self._resolve_tool_timeout(tool_name, args, timeout)
                 result = await asyncio.wait_for(
                     self._execute_tool(tool_name, args),
-                    timeout=timeout
+                    timeout=effective_timeout
                 )
                 return result
             except asyncio.TimeoutError:
@@ -102,6 +105,8 @@ class ToolExecutor:
                 role_ids=self._role_ids,
                 browser_bridge_handler=self._global_assistant_bridge_handler,
             )
+        if str(tool_name or "").strip() == "project_host_run_command":
+            return await self._execute_project_host_command(args)
         if str(tool_name or "").strip().startswith("local_connector_"):
             return await self._execute_local_connector_tool(tool_name, args)
         from services.dynamic_mcp_runtime import invoke_project_tool_runtime
@@ -124,7 +129,6 @@ class ToolExecutor:
             LOCAL_CONNECTOR_FILE_TOOL_NAMES,
             list_connector_workspace_files,
             read_connector_file,
-            run_connector_command,
             search_connector_workspace_files,
             write_connector_file,
         )
@@ -172,17 +176,6 @@ class ToolExecutor:
                 sandbox_mode=self._local_connector_sandbox_mode,
             )
 
-        if normalized_tool_name == "local_connector_run_command":
-            return await run_connector_command(
-                self._local_connector,
-                workspace_path=self._local_connector_workspace_path,
-                command=str(args.get("command") or "").strip(),
-                cwd=str(args.get("cwd") or "").strip(),
-                timeout_sec=int(args.get("timeout_sec", 20) or 20),
-                max_output_chars=int(args.get("max_output_chars", 12000) or 12000),
-                sandbox_mode=self._local_connector_sandbox_mode,
-            )
-
         return await write_connector_file(
             self._local_connector,
             workspace_path=self._local_connector_workspace_path,
@@ -190,3 +183,29 @@ class ToolExecutor:
             content=str(args.get("content") or ""),
             sandbox_mode=self._local_connector_sandbox_mode,
         )
+
+    async def _execute_project_host_command(self, args: dict) -> dict:
+        from services.project_host_command_service import run_project_host_command
+        from starlette.concurrency import run_in_threadpool
+
+        return await run_in_threadpool(
+            run_project_host_command,
+            workspace_path=self._host_workspace_path,
+            command=str(args.get("command") or "").strip(),
+            cwd=str(args.get("cwd") or "").strip(),
+            timeout_sec=int(args.get("timeout_sec", 20) or 20),
+            max_output_chars=int(args.get("max_output_chars", 12000) or 12000),
+        )
+
+    def _resolve_tool_timeout(self, tool_name: str, args: dict, default_timeout: int) -> int:
+        safe_timeout = max(1, min(int(default_timeout or self._timeout or 60), 600))
+        normalized_tool_name = str(tool_name or "").strip()
+        if normalized_tool_name != "project_host_run_command":
+            return safe_timeout
+        try:
+            requested_timeout = int(args.get("timeout_sec", 0) or 0)
+        except (TypeError, ValueError):
+            requested_timeout = 0
+        if requested_timeout <= 0:
+            return safe_timeout
+        return max(safe_timeout, min(requested_timeout + 5, 600))

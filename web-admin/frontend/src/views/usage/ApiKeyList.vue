@@ -59,7 +59,7 @@
             {{ formatDateTime(row.created_at, { withSeconds: true }) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="操作" min-width="100" fixed="right" class-name="table-action-column">
           <template #default="{ row }">
             <el-button
               v-if="canDeleteKey"

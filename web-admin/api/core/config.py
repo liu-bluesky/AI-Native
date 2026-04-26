@@ -128,6 +128,8 @@ class Settings:
     max_tool_retries: int
     studio_export_worker_enabled: bool
     studio_export_worker_poll_seconds: int
+    feishu_bot_long_connection_worker_enabled: bool
+    feishu_bot_long_connection_connector_ids: list[str]
 
 
 def get_api_data_dir(*, create: bool = True) -> Path:
@@ -171,4 +173,6 @@ def get_settings() -> Settings:
         max_tool_retries=int(_get_env("MAX_TOOL_RETRIES", "3")),
         studio_export_worker_enabled=_env_bool("STUDIO_EXPORT_WORKER_ENABLED", True),
         studio_export_worker_poll_seconds=int(_get_env("STUDIO_EXPORT_WORKER_POLL_SECONDS", "5")),
+        feishu_bot_long_connection_worker_enabled=_env_bool("FEISHU_BOT_LONG_CONNECTION_WORKER_ENABLED", False),
+        feishu_bot_long_connection_connector_ids=_split_env_list("FEISHU_BOT_LONG_CONNECTION_CONNECTOR_IDS", []),
     )

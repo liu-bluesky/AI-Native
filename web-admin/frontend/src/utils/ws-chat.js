@@ -32,9 +32,9 @@ function createChatWsClient({ path, token, onMessage, onOpen, onClose, onError }
   socket.onmessage = (event) => {
     try {
       const data = JSON.parse(String(event?.data || '{}'))
-      onMessage?.(data)
+      Promise.resolve(onMessage?.(data)).catch(() => {})
     } catch {
-      onMessage?.({ type: 'error', message: 'WebSocket 消息解析失败' })
+      Promise.resolve(onMessage?.({ type: 'error', message: 'WebSocket 消息解析失败' })).catch(() => {})
     }
   }
   socket.onerror = () => {
@@ -86,6 +86,17 @@ export function createProjectChatWsClient({ projectId, token, onMessage, onOpen,
 export function createGlobalAssistantWsClient({ token, onMessage, onOpen, onClose, onError }) {
   return createChatWsClient({
     path: '/api/projects/chat/global/ws',
+    token,
+    onMessage,
+    onOpen,
+    onClose,
+    onError,
+  })
+}
+
+export function createMarketCliPluginWsClient({ token, onMessage, onOpen, onClose, onError }) {
+  return createChatWsClient({
+    path: '/api/market/cli-plugins/install-tasks/ws',
     token,
     onMessage,
     onOpen,

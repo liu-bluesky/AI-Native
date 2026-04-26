@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from starlette.concurrency import run_in_threadpool
 
+from core.auth import decode_token
 from core.deps import employee_store, require_auth
+from models.requests import CliPluginInstallReq
+from services.cli_plugin_install_task_service import (
+    create_install_task,
+    get_install_task,
+    list_install_tasks,
+    subscribe_install_task_events,
+)
+from services.cli_plugin_market_service import install_cli_plugin, list_cli_plugins
 from stores.mcp_bridge import rule_store, skill_store
 
 router = APIRouter(prefix="/api/market", dependencies=[Depends(require_auth)])
@@ -30,6 +41,22 @@ def _normalize_tokens(values: list[str] | tuple[str, ...] | None) -> list[str]:
 
 def _normalize_domain(value: str) -> str:
     return str(value or "").strip().lower()
+
+
+def _extract_ws_auth_payload(websocket: WebSocket) -> dict | None:
+    token = str(websocket.query_params.get("token") or "").strip()
+    if token:
+        payload = decode_token(token)
+        if payload is not None:
+            return payload
+    auth_header = str(websocket.headers.get("authorization") or "").strip()
+    if auth_header.startswith("Bearer "):
+        return decode_token(auth_header[7:])
+    return None
+
+
+def _current_username(auth_payload: dict | None) -> str:
+    return str((auth_payload or {}).get("sub") or "").strip()
 
 
 def _sort_records(items: list[Any]) -> list[Any]:
@@ -125,6 +152,7 @@ async def get_market_catalog():
     rules = _sort_records(rule_store.list_all())
     employees = _sort_records(employee_store.list_all())
     skills = _sort_records(skill_store.list_all())
+    cli_plugins = await run_in_threadpool(list_cli_plugins)
 
     rule_domain_map = _build_rule_domain_map()
     employees_by_rule: dict[str, list[str]] = defaultdict(list)
@@ -146,10 +174,163 @@ async def get_market_catalog():
                 )
                 for rule in rules
             ],
+            "cli_plugins": cli_plugins,
         },
         "meta": {
             "skill_count": len(skills),
             "employee_count": len(employees),
             "rule_count": len(rules),
+            "cli_plugin_count": len(cli_plugins),
         },
     }
+
+
+@router.get("/cli-plugins")
+async def get_cli_plugin_catalog():
+    items = await run_in_threadpool(list_cli_plugins)
+    return {
+        "items": items,
+        "meta": {
+            "cli_plugin_count": len(items),
+        },
+    }
+
+
+@router.post("/cli-plugins/install")
+async def install_market_cli_plugin(req: CliPluginInstallReq):
+    try:
+        result = await run_in_threadpool(
+            install_cli_plugin,
+            str(req.plugin_id or "").strip(),
+            timeout_sec=max(30, min(int(req.timeout_sec or 180), 900)),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(504, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return {
+        "status": "installed" if bool(result.get("ok")) else "failed",
+        **result,
+    }
+
+
+@router.post("/cli-plugins/install-tasks", status_code=202)
+async def create_market_cli_plugin_install_task(
+    req: CliPluginInstallReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    try:
+        task = await run_in_threadpool(
+            create_install_task,
+            str(req.plugin_id or "").strip(),
+            username=_current_username(auth_payload),
+            timeout_sec=max(30, min(int(req.timeout_sec or 1800), 7200)),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "status": "accepted",
+        "task": task,
+    }
+
+
+@router.get("/cli-plugins/install-tasks")
+async def list_market_cli_plugin_install_tasks(
+    limit: int = Query(default=20, ge=1, le=200),
+    auth_payload: dict = Depends(require_auth),
+):
+    items = await run_in_threadpool(
+        list_install_tasks,
+        username=_current_username(auth_payload),
+        limit=limit,
+    )
+    return {
+        "items": items,
+        "meta": {
+            "count": len(items),
+        },
+    }
+
+
+@router.get("/cli-plugins/install-tasks/{task_id}")
+async def get_market_cli_plugin_install_task(
+    task_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    task = await run_in_threadpool(get_install_task, task_id)
+    if task is None:
+        raise HTTPException(404, "Install task not found")
+    if str(task.get("created_by") or "").strip() != _current_username(auth_payload):
+        raise HTTPException(403, "Permission denied")
+    return {
+        "task": task,
+    }
+
+
+@router.websocket("/cli-plugins/install-tasks/ws")
+async def ws_market_cli_plugin_install_tasks(websocket: WebSocket):
+    auth_payload = _extract_ws_auth_payload(websocket)
+    if auth_payload is None:
+        await websocket.close(code=4401, reason="Missing or invalid token")
+        return
+
+    username = _current_username(auth_payload)
+    if not username:
+        await websocket.close(code=4401, reason="Missing or invalid token")
+        return
+
+    await websocket.accept()
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    unsubscribe = subscribe_install_task_events(
+        username,
+        lambda payload: loop.call_soon_threadsafe(queue.put_nowait, payload),
+    )
+
+    initial_items = await run_in_threadpool(
+        list_install_tasks,
+        username=username,
+        limit=20,
+    )
+    await websocket.send_json(
+        {
+            "type": "ready",
+            "message": "connected",
+            "items": initial_items,
+        }
+    )
+
+    async def send_updates() -> None:
+        while True:
+            payload = await queue.get()
+            await websocket.send_json(payload)
+
+    sender_task = asyncio.create_task(send_updates())
+    try:
+        while True:
+            payload = await websocket.receive_json()
+            if not isinstance(payload, dict):
+                await websocket.send_json({"type": "error", "message": "Invalid payload type"})
+                continue
+            message_type = str(payload.get("type") or "").strip().lower()
+            if message_type == "ping":
+                await websocket.send_json(
+                    {"type": "pong", "request_id": str(payload.get("request_id") or "").strip()}
+                )
+                continue
+            if message_type == "snapshot":
+                items = await run_in_threadpool(
+                    list_install_tasks,
+                    username=username,
+                    limit=20,
+                )
+                await websocket.send_json({"type": "task_snapshot", "items": items})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        unsubscribe()
+        sender_task.cancel()

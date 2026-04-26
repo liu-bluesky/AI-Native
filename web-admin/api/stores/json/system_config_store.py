@@ -252,6 +252,10 @@ def default_public_contact_channels() -> list[dict[str, object]]:
     return []
 
 
+def default_bot_platform_connectors() -> list[dict[str, object]]:
+    return []
+
+
 def default_global_assistant_guide_modules() -> list[dict[str, object]]:
     return [
         {
@@ -662,6 +666,77 @@ def normalize_public_contact_channels(value: object) -> list[dict[str, object]]:
     return normalized
 
 
+def _normalize_bot_connector_id(raw_value: object, fallback: str) -> str:
+    text = str(raw_value or "").strip().lower()[:80]
+    for char in text:
+        if (char.isascii() and char.isalnum()) or char in {"-", "_"}:
+            continue
+        text = text.replace(char, "-")
+    while "--" in text:
+        text = text.replace("--", "-")
+    text = text.strip("-_")
+    return text or fallback
+
+
+def normalize_bot_platform_connectors(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+    supported_platforms = {"qq", "feishu", "wechat"}
+    for raw_item in value:
+        if not isinstance(raw_item, dict):
+            continue
+        platform = str(raw_item.get("platform") or "").strip().lower()
+        if platform not in supported_platforms:
+            continue
+        fallback_id = f"{platform}-connector-{len(normalized) + 1}"
+        item_id = _normalize_bot_connector_id(raw_item.get("id"), fallback_id)
+        if item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
+        try:
+            sort_order = int(raw_item.get("sort_order") or 0)
+        except (TypeError, ValueError):
+            sort_order = 0
+        sort_order = max(0, min(999, sort_order))
+        default_receive_mode = "http_callback" if platform == "feishu" else "manual"
+        event_receive_mode = str(raw_item.get("event_receive_mode") or default_receive_mode).strip().lower()
+        allowed_receive_modes = {"http_callback", "long_connection", "manual", "polling"}
+        if event_receive_mode not in allowed_receive_modes:
+            event_receive_mode = default_receive_mode
+        normalized.append(
+            {
+                "id": item_id,
+                "enabled": bool(raw_item.get("enabled", True)),
+                "platform": platform,
+                "name": str(raw_item.get("name") or "").strip()[:120],
+                "agent_name": str(raw_item.get("agent_name") or "").strip()[:120],
+                "description": str(raw_item.get("description") or "").strip()[:280],
+                "system_prompt": str(raw_item.get("system_prompt") or "").strip()[:4000],
+                "app_id": str(raw_item.get("app_id") or "").strip()[:160],
+                "app_secret": str(raw_item.get("app_secret") or "").strip()[:200],
+                "verification_token": str(raw_item.get("verification_token") or "").strip()[:200],
+                "encrypt_key": str(raw_item.get("encrypt_key") or "").strip()[:200],
+                "event_receive_mode": event_receive_mode,
+                "auto_start_worker": bool(raw_item.get("auto_start_worker", False)),
+                "project_id": str(raw_item.get("project_id") or "").strip()[:80],
+                "guide_url": str(raw_item.get("guide_url") or "").strip()[:500],
+                "sort_order": sort_order,
+            }
+        )
+    return sorted(
+        normalized,
+        key=lambda item: (
+            int(item["sort_order"]),
+            str(item["platform"]),
+            str(item.get("name") or ""),
+            str(item["id"]),
+        ),
+    )
+
+
 def _normalize_global_assistant_guide_module_id(raw_value: object, fallback: str) -> str:
     text = str(raw_value or "").strip().lower()[:80]
     for source, target in (
@@ -903,6 +978,10 @@ class SystemConfig:
     global_assistant_wake_phrase: str = "你好助手"
     global_assistant_idle_timeout_sec: int = 5
     global_assistant_greeting_audio: dict[str, object] = field(default_factory=dict)
+    bot_platform_connectors: list[dict[str, object]] = field(
+        default_factory=default_bot_platform_connectors
+    )
+    feishu_bot_long_connection_worker_enabled: bool = False
     public_contact_channels: list[dict[str, object]] = field(
         default_factory=default_public_contact_channels
     )
@@ -1003,6 +1082,9 @@ class SystemConfig:
         )
         self.global_assistant_greeting_audio = normalize_global_assistant_greeting_audio(
             self.global_assistant_greeting_audio
+        )
+        self.bot_platform_connectors = normalize_bot_platform_connectors(
+            self.bot_platform_connectors
         )
         self.public_contact_channels = normalize_public_contact_channels(
             self.public_contact_channels

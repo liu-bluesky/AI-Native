@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -900,7 +901,20 @@ class LlmProviderService:
             async with client.stream("POST", url, headers=headers, json=body) as resp:
                 if resp.status_code >= 400:
                     error_text = await resp.aread()
-                    raise RuntimeError(f"LLM stream request failed: HTTP {resp.status_code} {error_text.decode()[:300]}")
+                    content_type = str(resp.headers.get("Content-Type") or "").strip()
+                    summary, diagnostic = LlmProviderService._summarize_http_error_response(
+                        error_text,
+                        content_type=content_type,
+                    )
+                    logger.warning(
+                        "LLM stream request failed: provider=%s model=%s status=%s content_type=%s body=%s",
+                        provider_id or "-",
+                        model_name or "-",
+                        resp.status_code,
+                        content_type or "-",
+                        diagnostic,
+                    )
+                    raise RuntimeError(f"LLM stream request failed: HTTP {resp.status_code} {summary}")
 
                 async for line in resp.aiter_lines():
                     line = line.strip()
@@ -1246,6 +1260,63 @@ class LlmProviderService:
         if isinstance(error, str):
             return error.strip()
         return str(payload.get("message") or payload.get("detail") or payload.get("task_status") or "").strip()
+
+    @staticmethod
+    def _compact_error_text(value: Any, limit: int = 300) -> str:
+        text = " ".join(str(value or "").split())
+        if len(text) <= limit:
+            return text
+        return text[:limit]
+
+    @classmethod
+    def _summarize_http_error_response(
+        cls,
+        raw: bytes | str,
+        *,
+        content_type: str = "",
+    ) -> tuple[str, str]:
+        if isinstance(raw, bytes):
+            text = raw.decode("utf-8", errors="ignore")
+        else:
+            text = str(raw or "")
+
+        diagnostic = cls._compact_error_text(text, limit=500)
+        normalized_content_type = str(content_type or "").strip().lower()
+        lowered = diagnostic.lower()
+        looks_like_html = (
+            "text/html" in normalized_content_type
+            or lowered.startswith("<!doctype html")
+            or lowered.startswith("<html")
+        )
+        if looks_like_html:
+            title_match = re.search(
+                r"<title[^>]*>(.*?)</title>",
+                text,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            title = (
+                cls._compact_error_text(title_match.group(1), limit=120)
+                if title_match
+                else ""
+            )
+            summary = "upstream returned an HTML error page"
+            if title:
+                summary = f"{summary} ({title})"
+            return summary, diagnostic
+
+        if "json" in normalized_content_type or text.lstrip().startswith("{"):
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                extracted = cls._extract_error_message(payload)
+                if extracted:
+                    return cls._compact_error_text(extracted), diagnostic
+
+        if diagnostic:
+            return cls._compact_error_text(diagnostic), diagnostic
+        return "upstream returned an empty error response", diagnostic
 
     @staticmethod
     def _normalize_bigmodel_video_size(aspect_ratio: str) -> str:
@@ -1797,8 +1868,11 @@ class LlmProviderService:
                 ) as resp:
                     raw = resp.content or b""
                     if resp.status_code >= 400:
-                        text = raw.decode("utf-8", errors="ignore")
-                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {text[:300]}")
+                        summary, _ = LlmProviderService._summarize_http_error_response(
+                            raw,
+                            content_type=str(resp.headers.get("Content-Type") or "").strip(),
+                        )
+                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {summary}")
                     return raw, str(resp.headers.get("Content-Type") or "").strip()
         except requests.RequestException as exc:
             raise RuntimeError(f"LLM request failed: {exc}") from exc
@@ -1831,7 +1905,11 @@ class LlmProviderService:
                 ) as resp:
                     raw = resp.text or ""
                     if resp.status_code >= 400:
-                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {raw[:300]}")
+                        summary, _ = LlmProviderService._summarize_http_error_response(
+                            raw,
+                            content_type=str(resp.headers.get("Content-Type") or "").strip(),
+                        )
+                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {summary}")
         except requests.RequestException as exc:
             raise RuntimeError(f"LLM request failed: {exc}") from exc
 
@@ -1856,7 +1934,11 @@ class LlmProviderService:
                 ) as resp:
                     raw = resp.text or ""
                     if resp.status_code >= 400:
-                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {raw[:300]}")
+                        summary, _ = LlmProviderService._summarize_http_error_response(
+                            raw,
+                            content_type=str(resp.headers.get("Content-Type") or "").strip(),
+                        )
+                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {summary}")
         except requests.RequestException as exc:
             raise RuntimeError(f"LLM request failed: {exc}") from exc
 
@@ -1896,7 +1978,11 @@ class LlmProviderService:
                     stream=stream,
                 ) as resp:
                     if resp.status_code >= 400:
-                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {(resp.text or '')[:300]}")
+                        summary, _ = LlmProviderService._summarize_http_error_response(
+                            resp.text or "",
+                            content_type=str(resp.headers.get("Content-Type") or "").strip(),
+                        )
+                        raise RuntimeError(f"LLM request failed: HTTP {resp.status_code} {summary}")
                     if not stream:
                         return resp.text or ""
                     lines: list[str] = []

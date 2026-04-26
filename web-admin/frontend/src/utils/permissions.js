@@ -18,6 +18,7 @@ const PATH_PERMISSION_MAP = [
   { prefix: '/skill-resources', permission: 'menu.skills' },
   { prefix: '/skills', permission: 'menu.skills' },
   { prefix: '/rules', permission: 'menu.rules' },
+  { prefix: '/system/bot-connectors', permission: 'menu.system.config' },
   { prefix: '/system/config', permission: 'menu.system.config' },
   { prefix: '/changelog-entries', permission: 'menu.system.changelog' },
   { prefix: '/work-sessions', permission: 'menu.system.work_sessions' },

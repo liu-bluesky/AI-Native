@@ -3,6 +3,7 @@ const CHAT_SETTINGS_ROUTE_PREFIX = "/ai/chat/settings";
 const SETTINGS_PANEL_TARGETS = [
   { panel: "chat", prefixes: ["/chat"] },
   { panel: "user-settings", prefixes: ["/user/settings"] },
+  { panel: "bot-connectors", prefixes: ["/system/bot-connectors"] },
   { panel: "system-config", prefixes: ["/system/config"] },
   { panel: "desktop-wallpaper", prefixes: ["/desktop/background"] },
   { panel: "changelog-entries", prefixes: ["/changelog-entries"] },

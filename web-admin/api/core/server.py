@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi import Response
@@ -15,9 +16,12 @@ from core.deps import (
     project_material_store,
     project_store,
     project_studio_export_store,
+    system_config_store,
 )
 from routers import (
     agent_templates,
+    bot_events,
+    bot_connectors,
     changelog_entries,
     init_auth,
     market,
@@ -53,6 +57,15 @@ from services.dynamic_mcp_runtime import (
 from services.project_experience_summary_service import (
     ProjectExperienceSummaryBackgroundService,
 )
+from services.feishu_bot_long_connection_supervisor import FeishuBotLongConnectionSupervisor
+from services.global_assistant_task_service import (
+    start_global_assistant_task_scheduler,
+    stop_global_assistant_task_scheduler,
+)
+from services.project_chat_realtime_service import (
+    start_project_chat_realtime_subscriber,
+    stop_project_chat_realtime_subscriber,
+)
 from services.studio_export_service import StudioExportBackgroundService
 
 
@@ -77,14 +90,34 @@ def create_app() -> FastAPI:
             project_experience_summary_store=project_experience_summary_store,
             poll_interval_seconds=settings.studio_export_worker_poll_seconds,
         )
+        feishu_long_connection_supervisor = FeishuBotLongConnectionSupervisor(
+            api_root=Path(__file__).resolve().parents[1],
+            connector_ids=settings.feishu_bot_long_connection_connector_ids,
+        )
         app.state.studio_export_worker = worker
         app.state.project_experience_summary_worker = experience_summary_worker
+        app.state.feishu_long_connection_supervisor = feishu_long_connection_supervisor
+        app.state.project_chat_realtime_subscriber = start_project_chat_realtime_subscriber()
+        app.state.global_assistant_task_scheduler = start_global_assistant_task_scheduler()
         if settings.studio_export_worker_enabled:
             worker.start()
             experience_summary_worker.start()
+        feishu_worker_enabled = bool(
+            getattr(
+                system_config_store.get_global(),
+                "feishu_bot_long_connection_worker_enabled",
+                False,
+            )
+            or settings.feishu_bot_long_connection_worker_enabled
+        )
+        if feishu_worker_enabled:
+            feishu_long_connection_supervisor.start()
         try:
             yield
         finally:
+            await stop_global_assistant_task_scheduler()
+            await stop_project_chat_realtime_subscriber()
+            await feishu_long_connection_supervisor.stop()
             await experience_summary_worker.stop()
             await worker.stop()
 
@@ -101,7 +134,9 @@ def create_app() -> FastAPI:
         init_auth,
         market,
         agent_templates,
+        bot_events,
         changelog_entries,
+        bot_connectors,
         system_config,
         projects,
         employees,

@@ -282,7 +282,7 @@
                   <el-table-column label="加入时间" min-width="220" show-overflow-tooltip>
                     <template #default="{ row }">{{ row.joined_at || "-" }}</template>
                   </el-table-column>
-                  <el-table-column label="操作" width="140" fixed="right">
+                  <el-table-column label="操作" min-width="140" fixed="right" class-name="table-action-column">
                     <template #default="{ row }">
                       <el-button
                         text
@@ -353,7 +353,7 @@
                   <el-table-column label="加入时间" min-width="220" show-overflow-tooltip>
                     <template #default="{ row }">{{ row.joined_at || "-" }}</template>
                   </el-table-column>
-                  <el-table-column label="操作" width="190" fixed="right">
+                  <el-table-column label="操作" min-width="190" fixed="right" class-name="table-action-column">
                     <template #default="{ row }">
                       <el-button
                         text

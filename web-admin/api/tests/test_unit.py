@@ -5,6 +5,7 @@ from contextvars import ContextVar
 import json
 from pathlib import Path
 import re
+import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -40,14 +41,41 @@ async def test_tool_executor_logic():
     executor = ToolExecutor("test-proj", "test-emp")
     assert executor._timeout == 60
 
-def test_build_local_connector_file_tools_includes_coding_tools():
+def test_build_local_connector_file_tools_includes_file_tools_only():
     from services.local_connector_service import build_local_connector_file_tools
 
     tool_names = {item["tool_name"] for item in build_local_connector_file_tools()}
 
     assert "local_connector_read_file" in tool_names
     assert "local_connector_write_file" in tool_names
-    assert "local_connector_run_command" in tool_names
+    assert "local_connector_run_command" not in tool_names
+
+
+def test_build_project_host_command_tools_includes_local_shell_tool():
+    from services.project_host_command_service import (
+        PROJECT_HOST_RUN_COMMAND_TOOL_NAME,
+        build_project_host_command_tools,
+    )
+
+    tools = build_project_host_command_tools("/tmp/project-workspace")
+
+    assert len(tools) == 1
+    assert tools[0]["tool_name"] == PROJECT_HOST_RUN_COMMAND_TOOL_NAME
+    assert tools[0]["workspace_path"] == "/tmp/project-workspace"
+
+
+def test_build_project_host_command_tools_stays_available_without_workspace_path():
+    from services.project_host_command_service import (
+        PROJECT_HOST_RUN_COMMAND_TOOL_NAME,
+        build_project_host_command_tools,
+    )
+
+    tools = build_project_host_command_tools("")
+
+    assert len(tools) == 1
+    assert tools[0]["tool_name"] == PROJECT_HOST_RUN_COMMAND_TOOL_NAME
+    assert tools[0]["workspace_path"] == ""
+    assert "回退到当前 API 服务所在仓库根目录执行" in tools[0]["description"]
 
 
 @pytest.mark.asyncio
@@ -84,6 +112,356 @@ async def test_tool_executor_routes_local_connector_tools(monkeypatch):
     assert captured["kwargs"]["path"] == "src/app.py"
     assert captured["kwargs"]["start_line"] == 5
     assert captured["kwargs"]["end_line"] == 12
+
+
+@pytest.mark.asyncio
+async def test_tool_executor_routes_project_host_run_command(monkeypatch):
+    from services import project_host_command_service as host_command_svc
+    from services.tool_executor import ToolExecutor
+
+    captured: dict = {}
+
+    def fake_run_project_host_command(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "stdout": "PASS"}
+
+    monkeypatch.setattr(host_command_svc, "run_project_host_command", fake_run_project_host_command)
+
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        host_workspace_path="/tmp/project-workspace",
+    )
+
+    result = await executor._execute_tool(
+        "project_host_run_command",
+        {"command": "npm -v", "cwd": "web-admin/frontend", "timeout_sec": 45},
+    )
+
+    assert result["ok"] is True
+    assert captured["workspace_path"] == "/tmp/project-workspace"
+    assert captured["command"] == "npm -v"
+    assert captured["cwd"] == "web-admin/frontend"
+    assert captured["timeout_sec"] == 45
+
+
+@pytest.mark.asyncio
+async def test_tool_executor_routes_project_host_run_command_without_explicit_workspace(monkeypatch):
+    from services import project_host_command_service as host_command_svc
+    from services.tool_executor import ToolExecutor
+
+    captured: dict = {}
+
+    def fake_run_project_host_command(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "stdout": "PASS"}
+
+    monkeypatch.setattr(host_command_svc, "run_project_host_command", fake_run_project_host_command)
+
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        host_workspace_path="",
+    )
+
+    result = await executor._execute_tool(
+        "project_host_run_command",
+        {"command": "npm -v", "timeout_sec": 45},
+    )
+
+    assert result["ok"] is True
+    assert captured["workspace_path"] == ""
+    assert captured["command"] == "npm -v"
+    assert captured["timeout_sec"] == 45
+
+
+def test_run_project_host_command_falls_back_to_service_repo_root(monkeypatch, tmp_path):
+    from services import project_host_command_service as host_command_svc
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(host_command_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(host_command_svc.subprocess, "run", fake_run)
+
+    result = host_command_svc.run_project_host_command(
+        workspace_path="",
+        command="pwd",
+        timeout_sec=5,
+    )
+
+    assert result["ok"] is True
+    assert result["workspace_path"] == str(tmp_path)
+    assert result["cwd"] == str(tmp_path)
+    assert result["workspace_source"] == "service_repo_root_fallback"
+    assert result["environment_label"] == "当前 API 服务仓库根目录（回退）"
+    assert str(tmp_path) in result["environment_summary"]
+    assert result["service_start_script_hint"] == "web-admin/api/scripts/start_api_with_runner.sh"
+    assert result["requested_workspace_path"] == ""
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+
+
+def test_run_project_host_command_returns_project_workspace_environment_metadata(monkeypatch, tmp_path):
+    from services import project_host_command_service as host_command_svc
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(host_command_svc.subprocess, "run", fake_run)
+
+    result = host_command_svc.run_project_host_command(
+        workspace_path=str(tmp_path),
+        command="pwd",
+        timeout_sec=5,
+    )
+
+    assert result["ok"] is True
+    assert result["workspace_path"] == str(tmp_path)
+    assert result["workspace_source"] == "project_workspace"
+    assert result["environment_label"] == "项目工作区"
+    assert result["environment_summary"] == f"命令在项目工作区执行：{tmp_path}"
+    assert result["requested_workspace_path"] == str(tmp_path)
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+
+
+def test_build_cli_plugin_runtime_environment_uses_saved_receipt_paths(tmp_path, monkeypatch):
+    from services import cli_plugin_market_service as plugin_svc
+
+    node_bin = tmp_path / "node-bin"
+    global_bin = tmp_path / "global-bin"
+    plugin_bin = tmp_path / "plugin-bin"
+    npm_path = node_bin / "npm"
+    npx_path = node_bin / "npx"
+    node_path = node_bin / "node"
+    binary_path = plugin_bin / "lark-cli"
+    for path in (node_bin, global_bin, plugin_bin):
+        path.mkdir(parents=True, exist_ok=True)
+    for path in (npm_path, npx_path, node_path, binary_path):
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
+    plugin_svc._save_plugin_install_state(
+        {
+            "feishu-cli": {
+                "installed": True,
+                "installed_version": "1.2.3",
+                "latest_version": "1.2.3",
+                "last_installed_at": "2026-04-24T00:00:00+00:00",
+                "detection_source": "binary",
+                "toolchain": {
+                    "node_path": str(node_path),
+                    "npm_path": str(npm_path),
+                    "npx_path": str(npx_path),
+                    "plugin_binary_path": str(binary_path),
+                    "npm_global_bin": str(global_bin),
+                },
+            }
+        }
+    )
+
+    env, metadata = plugin_svc.build_cli_plugin_runtime_environment(base_env={"PATH": "/usr/bin"})
+
+    assert metadata["plugin_runtime_enabled"] is True
+    assert str(node_bin) in env["PATH"]
+    assert str(plugin_bin) in env["PATH"]
+    assert str(global_bin) in env["PATH"]
+    assert metadata["plugin_runtime_plugins"][0]["plugin_id"] == "feishu-cli"
+    assert metadata["plugin_runtime_plugins"][0]["binary_path"] == str(binary_path)
+
+
+def test_build_cli_plugin_runtime_environment_backfills_detected_plugin_runtime(tmp_path, monkeypatch):
+    from services import cli_plugin_market_service as plugin_svc
+
+    node_bin = tmp_path / "node-bin"
+    lark_bin = tmp_path / "lark-bin"
+    for path in (node_bin, lark_bin):
+        path.mkdir(parents=True, exist_ok=True)
+    for path in (
+        node_bin / "node",
+        node_bin / "npm",
+        node_bin / "npx",
+        lark_bin / "lark-cli",
+    ):
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        plugin_svc,
+        "list_cli_plugins",
+        lambda include_status=False: [
+            {
+                "id": "feishu-cli",
+                "binary_name": "lark-cli",
+                "package_name": "@larksuite/cli",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        plugin_svc,
+        "_collect_runtime_toolchain_snapshot",
+        lambda plugin, receipt=None: {
+            "node_path": str(node_bin / "node"),
+            "npm_path": str(node_bin / "npm"),
+            "npx_path": str(node_bin / "npx"),
+            "plugin_binary_path": str(lark_bin / "lark-cli"),
+            "npm_global_bin": str(lark_bin),
+            "runtime_path_entries": [str(node_bin), str(lark_bin)],
+        },
+    )
+    monkeypatch.setattr(
+        plugin_svc,
+        "_detect_installed_version",
+        lambda plugin: ("1.0.18", "npm-global"),
+    )
+
+    env, metadata = plugin_svc.build_cli_plugin_runtime_environment(
+        base_env={"PATH": "/usr/bin"},
+    )
+
+    assert metadata["plugin_runtime_enabled"] is True
+    assert str(node_bin) in env["PATH"]
+    assert str(lark_bin) in env["PATH"]
+    assert metadata["plugin_runtime_plugins"][0]["plugin_id"] == "feishu-cli"
+    assert metadata["plugin_runtime_plugins"][0]["binary_path"] == str(lark_bin / "lark-cli")
+
+    receipt = plugin_svc._read_install_receipt("feishu-cli")
+    assert receipt["installed"] is True
+    assert receipt["installed_version"] == "1.0.18"
+    assert receipt["toolchain"]["plugin_binary_path"] == str(lark_bin / "lark-cli")
+
+
+def test_detect_installed_version_uses_saved_binary_path_when_path_missing(tmp_path, monkeypatch):
+    from services import cli_plugin_market_service as plugin_svc
+
+    node_bin = tmp_path / "node-bin"
+    plugin_bin = tmp_path / "plugin-bin"
+    npm_path = node_bin / "npm"
+    node_path = node_bin / "node"
+    binary_path = plugin_bin / "lark-cli"
+    for path in (node_bin, plugin_bin):
+        path.mkdir(parents=True, exist_ok=True)
+    for path in (npm_path, node_path, binary_path):
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(plugin_svc, "which", lambda _name: "")
+    plugin_svc._save_plugin_install_state(
+        {
+            "feishu-cli": {
+                "installed": True,
+                "installed_version": "1.2.3",
+                "latest_version": "1.2.3",
+                "last_installed_at": "2026-04-24T00:00:00+00:00",
+                "detection_source": "binary",
+                "toolchain": {
+                    "node_path": str(node_path),
+                    "npm_path": str(npm_path),
+                    "plugin_binary_path": str(binary_path),
+                },
+            }
+        }
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="lark-cli 1.2.3\n", stderr="")
+
+    monkeypatch.setattr(plugin_svc.subprocess, "run", fake_run)
+
+    version, detection_source = plugin_svc._detect_installed_version(
+        {"id": "feishu-cli", "binary_name": "lark-cli", "package_name": "@larksuite/cli"}
+    )
+
+    assert version == "1.2.3"
+    assert detection_source == "binary"
+    assert captured["args"][0][0] == str(binary_path)
+    assert str(node_bin) in captured["kwargs"]["env"]["PATH"]
+
+
+def test_normalize_cli_plugin_host_skill_layout_uses_shared_root(tmp_path, monkeypatch):
+    from services import cli_plugin_market_service as plugin_svc
+
+    monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
+
+    agents_root = tmp_path / ".agents" / "skills"
+    qoder_root = tmp_path / ".qoder" / "skills"
+    codebuddy_root = tmp_path / ".codebuddy" / "skills"
+    pkg_dir = agents_root / "lark-doc"
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    (pkg_dir / "SKILL.md").write_text("# doc\n", encoding="utf-8")
+
+    qoder_root.mkdir(parents=True, exist_ok=True)
+    (qoder_root / "lark-doc").symlink_to(pkg_dir, target_is_directory=True)
+
+    codebuddy_root.mkdir(parents=True, exist_ok=True)
+
+    result = plugin_svc.normalize_cli_plugin_host_skill_layout()
+
+    shared_root = tmp_path / ".ai-employee" / "skills" / "host-marketplace"
+    assert shared_root.is_dir()
+    assert (shared_root / "lark-doc" / "SKILL.md").read_text(encoding="utf-8") == "# doc\n"
+
+    assert agents_root.is_symlink()
+    assert agents_root.resolve() == shared_root.resolve()
+    assert qoder_root.is_symlink()
+    assert qoder_root.resolve() == shared_root.resolve()
+    assert codebuddy_root.is_symlink()
+    assert codebuddy_root.resolve() == shared_root.resolve()
+
+    assert result["shared_root"] == str(shared_root)
+    assert any(item["action"] in {"moved_source", "copied_source"} for item in result["actions"])
+    assert any(item["action"] == "collapsed_alias_tree" for item in result["actions"])
+
+
+def test_run_project_host_command_includes_cli_plugin_runtime_paths(monkeypatch, tmp_path):
+    from services import project_host_command_service as host_command_svc
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(
+        host_command_svc,
+        "build_cli_plugin_runtime_environment",
+        lambda: (
+            {"PATH": "/opt/plugin/bin:/usr/bin"},
+            {
+                "plugin_runtime_enabled": True,
+                "plugin_runtime_path_entries": ["/opt/plugin/bin"],
+                "plugin_runtime_plugins": [{"plugin_id": "feishu-cli", "binary_path": "/opt/plugin/bin/lark-cli"}],
+            },
+        ),
+    )
+    monkeypatch.setattr(host_command_svc.subprocess, "run", fake_run)
+
+    result = host_command_svc.run_project_host_command(
+        workspace_path=str(tmp_path),
+        command="pwd",
+        timeout_sec=5,
+    )
+
+    assert result["ok"] is True
+    assert result["plugin_runtime_enabled"] is True
+    assert result["plugin_runtime_path_entries"] == ["/opt/plugin/bin"]
+    assert "/opt/plugin/bin" in result["plugin_runtime_summary"]
+    assert captured["kwargs"]["env"]["PATH"] == "/opt/plugin/bin:/usr/bin"
 
 
 def test_project_config_defaults_type_to_mixed_for_legacy_payload():
@@ -1964,24 +2342,13 @@ async def test_local_connector_llm_adapter_streams_chunks(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tool_executor_routes_local_connector_run_command(monkeypatch):
-    from services import local_connector_service as connector_svc
+async def test_tool_executor_rejects_local_connector_run_command():
     from services.tool_executor import ToolExecutor
 
-    captured: dict = {}
-
-    async def fake_run(connector, **kwargs):
-        captured["connector"] = connector
-        captured["kwargs"] = kwargs
-        return {"ok": True, "stdout": "PASS"}
-
-    monkeypatch.setattr(connector_svc, "run_connector_command", fake_run)
-
-    connector = object()
     executor = ToolExecutor(
         "test-proj",
         "test-emp",
-        local_connector=connector,
+        local_connector=object(),
         local_connector_workspace_path="/tmp/workspace",
         local_connector_sandbox_mode="workspace-write",
     )
@@ -1991,12 +2358,7 @@ async def test_tool_executor_routes_local_connector_run_command(monkeypatch):
         {"command": "pytest -q", "cwd": "web-admin/api", "timeout_sec": 30},
     )
 
-    assert result["ok"] is True
-    assert captured["connector"] is connector
-    assert captured["kwargs"]["workspace_path"] == "/tmp/workspace"
-    assert captured["kwargs"]["command"] == "pytest -q"
-    assert captured["kwargs"]["cwd"] == "web-admin/api"
-    assert captured["kwargs"]["timeout_sec"] == 30
+    assert result == {"error": "Unsupported local connector tool: local_connector_run_command"}
 
 
 @pytest.mark.asyncio
@@ -3817,6 +4179,7 @@ def test_dictionary_routes_support_custom_dictionary_crud(tmp_path, monkeypatch)
     core_config._file_env_values.cache_clear()
     for proxy_name in (
         "role_store",
+        "bot_connector_store",
         "system_config_store",
         "project_store",
         "project_material_store",
@@ -3908,6 +4271,7 @@ def test_system_config_patch_supports_dictionaries(tmp_path, monkeypatch):
     core_config._file_env_values.cache_clear()
     for proxy_name in (
         "role_store",
+        "bot_connector_store",
         "system_config_store",
         "project_store",
         "project_material_store",
@@ -3967,6 +4331,7 @@ def test_system_config_patch_supports_query_mcp_clarity_threshold(tmp_path, monk
     core_config._file_env_values.cache_clear()
     for proxy_name in (
         "role_store",
+        "bot_connector_store",
         "system_config_store",
         "project_store",
         "project_material_store",
@@ -4004,6 +4369,7 @@ def test_system_config_redacts_voice_allowlists_for_non_admin_readers(tmp_path, 
     core_config._file_env_values.cache_clear()
     for proxy_name in (
         "role_store",
+        "bot_connector_store",
         "system_config_store",
         "project_store",
         "project_material_store",
@@ -4061,6 +4427,7 @@ def test_public_contact_channels_endpoint_returns_enabled_items(tmp_path, monkey
     core_config._file_env_values.cache_clear()
     for proxy_name in (
         "role_store",
+        "bot_connector_store",
         "system_config_store",
         "project_store",
         "project_material_store",
@@ -11341,7 +11708,7 @@ def test_query_mcp_resources_and_style_hints_use_system_config(monkeypatch):
     )
     risk = registered_tools["classify_command_risk"](
         command="git push origin feature/mcp-upgrade",
-        tool_name="local_connector_run_command",
+        tool_name="project_host_run_command",
         project_id="proj-1",
     )
     scope = registered_tools["check_workspace_scope"](
@@ -12145,7 +12512,7 @@ def test_query_mcp_implementation_round_can_progress_past_33_with_completion_and
         username="admin",
         chat_session_id=started["chat_session_id"],
         assistant_content="已完成推进逻辑修复，并已通过 git diff 和日志确认修改生效，继续验证结果并完成本轮收尾。",
-        successful_tool_names=["local_connector_read_file", "local_connector_run_command"],
+        successful_tool_names=["local_connector_read_file", "project_host_run_command"],
         task_tree_tool_used=False,
     )
 
@@ -12732,6 +13099,47 @@ def test_project_chat_store_persists_videos_field(tmp_path):
     assert messages[0].videos == ["https://cdn.example.com/final.mp4"]
 
 
+def test_project_chat_store_persists_group_source_context(tmp_path):
+    from stores.json.project_chat_store import ProjectChatMessage, ProjectChatStore
+
+    store = ProjectChatStore(tmp_path / "data")
+    session = store.create_session(
+        "proj-test",
+        "tester",
+        title="飞书群：研发群",
+        source_context={
+            "source_type": "manual_ai_chat",
+            "platform": "feishu",
+            "connector_id": "feishu-main",
+            "external_chat_name": "研发群",
+            "thread_key": "manual:feishu:feishu-main:abc123",
+        },
+    )
+
+    store.append_message(
+        ProjectChatMessage(
+            id="msg-user-1",
+            project_id="proj-test",
+            username="tester",
+            role="user",
+            content="总结这个群里的需求",
+            chat_session_id=session.id,
+        )
+    )
+
+    messages = store.list_messages("proj-test", "tester", chat_session_id=session.id)
+    assert len(messages) == 1
+    assert messages[0].source_type == "manual_ai_chat"
+    assert messages[0].platform == "feishu"
+    assert messages[0].connector_id == "feishu-main"
+    assert messages[0].external_chat_name == "研发群"
+    assert messages[0].thread_key == "manual:feishu:feishu-main:abc123"
+
+    sessions = store.list_sessions("proj-test", "tester")
+    assert sessions[0].external_chat_name == "研发群"
+    assert sessions[0].thread_key == "manual:feishu:feishu-main:abc123"
+
+
 def test_project_chat_store_keeps_full_history_without_auto_trim(tmp_path):
     """聊天记录不应因为条数过多被自动裁掉"""
     from stores.json.project_chat_store import ProjectChatMessage, ProjectChatStore
@@ -12935,8 +13343,33 @@ def test_resolve_local_connector_coding_tools_returns_registered_tools(monkeypat
     assert selected_connector is connector
     assert sandbox_mode == "workspace-write"
     assert "local_connector_read_file" in tool_names
-    assert "local_connector_run_command" in tool_names
+    assert "local_connector_run_command" not in tool_names
     assert all(item["workspace_path"] == "/tmp/connector-workspace" for item in tools)
+
+
+def test_collect_runtime_tools_includes_project_host_command(monkeypatch):
+    from routers import projects as projects_router
+    from services.project_host_command_service import PROJECT_HOST_RUN_COMMAND_TOOL_NAME
+
+    monkeypatch.setattr(
+        "services.dynamic_mcp_runtime.list_project_proxy_tools_runtime",
+        lambda project_id, employee_id: [],
+    )
+    monkeypatch.setattr(
+        "services.dynamic_mcp_runtime.list_project_external_tools_runtime",
+        lambda project_id: [],
+    )
+
+    tools = projects_router._collect_runtime_tools(
+        "proj-1",
+        selected_employee_ids=[],
+        enabled_tool_names=[],
+        explicit_tool_filter=False,
+        tool_priority=[],
+        project_workspace_path="/tmp/project-workspace",
+    )
+
+    assert [item["tool_name"] for item in tools] == [PROJECT_HOST_RUN_COMMAND_TOOL_NAME]
 
 
 def test_project_chat_providers_route_returns_connector_workspace_path(tmp_path, monkeypatch):
@@ -13750,6 +14183,89 @@ def test_build_project_chat_messages_includes_project_workflow_skills(monkeypatc
     assert "不要把技能说明当成已完成的后端校验" in system_prompt
 
 
+def test_build_project_chat_messages_requires_fetching_urls_via_host_command():
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig
+
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        description="测试项目",
+    )
+
+    messages = projects_router._build_project_chat_messages(
+        project,
+        "帮我安装飞书 CLI：https://open.feishu.cn/document/no_class/mcp-archive/feishu-cli-installation-guide.md",
+        [],
+        tools=[{"tool_name": "project_host_run_command", "builtin": True}],
+    )
+    system_prompt = str(messages[0]["content"])
+
+    assert "当前用户消息包含外部链接" in system_prompt
+    assert "project_host_run_command" in system_prompt
+    assert "curl -L --fail --silent --show-error" in system_prompt
+    assert "不要只返回说明" in system_prompt
+    assert "https://open.feishu.cn/document/no_class/mcp-archive/feishu-cli-installation-guide.md" in system_prompt
+
+
+def test_build_project_chat_messages_prefers_direct_host_command_execution():
+    from routers import projects as projects_router
+    from stores.json.project_store import ProjectConfig
+
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        description="测试项目",
+    )
+
+    messages = projects_router._build_project_chat_messages(
+        project,
+        "直接执行 lark-cli auth status 并告诉我结果",
+        [],
+        tools=[{"tool_name": "project_host_run_command", "builtin": True}],
+    )
+    system_prompt = str(messages[0]["content"])
+
+    assert "project_host_run_command" in system_prompt
+    assert "优先直接执行，不要只返回命令教程" in system_prompt
+    assert "返回实际执行结果" in system_prompt
+    assert "本轮实际执行过的命令" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_maybe_enrich_project_chat_message_with_url_content_fetches_http_links(monkeypatch):
+    from routers import projects as projects_router
+
+    captured_calls: list[dict[str, object]] = []
+
+    def fake_run_project_host_command(**kwargs):
+        captured_calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "stdout": "安装命令：npx @larksuite/cli@latest install",
+            "stderr": "",
+        }
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(projects_router, "run_project_host_command", fake_run_project_host_command)
+    monkeypatch.setattr(projects_router, "run_in_threadpool", fake_run_in_threadpool)
+
+    enriched = await projects_router._maybe_enrich_project_chat_message_with_url_content(
+        "帮我安装飞书 CLI：https://open.feishu.cn/document/no_class/mcp-archive/feishu-cli-installation-guide.md",
+        [{"tool_name": "project_host_run_command", "builtin": True}],
+        host_workspace_path="/tmp/project-workspace",
+    )
+
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["workspace_path"] == "/tmp/project-workspace"
+    assert "curl -L --fail --silent --show-error" in str(captured_calls[0]["command"])
+    assert "【系统已自动抓取的外部链接正文】" in enriched
+    assert "安装命令：npx @larksuite/cli@latest install" in enriched
+    assert "继续实际执行，不要只返回说明" in enriched
+
+
 def test_build_project_manual_template_payload_prefers_ai_decided_collaboration(monkeypatch):
     from routers import employees as employees_router
     from routers import projects as projects_router
@@ -14162,6 +14678,82 @@ def test_admin_can_update_other_account(tmp_path, monkeypatch):
     updated = user_store.get("bob")
     assert updated is not None
     assert verify_password("bob-new-password", updated.password_hash)
+
+
+def test_build_project_chat_operation_event_for_start():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "start",
+            "request_id": "req-1",
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "operation_event"
+    assert event["operation_id"] == "request:req-1"
+    assert event["phase"] == "running"
+    assert event["summary"] == "已开始，正在处理中"
+
+
+def test_build_project_chat_operation_event_for_terminal_start():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "terminal_mirror_started",
+            "chat_session_id": "chat-1",
+            "session_id": "term-1",
+            "workspace_path": "/tmp/demo",
+            "command": "npm run dev",
+        }
+    )
+
+    assert event is not None
+    assert event["operation_id"] == "terminal:term-1"
+    assert event["phase"] == "running"
+    assert event["action_type"] == "enter_text"
+    assert "cwd=/tmp/demo" in event["detail"]
+    assert "cmd=npm run dev" in event["detail"]
+
+
+def test_build_project_chat_operation_event_for_done_guard():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "done",
+            "request_id": "req-2",
+            "completed_reason": "tool_budget_exceeded",
+            "content": "已停止",
+        }
+    )
+
+    assert event is not None
+    assert event["operation_id"] == "request:req-2"
+    assert event["phase"] == "blocked"
+    assert event["summary"] == "达到工具调用上限"
+    assert event["detail"] == "已停止"
+
+
+def test_build_project_chat_operation_event_for_auto_continue():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "auto_continue",
+            "request_id": "req-3",
+            "message": "系统已自动继续执行后续步骤。",
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "operation_event"
+    assert event["operation_id"] == "request:req-3"
+    assert event["phase"] == "running"
+    assert event["summary"] == "系统已自动继续执行"
+    assert event["detail"] == "系统已自动继续执行后续步骤。"
 
 
 if __name__ == "__main__":

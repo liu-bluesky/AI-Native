@@ -8,7 +8,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.config import get_api_data_dir
 from core.deps import (
@@ -20,6 +20,7 @@ from core.deps import (
     user_store,
 )
 from models.requests import SystemConfigUpdateReq
+from services.bot_connector_service import list_bot_connectors, replace_bot_connectors
 from services.llm_provider_service import get_llm_provider_service
 from services.system_mcp_discovery import list_system_mcp_skills
 from stores.json.system_config_store import (
@@ -196,6 +197,7 @@ async def _build_greeting_audio_metadata(
 
 def _serialize_system_config(config: object, *, include_sensitive_voice_scope: bool) -> dict[str, object]:
     payload = asdict(config)
+    payload["bot_platform_connectors"] = list_bot_connectors()
     if include_sensitive_voice_scope:
         return payload
     payload["voice_input_allowed_usernames"] = []
@@ -513,13 +515,20 @@ async def get_system_voice_output_voices(
 @router.patch("")
 async def patch_system_config(
     req: SystemConfigUpdateReq,
+    request: Request,
     auth_payload: dict = Depends(require_auth),
 ):
     _require_system_config_permission(auth_payload)
     updates = req.model_dump(exclude_none=True)
     if not updates:
         cfg = system_config_store.get_global()
-        return {"status": "no_change", "config": asdict(cfg)}
+        return {
+            "status": "no_change",
+            "config": _serialize_system_config(
+                cfg,
+                include_sensitive_voice_scope=_can_manage_system_config(auth_payload),
+            ),
+        }
     current_config = system_config_store.get_global()
 
     allowed = {
@@ -554,6 +563,8 @@ async def patch_system_config(
         "global_assistant_transcription_prompt",
         "global_assistant_wake_phrase",
         "global_assistant_idle_timeout_sec",
+        "bot_platform_connectors",
+        "feishu_bot_long_connection_worker_enabled",
         "public_contact_channels",
         "query_mcp_public_base_url",
         "query_mcp_clarity_confirm_threshold",
@@ -718,28 +729,31 @@ async def patch_system_config(
         or ""
     ).strip()
     if voice_enabled:
-        if not voice_provider_id:
-            raise HTTPException(400, "voice_input_provider_id is required when voice_input_enabled is true")
-        if not voice_model_name:
-            raise HTTPException(400, "voice_input_model_name is required when voice_input_enabled is true")
-        provider = get_llm_provider_service().get_provider_raw(
-            voice_provider_id,
-            owner_username=str(auth_payload.get("sub") or "").strip(),
-            include_all=True,
-            include_shared=True,
-        )
-        if provider is None or not bool(provider.get("enabled", True)):
-            raise HTTPException(400, "voice_input_provider_id is invalid or disabled")
-        provider_option = _serialize_voice_provider_option(provider)
-        if provider_option is None:
-            raise HTTPException(400, "voice_input_provider_id has no audio transcription model")
-        valid_model_names = {
-            str(item.get("name") or "").strip()
-            for item in provider_option.get("model_configs") or []
-            if str(item.get("name") or "").strip()
-        }
-        if voice_model_name not in valid_model_names:
-            raise HTTPException(400, "voice_input_model_name is invalid for the selected provider")
+        voice_input_valid = bool(voice_provider_id and voice_model_name)
+        if voice_input_valid:
+            try:
+                provider = get_llm_provider_service().get_provider_raw(
+                    voice_provider_id,
+                    owner_username=str(auth_payload.get("sub") or "").strip(),
+                    include_all=True,
+                    include_shared=True,
+                )
+            except Exception:
+                provider = None
+            if provider is None or not bool(provider.get("enabled", True)):
+                voice_input_valid = False
+            else:
+                provider_option = _serialize_voice_provider_option(provider)
+                valid_model_names = {
+                    str(item.get("name") or "").strip()
+                    for item in (provider_option or {}).get("model_configs") or []
+                    if str(item.get("name") or "").strip()
+                }
+                voice_input_valid = bool(provider_option and voice_model_name in valid_model_names)
+        if not voice_input_valid:
+            updates["voice_input_enabled"] = False
+            updates["voice_input_provider_id"] = ""
+            updates["voice_input_model_name"] = ""
 
     voice_output_enabled = bool(
         updates.get(
@@ -769,30 +783,32 @@ async def patch_system_config(
         or ""
     ).strip()
     if voice_output_enabled:
-        if not voice_output_provider_id:
-            raise HTTPException(400, "voice_output_provider_id is required when voice_output_enabled is true")
-        if not voice_output_model_name:
-            raise HTTPException(400, "voice_output_model_name is required when voice_output_enabled is true")
-        if not voice_output_voice:
-            raise HTTPException(400, "voice_output_voice is required when voice_output_enabled is true")
-        provider = get_llm_provider_service().get_provider_raw(
-            voice_output_provider_id,
-            owner_username=str(auth_payload.get("sub") or "").strip(),
-            include_all=True,
-            include_shared=True,
-        )
-        if provider is None or not bool(provider.get("enabled", True)):
-            raise HTTPException(400, "voice_output_provider_id is invalid or disabled")
-        provider_option = _serialize_voice_output_provider_option(provider)
-        if provider_option is None:
-            raise HTTPException(400, "voice_output_provider_id has no audio generation model")
-        valid_model_names = {
-            str(item.get("name") or "").strip()
-            for item in provider_option.get("model_configs") or []
-            if str(item.get("name") or "").strip()
-        }
-        if voice_output_model_name not in valid_model_names:
-            raise HTTPException(400, "voice_output_model_name is invalid for the selected provider")
+        voice_output_valid = bool(voice_output_provider_id and voice_output_model_name and voice_output_voice)
+        if voice_output_valid:
+            try:
+                provider = get_llm_provider_service().get_provider_raw(
+                    voice_output_provider_id,
+                    owner_username=str(auth_payload.get("sub") or "").strip(),
+                    include_all=True,
+                    include_shared=True,
+                )
+            except Exception:
+                provider = None
+            if provider is None or not bool(provider.get("enabled", True)):
+                voice_output_valid = False
+            else:
+                provider_option = _serialize_voice_output_provider_option(provider)
+                valid_model_names = {
+                    str(item.get("name") or "").strip()
+                    for item in (provider_option or {}).get("model_configs") or []
+                    if str(item.get("name") or "").strip()
+                }
+                voice_output_valid = bool(provider_option and voice_output_model_name in valid_model_names)
+        if not voice_output_valid:
+            updates["voice_output_enabled"] = False
+            updates["voice_output_provider_id"] = ""
+            updates["voice_output_model_name"] = ""
+            updates["voice_output_voice"] = ""
 
     global_assistant_chat_provider_id = str(
         updates.get(
@@ -836,6 +852,18 @@ async def patch_system_config(
         updates["public_contact_channels"] = normalize_public_contact_channels(
             updates["public_contact_channels"]
         )
+
+    bot_connectors_payload = None
+    if "bot_platform_connectors" in updates:
+        bot_connectors_payload = updates.pop("bot_platform_connectors")
+
+    worker_toggle_requested = False
+    if "feishu_bot_long_connection_worker_enabled" in updates:
+        next_worker_enabled = bool(updates["feishu_bot_long_connection_worker_enabled"])
+        worker_toggle_requested = next_worker_enabled != bool(
+            getattr(current_config, "feishu_bot_long_connection_worker_enabled", False)
+        )
+        updates["feishu_bot_long_connection_worker_enabled"] = next_worker_enabled
 
     if "query_mcp_public_base_url" in updates:
         normalized_base_url = normalize_query_mcp_public_base_url(
@@ -909,9 +937,27 @@ async def patch_system_config(
             owner_username=str(auth_payload.get("sub") or "").strip(),
         )
 
-    updated = system_config_store.patch_global(updates)
+    if updates:
+        updated = system_config_store.patch_global(updates)
+    else:
+        updated = current_config
+    if bot_connectors_payload is not None:
+        replace_bot_connectors(bot_connectors_payload)
+    supervisor = getattr(request.app.state, "feishu_long_connection_supervisor", None)
+    if supervisor is not None:
+        worker_enabled = bool(getattr(updated, "feishu_bot_long_connection_worker_enabled", False))
+        if worker_enabled and (worker_toggle_requested or bot_connectors_payload is not None):
+            supervisor.restart()
+        elif worker_toggle_requested:
+            await supervisor.stop()
     previous_storage_path = str(previous_greeting_audio.get("storage_path") or "").strip()
     current_storage_path = str(getattr(updated, "global_assistant_greeting_audio", {}).get("storage_path") or "").strip()
     if previous_storage_path and previous_storage_path != current_storage_path:
         _delete_greeting_audio_file(previous_storage_path)
-    return {"status": "updated", "config": asdict(updated)}
+    return {
+        "status": "updated",
+        "config": _serialize_system_config(
+            updated,
+            include_sensitive_voice_scope=_can_manage_system_config(auth_payload),
+        ),
+    }

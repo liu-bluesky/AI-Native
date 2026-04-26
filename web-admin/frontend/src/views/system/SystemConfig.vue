@@ -881,6 +881,7 @@
             </div>
           </el-form>
         </section>
+
       </div>
 
       <aside v-show="activeTab === 'mcp-config'" class="content-aside">
@@ -944,6 +945,21 @@
           />
 
           <el-form label-position="top" class="switch-form">
+            <div class="employee-skill-site-card voice-config-card">
+              <div class="voice-config-section__head">
+                <div>
+                  <div class="employee-skill-site-card__title">飞书长连接 worker</div>
+                  <div class="switch-desc">
+                    开启后，后端会托管已配置为长连接且允许托管的飞书机器人 worker；保存配置会立即尝试启动或停止。
+                  </div>
+                </div>
+                <el-switch v-model="form.feishu_bot_long_connection_worker_enabled" />
+              </div>
+              <div class="field-desc field-desc-block">
+                这个开关替代原来的 FEISHU_BOT_LONG_CONNECTION_WORKER_ENABLED 环境变量；仍需要在机器人接入页选择“长连接”并打开对应连接器的 worker 托管开关。
+              </div>
+            </div>
+
             <el-form-item label="统一 MCP 对外地址">
               <el-input
                 v-model="form.query_mcp_public_base_url"
@@ -1210,9 +1226,11 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { useRoute, useRouter } from "vue-router";
 import api from "@/utils/api.js";
+import { resolveSettingsAwarePath } from "@/utils/chat-settings-route.js";
 
 const DEFAULT_MCP_CONFIG = {
   mcpServers: {
@@ -1247,6 +1265,7 @@ const DEFAULT_SKILL_REGISTRY_SOURCES = {
     },
   },
 };
+const DEFAULT_BOT_PLATFORM_CONNECTORS = [];
 const DEFAULT_PUBLIC_CONTACT_CHANNELS = [];
 const DEFAULT_EMPLOYEE_RULE_GENERATION_PROMPT =
   "基于员工职责、目标、技能建议和 prompts.chat MCP 相关能力，为员工自动补全 1 到 3 条可直接落地的执行规则。优先生成问题排查、输出规范、风险控制、技术选型相关规则；规则内容必须具体、可执行、可绑定。";
@@ -1338,6 +1357,13 @@ const DEFAULT_CHAT_STYLE_HINTS = {
     order_hint: "回答顺序：先给结论再给步骤。",
   },
 };
+const SYSTEM_CONFIG_TAB_NAMES = [
+  "defaults",
+  "assistant",
+  "ecosystem",
+  "mcp-config",
+  "mcp-discovery",
+];
 const EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS = [
   {
     label: "prompts.chat curated 规则源",
@@ -1379,6 +1405,8 @@ function cloneConfig(value) {
 const loading = ref(false);
 const saving = ref(false);
 const activeTab = ref("defaults");
+const route = useRoute();
+const router = useRouter();
 const skillsLoading = ref(false);
 const connectorsLoading = ref(false);
 const uploadingDesktopArtifact = ref(false);
@@ -1402,6 +1430,7 @@ const voiceUserOptions = ref([]);
 const voiceRoleOptions = ref([]);
 const voiceOutputProviderOptions = ref([]);
 const voiceOutputVoiceOptions = ref([]);
+const projectOptions = ref([]);
 const voiceOutputVoiceCatalogLoading = ref(false);
 const voiceOutputVoiceCatalogMessage = ref("");
 const desktopArtifactUploadForm = ref({
@@ -1446,6 +1475,8 @@ const form = ref({
     DEFAULT_GLOBAL_ASSISTANT_TRANSCRIPTION_PROMPT,
   global_assistant_wake_phrase: "你好助手",
   global_assistant_idle_timeout_sec: 5,
+  bot_platform_connectors: cloneConfig(DEFAULT_BOT_PLATFORM_CONNECTORS),
+  feishu_bot_long_connection_worker_enabled: false,
   public_contact_channels: cloneConfig(DEFAULT_PUBLIC_CONTACT_CHANNELS),
   query_mcp_public_base_url: "",
   query_mcp_clarity_confirm_threshold: 3,
@@ -1677,6 +1708,67 @@ function normalizePublicContactChannels(value) {
     }
   }
   return items;
+}
+
+function normalizeBotConnectorId(value, fallback) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 80);
+  return normalized || fallback;
+}
+
+function normalizeBotPlatformConnectors(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const items = [];
+  const seen = new Set();
+  for (const rawItem of value) {
+    if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+      continue;
+    }
+    const platform = String(rawItem.platform || "").trim().toLowerCase();
+    if (!["qq", "feishu", "wechat"].includes(platform)) {
+      continue;
+    }
+    const id = normalizeBotConnectorId(
+      rawItem.id,
+      `${platform}-connector-${items.length + 1}`,
+    );
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    items.push({
+      id,
+      enabled: rawItem.enabled !== false,
+      platform,
+      name: String(rawItem.name || "").trim().slice(0, 120),
+      agent_name: String(rawItem.agent_name || "").trim().slice(0, 120),
+      description: String(rawItem.description || "").trim().slice(0, 280),
+      app_id: String(rawItem.app_id || "").trim().slice(0, 160),
+      app_secret: String(rawItem.app_secret || "").trim().slice(0, 200),
+      verification_token: String(rawItem.verification_token || "").trim().slice(0, 200),
+      encrypt_key: String(rawItem.encrypt_key || "").trim().slice(0, 200),
+      project_id: String(rawItem.project_id || "").trim().slice(0, 80),
+      guide_url: String(rawItem.guide_url || "").trim().slice(0, 500),
+      sort_order: Math.min(
+        999,
+        Math.max(0, Number(rawItem.sort_order || 0) || 0),
+      ),
+    });
+  }
+  return items.sort(
+    (a, b) =>
+      a.sort_order - b.sort_order ||
+      a.platform.localeCompare(b.platform) ||
+      String(a.name || "").localeCompare(String(b.name || "")) ||
+      a.id.localeCompare(b.id),
+  );
 }
 
 function normalizeRiskLevelList(value, fallback = []) {
@@ -2014,6 +2106,12 @@ function applyConfigToForm(config, options = {}) {
     global_assistant_idle_timeout_sec: Math.max(
       3,
       Math.min(30, Number(payload.global_assistant_idle_timeout_sec || 5) || 5),
+    ),
+    bot_platform_connectors: normalizeBotPlatformConnectors(
+      payload.bot_platform_connectors,
+    ),
+    feishu_bot_long_connection_worker_enabled: Boolean(
+      payload.feishu_bot_long_connection_worker_enabled,
     ),
     public_contact_channels: normalizePublicContactChannels(
       payload.public_contact_channels,
@@ -2536,6 +2634,41 @@ async function fetchConfig() {
   }
 }
 
+async function fetchProjectOptions() {
+  try {
+    const data = await api.get("/projects");
+    projectOptions.value = Array.isArray(data?.projects)
+      ? data.projects
+          .map((item) => ({
+            value: String(item?.id || "").trim(),
+            label: String(item?.name || item?.id || "").trim(),
+          }))
+          .filter((item) => item.value && item.label)
+      : [];
+  } catch {
+    projectOptions.value = [];
+  }
+}
+
+function normalizeSystemConfigTab(value) {
+  const normalized = String(value || "").trim();
+  return SYSTEM_CONFIG_TAB_NAMES.includes(normalized) ? normalized : "defaults";
+}
+
+function syncActiveTabFromRoute() {
+  if (String(route.query.tab || "").trim() === "bot-platforms") {
+    void router.replace({
+      path: resolveSettingsAwarePath(
+        route.path,
+        "/system/bot-connectors",
+        "/system/bot-connectors",
+      ),
+    });
+    return;
+  }
+  activeTab.value = normalizeSystemConfigTab(route.query.tab);
+}
+
 async function saveConfig() {
   let mcpConfig;
   try {
@@ -2619,6 +2752,12 @@ async function saveConfig() {
           Number(form.value.global_assistant_idle_timeout_sec || 5) || 5,
         ),
       ),
+      bot_platform_connectors: normalizeBotPlatformConnectors(
+        form.value.bot_platform_connectors,
+      ),
+      feishu_bot_long_connection_worker_enabled: Boolean(
+        form.value.feishu_bot_long_connection_worker_enabled,
+      ),
       public_contact_channels: normalizePublicContactChannels(
         form.value.public_contact_channels,
       ),
@@ -2676,7 +2815,29 @@ async function saveConfig() {
 }
 
 onMounted(() => {
+  syncActiveTabFromRoute();
   fetchConfig();
+  fetchProjectOptions();
+});
+
+watch(
+  () => route.query.tab,
+  () => {
+    syncActiveTabFromRoute();
+  },
+);
+
+watch(activeTab, (value) => {
+  const normalizedTab = normalizeSystemConfigTab(value);
+  if (String(route.query.tab || "") === normalizedTab) {
+    return;
+  }
+  router.replace({
+    query: {
+      ...route.query,
+      tab: normalizedTab,
+    },
+  });
 });
 
 </script>

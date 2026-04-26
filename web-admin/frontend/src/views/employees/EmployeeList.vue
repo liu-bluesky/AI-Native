@@ -57,7 +57,7 @@
       <el-table-column label="技能数" width="80">
         <template #default="{ row }">{{ row.skills?.length || 0 }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="360" fixed="right">
+      <el-table-column label="操作" min-width="360" fixed="right" class-name="table-action-column">
         <template #default="{ row }">
           <div class="employee-actions-cell">
             <el-button

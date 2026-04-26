@@ -1016,12 +1016,6 @@ def _infer_action(tool_name: str = "", command: str = "", path: str = "", action
         return "write"
     if normalized_tool in {"local_connector_read_file"}:
         return "read"
-    if normalized_tool in {"local_connector_run_command"}:
-        if any(pattern in normalized_command for pattern in _DESTRUCTIVE_COMMAND_PATTERNS):
-            return "destructive"
-        if any(hint in normalized_command for hint in _WRITE_COMMAND_HINTS):
-            return "write"
-        return "execute"
     if any(pattern in normalized_command for pattern in _DESTRUCTIVE_COMMAND_PATTERNS):
         return "destructive"
     if any(hint in normalized_command for hint in _WRITE_COMMAND_HINTS):

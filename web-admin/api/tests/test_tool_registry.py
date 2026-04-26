@@ -76,6 +76,7 @@ def test_collect_project_runtime_tools_filters_employee_and_name_and_priority():
 def test_summarize_effective_tools_infers_sources():
     summarized, total = tool_registry.summarize_effective_tools(
         [
+            {"tool_name": "project_host_run_command", "builtin": True},
             {"tool_name": "local_connector_read_file"},
             {"tool_name": "ext_tool", "module_type": "external_mcp_tool"},
             {"tool_name": "sys_tool", "module_type": "system_mcp_tool"},
@@ -85,8 +86,9 @@ def test_summarize_effective_tools_infers_sources():
         ]
     )
 
-    assert total == 6
+    assert total == 7
     assert [item["source"] for item in summarized] == [
+        "local_host",
         "local_connector",
         "external_mcp",
         "system_mcp",

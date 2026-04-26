@@ -5,7 +5,7 @@ export const DESKTOP_WALLPAPER_STORAGE_KEY = "desktop_wallpaper_config";
 export const DESKTOP_WINDOW_SESSION_STORAGE_KEY = "desktop_window_session";
 const DESKTOP_DOCK_APP_IDS_STORAGE_KEY = "desktop_dock_app_ids";
 const DESKTOP_DOCK_ORDER_STORAGE_KEY = "desktop_dock_order";
-const DESKTOP_REQUIRED_DOCK_APP_IDS = ["chat", "workbench"];
+const DESKTOP_REQUIRED_DOCK_APP_IDS = ["chat", "tasks", "workbench"];
 
 export const DESKTOP_WALLPAPER_PRESETS = [
   {
@@ -67,6 +67,7 @@ function clampNumber(value, min, max) {
 const DESKTOP_APP_ICON_THEMES = {
   chat: ["#22d3ee", "#2563eb"],
   workbench: ["#f59e0b", "#ef4444"],
+  tasks: ["#6366f1", "#2563eb"],
   projects: ["#38bdf8", "#0f766e"],
   "project-detail": ["#60a5fa", "#4f46e5"],
   materials: ["#34d399", "#059669"],
@@ -80,6 +81,7 @@ const DESKTOP_APP_ICON_THEMES = {
   "settings-skills": ["#22c55e", "#15803d"],
   "settings-skill-resources": ["#14b8a6", "#0f766e"],
   "settings-rules": ["#facc15", "#ca8a04"],
+  "settings-bot-connectors": ["#2dd4bf", "#0f766e"],
   "settings-system": ["#64748b", "#1e293b"],
   "settings-changelog": ["#fb923c", "#ea580c"],
   "settings-work-sessions": ["#38bdf8", "#2563eb"],
@@ -223,6 +225,18 @@ const DESKTOP_APP_ITEMS = [
     match: (path) =>
       String(path || "") === "/desktop" ||
       String(path || "").startsWith("/workbench"),
+  }),
+  createApp({
+    id: "tasks",
+    label: "任务",
+    shortLabel: "TS",
+    path: "/tasks",
+    summary: "集中管理任务，可由系统状态助手按描述快速创建。",
+    eyebrow: "Task Center",
+    width: 1080,
+    height: 760,
+    dock: true,
+    match: (path) => String(path || "").startsWith("/tasks"),
   }),
   createApp({
     id: "projects",
@@ -404,6 +418,20 @@ const DESKTOP_APP_ITEMS = [
     category: "settings",
     categoryLabel: "设置应用",
     match: (path) => String(path || "").startsWith("/rules"),
+  }),
+  createApp({
+    id: "settings-bot-connectors",
+    label: "机器人",
+    shortLabel: "RB",
+    path: "/system/bot-connectors",
+    summary: "配置飞书、QQ、微信机器人并关联项目。",
+    eyebrow: "Robot Connectors",
+    width: 1200,
+    height: 820,
+    launcher: false,
+    category: "settings",
+    categoryLabel: "设置应用",
+    match: (path) => String(path || "").startsWith("/system/bot-connectors"),
   }),
   createApp({
     id: "settings-system",

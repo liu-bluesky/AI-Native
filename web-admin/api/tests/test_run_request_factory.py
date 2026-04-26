@@ -47,6 +47,7 @@ def test_build_orchestrator_run_kwargs_uses_runtime_context_defaults():
     assert payload["messages"] == [{"role": "user", "content": "hello"}]
     assert payload["local_connector"] == {"id": "connector-1"}
     assert payload["local_connector_workspace_path"] == "/tmp/workspace"
+    assert payload["host_workspace_path"] == "/tmp/workspace"
     assert payload["local_connector_sandbox_mode"] == "danger-full-access"
     assert "role_ids" not in payload
     assert "global_assistant_bridge_handler" not in payload

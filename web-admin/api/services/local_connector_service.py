@@ -12,7 +12,6 @@ LOCAL_CONNECTOR_FILE_TOOL_NAMES = {
     "local_connector_search_files",
     "local_connector_read_file",
     "local_connector_write_file",
-    "local_connector_run_command",
 }
 
 
@@ -317,34 +316,6 @@ def build_local_connector_file_tools() -> list[dict[str, Any]]:
             },
         }
     )
-    tools.append(
-        {
-            "tool_name": "local_connector_run_command",
-            "description": "在本地连接器工作区内执行命令，适合运行测试、构建或代码格式检查。",
-            "parameters_schema": {
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "必填，要执行的 shell 命令。",
-                    },
-                    "cwd": {
-                        "type": "string",
-                        "description": "可选，相对工作区的子目录；留空表示工作区根目录。",
-                    },
-                    "timeout_sec": {
-                        "type": "integer",
-                        "description": "超时时间秒数，默认 20，范围 1-120。",
-                    },
-                    "max_output_chars": {
-                        "type": "integer",
-                        "description": "stdout/stderr 各自最多保留的字符数，默认 12000。",
-                    },
-                },
-                "required": ["command"],
-            },
-        }
-    )
     return tools
 
 
@@ -459,30 +430,3 @@ async def write_connector_file(
     )
     return payload
 
-
-async def run_connector_command(
-    connector: Any,
-    *,
-    workspace_path: str,
-    command: str,
-    cwd: str = "",
-    timeout_sec: int = 20,
-    max_output_chars: int = 12000,
-    sandbox_mode: str = "workspace-write",
-) -> dict[str, Any]:
-    payload = await _request_json(
-        connector,
-        "POST",
-        "/workspace/command/run",
-        timeout=max(float(timeout_sec) + 5.0, 10.0),
-        json_body={
-            "workspace_path": str(workspace_path or "").strip(),
-            "command": str(command or "").strip(),
-            "cwd": str(cwd or "").strip(),
-            "timeout_sec": int(timeout_sec),
-            "max_output_chars": int(max_output_chars),
-            "sandbox_mode": str(sandbox_mode or "workspace-write").strip()
-            or "workspace-write",
-        },
-    )
-    return payload

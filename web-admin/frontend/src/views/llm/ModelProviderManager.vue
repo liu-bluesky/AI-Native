@@ -57,7 +57,7 @@
         <div class="table-panel__meta">共 {{ filteredProviders.length }} 条</div>
       </div>
 
-      <el-table :data="pagedProviders" stripe>
+      <el-table :data="pagedProviders" stripe class="responsive-provider-table">
       <el-table-column type="expand">
         <template #default="{ row }">
           <el-descriptions :column="2" border size="small" class="expand-desc">
@@ -89,22 +89,22 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="name" label="名称" width="160" />
-      <el-table-column prop="owner_username" label="创建人" width="140">
+      <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
+      <el-table-column prop="owner_username" label="创建人" min-width="120" show-overflow-tooltip>
         <template #default="{ row }">{{ row.owner_username || '-' }}</template>
       </el-table-column>
-      <el-table-column prop="provider_type" label="类型" width="150" />
-      <el-table-column prop="base_url" label="Base URL" min-width="220" show-overflow-tooltip />
-      <el-table-column label="共享用户" min-width="200" show-overflow-tooltip>
+      <el-table-column prop="provider_type" label="类型" min-width="140" show-overflow-tooltip />
+      <el-table-column prop="base_url" label="Base URL" min-width="200" show-overflow-tooltip />
+      <el-table-column label="共享用户" min-width="160" show-overflow-tooltip>
         <template #default="{ row }">
           {{ formatSharedUsers(row.shared_usernames) }}
         </template>
       </el-table-column>
-      <el-table-column label="模型列表" min-width="260" show-overflow-tooltip>
+      <el-table-column label="模型列表" min-width="220" show-overflow-tooltip>
         <template #default="{ row }">{{ formatProviderModels(row) }}</template>
       </el-table-column>
-      <el-table-column prop="default_model" label="默认模型" width="170" show-overflow-tooltip />
-      <el-table-column label="API Key" width="150">
+      <el-table-column prop="default_model" label="默认模型" min-width="150" show-overflow-tooltip />
+      <el-table-column label="API Key" min-width="130" show-overflow-tooltip>
         <template #default="{ row }">{{ row.api_key_masked || '-' }}</template>
       </el-table-column>
       <el-table-column label="启用" width="90" align="center">
@@ -112,13 +112,13 @@
           <el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="创建时间" min-width="220">
+      <el-table-column label="创建时间" min-width="180">
         <template #default="{ row }">{{ formatDateTime(row.created_at, { withSeconds: true }) }}</template>
       </el-table-column>
-      <el-table-column label="更新时间" min-width="220">
+      <el-table-column label="更新时间" min-width="180">
         <template #default="{ row }">{{ formatDateTime(row.updated_at, { withSeconds: true }) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="320" fixed="right">
+      <el-table-column label="操作" min-width="320" fixed="right" class-name="table-action-column">
         <template #default="{ row }">
           <el-button
             v-for="action in getPrimaryProviderActions(row)"
@@ -166,7 +166,7 @@
       <el-empty v-if="!loading && !filteredProviders.length" description="暂无模型供应商" :image-size="60" />
     </section>
 
-    <el-dialog v-model="showDialog" :title="dialogTitle()" width="860px">
+    <el-dialog v-model="showDialog" :title="dialogTitle()" width="min(860px, calc(100vw - 24px))">
       <el-form :model="form" label-width="120px">
         <el-form-item label="主流模板">
           <div class="provider-preset-panel">
@@ -1092,6 +1092,7 @@ onMounted(async () => {
 
 .table-panel {
   padding: 20px;
+  overflow: hidden;
 }
 
 .table-panel__head {
@@ -1161,9 +1162,13 @@ onMounted(async () => {
 
 .model-config-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(180px, 220px) auto auto;
+  grid-template-columns: minmax(0, 1.4fr) minmax(160px, 220px) auto auto;
   gap: 8px;
   align-items: center;
+}
+
+.responsive-provider-table :deep(.table-action-column .cell) {
+  justify-content: flex-start;
 }
 
 .model-config-row__name,
@@ -1204,6 +1209,10 @@ onMounted(async () => {
 
   .filter-panel__grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .model-config-row {
+    grid-template-columns: 1fr;
   }
 }
 

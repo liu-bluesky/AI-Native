@@ -16,6 +16,7 @@ class ChatRuntimeContext:
     employee_id: str = ""
     selected_employee_ids: tuple[str, ...] = ()
     workspace_path: str = ""
+    host_workspace_path: str = ""
     skill_resource_directory: str = ""
     chat_surface: str = "main-chat"
     history: list[dict[str, Any]] = field(default_factory=list)
@@ -40,4 +41,3 @@ class ChatRuntimeContext:
     @property
     def model_name(self) -> str:
         return str((self.resolved_provider or {}).model_name if self.resolved_provider else "").strip()
-

@@ -31,6 +31,8 @@
           class="layout-window-frame__iframe"
           :src="window.embeddedUrl"
           :title="window.title"
+          @focus="focusWindow(window.id)"
+          @load="handleWindowFrameLoad(window.id, $event)"
         />
       </div>
     </template>
@@ -89,6 +91,7 @@ const currentDesktopPath = ref(DESKTOP_HOME_PATH);
 const suppressNextRouteWindowSync = ref(false);
 const desktopSessionHydrated = ref(false);
 const DESKTOP_WINDOW_SESSION_VERSION = 1;
+const embeddedFrameListeners = new Map();
 
 const dockItems = computed(() => {
   const itemsById = new Map();
@@ -169,6 +172,47 @@ function resetWindowMotion(window) {
     ...window,
     ...createWindowMotionState(),
   };
+}
+
+function detachEmbeddedFrameListeners(windowId) {
+  const targetId = String(windowId || "").trim();
+  if (!targetId) return;
+  const listenerEntry = embeddedFrameListeners.get(targetId);
+  if (!listenerEntry) return;
+  listenerEntry.doc?.removeEventListener("pointerdown", listenerEntry.handleInteract, true);
+  listenerEntry.doc?.removeEventListener("focusin", listenerEntry.handleInteract, true);
+  listenerEntry.frameWindow?.removeEventListener("focus", listenerEntry.handleInteract, true);
+  embeddedFrameListeners.delete(targetId);
+}
+
+function attachEmbeddedFrameListeners(windowId, iframeElement) {
+  const targetId = String(windowId || "").trim();
+  if (!targetId || !iframeElement?.contentWindow) return;
+  detachEmbeddedFrameListeners(targetId);
+
+  try {
+    const frameWindow = iframeElement.contentWindow;
+    const frameDocument = frameWindow.document;
+    const handleInteract = () => {
+      if (activeWindowId.value === targetId) return;
+      focusWindow(targetId);
+    };
+    frameDocument.addEventListener("pointerdown", handleInteract, true);
+    frameDocument.addEventListener("focusin", handleInteract, true);
+    frameWindow.addEventListener("focus", handleInteract, true);
+    embeddedFrameListeners.set(targetId, {
+      doc: frameDocument,
+      frameWindow,
+      handleInteract,
+    });
+  } catch {
+    detachEmbeddedFrameListeners(targetId);
+  }
+}
+
+function handleWindowFrameLoad(windowId, event) {
+  const iframeElement = event?.target;
+  attachEmbeddedFrameListeners(windowId, iframeElement);
 }
 
 function getDockTargetRect(appId) {
@@ -592,6 +636,7 @@ function focusWindow(windowId, options = {}) {
 
 function closeWindow(windowId) {
   const targetId = String(windowId || "").trim();
+  detachEmbeddedFrameListeners(targetId);
   clearWindowMotionTimer(targetId);
   const remaining = desktopWindows.value.filter((item) => item.id !== targetId);
   if (remaining.length === desktopWindows.value.length) return;
@@ -849,6 +894,9 @@ function reorderDockApps(nextOrder) {
 }
 
 async function clearDesktopCache() {
+  for (const windowId of embeddedFrameListeners.keys()) {
+    detachEmbeddedFrameListeners(windowId);
+  }
   for (const windowId of windowMotionTimers.keys()) {
     clearWindowMotionTimer(windowId);
   }
@@ -990,6 +1038,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (typeof window === "undefined") return;
   if (isEmbeddedMode.value) return;
+  for (const windowId of embeddedFrameListeners.keys()) {
+    detachEmbeddedFrameListeners(windowId);
+  }
   for (const windowId of windowMotionTimers.keys()) {
     clearWindowMotionTimer(windowId);
   }
@@ -1030,6 +1081,19 @@ watch(
   [desktopWindows, activeWindowId, currentDesktopPath, nextWindowOrder],
   () => {
     persistDesktopSession();
+  },
+  { deep: true },
+);
+
+watch(
+  desktopWindows,
+  (windows) => {
+    const activeIds = new Set(windows.map((item) => item.id));
+    for (const windowId of embeddedFrameListeners.keys()) {
+      if (!activeIds.has(windowId)) {
+        detachEmbeddedFrameListeners(windowId);
+      }
+    }
   },
   { deep: true },
 );

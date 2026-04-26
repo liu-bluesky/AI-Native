@@ -168,7 +168,7 @@
         <el-table-column label="样例标题" min-width="220" show-overflow-tooltip>
           <template #default="{ row }">{{ (row.sample_titles || []).join(' / ') || '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="110" fixed="right">
+        <el-table-column label="操作" min-width="110" fixed="right" class-name="table-action-column">
           <template #default="{ row }">
             <el-button text type="primary" :disabled="feedbackDisabled || !row.feedback_ids?.length" @click="openManualUpgrade(row)">
               手动升级
@@ -203,7 +203,7 @@
       <el-table-column label="更新时间" min-width="220">
         <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="290" fixed="right">
+      <el-table-column label="操作" min-width="290" fixed="right" class-name="table-action-column">
         <template #default="{ row }">
           <el-button text type="primary" @click="openDetail(row.id)">详情</el-button>
           <el-button

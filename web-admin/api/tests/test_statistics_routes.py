@@ -13,7 +13,7 @@ def _build_statistics_test_client(tmp_path, monkeypatch, auth_payload):
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
-    for proxy_name in ("role_store", "system_config_store", "user_store"):
+    for proxy_name in ("role_store", "bot_connector_store", "system_config_store", "user_store"):
         getattr(store_factory, proxy_name)._instance = None
 
     app = create_app()

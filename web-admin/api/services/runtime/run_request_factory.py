@@ -35,6 +35,7 @@ def build_orchestrator_run_kwargs(
         "messages": runtime_messages(runtime_context),
         "local_connector": runtime_context.local_connector,
         "local_connector_workspace_path": runtime_context.workspace_path,
+        "host_workspace_path": runtime_context.host_workspace_path or runtime_context.workspace_path,
         "local_connector_sandbox_mode": runtime_context.local_connector_sandbox_mode,
     }
     if role_ids is not None:

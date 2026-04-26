@@ -108,7 +108,7 @@
       <el-table-column label="更新时间" width="220">
         <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="260" fixed="right">
+      <el-table-column label="操作" min-width="260" fixed="right" class-name="table-action-column">
         <template #default="{ row }">
           <el-button text type="primary" @click="openTemplateDetail(row)"
             >详情</el-button

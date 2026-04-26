@@ -17,6 +17,7 @@ const routes = [
     redirect: '/intro',
     children: [
       { path: 'workbench', component: () => import('../views/desktop/DesktopWorkbench.vue') },
+      { path: 'tasks', component: () => import('../views/tasks/TaskManager.vue') },
       { path: 'settings-center', component: () => import('../views/desktop/SettingsLauncher.vue') },
       { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
       { path: 'desktop', redirect: '/workbench' },
@@ -29,6 +30,7 @@ const routes = [
           { path: 'chat', component: SettingsCenterChatStub },
           { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
           { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
+          { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
           { path: 'desktop/background', component: () => import('../views/desktop/DesktopWallpaperSettings.vue') },
           { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
           { path: 'work-sessions', component: () => import('../views/system/WorkSessionManager.vue') },
@@ -81,6 +83,7 @@ const routes = [
         ],
       },
       { path: 'system/config', component: () => import('../views/system/SystemConfig.vue') },
+      { path: 'system/bot-connectors', component: () => import('../views/system/SystemBotConnectors.vue') },
       { path: 'changelog-entries', component: () => import('../views/system/ChangelogManager.vue') },
       { path: 'work-sessions', component: () => import('../views/system/WorkSessionManager.vue') },
       { path: 'statistics', component: () => import('../views/system/StatisticsDashboard.vue') },

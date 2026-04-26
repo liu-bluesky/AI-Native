@@ -20,6 +20,7 @@ def _build_global_assistant_test_client(tmp_path, monkeypatch, auth_payload):
     mcp_bridge_store._store_bundle = None
     for proxy_name in (
         "role_store",
+        "bot_connector_store",
         "system_config_store",
         "project_chat_store",
     ):
@@ -1157,6 +1158,336 @@ def test_system_config_patch_accepts_global_assistant_greeting_fields(tmp_path, 
     assert config["global_assistant_idle_timeout_sec"] == 9
 
 
+def test_system_config_patch_disables_invalid_voice_input_instead_of_blocking(tmp_path, monkeypatch):
+    client, store_factory = _build_global_assistant_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    store_factory.system_config_store.patch_global(
+        {
+            "voice_input_enabled": True,
+            "voice_input_provider_id": "missing-provider",
+            "voice_input_model_name": "missing-model",
+        }
+    )
+
+    response = client.patch(
+        "/api/system-config",
+        json={
+            "voice_input_enabled": True,
+            "voice_input_provider_id": "missing-provider",
+            "voice_input_model_name": "missing-model",
+            "feishu_bot_long_connection_worker_enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    config = response.json()["config"]
+    assert config["feishu_bot_long_connection_worker_enabled"] is True
+    assert config["voice_input_enabled"] is False
+    assert config["voice_input_provider_id"] == ""
+    assert config["voice_input_model_name"] == ""
+
+
+def test_system_config_patch_accepts_bot_platform_connectors(tmp_path, monkeypatch):
+    client, _store_factory = _build_global_assistant_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+
+    response = client.patch(
+        "/api/system-config",
+        json={
+            "feishu_bot_long_connection_worker_enabled": True,
+            "bot_platform_connectors": [
+                {
+                    "id": "qq-main",
+                    "enabled": True,
+                    "platform": "qq",
+                    "name": "QQ 主机器人",
+                    "agent_name": "客服机器人",
+                    "description": "负责 QQ 侧用户咨询。",
+                    "app_id": " qq-app-id ",
+                    "app_secret": " qq-app-secret ",
+                    "project_id": " proj-d16591a6 ",
+                    "guide_url": "https://example.com/qq",
+                    "sort_order": 20,
+                },
+                {
+                    "id": "wechat-main",
+                    "enabled": False,
+                    "platform": "wechat",
+                    "agent_name": "企微机器人",
+                    "app_id": "wx-app-id",
+                    "app_secret": "wx-app-secret",
+                    "sort_order": 10,
+                },
+                {
+                    "id": "invalid",
+                    "platform": "telegram",
+                    "agent_name": "should-be-dropped",
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["config"]["feishu_bot_long_connection_worker_enabled"] is True
+    connectors = response.json()["config"]["bot_platform_connectors"]
+    assert [item["platform"] for item in connectors] == ["wechat", "qq"]
+    assert connectors[0]["enabled"] is False
+    assert connectors[0]["agent_name"] == "企微机器人"
+    assert connectors[1]["name"] == "QQ 主机器人"
+    assert connectors[1]["app_id"] == "qq-app-id"
+    assert connectors[1]["app_secret"] == "qq-app-secret"
+    assert connectors[1]["project_id"] == "proj-d16591a6"
+    assert connectors[1]["guide_url"] == "https://example.com/qq"
+    assert _store_factory.bot_connector_store.list_all() == connectors
+
+
+def test_system_config_patch_restarts_feishu_worker_after_connector_change(tmp_path, monkeypatch):
+    client, _store_factory = _build_global_assistant_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+
+    class FakeSupervisor:
+        def __init__(self):
+            self.restart_calls = 0
+            self.stop_calls = 0
+
+        def restart(self):
+            self.restart_calls += 1
+
+        async def stop(self):
+            self.stop_calls += 1
+
+    supervisor = FakeSupervisor()
+    client.app.state.feishu_long_connection_supervisor = supervisor
+
+    response = client.patch(
+        "/api/system-config",
+        json={
+            "feishu_bot_long_connection_worker_enabled": True,
+            "bot_platform_connectors": [
+                {
+                    "id": "feishu-main",
+                    "enabled": True,
+                    "platform": "feishu",
+                    "app_id": "cli_xxx",
+                    "app_secret": "secret_xxx",
+                    "event_receive_mode": "long_connection",
+                    "auto_start_worker": True,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert supervisor.restart_calls == 1
+    assert supervisor.stop_calls == 0
+
+
+def test_bot_connectors_route_persists_to_dedicated_store(tmp_path, monkeypatch):
+    client, store_factory = _build_global_assistant_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+
+    response = client.put(
+        "/api/bot-connectors",
+        json={
+            "items": [
+                {
+                    "id": "feishu-main",
+                    "enabled": True,
+                    "platform": "feishu",
+                    "name": "飞书主机器人",
+                    "agent_name": "内部协作机器人",
+                    "system_prompt": "你是飞书主机器人，只处理项目协作问题。",
+                    "app_id": "feishu-app-id",
+                    "app_secret": "feishu-app-secret",
+                    "verification_token": "verify-token",
+                    "encrypt_key": "encrypt-key",
+                    "project_id": "proj-d16591a6",
+                    "guide_url": "https://example.com/feishu",
+                    "sort_order": 15,
+                },
+                {
+                    "id": "feishu-testcase",
+                    "enabled": True,
+                    "platform": "feishu",
+                    "name": "测试用例机器人",
+                    "agent_name": "测试用例生成",
+                    "app_id": "feishu-testcase-app-id",
+                    "app_secret": "feishu-testcase-app-secret",
+                    "project_id": "proj-d16591a6",
+                    "sort_order": 16,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 2
+    assert [item["id"] for item in items] == ["feishu-main", "feishu-testcase"]
+    assert [item["platform"] for item in items] == ["feishu", "feishu"]
+    assert items[0]["name"] == "飞书主机器人"
+    assert items[0]["system_prompt"] == "你是飞书主机器人，只处理项目协作问题。"
+    assert items[0]["verification_token"] == "verify-token"
+    assert items[0]["encrypt_key"] == "encrypt-key"
+    assert items[1]["name"] == "测试用例机器人"
+    assert store_factory.bot_connector_store.list_all() == items
+
+    get_response = client.get("/api/system-config")
+    assert get_response.status_code == 200
+    assert get_response.json()["config"]["bot_platform_connectors"] == items
+
+
+def test_bot_connectors_route_restarts_feishu_worker_when_enabled(tmp_path, monkeypatch):
+    client, store_factory = _build_global_assistant_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+
+    class FakeSupervisor:
+        def __init__(self):
+            self.restart_calls = 0
+
+        def restart(self):
+            self.restart_calls += 1
+
+        def status(self):
+            return {
+                "feishu-main": {
+                    "connector_id": "feishu-main",
+                    "running": self.restart_calls > 0,
+                    "pid": 12345 if self.restart_calls > 0 else None,
+                    "return_code": None,
+                }
+            }
+
+    supervisor = FakeSupervisor()
+    client.app.state.feishu_long_connection_supervisor = supervisor
+    store_factory.system_config_store.patch_global({"feishu_bot_long_connection_worker_enabled": True})
+
+    response = client.put(
+        "/api/bot-connectors",
+        json={
+            "items": [
+                {
+                    "id": "feishu-main",
+                    "enabled": True,
+                    "platform": "feishu",
+                    "app_id": "cli_xxx",
+                    "app_secret": "secret_xxx",
+                    "event_receive_mode": "long_connection",
+                    "auto_start_worker": True,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert supervisor.restart_calls == 1
+    assert response.json()["feishu_long_connection"]["feishu-main"]["running"] is True
+
+
+def test_bot_connector_platforms_and_feishu_diagnose(tmp_path, monkeypatch):
+    client, _store_factory = _build_global_assistant_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    response = client.put(
+        "/api/bot-connectors",
+        json={
+            "items": [
+                {
+                    "id": "feishu-long",
+                    "enabled": True,
+                    "platform": "feishu",
+                    "name": "飞书长连接机器人",
+                    "app_id": "cli_xxx",
+                    "app_secret": "secret_xxx",
+                    "event_receive_mode": "long_connection",
+                    "auto_start_worker": True,
+                    "project_id": "proj-d16591a6",
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["event_receive_mode"] == "long_connection"
+    assert item["auto_start_worker"] is True
+
+    platforms_response = client.get("/api/bot-connectors/platforms")
+    assert platforms_response.status_code == 200
+    platforms = platforms_response.json()["items"]
+    feishu_manifest = next(item for item in platforms if item["platform"] == "feishu")
+    assert feishu_manifest["recommended_receive_mode"] == "long_connection"
+    assert "im.message.receive_v1" in feishu_manifest["required_events"]
+
+    monkeypatch.setattr(
+        "services.bot_connector_installer_service.check_feishu_connector_credentials",
+        lambda connector: {"ok": True, "message": "飞书应用凭证有效"},
+    )
+    diagnose_response = client.post("/api/bot-connectors/feishu-long/diagnose")
+    assert diagnose_response.status_code == 200
+    payload = diagnose_response.json()
+    assert payload["platform"] == "feishu"
+    assert payload["receive_mode"] == "long_connection"
+    checks = {item["id"]: item for item in payload["checks"]}
+    assert checks["credentials_present"]["ok"] is True
+    assert checks["feishu_credentials_valid"]["ok"] is True
+    assert checks["feishu_system_worker_enabled"]["ok"] is False
+    assert checks["feishu_long_connection_worker"]["ok"] is False
+    assert "系统配置页" in " ".join(payload["next_actions"])
+
+
+def test_feishu_bot_event_route_returns_503_when_sdk_unavailable(tmp_path, monkeypatch):
+    from routers import bot_events as bot_events_router
+
+    client, _store_factory = _build_global_assistant_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    client.put(
+        "/api/bot-connectors",
+        json={
+            "items": [
+                {
+                    "id": "feishu-main",
+                    "enabled": True,
+                    "platform": "feishu",
+                    "app_id": "feishu-app-id",
+                    "app_secret": "feishu-app-secret",
+                    "project_id": "proj-d16591a6",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(bot_events_router, "is_feishu_sdk_available", lambda: False)
+    monkeypatch.setattr(
+        bot_events_router,
+        "get_feishu_sdk_error_message",
+        lambda: "Feishu bot integration requires optional dependency 'lark_oapi' to be installed.",
+    )
+
+    response = client.post("/api/bot-events/feishu/feishu-main/event", json={})
+
+    assert response.status_code == 503
+    assert "lark_oapi" in response.json()["detail"]
+
+
 def test_global_assistant_voice_runtime_returns_disabled_when_global_assistant_is_off(
     tmp_path,
     monkeypatch,
@@ -1575,6 +1906,42 @@ def test_global_assistant_speech_generation_uses_real_backend_route(tmp_path, mo
     assert fake_llm_service.generate_audio_speech_calls[0]["provider_id"] == "provider-tts"
     assert fake_llm_service.generate_audio_speech_calls[0]["model_name"] == "tts-model"
     assert fake_llm_service.generate_audio_speech_calls[0]["voice"] == "alloy"
+
+
+def test_global_assistant_system_speech_queues_backend_playback(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+
+    queued_calls = []
+
+    async def fake_enqueue_system_speech(text, **kwargs):
+        queued_calls.append({"text": text, **kwargs})
+        return {"queued": True, "reason": "", "queue_size": 1, "text_length": len(text)}
+
+    monkeypatch.setattr(projects_router, "enqueue_system_speech", fake_enqueue_system_speech)
+
+    client, store_factory = _build_global_assistant_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    store_factory.system_config_store.patch_global({"voice_output_enabled": True})
+
+    response = client.post(
+        "/api/projects/chat/global/voice-output/system-speech",
+        json={"text": "请播报当前系统状态"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert queued_calls == [
+        {
+            "text": "请播报当前系统状态",
+            "owner_username": "tester",
+            "role_ids": ["admin"],
+            "source": "global-assistant",
+            "require_enabled": True,
+        }
+    ]
 
 
 def test_global_assistant_speech_generation_denies_user_outside_shared_voice_scope(tmp_path, monkeypatch):

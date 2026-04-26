@@ -119,7 +119,7 @@
           />
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" min-width="280" fixed="right" class-name="table-action-column">
         <template #default="{ row }">
           <el-button
             v-for="action in getPrimaryProjectActions(row)"

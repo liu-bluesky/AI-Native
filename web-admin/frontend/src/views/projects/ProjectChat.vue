@@ -33,6 +33,7 @@
           <div class="chat-sidebar-project-card">
             <div class="chat-sidebar-card__label">项目</div>
             <el-dropdown
+              :key="selectedProjectId || 'no-project-selected'"
               class="chat-project-dropdown"
               trigger="click"
               placement="bottom-start"
@@ -85,6 +86,14 @@
             </el-button>
             <el-button
               text
+              class="chat-group-conversation-button"
+              @click="openGroupChatDialog"
+              :disabled="chatLoading || creatingChatSession || !hasSelectedProject"
+            >
+              群对话
+            </el-button>
+            <el-button
+              text
               class="chat-clear-current-button"
               @click="clearMessages"
               :disabled="chatLoading || !currentChatSessionId"
@@ -125,6 +134,14 @@
                           {{ session.title }}
                         </span>
                         <el-button
+                          v-if="isGroupChatSession(session)"
+                          text
+                          size="small"
+                          class="chat-session-chip__edit"
+                          :icon="EditPen"
+                          @click.stop="openGroupChatDialog(session)"
+                        />
+                        <el-button
                           text
                           size="small"
                           class="chat-session-chip__delete"
@@ -133,6 +150,12 @@
                           @click.stop="deleteChatSession(session)"
                         />
                       </div>
+                      <span
+                        v-if="formatChatSessionSourceLabel(session)"
+                        class="chat-session-chip__source"
+                      >
+                        {{ formatChatSessionSourceLabel(session) }}
+                      </span>
                       <span class="chat-session-chip__meta">
                         {{ formatChatSessionMeta(session) }}
                       </span>
@@ -183,6 +206,9 @@
                     hasSelectedProject ? currentProjectLabel : "通用对话"
                   }}</span>
                   <span>{{ chatModeLabel }}</span>
+                  <span v-if="currentChatSessionSourceLabel">
+                    {{ currentChatSessionSourceLabel }}
+                  </span>
                   <span>{{ currentModelSummary }}</span>
                   <span>{{ chatHeaderStatusText }}</span>
                 </div>
@@ -354,7 +380,7 @@
                   </div>
                   <div
                     v-for="(item, idx) in messages"
-                    :key="idx"
+                    :key="item.id || `message-${idx}`"
                     :class="[
                       'message-row',
                       String(item?.id || '').trim() === highlightedMessageId
@@ -459,6 +485,61 @@
                         </template>
                         <template v-else-if="item.displayMode === 'terminal'">
                           <div
+                            v-if="messageOperations(item).length"
+                            class="message-operations"
+                          >
+                            <article
+                              v-for="operation in messageOperations(item)"
+                              :key="operation.id"
+                              class="message-operation-card"
+                              :class="`is-${operation.phase}`"
+                            >
+                              <div class="message-operation-card__head">
+                                <div class="message-operation-card__title-wrap">
+                                  <span class="message-operation-card__title">
+                                    {{ operation.title }}
+                                  </span>
+                                  <span
+                                    v-if="operation.summary"
+                                    class="message-operation-card__summary"
+                                  >
+                                    {{ operation.summary }}
+                                  </span>
+                                </div>
+                                <span class="message-operation-card__badge">
+                                  {{ operationPhaseLabel(operation) }}
+                                </span>
+                              </div>
+                              <p
+                                v-if="operation.detail"
+                                class="message-operation-card__detail"
+                              >
+                                {{ operation.detail }}
+                              </p>
+                              <p
+                                v-if="operationActionHint(operation)"
+                                class="message-operation-card__action"
+                              >
+                                {{ operationActionHint(operation) }}
+                              </p>
+                              <div
+                                v-if="operationActionButtons(operation).length"
+                                class="message-operation-card__actions"
+                              >
+                                <el-button
+                                  v-for="action in operationActionButtons(operation)"
+                                  :key="`${operation.id}-${action.key}`"
+                                  size="small"
+                                  :type="action.type === 'danger' ? 'danger' : 'primary'"
+                                  :plain="action.type !== 'danger'"
+                                  @click="handleOperationAction(operation, action.key)"
+                                >
+                                  {{ action.label }}
+                                </el-button>
+                              </div>
+                            </article>
+                          </div>
+                          <div
                             v-if="terminalLogLines(item).length"
                             class="message-process"
                           >
@@ -470,7 +551,7 @@
                               "
                             >
                               <span>
-                                思考过程
+                                终端输出
                                 <span class="message-process-count">
                                   {{ terminalLogLines(item).length }} 条
                                 </span>
@@ -482,8 +563,57 @@
                             <pre
                               v-show="item.processExpanded"
                               class="message-text message-text-terminal message-process-pre"
+                              @click="focusTerminalPanelInput"
                               >{{ formatTerminalLogs(item) }}</pre
                             >
+                          </div>
+                          <div
+                            v-if="terminalInteractionFormForMessage(item, idx)"
+                            class="message-terminal-form"
+                            :class="{
+                              'is-submitted': terminalStructuredSubmissionHintForMessage(idx),
+                            }"
+                          >
+                            <div class="message-terminal-form__head">
+                              <div>
+                                <strong>{{ terminalStructuredInteraction.title }}</strong>
+                                <p>{{ terminalStructuredInteraction.description }}</p>
+                              </div>
+                              <el-tag size="small" effect="plain">表单交互</el-tag>
+                            </div>
+                            <ElementEasyForm
+                              :form-json="terminalInteractionFormJson"
+                              class="message-terminal-form__easy-form"
+                            />
+                            <div class="message-terminal-form__actions">
+                              <el-button
+                                v-if="!terminalStructuredSubmissionHintForMessage(idx)"
+                                text
+                                @click="dismissTerminalStructuredInteraction"
+                              >
+                                使用终端兜底
+                              </el-button>
+                              <el-button
+                                type="primary"
+                                :disabled="
+                                  !canSubmitTerminalStructuredInteraction ||
+                                  Boolean(terminalStructuredSubmissionHintForMessage(idx))
+                                "
+                                @click="submitTerminalStructuredInteraction"
+                              >
+                                {{
+                                  terminalStructuredSubmissionHintForMessage(idx)
+                                    ? "已提交，继续执行中"
+                                    : "确认并继续"
+                                }}
+                              </el-button>
+                            </div>
+                          </div>
+                          <div
+                            v-if="terminalStructuredSubmissionHintForMessage(idx)"
+                            class="message-terminal-form__submitted"
+                          >
+                            {{ terminalStructuredSubmissionHintForMessage(idx) }}
                           </div>
                           <div
                             v-if="messageStatusNotes(item).length"
@@ -507,6 +637,61 @@
                           ></div>
                         </template>
                         <template v-else>
+                          <div
+                            v-if="messageOperations(item).length"
+                            class="message-operations"
+                          >
+                            <article
+                              v-for="operation in messageOperations(item)"
+                              :key="operation.id"
+                              class="message-operation-card"
+                              :class="`is-${operation.phase}`"
+                            >
+                              <div class="message-operation-card__head">
+                                <div class="message-operation-card__title-wrap">
+                                  <span class="message-operation-card__title">
+                                    {{ operation.title }}
+                                  </span>
+                                  <span
+                                    v-if="operation.summary"
+                                    class="message-operation-card__summary"
+                                  >
+                                    {{ operation.summary }}
+                                  </span>
+                                </div>
+                                <span class="message-operation-card__badge">
+                                  {{ operationPhaseLabel(operation) }}
+                                </span>
+                              </div>
+                              <p
+                                v-if="operation.detail"
+                                class="message-operation-card__detail"
+                              >
+                                {{ operation.detail }}
+                              </p>
+                              <p
+                                v-if="operationActionHint(operation)"
+                                class="message-operation-card__action"
+                              >
+                                {{ operationActionHint(operation) }}
+                              </p>
+                              <div
+                                v-if="operationActionButtons(operation).length"
+                                class="message-operation-card__actions"
+                              >
+                                <el-button
+                                  v-for="action in operationActionButtons(operation)"
+                                  :key="`${operation.id}-${action.key}`"
+                                  size="small"
+                                  :type="action.type === 'danger' ? 'danger' : 'primary'"
+                                  :plain="action.type !== 'danger'"
+                                  @click="handleOperationAction(operation, action.key)"
+                                >
+                                  {{ action.label }}
+                                </el-button>
+                              </div>
+                            </article>
+                          </div>
                           <div
                             v-if="messageStatusNotes(item).length"
                             class="message-status-notes"
@@ -1265,7 +1450,7 @@
                   <div class="footer-right">
                     <span class="hint-text">{{ composerHintText }}</span>
                     <el-tooltip
-                      v-if="chatLoading"
+                      v-if="showPauseGenerationButton"
                       content="暂停当前回答"
                       placement="top"
                     >
@@ -1538,6 +1723,106 @@
     :project-label="mcpDialogProjectLabel"
     :chat-session-id="currentChatSessionId"
   />
+
+  <el-dialog
+    v-model="groupChatDialogVisible"
+    :title="groupChatDialogTitle"
+    width="min(520px, calc(100vw - 32px))"
+    destroy-on-close
+    class="group-chat-dialog"
+    @closed="resetGroupChatDraft"
+  >
+    <el-form label-position="top" class="group-chat-dialog__form">
+      <el-alert
+        v-if="groupChatDialogStatus.text"
+        class="group-chat-dialog__status"
+        :title="groupChatDialogStatus.title"
+        :description="groupChatDialogStatus.text"
+        :type="groupChatDialogStatus.type"
+        show-icon
+        :closable="false"
+      />
+      <el-form-item label="平台">
+        <el-select v-model="groupChatDraft.platform" class="full-width">
+          <el-option
+            v-for="item in groupChatPlatformOptions"
+            :key="item.value"
+            :label="item.label"
+            :value="item.value"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="对话别名">
+        <el-input
+          v-model="groupChatDraft.title"
+          placeholder="例如：售前需求群 / 设计评审群"
+          maxlength="80"
+          show-word-limit
+          @keyup.enter="submitGroupChatDialog"
+        />
+        <div class="group-chat-dialog__hint">
+          留空时使用“平台群：群名称”，设置后会显示为最近对话标题。
+        </div>
+      </el-form-item>
+      <el-form-item label="绑定机器人">
+        <el-select
+          v-model="groupChatDraft.connector_id"
+          class="full-width"
+          filterable
+          placeholder="选择当前群对话使用的机器人"
+          :disabled="!groupBotConnectorOptions.length"
+        >
+          <el-option
+            v-for="item in groupBotConnectorOptions"
+            :key="item.value"
+            :label="item.label"
+            :value="item.value"
+          >
+            <div class="group-chat-dialog__connector-option">
+              <strong>{{ item.name }}</strong>
+              <span>{{ item.description }}</span>
+            </div>
+          </el-option>
+        </el-select>
+        <div class="group-chat-dialog__hint">
+          {{ groupBotConnectorHint }}
+        </div>
+      </el-form-item>
+      <el-form-item label="群名称">
+        <el-input
+          v-model="groupChatDraft.external_chat_name"
+          placeholder="例如：产品研发群 / 客户项目群"
+          maxlength="80"
+          show-word-limit
+          @keyup.enter="submitGroupChatDialog"
+        />
+        <div class="group-chat-dialog__hint">
+          群稳定 ID 需要通过飞书 API 或真实消息事件补齐；当前状态：{{ groupChatEditingResolved ? "已解析" : "待解析 ID" }}。
+        </div>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <div class="group-chat-dialog__footer">
+        <el-button @click="groupChatDialogVisible = false">取消</el-button>
+        <el-button
+          v-if="groupChatEditingSessionId"
+          :loading="groupChatResolving"
+          :disabled="groupChatCreating || groupChatEditingResolved"
+          @click="resolveGroupChatSourceId"
+        >
+          {{ groupChatEditingResolved ? "已解析 ID" : "解析群 ID" }}
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="groupChatCreating"
+          :disabled="!canSubmitGroupChatDialog"
+          @click="submitGroupChatDialog"
+        >
+          {{ groupChatEditingSessionId ? "保存修改" : "创建群对话" }}
+        </el-button>
+      </div>
+    </template>
+  </el-dialog>
 
   <el-dialog
     v-model="codePreviewVisible"
@@ -1956,6 +2241,12 @@
                     }}</span>
                   </div>
                   <div class="settings-chat-fact">
+                    <span class="settings-chat-fact__label">项目工作区</span>
+                    <span class="settings-chat-fact__value">{{
+                      projectWorkspaceResolved || "未配置"
+                    }}</span>
+                  </div>
+                  <div class="settings-chat-fact">
                     <span class="settings-chat-fact__label">当前面板</span>
                     <span class="settings-chat-fact__value">对话配置</span>
                   </div>
@@ -2100,6 +2391,55 @@
                       <el-form-item v-if="hasSelectedProject">
                         <template #label>
                           <span class="label-with-tooltip">
+                            项目工作区
+                            <el-tooltip
+                              content="当前项目在这台电脑上的真实目录。AI 直接执行本机命令、解析相对 AI 入口文件时都会以这里为基准。"
+                              placement="top"
+                            >
+                              <el-icon class="label-icon"
+                                ><InfoFilled
+                              /></el-icon>
+                            </el-tooltip>
+                          </span>
+                        </template>
+                        <div class="workspace-path-editor">
+                          <el-input
+                            v-model="projectWorkspaceDraft"
+                            class="full-width"
+                            placeholder="/Volumes/苹果1_5T/self/ai-employee"
+                          />
+                          <div class="workspace-path-actions">
+                            <el-button
+                              @click="promptProjectWorkspaceDirectory"
+                              :loading="projectWorkspacePicking"
+                            >
+                              选择目录
+                            </el-button>
+                            <el-button
+                              type="primary"
+                              :loading="projectWorkspaceSaving"
+                              @click="saveProjectWorkspaceDirectory()"
+                            >
+                              保存工作区
+                            </el-button>
+                          </div>
+                          <div class="workspace-path-hint">
+                            <template v-if="projectWorkspaceResolved">
+                              当前已保存：{{ projectWorkspaceResolved }}
+                            </template>
+                            <template v-else>
+                              当前项目还没有配置工作区路径，AI 不能直接在本机执行项目命令。
+                            </template>
+                            <template v-if="projectWorkspaceDirty">
+                              当前输入尚未保存。
+                            </template>
+                          </div>
+                        </div>
+                      </el-form-item>
+
+                      <el-form-item v-if="hasSelectedProject">
+                        <template #label>
+                          <span class="label-with-tooltip">
                             AI 入口文件
                             <el-tooltip
                               content="项目级规则入口。系统对话会优先读取它来理解规则、目录约定和实现约束。"
@@ -2133,8 +2473,9 @@
                             </el-button>
                           </div>
                           <div class="workspace-path-hint">
-                            <template v-if="projectWorkspacePath">
+                            <template v-if="projectWorkspaceDraftNormalized || projectWorkspacePath">
                               当前项目工作区：{{
+                                projectWorkspaceDraftNormalized ||
                                 projectWorkspacePath
                               }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话统一复用。
                             </template>
@@ -2766,13 +3107,13 @@
 import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { ElementEasyForm } from "element-easy-form";
+import "element-easy-form/dist/style.css";
 import ExternalMcpManager from "@/components/ExternalMcpManager.vue";
 import ProjectEmployeeDraftCreateDialog from "@/components/ProjectEmployeeDraftCreateDialog.vue";
 import ProjectMaterialSaveDialog from "@/components/ProjectMaterialSaveDialog.vue";
 import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
 import TaskTreeFeedbackBanner from "@/modules/task-tree-feedback/TaskTreeFeedbackBanner.vue";
-import { normalizeTaskTreeHealth } from "@/modules/task-tree-feedback/taskTreeFeedback";
-import { useTaskTreeHealth } from "@/modules/task-tree-feedback/useTaskTreeHealth";
 import api from "@/utils/api.js";
 import { createProjectChatWsClient } from "@/utils/ws-chat.js";
 import { hasPermission, isSuperAdmin } from "@/utils/permissions.js";
@@ -2831,6 +3172,40 @@ import {
   resolveSettingsAwarePanelPath,
   stripChatSettingsPrefix,
 } from "@/utils/chat-settings-route.js";
+import {
+  CHAT_BASE_ROUTE_PATH,
+  CODE_COPIED_ICON_HTML,
+  CODE_COPY_ICON_HTML,
+  CODE_PREVIEW_ICON_HTML,
+  EMPLOYEE_DRAFT_BLOCK_RE,
+  HOST_RUN_COMMAND,
+  HOST_RUN_COMMAND_ALIASES,
+  LARK_CLI_COMMAND,
+  LARK_CLI_COMMAND_ALIASES,
+  LARK_CLI_SKILL_ROOT_RELATIVE,
+  PLUGIN_INSTALL_DRAFT_QUERY_KEY,
+  PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX,
+  PREVIEWABLE_CODE_LANGUAGES,
+  PROJECT_STATS_COMMAND,
+  PROJECT_STATS_COMMAND_ALIASES,
+  PROJECT_STATS_REPORT_DAYS,
+  STATISTICS_ANALYSIS_DRAFT_QUERY_KEY,
+  STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX,
+} from "@/modules/project-chat/projectChatConstants.js";
+import { CHAT_SETTINGS_DEFAULTS } from "@/modules/project-chat/chatSettingsDefaults.js";
+import {
+  isTaskTreeArchivedOrDone,
+  normalizeTaskTreePayload,
+  useProjectChatTaskTreeState,
+} from "@/modules/project-chat/useProjectChatTaskTreeState.js";
+import { HIGH_RISK_RULES } from "@/modules/project-chat/highRiskRules.js";
+import {
+  CHAT_PARAMETER_SECTION_CONFIG,
+  ROLE_LABEL_MAP,
+  SETTINGS_CENTER_ITEM_DEFS,
+  SETTINGS_CENTER_PANEL_META,
+  SETTINGS_GUIDE_REASON_MAP,
+} from "@/modules/project-chat/settingsCenterConfig.js";
 
 // 配置 marked 以支持代码高亮和换行
 marked.setOptions({
@@ -2847,6 +3222,7 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+
 function normalizeCodeLanguage(value) {
   return String(value || "")
     .trim()
@@ -2855,19 +3231,6 @@ function normalizeCodeLanguage(value) {
 }
 
 const markdownRenderer = new marked.Renderer();
-const CODE_COPY_ICON_HTML =
-  '<span class="el-icon chat-code-block__icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><path fill="currentColor" d="M128 320v576h576V320zm-32-64h640a32 32 0 0 1 32 32v640a32 32 0 0 1-32 32H96a32 32 0 0 1-32-32V288a32 32 0 0 1 32-32M960 96v704a32 32 0 0 1-32 32h-96v-64h64V128H384v64h-64V96a32 32 0 0 1 32-32h576a32 32 0 0 1 32 32M256 672h320v64H256zm0-192h320v64H256z" /></svg></span>';
-const CODE_COPIED_ICON_HTML =
-  '<span class="el-icon chat-code-block__icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><path fill="currentColor" d="M406.656 706.944 195.84 496.256a32 32 0 1 0-45.248 45.248l256 256 512-512a32 32 0 0 0-45.248-45.248L406.592 706.944z" /></svg></span>';
-const CODE_PREVIEW_ICON_HTML =
-  '<span class="el-icon chat-code-block__icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><path fill="currentColor" d="M942.2 486.2C847.4 334.6 691 224 512 224S176.6 334.6 81.8 486.2a48.9 48.9 0 0 0 0 51.6C176.6 689.4 333 800 512 800s335.4-110.6 430.2-262.2a48.9 48.9 0 0 0 0-51.6M512 736c-147.8 0-279-88.5-363.1-224C233 376.5 364.2 288 512 288s279 88.5 363.1 224C791 647.5 659.8 736 512 736m0-352a128 128 0 1 0 0 256 128 128 0 0 0 0-256m0 192a64 64 0 1 1 0-128 64 64 0 0 1 0 128" /></svg></span>';
-const EMPLOYEE_DRAFT_BLOCK_RE = /```employee-draft\s*([\s\S]*?)```/i;
-const PREVIEWABLE_CODE_LANGUAGES = new Set(["vue", "html", "htm"]);
-const PROJECT_STATS_COMMAND = "/stats-report";
-const PROJECT_STATS_COMMAND_ALIASES = [];
-const PROJECT_STATS_REPORT_DAYS = 7;
-const STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX = "statistics_analysis_draft:";
-const STATISTICS_ANALYSIS_DRAFT_QUERY_KEY = "statistics_analysis_draft_key";
 
 function isPreviewableCodeBlock(content, language) {
   const normalizedLanguage = normalizeCodeLanguage(language);
@@ -2905,92 +3268,6 @@ markdownRenderer.code = ({ text, lang, escaped }) => {
 
 const route = useRoute();
 const router = useRouter();
-const CHAT_BASE_ROUTE_PATH = "/ai/chat";
-
-const HIGH_RISK_RULES = [
-  {
-    id: "delete_force",
-    label: "删除类命令",
-    severity: "high",
-    pattern: /\brm\s+-rf\b|\bdel\s+\/[qsf]\b/i,
-  },
-  {
-    id: "git_hard_reset",
-    label: "Git 强制回滚",
-    severity: "high",
-    pattern: /\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-fd/i,
-  },
-  {
-    id: "shell_pipe_remote",
-    label: "远程脚本直执行",
-    severity: "high",
-    pattern: /(?:curl|wget)[^\n|]*\|\s*(?:sh|bash|zsh)/i,
-  },
-  {
-    id: "network_transfer",
-    label: "网络传输/外发",
-    severity: "medium",
-    pattern: /\b(?:scp|rsync|curl|wget)\b/i,
-  },
-];
-
-const CHAT_SETTINGS_DEFAULTS = {
-  chat_mode: "system",
-  local_connector_id: "",
-  connector_workspace_path: "",
-  connector_sandbox_mode: "workspace-write",
-  connector_sandbox_mode_explicit: false,
-  selected_employee_id: "",
-  selected_employee_ids: [],
-  employee_coordination_mode: "auto",
-  provider_id: "",
-  model_name: "",
-  temperature: 0.1,
-  max_tokens: 512,
-  system_prompt: "",
-  auto_use_tools: true,
-  enabled_project_tool_names: [],
-  tool_priority: [],
-  max_tool_calls_per_round: 6,
-  max_loop_rounds: 20,
-  max_tool_rounds: 6,
-  repeated_tool_call_threshold: 2,
-  tool_only_threshold: 3,
-  tool_budget_strategy: "finalize",
-  history_limit: 20,
-  upload_file_limit: 6,
-  max_file_size_mb: 15,
-  doc_max_chars_per_file: 1200,
-  doc_max_chars_total: 3000,
-  allowed_file_types: [
-    "image/*",
-    ".wps",
-    ".doc",
-    ".docx",
-    ".pdf",
-    ".txt",
-    ".csv",
-    ".xlsx",
-    ".xls",
-  ],
-  high_risk_tool_confirm: true,
-  tool_timeout_sec: 60,
-  tool_retry_count: 0,
-  answer_style: "concise",
-  prefer_conclusion_first: true,
-  task_tree_enabled: true,
-  task_tree_auto_generate: true,
-  image_resolution: "1080x1080",
-  image_aspect_ratio: "1:1",
-  image_generate_four_views: false,
-  image_style: "auto",
-  image_quality: "high",
-  video_aspect_ratio: "16:9",
-  video_style: "cinematic",
-  video_duration_seconds: 5,
-  video_motion_strength: "medium",
-};
-
 const EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS = {
   prompts_chat_curated: "系统规则源",
 };
@@ -3000,95 +3277,6 @@ const ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT = true;
 const LOCAL_CONNECTOR_STORAGE_PREFIX = "project_chat.local_connector";
 const PROJECT_CREATED_EVENT = "project-created";
 const GUIDE_TOUR_STORAGE_PREFIX = "project_chat.guide_tour";
-const CHAT_PARAMETER_SECTION_CONFIG = {
-  image: [
-    {
-      key: "image_aspect_ratio",
-      label: "图片比例",
-      helper: "先确定画面构图比例，再选择对应输出尺寸。",
-      control: "segmented",
-      maxSegmentedOptions: 5,
-    },
-    {
-      key: "image_resolution",
-      label: "图片分辨率",
-      helper: "在比例确定后，再选择固定尺寸档位，后端会自动换算最终输出尺寸。",
-      control: "select",
-    },
-    {
-      key: "image_style",
-      label: "图片风格",
-      helper: "控制图片整体视觉风格。",
-      control: "segmented",
-      maxSegmentedOptions: 4,
-    },
-    {
-      key: "image_quality",
-      label: "图片质量",
-      helper: "平衡生成速度和细节质量。",
-      control: "segmented",
-      maxSegmentedOptions: 3,
-    },
-  ],
-  video: [
-    {
-      key: "video_aspect_ratio",
-      label: "视频比例",
-      helper: "控制视频画幅比例。",
-      control: "segmented",
-      maxSegmentedOptions: 4,
-    },
-    {
-      key: "video_style",
-      label: "视频风格",
-      helper: "控制镜头和整体表现风格。",
-      control: "segmented",
-      maxSegmentedOptions: 4,
-    },
-    {
-      key: "video_duration_seconds",
-      label: "视频时长",
-      helper: "控制单次生成片段长度。",
-      control: "segmented",
-      maxSegmentedOptions: 4,
-    },
-    {
-      key: "video_motion_strength",
-      label: "动作强度",
-      helper: "控制镜头和主体的动态程度。",
-      control: "segmented",
-      maxSegmentedOptions: 4,
-    },
-  ],
-};
-const SETTINGS_CENTER_ITEM_DEFS = [
-  {
-    id: "chat",
-    label: "对话设置",
-    desc: "当前项目的 AI 对话运行参数",
-    kind: "internal",
-  },
-];
-const SETTINGS_CENTER_PANEL_META = {
-  chat: {
-    label: "对话设置",
-    desc: "当前项目的 AI 对话运行参数",
-    contextLabel: "对话配置",
-  },
-  projects: {
-    label: "项目详情",
-    desc: "查看当前项目的配置、成员、记忆和任务推进。",
-    contextLabel: "项目详情",
-  },
-};
-const ROLE_LABEL_MAP = {
-  admin: "管理员",
-  user: "普通用户",
-};
-const SETTINGS_GUIDE_REASON_MAP = {
-  chat: "先把项目、执行员工、模型和工具预算收束到同一轮上下文里。",
-};
-
 function formatRoleLabel(roleId) {
   const normalized = String(roleId || "")
     .trim()
@@ -3239,6 +3427,7 @@ const chatLoading = ref(false);
 const settingsSaving = ref(false);
 const workspacePathSaving = ref(false);
 const workspacePathTesting = ref(false);
+const projectWorkspaceSaving = ref(false);
 const autoSaveState = ref("idle");
 const autoSaveUpdatedAt = ref("");
 const projectSettingsHydrating = ref(false);
@@ -3246,6 +3435,7 @@ const projectSettingsHydrating = ref(false);
 const projects = ref([]);
 const providers = ref([]);
 const localConnectors = ref([]);
+const botPlatformConnectors = ref([]);
 const desktopConnectorArtifacts = ref([]);
 const projectEmployees = ref([]);
 const externalAgentInfo = ref({
@@ -3288,6 +3478,22 @@ const mcpModules = ref({
 const runtimeExternalTools = ref([]);
 const messages = ref([]);
 const chatSessions = ref([]);
+const groupChatDialogVisible = ref(false);
+const groupChatCreating = ref(false);
+const groupChatResolving = ref(false);
+const groupChatEditingSessionId = ref("");
+const groupChatLiveStatuses = ref({});
+const groupChatDraft = ref({
+  title: "",
+  platform: "feishu",
+  connector_id: "",
+  external_chat_name: "",
+});
+const groupChatPlatformOptions = [
+  { label: "飞书", value: "feishu" },
+  { label: "微信/企微", value: "wechat" },
+  { label: "QQ", value: "qq" },
+];
 const employeeDraftCatalog = ref({
   skills: [],
   rules: [],
@@ -3319,6 +3525,7 @@ const skillResourceSearchResults = ref([]);
 const skillResourceSearchResolvedQueries = ref([]);
 const skillResourceSearchLoading = ref(false);
 const skillResourceInstallingSlug = ref("");
+const projectWorkspacePicking = ref(false);
 const codePreviewVisible = ref(false);
 const codePreviewTitle = ref("代码预览");
 const codePreviewSrcdoc = ref("");
@@ -3342,6 +3549,7 @@ const activeSystemScope = ref("project_related");
 const selectedProjectToolNames = ref([]);
 const projectChatSettings = ref({ ...CHAT_SETTINGS_DEFAULTS });
 const projectWorkspacePath = ref("");
+const projectWorkspaceDraft = ref("");
 const workspacePathDraft = ref("");
 const projectAiEntryFile = ref("");
 const aiEntryFileDraft = ref("");
@@ -3371,6 +3579,12 @@ const aiEntryFilePicking = ref(false);
 const aiEntryFileSaving = ref(false);
 let connectorPollTimer = null;
 let terminalApprovalFallbackTimer = null;
+let chatRuntimePersistTimer = null;
+let chatRuntimeRemotePersistTimer = null;
+let lastChatRuntimeRemotePersistKey = "";
+let lastChatRuntimeRemotePersistFingerprint = "";
+let terminalRestoreAttemptKey = "";
+let terminalStructuredInteractionRefreshPending = false;
 
 const wsConnected = ref(false);
 const wsClient = ref(null);
@@ -3385,12 +3599,65 @@ const terminalPanelExpanded = ref(false);
 const terminalPanelLines = ref([]);
 const terminalPanelRef = ref(null);
 const terminalPanelStatus = ref("idle");
-const terminalPanelInput = ref("");
 const terminalMirrorConnected = ref(false);
+const hostTerminalSessionId = ref("");
+const hostTerminalWorkspacePath = ref("");
 const activeTerminalMirrorAssistantIndex = ref(-1);
 const terminalApprovalDialogVisible = ref(false);
 const terminalApprovalHandledKey = ref("");
 const terminalApprovalFallbackPrompt = ref(null);
+const terminalStructuredInteraction = ref(null);
+const terminalStructuredFormModel = ref({ choices: [], choice: "" });
+const terminalDismissedStructuredInteractionKeys = ref(new Set());
+const terminalStructuredSubmissionHint = ref(null);
+const terminalActiveCommand = ref("");
+const terminalAutoOpenedUrls = new Set();
+const LARK_AUTH_DOMAIN_OPTIONS = [
+  "approval",
+  "attendance",
+  "base",
+  "calendar",
+  "contact",
+  "docs",
+  "drive",
+  "im",
+  "mail",
+  "minutes",
+  "okr",
+  "sheets",
+  "task",
+  "vc",
+  "wiki",
+];
+const TERMINAL_CHOICE_FALLBACK_PROVIDERS = [
+  {
+    key: "lark-auth-domain",
+    match({ text, activeCommand }) {
+      const terminalText = String(text || "").trim();
+      const command = String(activeCommand || "").trim();
+      const hasAuthLoginCommand = /\blark-cli\s+auth\s+login\b/.test(command);
+      const hasDomainPrompt = /(?:请选择|选择|select|choose).{0,30}业务域|业务域.{0,30}(?:请选择|选择|select|choose|enter confirm)/i.test(
+        terminalText,
+      );
+      return Boolean(
+        hasDomainPrompt ||
+          (hasAuthLoginCommand &&
+            /业务域/.test(terminalText) &&
+            /选择|select|choose|enter confirm|上下键|方向键|回车/i.test(
+              terminalText,
+            ))
+      );
+    },
+    options() {
+      return LARK_AUTH_DOMAIN_OPTIONS.map((value) => ({
+        label: value,
+        value,
+        selected: false,
+        highlighted: false,
+      }));
+    },
+  },
+];
 const inlineEditingMessageIndex = ref(-1);
 const inlineEditingMessageId = ref("");
 const inlineEditingDraft = ref("");
@@ -3435,6 +3702,12 @@ const isExternalAgentMode = computed(() => false);
 const chatModeLabel = computed(() => "系统对话");
 const wsStatusText = computed(() => (wsConnected.value ? "已连接" : "未连接"));
 const wsStatusType = computed(() => (wsConnected.value ? "success" : "info"));
+const projectWorkspaceResolved = computed(() =>
+  String(projectWorkspacePath.value || "").trim(),
+);
+const projectWorkspaceDraftNormalized = computed(() =>
+  String(projectWorkspaceDraft.value || "").trim(),
+);
 const workspacePathResolved = computed(() =>
   String(externalAgentInfo.value.workspace_path || "").trim(),
 );
@@ -3448,6 +3721,19 @@ const aiEntryFileDraftNormalized = computed(() =>
   String(aiEntryFileDraft.value || "").trim(),
 );
 const workspacePathConfigured = computed(() => !!workspacePathResolved.value);
+const projectWorkspaceDirty = computed(
+  () => projectWorkspaceDraftNormalized.value !== projectWorkspaceResolved.value,
+);
+const canUseHostTerminal = computed(
+  () =>
+    hasSelectedProject.value &&
+    Boolean(
+      String(
+        projectWorkspaceDraftNormalized.value || projectWorkspaceResolved.value,
+      ).trim(),
+    ) &&
+    Boolean(String(currentChatSessionId.value || "").trim()),
+);
 const externalAgentConnectorRequired = computed(
   () => isExternalAgentMode.value && !usingLocalConnector.value,
 );
@@ -3601,58 +3887,19 @@ const currentRoleId = computed(
       .toLowerCase() || "user",
 );
 const currentRoleLabel = computed(() => formatRoleLabel(currentRoleId.value));
-const displayedChatTaskTree = computed(() => {
-  const payload =
-    chatTaskTree.value && typeof chatTaskTree.value === "object"
-      ? chatTaskTree.value
-      : null;
-  return payload;
-});
-const hasChatTaskTree = computed(() =>
-  Boolean(String(displayedChatTaskTree.value?.id || "").trim()),
-);
-const taskTreeIsReadonly = computed(() => {
-  return isTaskTreeArchivedOrDone(displayedChatTaskTree.value);
-});
-const taskTreeTreeData = computed(() =>
-  Array.isArray(displayedChatTaskTree.value?.tree) ? displayedChatTaskTree.value.tree : [],
-);
-const taskTreeProgressLabel = computed(() => {
-  if (!hasChatTaskTree.value) return "未拆解";
-  return `${resolveTaskTreeProgressPercent(displayedChatTaskTree.value)}%`;
-});
-const displayedChatTaskTreeHealth = useTaskTreeHealth(
-  () => displayedChatTaskTree.value?.task_tree_health || null,
-);
-const taskTreeSelectedNode = computed(() => {
-  const nodeId = String(selectedTaskTreeNodeId.value || "").trim();
-  if (!nodeId) return null;
-  return (
-    (Array.isArray(displayedChatTaskTree.value?.nodes)
-      ? displayedChatTaskTree.value.nodes.find(
-          (item) => String(item?.id || "").trim() === nodeId,
-        )
-      : null) || null
-  );
-});
-const taskTreeSelectedNodeChildCount = computed(
-  () =>
-    getTaskTreeChildNodes(String(taskTreeSelectedNode.value?.id || "").trim())
-      .length,
-);
-const taskTreeVerificationPlaceholder = computed(() =>
-  taskTreeSelectedNodeChildCount.value
-    ? "填写父节点的整体验证结论。只有全部子任务完成后，父节点才能标记完成。"
-    : "填写叶子节点的验证结果，例如测试、截图、日志或人工确认结论。"
-);
-const taskTreeSaveHint = computed(() => {
-  const node = taskTreeSelectedNode.value;
-  if (!node) return "请先选择一个任务节点。";
-  if (taskTreeSelectedNodeChildCount.value) {
-    return `当前选中的是父节点「${node.title}」。请先完成全部子任务，再补充整体验证结论。`;
-  }
-  return `当前选中的是叶子节点「${node.title}」。标记完成前必须填写验证结果。`;
-});
+const {
+  displayedChatTaskTree,
+  hasChatTaskTree,
+  taskTreeIsReadonly,
+  taskTreeTreeData,
+  taskTreeProgressLabel,
+  displayedChatTaskTreeHealth,
+  taskTreeSelectedNode,
+  taskTreeSelectedNodeChildCount,
+  taskTreeVerificationPlaceholder,
+  taskTreeSaveHint,
+  getTaskTreeChildNodes,
+} = useProjectChatTaskTreeState({ chatTaskTree, selectedTaskTreeNodeId });
 const taskTreeStatusOptions = [
   { value: "pending", label: "待开始" },
   { value: "in_progress", label: "进行中" },
@@ -4088,6 +4335,110 @@ const currentChatSession = computed(
       (item) => item.id === String(currentChatSessionId.value || "").trim(),
     ) || null,
 );
+const currentChatSessionSourceLabel = computed(() =>
+  formatChatSessionSourceLabel(currentChatSession.value),
+);
+const groupChatDialogTitle = computed(() =>
+  groupChatEditingSessionId.value ? "编辑群上下文对话" : "新建群上下文对话",
+);
+const groupChatEditingSession = computed(
+  () =>
+    (chatSessions.value || []).find(
+      (item) => item.id === String(groupChatEditingSessionId.value || "").trim(),
+    ) || null,
+);
+const groupChatEditingSource = computed(() =>
+  normalizeChatSourceContext(groupChatEditingSession.value || {}),
+);
+const groupChatEditingResolved = computed(() =>
+  Boolean(groupChatEditingSource.value.external_chat_id),
+);
+const groupChatDialogStatus = computed(() => {
+  const sessionId = String(groupChatEditingSessionId.value || "").trim();
+  const live = sessionId ? groupChatLiveStatuses.value[sessionId] : null;
+  if (live?.message) {
+    const status = String(live.status || "").trim().toLowerCase();
+    return {
+      title: status === "processing" ? "群通讯中" : "群链接状态",
+      text: String(live.message || "").trim(),
+      type: status === "processing" ? "success" : "info",
+    };
+  }
+  const source = groupChatEditingSource.value;
+  if (source.external_chat_id) {
+    return {
+      title: "群链接状态",
+      text: "当前飞书群已链接工作群，群内 @ 机器人后会同步到这个 AI 对话。",
+      type: "success",
+    };
+  }
+  if (source.connector_id || groupChatDraft.value.connector_id) {
+    return {
+      title: "群链接状态",
+      text: "当前群对话已选择机器人，等待解析群 ID 或收到真实群消息后建立稳定链接。",
+      type: "warning",
+    };
+  }
+  return {
+    title: "群链接状态",
+    text: "先选择机器人并填写群名称，保存后可解析群 ID。",
+    type: "info",
+  };
+});
+function normalizeBotPlatformConnector(item) {
+  const raw = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+  return {
+    id: String(raw.id || "").trim(),
+    enabled: raw.enabled !== false,
+    platform: String(raw.platform || "").trim().toLowerCase(),
+    name: String(raw.name || "").trim(),
+    agent_name: String(raw.agent_name || "").trim(),
+    description: String(raw.description || "").trim(),
+    app_id: String(raw.app_id || "").trim(),
+    app_secret: String(raw.app_secret || "").trim(),
+    project_id: String(raw.project_id || "").trim(),
+  };
+}
+
+const groupBotConnectorOptions = computed(() => {
+  const platform = String(groupChatDraft.value.platform || "").trim().toLowerCase();
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!platform) return [];
+  return (botPlatformConnectors.value || [])
+    .map(normalizeBotPlatformConnector)
+    .filter((item) => {
+      if (!item.id || !item.enabled || item.platform !== platform) return false;
+      if (!item.app_id || !item.app_secret) return false;
+      return !item.project_id || !projectId || item.project_id === projectId;
+    })
+    .map((item) => {
+      const name = item.name || item.agent_name || `${formatChatPlatformLabel(item.platform)}机器人`;
+      const scope = item.project_id ? "当前项目" : "全局配置";
+      return {
+        value: item.id,
+        label: name,
+        name,
+        description: `${scope} · 配置ID：${item.id}`,
+      };
+    });
+});
+
+const groupBotConnectorHint = computed(() => {
+  const platformLabel = formatChatPlatformLabel(groupChatDraft.value.platform);
+  if (groupBotConnectorOptions.value.length) {
+    return "选择后会写入群对话 source_context.connector_id；保存后可点击“解析群 ID”绑定真实飞书群。";
+  }
+  return `当前项目没有可用的${platformLabel}机器人，请先到第三方机器人接入页面添加并关联项目。`;
+});
+
+const canSubmitGroupChatDialog = computed(
+  () =>
+    Boolean(String(groupChatDraft.value.title || groupChatDraft.value.external_chat_name || "").trim()) &&
+    Boolean(String(groupChatDraft.value.platform || "").trim()) &&
+    Boolean(String(groupChatDraft.value.connector_id || "").trim()) &&
+    Boolean(String(groupChatDraft.value.external_chat_name || "").trim()) &&
+    !groupChatCreating.value,
+);
 const autoSaveStatusText = computed(() => {
   if (!selectedProjectId.value) return "未选择项目";
   if (projectSettingsHydrating.value) return "正在同步项目配置...";
@@ -4164,7 +4515,11 @@ const emptyStateText = computed(() => {
 });
 
 const composerPlaceholder = computed(() =>
-  !hasAccessibleProjects.value
+  isTerminalInteractionMode.value
+    ? "项目终端已连接，直接输入命令或交互内容，按 Enter 发送。"
+    : isAwaitingUserInteraction.value
+    ? "已完成浏览器授权或确认后，可直接继续输入，按 Enter 发送。"
+    : !hasAccessibleProjects.value
     ? activeComposerAssistMeta.value?.id === "employee_create"
       ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
       : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
@@ -4179,6 +4534,12 @@ const composerPlaceholder = computed(() =>
       : "输入你的问题，按 Enter 发送，Shift + Enter 换行。输入 / 可查看可用命令。",
 );
 const composerHintText = computed(() => {
+  if (isTerminalInteractionMode.value) {
+    return "当前主输入框已切换为项目终端输入，Enter 发送";
+  }
+  if (isAwaitingUserInteraction.value) {
+    return "当前处于等待你继续的交互状态，Enter 发送";
+  }
   if (!hasAccessibleProjects.value) {
     return activeComposerAssistMeta.value?.id === "employee_create"
       ? "当前将直接生成员工草稿，无需选择项目"
@@ -4202,17 +4563,267 @@ const shortThreadId = computed(() => {
   const value = String(externalAgentInfo.value.thread_id || "").trim();
   return value ? value.slice(0, 8) : "";
 });
+function isTerminalInputCandidateRow(row) {
+  if (!row || String(row.role || "assistant") !== "assistant") return false;
+  const terminalOperations = (Array.isArray(row.operations) ? row.operations : []).filter(
+    (operation) =>
+      String(operation?.kind || "").trim().toLowerCase() === "terminal",
+  );
+  if (terminalOperations.length) {
+    return terminalOperations.some((operation) => {
+      const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+      return !["completed", "failed", "blocked"].includes(phase);
+    });
+  }
+  return (
+    String(row.displayMode || "").trim() === "terminal" &&
+    terminalPanelStatus.value === "running"
+  );
+}
+
+function completeTerminalInputOperations(row, summary = "终端交互已结束") {
+  if (!row || !Array.isArray(row.operations) || !row.operations.length) return false;
+  let changed = false;
+  row.operations = row.operations.map((operation) => {
+    const kind = String(operation?.kind || "").trim().toLowerCase();
+    if (kind !== "terminal") return operation;
+    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    if (["completed", "failed", "blocked"].includes(phase)) return operation;
+    changed = true;
+    return {
+      ...operation,
+      phase: "completed",
+      summary: String(operation?.summary || summary).trim() || summary,
+    };
+  });
+  return changed;
+}
+
+function isLiveTerminalOperation(operation) {
+  const kind = String(operation?.kind || "").trim().toLowerCase();
+  if (kind !== "terminal") return false;
+  const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+  return !["completed", "failed", "blocked"].includes(phase);
+}
+
+function hasLiveTerminalOperation(row) {
+  return (Array.isArray(row?.operations) ? row.operations : []).some(
+    (operation) => isLiveTerminalOperation(operation),
+  );
+}
+
+function markTerminalOperationsWaitingForInput(
+  row,
+  summary = "等待你在对话框继续终端登录操作",
+) {
+  if (!row || !Array.isArray(row.operations) || !row.operations.length) {
+    return false;
+  }
+  let changed = false;
+  row.operations = row.operations.map((operation) => {
+    if (!isLiveTerminalOperation(operation)) return operation;
+    changed = true;
+    return {
+      ...operation,
+      title: "需要你继续操作",
+      phase: "waiting_user",
+      actionType: "enter_text",
+      summary: String(operation?.summary || summary).trim() || summary,
+      detail:
+        String(operation?.detail || "").trim() ||
+        "终端会话仍在等待输入，主输入框会继续发送到项目终端。",
+      updatedAt: nowText(),
+    };
+  });
+  return changed;
+}
+
+function shouldPreserveTerminalInteractionAfterDone(row, pending) {
+  const assistantIndex = Number(pending?.assistantIndex ?? -1);
+  if (!row || assistantIndex < 0) return false;
+  const activeIndex = Number(activeTerminalMirrorAssistantIndex.value ?? -1);
+  if (activeIndex !== assistantIndex) return false;
+  const hasLiveSession = Boolean(
+    terminalMirrorConnected.value ||
+      String(hostTerminalSessionId.value || "").trim() ||
+      terminalPanelStatus.value === "running",
+  );
+  if (!hasLiveSession) return false;
+  const interaction = terminalStructuredInteraction.value;
+  const hasStructuredInteraction = Boolean(
+    interaction && Number(interaction.assistantIndex) === assistantIndex,
+  );
+  const submissionHint = terminalStructuredSubmissionHint.value;
+  const hasSubmittedStructuredInteraction = Boolean(
+    submissionHint && Number(submissionHint.assistantIndex) === assistantIndex,
+  );
+  return Boolean(
+    hasStructuredInteraction ||
+      hasSubmittedStructuredInteraction ||
+      hasLiveTerminalOperation(row) ||
+      String(row.displayMode || "").trim() === "terminal",
+  );
+}
+
+function findLatestTerminalInputAssistantIndex(rows) {
+  for (let index = (rows || []).length - 1; index >= 0; index -= 1) {
+    if (isTerminalInputCandidateRow(rows[index])) return index;
+  }
+  return -1;
+}
+
+const latestTerminalInputAssistantIndex = computed(() =>
+  findLatestTerminalInputAssistantIndex(messages.value),
+);
+
+const activeTerminalInputTargetIndex = computed(() => {
+  const activeIndex = Number(activeTerminalMirrorAssistantIndex.value ?? -1);
+  const activeRow =
+    activeIndex >= 0 && activeIndex < messages.value.length
+      ? messages.value[activeIndex]
+      : null;
+  if (isTerminalInputCandidateRow(activeRow)) {
+    return activeIndex;
+  }
+  return Number(latestTerminalInputAssistantIndex.value ?? -1);
+});
+
+function ensureActiveTerminalInputTarget() {
+  const fallbackIndex = Number(activeTerminalInputTargetIndex.value ?? -1);
+  if (fallbackIndex >= 0) {
+    activeTerminalMirrorAssistantIndex.value = fallbackIndex;
+  }
+  return fallbackIndex;
+}
+
+const hasLiveTerminalSession = computed(() => {
+  if (!String(selectedProjectId.value || "").trim()) return false;
+  return Boolean(
+    terminalMirrorConnected.value ||
+      String(hostTerminalSessionId.value || "").trim() ||
+      terminalPanelStatus.value === "running",
+  );
+});
+const activePendingInteraction = computed(() => {
+  const requestId = getActiveRequestId();
+  if (requestId) {
+    const pending = pendingRequests.get(requestId);
+    if (!pending) return null;
+    const row = messages.value[pending.assistantIndex];
+    const operation = pickAwaitingInteractionOperation(row, {
+      allowTerminal: true,
+    });
+    if (!row || !operation) return null;
+    return {
+      requestId,
+      pending,
+      row,
+      operation,
+    };
+  }
+  const restorable = findLatestAwaitingInteractionMessage(messages.value);
+  if (!restorable?.row || !restorable?.operation) return null;
+  return {
+    requestId: "",
+    pending: null,
+    row: restorable.row,
+    operation: restorable.operation,
+  };
+});
+const isAwaitingUserInteraction = computed(() =>
+  Boolean(activePendingInteraction.value?.operation),
+);
+const isTerminalInteractionMode = computed(() => {
+  if (!String(selectedProjectId.value || "").trim()) return false;
+  if (
+    hasLiveTerminalSession.value &&
+    activeTerminalInputTargetIndex.value >= 0
+  ) {
+    return true;
+  }
+  if (!String(activePendingInteraction.value?.requestId || "").trim()) {
+    return false;
+  }
+  if (canSupersedePendingInteraction(activePendingInteraction.value)) {
+    return false;
+  }
+  const operation = activePendingInteraction.value?.operation;
+  if (operation) {
+    const actionType = normalizeOperationActionType(operation?.actionType);
+    const kind = String(operation?.kind || "").trim().toLowerCase();
+    if (actionType === "enter_text" || kind === "terminal") {
+      return hasLiveTerminalSession.value;
+    }
+    return false;
+  }
+  return false;
+});
+const showPauseGenerationButton = computed(
+  () =>
+    chatLoading.value &&
+    !isAwaitingUserInteraction.value &&
+    !isTerminalInteractionMode.value,
+);
+
+function canSupersedePendingInteraction(interaction) {
+  const operation = interaction?.operation;
+  if (!operation) return false;
+  const actionType = normalizeOperationActionType(operation?.actionType);
+  const kind = String(operation?.kind || "").trim().toLowerCase();
+  const meta =
+    operation?.meta && typeof operation.meta === "object"
+      ? operation.meta
+      : {};
+  if (String(meta.approval_id || meta.review_id || "").trim()) {
+    return false;
+  }
+  if (String(meta.approval_mode || "").trim() === "terminal") {
+    return false;
+  }
+  return (
+    ["open_url", "enter_text", "select"].includes(actionType) ||
+    kind === "auth"
+  );
+}
+
+function releasePendingInteractionForFollowup(followupText = "") {
+  const interaction = activePendingInteraction.value;
+  if (!interaction || !canSupersedePendingInteraction(interaction)) {
+    return false;
+  }
+  const requestId = String(interaction.requestId || "").trim();
+  const pending = interaction.pending;
+  const row = interaction.row;
+  const operation = interaction.operation;
+  if (!row || !operation) return false;
+  const preview = clipText(String(followupText || "").trim(), 80);
+  const summary = preview
+    ? `已收到继续指令：${preview}`
+    : "已切换为下一轮继续";
+  upsertMessageOperation(row, {
+    ...operation,
+    summary,
+    phase: "completed",
+  });
+  appendAssistantStatusNote(row, "> ↻ 已结束当前等待状态，转到下一轮继续处理。");
+  if (requestId && pending) {
+    pending.followupReleased = true;
+    resolvePendingRequest(requestId, pending, row.content || summary);
+  }
+  return true;
+}
+
 const terminalPanelStatusText = computed(() => {
-  if (!isExternalAgentMode.value) return "未启用";
   if (terminalPanelStatus.value === "error") return "异常";
-  if (chatLoading.value || terminalPanelStatus.value === "running") {
+  if (terminalMirrorConnected.value && terminalPanelStatus.value === "running") {
     return "运行中";
   }
-  if (externalAgentWarmupLoading.value) return "预热中";
-  if (terminalPanelStatus.value === "ready" || externalAgentInfo.value.ready) {
+  if (terminalMirrorConnected.value) {
     return "待命";
   }
-  return "未就绪";
+  if (!hasSelectedProject.value) return "未启用";
+  if (!canUseHostTerminal.value) return "未配置";
+  return "未连接";
 });
 const terminalPanelText = computed(() => {
   const lines = Array.isArray(terminalPanelLines.value)
@@ -4223,13 +4834,12 @@ const terminalPanelText = computed(() => {
   if (lines.length) {
     return lines.join("\n");
   }
-  const command = String(
-    externalAgentInfo.value.resolved_command ||
-      externalAgentInfo.value.command ||
-      "codex",
-  ).trim();
-  const cwd = String(externalAgentInfo.value.workspace_path || "").trim();
-  return [`# ${command}`, cwd ? `# cwd ${cwd}` : "", "# 等待外部 Agent 新请求…"]
+  return [
+    "# 项目终端",
+    canUseHostTerminal.value
+      ? "# 点击“启动终端”后可继续执行交互式命令…"
+      : "# 先保存项目工作区后再启动终端…",
+  ]
     .filter(Boolean)
     .join("\n");
 });
@@ -4523,6 +5133,26 @@ const composerSlashCommands = computed(() => {
       description: "把当前项目统计 AI 报表注入聊天，让模型继续分析优化方向和升级重点。",
       assistActionId: "",
     },
+    {
+      id: "host_run",
+      kind: "host_run",
+      command: HOST_RUN_COMMAND,
+      aliases: HOST_RUN_COMMAND_ALIASES,
+      label: "本机命令",
+      description:
+        "让 AI 直接在当前电脑执行命令并返回实际结果，例如 /run lark-cli auth status。",
+      assistActionId: "",
+    },
+    {
+      id: "lark_cli",
+      kind: "lark_cli",
+      command: LARK_CLI_COMMAND,
+      aliases: LARK_CLI_COMMAND_ALIASES,
+      label: "飞书 CLI",
+      description:
+        "强制优先使用 lark-cli 执行飞书相关操作，例如 /lark-cli auth status 或 /feishucli 给某人发 test。",
+      assistActionId: "",
+    },
   ];
   for (const action of composerAssistActions.value) {
     commands.push({
@@ -4566,6 +5196,7 @@ const editorComposing = ref(false);
 const uploadFiles = ref([]);
 const inputFocused = ref(false);
 const isDragging = ref(false);
+const pendingComposerRefocusAfterExternalOpen = ref(false);
 
 const currentSlashDraftState = computed(() => parseSlashCommandDraft(draftText.value));
 const filteredSlashCommands = computed(() => {
@@ -4624,6 +5255,7 @@ const projectSwitcherMenuWidth = ref(0);
 const CHAT_HISTORY_PAGE_SIZE = 120;
 const chatHistoryLoadedCount = ref(0);
 const chatHistoryLoadingMore = ref(false);
+const chatHistoryReachedEnd = ref(false);
 const IMAGE_EXTENSIONS = new Set([
   "png",
   "jpg",
@@ -4685,6 +5317,55 @@ function taskTreeSessionStorageKey(projectId) {
 function workSessionStorageKey(projectId) {
   const normalized = String(projectId || "").trim();
   return normalized ? `project_chat_work_session_${normalized}` : "";
+}
+
+function chatRuntimeStorageKey(projectId, chatSessionId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId || !normalizedChatSessionId) return "";
+  return `project_chat_runtime_${normalizedProjectId}_${normalizedChatSessionId}`;
+}
+
+function chatRuntimeRemoteFingerprint(projectId, chatSessionId, payload) {
+  const key = chatRuntimeStorageKey(projectId, chatSessionId);
+  if (!key || !payload || typeof payload !== "object") return "";
+  try {
+    return `${key}:${JSON.stringify(payload)}`;
+  } catch (_error) {
+    return key;
+  }
+}
+
+function rememberRemotePersistedChatRuntime(projectId, chatSessionId, payload) {
+  lastChatRuntimeRemotePersistKey = chatRuntimeStorageKey(projectId, chatSessionId);
+  lastChatRuntimeRemotePersistFingerprint = chatRuntimeRemoteFingerprint(
+    projectId,
+    chatSessionId,
+    payload,
+  );
+}
+
+function clearRemotePersistedChatRuntimeState(projectId, chatSessionId = "") {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId) {
+    lastChatRuntimeRemotePersistKey = "";
+    lastChatRuntimeRemotePersistFingerprint = "";
+    return;
+  }
+  if (normalizedChatSessionId) {
+    const key = chatRuntimeStorageKey(normalizedProjectId, normalizedChatSessionId);
+    if (lastChatRuntimeRemotePersistKey === key) {
+      lastChatRuntimeRemotePersistKey = "";
+      lastChatRuntimeRemotePersistFingerprint = "";
+    }
+    return;
+  }
+  const prefix = `project_chat_runtime_${normalizedProjectId}_`;
+  if (lastChatRuntimeRemotePersistKey.startsWith(prefix)) {
+    lastChatRuntimeRemotePersistKey = "";
+    lastChatRuntimeRemotePersistFingerprint = "";
+  }
 }
 
 function rememberChatSession(projectId, sessionId) {
@@ -4759,19 +5440,324 @@ function clearWorkSessionMemory(projectId) {
   }
 }
 
+function readPersistedChatRuntime(projectId, chatSessionId) {
+  const key = chatRuntimeStorageKey(projectId, chatSessionId);
+  if (!key) return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function writePersistedChatRuntime(projectId, chatSessionId, payload) {
+  const key = chatRuntimeStorageKey(projectId, chatSessionId);
+  if (!key) return;
+  if (!payload || typeof payload !== "object") {
+    localStorage.removeItem(key);
+    return;
+  }
+  localStorage.setItem(key, JSON.stringify(payload));
+}
+
+function clearPersistedChatRuntime(projectId, chatSessionId = "") {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId) return;
+  clearRemotePersistedChatRuntimeState(
+    normalizedProjectId,
+    normalizedChatSessionId,
+  );
+  if (normalizedChatSessionId) {
+    const key = chatRuntimeStorageKey(normalizedProjectId, normalizedChatSessionId);
+    if (key) {
+      localStorage.removeItem(key);
+    }
+    return;
+  }
+  const prefix = `project_chat_runtime_${normalizedProjectId}_`;
+  const keys = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = String(localStorage.key(index) || "").trim();
+    if (key.startsWith(prefix)) {
+      keys.push(key);
+    }
+  }
+  for (const key of keys) {
+    localStorage.removeItem(key);
+  }
+}
+
+async function fetchPersistedChatRuntime(projectId, chatSessionId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  const localPayload = readPersistedChatRuntime(
+    normalizedProjectId,
+    normalizedChatSessionId,
+  );
+  if (!normalizedProjectId || !normalizedChatSessionId) {
+    return localPayload;
+  }
+  try {
+    const data = await api.get(
+      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/runtime`,
+      {
+        params: {
+          chat_session_id: normalizedChatSessionId,
+        },
+      },
+    );
+    const payload =
+      data?.snapshot?.payload && typeof data.snapshot.payload === "object"
+        ? data.snapshot.payload
+        : null;
+    if (payload) {
+      writePersistedChatRuntime(
+        normalizedProjectId,
+        normalizedChatSessionId,
+        payload,
+      );
+      rememberRemotePersistedChatRuntime(
+        normalizedProjectId,
+        normalizedChatSessionId,
+        payload,
+      );
+      return payload;
+    }
+  } catch (_error) {
+    // 服务端快照读取失败时保留本地兜底，不中断聊天恢复。
+  }
+  return localPayload;
+}
+
+async function persistChatRuntimeToServer(projectId, chatSessionId, payload) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (
+    !normalizedProjectId ||
+    !normalizedChatSessionId ||
+    !payload ||
+    typeof payload !== "object"
+  ) {
+    return;
+  }
+  const key = chatRuntimeStorageKey(normalizedProjectId, normalizedChatSessionId);
+  const fingerprint = chatRuntimeRemoteFingerprint(
+    normalizedProjectId,
+    normalizedChatSessionId,
+    payload,
+  );
+  if (
+    key &&
+    key === lastChatRuntimeRemotePersistKey &&
+    fingerprint &&
+    fingerprint === lastChatRuntimeRemotePersistFingerprint
+  ) {
+    return;
+  }
+  try {
+    await api.put(
+      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/runtime`,
+      {
+        chat_session_id: normalizedChatSessionId,
+        payload,
+      },
+    );
+    rememberRemotePersistedChatRuntime(
+      normalizedProjectId,
+      normalizedChatSessionId,
+      payload,
+    );
+  } catch (_error) {
+    // 服务端持久化失败时保留本地快照，避免阻塞当前交互。
+  }
+}
+
+function normalizeRuntimeMessageSnapshot(row) {
+  if (!row || typeof row !== "object") return null;
+  const id = String(row.id || "").trim();
+  if (!id) return null;
+  return {
+    id,
+    role: String(row.role || "assistant"),
+    content: String(row.content || ""),
+    images: Array.isArray(row.images) ? row.images.slice() : [],
+    videos: Array.isArray(row.videos) ? row.videos.slice() : [],
+    attachments: Array.isArray(row.attachments) ? row.attachments.slice() : [],
+    time: String(row.time || ""),
+    displayMode: String(row.displayMode || ""),
+    effectiveTools: Array.isArray(row.effectiveTools) ? row.effectiveTools.slice() : [],
+    effectiveToolTotal: Number(row.effectiveToolTotal || 0),
+    terminalLog: Array.isArray(row.terminalLog) ? row.terminalLog.slice() : [],
+    processExpanded: Boolean(row.processExpanded),
+    audit: row.audit && typeof row.audit === "object" ? row.audit : null,
+    taskTreeAudit:
+      row.taskTreeAudit && typeof row.taskTreeAudit === "object"
+        ? row.taskTreeAudit
+        : null,
+    statusNotes: Array.isArray(row.statusNotes) ? row.statusNotes.slice() : [],
+    operations: Array.isArray(row.operations) ? row.operations.slice() : [],
+  };
+}
+
+function buildPersistedChatRuntimePayload() {
+  const activeIndex = Number(activeTerminalMirrorAssistantIndex.value ?? -1);
+  const activeRow =
+    activeIndex >= 0 && activeIndex < messages.value.length
+      ? messages.value[activeIndex]
+      : null;
+  return {
+    version: 1,
+    updated_at: new Date().toISOString(),
+    messages: (messages.value || [])
+      .map(normalizeRuntimeMessageSnapshot)
+      .filter(Boolean),
+    terminal: {
+      panel_status: String(terminalPanelStatus.value || "idle"),
+      panel_expanded: Boolean(terminalPanelExpanded.value),
+      panel_lines: Array.isArray(terminalPanelLines.value)
+        ? terminalPanelLines.value.slice(-400)
+        : [],
+      mirror_connected: Boolean(terminalMirrorConnected.value),
+      host_terminal_session_id: String(hostTerminalSessionId.value || "").trim(),
+      host_terminal_workspace_path: String(hostTerminalWorkspacePath.value || "").trim(),
+      active_assistant_index: activeIndex,
+      active_assistant_message_id: String(activeRow?.id || "").trim(),
+    },
+  };
+}
+
+function shouldKeepRuntimeOnlyMessage(row) {
+  if (!row) return false;
+  if (isTerminalInputCandidateRow(row)) return true;
+  if (Array.isArray(row.terminalLog) && row.terminalLog.length) return true;
+  if (Array.isArray(row.operations) && row.operations.length) return true;
+  return String(row.displayMode || "").trim() === "terminal";
+}
+
+function applyPersistedChatRuntimeRows(historyRows, runtimePayload) {
+  const rows = Array.isArray(historyRows) ? historyRows : [];
+  const runtimeRows = Array.isArray(runtimePayload?.messages)
+    ? runtimePayload.messages.map(normalizeRuntimeMessageSnapshot).filter(Boolean)
+    : [];
+  if (!runtimeRows.length) return rows;
+  const runtimeById = new Map(runtimeRows.map((item) => [item.id, item]));
+  const historyIds = new Set(rows.map((row) => String(row?.id || "").trim()));
+  const mergedRows = rows.map((row) => {
+    const runtimeRow = runtimeById.get(String(row?.id || "").trim());
+    return runtimeRow ? { ...row, ...runtimeRow } : row;
+  });
+  const runtimeOnlyRows = runtimeRows.filter((row) => {
+    const id = String(row?.id || "").trim();
+    return id && !historyIds.has(id) && shouldKeepRuntimeOnlyMessage(row);
+  });
+  if (mergedRows.length) return [...mergedRows, ...runtimeOnlyRows];
+  return runtimeRows;
+}
+
+async function restoreInteractiveChatRuntime(
+  projectId,
+  chatSessionId,
+  rows,
+  runtimePayload,
+) {
+  const activeProjectId = String(selectedProjectId.value || "").trim();
+  const activeChatSessionId = String(currentChatSessionId.value || "").trim();
+  if (
+    String(projectId || "").trim() !== activeProjectId ||
+    String(chatSessionId || "").trim() !== activeChatSessionId
+  ) {
+    return;
+  }
+  const terminal =
+    runtimePayload?.terminal && typeof runtimePayload.terminal === "object"
+      ? runtimePayload.terminal
+      : null;
+  if (!terminal) return;
+  const restoredPanelStatus = String(terminal.panel_status || "idle").trim();
+  terminalPanelStatus.value = restoredPanelStatus === "running" ? "idle" : restoredPanelStatus;
+  terminalPanelExpanded.value = Boolean(terminal.panel_expanded);
+  terminalPanelLines.value = Array.isArray(terminal.panel_lines)
+    ? terminal.panel_lines.slice(-400)
+    : [];
+  terminalMirrorConnected.value = false;
+  hostTerminalSessionId.value = "";
+  hostTerminalWorkspacePath.value = String(
+    terminal.host_terminal_workspace_path || "",
+  ).trim();
+  activeTerminalMirrorAssistantIndex.value = -1;
+  await nextTick();
+  scrollTerminalPanelBottom();
+}
+
+function schedulePersistChatRuntime() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!projectId || !chatSessionId) return;
+  if (chatRuntimePersistTimer) {
+    clearTimeout(chatRuntimePersistTimer);
+  }
+  chatRuntimePersistTimer = window.setTimeout(() => {
+    chatRuntimePersistTimer = null;
+    const activeProjectId = String(selectedProjectId.value || "").trim();
+    const activeChatSessionId = String(currentChatSessionId.value || "").trim();
+    if (activeProjectId !== projectId || activeChatSessionId !== chatSessionId) {
+      return;
+    }
+    const payload = buildPersistedChatRuntimePayload();
+    writePersistedChatRuntime(projectId, chatSessionId, payload);
+    void persistChatRuntimeToServer(projectId, chatSessionId, payload);
+  }, 300);
+}
+
+function normalizeChatSourceContext(item) {
+  const source =
+    item?.source_context && typeof item.source_context === "object"
+      ? item.source_context
+      : item || {};
+  return {
+    source_type: String(source.source_type || "").trim(),
+    platform: String(source.platform || "").trim(),
+    connector_id: String(source.connector_id || "").trim(),
+    external_chat_id: String(source.external_chat_id || "").trim(),
+    external_chat_name: String(source.external_chat_name || "").trim(),
+    external_message_id: String(source.external_message_id || "").trim(),
+    sender_id: String(source.sender_id || "").trim(),
+    sender_name: String(source.sender_name || "").trim(),
+    thread_key: String(source.thread_key || "").trim(),
+  };
+}
+
 function normalizeChatSession(item) {
+  const sourceContext = normalizeChatSourceContext(item || {});
   return {
     id: String(item?.id || "").trim(),
     title: String(item?.title || "新对话").trim() || "新对话",
     preview: String(item?.preview || "").trim(),
     message_count: Number(item?.message_count || 0),
+    source_type: sourceContext.source_type,
+    platform: sourceContext.platform,
+    connector_id: sourceContext.connector_id,
+    external_chat_id: sourceContext.external_chat_id,
+    external_chat_name: sourceContext.external_chat_name,
+    thread_key: sourceContext.thread_key,
+    source_context: sourceContext,
     created_at: String(item?.created_at || "").trim(),
     updated_at: String(item?.updated_at || "").trim(),
     last_message_at: String(item?.last_message_at || "").trim(),
   };
 }
 
+function isGroupChatSession(session) {
+  const source = normalizeChatSourceContext(session || {});
+  return Boolean(source.platform || source.connector_id || source.external_chat_name || source.external_chat_id);
+}
+
 const chatHistoryHasMore = computed(() => {
+  if (chatHistoryReachedEnd.value) return false;
   const total = Number(currentChatSession.value?.message_count || 0);
   if (total > 0) {
     return chatHistoryLoadedCount.value < total;
@@ -4792,6 +5778,25 @@ function formatChatSessionMeta(session) {
 
 function formatChatSessionTime(value) {
   return formatRelativeDateTime(value, { fallback: "刚刚" });
+}
+
+function formatChatPlatformLabel(platform) {
+  const normalized = String(platform || "").trim().toLowerCase();
+  if (normalized === "feishu") return "飞书";
+  if (normalized === "wechat") return "微信/企微";
+  if (normalized === "qq") return "QQ";
+  return normalized;
+}
+
+function formatChatSessionSourceLabel(session) {
+  const source = normalizeChatSourceContext(session || {});
+  const groupName = source.external_chat_name;
+  const platformLabel = formatChatPlatformLabel(source.platform);
+  if (!groupName && !platformLabel) return "";
+  const suffix = source.external_chat_id ? "已解析" : "待解析 ID";
+  if (groupName && platformLabel) return `${platformLabel}群 · ${groupName} · ${suffix}`;
+  if (groupName) return `群 · ${groupName} · ${suffix}`;
+  return `${platformLabel}群 · ${suffix}`;
 }
 
 function resolveChatSessionGroupLabel(session) {
@@ -4959,7 +5964,11 @@ function getFileReviewStatusMeta(status) {
 
 async function sendApprovalDecision(requestId, approvalId, approved) {
   if (!wsClient.value || !wsClient.value.isOpen()) {
-    throw new Error("WebSocket 未连接");
+    const projectId = String(selectedProjectId.value || "").trim();
+    if (!projectId) {
+      throw new Error("WebSocket 未连接");
+    }
+    await ensureWsClient(projectId);
   }
   wsClient.value.send({
     type: "approval_response",
@@ -4971,7 +5980,11 @@ async function sendApprovalDecision(requestId, approvalId, approved) {
 
 async function sendFileReviewDecision(requestId, reviewId, approved) {
   if (!wsClient.value || !wsClient.value.isOpen()) {
-    throw new Error("WebSocket 未连接");
+    const projectId = String(selectedProjectId.value || "").trim();
+    if (!projectId) {
+      throw new Error("WebSocket 未连接");
+    }
+    await ensureWsClient(projectId);
   }
   wsClient.value.send({
     type: "file_review_response",
@@ -5007,6 +6020,23 @@ async function handleApprovalRequired(eventData, row) {
     return;
   }
   activeApprovalIds.add(approvalId);
+  upsertMessageOperation(row, {
+    operationId: `approval:${approvalId}`,
+    kind: "approval",
+    title: String(eventData?.title || "操作审批").trim() || "操作审批",
+    summary: "等待你确认后继续",
+    detail: formatApprovalMessage(eventData),
+    phase: "waiting_user",
+    actionType: "approve",
+    meta: {
+      request_id: requestId,
+      approval_id: approvalId,
+      message: String(eventData?.message || "").trim(),
+      risk_signals: Array.isArray(eventData?.risk_signals)
+        ? eventData.risk_signals
+        : [],
+    },
+  });
   row.content =
     `${row.content || ""}\n\n> ⛔ 检测到高风险操作，等待审批...`.trim();
   scrollToBottom();
@@ -5074,6 +6104,24 @@ async function handleFileReviewRequired(eventData, row) {
     after_diff_summary:
       eventData?.diff_summary || row.audit?.after_diff_summary || {},
     file_review_status: "pending",
+  });
+  upsertMessageOperation(row, {
+    operationId: `review:${reviewId}`,
+    kind: "approval",
+    title: String(eventData?.title || "文件变更审查").trim() || "文件变更审查",
+    summary: "等待你确认是否保留当前改动",
+    detail: formatFileReviewMessage(eventData),
+    phase: "waiting_user",
+    actionType: "approve",
+    meta: {
+      request_id: requestId,
+      review_id: reviewId,
+      diff_summary:
+        eventData?.diff_summary && typeof eventData.diff_summary === "object"
+          ? eventData.diff_summary
+          : null,
+      message: String(eventData?.message || "").trim(),
+    },
   });
   row.content =
     `${row.content || ""}\n> 📝 检测到文件改动，等待审查确认`.trim();
@@ -5330,119 +6378,6 @@ function normalizeChatSelectedEmployeeIds(
   return validSelected.length >= available.length ? [] : validSelected;
 }
 
-function normalizeTaskTreePayload(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const nodes = Array.isArray(raw.nodes) ? raw.nodes : [];
-  const tree = Array.isArray(raw.tree) ? raw.tree : [];
-  const currentNodeId = String(raw.current_node_id || "").trim();
-  return {
-    ...raw,
-    id: String(raw.id || "").trim(),
-    chat_session_id: String(raw.chat_session_id || "").trim(),
-    title: String(raw.title || "").trim(),
-    root_goal: String(raw.root_goal || "").trim(),
-    status:
-      String(raw.status || "pending")
-        .trim()
-        .toLowerCase() || "pending",
-    current_node_id: currentNodeId,
-    progress_percent: resolveTaskTreeProgressPercent(raw),
-    nodes,
-    tree,
-    task_tree_health: normalizeTaskTreeHealth(raw.task_tree_health),
-    current_node:
-      raw.current_node && typeof raw.current_node === "object"
-        ? raw.current_node
-        : nodes.find(
-            (item) => String(item?.id || "").trim() === currentNodeId,
-          ) || null,
-    stats: raw.stats && typeof raw.stats === "object" ? raw.stats : {},
-    model_context_summary: String(raw.model_context_summary || "").trim(),
-  };
-}
-
-function normalizeTaskTreeAuditPayload(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const message = buildTaskTreeAuditMessage(raw);
-  if (!message) return null;
-  return {
-    status: String(raw.status || "attention").trim().toLowerCase(),
-    code: String(raw.code || "").trim(),
-    severity: String(raw.severity || "medium").trim().toLowerCase(),
-    category: String(raw.category || "").trim(),
-    message,
-    recommended_action: String(raw.recommended_action || "").trim(),
-    evidence: Array.isArray(raw.evidence)
-      ? raw.evidence
-          .map((item) => String(item || "").trim())
-          .filter(Boolean)
-      : [],
-    auto_updated: Boolean(raw.auto_updated),
-    suggested_status: String(raw.suggested_status || "")
-      .trim()
-      .toLowerCase(),
-    completion_signal_detected: Boolean(raw.completion_signal_detected),
-    verification_signal_detected: Boolean(raw.verification_signal_detected),
-    executed_tool_names: Array.isArray(raw.executed_tool_names)
-      ? raw.executed_tool_names
-          .map((item) => String(item || "").trim())
-          .filter(Boolean)
-      : [],
-    current_node:
-      raw.current_node && typeof raw.current_node === "object"
-        ? raw.current_node
-        : null,
-  };
-}
-
-function buildTaskTreeAuditMessage(raw) {
-  const explicitMessage = String(raw?.message || "").trim();
-  if (explicitMessage) return explicitMessage;
-  const normalizedCode = String(raw?.code || "").trim().toLowerCase();
-  if (normalizedCode === "lookup_query_auto_completed") {
-    return "当前检索型任务已自动归档。";
-  }
-  if (normalizedCode === "embedded_task_call_recovered") {
-    return "系统已恢复回答中的任务树回写。";
-  }
-  if (normalizedCode === "bootstrap_step_auto_completed") {
-    return "系统已自动完成当前上下文预检节点。";
-  }
-  if (normalizedCode === "completion_unverified") {
-    return "当前节点存在完成表述，但还缺少验证结果。";
-  }
-  if (normalizedCode === "progress_not_written_back") {
-    return "当前节点已有进展，但任务树没有完整回写。";
-  }
-  const recommendedAction = String(raw?.recommended_action || "").trim();
-  if (recommendedAction) return recommendedAction;
-  return "";
-}
-
-function getTaskTreeAuditSeverityMeta(value) {
-  const normalized = String(value || "medium").trim().toLowerCase();
-  if (normalized === "high") {
-    return { label: "高优先级", type: "danger" };
-  }
-  if (normalized === "low") {
-    return { label: "低优先级", type: "info" };
-  }
-  return { label: "中优先级", type: "warning" };
-}
-
-function getTaskTreeAuditCategoryLabel(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  return (
-    {
-      verification_guard: "完成前校验",
-      writeback_missing: "回写缺失",
-      lookup_query: "检索归档",
-      embedded_writeback_recovery: "回写恢复",
-      context_bootstrap: "上下文预检",
-      task_tree_sync: "任务同步",
-    }[normalized] || "任务校验"
-  );
-}
 
 function normalizeWorkSessionSummary(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -5487,53 +6422,6 @@ function resolveTaskTreeEventPayload(payload) {
   return payload;
 }
 
-function isTaskTreeArchivedOrDone(payload) {
-  if (!payload || typeof payload !== "object") return false;
-  const lifecycle = String(payload.lifecycle_status || "").trim().toLowerCase();
-  const status = String(payload.status || "").trim().toLowerCase();
-  return Boolean(payload.is_archived || lifecycle === "archived" || status === "done");
-}
-
-function isTaskTreeFinalized(taskTree) {
-  if (!taskTree || typeof taskTree !== "object") {
-    return false;
-  }
-  const status = String(taskTree.status || "").trim().toLowerCase();
-  const progressPercent = Number(taskTree.progress_percent || 0);
-  const stats = taskTree.stats && typeof taskTree.stats === "object" ? taskTree.stats : {};
-  const leafTotal = Number(taskTree.leaf_total ?? stats.leaf_total ?? 0);
-  const doneLeafTotal = Number(taskTree.done_leaf_total ?? stats.done_leaf_total ?? 0);
-  if (Boolean(taskTree.is_archived) && status === "done") {
-    return true;
-  }
-  if (status !== "done") {
-    return false;
-  }
-  if (progressPercent >= 100) {
-    return true;
-  }
-  return leafTotal > 0 && doneLeafTotal >= leafTotal;
-}
-
-function resolveTaskTreeProgressPercent(taskTree) {
-  if (!taskTree || typeof taskTree !== "object") {
-    return 0;
-  }
-  const explicitProgress = Number(taskTree.progress_percent || 0);
-  if (explicitProgress > 0) {
-    return explicitProgress;
-  }
-  if (isTaskTreeFinalized(taskTree)) {
-    return 100;
-  }
-  const stats = taskTree.stats && typeof taskTree.stats === "object" ? taskTree.stats : {};
-  const leafTotal = Number(taskTree.leaf_total ?? stats.leaf_total ?? 0);
-  const doneLeafTotal = Number(taskTree.done_leaf_total ?? stats.done_leaf_total ?? 0);
-  if (leafTotal > 0 && doneLeafTotal > 0) {
-    return Math.round((doneLeafTotal / leafTotal) * 100);
-  }
-  return 0;
-}
 
 function applyTaskTreePayload(payload) {
   const normalized = normalizeTaskTreePayload(payload);
@@ -5701,13 +6589,6 @@ function syncTaskTreeDrafts(node) {
   ).trim();
 }
 
-function getTaskTreeChildNodes(nodeId) {
-  const normalizedNodeId = String(nodeId || "").trim();
-  if (!normalizedNodeId || !Array.isArray(displayedChatTaskTree.value?.nodes)) return [];
-  return displayedChatTaskTree.value.nodes.filter(
-    (item) => String(item?.parent_id || "").trim() === normalizedNodeId,
-  );
-}
 
 function normalizeDictionaryBackedChatSettings(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
@@ -5770,7 +6651,14 @@ const allowedFileTypes = computed(() =>
 );
 
 const canSend = computed(() => {
-  if (chatLoading.value) return false;
+  if (isTerminalInteractionMode.value) {
+    return Boolean(
+      String(draftText.value || "").trim() ||
+        terminalMirrorConnected.value ||
+        String(hostTerminalSessionId.value || "").trim(),
+    );
+  }
+  if (chatLoading.value && !isAwaitingUserInteraction.value) return false;
   if (
     !String(selectedProjectId.value || "").trim() &&
     activeComposerAssistMeta.value?.id !== "employee_create" &&
@@ -5796,7 +6684,8 @@ const isProjectOptionalEmployeeCreate = computed(
 );
 
 const isComposerDisabled = computed(() => {
-  if (chatLoading.value) return true;
+  if (isTerminalInteractionMode.value) return false;
+  if (chatLoading.value && !isAwaitingUserInteraction.value) return true;
   if (isProjectOptionalEmployeeCreate.value) return false;
   if (!ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT) {
     return !selectedProjectId.value;
@@ -5822,14 +6711,177 @@ function scrollTerminalPanelBottom() {
   });
 }
 
+function focusTerminalPanelInput() {
+  if (!isTerminalInteractionMode.value) return;
+  void focusChatComposerTextarea();
+}
+
+function extractInteractiveBrowserUrls(value) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  const urls = Array.from(
+    text.matchAll(/https?:\/\/[^\s)>"]+/gi),
+    (match) => String(match?.[0] || "").trim().replace(/[),.;:!?]+$/g, ""),
+  ).filter(Boolean);
+  if (!urls.length) return [];
+  const hasOpenHint =
+    /打开以下链接|授权链接|重新授权|浏览器.*授权|人工授权|device\/verify|user_code|open the following link|open the link|continue in browser|confirm in browser|verification url|等待配置应用|等待授权|authorize|authorization/i.test(
+      text,
+    );
+  if (!hasOpenHint) return [];
+  return Array.from(new Set(urls));
+}
+
+function pickAwaitingInteractionOperation(row, options = {}) {
+  if (!row) return null;
+  const operations = [...messageOperations(row)]
+    .reverse()
+    .filter((item) => {
+      if (!isOperationAwaitingInteraction(item)) return false;
+      if (options?.allowTerminal !== false) return true;
+      const actionType = normalizeOperationActionType(item?.actionType);
+      const kind = String(item?.kind || "").trim().toLowerCase();
+      return actionType !== "enter_text" && kind !== "terminal";
+    });
+  if (!operations.length) return null;
+  if (options?.allowTerminal === false) return operations[0];
+  if (!hasLiveTerminalSession.value) return operations[0];
+  return (
+    operations.find((item) => {
+      const actionType = normalizeOperationActionType(item?.actionType);
+      const kind = String(item?.kind || "").trim().toLowerCase();
+      return actionType === "enter_text" || kind === "terminal";
+    }) || operations[0]
+  );
+}
+
+function findLatestAwaitingInteractionMessage(rows) {
+  if (!Array.isArray(rows)) return null;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (String(row?.role || "").trim() !== "assistant") continue;
+    const operation = pickAwaitingInteractionOperation(row, {
+      allowTerminal: false,
+    });
+    if (operation) return { index, row, operation };
+  }
+  return null;
+}
+
+async function ensureBrowserAuthOperationFromText(value, row, options = {}) {
+  const text = String(value || "").trim();
+  const urls = extractInteractiveBrowserUrls(text);
+  if (!urls.length) return false;
+  if (options?.autoOpen !== false) {
+    await autoOpenTerminalBrowserUrls(text, row);
+  }
+  if (!row) return true;
+  for (const url of urls) {
+    upsertMessageOperation(row, {
+      operationId: `auth:${url}`,
+      kind: "auth",
+      title: "浏览器授权",
+      summary: "等待你完成授权后回到输入框继续",
+      detail: url,
+      phase: "waiting_user",
+      actionType: "open_url",
+    });
+  }
+  appendAssistantStatusNote(
+    row,
+    "> 🌐 已识别浏览器授权等待状态；完成授权后回到输入框输入“授权完成”即可继续。",
+  );
+  return true;
+}
+
+async function openExternalUrlViaSystem(url) {
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl) return false;
+  try {
+    const response = await api.post("/projects/external-url/open", {
+      url: normalizedUrl,
+    });
+    return Boolean(response?.opened);
+  } catch (err) {
+    return false;
+  }
+}
+
+async function autoOpenTerminalBrowserUrls(value, row = null) {
+  const urls = extractInteractiveBrowserUrls(value);
+  if (!urls.length) return;
+  for (const url of urls) {
+    if (terminalAutoOpenedUrls.has(url)) continue;
+    terminalAutoOpenedUrls.add(url);
+    let opened = false;
+    try {
+      opened = await openExternalUrlViaSystem(url);
+    } catch (err) {
+      opened = false;
+    }
+    if (!opened) {
+      try {
+        opened = Boolean(window.open(url, "_blank", "noopener,noreferrer"));
+      } catch (err) {
+        opened = false;
+      }
+    }
+    if (opened) {
+      pendingComposerRefocusAfterExternalOpen.value = true;
+      if (row) {
+        upsertMessageOperation(row, {
+          operationId: `auth:${url}`,
+          kind: "auth",
+          title: "浏览器授权",
+          summary: "已自动打开授权链接，完成后回到对话框继续",
+          detail: url,
+          phase: "waiting_user",
+          actionType: "open_url",
+        });
+        appendAssistantStatusNote(
+          row,
+          `> 🌐 已自动打开浏览器链接：\`${url}\`。完成后回到对话框输入“已完成”继续。`,
+        );
+      }
+      continue;
+    }
+    if (row) {
+      upsertMessageOperation(row, {
+        operationId: `auth:${url}`,
+        kind: "auth",
+        title: "浏览器授权",
+        summary: "自动打开失败，请手动继续",
+        detail: url,
+        phase: "waiting_user",
+        actionType: "open_url",
+      });
+      appendAssistantStatusNote(
+        row,
+        `> 🌐 自动打开浏览器失败，请手动打开：\`${url}\`。完成后回到对话框输入“已完成”继续。`,
+      );
+    }
+  }
+}
+
+function restoreComposerFocusAfterExternalOpen() {
+  if (!pendingComposerRefocusAfterExternalOpen.value) return;
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+    return;
+  }
+  pendingComposerRefocusAfterExternalOpen.value = false;
+  void focusChatComposerTextarea();
+}
+
 function appendTerminalPanelLine(text) {
-  const line = String(text || "").trim();
-  if (!line) return;
+  const linesToAppend = sanitizeTerminalOutputLines(text);
+  if (!linesToAppend.length) return;
   const lines = Array.isArray(terminalPanelLines.value)
     ? terminalPanelLines.value.slice()
     : [];
-  if (lines.length && lines[lines.length - 1] === line) return;
-  lines.push(line);
+  linesToAppend.forEach((line) => {
+    if (!line || (lines.length && lines[lines.length - 1] === line)) return;
+    lines.push(line);
+  });
   if (lines.length > 400) {
     lines.splice(0, lines.length - 400);
   }
@@ -5845,8 +6897,9 @@ function clearTerminalPanel() {
 function resetTerminalPanel() {
   terminalPanelLines.value = [];
   terminalPanelStatus.value = "idle";
-  terminalPanelInput.value = "";
   terminalMirrorConnected.value = false;
+  hostTerminalSessionId.value = "";
+  hostTerminalWorkspacePath.value = "";
   activeTerminalMirrorAssistantIndex.value = -1;
   terminalApprovalDialogVisible.value = false;
   terminalApprovalHandledKey.value = "";
@@ -5854,73 +6907,151 @@ function resetTerminalPanel() {
   scrollTerminalPanelBottom();
 }
 
-async function startTerminalMirror() {
-  if (!isExternalAgentMode.value) return;
+async function startTerminalMirror(options = {}) {
   const projectId = String(selectedProjectId.value || "").trim();
-  if (!projectId) return;
-  if (!externalAgentInfo.value.thread_id) {
-    await prepareExternalAgentSession({ silent: true });
+  if (!projectId) return false;
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!chatSessionId) {
+    if (!options?.silent) {
+      ElMessage.warning("请先创建或切换到一个项目对话");
+    }
+    return false;
   }
+  if (!canUseHostTerminal.value && !options?.attachOnly) {
+    if (!options?.silent) {
+      ElMessage.warning("请先保存项目工作区路径");
+    }
+    return false;
+  }
+  if (typeof options?.assistantIndex === "number") {
+    activeTerminalMirrorAssistantIndex.value = options.assistantIndex;
+  }
+  terminalPanelStatus.value = "running";
+  terminalPanelExpanded.value = true;
   const client = await ensureWsClient(projectId);
   client.send({
     type: "terminal_mirror_start",
     request_id: `mirror-start-${Date.now()}`,
-    chat_mode: "external_agent",
-    external_agent_type: String(
-      projectChatSettings.value.external_agent_type || "codex_cli",
-    ).trim(),
-    external_agent_sandbox_mode:
-      projectChatSettings.value.external_agent_sandbox_mode ||
-      "workspace-write",
-    external_agent_sandbox_mode_explicit: true,
+    chat_mode: "host_terminal",
+    chat_session_id: chatSessionId,
+    initial_command: String(options?.initialCommand || "").trim(),
+    attach_only: Boolean(options?.attachOnly),
   });
+  return true;
 }
 
 async function stopTerminalMirror() {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId || !wsClient.value) return;
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!chatSessionId) return;
   wsClient.value.send({
     type: "terminal_mirror_stop",
     request_id: `mirror-stop-${Date.now()}`,
+    chat_mode: "host_terminal",
+    chat_session_id: chatSessionId,
   });
   terminalMirrorConnected.value = false;
 }
 
 async function sendTerminalMirrorInput() {
-  const content = String(terminalPanelInput.value || "").trim();
-  if (!content) return;
-  await sendTerminalMirrorContent(content);
-  terminalPanelInput.value = "";
+  ensureActiveTerminalInputTarget();
+  const rawContent = String(draftText.value ?? "");
+  const content = rawContent.trim();
+  const sent = content
+    ? await sendTerminalMirrorContent(content)
+    : await sendTerminalMirrorContent("\r", {
+        appendNewline: false,
+        allowBlank: true,
+        echoLabel: "回车",
+      });
+  if (!sent) return;
+  draftText.value = "";
+  focusTerminalPanelInput();
+}
+
+async function waitForTerminalMirrorReady(timeoutMs = 5000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (terminalMirrorConnected.value) {
+      return true;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+  }
+  return false;
 }
 
 async function sendTerminalMirrorContent(content, options = {}) {
-  const normalizedContent = String(content || "").trim();
-  if (!normalizedContent) return;
+  const rawContent = String(content ?? "");
+  const shouldPreserveContent =
+    Boolean(options?.allowBlank) || options?.appendNewline === false;
+  const normalizedContent = shouldPreserveContent
+    ? rawContent
+    : rawContent.trim();
+  if (!normalizedContent && !options?.allowBlank) return false;
   const projectId = String(selectedProjectId.value || "").trim();
-  if (!projectId) return;
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!chatSessionId) return false;
+  if (!projectId) return false;
   const client = await ensureWsClient(projectId);
   if (!terminalMirrorConnected.value) {
-    await startTerminalMirror();
+    const hasRememberedSession = Boolean(
+      String(hostTerminalSessionId.value || "").trim(),
+    );
+    await startTerminalMirror({
+      attachOnly: hasRememberedSession,
+      silent: hasRememberedSession,
+    });
+    const ready = await waitForTerminalMirrorReady();
+    if (!ready) {
+      if (hasRememberedSession) {
+        terminalMirrorConnected.value = false;
+        hostTerminalSessionId.value = "";
+        terminalPanelStatus.value = "idle";
+        ElMessage.warning("项目终端连接已失效，请重新执行命令");
+      } else {
+        ElMessage.warning("项目终端仍在连接中，请稍后再试");
+      }
+      return false;
+    }
   }
   if (options?.echo !== false) {
-    appendTerminalPanelLine(`› ${normalizedContent}`);
+    const echoText = String(
+      options?.echoLabel ?? normalizedContent,
+    ).trim();
+    if (echoText) {
+      const inputLine = `› ${echoText}`;
+      appendTerminalPanelLine(inputLine);
+      const targetIndex = ensureActiveTerminalInputTarget();
+      const targetRow = messages.value[Number(targetIndex)];
+      if (targetRow) {
+        targetRow.displayMode = "terminal";
+        targetRow.processExpanded = true;
+        appendTerminalLog(targetRow, inputLine, { mirrorToPanel: false });
+        upsertMessageOperation(targetRow, {
+          operationId: `terminal:${String(hostTerminalSessionId.value || chatSessionId || "active").trim()}`,
+          kind: "terminal",
+          title: "需要你继续操作",
+          summary: "已发送输入，等待终端输出",
+          detail: "主输入框内容已发送到项目终端。",
+          phase: "running",
+          actionType: "enter_text",
+        });
+      }
+    }
   }
   client.send({
     type: "terminal_mirror_input",
     request_id: `mirror-input-${Date.now()}`,
-    chat_mode: "external_agent",
-    external_agent_type: String(
-      projectChatSettings.value.external_agent_type || "codex_cli",
-    ).trim(),
-    external_agent_sandbox_mode:
-      projectChatSettings.value.external_agent_sandbox_mode ||
-      "workspace-write",
-    external_agent_sandbox_mode_explicit: true,
+    chat_mode: "host_terminal",
+    chat_session_id: chatSessionId,
+    session_id: String(hostTerminalSessionId.value || "").trim(),
     content:
       options?.appendNewline === false
         ? normalizedContent
         : `${normalizedContent}\r`,
   });
+  return true;
 }
 
 async function sendTerminalApprovalChoice(choice) {
@@ -5932,7 +7063,8 @@ async function sendTerminalApprovalChoice(choice) {
   }
   clearTerminalApprovalFallback();
   terminalApprovalDialogVisible.value = false;
-  await sendTerminalMirrorContent(String(choice || "").trim());
+  const sent = await sendTerminalMirrorContent(String(choice || "").trim());
+  if (!sent) return;
   const activeRequestId = getActiveRequestId();
   if (activeRequestId) {
     const pending = pendingRequests.get(activeRequestId);
@@ -5957,26 +7089,995 @@ function appendAssistantStatusNote(row, text) {
   row.statusNotes = notes;
 }
 
+function removeAssistantStatusNotes(row, predicate) {
+  if (!row || typeof predicate !== "function") return;
+  const notes = Array.isArray(row.statusNotes) ? row.statusNotes.slice() : [];
+  row.statusNotes = notes.filter((note) => !predicate(String(note || "").trim()));
+}
+
+function isTransientExecutionStatusNote(note) {
+  const normalized = String(note || "").trim();
+  return /有执行步骤未完成，正在等待模型给出下一步|执行过程中出现提示，正在等待后续处理/i.test(normalized);
+}
+
+function isInternalStatusNote(note) {
+  const normalized = String(note || "").trim();
+  return (
+    /工具调用|正在调用工具|tokens\s+in=|正在处理任务|命令已进入交互模式|已切换到项目终端/i.test(normalized) ||
+    isTransientExecutionStatusNote(normalized)
+  );
+}
+
 function messageStatusNotes(row) {
   return Array.isArray(row?.statusNotes)
     ? row.statusNotes
         .map((item) => String(item || "").trim())
-        .filter(Boolean)
+        .filter((item) => item && !isInternalStatusNote(item))
     : [];
 }
 
-function appendTerminalLog(row, text) {
+function normalizeOperationPhase(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    ["pending", "running", "waiting_user", "blocked", "completed", "failed"].includes(
+      normalized,
+    )
+  ) {
+    return normalized;
+  }
+  return "pending";
+}
+
+function normalizeOperationActionType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["open_url", "approve", "enter_text", "select", "none"].includes(normalized)) {
+    return normalized;
+  }
+  return "none";
+}
+
+function buildMessageOperation(source = {}) {
+  const rawOperationId = String(
+    source.operationId || source.operation_id || source.id || "",
+  ).trim();
+  const rawKind = String(source.kind || source.operation_kind || "task").trim();
+  const title = String(source.title || "执行步骤").trim() || "执行步骤";
+  const summary = String(source.summary || "").trim();
+  const detail = String(source.detail || "").trim();
+  const phase = normalizeOperationPhase(source.phase || source.status);
+  const actionType = normalizeOperationActionType(
+    source.actionType || source.action_type,
+  );
+  const meta =
+    source.meta && typeof source.meta === "object"
+      ? { ...source.meta }
+      : {
+          request_id: String(source.requestId || source.request_id || "").trim(),
+          approval_id: String(
+            source.approvalId || source.approval_id || "",
+          ).trim(),
+          review_id: String(source.reviewId || source.review_id || "").trim(),
+          prompt_key: String(source.promptKey || source.prompt_key || source.key || "").trim(),
+          message: String(source.message || "").trim(),
+          description: String(source.description || "").trim(),
+          approval_mode: String(source.approvalMode || source.approval_mode || "").trim(),
+          diff_summary:
+            source.diffSummary && typeof source.diffSummary === "object"
+              ? source.diffSummary
+              : source.diff_summary && typeof source.diff_summary === "object"
+                ? source.diff_summary
+                : null,
+          risk_signals: Array.isArray(source.riskSignals || source.risk_signals)
+            ? (source.riskSignals || source.risk_signals)
+            : [],
+        };
+  return {
+    id:
+      rawOperationId ||
+      `${rawKind}:${title}:${summary}:${detail}:${phase}:${actionType}`,
+    operationId: rawOperationId || "",
+    kind: rawKind,
+    title,
+    summary,
+    detail,
+    phase,
+    actionType,
+    createdAt: String(source.createdAt || source.created_at || nowText()).trim(),
+    updatedAt: String(source.updatedAt || source.updated_at || nowText()).trim(),
+    meta,
+  };
+}
+
+function findMessageOperationMatchIndex(items, operation) {
+  const byId = items.findIndex((item) => item.id === operation.id);
+  if (byId >= 0) return byId;
+  const operationKind = String(operation?.kind || "").trim().toLowerCase();
+  if (operationKind !== "request") return -1;
+  const requestId = String(operation?.meta?.request_id || "").trim();
+  if (requestId) {
+    const byRequestId = items.findIndex(
+      (item) =>
+        String(item?.kind || "").trim().toLowerCase() === "request" &&
+        String(item?.meta?.request_id || "").trim() === requestId,
+    );
+    if (byRequestId >= 0) return byRequestId;
+  }
+  return items.findIndex(
+    (item) =>
+      String(item?.kind || "").trim().toLowerCase() === "request" &&
+      String(item?.title || "").trim() === String(operation?.title || "").trim(),
+  );
+}
+
+function upsertMessageOperation(row, source = {}) {
+  if (!row) return null;
+  const operation = buildMessageOperation(source);
+  const items = Array.isArray(row.operations) ? row.operations.slice() : [];
+  const matchIndex = findMessageOperationMatchIndex(items, operation);
+  if (matchIndex >= 0) {
+    items[matchIndex] = {
+      ...items[matchIndex],
+      ...operation,
+      id: items[matchIndex].operationId ? items[matchIndex].id : operation.id,
+      operationId: items[matchIndex].operationId || operation.operationId,
+      createdAt: items[matchIndex].createdAt || operation.createdAt,
+      updatedAt: operation.updatedAt || nowText(),
+    };
+  } else {
+    items.push(operation);
+  }
+  row.operations = items.slice(-24);
+  return operation;
+}
+
+function isInternalToolOperation(operation) {
+  return String(operation?.kind || "").trim().toLowerCase() === "tool";
+}
+
+function messageOperations(row) {
+  return Array.isArray(row?.operations)
+    ? row.operations.filter(
+        (item) => item && item.title && !isInternalToolOperation(item),
+      )
+    : [];
+}
+
+function isOperationAwaitingInteraction(operation) {
+  if (!operation) return false;
+  const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+  if (phase !== "waiting_user") return false;
+  const actionType = normalizeOperationActionType(operation?.actionType);
+  const kind = String(operation?.kind || "").trim().toLowerCase();
+  if (["open_url", "approve", "enter_text", "select"].includes(actionType)) {
+    return true;
+  }
+  return ["auth", "approval", "terminal"].includes(kind);
+}
+
+function operationPhaseLabel(operation) {
+  const phase = normalizeOperationPhase(operation?.phase);
+  if (phase === "running") return "进行中";
+  if (phase === "waiting_user") return "等你处理";
+  if (phase === "blocked") return "已阻塞";
+  if (phase === "completed") return "已完成";
+  if (phase === "failed") return "失败";
+  return "待开始";
+}
+
+function operationActionHint(operation) {
+  const actionType = normalizeOperationActionType(operation?.actionType);
+  if (actionType === "open_url") {
+    return "需要在浏览器完成操作，然后回到对话框继续。";
+  }
+  if (actionType === "approve") {
+    return "等待你确认或批准后继续。";
+  }
+  if (actionType === "enter_text") {
+    const kind = String(operation?.kind || "").trim().toLowerCase();
+    if (kind === "terminal") {
+      if (terminalStructuredSubmissionHint.value) {
+        return "已提交表单，终端已继续执行；如已打开浏览器授权，请完成后回到这里。";
+      }
+      if (terminalStructuredInteraction.value) {
+        return "已识别为可表单化交互，请在终端输出下方的表单里选择并确认。";
+      }
+      return "无法识别为表单时，下方会显示清洗后的真实终端输出作为兜底。";
+    }
+    return "等待你在当前输入框继续输入。";
+  }
+  if (actionType === "select") {
+    return "等待你从候选对象里选择一个目标。";
+  }
+  return "";
+}
+
+function extractOperationUrl(operation) {
+  const detail = String(operation?.detail || "").trim();
+  if (!detail) return "";
+  const match = detail.match(/https?:\/\/[^\s)>"]+/i);
+  return String(match?.[0] || "").trim().replace(/[),.;:!?]+$/g, "");
+}
+
+function operationPrimaryActionLabel(operation) {
+  const buttons = operationActionButtons(operation);
+  return buttons.length ? buttons[0].label : "";
+}
+
+
+function buildTerminalChoiceChildren(componentName) {
+  const interaction = terminalStructuredInteraction.value;
+  return (interaction?.options || []).map((item) => ({
+    componentName,
+    attrs: {
+      label: item.value,
+      value: item.value,
+    },
+    children: item.label,
+  }));
+}
+
+const terminalInteractionFormJson = computed(() => {
+  const interaction = terminalStructuredInteraction.value;
+  const isMulti = interaction?.type === "checkbox";
+  return {
+    rowAttrs: { gutter: 12 },
+    formAttrs: { "label-position": "top" },
+    model: terminalStructuredFormModel.value,
+    schema: interaction
+      ? [
+          {
+            label: interaction.fieldLabel || "请选择",
+            prop: isMulti ? "choices" : "choice",
+            componentName: isMulti ? "ElCheckboxGroup" : "ElRadioGroup",
+            colAttrs: { span: 24 },
+            attrs: {
+              class: isMulti
+                ? "message-terminal-form__checkbox-group"
+                : "message-terminal-form__radio-group",
+            },
+            rules: [
+              isMulti
+                ? {
+                    required: true,
+                    type: "array",
+                    min: 1,
+                    message: "请至少选择一项",
+                    trigger: "change",
+                  }
+                : {
+                    required: true,
+                    message: "请选择一项",
+                    trigger: "change",
+                  },
+            ],
+            children: buildTerminalChoiceChildren(isMulti ? "ElCheckbox" : "ElRadio"),
+          },
+        ]
+      : [],
+  };
+});
+
+const canSubmitTerminalStructuredInteraction = computed(() => {
+  const interaction = terminalStructuredInteraction.value;
+  if (!interaction) return false;
+  if (interaction.type === "checkbox") {
+    const choices = Array.isArray(terminalStructuredFormModel.value?.choices)
+      ? terminalStructuredFormModel.value.choices
+      : [];
+    return Boolean(choices.length);
+  }
+  return Boolean(String(terminalStructuredFormModel.value?.choice || "").trim());
+});
+
+function terminalInteractionDismissKey(interaction) {
+  if (!interaction) return "";
+  return `${Number(interaction.assistantIndex)}:${String(interaction.type || "choice")}:${String(interaction.key || "")}`;
+}
+
+function rememberDismissedTerminalStructuredInteraction(interaction) {
+  const dismissKey = terminalInteractionDismissKey(interaction);
+  if (!dismissKey) return;
+  const nextKeys = new Set(terminalDismissedStructuredInteractionKeys.value);
+  nextKeys.add(dismissKey);
+  terminalDismissedStructuredInteractionKeys.value = nextKeys;
+}
+
+function scheduleTerminalStructuredInteractionRefresh(row, index) {
+  if (!row || terminalStructuredInteractionRefreshPending) return;
+  terminalStructuredInteractionRefreshPending = true;
+  Promise.resolve().then(() => {
+    terminalStructuredInteractionRefreshPending = false;
+    if (!terminalStructuredInteraction.value) {
+      refreshTerminalStructuredInteraction(row, index);
+    }
+  });
+}
+
+function terminalStructuredSubmissionHintForMessage(index) {
+  const hint = terminalStructuredSubmissionHint.value;
+  if (!hint) return "";
+  return Number(hint.assistantIndex) === Number(index) ? String(hint.text || "") : "";
+}
+
+function terminalInteractionFormForMessage(row, index) {
+  if (!terminalStructuredInteraction.value && row) {
+    scheduleTerminalStructuredInteractionRefresh(row, index);
+  }
+  const interaction = terminalStructuredInteraction.value;
+  if (!interaction) return false;
+  return Number(interaction.assistantIndex) === Number(index);
+}
+
+function markTerminalInteractionOperationRunning(assistantIndex) {
+  const row = messages.value[Number(assistantIndex)];
+  if (!row || !Array.isArray(row.operations)) return;
+  row.operations = row.operations.map((operation) => {
+    if (String(operation?.kind || "").trim().toLowerCase() !== "terminal") {
+      return operation;
+    }
+    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    if (!["waiting_user", "running"].includes(phase)) return operation;
+    return {
+      ...operation,
+      title: "终端继续执行中",
+      phase: "running",
+      actionType: "none",
+      summary: "已提交选择，正在等待后续输出",
+      detail: "",
+      updatedAt: nowText(),
+    };
+  });
+}
+
+function markTerminalInteractionContentSubmitted(assistantIndex) {
+  const row = messages.value[Number(assistantIndex)];
+  if (!row) return;
+  const current = String(row.content || "").trim();
+  const submittedText =
+    "已提交表单选择，终端正在继续执行；如果打开了浏览器授权，请在浏览器完成后回到这里。";
+  if (
+    !current ||
+    /请根据下方表单或终端提示完成交互|命令已进入交互模式|需要你继续操作/.test(
+      current,
+    )
+  ) {
+    row.content = submittedText;
+  }
+}
+
+function dismissTerminalStructuredInteraction() {
+  rememberDismissedTerminalStructuredInteraction(terminalStructuredInteraction.value);
+  terminalStructuredInteraction.value = null;
+}
+
+function inferTerminalChoiceType(text, options) {
+  if (/至少选择|多选|复选|toggle|select all|ctrl\+a|space|空格/i.test(text)) {
+    return "checkbox";
+  }
+  if ((options || []).filter((item) => item.selected).length > 1) {
+    return "checkbox";
+  }
+  return "radio";
+}
+
+function terminalChoiceDescription(type) {
+  if (type === "checkbox") {
+    return "已识别到终端里的多选题，直接勾选选项后确认即可，不需要手动按方向键。";
+  }
+  return "已识别到终端里的单选题，直接选择一项后确认即可，不需要手动按方向键。";
+}
+
+function hasTerminalChoiceControlSignal(lines, text) {
+  const terminalText = String(text || "").trim();
+  if (!terminalText) return false;
+  const hasVisibleChoiceMarker = (lines || []).some((line) =>
+    /^\s*(?:[>❯]\s*)?(?:\[[ xX]\]|[◉●○◯◎✓✔])\s*\S+/u.test(
+      String(line || ""),
+    ),
+  );
+  if (hasVisibleChoiceMarker) return true;
+  return /enter confirm|enter to (?:select|confirm)|use .*arrow|arrow keys|press .*enter|上下键|方向键|回车(?:确认|选择)|空格(?:选择|切换)|select one|choose one|choose from|请选择以下/i.test(
+    terminalText,
+  );
+}
+
+function isPlainTerminalChoiceLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  if (/\s/.test(text)) return false;
+  if (/[，。；：、,.!?！？*`#()[\]{}<>]/.test(text)) return false;
+  return /^[A-Za-z][\w:-]{1,40}$/.test(text) || /^[\u4e00-\u9fff]{1,12}$/u.test(text);
+}
+
+function parseTerminalChoiceLine(line) {
+  const raw = String(line || "").trim();
+  if (!raw) return null;
+  if (/toggle|enter confirm|ctrl\+a|filter|请至少选择|选择要|select all/i.test(raw)) {
+    return null;
+  }
+  if (/^(?:[#>$]|---|\/|```|[-*+]\s+|\d+[.)、]\s+|\*\s*请)/.test(raw)) {
+    return null;
+  }
+  const match = raw.match(/^(?<cursor>[>❯])?\s*(?<marker>\[[ xX]\]|[◉●○◯◎✓✔•])?\s*(?<label>[A-Za-z][\w:-]{1,80}|[\u4e00-\u9fff][^\s]{0,40})(?:\s.*)?$/u);
+  if (!match?.groups?.label) return null;
+  const cursor = String(match.groups.cursor || "").trim();
+  const marker = String(match.groups.marker || "").trim();
+  const label = String(match.groups.label || "").trim();
+  if (!label || ["RUN", "pwd", "echo", "login", "auth"].includes(label)) return null;
+  if (!cursor && !marker && !isPlainTerminalChoiceLabel(raw)) return null;
+  return {
+    label,
+    value: label,
+    selected: /\[[xX]\]|[◉●✓✔]/.test(marker),
+    highlighted: Boolean(cursor),
+  };
+}
+
+function detectTerminalChoiceInteraction(row, assistantIndex) {
+  const lines = terminalLogLines(row);
+  if (!lines.length) return null;
+  const recentLines = lines.slice(-80);
+  const text = recentLines.join("\n");
+  const activeCommand = String(terminalActiveCommand.value || "").trim();
+  const fallbackProvider = TERMINAL_CHOICE_FALLBACK_PROVIDERS.find((provider) =>
+    provider.match({ text, lines: recentLines, activeCommand, row }),
+  );
+  let parsedOptions = [];
+  let highlightedIndex = 0;
+  if (fallbackProvider) {
+    parsedOptions = fallbackProvider.options({ text, lines: recentLines, activeCommand, row });
+  } else {
+    if (!/(选择|请选择|至少选择|select|choose|toggle|enter confirm)/i.test(text)) {
+      return null;
+    }
+    if (!hasTerminalChoiceControlSignal(recentLines, text)) {
+      return null;
+    }
+    recentLines.forEach((line) => {
+      const option = parseTerminalChoiceLine(line);
+      if (!option) return;
+      if (parsedOptions.some((item) => item.value === option.value)) return;
+      if (option.highlighted) highlightedIndex = parsedOptions.length;
+      parsedOptions.push(option);
+    });
+  }
+  if (parsedOptions.length < 2) return null;
+  const selectedValues = parsedOptions
+    .filter((item) => item.selected)
+    .map((item) => item.value);
+  const interactionType = inferTerminalChoiceType(text, parsedOptions);
+  const selectedValue =
+    selectedValues[0] ||
+    parsedOptions.find((item) => item.highlighted)?.value ||
+    parsedOptions[0]?.value ||
+    "";
+  const promptLine = [...recentLines]
+    .reverse()
+    .find((line) => /(选择|请选择|至少选择|select|choose)/i.test(line));
+  return {
+    key: parsedOptions.map((item) => item.value).join("|"),
+    assistantIndex: Number(assistantIndex),
+    type: interactionType,
+    title: "需要你选择后继续",
+    description: terminalChoiceDescription(interactionType),
+    fieldLabel: String(promptLine || "选择选项").replace(/^\*\s*/, "").trim(),
+    options: parsedOptions,
+    selectedValues,
+    selectedValue,
+    highlightedIndex,
+  };
+}
+
+function refreshTerminalStructuredInteraction(row, assistantIndexOverride = null) {
+  const fallbackIndex = Number(activeTerminalMirrorAssistantIndex.value ?? -1);
+  const assistantIndex =
+    assistantIndexOverride === null || assistantIndexOverride === undefined
+      ? fallbackIndex
+      : Number(assistantIndexOverride);
+  if (assistantIndex < 0) {
+    return;
+  }
+  const interaction = detectTerminalChoiceInteraction(row, assistantIndex);
+  if (!interaction) {
+    return;
+  }
+  if (terminalDismissedStructuredInteractionKeys.value.has(terminalInteractionDismissKey(interaction))) {
+    return;
+  }
+  const current = terminalStructuredInteraction.value;
+  const currentChoices = Array.isArray(terminalStructuredFormModel.value?.choices)
+    ? terminalStructuredFormModel.value.choices
+    : [];
+  const currentChoice = String(terminalStructuredFormModel.value?.choice || "").trim();
+  terminalStructuredSubmissionHint.value = null;
+  terminalStructuredInteraction.value = interaction;
+  if (interaction.type === "checkbox") {
+    terminalStructuredFormModel.value = {
+      choices:
+        current?.key === interaction.key && currentChoices.length
+          ? currentChoices.filter((item) =>
+              interaction.options.some((option) => option.value === item),
+            )
+          : interaction.selectedValues,
+      choice: "",
+    };
+    return;
+  }
+  terminalStructuredFormModel.value = {
+    choices: [],
+    choice:
+      current?.key === interaction.key &&
+      currentChoice &&
+      interaction.options.some((option) => option.value === currentChoice)
+        ? currentChoice
+        : interaction.selectedValue,
+  };
+}
+
+async function submitTerminalStructuredInteraction() {
+  const interaction = terminalStructuredInteraction.value;
+  if (!interaction) return;
+  const isMulti = interaction.type === "checkbox";
+  const choices = Array.isArray(terminalStructuredFormModel.value?.choices)
+    ? terminalStructuredFormModel.value.choices.map((item) => String(item || "").trim())
+    : [];
+  const choice = String(terminalStructuredFormModel.value?.choice || "").trim();
+  if (isMulti ? !choices.length : !choice) {
+    ElMessage.warning(isMulti ? "请至少选择一项" : "请选择一项");
+    return;
+  }
+  let content = "";
+  const upCount = Math.max(0, Number(interaction.highlightedIndex || 0));
+  content += "\u001b[A".repeat(upCount);
+  if (isMulti) {
+    const selectedSet = new Set(choices);
+    interaction.options.forEach((option, index) => {
+      const shouldSelect = selectedSet.has(option.value);
+      if (Boolean(option.selected) !== shouldSelect) {
+        content += " ";
+      }
+      if (index < interaction.options.length - 1) {
+        content += "\u001b[B";
+      }
+    });
+  } else {
+    const targetIndex = Math.max(
+      0,
+      interaction.options.findIndex((option) => option.value === choice),
+    );
+    content += "\u001b[B".repeat(targetIndex);
+  }
+  content += "\r";
+  const sent = await sendTerminalMirrorContent(content, {
+    appendNewline: false,
+    allowBlank: true,
+    echo: false,
+  });
+  if (!sent) return;
+  rememberDismissedTerminalStructuredInteraction(interaction);
+  terminalStructuredSubmissionHint.value = {
+    assistantIndex: Number(interaction.assistantIndex),
+    text: "已提交选择，终端已继续执行；如果弹出浏览器授权，请在浏览器完成后回到这里。",
+  };
+  markTerminalInteractionOperationRunning(interaction.assistantIndex);
+  markTerminalInteractionContentSubmitted(interaction.assistantIndex);
+}
+
+async function handleOperationPrimaryAction(operation) {
+  const buttons = operationActionButtons(operation);
+  if (!buttons.length) return;
+  await handleOperationAction(operation, buttons[0].key);
+}
+
+function operationActionButtons(operation) {
+  const actionType = normalizeOperationActionType(operation?.actionType);
+  const meta =
+    operation?.meta && typeof operation.meta === "object"
+      ? operation.meta
+      : {};
+  if (actionType === "open_url" && extractOperationUrl(operation)) {
+    return [{ key: "open_url", label: "打开链接" }];
+  }
+  if (actionType === "enter_text") {
+    const kind = String(operation?.kind || "").trim().toLowerCase();
+    if (kind === "terminal") {
+      if (terminalStructuredInteraction.value) return [];
+      return [
+        { key: "terminal_ctrl_c", label: "中止", type: "danger" },
+      ];
+    }
+  }
+  if (actionType === "approve") {
+    if (String(meta.approval_mode || "").trim() === "terminal") {
+      return [
+        { key: "terminal_approve_once", label: "批准一次" },
+        { key: "terminal_approve_session", label: "本会话批准" },
+        { key: "terminal_cancel", label: "取消", type: "danger" },
+      ];
+    }
+    if (String(meta.approval_id || "").trim()) {
+      return [
+        { key: "approval_approve", label: "批准" },
+        { key: "approval_reject", label: "拒绝", type: "danger" },
+      ];
+    }
+    if (String(meta.review_id || "").trim()) {
+      return [
+        { key: "review_approve", label: "允许保留" },
+        { key: "review_reject", label: "拒绝变更", type: "danger" },
+      ];
+    }
+  }
+  return [];
+}
+
+async function handleOperationAction(operation, actionKey) {
+  const normalizedActionKey = String(actionKey || "").trim();
+  if (!normalizedActionKey) return;
+  const actionType = normalizeOperationActionType(operation?.actionType);
+  const meta =
+    operation?.meta && typeof operation.meta === "object"
+      ? operation.meta
+      : {};
+  if (normalizedActionKey === "open_url" && actionType === "open_url") {
+    const url = extractOperationUrl(operation);
+    if (!url) return;
+    let opened = false;
+    try {
+      opened = await openExternalUrlViaSystem(url);
+    } catch (_error) {
+      opened = false;
+    }
+    if (!opened) {
+      try {
+        opened = Boolean(window.open(url, "_blank", "noopener,noreferrer"));
+      } catch (_error) {
+        opened = false;
+      }
+    }
+    if (!opened) {
+      ElMessage.warning("自动打开失败，请手动复制链接继续");
+    }
+    return;
+  }
+  if (normalizedActionKey === "approval_approve" || normalizedActionKey === "approval_reject") {
+    const requestId = String(meta.request_id || "").trim();
+    const approvalId = String(meta.approval_id || "").trim();
+    if (!requestId || !approvalId) {
+      ElMessage.warning("缺少审批上下文，无法继续");
+      return;
+    }
+    await sendApprovalDecision(
+      requestId,
+      approvalId,
+      normalizedActionKey === "approval_approve",
+    );
+    return;
+  }
+  if (normalizedActionKey === "review_approve" || normalizedActionKey === "review_reject") {
+    const requestId = String(meta.request_id || "").trim();
+    const reviewId = String(meta.review_id || "").trim();
+    if (!requestId || !reviewId) {
+      ElMessage.warning("缺少审查上下文，无法继续");
+      return;
+    }
+    await sendFileReviewDecision(
+      requestId,
+      reviewId,
+      normalizedActionKey === "review_approve",
+    );
+    return;
+  }
+  if (
+    [
+      "terminal_arrow_up",
+      "terminal_arrow_down",
+      "terminal_space",
+      "terminal_enter",
+      "terminal_ctrl_c",
+    ].includes(normalizedActionKey)
+  ) {
+    const controlMap = {
+      terminal_arrow_up: { content: "\u001b[A", label: "↑" },
+      terminal_arrow_down: { content: "\u001b[B", label: "↓" },
+      terminal_space: { content: " ", label: "空格" },
+      terminal_enter: { content: "\r", label: "回车" },
+      terminal_ctrl_c: { content: "\u0003", label: "Ctrl+C" },
+    };
+    const control = controlMap[normalizedActionKey];
+    if (!control) return;
+    await sendTerminalMirrorContent(control.content, {
+      appendNewline: false,
+      allowBlank: true,
+      echoLabel: control.label,
+    });
+    return;
+  }
+  if (
+    ["terminal_approve_once", "terminal_approve_session", "terminal_cancel"].includes(
+      normalizedActionKey,
+    )
+  ) {
+    const choiceMap = {
+      terminal_approve_once: "1",
+      terminal_approve_session: "2",
+      terminal_cancel: "3",
+    };
+    await sendTerminalApprovalChoice(choiceMap[normalizedActionKey]);
+  }
+}
+
+function sanitizeTerminalOutputLines(text) {
+  const raw = String(text || "");
+  if (!raw) return [];
+  const clean = raw
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b[PX^_].*?\x1b\\/gs, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[@-Z\\-_]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+  return clean
+    .split("\n")
+    .map((line) => line.replace(/\s+$/g, "").trim())
+    .filter((line) => {
+      if (!line) return false;
+      if (/^[%$#>]$/.test(line)) return false;
+      if (/^[^\s@]+@[^\s]+\s+[^%]*%$/.test(line)) return false;
+      if (/^[^\s@]+@[^\s]+\s+[^%]*%\s+.+/.test(line)) return false;
+      return true;
+    });
+}
+
+function appendTerminalLog(row, text, options = {}) {
   if (!row || row.displayMode !== "terminal") return;
-  const line = String(text || "").trim();
-  if (!line) return;
+  const linesToAppend = sanitizeTerminalOutputLines(text);
+  if (!linesToAppend.length) return;
   const logs = Array.isArray(row.terminalLog) ? row.terminalLog.slice() : [];
-  if (logs.length && logs[logs.length - 1] === line) return;
-  logs.push(line);
+  linesToAppend.forEach((line) => {
+    if (!line || (logs.length && logs[logs.length - 1] === line)) return;
+    logs.push(line);
+  });
   if (logs.length > 160) {
     logs.splice(0, logs.length - 160);
   }
   row.terminalLog = logs;
-  appendTerminalPanelLine(line);
+  if (options?.mirrorToPanel !== false) {
+    appendTerminalPanelLine(linesToAppend.join("\n"));
+  }
+}
+
+function ensureProcessLogVisible(row) {
+  if (!row) return;
+  if (row.displayMode !== "terminal") {
+    row.displayMode = "terminal";
+  }
+  if (row.processExpanded !== true) {
+    row.processExpanded = false;
+  }
+}
+
+function toolProgressLabel(eventData, toolName) {
+  const index = Number(eventData?.tool_index || 0);
+  const total = Number(eventData?.tool_count || 0);
+  if (index > 0 && total > 0) {
+    return `${toolName} (${index}/${total})`;
+  }
+  return toolName;
+}
+
+function formatToolArgumentsPreview(eventData) {
+  const preview = String(eventData?.arguments_preview || "").trim();
+  if (!preview) return "";
+  return preview.replace(/\s+/g, " ").trim();
+}
+
+function appendToolStartLogs(row, eventData) {
+  if (!row) return;
+  const toolName = String(eventData?.tool_name || "工具").trim() || "工具";
+  const label = toolProgressLabel(eventData, toolName);
+  upsertMessageOperation(row, {
+    operationId: `tool:${String(toolName || "tool").trim()}:${Number(eventData?.tool_index || 0) || 0}`,
+    kind: "tool",
+    title: label,
+    summary: "处理中",
+    detail: "",
+    phase: "running",
+  });
+}
+
+function appendToolResultLogs(row, eventData) {
+  if (!row) return;
+  const toolName = String(eventData?.tool_name || "工具").trim() || "工具";
+  const label = toolProgressLabel(eventData, toolName);
+  const statusText = String(eventData?.status || "completed").trim() || "completed";
+  const normalizedStatus = statusText.toLowerCase();
+  upsertMessageOperation(row, {
+    operationId: `tool:${String(toolName || "tool").trim()}:${Number(eventData?.tool_index || 0) || 0}`,
+    kind: "tool",
+    title: label,
+    summary: normalizedStatus === "error" ? "执行未完成" : "已处理",
+    detail: "",
+    phase: normalizedStatus === "error" ? "failed" : "completed",
+  });
+}
+
+function formatGuardSummary(eventData) {
+  const reason = String(eventData?.guard_reason || "").trim();
+  const message = String(eventData?.guard_message || "").trim();
+  const details =
+    eventData?.guard_details && typeof eventData.guard_details === "object"
+      ? eventData.guard_details
+      : {};
+  if (message) return message;
+  if (reason === "tool_budget_exceeded") {
+    return `工具调用达到预算上限（${Number(details.tool_rounds || 0)}/${Number(details.max_tool_rounds || 0)} 轮）`;
+  }
+  if (reason === "repeated_tool_signature") {
+    return `检测到重复工具调用且没有正文输出（${Number(details.repeated_tool_signature_rounds || 0)}/${Number(details.repeated_tool_call_threshold || 0)} 次）`;
+  }
+  if (reason === "tool_only_loops") {
+    return `连续多轮只有工具调用没有正文输出（${Number(details.tool_only_loops || 0)}/${Number(details.tool_only_threshold || 0)} 轮）`;
+  }
+  if (reason === "max_loops") {
+    return `达到最大处理轮次（${Number(details.loop_count || 0)}/${Number(details.max_loops || 0)} 轮）`;
+  }
+  return "";
+}
+
+function isLarkSkillReferenceOutput(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return (
+    /==\s*lark-[\w-]+\/SKILL\.md\s*==/i.test(text) ||
+    /name:\s*lark-[\w-]+/i.test(text) ||
+    /cliHelp:\s*"?lark-cli/i.test(text) ||
+    /CRITICAL.*lark-shared\/SKILL\.md/is.test(text)
+  );
+}
+
+function isMissingLarkChatTargetContext(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return (
+    /缺少(?:目标)?(?:群|群聊|chat_id)|没有(?:给|提供).*(?:群名|群聊|chat_id)|不能盲发|未知群|目标群/i.test(text) ||
+    /missing.*(?:chat|chat_id|recipient|target)|chat_id.*required|recipient.*required/i.test(text)
+  );
+}
+
+function isReferenceOnlyProjectHostOutput(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return isLarkSkillReferenceOutput(text) && !extractInteractiveBrowserUrls(text).length;
+}
+
+function hasInteractiveCommandHint(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return false;
+  if (isMissingLarkChatTargetContext(text) || isReferenceOnlyProjectHostOutput(text)) {
+    return false;
+  }
+  return [
+    /verification url/,
+    /open .*browser/,
+    /authorize/,
+    /authorization/,
+    /auth login/,
+    /sign in/,
+    /waiting for input/,
+    /press enter/,
+    /press any key/,
+    /complete setup/,
+    /run .* in the background/,
+    /continue in browser/,
+    /confirm in browser/,
+  ].some((pattern) => pattern.test(text));
+}
+
+function buildProjectHostCommandOutput(eventData) {
+  return [
+    eventData?.stdout_preview,
+    eventData?.stderr_preview,
+    eventData?.output_preview,
+    eventData?.error,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function shouldUseBrowserInteractionForProjectHostCommand(eventData) {
+  if (String(eventData?.tool_name || "").trim() !== "project_host_run_command") {
+    return false;
+  }
+  const command = String(eventData?.command || "").trim();
+  if (!command) return false;
+  const combinedOutput = buildProjectHostCommandOutput(eventData);
+  if (isMissingLarkChatTargetContext(combinedOutput)) return false;
+  if (isReferenceOnlyProjectHostOutput(combinedOutput)) return false;
+  if (extractInteractiveBrowserUrls(combinedOutput).length) return true;
+  if (hasInteractiveCommandHint(combinedOutput)) return true;
+  if (!Boolean(eventData?.timed_out)) return false;
+  if (isLarkSkillReferenceOutput(combinedOutput)) return false;
+  return /\b(login|auth|config\s+init|init|oauth|sso)\b/i.test(command);
+}
+
+async function ensureProjectHostBrowserInteraction(row, eventData) {
+  if (!row || !shouldUseBrowserInteractionForProjectHostCommand(eventData)) {
+    return false;
+  }
+  const command = String(eventData?.command || "").trim();
+  const combinedOutput = buildProjectHostCommandOutput(eventData);
+  const hasBrowserAuth = await ensureBrowserAuthOperationFromText(
+    combinedOutput,
+    row,
+    { autoOpen: false },
+  );
+  if (hasBrowserAuth) return true;
+  const detail = clipText(combinedOutput || command, 800);
+  upsertMessageOperation(row, {
+    operationId: `browser-interaction:${command || Date.now()}`,
+    kind: "auth",
+    title: "需要在浏览器继续",
+    summary: "不会接管聊天输入框；完成后输入“已完成”继续",
+    detail,
+    phase: "waiting_user",
+    actionType: "open_url",
+  });
+  appendAssistantStatusNote(
+    row,
+    "> 🌐 当前命令需要浏览器或外部窗口继续；我不会再把聊天框切到项目终端。完成后直接在对话框输入“已完成”继续。",
+  );
+  return true;
+}
+
+function shouldAutoHandoffProjectHostCommand() {
+  return false;
+}
+
+async function handoffProjectHostCommandToTerminal(row, pending, eventData) {
+  if (!row || !pending || pending.projectHostTerminalHandoffTriggered) {
+    return false;
+  }
+  const command = String(eventData?.command || "").trim();
+  if (!command) return false;
+  pending.projectHostTerminalHandoffTriggered = true;
+  terminalActiveCommand.value = command;
+  row.displayMode = "terminal";
+  ensureProcessLogVisible(row);
+  activeTerminalMirrorAssistantIndex.value = Number(
+    pending.assistantIndex ?? -1,
+  );
+  row.terminalLog = [];
+  row.processExpanded = true;
+  appendTerminalLog(
+    row,
+    `# 正在连接项目终端并接管交互\n$ ${command}`,
+    { mirrorToPanel: false },
+  );
+  upsertMessageOperation(row, {
+    operationId: `terminal:handoff:${Number(pending.assistantIndex ?? -1)}`,
+    kind: "terminal",
+    title: "正在连接项目终端",
+    summary: "命令需要交互，正在切换到项目终端",
+    detail: command,
+    phase: "running",
+    actionType: "enter_text",
+  });
+  try {
+    await startTerminalMirror({
+      assistantIndex: pending.assistantIndex,
+      initialCommand: command,
+    });
+    return true;
+  } catch (err) {
+    appendTerminalLog(
+      row,
+      `! 自动切换项目终端失败：${String(err?.message || err || "未知错误").trim()}`,
+    );
+    return false;
+  }
 }
 
 function isMcpApprovalCancelledMessage(value) {
@@ -5999,7 +8100,11 @@ async function handoffExternalAgentRequestToTerminal(row, requestMeta) {
     "# 检测到 MCP 写操作需要交互审批，已切换到真实终端继续执行",
   );
   try {
-    await sendTerminalMirrorContent(userPrompt);
+    const sent = await sendTerminalMirrorContent(userPrompt);
+    if (!sent) {
+      requestMeta.handoffTriggered = false;
+      return false;
+    }
     scheduleTerminalApprovalFallback(requestMeta);
     appendAssistantStatusNote(
       row,
@@ -6028,21 +8133,21 @@ function formatTerminalLogs(item) {
 }
 
 function messageRoleName(item) {
-  if (String(item?.role || "").trim() === "user") return "You";
+  if (String(item?.role || "").trim() === "user") return "登录用户";
   if (String(item?.displayMode || "").trim() === "terminal") {
-    return externalAgentDisplayLabel.value;
+    return `机器人 · ${externalAgentDisplayLabel.value}`;
   }
-  return "Assistant";
+  return "机器人";
 }
 
 function avatarLabel(item) {
-  if (String(item?.role || "").trim() === "user") return "U";
+  if (String(item?.role || "").trim() === "user") return "登";
   const source = String(
     String(item?.displayMode || "").trim() === "terminal"
-      ? externalAgentDisplayLabel.value
-      : "AI",
+      ? "机器人"
+      : "机器人",
   ).trim();
-  return source.slice(0, 1).toUpperCase() || "A";
+  return source.slice(0, 1).toUpperCase() || "机";
 }
 
 function buildMessageMarkdown(item, options = {}) {
@@ -6952,11 +9057,37 @@ function consumeStatisticsAnalysisDraft(storageKey) {
   }
 }
 
+function consumePluginInstallDraft(storageKey) {
+  const normalizedKey = String(storageKey || "").trim();
+  if (!normalizedKey || !normalizedKey.startsWith(PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX)) {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(normalizedKey);
+    if (!raw) return null;
+    window.localStorage.removeItem(normalizedKey);
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      prompt: String(parsed.prompt || "").trim(),
+      source: String(parsed.source || "").trim(),
+    };
+  } catch {
+    try {
+      window.localStorage.removeItem(normalizedKey);
+    } catch {
+      // ignore cleanup errors
+    }
+    return null;
+  }
+}
+
 async function focusChatComposerTextarea() {
   await nextTick();
   const textarea = chatComposerRef.value?.querySelector?.("textarea");
   if (!textarea) return;
   textarea.focus();
+  inputFocused.value = true;
   const textLength = String(textarea.value || "").length;
   if (typeof textarea.setSelectionRange === "function") {
     textarea.setSelectionRange(textLength, textLength);
@@ -6978,6 +9109,24 @@ async function applyStatisticsAnalysisDraftFromRoute() {
   }
   const nextQuery = { ...route.query };
   delete nextQuery[STATISTICS_ANALYSIS_DRAFT_QUERY_KEY];
+  await router.replace({ query: nextQuery });
+}
+
+async function applyPluginInstallDraftFromRoute() {
+  const draftKey = String(route.query[PLUGIN_INSTALL_DRAFT_QUERY_KEY] || "").trim();
+  if (!draftKey) return;
+  const payload = consumePluginInstallDraft(draftKey);
+  const prompt = String(payload?.prompt || "").trim();
+  if (prompt) {
+    draftText.value = String(draftText.value || "").trim()
+      ? `${String(draftText.value || "").trim()}\n\n${prompt}`
+      : prompt;
+    scrollToBottom();
+    await focusChatComposerTextarea();
+    ElMessage.success("插件安装请求已填入输入框");
+  }
+  const nextQuery = { ...route.query };
+  delete nextQuery[PLUGIN_INSTALL_DRAFT_QUERY_KEY];
   await router.replace({ query: nextQuery });
 }
 
@@ -7273,6 +9422,58 @@ function buildProjectStatsCommandPrompt({
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function buildHostRunCommandPrompt(commandPrompt) {
+  const normalizedCommand = String(commandPrompt || "").trim();
+  return [
+    "你现在必须直接调用 `project_host_run_command`，在当前电脑执行下面这条命令。",
+    "要求：",
+    "- 不要只解释命令，也不要让用户自己执行。",
+    "- 返回实际执行结果，至少说明工作目录、退出码、stdout/stderr 关键信息。",
+    "- 如果命令执行到浏览器授权、系统确认或人工输入阻塞点，先执行到阻塞点，再明确告诉用户当前卡在哪一步。",
+    "",
+    `要执行的命令：${normalizedCommand}`,
+  ].join("\n");
+}
+
+function resolveLarkCliSkillDirectory() {
+  const stored = String(skillResourceDirectoryResolved.value || "").trim();
+  if (stored) return stored;
+  const workspaceRoot = String(
+    projectWorkspaceDraftNormalized.value || projectWorkspaceResolved.value || "",
+  ).trim();
+  if (!workspaceRoot) return LARK_CLI_SKILL_ROOT_RELATIVE;
+  return `${workspaceRoot.replace(/\/+$/g, "")}/${LARK_CLI_SKILL_ROOT_RELATIVE}`;
+}
+
+function buildLarkCliCommandPrompt(commandPrompt) {
+  const normalizedPrompt = String(commandPrompt || "").trim();
+  const skillRoot = resolveLarkCliSkillDirectory();
+  const sharedSkillPath = `${skillRoot}/lark-shared/SKILL.md`;
+  const contactSkillPath = `${skillRoot}/lark-contact/SKILL.md`;
+  const imSkillPath = `${skillRoot}/lark-im/SKILL.md`;
+  return [
+    "你现在必须优先使用 `lark-cli` 完成这轮任务，并通过 `project_host_run_command` 在当前电脑上直接执行。",
+    "执行约束：",
+    "- 先检查 `lark-cli` 是否可用；如果不可用，再用最少必要命令定位 PATH / 安装态，不要直接放弃。",
+    `- 本轮优先参考本地飞书技能目录：${skillRoot}`,
+    `- 开始前先阅读：${sharedSkillPath}`,
+    `- 涉及联系人解析时再阅读：${contactSkillPath}`,
+    `- 涉及发消息、群聊、消息查询时再阅读：${imSkillPath}`,
+    "- 后续飞书相关操作优先走 `lark-cli`，不要改用 Python SDK、伪代码、手写 HTTP 请求或让用户自己执行终端命令。",
+    "- 如果用户给的是自然语言目标，请先把目标翻译成合适的 `lark-cli` 命令，再直接执行并返回实际结果。",
+    "- 不要停在 `--help`、`auth status`、`已确认登录态`、`已确认子命令名` 这种中间状态；除非遇到真实阻塞，否则继续执行到目标完成。",
+    "- 如果目标是“给某人发消息”，默认流程应是：确认发送内容与身份 -> 搜索联系人 open_id -> 如结果唯一则直接发送 -> 若缺 scope 则发起授权 -> 授权后自动重试发送。",
+    "- 搜索联系人优先使用：`lark-cli contact +search-user --query \"<姓名>\"`。",
+    "- 发送文本消息优先使用：`lark-cli im +messages-send --as user --user-id <open_id> --text '<内容>'`。",
+    "- 如果 `messages-send` 返回缺少 scope，优先继续执行工具输出里的授权提示；若 `auth login --scope` 失败，再改用 `lark-cli auth login --domain <domain>` 或 `--recommend`，不要只把 hint 转述给用户。",
+    "- 当输出里已经拿到唯一 open_id 时，把它当成可继续执行的结果，不要停止在“我已找到联系人”这一步。",
+    "- 返回实际执行结果，至少包含工作目录、退出码、stdout/stderr 关键信息。",
+    "- 如果卡在浏览器授权、系统确认或人工输入阻塞点，先执行到阻塞点，再明确说明当前等待什么，不要提前收口。",
+    "",
+    `本轮目标：${normalizedPrompt}`,
+  ].join("\n");
 }
 
 function canSaveMessageAsMaterial(message) {
@@ -8605,7 +10806,13 @@ function handleSettingsTourFinish() {
 }
 
 function handleProjectCommand(projectId) {
-  selectedProjectId.value = String(projectId || "").trim();
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return;
+  const nextQuery = { ...route.query, project_id: normalizedProjectId };
+  delete nextQuery.chat_session_id;
+  delete nextQuery.message_id;
+  void router.replace({ query: nextQuery }).catch(() => {});
+  selectedProjectId.value = normalizedProjectId;
 }
 
 function moduleTypeLabel(moduleType) {
@@ -8671,6 +10878,9 @@ async function fetchSystemConfig() {
     if (data?.config?.chat_max_tokens) {
       chatMaxTokens.value = Number(data.config.chat_max_tokens);
     }
+    botPlatformConnectors.value = Array.isArray(data?.config?.bot_platform_connectors)
+      ? data.config.bot_platform_connectors.map(normalizeBotPlatformConnector)
+      : [];
     employeeDraftAutoRuleGenerationEnabled.value =
       !Object.prototype.hasOwnProperty.call(
         data?.config || {},
@@ -8704,6 +10914,7 @@ async function fetchSystemConfig() {
     ];
     employeeDraftExternalSkillSites.value = [];
     employeeDraftAutoRuleGenerationMaxCount.value = 3;
+    botPlatformConnectors.value = [];
   }
 }
 
@@ -8855,9 +11066,10 @@ function syncProjectFromRoute() {
   if (initialProjectId) {
     selectedProjectId.value = initialProjectId;
     localStorage.setItem("project_id", initialProjectId);
-    return;
+    return initialProjectId;
   }
   clearSelectedProjectState();
+  return "";
 }
 
 async function handleProjectCreated(event) {
@@ -8892,6 +11104,7 @@ async function fetchProvidersByProject(projectId) {
     void stopTerminalMirror().catch(() => {});
     resetTerminalPanel();
     projectWorkspacePath.value = "";
+    projectWorkspaceDraft.value = "";
     workspacePathDraft.value = "";
     projectAiEntryFile.value = "";
     aiEntryFileDraft.value = "";
@@ -8933,13 +11146,14 @@ async function fetchProvidersByProject(projectId) {
     projectWorkspacePath.value = String(
       data?.project_workspace_path || "",
     ).trim();
+    projectWorkspaceDraft.value = projectWorkspacePath.value;
     projectAiEntryFile.value = String(data?.project_ai_entry_file || "").trim();
     aiEntryFileDraft.value = projectAiEntryFile.value;
     workspacePathDraft.value = String(
-      projectWorkspacePath.value ||
-        data?.workspace_path ||
-        data?.external_agent?.workspace_path ||
-        "",
+      settings.connector_workspace_path ||
+      data?.workspace_path ||
+      data?.external_agent?.workspace_path ||
+      "",
     ).trim();
     mcpModules.value = normalizeMcpModules(data.mcp_modules || {});
     runtimeExternalTools.value = normalizeRuntimeExternalTools(
@@ -9014,9 +11228,6 @@ async function fetchProvidersByProject(projectId) {
     chatMaxTokens.value = Number(
       settings.max_tokens ?? CHAT_SETTINGS_DEFAULTS.max_tokens,
     );
-    await fetchChatTaskTree(projectId, currentChatSessionId.value, {
-      silent: true,
-    });
     hydrated = true;
   } finally {
     projectSettingsHydrating.value = false;
@@ -9230,6 +11441,7 @@ function mapHistoryMessage(item) {
   const attachments = Array.isArray(item?.attachments) ? item.attachments : [];
   const images = Array.isArray(item?.images) ? item.images : [];
   const videos = Array.isArray(item?.videos) ? item.videos : [];
+  const sourceContext = normalizeChatSourceContext(item || {});
   return {
     id: String(item?.id || ""),
     role: String(item?.role || "assistant"),
@@ -9240,11 +11452,65 @@ function mapHistoryMessage(item) {
     audit: null,
     taskTreeAudit: null,
     statusNotes: [],
+    operations: [],
     images: images,
     videos: videos,
     attachments,
+    source_context: sourceContext,
     time: String(item?.created_at || ""),
   };
+}
+
+function upsertChatSessionFromRealtime(sessionPayload) {
+  const session = normalizeChatSession(sessionPayload || {});
+  if (!session.id) return null;
+  chatSessions.value = [
+    session,
+    ...chatSessions.value.filter((item) => item.id !== session.id),
+  ];
+  return session;
+}
+
+function setGroupChatLiveStatus(eventData) {
+  const sessionId = String(eventData?.chat_session_id || "").trim();
+  if (!sessionId) return;
+  groupChatLiveStatuses.value = {
+    ...groupChatLiveStatuses.value,
+    [sessionId]: {
+      status: String(eventData?.status || "").trim(),
+      message: String(eventData?.message || "").trim(),
+      updated_at: new Date().toISOString(),
+      source_context: normalizeChatSourceContext(eventData?.source_context || {}),
+    },
+  };
+}
+
+function appendRealtimeChatMessage(eventData) {
+  const messagePayload =
+    eventData?.message && typeof eventData.message === "object"
+      ? eventData.message
+      : null;
+  const chatSessionId = String(
+    eventData?.chat_session_id || messagePayload?.chat_session_id || "",
+  ).trim();
+  if (eventData?.session) {
+    upsertChatSessionFromRealtime(eventData.session);
+  }
+  if (
+    !messagePayload ||
+    !chatSessionId ||
+    chatSessionId !== String(currentChatSessionId.value || "").trim()
+  ) {
+    return;
+  }
+  const row = mapHistoryMessage(messagePayload);
+  if (!row.id) return;
+  if (messages.value.some((item) => String(item?.id || "") === row.id)) {
+    return;
+  }
+  messages.value = [...messages.value, row];
+  chatHistoryLoadedCount.value = messages.value.length;
+  scrollToBottom();
 }
 
 async function fetchChatTaskTree(
@@ -9535,6 +11801,13 @@ async function fetchChatSessions(projectId, preferredSessionId = "", options = {
   }
 }
 
+async function refreshChatSessionsKeepingCurrent() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) return;
+  const currentId = String(currentChatSessionId.value || "").trim();
+  await fetchChatSessions(projectId, currentId, { useRemembered: false });
+}
+
 async function fetchChatHistory(
   projectId,
   chatSessionId = currentChatSessionId.value,
@@ -9543,7 +11816,9 @@ async function fetchChatHistory(
   if (!projectId) {
     messages.value = [];
     chatHistoryLoadedCount.value = 0;
+    chatHistoryReachedEnd.value = false;
     applyTaskTreePayload(null);
+    resetTerminalPanel();
     return;
   }
   const normalizedSessionId = String(chatSessionId || "").trim();
@@ -9551,7 +11826,9 @@ async function fetchChatHistory(
   if (!normalizedSessionId) {
     messages.value = [];
     chatHistoryLoadedCount.value = 0;
+    chatHistoryReachedEnd.value = false;
     applyTaskTreePayload(null);
+    resetTerminalPanel();
     return;
   }
   const append = options.append === true;
@@ -9564,21 +11841,36 @@ async function fetchChatHistory(
   const previousScrollHeight = Number(container?.scrollHeight || 0);
   const previousScrollTop = Number(container?.scrollTop || 0);
   try {
-    const data = await api.get(
-      `/projects/${encodeURIComponent(projectId)}/chat/history`,
-      {
+    const [data, runtimePayload] = await Promise.all([
+      api.get(`/projects/${encodeURIComponent(projectId)}/chat/history`, {
         params: {
           limit,
           offset,
           chat_session_id: normalizedSessionId,
         },
-      },
-    );
+      }),
+      append
+        ? Promise.resolve(null)
+        : fetchPersistedChatRuntime(projectId, normalizedSessionId),
+    ]);
     const historyRows = (data.messages || []).map(mapHistoryMessage);
-    messages.value = append ? [...historyRows, ...messages.value] : historyRows;
+    chatHistoryReachedEnd.value = historyRows.length < limit;
+    if (append) {
+      messages.value = [...historyRows, ...messages.value];
+    } else {
+      messages.value = applyPersistedChatRuntimeRows(historyRows, runtimePayload);
+    }
     chatHistoryLoadedCount.value = messages.value.length;
     rememberChatSession(projectId, normalizedSessionId);
     await fetchChatTaskTree(projectId, normalizedSessionId, { silent: true });
+    if (!append) {
+      await restoreInteractiveChatRuntime(
+        projectId,
+        normalizedSessionId,
+        messages.value,
+        runtimePayload,
+      );
+    }
     if (append) {
       nextTick(() => {
         if (!messagesContainer.value) return;
@@ -9595,6 +11887,7 @@ async function fetchChatHistory(
     if (!append) {
       messages.value = [];
       chatHistoryLoadedCount.value = 0;
+      chatHistoryReachedEnd.value = false;
     }
     ElMessage.error(
       err?.detail ||
@@ -9669,9 +11962,16 @@ async function createChatSession(options = {}) {
   }
   creatingChatSession.value = true;
   try {
+    const body =
+      options.sourceContext && typeof options.sourceContext === "object"
+        ? {
+            source_context: options.sourceContext,
+            title: String(options.title || "").trim(),
+          }
+        : {};
     const data = await api.post(
       `/projects/${encodeURIComponent(projectId)}/chat/sessions`,
-      {},
+      body,
     );
     const session = normalizeChatSession(data.session || {});
     if (!session.id) {
@@ -9691,6 +11991,7 @@ async function createChatSession(options = {}) {
       messages.value = [];
       chatHistoryLoadedCount.value = 0;
       applyTaskTreePayload(null);
+      resetTerminalPanel();
       scrollToBottom();
     }
     return session;
@@ -9699,6 +12000,76 @@ async function createChatSession(options = {}) {
     return null;
   } finally {
     creatingChatSession.value = false;
+  }
+}
+
+async function updateChatSession(chatSessionId, options = {}) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const normalizedSessionId = String(chatSessionId || "").trim();
+  if (!projectId || !normalizedSessionId) {
+    return null;
+  }
+  try {
+    const data = await api.patch(
+      `/projects/${encodeURIComponent(projectId)}/chat/sessions/${encodeURIComponent(normalizedSessionId)}`,
+      {
+        title: String(options.title || "").trim(),
+        source_context:
+          options.sourceContext && typeof options.sourceContext === "object"
+            ? options.sourceContext
+            : {},
+      },
+    );
+    const session = normalizeChatSession(data.session || {});
+    if (!session.id) {
+      throw new Error("更新会话失败");
+    }
+    chatSessions.value = [
+      session,
+      ...chatSessions.value.filter((item) => item.id !== session.id),
+    ];
+    if (currentChatSessionId.value === session.id) {
+      rememberChatSession(projectId, session.id);
+    }
+    return session;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "更新会话失败");
+    return null;
+  }
+}
+
+async function resolveGroupChatSourceId() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const sessionId = String(groupChatEditingSessionId.value || "").trim();
+  if (!projectId || !sessionId) return;
+  if (groupChatResolving.value) return;
+  groupChatResolving.value = true;
+  try {
+    await refreshChatSessionsKeepingCurrent();
+    const data = await api.post(
+      `/projects/${encodeURIComponent(projectId)}/chat/sessions/${encodeURIComponent(sessionId)}/resolve-source`,
+    );
+    const session = normalizeChatSession(data.session || {});
+    if (!session.id) {
+      throw new Error("解析群 ID 失败");
+    }
+    chatSessions.value = [
+      session,
+      ...chatSessions.value.filter((item) => item.id !== session.id),
+    ];
+    groupChatDraft.value = {
+      ...groupChatDraft.value,
+      title: String(session.title || groupChatDraft.value.title || "").trim(),
+      platform: session.source_context.platform || groupChatDraft.value.platform || "feishu",
+      connector_id: session.source_context.connector_id || groupChatDraft.value.connector_id || "",
+      external_chat_name:
+        session.source_context.external_chat_name || groupChatDraft.value.external_chat_name || "",
+    };
+    ElMessage.success(data.resolved === false ? "群 ID 已是解析状态" : "群 ID 已解析并绑定");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "解析群 ID 失败");
+  } finally {
+    groupChatResolving.value = false;
   }
 }
 
@@ -9858,6 +12229,83 @@ async function downloadDesktopConnectorArtifact(item) {
   }
 }
 
+function resetGroupChatDraft() {
+  if (groupChatCreating.value) return;
+  groupChatEditingSessionId.value = "";
+  groupChatDraft.value = {
+    title: "",
+    platform: "feishu",
+    connector_id: "",
+    external_chat_name: "",
+  };
+}
+
+function openGroupChatDialog(session = null) {
+  if (chatLoading.value) {
+    ElMessage.warning("当前回答进行中，暂时不能新建群对话");
+    return;
+  }
+  if (!hasSelectedProject.value) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  if (session && typeof session === "object" && String(session.id || "").trim()) {
+    const source = normalizeChatSourceContext(session);
+    groupChatEditingSessionId.value = String(session.id || "").trim();
+    groupChatDraft.value = {
+      title: String(session.title || "").trim(),
+      platform: source.platform || "feishu",
+      connector_id: source.connector_id,
+      external_chat_name: source.external_chat_name,
+    };
+  } else {
+    resetGroupChatDraft();
+  }
+  groupChatDialogVisible.value = true;
+}
+
+async function submitGroupChatDialog() {
+  const platform = String(groupChatDraft.value.platform || "").trim();
+  const connectorId = String(groupChatDraft.value.connector_id || "").trim();
+  const externalChatName = String(
+    groupChatDraft.value.external_chat_name || "",
+  ).trim();
+  if (!platform || !connectorId || !externalChatName) {
+    ElMessage.warning("请选择平台、绑定机器人并填写群名称");
+    return;
+  }
+  groupChatCreating.value = true;
+  try {
+    const wasEditing = Boolean(groupChatEditingSessionId.value);
+    const title = String(groupChatDraft.value.title || "").trim();
+    const sourceContext = {
+      source_type: "group_message",
+      platform,
+      connector_id: connectorId,
+      external_chat_name: externalChatName,
+    };
+    let session = null;
+    if (groupChatEditingSessionId.value) {
+      session = await updateChatSession(groupChatEditingSessionId.value, {
+        title: title || `${formatChatPlatformLabel(platform)}群：${externalChatName}`,
+        sourceContext,
+      });
+    } else {
+      session = await createChatSession({
+        switchTo: true,
+        title: title || `${formatChatPlatformLabel(platform)}群：${externalChatName}`,
+        sourceContext,
+      });
+    }
+    if (!session) return;
+    groupChatDialogVisible.value = false;
+    resetGroupChatDraft();
+    ElMessage.success(wasEditing ? "群对话已更新" : "已创建群上下文对话");
+  } finally {
+    groupChatCreating.value = false;
+  }
+}
+
 async function handleCreateNewConversation() {
   if (
     !String(selectedProjectId.value || "").trim() &&
@@ -9919,6 +12367,7 @@ async function deleteChatSession(session) {
     chatSessions.value = chatSessions.value.filter(
       (item) => item.id !== chatSessionId,
     );
+    clearPersistedChatRuntime(projectId, chatSessionId);
     const isCurrentSession = currentChatSessionId.value === chatSessionId;
     if (isCurrentSession) {
       clearChatSessionMemory(projectId);
@@ -9950,6 +12399,20 @@ async function clearMessages() {
     messages.value = [];
     return;
   }
+  const currentTitle = String(activeChatSessionTitle.value || "当前会话").trim();
+  try {
+    await ElMessageBox.confirm(
+      `确认清空「${currentTitle}」吗？当前会话的聊天记录会被删除，且不可恢复。`,
+      "清空当前会话",
+      {
+        confirmButtonText: "清空",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+  } catch {
+    return;
+  }
   try {
     await api.delete(
       `/projects/${encodeURIComponent(projectId)}/chat/history`,
@@ -9962,6 +12425,7 @@ async function clearMessages() {
     chatSessions.value = chatSessions.value.filter(
       (item) => item.id !== chatSessionId,
     );
+    clearPersistedChatRuntime(projectId, chatSessionId);
     clearChatSessionMemory(projectId);
     clearTaskTreeSessionMemory(projectId);
     clearWorkSessionMemory(projectId);
@@ -9997,6 +12461,39 @@ async function handleSocketMessage(eventData) {
   if (eventType === "ready" || eventType === "pong") {
     return;
   }
+  if (
+    eventType === "error" &&
+    /^(?:mirror-input|mirror-start|mirror-stop)-/.test(requestId)
+  ) {
+    const message = String(eventData?.message || "项目终端请求失败").trim();
+    appendTerminalPanelLine(`! ${message}`);
+    const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+    if (mirrorRow) {
+      mirrorRow.displayMode = "terminal";
+      mirrorRow.processExpanded = true;
+      appendTerminalLog(mirrorRow, `! ${message}`, { mirrorToPanel: false });
+      upsertMessageOperation(mirrorRow, {
+        operationId: `terminal-error:${requestId}`,
+        kind: "terminal",
+        title: "项目终端异常",
+        summary: message,
+        detail: "当前终端会话不可用，请重新执行命令以创建新的项目终端。",
+        phase: "failed",
+        actionType: "enter_text",
+      });
+    }
+    if (/not running|not found|closed|不可用|未运行/i.test(message)) {
+      terminalMirrorConnected.value = false;
+      hostTerminalSessionId.value = "";
+      terminalPanelStatus.value = "idle";
+      activeTerminalMirrorAssistantIndex.value = -1;
+    } else {
+      terminalPanelStatus.value = "error";
+    }
+    ElMessage.error(message);
+    scrollToBottom();
+    return;
+  }
   if (eventType === "agent_ready") {
     externalAgentWarmupLoading.value = false;
     terminalPanelStatus.value = "ready";
@@ -10022,24 +12519,66 @@ async function handleSocketMessage(eventData) {
   }
   if (eventType === "terminal_mirror_started") {
     terminalMirrorConnected.value = true;
-    appendTerminalPanelLine(
-      `# 真实终端镜像已连接 · thread=${String(eventData?.thread_id || "-").trim() || "-"}`,
-    );
+    terminalPanelStatus.value = "running";
+    hostTerminalSessionId.value = String(eventData?.session_id || "").trim();
+    hostTerminalWorkspacePath.value = String(
+      eventData?.workspace_path ||
+        hostTerminalWorkspacePath.value ||
+        projectWorkspaceResolved.value ||
+        "",
+    ).trim();
+    terminalPanelExpanded.value = true;
+    terminalActiveCommand.value = String(eventData?.command || terminalActiveCommand.value || "").trim();
+    const connectedSummary = "# 项目终端已连接，完整交互会显示在这里";
+    appendTerminalPanelLine(connectedSummary);
     const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
     if (mirrorRow) {
-      appendTerminalLog(
-        mirrorRow,
-        `# 真实终端镜像已连接 · thread=${String(eventData?.thread_id || "-").trim() || "-"}`,
-      );
+      mirrorRow.displayMode = "terminal";
+      mirrorRow.processExpanded = true;
+      appendTerminalLog(mirrorRow, connectedSummary, { mirrorToPanel: false });
+      ensureProcessLogVisible(mirrorRow);
+      upsertMessageOperation(mirrorRow, {
+        operationId: `terminal:${String(eventData?.session_id || eventData?.chat_session_id || "active").trim()}`,
+        kind: "terminal",
+        title: "需要你继续操作",
+        summary: "命令已进入交互模式",
+        detail: "能识别的选择题会自动转成表单；无法识别时再查看下方终端输出。",
+        phase: "running",
+        actionType: "enter_text",
+      });
     }
+    void autoOpenTerminalBrowserUrls(connectedSummary, mirrorRow);
+    focusTerminalPanelInput();
     return;
   }
   if (eventType === "terminal_mirror_stopped") {
     terminalMirrorConnected.value = false;
-    appendTerminalPanelLine(`# 真实终端镜像已停止`);
+    terminalPanelStatus.value = "idle";
+    hostTerminalSessionId.value = "";
+    terminalActiveCommand.value = "";
+    terminalStructuredInteraction.value = null;
+    const exitCode = eventData?.exit_code;
+    appendTerminalPanelLine(
+      exitCode === null || exitCode === undefined
+        ? "# 项目终端已停止"
+        : `# 项目终端已停止 · exit=${exitCode}`,
+    );
     const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
     if (mirrorRow) {
-      appendTerminalLog(mirrorRow, "# 真实终端镜像已停止");
+      upsertMessageOperation(mirrorRow, {
+        operationId: `terminal:${String(eventData?.session_id || eventData?.chat_session_id || "active").trim()}`,
+        kind: "terminal",
+        title: "项目终端",
+        summary:
+          exitCode === null || exitCode === undefined
+            ? "终端会话已停止"
+            : `终端已结束 · exit=${exitCode}`,
+        detail: "",
+        phase:
+          exitCode === null || exitCode === undefined || Number(exitCode) === 0
+            ? "completed"
+            : "failed",
+      });
     }
     activeTerminalMirrorAssistantIndex.value = -1;
     return;
@@ -10050,13 +12589,34 @@ async function handleSocketMessage(eventData) {
     appendTerminalPanelLine(chunk);
     const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
     if (mirrorRow) {
-      appendTerminalLog(mirrorRow, chunk);
+      mirrorRow.displayMode = "terminal";
+      mirrorRow.processExpanded = true;
+      appendTerminalLog(mirrorRow, chunk, { mirrorToPanel: false });
+      refreshTerminalStructuredInteraction(mirrorRow, activeTerminalMirrorAssistantIndex.value);
     }
+    void autoOpenTerminalBrowserUrls(chunk, mirrorRow);
     return;
   }
   if (eventType === "terminal_approval_required") {
     const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
     if (mirrorRow) {
+      upsertMessageOperation(mirrorRow, {
+        operationId: `approval:${String(eventData?.key || eventData?.chat_session_id || "terminal").trim()}`,
+        kind: "approval",
+        title: String(eventData?.title || "终端审批").trim() || "终端审批",
+        summary: "等待你确认后继续",
+        detail: String(eventData?.description || eventData?.message || "").trim(),
+        phase: "waiting_user",
+        actionType: "approve",
+        meta: {
+          prompt_key: String(
+            eventData?.key || eventData?.chat_session_id || "terminal",
+          ).trim(),
+          approval_mode: "terminal",
+          message: String(eventData?.message || "").trim(),
+          description: String(eventData?.description || "").trim(),
+        },
+      });
       appendAssistantStatusNote(
         mirrorRow,
         "> ⏳ 终端请求审批，请在弹框中继续。",
@@ -10071,6 +12631,24 @@ async function handleSocketMessage(eventData) {
       message: String(eventData?.message || "").trim(),
     });
     scrollToBottom();
+    return;
+  }
+  if (eventType === "chat_message_created") {
+    appendRealtimeChatMessage(eventData);
+    return;
+  }
+  if (eventType === "chat_session_updated") {
+    if (eventData?.session) {
+      upsertChatSessionFromRealtime(eventData.session);
+    }
+    setGroupChatLiveStatus(eventData);
+    return;
+  }
+  if (eventType === "group_chat_status") {
+    if (eventData?.session) {
+      upsertChatSessionFromRealtime(eventData.session);
+    }
+    setGroupChatLiveStatus(eventData);
     return;
   }
   if (!requestId) {
@@ -10100,6 +12678,11 @@ async function handleSocketMessage(eventData) {
   if (!row) {
     pendingRequests.delete(requestId);
     pending.reject(new Error("消息上下文已失效"));
+    return;
+  }
+  if (eventType === "operation_event") {
+    upsertMessageOperation(row, eventData);
+    scrollToBottom();
     return;
   }
   if (eventType === "start") {
@@ -10209,12 +12792,37 @@ async function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "approval_required") {
+    upsertMessageOperation(row, {
+      operationId: `approval:${String(eventData?.approval_id || requestId).trim()}`,
+      kind: "approval",
+      title: String(eventData?.title || "操作审批").trim() || "操作审批",
+      summary: "等待你确认后继续",
+      detail: String(eventData?.message || "").trim(),
+      phase: "waiting_user",
+      actionType: "approve",
+      meta: {
+        request_id: String(eventData?.request_id || requestId).trim(),
+        approval_id: String(eventData?.approval_id || "").trim(),
+        message: String(eventData?.message || "").trim(),
+        risk_signals: Array.isArray(eventData?.risk_signals)
+          ? eventData.risk_signals
+          : [],
+      },
+    });
     void handleApprovalRequired(eventData, row);
     return;
   }
   if (eventType === "approval_resolved") {
     const approved = Boolean(eventData?.approved);
     terminalApprovalDialogVisible.value = false;
+    upsertMessageOperation(row, {
+      operationId: `approval:${String(eventData?.approval_id || requestId).trim()}`,
+      kind: "approval",
+      title: "操作审批",
+      summary: approved ? "已批准，继续执行" : "已拒绝，本次取消",
+      detail: "",
+      phase: approved ? "completed" : "blocked",
+    });
     appendAssistantStatusNote(
       row,
       approved ? "> ✅ 已批准，继续执行" : "> ❌ 已拒绝，本次执行取消",
@@ -10223,6 +12831,24 @@ async function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "file_review_required") {
+    upsertMessageOperation(row, {
+      operationId: `review:${String(eventData?.review_id || requestId).trim()}`,
+      kind: "approval",
+      title: String(eventData?.title || "文件变更审查").trim() || "文件变更审查",
+      summary: "等待你确认是否保留当前改动",
+      detail: formatFileReviewMessage(eventData),
+      phase: "waiting_user",
+      actionType: "approve",
+      meta: {
+        request_id: String(eventData?.request_id || requestId).trim(),
+        review_id: String(eventData?.review_id || "").trim(),
+        diff_summary:
+          eventData?.diff_summary && typeof eventData.diff_summary === "object"
+            ? eventData.diff_summary
+            : null,
+        message: String(eventData?.message || "").trim(),
+      },
+    });
     row.audit = normalizeAuditPayload({
       ...(row.audit && typeof row.audit === "object" ? row.audit : {}),
       after_diff_summary:
@@ -10248,59 +12874,50 @@ async function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "status") {
-    appendTerminalLog(
-      row,
-      `› ${String(eventData?.message || "处理中...").trim()}`,
-    );
+    appendAssistantStatusNote(row, "> ⏳ 正在处理任务…");
     scrollToBottom();
     return;
   }
   if (eventType === "stderr") {
-    appendTerminalLog(row, `! ${String(eventData?.message || "").trim()}`);
+    appendAssistantStatusNote(row, "> ⚠️ 执行过程中出现提示，正在等待后续处理。");
     scrollToBottom();
     return;
   }
   if (eventType === "command_start") {
-    appendTerminalLog(
-      row,
-      `$ ${String(eventData?.command || "").trim() || "(command)"}`,
-    );
+    appendAssistantStatusNote(row, "> ⏳ 正在执行必要步骤…");
     scrollToBottom();
     return;
   }
   if (eventType === "command_result") {
-    const exitCode = eventData?.exit_code;
     const statusText =
-      String(eventData?.status || "completed").trim() || "completed";
-    const exitLabel =
-      exitCode === null || exitCode === undefined
-        ? statusText
-        : `exit=${exitCode}`;
-    appendTerminalLog(row, `# 命令完成 · ${exitLabel}`);
+      String(eventData?.status || "completed").trim().toLowerCase() ||
+      "completed";
     const outputPreview = String(eventData?.output_preview || "").trim();
     if (outputPreview) {
-      appendTerminalLog(row, outputPreview);
+      void autoOpenTerminalBrowserUrls(outputPreview, row);
       if (isMcpApprovalCancelledMessage(outputPreview) && pending) {
         pending.mcpApprovalCancelled = true;
       }
+    }
+    const exitCode = eventData?.exit_code;
+    const succeeded =
+      (exitCode === null || exitCode === undefined || Number(exitCode) === 0) &&
+      ["success", "completed", "ok"].includes(statusText);
+    if (!succeeded) {
+      appendAssistantStatusNote(
+        row,
+        "> ⚠️ 有执行步骤未完成，正在等待模型给出下一步。",
+      );
     }
     scrollToBottom();
     return;
   }
   if (eventType === "usage") {
-    const usage =
-      eventData?.usage && typeof eventData.usage === "object"
-        ? eventData.usage
-        : {};
-    appendTerminalLog(
-      row,
-      `# tokens in=${Number(usage.input_tokens || 0)} cache=${Number(usage.cached_input_tokens || 0)} out=${Number(usage.output_tokens || 0)}`,
-    );
-    scrollToBottom();
     return;
   }
   if (eventType === "delta") {
     row.content = `${row.content || ""}${String(eventData?.content || "")}`;
+    void ensureBrowserAuthOperationFromText(row.content, row);
     scrollToBottom();
     return;
   }
@@ -10326,7 +12943,7 @@ async function handleSocketMessage(eventData) {
     if (pending) {
       pending.lastToolName = toolName;
     }
-    appendAssistantStatusNote(row, `> ⏳ 正在调用工具：\`${toolName}\``);
+    appendAssistantStatusNote(row, "> ⏳ 正在处理任务…");
     scrollToBottom();
     return;
   }
@@ -10349,90 +12966,202 @@ async function handleSocketMessage(eventData) {
     ) {
       applyTaskTreePayload(eventData.task_tree);
     }
-    if (approvalPending) {
-      appendAssistantStatusNote(row, `> ⏳ 工具调用等待审批：\`${toolName}\``);
-    } else if (success) {
-      appendAssistantStatusNote(row, `> ✅ 工具调用完成：\`${toolName}\``);
-    } else {
-      appendAssistantStatusNote(row, `> ❌ 工具调用失败：\`${toolName}\``);
+    const projectHostCommandOutput = buildProjectHostCommandOutput(eventData);
+    void autoOpenTerminalBrowserUrls(projectHostCommandOutput, row);
+    if (await ensureProjectHostBrowserInteraction(row, eventData)) {
+      scrollToBottom();
     }
-    scrollToBottom();
-    return;
-  }
-  if (eventType === "done") {
-    terminalPanelStatus.value = "idle";
-    row.images = mergeImageUrls(
-      extractImages(row),
-      collectArtifactImageUrls(eventData),
-    );
-    row.videos = mergeVideoUrls(
-      extractVideos(row),
-      collectArtifactVideoUrls(eventData),
-    );
-    const doneContent = String(eventData?.content || "").trim();
-    const currentContent = String(row.content || "").trim();
-    if (!currentContent) {
-      row.content = doneContent;
-    } else if (doneContent && currentContent !== doneContent) {
-      if (
-        isIntentOnlyReply(currentContent) ||
-        /达到最大处理轮次|已停止生成/.test(doneContent)
-      ) {
-        row.content = doneContent;
-      }
-    }
-    const taskTreePayload = eventData
-      ? resolveTaskTreeEventPayload(eventData)
-      : null;
-    if (
-      eventData &&
-      (
-        Object.prototype.hasOwnProperty.call(eventData, "task_tree") ||
-        Object.prototype.hasOwnProperty.call(eventData, "history_task_tree")
-      )
-    ) {
-      applyTaskTreePayload(taskTreePayload);
-    }
-    if (
-      eventData?.work_session &&
-      taskTreePayload &&
-      !isTaskTreeArchivedOrDone(taskTreePayload)
-    ) {
-      applyWorkSessionPayload(eventData.work_session, {
-        taskTree: taskTreePayload,
-      });
-    }
-    row.taskTreeAudit = normalizeTaskTreeAuditPayload(
-      eventData?.task_tree_audit,
-    );
-    if (row.taskTreeAudit) {
-      appendAssistantStatusNote(row, `> ⚠️ ${row.taskTreeAudit.message}`);
-    }
-    if (pending?.mcpApprovalCancelled) {
-      const handedOff = await handoffExternalAgentRequestToTerminal(
+    if (shouldAutoHandoffProjectHostCommand(eventData)) {
+      const handedOff = await handoffProjectHostCommandToTerminal(
         row,
         pending,
+        eventData,
       );
-      if (handedOff) {
-        pending.awaitingTerminalApproval = true;
+      if (handedOff && pending) {
+        row.content =
+          String(row.content || "").trim() ||
+          "命令已接入项目终端；如出现可识别交互，会在终端输出下方显示表单。";
+        const activeClient = wsClient.value;
+        if (activeClient && typeof activeClient.send === "function") {
+          activeClient.send({ type: "cancel", request_id: requestId });
+        }
+        resolvePendingRequest(requestId, pending, row.content || "");
         scrollToBottom();
         return;
       }
     }
-    pendingRequests.delete(requestId);
-    pending.resolve(row.content || "");
+    if (approvalPending) {
+      appendAssistantStatusNote(row, "> ⏳ 等待你确认后继续。");
+    } else if (!success) {
+      appendAssistantStatusNote(
+        row,
+        "> ⚠️ 有执行步骤未完成，正在等待模型给出下一步。",
+      );
+    }
     scrollToBottom();
+    return;
+  }
+  if (eventType === "auto_continue") {
+    const message =
+      String(
+        eventData?.message || "系统已自动继续执行后续步骤。",
+      ).trim() || "系统已自动继续执行后续步骤。";
+    appendAssistantStatusNote(row, `> ↻ ${message}`);
+    scrollToBottom();
+    return;
+  }
+  if (eventType === "done") {
+    try {
+      const preserveTerminalInteraction = shouldPreserveTerminalInteractionAfterDone(
+        row,
+        pending,
+      );
+      if (!preserveTerminalInteraction) {
+        terminalPanelStatus.value = "idle";
+      }
+      const guardSummary = formatGuardSummary(eventData);
+      if (guardSummary) {
+        removeAssistantStatusNotes(row, isTransientExecutionStatusNote);
+      }
+      upsertMessageOperation(row, {
+        operationId: `request:${requestId}`,
+        kind: "request",
+        title: "本轮执行",
+        summary: guardSummary || "本轮执行已结束",
+        detail: String(eventData?.content || "").trim(),
+        phase: guardSummary ? "blocked" : "completed",
+        meta: { request_id: requestId },
+      });
+      if (guardSummary) {
+        appendAssistantStatusNote(row, `> ⚠️ ${guardSummary}`);
+      }
+      row.images = mergeImageUrls(
+        extractImages(row),
+        collectArtifactImageUrls(eventData),
+      );
+      row.videos = mergeVideoUrls(
+        extractVideos(row),
+        collectArtifactVideoUrls(eventData),
+      );
+      const doneContent = String(eventData?.content || "").trim();
+      const currentContent = String(row.content || "").trim();
+      if (!currentContent) {
+        row.content = doneContent || guardSummary;
+      } else if (doneContent && currentContent !== doneContent) {
+        if (
+          isIntentOnlyReply(currentContent) ||
+          /达到最大处理轮次|已停止生成/.test(doneContent)
+        ) {
+          row.content = doneContent;
+        }
+      }
+      const hasBrowserAuthWait = await ensureBrowserAuthOperationFromText(
+        [doneContent, row.content].filter(Boolean).join("\n"),
+        row,
+      );
+      const taskTreePayload = eventData
+        ? resolveTaskTreeEventPayload(eventData)
+        : null;
+      if (
+        eventData &&
+        (
+          Object.prototype.hasOwnProperty.call(eventData, "task_tree") ||
+          Object.prototype.hasOwnProperty.call(eventData, "history_task_tree")
+        )
+      ) {
+        applyTaskTreePayload(taskTreePayload);
+      }
+      if (
+        eventData?.work_session &&
+        taskTreePayload &&
+        !isTaskTreeArchivedOrDone(taskTreePayload)
+      ) {
+        applyWorkSessionPayload(eventData.work_session, {
+          taskTree: taskTreePayload,
+        });
+      }
+      row.taskTreeAudit = normalizeTaskTreeAuditPayload(
+        eventData?.task_tree_audit,
+      );
+      if (row.taskTreeAudit) {
+        appendAssistantStatusNote(row, `> ⚠️ ${row.taskTreeAudit.message}`);
+      }
+      if (hasBrowserAuthWait) {
+        row.content =
+          String(row.content || doneContent || "").trim() ||
+          "已进入浏览器授权等待状态，完成后可回到输入框继续。";
+      }
+      if (pending?.mcpApprovalCancelled) {
+        const handedOff = await handoffExternalAgentRequestToTerminal(
+          row,
+          pending,
+        );
+        if (handedOff) {
+          pending.awaitingTerminalApproval = false;
+          row.content =
+            String(row.content || "").trim() ||
+            "命令已接入项目终端；如出现可识别交互，会在终端输出下方显示表单。";
+          resolvePendingRequest(requestId, pending, row.content || "");
+          scrollToBottom();
+          return;
+        }
+      }
+      if (preserveTerminalInteraction) {
+        terminalPanelStatus.value = "running";
+        activeTerminalMirrorAssistantIndex.value = Number(
+          pending?.assistantIndex ?? activeTerminalMirrorAssistantIndex.value,
+        );
+        markTerminalOperationsWaitingForInput(row);
+        row.displayMode = "terminal";
+        row.processExpanded = true;
+      } else {
+        completeTerminalInputOperations(row, "本轮执行已结束");
+        if (
+          Number(activeTerminalMirrorAssistantIndex.value) ===
+          Number(pending?.assistantIndex ?? -1)
+        ) {
+          activeTerminalMirrorAssistantIndex.value = -1;
+        }
+        terminalMirrorConnected.value = false;
+        hostTerminalSessionId.value = "";
+        terminalStructuredInteraction.value = null;
+      }
+    } finally {
+      resolvePendingRequest(requestId, pending, row.content || "");
+      scrollToBottom();
+    }
     return;
   }
   if (eventType === "error") {
     terminalPanelStatus.value = "error";
     const message = String(eventData?.message || "未知错误");
+    upsertMessageOperation(row, {
+      operationId: `request:${requestId}`,
+      kind: "request",
+      title: "本轮执行",
+      summary: "执行失败",
+      detail: message,
+      phase: "failed",
+    });
     appendTerminalPanelLine(`! ${message}`);
     row.content = `对话失败：${message}`;
-    pendingRequests.delete(requestId);
-    pending.reject(new Error(message));
+    rejectPendingRequest(requestId, pending, new Error(message));
     scrollToBottom();
   }
+}
+
+function resolvePendingRequest(requestId, pending, content = "") {
+  if (!pending || !requestId) return;
+  pendingRequests.delete(requestId);
+  pending.resolve(String(content || "").trim());
+}
+
+function rejectPendingRequest(requestId, pending, error) {
+  if (!pending || !requestId) return;
+  pendingRequests.delete(requestId);
+  pending.reject(
+    error instanceof Error ? error : new Error(String(error || "未知错误")),
+  );
 }
 
 function rejectPendingRequests(reason) {
@@ -10523,9 +13252,35 @@ function normalizeAiEntryFileForSave(value) {
   if (!rawValue) return "";
   const normalizedRelative = toWorkspaceRelativePath(
     rawValue,
-    projectWorkspacePath.value,
+    projectWorkspaceDraftNormalized.value || projectWorkspacePath.value,
   );
   return String(normalizedRelative || rawValue).trim();
+}
+
+async function promptProjectWorkspaceDirectory() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  projectWorkspacePicking.value = true;
+  try {
+    const pickedPath = await pickWorkspaceDirectory(
+      projectWorkspaceDraftNormalized.value || projectWorkspaceResolved.value || "",
+      {
+        title: `选择项目工作区目录 · ${String(currentProjectLabel.value || "").trim() || "AI 对话中心"}`,
+        placeholder: "/Volumes/苹果1_5T/self/ai-employee",
+      },
+    );
+    if (!pickedPath) {
+      return;
+    }
+    projectWorkspaceDraft.value = pickedPath;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "打开目录选择器失败");
+  } finally {
+    projectWorkspacePicking.value = false;
+  }
 }
 
 async function promptProjectAiEntryFile() {
@@ -10541,7 +13296,8 @@ async function promptProjectAiEntryFile() {
       {
         title: "选择 AI 入口文件",
         placeholder: ".ai/ENTRY.md",
-        basePath: projectWorkspacePath.value,
+        basePath:
+          projectWorkspaceDraftNormalized.value || projectWorkspacePath.value,
       },
     );
     if (!pickedPath) {
@@ -10552,6 +13308,48 @@ async function promptProjectAiEntryFile() {
     ElMessage.error(err?.detail || err?.message || "打开文件选择器失败");
   } finally {
     aiEntryFilePicking.value = false;
+  }
+}
+
+async function saveProjectWorkspaceDirectory(workspacePathOverride = null) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  projectWorkspaceSaving.value = true;
+  try {
+    const normalizedOverride =
+      typeof Event !== "undefined" && workspacePathOverride instanceof Event
+        ? null
+        : workspacePathOverride;
+    const workspacePath = String(
+      normalizedOverride ?? projectWorkspaceDraft.value ?? "",
+    ).trim();
+    const data = await api.patch(`/projects/${encodeURIComponent(projectId)}`, {
+      workspace_path: workspacePath,
+    });
+    const persisted = String(
+      data?.project?.workspace_path || workspacePath,
+    ).trim();
+    projectWorkspacePath.value = persisted;
+    projectWorkspaceDraft.value = persisted;
+    projects.value = (projects.value || []).map((item) =>
+      String(item?.id || "").trim() === projectId
+        ? { ...item, workspace_path: persisted }
+        : item,
+    );
+    if (!usingLocalConnector.value) {
+      externalAgentInfo.value = normalizeExternalAgentInfo({
+        ...externalAgentInfo.value,
+        workspace_path: persisted,
+      });
+    }
+    ElMessage.success(persisted ? "项目工作区路径已保存" : "已清空项目工作区路径");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存项目工作区路径失败");
+  } finally {
+    projectWorkspaceSaving.value = false;
   }
 }
 
@@ -10666,7 +13464,7 @@ async function testProjectWorkspacePath() {
         ),
       );
     }
-    ElMessage.success("工作区可用，本地连接器工具已可在该目录执行");
+    ElMessage.success("工作区可用，本地连接器文件工具已可在该目录使用");
   } catch (err) {
     ElMessage.error(err?.message || "工作区测试失败");
   } finally {
@@ -10857,6 +13655,8 @@ async function generateEmployeeDraftWithoutProject() {
     processExpanded: false,
     audit: null,
     taskTreeAudit: null,
+    statusNotes: [],
+    operations: [],
     time: nowText(),
   };
 
@@ -10942,6 +13742,9 @@ async function sendGlobalChatWithoutProject() {
     terminalLog: [],
     processExpanded: false,
     audit: null,
+    taskTreeAudit: null,
+    statusNotes: [],
+    operations: [],
     time: nowText(),
   };
 
@@ -11009,6 +13812,25 @@ async function sendGlobalChatWithoutProject() {
 async function doSend() {
   if (!canSend.value) return;
 
+  if (isTerminalInteractionMode.value) {
+    if (uploadFiles.value.length) {
+      ElMessage.warning("项目终端模式下不支持通过主输入框发送附件");
+      return;
+    }
+    await sendTerminalMirrorInput();
+    scrollToBottom();
+    return;
+  }
+
+  if (isAwaitingUserInteraction.value) {
+    const text = String(draftText.value || "").trim();
+    if (!canSupersedePendingInteraction(activePendingInteraction.value)) {
+      ElMessage.warning("当前等待的是确认类操作，请先使用消息卡片里的按钮继续");
+      return;
+    }
+    releasePendingInteractionForFollowup(text);
+  }
+
   if (
     !selectedProjectId.value &&
     activeComposerAssistMeta.value?.id === "employee_create"
@@ -11038,6 +13860,9 @@ async function doSend() {
   const files = uploadFiles.value.map((item) => item.raw).filter(Boolean);
   const imageFiles = files.filter((file) => isImageFile(file));
 
+  const activeSessionSourceContext = normalizeChatSourceContext(
+    currentChatSession.value || {},
+  );
   const historyRows = toHistoryRows(messages.value, historyLimit.value);
   const imageUrls = uploadFiles.value
     .filter((item) => item.kind === "image")
@@ -11100,6 +13925,21 @@ async function doSend() {
       ElMessage.error(err?.message || "项目统计 AI 报表加载失败");
       return;
     }
+  } else if (slashCommand?.entry?.kind === "host_run") {
+    if (!slashCommand.prompt) {
+      ElMessage.warning("请在 /run 后输入要执行的命令");
+      return;
+    }
+    userPrompt = buildHostRunCommandPrompt(slashCommand.prompt);
+  } else if (slashCommand?.entry?.kind === "lark_cli") {
+    if (!slashCommand.prompt) {
+      ElMessage.warning("请在 /lark-cli 后输入目标，例如 auth status 或 给屈行行发 test");
+      return;
+    }
+    if (!String(skillResourceDirectoryResolved.value || "").trim()) {
+      setSkillResourceDirectory(resolveLarkCliSkillDirectory(), { silent: true });
+    }
+    userPrompt = buildLarkCliCommandPrompt(slashCommand.prompt);
   } else if (slashCommand?.entry?.kind === "assist") {
     userPrompt =
       slashCommand.prompt || String(slashAssistAction?.seedText || "").trim();
@@ -11195,6 +14035,7 @@ async function doSend() {
     audit: null,
     taskTreeAudit: null,
     statusNotes: [],
+    operations: [],
     time: nowText(),
   };
 
@@ -11220,6 +14061,7 @@ async function doSend() {
         mcpApprovalCancelled: false,
         awaitingTerminalApproval: false,
         handoffTriggered: false,
+        projectHostTerminalHandoffTriggered: false,
         lastToolName: "",
       });
     });
@@ -11231,6 +14073,7 @@ async function doSend() {
       chat_session_id: activeChatSessionId,
       chat_mode: "system",
       chat_surface: "main-chat",
+      source_context: activeSessionSourceContext,
       skill_resource_directory: String(
         skillResourceDirectoryResolved.value || "",
       ).trim(),
@@ -11306,7 +14149,13 @@ async function doSend() {
       200,
     );
     client.send(requestPayload);
-    await donePromise;
+    const PENDING_TIMEOUT_MS = 5 * 60 * 1000;
+    await Promise.race([
+      donePromise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("请求超时，请重试")), PENDING_TIMEOUT_MS),
+      ),
+    ]);
     if (!String(messages.value[assistantIndex]?.content || "").trim()) {
       messages.value[assistantIndex].content = "模型未返回内容。";
     }
@@ -11321,7 +14170,7 @@ async function doSend() {
     ElMessage.error(err?.message || "对话失败");
   } finally {
     pendingRequests.delete(requestId);
-    chatLoading.value = false;
+    chatLoading.value = pendingRequests.size > 0;
     singleRoundAnswerOnly.value = false;
     if (selectedProjectId.value) {
       await fetchChatSessions(selectedProjectId.value, activeChatSessionId);
@@ -11359,6 +14208,24 @@ watch(
 watch(selectedProviderId, () => {
   handleProviderChange();
 });
+
+watch(
+  () => [
+    String(groupChatDraft.value.platform || "").trim(),
+    String(selectedProjectId.value || "").trim(),
+    groupBotConnectorOptions.value.map((item) => item.value).join("|"),
+  ],
+  () => {
+    const currentConnectorId = String(groupChatDraft.value.connector_id || "").trim();
+    const options = groupBotConnectorOptions.value;
+    if (currentConnectorId && options.some((item) => item.value === currentConnectorId)) {
+      return;
+    }
+    groupChatDraft.value.connector_id = options[0]?.value || "";
+  },
+  { immediate: true },
+);
+
 
 watch(
   () => terminalApprovalPrompt.value?.key || "",
@@ -11414,6 +14281,42 @@ watch(autoSaveFingerprint, (nextFingerprint, prevFingerprint) => {
   scheduleAutoSave();
 });
 
+watch(
+  messages,
+  () => {
+    schedulePersistChatRuntime();
+  },
+  { deep: true },
+);
+
+watch(
+  () => [
+    String(selectedProjectId.value || "").trim(),
+    String(currentChatSessionId.value || "").trim(),
+    String(terminalPanelStatus.value || "").trim(),
+    String(hostTerminalSessionId.value || "").trim(),
+    String(hostTerminalWorkspacePath.value || "").trim(),
+    Boolean(terminalPanelExpanded.value),
+    Number(activeTerminalMirrorAssistantIndex.value || -1),
+    Array.isArray(terminalPanelLines.value)
+      ? terminalPanelLines.value.join("\n")
+      : "",
+  ],
+  () => {
+    schedulePersistChatRuntime();
+  },
+);
+
+watch(
+  () => [
+    String(selectedProjectId.value || "").trim(),
+    String(currentChatSessionId.value || "").trim(),
+  ],
+  () => {
+    terminalRestoreAttemptKey = "";
+  },
+);
+
 function clearSelectedProjectState() {
   clearChatSessionMemory(selectedProjectId.value);
   clearTaskTreeSessionMemory(selectedProjectId.value);
@@ -11437,6 +14340,76 @@ function resolveAvailableProjectId(preferredId = "") {
   return String(projects.value[0]?.id || "").trim();
 }
 
+async function loadSelectedProjectConversation(projectId) {
+  agentStatusExpanded.value = false;
+  await fetchProvidersByProject(projectId);
+  if (projectId !== String(selectedProjectId.value || "").trim()) return;
+  const { chatSessionId: routeChatSessionId } = routeChatTarget();
+  const restoredTask = routeChatSessionId
+    ? null
+    : await restoreOngoingTaskFromServer(projectId, { silent: true });
+  if (projectId !== String(selectedProjectId.value || "").trim()) return;
+  let chatSessionId = await fetchChatSessions(
+    projectId,
+    routeChatSessionId || "",
+    {
+      excludeSessionIds: restoredTask?.chatSessionId
+        ? [restoredTask.chatSessionId]
+        : [],
+    },
+  );
+  if (restoredTask?.chatSessionId) {
+    const restoredChatSessionId = String(restoredTask.chatSessionId || "").trim();
+    if (
+      restoredChatSessionId &&
+      !chatSessions.value.some((item) => item.id === restoredChatSessionId)
+    ) {
+      chatSessions.value = [
+        {
+          id: restoredChatSessionId,
+          title:
+            String(
+              restoredTask.taskTree?.title ||
+                restoredTask.taskTree?.root_goal ||
+                "进行中的任务",
+            ).trim() || "进行中的任务",
+          preview: String(
+            restoredTask.taskTree?.current_node?.title ||
+              restoredTask.taskTree?.root_goal ||
+              "",
+          ).trim(),
+          message_count: 0,
+          created_at: String(restoredTask.taskTree?.created_at || "").trim(),
+          updated_at: String(restoredTask.taskTree?.updated_at || "").trim(),
+          last_message_at: String(
+            restoredTask.taskTree?.updated_at ||
+              restoredTask.taskTree?.created_at ||
+              "",
+          ).trim(),
+        },
+        ...chatSessions.value.filter((item) => item.id !== restoredChatSessionId),
+      ];
+    }
+  }
+  if (projectId !== String(selectedProjectId.value || "").trim()) return;
+  if (!chatSessionId) {
+    const created = await createChatSession({ switchTo: true });
+    chatSessionId = String(created?.id || "").trim();
+  }
+  if (!chatSessionId || projectId !== String(selectedProjectId.value || "").trim()) {
+    return;
+  }
+  await fetchChatHistory(projectId, chatSessionId);
+  void ensureWsClient(projectId).catch(() => {});
+  if (restoredTask?.chatSessionId) {
+    setOngoingTaskRestoreNotice(
+      restoredTask.taskTree,
+      restoredTask.workSession,
+    );
+  }
+  await applyRouteMessageFocus();
+}
+
 watch(selectedProjectId, async (value) => {
   const projectId = String(value || "").trim();
   if (projectId) {
@@ -11456,75 +14429,19 @@ watch(selectedProjectId, async (value) => {
   rejectPendingRequests("已切换项目，当前请求取消");
   disconnectWs("switch project");
   singleRoundAnswerOnly.value = false;
+  currentChatSessionId.value = "";
+  messages.value = [];
+  chatHistoryLoadedCount.value = 0;
+  applyTaskTreePayload(null);
   resetTerminalPanel();
   try {
-    agentStatusExpanded.value = false;
-    await fetchProvidersByProject(projectId);
-    const { chatSessionId: routeChatSessionId } = routeChatTarget();
-    const restoredTask = routeChatSessionId
-      ? null
-      : await restoreOngoingTaskFromServer(projectId, { silent: true });
-    let chatSessionId = await fetchChatSessions(
-      projectId,
-      routeChatSessionId || "",
-      {
-        excludeSessionIds: restoredTask?.chatSessionId
-          ? [restoredTask.chatSessionId]
-          : [],
-        useRemembered: Boolean(routeChatSessionId),
-      },
-    );
-    if (restoredTask?.chatSessionId) {
-      const restoredChatSessionId = String(restoredTask.chatSessionId || "").trim();
-      if (
-        restoredChatSessionId &&
-        !chatSessions.value.some((item) => item.id === restoredChatSessionId)
-      ) {
-        chatSessions.value = [
-          {
-            id: restoredChatSessionId,
-            title:
-              String(
-                restoredTask.taskTree?.title ||
-                  restoredTask.taskTree?.root_goal ||
-                  "进行中的任务",
-              ).trim() || "进行中的任务",
-            preview: String(
-              restoredTask.taskTree?.current_node?.title ||
-                restoredTask.taskTree?.root_goal ||
-                "",
-            ).trim(),
-            message_count: 0,
-            created_at: String(restoredTask.taskTree?.created_at || "").trim(),
-            updated_at: String(restoredTask.taskTree?.updated_at || "").trim(),
-            last_message_at: String(
-              restoredTask.taskTree?.updated_at ||
-                restoredTask.taskTree?.created_at ||
-                "",
-            ).trim(),
-          },
-          ...chatSessions.value.filter((item) => item.id !== restoredChatSessionId),
-        ];
-      }
-    }
-    if (!chatSessionId) {
-      const created = await createChatSession({ switchTo: true });
-      chatSessionId = String(created?.id || "").trim();
-    }
-    await fetchChatHistory(projectId, chatSessionId);
-    if (restoredTask?.chatSessionId) {
-      setOngoingTaskRestoreNotice(
-        restoredTask.taskTree,
-        restoredTask.workSession,
-      );
-    }
-    await applyRouteMessageFocus();
+    await loadSelectedProjectConversation(projectId);
   } catch (err) {
-    if (
+    const isAccessError =
       err?.status === 403 ||
       err?.status === 404 ||
-      String(err?.detail || "").includes("Project access denied")
-    ) {
+      String(err?.detail || "").includes("Project access denied");
+    if (isAccessError) {
       await fetchProjects();
       const fallbackProjectId = resolveAvailableProjectId();
       if (fallbackProjectId && fallbackProjectId !== projectId) {
@@ -11533,10 +14450,10 @@ watch(selectedProjectId, async (value) => {
       } else if (!fallbackProjectId) {
         clearSelectedProjectState();
       }
+      await fetchProvidersByProject("");
+      messages.value = [];
     }
-    await fetchProvidersByProject("");
-    messages.value = [];
-    ElMessage.error(err?.detail || err?.message || "加载模型供应商失败");
+    ElMessage.error(err?.detail || err?.message || "切换项目失败");
   }
 });
 
@@ -11590,9 +14507,22 @@ watch(
   },
 );
 
+watch(
+  () => String(route.query[PLUGIN_INSTALL_DRAFT_QUERY_KEY] || "").trim(),
+  async (draftKey, previousKey) => {
+    if (!draftKey || draftKey === previousKey) return;
+    await applyPluginInstallDraftFromRoute();
+  },
+);
+
 onMounted(async () => {
   loading.value = true;
   window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
+  window.addEventListener("focus", restoreComposerFocusAfterExternalOpen);
+  document.addEventListener(
+    "visibilitychange",
+    restoreComposerFocusAfterExternalOpen,
+  );
   try {
     await Promise.all([
       fetchSystemConfig(),
@@ -11601,7 +14531,12 @@ onMounted(async () => {
       fetchChatParameterOptions(),
       fetchGlobalProviders(),
     ]);
-    syncProjectFromRoute();
+    const initialProjectId = syncProjectFromRoute();
+    if (initialProjectId) {
+      await loadSelectedProjectConversation(initialProjectId);
+    }
+    await applyStatisticsAnalysisDraftFromRoute();
+    await applyPluginInstallDraftFromRoute();
     if (!String(selectedProjectId.value || "").trim()) {
       await fetchProvidersByProject("");
     }
@@ -11622,9 +14557,22 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.removeEventListener("resize", syncProjectSwitcherMenuWidth);
+  window.removeEventListener("focus", restoreComposerFocusAfterExternalOpen);
+  document.removeEventListener(
+    "visibilitychange",
+    restoreComposerFocusAfterExternalOpen,
+  );
   if (connectorPollTimer !== null) {
     clearInterval(connectorPollTimer);
     connectorPollTimer = null;
+  }
+  if (chatRuntimePersistTimer !== null) {
+    window.clearTimeout(chatRuntimePersistTimer);
+    chatRuntimePersistTimer = null;
+  }
+  if (chatRuntimeRemotePersistTimer !== null) {
+    window.clearTimeout(chatRuntimeRemotePersistTimer);
+    chatRuntimeRemotePersistTimer = null;
   }
   clearHighlightedMessage();
   clearAutoSaveTimer();
@@ -11660,7 +14608,7 @@ onUnmounted(() => {
 
 .chat-parameter-ribbon__items {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  grid-template-columns: 1fr;
   gap: 6px;
 }
 
@@ -11939,6 +14887,14 @@ onUnmounted(() => {
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16) !important;
 }
 
+.chat-group-conversation-button {
+  justify-content: center;
+  height: 34px !important;
+  border-radius: 999px !important;
+  color: #2563eb !important;
+  font-weight: 600;
+}
+
 .chat-stage-toolbar {
   flex-shrink: 0;
   padding: 18px 20px 14px;
@@ -12103,10 +15059,55 @@ onUnmounted(() => {
   line-height: 1.3;
 }
 
+.chat-session-chip__source {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #2563eb;
+  font-weight: 600;
+}
+
 .chat-session-chip__meta {
   font-size: 12px;
   line-height: 1.4;
   color: #64748b;
+}
+
+.group-chat-dialog__hint {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.group-chat-dialog__status {
+  margin-bottom: 14px;
+}
+
+.group-chat-dialog__connector-option {
+  display: grid;
+  gap: 2px;
+  line-height: 1.35;
+}
+
+.group-chat-dialog__connector-option strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.group-chat-dialog__connector-option span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.group-chat-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .chat-session-empty {
@@ -12118,14 +15119,18 @@ onUnmounted(() => {
   color: #94a3b8;
 }
 
+.chat-terminal-dock {
+  margin: 0 0 12px;
+}
+
 .terminal-panel {
   width: 100%;
-  border: 1px solid #1f2937;
+  border: 1px solid rgba(203, 213, 225, 0.92);
   border-radius: 14px;
-  background: #0b1220;
-  color: #d1d5db;
+  background: rgba(255, 255, 255, 0.88);
+  color: #334155;
   overflow: hidden;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
 }
 
 .terminal-panel.is-collapsed {
@@ -12138,17 +15143,24 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(15, 23, 42, 0.92);
+  border-bottom: 1px solid rgba(226, 232, 240, 0.92);
+  background: rgba(248, 250, 252, 0.92);
 }
 
 .terminal-panel-title {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   font-size: 13px;
   font-weight: 600;
-  color: #e5e7eb;
+  color: #0f172a;
+}
+
+.terminal-panel-inline-hint {
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
 }
 
 .terminal-panel-actions {
@@ -12167,8 +15179,8 @@ onUnmounted(() => {
   margin-bottom: 10px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgba(59, 130, 246, 0.12);
-  color: #bfdbfe;
+  background: rgba(241, 245, 249, 0.92);
+  color: #475569;
   font-size: 12px;
   line-height: 1.55;
 }
@@ -12216,16 +15228,88 @@ onUnmounted(() => {
     ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 12px;
   line-height: 1.55;
-  color: #d1d5db;
+  color: #1e293b;
 }
 
-.terminal-panel-footer {
+.terminal-panel-pre.is-interactive {
+  cursor: text;
+}
+
+.message-terminal-form {
+  margin: 12px 0 12px;
+  padding: 14px;
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.96), rgba(255, 255, 255, 0.94));
+}
+
+.message-terminal-form.is-submitted {
+  border-color: rgba(34, 197, 94, 0.28);
+  background: linear-gradient(135deg, rgba(240, 253, 244, 0.96), rgba(255, 255, 255, 0.94));
+}
+
+.message-terminal-form.is-submitted :deep(.el-checkbox),
+.message-terminal-form.is-submitted :deep(.el-radio) {
+  pointer-events: none;
+}
+
+.message-terminal-form__head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.message-terminal-form__head strong {
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.message-terminal-form__head p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.message-terminal-form__easy-form :deep(.el-form-item) {
+  margin-bottom: 10px;
+}
+
+.message-terminal-form__easy-form :deep(.el-checkbox-group),
+.message-terminal-form__easy-form :deep(.el-radio-group) {
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 8px;
-  padding: 10px 12px 12px;
-  border-top: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(15, 23, 42, 0.8);
+}
+
+.message-terminal-form__easy-form :deep(.el-checkbox),
+.message-terminal-form__easy-form :deep(.el-radio) {
+  height: auto;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.message-terminal-form__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.message-terminal-form__submitted {
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(240, 253, 244, 0.92);
+  border: 1px solid rgba(34, 197, 94, 0.22);
+  color: #166534;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .terminal-approval-dialog__footer {
@@ -13178,6 +16262,193 @@ onUnmounted(() => {
   color: #4b5563;
   font-size: 13px;
   line-height: 1.65;
+}
+
+.message-operations {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.message-operation-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(191, 219, 254, 0.6);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.98),
+      rgba(248, 250, 252, 0.96)
+    ),
+    rgba(255, 255, 255, 0.96);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 8px 18px rgba(15, 23, 42, 0.04);
+}
+
+.message-operation-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.message-operation-card__title-wrap {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.message-operation-card__title {
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.message-operation-card__summary {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.message-operation-card__badge {
+  flex-shrink: 0;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.82);
+  color: #334155;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.message-operation-card__detail,
+.message-operation-card__action {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.message-operation-card__detail {
+  color: #334155;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message-operation-card__action {
+  color: #0f766e;
+  font-weight: 600;
+}
+
+.message-operation-card__actions {
+  display: flex;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.message-operation-card.is-running {
+  border-color: rgba(59, 130, 246, 0.42);
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(59, 130, 246, 0.12),
+      transparent 34%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.98),
+      rgba(239, 246, 255, 0.96)
+    );
+}
+
+.message-operation-card.is-running .message-operation-card__badge {
+  background: rgba(219, 234, 254, 0.95);
+  color: #1d4ed8;
+}
+
+.message-operation-card.is-waiting_user {
+  border-color: rgba(245, 158, 11, 0.45);
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(251, 191, 36, 0.16),
+      transparent 38%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(255, 251, 235, 0.98),
+      rgba(255, 247, 237, 0.96)
+    );
+}
+
+.message-operation-card.is-waiting_user .message-operation-card__badge {
+  background: rgba(254, 240, 138, 0.92);
+  color: #92400e;
+}
+
+.message-operation-card.is-blocked {
+  border-color: rgba(248, 113, 113, 0.42);
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(248, 113, 113, 0.12),
+      transparent 36%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(255, 250, 250, 0.98),
+      rgba(254, 242, 242, 0.96)
+    );
+}
+
+.message-operation-card.is-blocked .message-operation-card__badge {
+  background: rgba(254, 202, 202, 0.92);
+  color: #b91c1c;
+}
+
+.message-operation-card.is-completed {
+  border-color: rgba(16, 185, 129, 0.38);
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(52, 211, 153, 0.14),
+      transparent 36%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(240, 253, 244, 0.98),
+      rgba(236, 253, 245, 0.96)
+    );
+}
+
+.message-operation-card.is-completed .message-operation-card__badge {
+  background: rgba(167, 243, 208, 0.92);
+  color: #047857;
+}
+
+.message-operation-card.is-failed {
+  border-color: rgba(239, 68, 68, 0.4);
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(248, 113, 113, 0.16),
+      transparent 36%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(254, 242, 242, 0.98),
+      rgba(255, 241, 242, 0.96)
+    );
+}
+
+.message-operation-card.is-failed .message-operation-card__badge {
+  background: rgba(254, 205, 211, 0.92);
+  color: #be123c;
 }
 
 .message-inline-editor {
@@ -14993,9 +18264,26 @@ onUnmounted(() => {
     color 0.18s ease;
 }
 
+.chat-session-chip__edit {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  color: #64748b;
+  opacity: 0;
+  transition:
+    opacity 0.18s ease,
+    color 0.18s ease;
+}
+
 .chat-session-chip:hover .chat-session-chip__delete,
-.chat-session-chip.is-active .chat-session-chip__delete {
+.chat-session-chip.is-active .chat-session-chip__delete,
+.chat-session-chip:hover .chat-session-chip__edit,
+.chat-session-chip.is-active .chat-session-chip__edit {
   opacity: 1;
+}
+
+.chat-session-chip__edit:hover {
+  color: #2563eb;
 }
 
 .chat-session-chip__delete:hover {
@@ -15471,16 +18759,16 @@ onUnmounted(() => {
 .settings-center-stage__body {
   flex: 1;
   min-height: 0;
-  padding-top: 14px;
-  overflow: visible;
+  padding: 14px 0 28px;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .settings-center-stage__body--chat {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  overflow-y: auto;
-  padding: 18px 0 28px;
+  padding-top: 18px;
 }
 
 .settings-tabs {
@@ -17312,8 +20600,15 @@ onUnmounted(() => {
   color: #a1a1aa;
 }
 
+.chat-session-chip__edit {
+  opacity: 0;
+  color: #94a3b8;
+}
+
 .chat-session-chip:hover .chat-session-chip__delete,
-.chat-session-chip.is-active .chat-session-chip__delete {
+.chat-session-chip.is-active .chat-session-chip__delete,
+.chat-session-chip:hover .chat-session-chip__edit,
+.chat-session-chip.is-active .chat-session-chip__edit {
   opacity: 1;
 }
 

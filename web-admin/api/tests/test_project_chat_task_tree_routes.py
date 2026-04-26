@@ -15,6 +15,7 @@ def _build_project_chat_task_tree_test_client(tmp_path, monkeypatch, auth_payloa
     core_config._file_env_values.cache_clear()
     for proxy_name in (
         "role_store",
+        "bot_connector_store",
         "system_config_store",
         "project_store",
         "project_chat_store",
@@ -116,6 +117,7 @@ def test_project_chat_task_tree_routes_generate_update_and_clear(tmp_path, monke
     updated_payload = valid_done_response.json()["task_tree"]
     assert updated_payload["current_node_id"]
     assert updated_payload["progress_percent"] > 0
+
 
     work_events_after_done = client.get(
         "/api/projects/proj-1/work-session-events",
@@ -220,6 +222,84 @@ def test_project_chat_task_tree_routes_generate_update_and_clear(tmp_path, monke
     )
     assert after_clear_response.status_code == 200
 
+
+def test_project_chat_task_tree_rebuilds_stale_active_tree_for_new_goal(tmp_path, monkeypatch):
+    from services.project_chat_task_tree import ensure_task_tree
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    initial = ensure_task_tree(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=chat_session_id,
+        root_goal="梳理 /Volumes 的现状与改动范围",
+    )
+    initial_leaf = next(item for item in initial.nodes if int(item.level) == 1)
+    update_response = client.patch(
+        f"/api/projects/proj-1/chat/task-tree/nodes/{initial_leaf.id}",
+        json={"chat_session_id": chat_session_id, "status": "in_progress", "is_current": True},
+    )
+    assert update_response.status_code == 200
+
+    rebuilt = ensure_task_tree(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=chat_session_id,
+        root_goal="给飞书智能助手机器人发送 test 消息",
+    )
+
+    assert rebuilt.id != initial.id
+    assert rebuilt.root_goal == "给飞书智能助手机器人发送 test 消息"
+    assert rebuilt.current_node_id
+
+
+def test_project_chat_task_tree_keeps_active_tree_for_short_continuation(tmp_path, monkeypatch):
+    from services.project_chat_task_tree import ensure_task_tree
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    initial = ensure_task_tree(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=chat_session_id,
+        root_goal="发送飞书消息时等待浏览器授权后继续执行",
+    )
+    initial_leaf = next(item for item in initial.nodes if int(item.level) == 1)
+    update_response = client.patch(
+        f"/api/projects/proj-1/chat/task-tree/nodes/{initial_leaf.id}",
+        json={"chat_session_id": chat_session_id, "status": "in_progress", "is_current": True},
+    )
+    assert update_response.status_code == 200
+
+    continued = ensure_task_tree(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=chat_session_id,
+        root_goal="授权完成",
+    )
+
+    assert continued.id == initial.id
+    assert continued.root_goal == "发送飞书消息时等待浏览器授权后继续执行"
 
 def test_project_workflow_skill_routes_enable_and_set_default(tmp_path, monkeypatch):
     from stores import mcp_bridge
@@ -713,7 +793,7 @@ def test_project_chat_task_tree_audit_auto_completes_leaf_when_completion_and_ve
         username="tester",
         chat_session_id=chat_session_id,
         assistant_content="已完成当前问题定位并修复，已通过 git diff 和日志确认修改正确，继续下一步。",
-        successful_tool_names=["local_connector_read_file", "local_connector_run_command"],
+        successful_tool_names=["local_connector_read_file", "project_host_run_command"],
         task_tree_tool_used=False,
     )
 

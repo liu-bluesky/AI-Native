@@ -1,11 +1,13 @@
 """JSON-backed store exports for web-admin API."""
 
+from stores.json.bot_connector_store import BotConnectorStore
 from stores.json.changelog_entry_store import ChangelogEntryStore
 from stores.json.employee_store import EmployeeStore
 from stores.json.agent_template_store import AgentTemplateStore
 from stores.json.external_mcp_store import ExternalMcpStore
 from stores.json.local_connector_store import LocalConnectorStore
 from stores.json.project_chat_store import ProjectChatStore
+from stores.json.project_chat_runtime_store import ProjectChatRuntimeStore
 from stores.json.project_chat_task_store import ProjectChatTaskStore
 from stores.json.project_experience_summary_store import ProjectExperienceSummaryStore
 from stores.json.project_material_store import ProjectMaterialStore
@@ -19,12 +21,14 @@ from stores.json.user_store import UserStore
 from stores.json.work_session_store import WorkSessionStore
 
 __all__ = [
+    "BotConnectorStore",
     "ChangelogEntryStore",
     "EmployeeStore",
     "AgentTemplateStore",
     "ExternalMcpStore",
     "LocalConnectorStore",
     "ProjectChatStore",
+    "ProjectChatRuntimeStore",
     "ProjectChatTaskStore",
     "ProjectExperienceSummaryStore",
     "ProjectMaterialStore",

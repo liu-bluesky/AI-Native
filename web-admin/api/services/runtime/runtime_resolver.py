@@ -16,6 +16,7 @@ def build_chat_runtime_context(
     employee_id: str = "",
     selected_employee_ids: list[str] | None = None,
     workspace_path: str = "",
+    host_workspace_path: str = "",
     skill_resource_directory: str = "",
     chat_surface: str = "main-chat",
     history: list[dict] | None = None,
@@ -44,6 +45,7 @@ def build_chat_runtime_context(
             if str(item or "").strip()
         ),
         workspace_path=str(workspace_path or "").strip(),
+        host_workspace_path=str(host_workspace_path or "").strip(),
         skill_resource_directory=str(skill_resource_directory or "").strip(),
         chat_surface=str(chat_surface or "main-chat").strip() or "main-chat",
         history=list(history or []),

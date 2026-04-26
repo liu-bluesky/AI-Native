@@ -143,6 +143,23 @@ def _create_project_chat_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_project_chat_runtime_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import ProjectChatRuntimeStore
+
+        return ProjectChatRuntimeStore(_data_dir())
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.project_chat_runtime_store import (
+                ProjectChatRuntimeStorePostgres,
+            )
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return ProjectChatRuntimeStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_project_chat_task_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
@@ -222,6 +239,21 @@ def _create_system_config_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_bot_connector_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import BotConnectorStore
+
+        return BotConnectorStore(_data_dir())
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.bot_connector_store import BotConnectorStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return BotConnectorStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_external_mcp_store() -> Any:
     settings = get_settings()
     if settings.core_store_backend == "json":
@@ -298,11 +330,13 @@ employee_store = _StoreProxy(_create_employee_store)
 agent_template_store = _StoreProxy(_create_agent_template_store)
 project_store = _StoreProxy(_create_project_store)
 project_chat_store = _StoreProxy(_create_project_chat_store)
+project_chat_runtime_store = _StoreProxy(_create_project_chat_runtime_store)
 project_chat_task_store = _StoreProxy(_create_project_chat_task_store)
 project_material_store = _StoreProxy(_create_project_material_store)
 project_experience_summary_store = _StoreProxy(_create_project_experience_summary_store)
 project_studio_export_store = _StoreProxy(_create_project_studio_export_store)
 system_config_store = _StoreProxy(_create_system_config_store)
+bot_connector_store = _StoreProxy(_create_bot_connector_store)
 usage_store = _StoreProxy(_create_usage_store)
 external_mcp_store = _StoreProxy(_create_external_mcp_store)
 local_connector_store = _StoreProxy(_create_local_connector_store)
@@ -318,10 +352,12 @@ __all__ = [
     "agent_template_store",
     "project_store",
     "project_chat_store",
+    "project_chat_runtime_store",
     "project_chat_task_store",
     "project_material_store",
     "project_studio_export_store",
     "system_config_store",
+    "bot_connector_store",
     "usage_store",
     "external_mcp_store",
     "local_connector_store",

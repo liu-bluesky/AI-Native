@@ -34,47 +34,6 @@
     </header>
 
     <main class="market-main">
-      <section class="market-hero">
-        <div class="market-hero__copy">
-          <div class="market-hero__eyebrow">Capability Market</div>
-          <h1 class="market-hero__title">技能、员工、规则，进入同一目录。</h1>
-          <p class="market-hero__text">
-            先理解能力结构，再决定接入路径。市场页统一承载技能资产、员工模板和规则标准。
-          </p>
-
-          <div class="market-hero__actions">
-            <el-button
-              type="primary"
-              class="market-nav__primary market-hero__button"
-              @click="authenticated ? router.push('/ai/chat') : (showAuthDialog = true)"
-            >
-              {{ authenticated ? '进入工作台' : '登录后继续' }}
-            </el-button>
-            <el-button class="market-nav__secondary market-hero__button" @click="router.push('/intro')">
-              返回官网
-            </el-button>
-          </div>
-        </div>
-
-        <div class="market-hero__panel">
-          <div class="market-hero__panel-head">
-            <div class="market-hero__panel-eyebrow">Overview</div>
-            <div class="market-hero__panel-title">市场结构</div>
-          </div>
-
-          <div class="market-hero__stats">
-            <article v-for="item in summaryItems" :key="item.label" class="market-stat">
-              <div class="market-stat__value">{{ item.value }}</div>
-              <div class="market-stat__label">{{ item.label }}</div>
-            </article>
-          </div>
-
-          <div class="market-hero__chips">
-            <span v-for="item in marketSignals" :key="item">{{ item }}</span>
-          </div>
-        </div>
-      </section>
-
       <section class="market-surface" :class="{ 'is-locked': !authenticated }">
         <div v-if="!authenticated" class="market-gate">
           <div class="market-gate__eyebrow">Access Required</div>
@@ -93,7 +52,30 @@
         </div>
 
         <div v-if="authenticated" class="market-content">
-          <div class="market-section" v-for="section in marketSections" :key="section.key">
+          <section class="market-toolbar">
+            <div class="market-toolbar__summary">
+              <article v-for="item in summaryItems" :key="item.label" class="market-toolbar__stat">
+                <strong>{{ item.value }}</strong>
+                <span>{{ item.label }}</span>
+              </article>
+            </div>
+
+            <div class="market-tabs" role="tablist" aria-label="市场分类">
+              <button
+                v-for="tab in marketTabs"
+                :key="tab.key"
+                type="button"
+                class="market-tabs__item"
+                :class="{ 'is-active': activeTab === tab.key }"
+                @click="activeTab = tab.key"
+              >
+                <span>{{ tab.label }}</span>
+                <small>{{ tab.count }}</small>
+              </button>
+            </div>
+          </section>
+
+          <div class="market-section" v-for="section in filteredMarketSections" :key="section.key">
             <div class="market-section__head">
               <div>
                 <div class="market-section__eyebrow">{{ section.eyebrow }}</div>
@@ -113,7 +95,26 @@
                 <h3 class="market-card__title">{{ item.name || item.title }}</h3>
                 <p class="market-card__text">{{ item.description || item.goal || item.domain }}</p>
 
-                <div class="market-card__meta" v-if="section.key === 'skills'">
+                <div class="market-card__status" v-if="section.key === 'cli_plugins'">
+                  <span
+                    class="market-card__status-badge"
+                    :class="`is-${resolveCliPluginStatus(item).status}`"
+                  >
+                    {{ resolveCliPluginStatus(item).status_label }}
+                  </span>
+                  <span class="market-card__status-text">
+                    {{ resolveCliPluginStatus(item).status_reason || '等待检测' }}
+                  </span>
+                </div>
+
+                <div class="market-card__meta" v-if="section.key === 'cli_plugins'">
+                  <span>{{ item.vendor || '第三方' }}</span>
+                  <span>本地 {{ resolveCliPluginStatus(item).installed_version || '-' }}</span>
+                  <span>最新 {{ resolveCliPluginStatus(item).latest_version || '-' }}</span>
+                  <span>{{ item.requires_restart ? '安装后需重启' : '安装后可直接使用' }}</span>
+                </div>
+
+                <div class="market-card__meta" v-else-if="section.key === 'skills'">
                   <span>版本 {{ item.version || '1.0.0' }}</span>
                   <span>{{ item.tool_count }} 个工具</span>
                 </div>
@@ -128,7 +129,24 @@
                   <span>{{ item.bound_employee_count }} 名员工绑定</span>
                 </div>
 
-                <div class="market-card__chips" v-if="section.key === 'skills' && item.tags?.length">
+                <div class="market-card__chips" v-if="section.key === 'cli_plugins' && item.tags?.length">
+                  <span v-for="tag in item.tags.slice(0, 4)" :key="tag">{{ tag }}</span>
+                </div>
+
+                <div class="market-card__command" v-if="section.key === 'cli_plugins'">
+                  <code>{{ item.install_command }}</code>
+                </div>
+
+                <div class="market-card__actions" v-if="section.key === 'cli_plugins'">
+                  <el-button size="small" @click="sendPluginInstallPromptToChat(item)">
+                    交给 AI 安装
+                  </el-button>
+                  <el-button size="small" @click="copyPluginInstallCommand(item)">
+                    复制命令
+                  </el-button>
+                </div>
+
+                <div class="market-card__chips" v-else-if="section.key === 'skills' && item.tags?.length">
                   <span v-for="tag in item.tags.slice(0, 4)" :key="tag">{{ tag }}</span>
                 </div>
 
@@ -162,7 +180,7 @@
       v-model="showAuthDialog"
       title="登录后进入能力市场"
       description="市场目录统一承载技能、员工和规则，后续其他入口也可直接复用这套登录注册能力。"
-      @success="handleAuthSuccess"
+      @success="fetchCatalog"
     />
   </div>
 </template>
@@ -180,24 +198,21 @@ import { authStateVersion, hasStoredToken } from '@/utils/auth-storage.js'
 const router = useRouter()
 const loading = ref(false)
 const showAuthDialog = ref(false)
+const activeTab = ref('all')
 const catalog = reactive({
+  cli_plugins: [],
   skills: [],
   employees: [],
   rules: [],
 })
 const meta = reactive({
+  cli_plugin_count: 0,
   skill_count: 0,
   employee_count: 0,
   rule_count: 0,
 })
-
-const previewCounts = {
-  skill_count: 18,
-  employee_count: 12,
-  rule_count: 24,
-}
-
-const marketSignals = ['技能目录', '员工模板', '规则标准']
+const PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX = 'plugin-install-draft:'
+const PLUGIN_INSTALL_DRAFT_QUERY_KEY = 'plugin_install_draft_key'
 
 const authenticated = computed(() => {
   authStateVersion.value
@@ -205,15 +220,22 @@ const authenticated = computed(() => {
 })
 
 const summaryItems = computed(() => {
-  const source = authenticated.value ? meta : previewCounts
   return [
-    { label: '技能', value: String(source.skill_count || 0).padStart(2, '0') },
-    { label: '员工', value: String(source.employee_count || 0).padStart(2, '0') },
-    { label: '规则', value: String(source.rule_count || 0).padStart(2, '0') },
+    { label: 'CLI 插件', value: String(meta.cli_plugin_count || 0).padStart(2, '0') },
+    { label: '技能', value: String(meta.skill_count || 0).padStart(2, '0') },
+    { label: '员工', value: String(meta.employee_count || 0).padStart(2, '0') },
+    { label: '规则', value: String(meta.rule_count || 0).padStart(2, '0') },
   ]
 })
 
 const marketSections = computed(() => [
+  {
+    key: 'cli_plugins',
+    eyebrow: 'CLI Plugin',
+    title: 'CLI 插件市场',
+    label: 'CLI',
+    items: catalog.cli_plugins,
+  },
   {
     key: 'skills',
     eyebrow: 'Skill',
@@ -237,6 +259,53 @@ const marketSections = computed(() => [
   },
 ])
 
+const marketTabs = computed(() => [
+  {
+    key: 'all',
+    label: '全部',
+    count: catalog.cli_plugins.length + catalog.skills.length + catalog.employees.length + catalog.rules.length,
+  },
+  {
+    key: 'cli_plugins',
+    label: 'CLI 插件',
+    count: catalog.cli_plugins.length,
+  },
+  {
+    key: 'skills',
+    label: '技能',
+    count: catalog.skills.length,
+  },
+  {
+    key: 'employees',
+    label: '员工',
+    count: catalog.employees.length,
+  },
+  {
+    key: 'rules',
+    label: '规则',
+    count: catalog.rules.length,
+  },
+])
+
+const filteredMarketSections = computed(() => {
+  if (activeTab.value === 'all') return marketSections.value
+  return marketSections.value.filter((section) => section.key === activeTab.value)
+})
+
+function resolveCliPluginStatus(item) {
+  const rawStatus = item?.install_status && typeof item.install_status === 'object' ? item.install_status : {}
+  const status = String(rawStatus.status || '').trim() || 'unknown'
+  return {
+    status,
+    status_label: String(rawStatus.status_label || '').trim() || '状态未知',
+    status_reason: String(rawStatus.status_reason || '').trim(),
+    installed: rawStatus.installed === true,
+    installed_version: String(rawStatus.installed_version || '').trim(),
+    latest_version: String(rawStatus.latest_version || '').trim(),
+    update_available: rawStatus.update_available === true,
+  }
+}
+
 async function fetchCatalog() {
   if (!authenticated.value) {
     return
@@ -245,16 +314,20 @@ async function fetchCatalog() {
   loading.value = true
   try {
     const data = await api.get('/market/catalog')
+    catalog.cli_plugins = Array.isArray(data?.catalog?.cli_plugins) ? data.catalog.cli_plugins : []
     catalog.skills = Array.isArray(data?.catalog?.skills) ? data.catalog.skills : []
     catalog.employees = Array.isArray(data?.catalog?.employees) ? data.catalog.employees : []
     catalog.rules = Array.isArray(data?.catalog?.rules) ? data.catalog.rules : []
+    meta.cli_plugin_count = Number(data?.meta?.cli_plugin_count || catalog.cli_plugins.length || 0)
     meta.skill_count = Number(data?.meta?.skill_count || catalog.skills.length || 0)
     meta.employee_count = Number(data?.meta?.employee_count || catalog.employees.length || 0)
     meta.rule_count = Number(data?.meta?.rule_count || catalog.rules.length || 0)
   } catch (err) {
+    catalog.cli_plugins = []
     catalog.skills = []
     catalog.employees = []
     catalog.rules = []
+    meta.cli_plugin_count = 0
     meta.skill_count = 0
     meta.employee_count = 0
     meta.rule_count = 0
@@ -264,8 +337,51 @@ async function fetchCatalog() {
   }
 }
 
-async function handleAuthSuccess() {
-  await fetchCatalog()
+async function copyPluginInstallCommand(item) {
+  const command = String(item?.install_command || '').trim()
+  if (!command) {
+    ElMessage.warning('当前插件没有可复制的安装命令')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(command)
+    ElMessage.success('安装命令已复制')
+  } catch (err) {
+    ElMessage.error(err?.message || '复制安装命令失败')
+  }
+}
+
+function buildPluginInstallPrompt(item) {
+  const prompt = String(item?.ai_install_prompt || '').trim()
+  if (prompt) return prompt
+  const docsUrl = String(item?.docs_url || '').trim()
+  const name = String(item?.name || 'CLI 插件').trim()
+  return docsUrl ? `帮我安装 ${name}：${docsUrl}` : `帮我安装 ${name}`
+}
+
+function persistPluginInstallDraft(prompt) {
+  const key = `${PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX}${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+  window.localStorage.setItem(
+    key,
+    JSON.stringify({
+      prompt,
+      source: 'market-cli-plugin',
+    }),
+  )
+  return key
+}
+
+function sendPluginInstallPromptToChat(item) {
+  const prompt = buildPluginInstallPrompt(item)
+  const draftKey = persistPluginInstallDraft(prompt)
+  const projectId = String(window.localStorage.getItem('project_id') || '').trim()
+  router.push({
+    path: '/ai/chat',
+    query: {
+      ...(projectId ? { project_id: projectId } : {}),
+      [PLUGIN_INSTALL_DRAFT_QUERY_KEY]: draftKey,
+    },
+  })
 }
 
 onMounted(async () => {
@@ -387,8 +503,6 @@ onMounted(async () => {
 }
 
 .market-nav__name,
-.market-hero__title,
-.market-hero__panel-title,
 .market-gate__title,
 .market-section__title,
 .market-card__title {
@@ -439,7 +553,6 @@ onMounted(async () => {
   padding: 28px 0 56px;
 }
 
-.market-hero,
 .market-surface,
 .market-card,
 .market-section {
@@ -450,21 +563,6 @@ onMounted(async () => {
   backdrop-filter: blur(20px);
 }
 
-.market-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.92fr);
-  gap: 18px;
-  padding: 26px;
-}
-
-.market-hero__copy {
-  display: grid;
-  align-content: start;
-  gap: 18px;
-}
-
-.market-hero__eyebrow,
-.market-hero__panel-eyebrow,
 .market-gate__eyebrow,
 .market-section__eyebrow,
 .market-card__tag {
@@ -475,16 +573,90 @@ onMounted(async () => {
   text-transform: uppercase;
 }
 
-.market-hero__title {
-  max-width: 10em;
-  margin: 0;
-  font-size: clamp(46px, 5.2vw, 74px);
-  line-height: 0.96;
-  letter-spacing: -0.07em;
-  text-wrap: balance;
+.market-toolbar {
+  display: grid;
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
 }
 
-.market-hero__text,
+.market-toolbar__summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.market-toolbar__stat {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.market-toolbar__stat strong {
+  color: #0f172a;
+  font-size: 28px;
+  line-height: 1;
+  letter-spacing: -0.05em;
+  font-family: 'Avenir Next', 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.market-toolbar__stat span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.market-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.market-tabs__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.56);
+  color: #475569;
+  cursor: pointer;
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    background-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.market-tabs__item span {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.market-tabs__item small {
+  color: inherit;
+  font-size: 12px;
+}
+
+.market-tabs__item:hover,
+.market-tabs__item.is-active {
+  transform: translateY(-1px);
+  border-color: rgba(15, 23, 42, 0.18);
+}
+
+.market-tabs__item.is-active {
+  background: #0f172a;
+  color: #fff;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.16);
+}
+
 .market-gate__text,
 .market-card__text {
   color: var(--page-text-muted);
@@ -492,76 +664,17 @@ onMounted(async () => {
   line-height: 1.85;
 }
 
-.market-hero__actions,
 .market-gate__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
 }
-
-.market-hero__button {
-  min-width: 144px;
-}
-
-.market-hero__panel {
-  display: grid;
-  gap: 20px;
-  padding: 22px;
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  border-radius: 28px;
-  background:
-    radial-gradient(circle at top right, rgba(125, 211, 252, 0.14), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(241, 246, 251, 0.82));
-}
-
-.market-hero__panel-head {
-  display: grid;
-  gap: 8px;
-}
-
-.market-hero__panel-title {
-  color: #0f172a;
-  font-size: 30px;
-  line-height: 1;
-  letter-spacing: -0.05em;
-}
-
-.market-hero__stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.market-stat {
-  display: grid;
-  gap: 8px;
-  padding: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.6);
-}
-
-.market-stat__value {
-  color: #0f172a;
-  font-size: 34px;
-  line-height: 1;
-  letter-spacing: -0.05em;
-  font-family: 'Avenir Next', 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-}
-
-.market-stat__label {
-  color: #64748b;
-  font-size: 13px;
-}
-
-.market-hero__chips,
 .market-card__chips {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.market-hero__chips span,
 .market-card__chips span {
   display: inline-flex;
   align-items: center;
@@ -679,6 +792,118 @@ onMounted(async () => {
   font-size: 13px;
 }
 
+.market-card__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.market-card__status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.market-card__status-badge.is-not_installed {
+  background: rgba(148, 163, 184, 0.16);
+  color: #475569;
+}
+
+.market-card__status-badge.is-installed {
+  background: rgba(34, 197, 94, 0.16);
+  color: #15803d;
+}
+
+.market-card__status-badge.is-update_available {
+  background: rgba(245, 158, 11, 0.18);
+  color: #b45309;
+}
+
+.market-card__status-badge.is-queued,
+.market-card__status-badge.is-running {
+  background: rgba(59, 130, 246, 0.14);
+  color: #1d4ed8;
+}
+
+.market-card__status-badge.is-failed,
+.market-card__status-badge.is-timeout {
+  background: rgba(239, 68, 68, 0.14);
+  color: #b91c1c;
+}
+
+.market-card__status-badge.is-unknown {
+  background: rgba(59, 130, 246, 0.14);
+  color: #1d4ed8;
+}
+
+.market-card__status-text {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.market-card__command {
+  padding: 12px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.04);
+  overflow-x: auto;
+}
+
+.market-card__command code {
+  font-size: 12px;
+  color: #0f172a;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.market-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.plugin-install-dialog {
+  display: grid;
+  gap: 16px;
+}
+
+.plugin-install-dialog__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.plugin-install-dialog__block {
+  display: grid;
+  gap: 8px;
+}
+
+.plugin-install-dialog__label {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.plugin-install-dialog__block code,
+.plugin-install-dialog__block pre {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.05);
+  color: #0f172a;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .market-loading {
   display: grid;
   gap: 10px;
@@ -711,14 +936,6 @@ onMounted(async () => {
     flex-wrap: wrap;
     border-radius: 30px;
   }
-
-  .market-hero {
-    grid-template-columns: 1fr;
-  }
-
-  .market-hero__title {
-    max-width: none;
-  }
 }
 
 @media (max-width: 720px) {
@@ -732,7 +949,7 @@ onMounted(async () => {
     justify-content: flex-end;
   }
 
-  .market-hero__stats,
+  .market-toolbar__summary,
   .market-grid {
     grid-template-columns: 1fr;
   }

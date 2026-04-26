@@ -8,10 +8,14 @@
 # Python runtime artifacts
 __pycache__/
 *.py[cod]
-
+skills
 # Frontend build artifacts
 web-admin/frontend/dist/
 rules
 # Local virtualenvs
 .venv/
 web-admin/api/.venv/
+.agents
+.augment
+.qoder
+.codebuddy

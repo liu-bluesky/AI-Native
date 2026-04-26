@@ -31,6 +31,17 @@ def _normalize_attachments(values: list[str] | None) -> list[str]:
     ]
 
 
+def _normalize_chat_context_text(value: object, limit: int = 160) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _normalize_chat_source_type(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"group_message", "private_message", "manual_ai_chat", "group_analysis"}:
+        return normalized
+    return ""
+
+
 @dataclass
 class ProjectChatMessage:
     project_id: str
@@ -39,6 +50,15 @@ class ProjectChatMessage:
     content: str
     chat_session_id: str = ""
     display_mode: str = ""
+    source_type: str = ""
+    platform: str = ""
+    connector_id: str = ""
+    external_chat_id: str = ""
+    external_chat_name: str = ""
+    external_message_id: str = ""
+    sender_id: str = ""
+    sender_name: str = ""
+    thread_key: str = ""
     attachments: list[str] = field(default_factory=list)
     images: list[str] = field(default_factory=list)
     videos: list[str] = field(default_factory=list)
@@ -54,6 +74,12 @@ class ProjectChatSession:
     title: str = "新对话"
     preview: str = ""
     message_count: int = 0
+    source_type: str = ""
+    platform: str = ""
+    connector_id: str = ""
+    external_chat_id: str = ""
+    external_chat_name: str = ""
+    thread_key: str = ""
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
     last_message_at: str = field(default_factory=_now_iso)
@@ -107,6 +133,15 @@ class ProjectChatStore:
                     content=content,
                     chat_session_id=str(raw.get("chat_session_id") or "").strip(),
                     display_mode=str(raw.get("display_mode") or "").strip(),
+                    source_type=_normalize_chat_source_type(raw.get("source_type")),
+                    platform=_normalize_chat_context_text(raw.get("platform"), 40).lower(),
+                    connector_id=_normalize_chat_context_text(raw.get("connector_id"), 120),
+                    external_chat_id=_normalize_chat_context_text(raw.get("external_chat_id"), 200),
+                    external_chat_name=_normalize_chat_context_text(raw.get("external_chat_name"), 200),
+                    external_message_id=_normalize_chat_context_text(raw.get("external_message_id"), 200),
+                    sender_id=_normalize_chat_context_text(raw.get("sender_id"), 200),
+                    sender_name=_normalize_chat_context_text(raw.get("sender_name"), 120),
+                    thread_key=_normalize_chat_context_text(raw.get("thread_key"), 240),
                     attachments=_normalize_attachments(raw.get("attachments")),
                     images=_normalize_attachments(raw.get("images")),
                     videos=_normalize_attachments(raw.get("videos")),
@@ -139,6 +174,12 @@ class ProjectChatStore:
                     title=str(raw.get("title") or "新对话"),
                     preview=str(raw.get("preview") or ""),
                     message_count=max(0, int(raw.get("message_count") or 0)),
+                    source_type=_normalize_chat_source_type(raw.get("source_type")),
+                    platform=_normalize_chat_context_text(raw.get("platform"), 40).lower(),
+                    connector_id=_normalize_chat_context_text(raw.get("connector_id"), 120),
+                    external_chat_id=_normalize_chat_context_text(raw.get("external_chat_id"), 200),
+                    external_chat_name=_normalize_chat_context_text(raw.get("external_chat_name"), 200),
+                    thread_key=_normalize_chat_context_text(raw.get("thread_key"), 240),
                     created_at=str(raw.get("created_at") or _now_iso()),
                     updated_at=str(raw.get("updated_at") or raw.get("created_at") or _now_iso()),
                     last_message_at=str(raw.get("last_message_at") or raw.get("updated_at") or raw.get("created_at") or _now_iso()),
@@ -200,6 +241,12 @@ class ProjectChatStore:
             title=str(getattr(existing, "title", "") or "").strip() or _session_title_from_content(first_user.content),
             preview=str(last_item.content or "")[:80],
             message_count=len(remaining),
+            source_type=str(getattr(existing, "source_type", "") or first_user.source_type or "").strip(),
+            platform=str(getattr(existing, "platform", "") or first_user.platform or "").strip(),
+            connector_id=str(getattr(existing, "connector_id", "") or first_user.connector_id or "").strip(),
+            external_chat_id=str(getattr(existing, "external_chat_id", "") or first_user.external_chat_id or "").strip(),
+            external_chat_name=str(getattr(existing, "external_chat_name", "") or first_user.external_chat_name or "").strip(),
+            thread_key=str(getattr(existing, "thread_key", "") or first_user.thread_key or "").strip(),
             created_at=str(getattr(existing, "created_at", "") or remaining[0].created_at or _now_iso()),
             updated_at=_now_iso(),
             last_message_at=str(last_item.created_at or _now_iso()),
@@ -208,18 +255,64 @@ class ProjectChatStore:
         sessions.sort(key=lambda item: str(item.updated_at or ""), reverse=True)
         self._write_sessions(project_id, username, sessions)
 
-    def create_session(self, project_id: str, username: str, title: str = "新对话") -> ProjectChatSession:
+    def create_session(
+        self,
+        project_id: str,
+        username: str,
+        title: str = "新对话",
+        source_context: dict | None = None,
+    ) -> ProjectChatSession:
+        context = source_context if isinstance(source_context, dict) else {}
         normalized = ProjectChatSession(
             id=f"chat-session-{uuid.uuid4().hex[:12]}",
             project_id=str(project_id or "").strip(),
             username=str(username or "").strip(),
             title=str(title or "新对话").strip() or "新对话",
+            source_type=_normalize_chat_source_type(context.get("source_type")),
+            platform=_normalize_chat_context_text(context.get("platform"), 40).lower(),
+            connector_id=_normalize_chat_context_text(context.get("connector_id"), 120),
+            external_chat_id=_normalize_chat_context_text(context.get("external_chat_id"), 200),
+            external_chat_name=_normalize_chat_context_text(context.get("external_chat_name"), 200),
+            thread_key=_normalize_chat_context_text(context.get("thread_key"), 240),
         )
         sessions = self._read_sessions(normalized.project_id, normalized.username)
         sessions = [item for item in sessions if item.id != normalized.id]
         sessions.insert(0, normalized)
         self._write_sessions(normalized.project_id, normalized.username, sessions)
         return normalized
+
+    def update_session(
+        self,
+        project_id: str,
+        username: str,
+        chat_session_id: str,
+        *,
+        title: str | None = None,
+        source_context: dict | None = None,
+    ) -> ProjectChatSession | None:
+        normalized_session_id = str(chat_session_id or "").strip()
+        if not normalized_session_id or normalized_session_id == "legacy":
+            return None
+        sessions = self._read_sessions(project_id, username)
+        existing = next((item for item in sessions if item.id == normalized_session_id), None)
+        if existing is None:
+            return None
+        next_title = str(title if title is not None else existing.title or "").strip()
+        if next_title:
+            existing.title = next_title
+        context = source_context if isinstance(source_context, dict) else {}
+        if context:
+            existing.source_type = _normalize_chat_source_type(context.get("source_type")) or existing.source_type
+            existing.platform = _normalize_chat_context_text(context.get("platform") or existing.platform, 40).lower()
+            existing.connector_id = _normalize_chat_context_text(context.get("connector_id") or existing.connector_id, 120)
+            existing.external_chat_id = _normalize_chat_context_text(context.get("external_chat_id") or existing.external_chat_id, 200)
+            existing.external_chat_name = _normalize_chat_context_text(context.get("external_chat_name") or existing.external_chat_name, 200)
+            existing.thread_key = _normalize_chat_context_text(context.get("thread_key") or existing.thread_key, 240)
+        existing.updated_at = _now_iso()
+        sessions = [item for item in sessions if item.id != existing.id] + [existing]
+        sessions.sort(key=lambda item: str(item.updated_at or ""), reverse=True)
+        self._write_sessions(project_id, username, sessions)
+        return existing
 
     def _legacy_session(self, project_id: str, username: str, messages: list[ProjectChatMessage]) -> ProjectChatSession | None:
         legacy_messages = [item for item in messages if not str(item.chat_session_id or "").strip()]
@@ -234,6 +327,12 @@ class ProjectChatStore:
             title=_session_title_from_content(first_user.content) or "历史会话",
             preview=str(last_item.content or "")[:80],
             message_count=len(legacy_messages),
+            source_type=str(getattr(last_item, "source_type", "") or ""),
+            platform=str(getattr(last_item, "platform", "") or ""),
+            connector_id=str(getattr(last_item, "connector_id", "") or ""),
+            external_chat_id=str(getattr(last_item, "external_chat_id", "") or ""),
+            external_chat_name=str(getattr(last_item, "external_chat_name", "") or ""),
+            thread_key=str(getattr(last_item, "thread_key", "") or ""),
             created_at=str(legacy_messages[0].created_at or _now_iso()),
             updated_at=str(last_item.created_at or _now_iso()),
             last_message_at=str(last_item.created_at or _now_iso()),
@@ -247,6 +346,15 @@ class ProjectChatStore:
             sessions.append(legacy)
         sessions.sort(key=lambda item: str(item.updated_at or ""), reverse=True)
         return sessions[:safe_limit]
+
+    def get_session(self, project_id: str, username: str, chat_session_id: str) -> ProjectChatSession | None:
+        normalized_session_id = str(chat_session_id or "").strip()
+        if not normalized_session_id:
+            return None
+        for item in self._read_sessions(project_id, username):
+            if item.id == normalized_session_id:
+                return item
+        return None
 
     def list_messages(
         self,
@@ -294,6 +402,8 @@ class ProjectChatStore:
         project_dir = self._project_dir(project_id)
         project_dir.mkdir(parents=True, exist_ok=True)
         path = self._messages_path(project_id, username)
+        chat_session_id = str(message.chat_session_id or "").strip()
+        existing_session = self.get_session(project_id, username, chat_session_id)
 
         normalized = ProjectChatMessage(
             id=str(message.id or f"chat-{uuid.uuid4().hex[:12]}"),
@@ -301,8 +411,17 @@ class ProjectChatStore:
             username=username,
             role=role,
             content=content,
-            chat_session_id=str(message.chat_session_id or "").strip(),
+            chat_session_id=chat_session_id,
             display_mode=str(message.display_mode or "").strip(),
+            source_type=_normalize_chat_source_type(message.source_type or getattr(existing_session, "source_type", "")),
+            platform=_normalize_chat_context_text(message.platform or getattr(existing_session, "platform", ""), 40).lower(),
+            connector_id=_normalize_chat_context_text(message.connector_id or getattr(existing_session, "connector_id", ""), 120),
+            external_chat_id=_normalize_chat_context_text(message.external_chat_id or getattr(existing_session, "external_chat_id", ""), 200),
+            external_chat_name=_normalize_chat_context_text(message.external_chat_name or getattr(existing_session, "external_chat_name", ""), 200),
+            external_message_id=_normalize_chat_context_text(message.external_message_id, 200),
+            sender_id=_normalize_chat_context_text(message.sender_id, 200),
+            sender_name=_normalize_chat_context_text(message.sender_name, 120),
+            thread_key=_normalize_chat_context_text(message.thread_key or getattr(existing_session, "thread_key", ""), 240),
             attachments=_normalize_attachments(message.attachments),
             images=_normalize_attachments(message.images),
             videos=_normalize_attachments(message.videos),
@@ -328,6 +447,12 @@ class ProjectChatStore:
                     else "新对话",
                     preview=str(normalized.content or "")[:80],
                     message_count=1,
+                    source_type=normalized.source_type,
+                    platform=normalized.platform,
+                    connector_id=normalized.connector_id,
+                    external_chat_id=normalized.external_chat_id,
+                    external_chat_name=normalized.external_chat_name,
+                    thread_key=normalized.thread_key,
                     created_at=now,
                     updated_at=now,
                     last_message_at=now,
@@ -336,6 +461,12 @@ class ProjectChatStore:
             else:
                 existing.preview = str(normalized.content or "")[:80]
                 existing.message_count = max(0, int(existing.message_count or 0)) + 1
+                existing.source_type = str(existing.source_type or normalized.source_type or "").strip()
+                existing.platform = str(existing.platform or normalized.platform or "").strip()
+                existing.connector_id = str(existing.connector_id or normalized.connector_id or "").strip()
+                existing.external_chat_id = str(existing.external_chat_id or normalized.external_chat_id or "").strip()
+                existing.external_chat_name = str(existing.external_chat_name or normalized.external_chat_name or "").strip()
+                existing.thread_key = str(existing.thread_key or normalized.thread_key or "").strip()
                 existing.updated_at = now
                 existing.last_message_at = now
                 if (

@@ -1,0 +1,159 @@
+2026-04-26 19:47:00,800 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-26 19:47:01,276] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633033112487971788&access_key=d702a8d0bfb610cb8452b23ffe292bf0&service_id=33554678&ticket=4458aa06-79bf-4e93-b448-b4f31f53250f [conn_id=7633033112487971788]
+2026-04-26 19:47:01,276 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633033112487971788&access_key=d702a8d0bfb610cb8452b23ffe292bf0&service_id=33554678&ticket=4458aa06-79bf-4e93-b448-b4f31f53250f [conn_id=7633033112487971788]
+2026-04-26 19:47:24 [info     ] agent_loop_start               has_system_prompt=True loop=1 tools_count=25
+2026-04-26 19:47:28,866 INFO httpx: HTTP Request: POST https://api.ikuncode.cc/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-26 19:47:28 [info     ] llm_chunk_sample               chunk_index=1 chunk_keys=['content'] chunk_type=dict
+2026-04-26 19:47:28 [info     ] llm_chunk_sample               chunk_index=2 chunk_keys=['content'] chunk_type=dict
+2026-04-26 19:47:28 [info     ] llm_chunk_sample               chunk_index=3 chunk_keys=['content'] chunk_type=dict
+2026-04-26 19:47:32,183 WARNING services.llm_provider_service: Failed to parse SSE line: data: {"id":"chatcmpl-20260426114725189278158268d9d6D6J9XZVj","object":"chat.completion.chunk","crea, error: list index out of range
+2026-04-26 19:47:32 [info     ] agent_loop_response            has_tool_calls=False response_length=397
+2026-04-26 19:47:32 [info     ] conversation_completed         duration_ms=8092 loops=1 project_id=proj-d16591a6
+2026-04-26 19:47:32,584 ERROR services.system_speech_service: failed to prepare macOS output volume for speech
+Traceback (most recent call last):
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 116, in _prepare_darwin_output_for_speech
+    _set_darwin_output_state(muted=False, volume=target_volume)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 108, in _set_darwin_output_state
+    _run_osascript(script)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 70, in _run_osascript
+    result = subprocess.run(
+             ^^^^^^^^^^^^^^^
+  File "/Users/liulantian/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['osascript', '-e', 'set volume with output muted false']' returned non-zero exit status 1.
+2026-04-26 20:00:24,171 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-26 20:00:24,488] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633036538726009788&access_key=893f3b1b238b92976c11f90b46ce3aa6&service_id=33554678&ticket=8fea262d-5545-4d14-973f-2c0f8dccda86 [conn_id=7633036538726009788]
+2026-04-26 20:00:24,488 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633036538726009788&access_key=893f3b1b238b92976c11f90b46ce3aa6&service_id=33554678&ticket=8fea262d-5545-4d14-973f-2c0f8dccda86 [conn_id=7633036538726009788]
+2026-04-26 20:00:55 [info     ] agent_loop_start               has_system_prompt=True loop=1 tools_count=25
+2026-04-26 20:00:59,161 INFO httpx: HTTP Request: POST https://api.ikuncode.cc/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-26 20:00:59 [info     ] llm_chunk_sample               chunk_index=1 chunk_keys=['content'] chunk_type=dict
+2026-04-26 20:00:59 [info     ] llm_chunk_sample               chunk_index=2 chunk_keys=['content'] chunk_type=dict
+2026-04-26 20:00:59 [info     ] llm_chunk_sample               chunk_index=3 chunk_keys=['content'] chunk_type=dict
+2026-04-26 20:01:04,537 WARNING services.llm_provider_service: Failed to parse SSE line: data: {"id":"chatcmpl-202604261200573096925028268d9d62fiG9drp","object":"chat.completion.chunk","cre, error: list index out of range
+2026-04-26 20:01:04 [info     ] agent_loop_response            has_tool_calls=False response_length=446
+2026-04-26 20:01:04 [info     ] conversation_completed         duration_ms=9346 loops=1 project_id=proj-d16591a6
+2026-04-26 20:01:06,129 ERROR services.system_speech_service: failed to prepare macOS output volume for speech
+Traceback (most recent call last):
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 116, in _prepare_darwin_output_for_speech
+    _set_darwin_output_state(muted=False, volume=target_volume)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 108, in _set_darwin_output_state
+    _run_osascript(script)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 70, in _run_osascript
+    result = subprocess.run(
+             ^^^^^^^^^^^^^^^
+  File "/Users/liulantian/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['osascript', '-e', 'set volume with output muted false']' returned non-zero exit status 1.
+2026-04-26 20:09:35,145 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-26 20:09:35,523] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633038927175551928&access_key=66d8d2edc10d7158441b0084c2d4b390&service_id=33554678&ticket=3b0f44f0-588e-4143-b223-6893b66242a4 [conn_id=7633038927175551928]
+2026-04-26 20:09:35,523 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633038927175551928&access_key=66d8d2edc10d7158441b0084c2d4b390&service_id=33554678&ticket=3b0f44f0-588e-4143-b223-6893b66242a4 [conn_id=7633038927175551928]
+2026-04-26 20:10:05 [info     ] agent_loop_start               has_system_prompt=True loop=1 tools_count=25
+2026-04-26 20:10:08,046 INFO httpx: HTTP Request: POST https://api.ikuncode.cc/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-26 20:10:08 [info     ] llm_chunk_sample               chunk_index=1 chunk_keys=['content'] chunk_type=dict
+2026-04-26 20:10:08 [info     ] llm_chunk_sample               chunk_index=2 chunk_keys=['content'] chunk_type=dict
+2026-04-26 20:10:08 [info     ] llm_chunk_sample               chunk_index=3 chunk_keys=['content'] chunk_type=dict
+2026-04-26 20:10:13,528 WARNING services.llm_provider_service: Failed to parse SSE line: data: {"id":"chatcmpl-202604261210066085915958268d9d6px5OVh0M","object":"chat.completion.chunk","cre, error: list index out of range
+2026-04-26 20:10:13 [info     ] agent_loop_response            has_tool_calls=False response_length=446
+2026-04-26 20:10:13 [info     ] conversation_completed         duration_ms=7885 loops=1 project_id=proj-d16591a6
+2026-04-26 20:10:14,939 INFO services.feishu_archive_writer_service: failed to open feishu archive link permission
+Traceback (most recent call last):
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/feishu_archive_writer_service.py", line 208, in _try_open_link_permission
+    _patch_feishu_json(
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/feishu_archive_writer_service.py", line 104, in _patch_feishu_json
+    response.raise_for_status()
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/.venv/lib/python3.12/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://open.feishu.cn/open-apis/drive/v1/permissions/QCevddHCLobLeMxp0s0cdGd3nZb/public?type=docx
+2026-04-26 20:10:15,279 ERROR services.system_speech_service: failed to prepare macOS output volume for speech
+Traceback (most recent call last):
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 116, in _prepare_darwin_output_for_speech
+    _set_darwin_output_state(muted=False, volume=target_volume)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 108, in _set_darwin_output_state
+    _run_osascript(script)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 70, in _run_osascript
+    result = subprocess.run(
+             ^^^^^^^^^^^^^^^
+  File "/Users/liulantian/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['osascript', '-e', 'set volume with output muted false']' returned non-zero exit status 1.
+2026-04-26 20:40:44,241 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-26 20:40:44,712] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633046949940267995&access_key=48d249ec6e1f1669f2c1851c115a83bd&service_id=33554678&ticket=61859b74-af41-45a5-952b-8c5e8d109c65 [conn_id=7633046949940267995]
+2026-04-26 20:40:44,712 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633046949940267995&access_key=48d249ec6e1f1669f2c1851c115a83bd&service_id=33554678&ticket=61859b74-af41-45a5-952b-8c5e8d109c65 [conn_id=7633046949940267995]
+2026-04-26 21:15:17,857 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-26 21:15:18,396] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633055874319846336&access_key=b907044c9376e72965924bfda68fcf3a&service_id=33554678&ticket=d502bd22-5515-4d0a-aa87-b6a893c66257 [conn_id=7633055874319846336]
+2026-04-26 21:15:18,396 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633055874319846336&access_key=b907044c9376e72965924bfda68fcf3a&service_id=33554678&ticket=d502bd22-5515-4d0a-aa87-b6a893c66257 [conn_id=7633055874319846336]
+2026-04-26 21:16:32 [info     ] agent_loop_start               has_system_prompt=True loop=1 tools_count=25
+2026-04-26 21:16:36,205 INFO httpx: HTTP Request: POST https://api.ikuncode.cc/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-26 21:16:36 [info     ] llm_chunk_sample               chunk_index=1 chunk_keys=['content'] chunk_type=dict
+2026-04-26 21:16:36 [info     ] llm_chunk_sample               chunk_index=2 chunk_keys=['content'] chunk_type=dict
+2026-04-26 21:16:36 [info     ] llm_chunk_sample               chunk_index=3 chunk_keys=['content'] chunk_type=dict
+2026-04-26 21:16:41,262 WARNING services.llm_provider_service: Failed to parse SSE line: data: {"id":"chatcmpl-202604261316333717449588268d9d6NBC0twop","object":"chat.completion.chunk","cre, error: list index out of range
+2026-04-26 21:16:41 [info     ] agent_loop_response            has_tool_calls=False response_length=461
+2026-04-26 21:16:41 [info     ] conversation_completed         duration_ms=9050 loops=1 project_id=proj-d16591a6
+2026-04-26 21:16:42,659 ERROR services.system_speech_service: failed to prepare macOS output volume for speech
+Traceback (most recent call last):
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 116, in _prepare_darwin_output_for_speech
+    _set_darwin_output_state(muted=False, volume=target_volume)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 108, in _set_darwin_output_state
+    _run_osascript(script)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 70, in _run_osascript
+    result = subprocess.run(
+             ^^^^^^^^^^^^^^^
+  File "/Users/liulantian/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['osascript', '-e', 'set volume with output muted false']' returned non-zero exit status 1.
+[Lark] [2026-04-26 21:35:27,372] [ERROR] receive message loop exit, err: no close frame received or sent [conn_id=7633055874319846336]
+2026-04-26 21:35:27,372 ERROR Lark: receive message loop exit, err: no close frame received or sent [conn_id=7633055874319846336]
+2026-04-26 21:47:12,279 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-26 21:47:12,787] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633064098109033414&access_key=194fff0f6687b1204b3c653f7104ecc7&service_id=33554678&ticket=4be72066-be49-4d73-a613-a95d026b8b53 [conn_id=7633064098109033414]
+2026-04-26 21:47:12,787 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633064098109033414&access_key=194fff0f6687b1204b3c653f7104ecc7&service_id=33554678&ticket=4be72066-be49-4d73-a613-a95d026b8b53 [conn_id=7633064098109033414]
+2026-04-26 21:48:11 [info     ] agent_loop_start               has_system_prompt=True loop=1 tools_count=25
+2026-04-26 21:48:15,120 INFO httpx: HTTP Request: POST https://api.ikuncode.cc/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-26 21:48:15 [info     ] llm_chunk_sample               chunk_index=1 chunk_keys=['content'] chunk_type=dict
+2026-04-26 21:48:15 [info     ] llm_chunk_sample               chunk_index=2 chunk_keys=['content'] chunk_type=dict
+2026-04-26 21:48:15 [info     ] llm_chunk_sample               chunk_index=3 chunk_keys=['content'] chunk_type=dict
+2026-04-26 21:48:21,892 WARNING services.llm_provider_service: Failed to parse SSE line: data: {"id":"chatcmpl-202604261348134917308348268d9d66Kms6IYx","object":"chat.completion.chunk","cre, error: list index out of range
+2026-04-26 21:48:21 [info     ] agent_loop_response            has_tool_calls=False response_length=461
+2026-04-26 21:48:21 [info     ] conversation_completed         duration_ms=10170 loops=1 project_id=proj-d16591a6
+2026-04-26 21:48:23,805 ERROR services.system_speech_service: failed to prepare macOS output volume for speech
+Traceback (most recent call last):
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 116, in _prepare_darwin_output_for_speech
+    _set_darwin_output_state(muted=False, volume=target_volume)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 108, in _set_darwin_output_state
+    _run_osascript(script)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 70, in _run_osascript
+    result = subprocess.run(
+             ^^^^^^^^^^^^^^^
+  File "/Users/liulantian/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['osascript', '-e', 'set volume with output muted false']' returned non-zero exit status 1.
+2026-04-26 22:42:18,984 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-26 22:42:19,434] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633078270083435474&access_key=6646a70392af60d2956b4de946dc6782&service_id=33554678&ticket=978e6bd1-520f-4399-a619-2902e14105ea [conn_id=7633078270083435474]
+2026-04-26 22:42:19,434 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633078270083435474&access_key=6646a70392af60d2956b4de946dc6782&service_id=33554678&ticket=978e6bd1-520f-4399-a619-2902e14105ea [conn_id=7633078270083435474]
+2026-04-26 22:42:24,490 WARNING services.feishu_bot_service: feishu message ignored because no project chat session binding was found
+2026-04-26 22:53:42,245 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-26 22:53:42,648] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633081207661382597&access_key=4f3b1442d5140bc22793bc4a7fd6d2ff&service_id=33554678&ticket=f531655d-6f0c-4674-88a2-80028789b117 [conn_id=7633081207661382597]
+2026-04-26 22:53:42,648 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633081207661382597&access_key=4f3b1442d5140bc22793bc4a7fd6d2ff&service_id=33554678&ticket=f531655d-6f0c-4674-88a2-80028789b117 [conn_id=7633081207661382597]
+2026-04-26 22:53:49 [info     ] agent_loop_start               has_system_prompt=True loop=1 tools_count=25
+2026-04-26 22:53:56,488 INFO httpx: HTTP Request: POST https://api.ikuncode.cc/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-26 22:53:56 [info     ] llm_chunk_sample               chunk_index=1 chunk_keys=['content'] chunk_type=dict
+2026-04-26 22:53:56 [info     ] llm_chunk_sample               chunk_index=2 chunk_keys=['content'] chunk_type=dict
+2026-04-26 22:53:56 [info     ] llm_chunk_sample               chunk_index=3 chunk_keys=['content'] chunk_type=dict
+2026-04-26 22:54:01,971 WARNING services.llm_provider_service: Failed to parse SSE line: data: {"id":"chatcmpl-202604261453505755087698268d9d63KIhsiO4","object":"chat.completion.chunk","cre, error: list index out of range
+2026-04-26 22:54:01 [info     ] agent_loop_response            has_tool_calls=False response_length=461
+2026-04-26 22:54:02 [info     ] conversation_completed         duration_ms=12725 loops=1 project_id=proj-d16591a6
+2026-04-26 22:54:04,502 ERROR services.system_speech_service: failed to prepare macOS output volume for speech
+Traceback (most recent call last):
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 116, in _prepare_darwin_output_for_speech
+    _set_darwin_output_state(muted=False, volume=target_volume)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 108, in _set_darwin_output_state
+    _run_osascript(script)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 70, in _run_osascript
+    result = subprocess.run(
+             ^^^^^^^^^^^^^^^
+  File "/Users/liulantian/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['osascript', '-e', 'set volume with output muted false']' returned non-zero exit status 1.
+2026-04-26 23:00:07,828 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-26 23:00:08,241] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633082881913441243&access_key=816d88442a78c84c931264ee4a8b0b8a&service_id=33554678&ticket=cc0f7ded-f8b0-4825-b502-2121bd786dcc [conn_id=7633082881913441243]
+2026-04-26 23:00:08,241 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633082881913441243&access_key=816d88442a78c84c931264ee4a8b0b8a&service_id=33554678&ticket=cc0f7ded-f8b0-4825-b502-2121bd786dcc [conn_id=7633082881913441243]

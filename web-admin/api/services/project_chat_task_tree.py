@@ -367,7 +367,84 @@ def _should_rebuild_task_tree_for_new_goal(
         progress_percent = 0
     if current_status == "pending" and progress_percent <= 0:
         return True
+    if current_status in {"in_progress", "verifying"}:
+        if _looks_like_task_tree_continuation_message(next_goal):
+            return False
+        return _goals_are_substantially_different(current_goal, next_goal)
     return False
+
+
+def _looks_like_task_tree_continuation_message(value: str) -> bool:
+    normalized = _normalize_text(value, 240).strip().lower()
+    if not normalized:
+        return False
+    compact = re.sub(r"\s+", "", normalized)
+    continuation_terms = (
+        "继续",
+        "继续执行",
+        "继续刚才",
+        "接着",
+        "接着来",
+        "继续处理",
+        "继续发送",
+        "授权完成",
+        "已授权",
+        "完成授权",
+        "已经授权",
+        "我授权了",
+        "好了",
+        "可以了",
+        "确认了",
+        "已确认",
+        "完成了",
+        "done",
+        "ok",
+        "yes",
+    )
+    if compact in continuation_terms:
+        return True
+    if len(compact) <= 30 and any(term in compact for term in continuation_terms):
+        return True
+    return False
+
+
+def _goal_terms(value: str) -> set[str]:
+    normalized = _normalize_text(value, 1000).lower()
+    terms = set(re.findall(r"[a-z0-9_./:-]{2,}", normalized))
+    terms.update(re.findall(r"[\u4e00-\u9fff]{2,}", normalized))
+    stop_terms = {
+        "当前",
+        "需求",
+        "问题",
+        "继续",
+        "处理",
+        "修复",
+        "执行",
+        "确认",
+        "完成",
+        "the",
+        "and",
+        "with",
+    }
+    return {term.strip() for term in terms if term.strip() and term.strip() not in stop_terms}
+
+
+def _goals_are_substantially_different(current_goal: str, next_goal: str) -> bool:
+    current = _normalize_text(current_goal, 1000).lower()
+    next_text = _normalize_text(next_goal, 1000).lower()
+    if not current or not next_text or current == next_text:
+        return False
+    if current in next_text or next_text in current:
+        return False
+    current_terms = _goal_terms(current)
+    next_terms = _goal_terms(next_text)
+    smaller_size = min(len(current_terms), len(next_terms))
+    if smaller_size <= 0:
+        return False
+    overlap_ratio = len(current_terms & next_terms) / smaller_size
+    if smaller_size <= 2:
+        return overlap_ratio == 0 and abs(len(current) - len(next_text)) >= 12
+    return overlap_ratio < 0.35
 
 
 def _can_refine_task_tree_in_place(
