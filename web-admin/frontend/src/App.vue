@@ -16,6 +16,7 @@ const router = useRouter()
 const ONLINE_HEARTBEAT_INTERVAL_MS = 60 * 1000
 let onlineHeartbeatTimer = null
 let onlineHeartbeatPending = false
+const AUTH_PUBLIC_PATHS = new Set(['/init', '/intro', '/market', '/updates', '/login', '/register'])
 
 function stopOnlineHeartbeat() {
   if (onlineHeartbeatTimer !== null) {
@@ -48,12 +49,30 @@ function startOnlineHeartbeat() {
   }, ONLINE_HEARTBEAT_INTERVAL_MS)
 }
 
+function redirectToLoginIfNeeded() {
+  const currentRoute = router.currentRoute.value
+  const currentPath = currentRoute.path || ''
+  if (AUTH_PUBLIC_PATHS.has(currentPath)) return
+  router.replace({
+    path: '/login',
+    query: currentRoute.fullPath ? { redirect: currentRoute.fullPath } : {},
+  })
+}
+
+function handleAuthStorageChange(event) {
+  if (String(event?.key || '').trim() !== 'token') return
+  if (getStoredToken()) return
+  stopOnlineHeartbeat()
+  redirectToLoginIfNeeded()
+}
+
 onMounted(async () => {
   await router.isReady()
 
   const currentPath = router.currentRoute.value.path
-  const publicPaths = new Set(['/intro', '/market', '/login', '/register'])
+  const publicPaths = AUTH_PUBLIC_PATHS
   const initBypassPaths = new Set(['/intro', '/market'])
+  window.addEventListener('storage', handleAuthStorageChange)
 
   try {
     const { initialized } = await api.get('/init/status')
@@ -93,6 +112,7 @@ watch(
   () => {
     if (!getStoredToken()) {
       stopOnlineHeartbeat()
+      redirectToLoginIfNeeded()
       return
     }
     startOnlineHeartbeat()
@@ -110,5 +130,6 @@ watch(
 
 onBeforeUnmount(() => {
   stopOnlineHeartbeat()
+  window.removeEventListener('storage', handleAuthStorageChange)
 })
 </script>

@@ -321,6 +321,15 @@
               这个字段会作为当前机器人的系统提示词参与 AI 回复；留空时使用项目 AI 对话默认提示词。
             </div>
           </el-form-item>
+          <el-form-item label="回复身份">
+            <el-select v-model="draft.reply_identity" placeholder="选择回复身份">
+              <el-option label="机器人" value="bot" />
+              <el-option label="当前登录人" value="user" />
+            </el-select>
+            <div class="connector-dialog__hint">
+              长连接接收消息仍使用机器人能力；最终回复统一通过 lark-cli 发送，可按场景选择机器人或已授权用户身份。
+            </div>
+          </el-form-item>
           <el-form-item label="配置指南链接">
             <el-input
               v-model="draft.guide_url"
@@ -548,6 +557,9 @@ function normalizeConnector(item) {
     encrypt_key: String(raw.encrypt_key || "").trim().slice(0, 200),
     event_receive_mode: normalizeReceiveMode(raw.event_receive_mode, preset),
     auto_start_worker: raw.auto_start_worker === true,
+    reply_identity: ["bot", "user"].includes(String(raw.reply_identity || "").trim().toLowerCase())
+      ? String(raw.reply_identity || "").trim().toLowerCase()
+      : "bot",
     project_id: String(raw.project_id || "").trim().slice(0, 80),
     guide_url: String(raw.guide_url || "").trim().slice(0, 500),
     sort_order: Math.min(999, Math.max(0, Number(raw.sort_order || 0) || 0)),
@@ -639,6 +651,7 @@ const draft = ref({
   encrypt_key: "",
   event_receive_mode: "manual",
   auto_start_worker: false,
+  reply_identity: "bot",
   project_id: "",
   guide_url: "",
   sort_order: 0,
@@ -734,6 +747,7 @@ function openDialog(platform, connector = null) {
       encrypt_key: "",
       event_receive_mode: preset.default_receive_mode || "manual",
       auto_start_worker: false,
+      reply_identity: "bot",
       project_id: "",
       guide_url: "",
       sort_order: nextSortOrder(normalizedPlatform),

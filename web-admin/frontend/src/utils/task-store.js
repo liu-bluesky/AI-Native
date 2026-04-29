@@ -43,6 +43,35 @@ function normalizeAction(rawAction = {}) {
   };
 }
 
+function dynamicProjectChatAction() {
+  return normalizeAction({
+    type: "project_chat",
+    label: "大模型动态执行",
+    params: { mode: "dynamic_task" },
+  });
+}
+
+function isDefaultRecordAction(action = {}) {
+  const label = String(action.label || "").trim();
+  return String(action.type || "").trim() === "record" && ["", "记录任务执行"].includes(label);
+}
+
+function actionHasExplicitText(action = {}) {
+  const params = action.params && typeof action.params === "object" ? action.params : {};
+  return Boolean(String(params.text || params.message || "").trim());
+}
+
+function shouldMigrateTaskModuleAction(rawTask = {}, actions = []) {
+  if (String(rawTask.source || "").trim() !== "tasks-module") return false;
+  if (actions.length !== 1) return false;
+  const action = actions[0];
+  if (String(action.type || "").trim() === "system_speech") {
+    return !actionHasExplicitText(action);
+  }
+  if (!isDefaultRecordAction(action)) return false;
+  return ["workflow", "reminder"].includes(String(rawTask.task_type || rawTask.taskType || "").trim());
+}
+
 function normalizeTask(rawTask = {}) {
   const description = String(rawTask.description || rawTask.title || "").trim();
   const title = String(rawTask.title || description.split(/\n/)[0] || "未命名任务")
@@ -70,6 +99,7 @@ function normalizeTask(rawTask = {}) {
   const actions = Array.isArray(rawTask.actions)
     ? rawTask.actions.map((item) => normalizeAction(item)).filter(Boolean)
     : [normalizeAction({ type: "record", label: "记录任务执行" })];
+  const normalizedActions = shouldMigrateTaskModuleAction(rawTask, actions) ? [dynamicProjectChatAction()] : actions;
   const eventTrigger = normalizedTriggers.find((item) => item.type === "event");
   return {
     id: String(rawTask.id || "").trim() || createTaskId(),
@@ -81,7 +111,7 @@ function normalizeTask(rawTask = {}) {
     listen_enabled: eventTrigger ? eventTrigger.enabled !== false : rawTask.listen_enabled !== false && rawTask.listenEnabled !== false,
     triggerPhrases: eventTrigger ? eventTrigger.phrases : legacyTriggerPhrases,
     triggers: normalizedTriggers,
-    actions,
+    actions: normalizedActions,
     nextRunAt: String(rawTask.nextRunAt || rawTask.next_run_at || "").trim(),
     lastRunAt: String(rawTask.lastRunAt || rawTask.last_run_at || "").trim(),
     executionCount: Number(rawTask.executionCount || rawTask.execution_count || 0) || 0,

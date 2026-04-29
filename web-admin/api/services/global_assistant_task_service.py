@@ -12,6 +12,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from core.config import get_api_data_dir
 from services.feishu_archive_writer_service import archive_feishu_task_message, is_feishu_auto_archive_action
@@ -23,6 +24,24 @@ _ACTIVE_STATUSES = {"todo", "doing"}
 _EXECUTION_HISTORY_LIMIT = 50
 _SCHEDULER_TASK: asyncio.Task[None] | None = None
 _SCHEDULER_LOCK = threading.RLock()
+_LOCAL_TZ = ZoneInfo("Asia/Shanghai")
+_CN_NUMBERS = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+    "十一": 11,
+    "十二": 12,
+}
 _GENERIC_CHINESE_TERMS = {
     "任务",
     "创建",
@@ -57,6 +76,16 @@ _SYSTEM_SPEECH_INTENT_TERMS = {
     "notification",
     "speech",
     "speak",
+}
+_SCHEDULE_INTENT_TERMS = {
+    "提醒",
+    "提示",
+    "通知",
+    "定时",
+    "到点",
+    "到时间",
+    "叫我",
+    "叫一下",
 }
 
 
@@ -112,6 +141,95 @@ def _normalize_interval_seconds(value: Any) -> int:
     return max(0, min(interval_seconds, 31_536_000))
 
 
+def _parse_chinese_number(value: str) -> int | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        return int(raw)
+    if raw in _CN_NUMBERS:
+        return _CN_NUMBERS[raw]
+    if raw.startswith("十") and len(raw) == 2 and raw[1:] in _CN_NUMBERS:
+        return 10 + int(_CN_NUMBERS[raw[1:]])
+    if raw.endswith("十") and raw[:-1] in _CN_NUMBERS:
+        return int(_CN_NUMBERS[raw[:-1]]) * 10
+    return None
+
+
+def _resolve_natural_schedule_date(text: str, base_local: datetime) -> tuple[datetime, bool]:
+    if "后天" in text:
+        return base_local + timedelta(days=2), True
+    if "明天" in text or "明日" in text:
+        return base_local + timedelta(days=1), True
+    if "今天" in text or "今日" in text or "今晚" in text:
+        return base_local, True
+    absolute = re.search(r"(?:(20\d{2})[年/-])?(\d{1,2})[月/-](\d{1,2})[日号]?", text)
+    if absolute:
+        try:
+            return (
+                base_local.replace(
+                    year=int(absolute.group(1) or base_local.year),
+                    month=int(absolute.group(2)),
+                    day=int(absolute.group(3)),
+                ),
+                True,
+            )
+        except ValueError:
+            return base_local, False
+    return base_local, False
+
+
+def _resolve_natural_schedule_time(text: str) -> tuple[int, int] | None:
+    match = re.search(r"(\d{1,2})[:：](\d{1,2})", text)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+    else:
+        token = r"\d{1,2}|十[一二]?|[一二两三四五六七八九十]"
+        match = re.search(rf"({token})点(半|({token})分?)?", text)
+        if not match:
+            return None
+        parsed_hour = _parse_chinese_number(match.group(1))
+        if parsed_hour is None:
+            return None
+        hour = parsed_hour
+        minute = 30 if match.group(2) == "半" else (_parse_chinese_number(match.group(3) or "") or 0)
+    if minute < 0 or minute > 59 or hour < 0 or hour > 23:
+        return None
+    if re.search(r"下午|晚上|今晚|傍晚", text) and 1 <= hour <= 11:
+        hour += 12
+    if "中午" in text and hour < 11:
+        hour = 12 if hour == 0 else hour + 12
+    return hour, minute
+
+
+def _infer_natural_schedule_time(raw: dict[str, Any], *, base_time: datetime | None = None) -> datetime | None:
+    if str(raw.get("status") or "todo").strip().lower() == "done":
+        return None
+    if int(raw.get("execution_count") or raw.get("executionCount") or 0) > 0:
+        return None
+    text = " ".join(
+        str(item or "").strip()
+        for item in (raw.get("title"), raw.get("description"), raw.get("task_type"), raw.get("taskType"))
+        if str(item or "").strip()
+    )
+    if not text or not any(term in text for term in _SCHEDULE_INTENT_TERMS):
+        return None
+    base_local = (base_time or datetime.now(timezone.utc)).astimezone(_LOCAL_TZ)
+    date_base, has_explicit_date = _resolve_natural_schedule_date(text, base_local)
+    resolved_time = _resolve_natural_schedule_time(text)
+    if resolved_time is None:
+        return None
+    hour, minute = resolved_time
+    try:
+        due_local = date_base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    except ValueError:
+        return None
+    if not has_explicit_date and due_local <= base_local:
+        due_local += timedelta(days=1)
+    return due_local.astimezone(timezone.utc)
+
+
 def _normalize_trigger(raw_trigger: dict[str, Any] | None, *, fallback_type: str = "manual") -> dict[str, Any]:
     raw = raw_trigger if isinstance(raw_trigger, dict) else {}
     trigger_type = str(raw.get("type") or raw.get("trigger_type") or fallback_type or "manual").strip().lower()
@@ -155,7 +273,15 @@ def _normalize_trigger(raw_trigger: dict[str, Any] | None, *, fallback_type: str
 def _normalize_action(raw_action: dict[str, Any] | None, *, fallback_type: str = "record") -> dict[str, Any]:
     raw = raw_action if isinstance(raw_action, dict) else {}
     action_type = str(raw.get("type") or raw.get("action_type") or fallback_type or "record").strip().lower()
-    if action_type not in {"record", "notify", "system_speech", "project_chat", "file_processing", "webhook"}:
+    if action_type not in {
+        "record",
+        "notify",
+        "system_speech",
+        "project_chat",
+        "file_processing",
+        "webhook",
+        "feishu_message",
+    }:
         action_type = "record"
     params = raw.get("params") if isinstance(raw.get("params"), dict) else {}
     return {
@@ -181,6 +307,85 @@ def _actions_are_default_record(actions: list[dict[str, Any]]) -> bool:
     action_type = str(action.get("type") or "").strip().lower()
     label = str(action.get("label") or "").strip()
     return action_type == "record" and label in {"", "记录任务执行"}
+
+
+def _dynamic_project_chat_action() -> dict[str, Any]:
+    return _normalize_action(
+        {
+            "type": "project_chat",
+            "label": "大模型动态执行",
+            "params": {"mode": "dynamic_task"},
+        },
+        fallback_type="project_chat",
+    )
+
+
+def _is_dynamic_project_chat_action(action: dict[str, Any]) -> bool:
+    if str(action.get("type") or "").strip().lower() != "project_chat":
+        return False
+    params = action.get("params") if isinstance(action.get("params"), dict) else {}
+    return str(params.get("mode") or "").strip() in {"", "dynamic_task"}
+
+
+def _actions_are_dynamic_project_chat(actions: list[dict[str, Any]]) -> bool:
+    return len(actions) == 1 and _is_dynamic_project_chat_action(actions[0])
+
+
+def _raw_task_has_event_listener(raw: dict[str, Any]) -> bool:
+    if bool(raw.get("listen_enabled", raw.get("listenEnabled", False))):
+        text = " ".join(str(item or "") for item in (raw.get("title"), raw.get("description")))
+        if any(term in text for term in ("监听", "收到", "飞书群", "群里", "消息")):
+            return True
+    if raw.get("trigger_phrases") or raw.get("triggerPhrases"):
+        return True
+    raw_triggers = raw.get("triggers") if isinstance(raw.get("triggers"), list) else []
+    return any(
+        isinstance(trigger, dict)
+        and str(trigger.get("type") or trigger.get("trigger_type") or "").strip().lower() == "event"
+        and bool(trigger.get("phrases") or trigger.get("trigger_phrases") or trigger.get("triggerPhrases"))
+        for trigger in raw_triggers
+    )
+
+
+def _system_speech_reminder_action(raw: dict[str, Any]) -> dict[str, Any] | None:
+    task_type = _normalize_task_type(raw.get("task_type") or raw.get("taskType"))
+    if task_type == "message_listener" or _raw_task_has_event_listener(raw):
+        return None
+    dynamic_actions = _infer_simple_reminder_dynamic_actions(raw)
+    if dynamic_actions:
+        first = dynamic_actions[0]
+        text = str(first.get("text") or "").strip()
+        repeat = int(first.get("repeat") or 1)
+    else:
+        text = _strip_simple_reminder_control_text(str(raw.get("description") or raw.get("title") or ""))
+        repeat = _extract_simple_reminder_repeat(
+            " ".join(str(item or "") for item in (raw.get("description"), raw.get("title")))
+        )
+    if not text:
+        return None
+    return _normalize_action(
+        {
+            "type": "system_speech",
+            "label": "系统播报",
+            "params": {
+                "text": text,
+                "repeat": max(1, min(int(repeat or 1), 10)),
+            },
+        },
+        fallback_type="system_speech",
+    )
+
+
+def _is_empty_task_module_speech_action(raw: dict[str, Any], actions: list[dict[str, Any]]) -> bool:
+    if str(raw.get("source") or "").strip() != "tasks-module":
+        return False
+    if len(actions) != 1:
+        return False
+    action = actions[0]
+    if str(action.get("type") or "").strip().lower() != "system_speech":
+        return False
+    params = action.get("params") if isinstance(action.get("params"), dict) else {}
+    return not str(params.get("text") or params.get("message") or "").strip()
 
 
 def _task_implies_system_speech(raw: dict[str, Any]) -> bool:
@@ -258,13 +463,40 @@ def _legacy_schedule_trigger(raw: dict[str, Any]) -> dict[str, Any] | None:
     )
 
 
-def _normalize_triggers(raw: dict[str, Any]) -> list[dict[str, Any]]:
+def _normalize_triggers(raw: dict[str, Any], *, base_time: datetime | None = None) -> list[dict[str, Any]]:
     raw_triggers = raw.get("triggers") if isinstance(raw.get("triggers"), list) else []
     triggers = [_normalize_trigger(item) for item in raw_triggers if isinstance(item, dict)]
     if not triggers:
         event_trigger = _legacy_event_trigger(raw)
         schedule_trigger = _legacy_schedule_trigger(raw)
         triggers = [item for item in (event_trigger, schedule_trigger) if item]
+    has_scheduled_time = any(
+        isinstance(trigger, dict)
+        and trigger.get("type") == "schedule"
+        and (
+            _parse_iso_datetime((trigger.get("schedule") if isinstance(trigger.get("schedule"), dict) else {}).get("next_run_at"))
+            or _parse_iso_datetime((trigger.get("schedule") if isinstance(trigger.get("schedule"), dict) else {}).get("run_at"))
+            or _normalize_interval_seconds((trigger.get("schedule") if isinstance(trigger.get("schedule"), dict) else {}).get("interval_seconds")) > 0
+        )
+        for trigger in triggers
+    )
+    inferred_run_at = None if has_scheduled_time else _infer_natural_schedule_time(raw, base_time=base_time)
+    if inferred_run_at is not None:
+        triggers.append(
+            _normalize_trigger(
+                {
+                    "type": "schedule",
+                    "enabled": True,
+                    "source": "natural-language",
+                    "schedule": {
+                        "run_at": inferred_run_at.isoformat(timespec="seconds"),
+                        "next_run_at": inferred_run_at.isoformat(timespec="seconds"),
+                        "interval_seconds": 0,
+                    },
+                },
+                fallback_type="schedule",
+            )
+        )
     if not triggers:
         triggers = [_normalize_trigger({"type": "manual", "enabled": True}, fallback_type="manual")]
     return triggers
@@ -275,17 +507,17 @@ def _normalize_actions(raw: dict[str, Any]) -> list[dict[str, Any]]:
     actions = [_normalize_action(item) for item in raw_actions if isinstance(item, dict)]
     if not actions and isinstance(raw.get("action"), dict):
         actions = [_normalize_action(raw.get("action"))]
+    reminder_action = _system_speech_reminder_action(raw)
+    if (
+        reminder_action
+        and _normalize_task_type(raw.get("task_type") or raw.get("taskType")) == "reminder"
+        and (not actions or _actions_are_default_record(actions) or _actions_are_dynamic_project_chat(actions))
+    ):
+        return [reminder_action]
+    if _is_empty_task_module_speech_action(raw, actions):
+        return [reminder_action] if reminder_action else [_dynamic_project_chat_action()]
     if (not actions or _actions_are_default_record(actions)) and _task_implies_system_speech(raw):
-        return [
-            _normalize_action(
-                {
-                    "type": "system_speech",
-                    "label": "后台语音提醒",
-                    "params": {"mode": "brief"},
-                },
-                fallback_type="system_speech",
-            )
-        ]
+        return [reminder_action] if reminder_action else [_dynamic_project_chat_action()]
     if not actions:
         actions = [_normalize_action({"type": "record", "label": "记录任务执行"})]
     return actions
@@ -318,7 +550,7 @@ def _normalize_task(raw_task: dict[str, Any] | None, *, username: str) -> dict[s
         task_id = f"task-{uuid.uuid4().hex[:12]}"
     created_at = str(raw.get("createdAt") or raw.get("created_at") or "").strip() or now
     updated_at = str(raw.get("updatedAt") or raw.get("updated_at") or "").strip() or now
-    triggers = _normalize_triggers(raw)
+    triggers = _normalize_triggers(raw, base_time=_parse_iso_datetime(created_at))
     actions = _normalize_actions(raw)
     trigger_phrases: list[str] = []
     listen_enabled = False
@@ -539,6 +771,38 @@ def _execute_actions(
         if not isinstance(action, dict) or not bool(action.get("enabled", True)):
             continue
         action_type = str(action.get("type") or "record").strip() or "record"
+        if action_type == "system_speech":
+            try:
+                speech_result = _enqueue_system_speech_action(task, action)
+            except Exception as exc:
+                logger.exception("failed to queue system speech reminder")
+                results.append(
+                    {
+                        "action_id": str(action.get("id") or "").strip(),
+                        "action_type": action_type,
+                        "status": "failed",
+                        "trigger_type": trigger_type,
+                        "message": str(exc).strip()[:200] or "系统提醒播报失败",
+                    }
+                )
+            else:
+                queued = bool(speech_result.get("queued"))
+                queued_count = int(speech_result.get("queued_count") or 1)
+                results.append(
+                    {
+                        "action_id": str(action.get("id") or "").strip(),
+                        "action_type": action_type,
+                        "status": "queued" if queued else "failed",
+                        "trigger_type": trigger_type,
+                        "message": (
+                            f"系统提醒已加入播报队列（{queued_count}次）"
+                            if queued
+                            else str(speech_result.get("reason") or "系统提醒播报未入队").strip()[:200]
+                        ),
+                        "queued_count": queued_count if queued else 0,
+                    }
+                )
+            continue
         if action_type == "project_chat" and is_feishu_auto_archive_action(action):
             try:
                 archive_result = archive_feishu_task_message(
@@ -581,6 +845,67 @@ def _execute_actions(
                     }
                 )
             continue
+        if action_type == "project_chat":
+            try:
+                dynamic_result = _execute_dynamic_project_chat_action(
+                    task,
+                    action,
+                    trigger_type=trigger_type,
+                    message_text=message_text,
+                    source_context=source_context,
+                )
+            except Exception as exc:
+                logger.exception("failed to execute dynamic global assistant task")
+                results.append(
+                    {
+                        "action_id": str(action.get("id") or "").strip(),
+                        "action_type": action_type,
+                        "status": "failed",
+                        "trigger_type": trigger_type,
+                        "message": str(exc).strip()[:200] or "动态任务执行失败",
+                    }
+                )
+            else:
+                status = str(dynamic_result.get("status") or "").strip() or "completed"
+                results.append(
+                    {
+                        "action_id": str(action.get("id") or "").strip(),
+                        "action_type": action_type,
+                        "status": status,
+                        "trigger_type": trigger_type,
+                        "message": str(dynamic_result.get("message") or "动态任务已执行").strip()[:200],
+                        "dynamic_action_count": dynamic_result.get("dynamic_action_count", 0),
+                    }
+                )
+            continue
+        if action_type == "feishu_message":
+            try:
+                from services.feishu_scheduled_reminder_service import send_feishu_scheduled_message
+
+                send_result = send_feishu_scheduled_message(task=task, action=action)
+            except Exception as exc:
+                logger.exception("failed to send feishu scheduled reminder")
+                results.append(
+                    {
+                        "action_id": str(action.get("id") or "").strip(),
+                        "action_type": action_type,
+                        "status": "failed",
+                        "trigger_type": trigger_type,
+                        "message": str(exc).strip()[:200] or "飞书定时提醒发送失败",
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "action_id": str(action.get("id") or "").strip(),
+                        "action_type": action_type,
+                        "status": str(send_result.get("status") or "sent").strip() or "sent",
+                        "trigger_type": trigger_type,
+                        "message": str(send_result.get("message") or "飞书定时提醒已发送").strip()[:200],
+                        "chat_id": send_result.get("chat_id") or "",
+                    }
+                )
+            continue
         status = "completed"
         if action_type in {"project_chat", "file_processing", "webhook", "system_speech"}:
             # The generic engine records intent and execution history here; concrete runners can be
@@ -606,6 +931,339 @@ def _execute_actions(
             }
         )
     return results
+
+
+def _extract_json_object(value: str) -> dict[str, Any]:
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S)
+    if fenced:
+        text = fenced.group(1).strip()
+    if not text.startswith("{"):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start : end + 1]
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_dynamic_actions(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_actions = plan.get("actions") if isinstance(plan.get("actions"), list) else []
+    result: list[dict[str, Any]] = []
+    for item in raw_actions:
+        if not isinstance(item, dict):
+            continue
+        action_type = str(item.get("type") or "").strip().lower()
+        if action_type not in {"system_speech"}:
+            continue
+        text = str(item.get("text") or item.get("message") or "").strip()
+        if not text:
+            continue
+        try:
+            repeat = int(item.get("repeat") or item.get("count") or 1)
+        except (TypeError, ValueError):
+            repeat = 1
+        result.append(
+            {
+                "type": action_type,
+                "text": text,
+                "repeat": max(1, min(repeat, 10)),
+            }
+        )
+    return result
+
+
+def _strip_simple_reminder_control_text(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    if "提醒：" in normalized:
+        normalized = normalized.split("提醒：", 1)[1]
+    elif "提醒:" in normalized:
+        normalized = normalized.split("提醒:", 1)[1]
+    normalized = re.sub(r"(?:共)?(?:提醒|播报|重复(?:执行)?|说)[0-9一二两三四五六七八九十两]+[次遍]", "", normalized)
+    normalized = re.sub(r"[，,。；;！!\s]+$", "", normalized).strip()
+    normalized = re.sub(r"^[，,。；;：:\s]+", "", normalized).strip()
+    return normalized
+
+
+def _extract_simple_reminder_repeat(text: str) -> int:
+    for match in re.finditer(
+        r"(?:共)?(?:提醒|播报|重复(?:执行)?|说)([0-9一二两三四五六七八九十两]+)[次遍]",
+        str(text or ""),
+    ):
+        parsed = _parse_chinese_number(match.group(1))
+        if parsed:
+            return max(1, min(parsed, 10))
+    return 1
+
+
+def _infer_simple_reminder_dynamic_actions(task: dict[str, Any], message_text: str = "") -> list[dict[str, Any]]:
+    text = " ".join(
+        str(item or "").strip()
+        for item in (message_text, task.get("description"), task.get("title"))
+        if str(item or "").strip()
+    )
+    if not text or not any(term in text for term in _SCHEDULE_INTENT_TERMS):
+        return []
+    if not (
+        str(task.get("task_type") or task.get("taskType") or "").strip().lower() == "reminder"
+        or _contains_system_speech_intent(text)
+        or "提醒" in text
+    ):
+        return []
+    repeat = _extract_simple_reminder_repeat(text)
+    candidates = [
+        _strip_simple_reminder_control_text(str(task.get("description") or "")),
+        _strip_simple_reminder_control_text(str(message_text or "")),
+        _strip_simple_reminder_control_text(str(task.get("title") or "")),
+    ]
+    speech_text = next((item for item in candidates if item), "")
+    if not speech_text:
+        return []
+    return [{"type": "system_speech", "text": speech_text, "repeat": repeat}]
+
+
+def _dynamic_task_chat_session_id(task: dict[str, Any]) -> str:
+    task_id = str(task.get("id") or "task").strip() or "task"
+    return f"chat-session-global-task-{task_id[:80]}"
+
+
+def _record_async_dynamic_action_result(
+    *,
+    username: str,
+    task_id: str,
+    action_id: str,
+    result: dict[str, Any],
+) -> None:
+    owner = _normalize_username(username)
+    target_id = str(task_id or "").strip()
+    target_action_id = str(action_id or "").strip()
+    if not target_id or not target_action_id:
+        return
+    with _TASK_LOCK:
+        payload = _read_payload()
+        tasks = [item for item in payload.get("tasks", []) if isinstance(item, dict)]
+        changed = False
+        for task in tasks:
+            if str(task.get("id") or task.get("task_id") or "").strip() != target_id:
+                continue
+            if _normalize_username(str(task.get("created_by") or task.get("createdBy") or owner)) != owner:
+                continue
+            history = task.get("execution_history") if isinstance(task.get("execution_history"), list) else []
+            for execution in reversed(history):
+                if not isinstance(execution, dict):
+                    continue
+                action_results = execution.get("action_results") if isinstance(execution.get("action_results"), list) else []
+                for action_result in action_results:
+                    if not isinstance(action_result, dict):
+                        continue
+                    if str(action_result.get("action_id") or "").strip() != target_action_id:
+                        continue
+                    if str(action_result.get("status") or "").strip().lower() != "queued":
+                        continue
+                    status = str(result.get("status") or "failed").strip().lower() or "failed"
+                    action_result["status"] = status
+                    action_result["message"] = str(result.get("message") or "").strip()[:500]
+                    action_result["dynamic_action_count"] = int(result.get("dynamic_action_count") or 0)
+                    execution["status"] = "failed" if status == "failed" else "completed"
+                    execution["finished_at"] = _now_iso()
+                    task["updated_at"] = execution["finished_at"]
+                    if status == "failed" and str(execution.get("trigger_type") or "") == "schedule":
+                        task["status"] = "todo"
+                        task["next_run_at"] = _format_datetime(datetime.now(timezone.utc) + timedelta(seconds=60))
+                    changed = True
+                    break
+                if changed:
+                    break
+            break
+        if changed:
+            payload["tasks"] = tasks
+            _write_payload(payload)
+
+
+def _execute_dynamic_project_chat_action(
+    task: dict[str, Any],
+    action: dict[str, Any],
+    *,
+    trigger_type: str,
+    message_text: str = "",
+    source_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    async def _run() -> dict[str, Any]:
+        from models.requests import ProjectChatReq
+        from routers import projects as projects_router
+        from services.project_chat_execution_service import run_project_chat_once
+        from services.system_speech_service import enqueue_system_speech
+
+        project_id = str(task.get("project_id") or "").strip()
+        username = _normalize_username(str(task.get("created_by") or "admin"))
+        if not project_id:
+            return {"status": "failed", "message": "动态任务缺少 project_id", "dynamic_action_count": 0}
+        if projects_router.project_store.get(project_id) is None:
+            return {"status": "failed", "message": f"项目不存在：{project_id}", "dynamic_action_count": 0}
+
+        chat_session_id = _dynamic_task_chat_session_id(task)
+        if projects_router.project_chat_store.get_session(project_id, username, chat_session_id) is None:
+            projects_router.project_chat_store.create_session(
+                project_id,
+                username,
+                f"动态任务：{str(task.get('title') or task.get('description') or '未命名任务')[:48]}",
+                source_context={"source_type": "global_assistant_task", "platform": "system"},
+                session_id=chat_session_id,
+            )
+
+        prompt = (
+            "你是全局助手的动态任务执行器。请理解任务定义和触发上下文，输出 JSON 执行计划，不要输出解释文字。\n"
+            "当前只允许使用这些安全动作：\n"
+            "- system_speech: 系统语音播报。字段：text（播报正文），repeat（重复次数，1-10）。\n"
+            "如果用户写“重复执行3次 / 重复3遍 / 说三次”，应把 repeat 设为 3，并把 text 设为真正要提醒的正文，"
+            "如果用户写“共提醒2次 / 提醒2次 / 播报2遍”，也应把 repeat 设为 2，"
+            "不要把“到时间提醒”“重复执行3次”等控制语句放进 text。\n"
+            "输出格式：{\"actions\":[{\"type\":\"system_speech\",\"text\":\"...\",\"repeat\":1}],\"summary\":\"...\"}\n\n"
+            f"任务标题：{task.get('title') or ''}\n"
+            f"任务定义：{task.get('description') or ''}\n"
+            f"触发类型：{trigger_type}\n"
+            f"触发消息：{message_text}\n"
+            f"上下文：{json.dumps(source_context or {}, ensure_ascii=False)[:2000]}"
+        )
+        params = action.get("params") if isinstance(action.get("params"), dict) else {}
+        req = ProjectChatReq(
+            message=prompt,
+            chat_session_id=chat_session_id,
+            chat_surface="global-assistant-task",
+            source_context={"source_type": "global_assistant_task", "task_id": str(task.get("id") or "")},
+            system_prompt="你只输出严格 JSON，不要 Markdown，不要解释。",
+            temperature=0.0,
+            max_tokens=800,
+            auto_use_tools=False,
+            task_tree_enabled=False,
+            task_tree_auto_generate=False,
+        )
+        result = await run_project_chat_once(
+            project_id=project_id,
+            username=username,
+            req=req,
+            auth_payload={"sub": username, "role": "admin", "roles": ["admin"]},
+            save_memory_snapshot=False,
+            publish_realtime=False,
+        )
+        plan = _extract_json_object(result.content)
+        dynamic_actions = _normalize_dynamic_actions(plan)
+        if not dynamic_actions:
+            return {
+                "status": "failed",
+                "message": "大模型未返回可执行动作",
+                "dynamic_action_count": 0,
+            }
+        executed_count = 0
+        for dynamic_action in dynamic_actions:
+            if dynamic_action["type"] != "system_speech":
+                continue
+            for _ in range(int(dynamic_action["repeat"])):
+                speech_result = await enqueue_system_speech(
+                    str(dynamic_action["text"]),
+                    owner_username=username,
+                    role_ids=params.get("role_ids") if isinstance(params.get("role_ids"), list) else ["admin"],
+                    source="global-assistant-dynamic-task",
+                    require_enabled=bool(params.get("require_enabled", True)),
+                )
+                if not bool(speech_result.get("queued")):
+                    return {
+                        "status": "failed",
+                        "message": str(speech_result.get("reason") or "系统播报未入队"),
+                        "dynamic_action_count": executed_count,
+                    }
+                executed_count += 1
+        summary = str(plan.get("summary") or "").strip()
+        return {
+            "status": "completed",
+            "message": summary or f"动态任务已执行 {executed_count} 个动作",
+            "dynamic_action_count": executed_count,
+        }
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_run())
+    future = loop.create_task(_run())
+
+    def _on_done(task_future: asyncio.Task[dict[str, Any]]) -> None:
+        try:
+            async_result = task_future.result()
+        except Exception as exc:
+            logger.exception("dynamic global assistant task failed")
+            async_result = {
+                "status": "failed",
+                "message": str(exc),
+                "dynamic_action_count": 0,
+            }
+        _record_async_dynamic_action_result(
+            username=str(task.get("created_by") or "admin"),
+            task_id=str(task.get("id") or ""),
+            action_id=str(action.get("id") or ""),
+            result=async_result,
+        )
+
+    future.add_done_callback(_on_done)
+    return {"status": "queued", "message": "动态任务已交给大模型执行", "dynamic_action_count": 0}
+
+
+def _enqueue_system_speech_action(task: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
+    params = action.get("params") if isinstance(action.get("params"), dict) else {}
+    text = str(
+        params.get("text")
+        or params.get("message")
+        or task.get("description")
+        or task.get("title")
+        or "提醒时间到了"
+    ).strip()
+    try:
+        repeat = int(params.get("repeat") or params.get("count") or 1)
+    except (TypeError, ValueError):
+        repeat = 1
+    repeat = max(1, min(repeat, 10))
+    role_ids = params.get("role_ids") if isinstance(params.get("role_ids"), list) else ["admin"]
+    require_enabled = bool(params.get("require_enabled", True))
+    if not text:
+        return {"queued": False, "reason": "语音内容为空"}
+    if require_enabled:
+        from services.system_speech_service import is_system_speech_allowed
+
+        allowed, reason = is_system_speech_allowed(
+            owner_username=str(task.get("created_by") or "").strip(),
+            role_ids=role_ids,
+        )
+        if not allowed:
+            return {"queued": False, "reason": reason}
+
+    async def _enqueue() -> dict[str, Any]:
+        from services.system_speech_service import enqueue_system_speech
+
+        last_result: dict[str, Any] = {"queued": True}
+        for _ in range(repeat):
+            last_result = await enqueue_system_speech(
+                text,
+                owner_username=str(task.get("created_by") or "").strip(),
+                role_ids=role_ids,
+                source="global-assistant-task",
+                require_enabled=False,
+            )
+            if not bool(last_result.get("queued")):
+                return {**last_result, "queued_count": 0}
+        return {**last_result, "queued_count": repeat}
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_enqueue())
+    loop.create_task(_enqueue())
+    return {"queued": True, "reason": "", "async": True, "queued_count": repeat}
 
 
 def _calculate_following_schedule(task: dict[str, Any], *, finished_at: datetime) -> str:
@@ -659,10 +1317,11 @@ def execute_global_assistant_task(
                 message_text=message_text,
                 source_context=source_context,
             )
+            has_failed_action = any(str(item.get("status") or "").strip().lower() == "failed" for item in action_results)
             execution_record = {
                 "id": f"run-{uuid.uuid4().hex[:12]}",
                 "trigger_type": str(trigger_type or "manual").strip() or "manual",
-                "status": "completed",
+                "status": "failed" if has_failed_action else "completed",
                 "started_at": now_iso,
                 "finished_at": _now_iso(),
                 "message": str(message_text or "").strip()[:500],
@@ -676,6 +1335,18 @@ def execute_global_assistant_task(
             task["updated_at"] = execution_record["finished_at"]
             if trigger_type == "schedule":
                 task["next_run_at"] = _calculate_following_schedule(task, finished_at=now)
+                if not task["next_run_at"] and has_failed_action:
+                    task["next_run_at"] = _format_datetime(now + timedelta(seconds=60))
+                elif not task["next_run_at"]:
+                    task["status"] = "done"
+                    for trigger in task.get("triggers") or []:
+                        if not isinstance(trigger, dict) or trigger.get("type") != "schedule":
+                            continue
+                        schedule = trigger.get("schedule") if isinstance(trigger.get("schedule"), dict) else {}
+                        if _normalize_interval_seconds(schedule.get("interval_seconds")) <= 0:
+                            schedule["next_run_at"] = ""
+                            schedule["run_at"] = ""
+                            trigger["schedule"] = schedule
             tasks[index] = task
             payload["tasks"] = tasks
             _write_payload(payload)

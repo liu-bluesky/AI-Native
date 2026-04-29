@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 _FEISHU_OPEN_API_BASE_URL = "https://open.feishu.cn"
 _ARCHIVE_STATE_LOCK = threading.RLock()
 _ARCHIVE_WORKFLOW = "feishu_bot_auto_archive_to_doc_table"
+_ARCHIVE_ATTACHMENT_TEXT_COLUMN = "图片/附件"
+_ARCHIVE_ATTACHMENT_COLUMN = "图片附件"
+_CLI_FIELD_ID_CACHE: dict[tuple[str, str, str], str] = {}
 _ARCHIVE_COLUMNS = (
     "归档时间",
     "类型",
@@ -32,11 +35,11 @@ _ARCHIVE_COLUMNS = (
     "负责人",
     "提出人",
     "来源群",
-    "图片/附件",
+    _ARCHIVE_ATTACHMENT_TEXT_COLUMN,
     "消息链接",
     "聊天记录",
 )
-_ARCHIVE_ATTACHMENT_COLUMN = "图片/附件"
+_ARCHIVE_BITABLE_COLUMNS = (*_ARCHIVE_COLUMNS, _ARCHIVE_ATTACHMENT_COLUMN)
 _BITABLE_ATTACHMENT_FIELD_TYPE = 17
 _LEGACY_ARCHIVE_COLUMNS = (
     "分类",
@@ -522,11 +525,15 @@ def _archive_openapi_field_spec(column: str) -> dict[str, Any]:
 
 
 def _archive_record_fields_for_bitable(fields: dict[str, Any]) -> dict[str, Any]:
-    return {column: fields.get(column, "") for column in _ARCHIVE_COLUMNS if column != _ARCHIVE_ATTACHMENT_COLUMN}
+    return {
+        column: fields.get(column, "")
+        for column in _ARCHIVE_COLUMNS
+        if column != _ARCHIVE_ATTACHMENT_COLUMN
+    }
 
 
 def _create_bitable_table(*, token: str, app_token: str, category: str) -> dict[str, Any]:
-    fields = [_archive_openapi_field_spec(column) for column in _ARCHIVE_COLUMNS]
+    fields = [_archive_openapi_field_spec(column) for column in _ARCHIVE_BITABLE_COLUMNS]
     data = _post_feishu_json(
         f"/open-apis/bitable/v1/apps/{app_token}/tables",
         token=token,
@@ -746,10 +753,17 @@ def _upload_cli_bitable_attachments(
     field_name: str = _ARCHIVE_ATTACHMENT_COLUMN,
 ) -> int:
     uploaded = 0
+    field_identifier = _resolve_cli_bitable_field_identifier(
+        app_token=app_token,
+        table_id=table_id,
+        field_name=field_name,
+    )
     for attachment in attachments:
         path = str(attachment.get("path") or "").strip()
         if not path:
             continue
+        file_path = Path(path)
+        relative_file = f"./{file_path.name}"
         command = [
             "base",
             "+record-upload-attachment",
@@ -762,13 +776,13 @@ def _upload_cli_bitable_attachments(
             "--record-id",
             record_id,
             "--field-id",
-            str(field_name or _ARCHIVE_ATTACHMENT_COLUMN).strip() or _ARCHIVE_ATTACHMENT_COLUMN,
+            field_identifier,
             "--file",
-            path,
+            relative_file,
         ]
         filename = str(attachment.get("filename") or "").strip()
         _append_optional_arg(command, "--name", filename)
-        _run_lark_cli_json(command, timeout=180)
+        _run_lark_cli_json(command, timeout=180, cwd=file_path.parent)
         uploaded += 1
     return uploaded
 
@@ -877,7 +891,7 @@ def _extract_cli_json(stdout: str) -> dict[str, Any]:
     return {"raw_output": text}
 
 
-def _run_lark_cli_json(args: list[str], *, timeout: int = 90) -> dict[str, Any]:
+def _run_lark_cli_json(args: list[str], *, timeout: int = 90, cwd: Path | str | None = None) -> dict[str, Any]:
     command = ["lark-cli", *args]
     try:
         completed = subprocess.run(
@@ -886,6 +900,7 @@ def _run_lark_cli_json(args: list[str], *, timeout: int = 90) -> dict[str, Any]:
             text=True,
             timeout=timeout,
             check=False,
+            cwd=str(cwd) if cwd is not None else None,
         )
     except FileNotFoundError as exc:
         raise RuntimeError("未找到 lark-cli，请先安装 @larksuite/cli 并重新启动服务") from exc
@@ -919,10 +934,15 @@ def _find_cli_path_value(payload: Any, paths: tuple[tuple[str, ...], ...]) -> st
     for path in paths:
         current = payload
         for key in path:
-            if not isinstance(current, dict):
-                current = None
-                break
-            current = current.get(key)
+            if isinstance(current, dict):
+                current = current.get(key)
+                continue
+            if isinstance(current, list) and str(key).isdigit():
+                index = int(key)
+                current = current[index] if 0 <= index < len(current) else None
+                continue
+            current = None
+            break
         if str(current or "").strip():
             return str(current).strip()
     return ""
@@ -941,15 +961,52 @@ def _find_cli_table_id(payload: dict[str, Any]) -> str:
 
 
 def _find_cli_record_id(payload: dict[str, Any]) -> str:
-    return _find_cli_path_value(
+    found = _find_cli_path_value(
         payload,
         (
             ("record", "record_id"),
             ("record", "id"),
+            ("record", "record_id_list", "0"),
+            ("records", "0", "record_id"),
+            ("records", "0", "id"),
             ("data", "record", "record_id"),
             ("data", "record", "id"),
+            ("data", "record", "record_id_list", "0"),
+            ("data", "record_id"),
+            ("data", "id"),
+            ("data", "records", "0", "record_id"),
+            ("data", "records", "0", "id"),
+            ("data", "data", "record", "record_id"),
+            ("data", "data", "record", "id"),
+            ("data", "data", "record", "record_id_list", "0"),
+            ("data", "data", "record_id"),
+            ("data", "data", "id"),
+            ("data", "data", "records", "0", "record_id"),
+            ("data", "data", "records", "0", "id"),
         ),
     ) or _find_cli_value(payload, ("record_id", "recordId"))
+    if found:
+        return found
+
+    def find_record_like_id(value: Any) -> str:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if str(key).lower() == "id":
+                    candidate = str(item or "").strip()
+                    if candidate.startswith("rec"):
+                        return candidate
+            for item in value.values():
+                candidate = find_record_like_id(item)
+                if candidate:
+                    return candidate
+        elif isinstance(value, list):
+            for item in value:
+                candidate = find_record_like_id(item)
+                if candidate:
+                    return candidate
+        return ""
+
+    return find_record_like_id(payload)
 
 
 def _append_optional_arg(command: list[str], flag: str, value: str) -> None:
@@ -973,21 +1030,76 @@ def _cli_field_type(value: Any) -> str:
     return raw
 
 
-def _extract_cli_fields(payload: dict[str, Any]) -> dict[str, str]:
+def _extract_cli_field_refs(payload: dict[str, Any]) -> dict[str, dict[str, str]]:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     raw_fields = data.get("fields") if isinstance(data, dict) else []
-    fields: dict[str, str] = {}
+    fields: dict[str, dict[str, str]] = {}
     if isinstance(raw_fields, list):
         for item in raw_fields:
             if isinstance(item, dict):
                 name = str(item.get("name") or item.get("field_name") or "").strip()
                 field_type = _cli_field_type(item.get("type") or item.get("ui_type") or item.get("uiType"))
+                field_id = str(item.get("id") or item.get("field_id") or item.get("fieldId") or "").strip()
             else:
                 name = str(item or "").strip()
                 field_type = ""
+                field_id = ""
             if name:
-                fields[name] = field_type
+                fields[name] = {"type": field_type, "id": field_id}
     return fields
+
+
+def _extract_cli_fields(payload: dict[str, Any]) -> dict[str, str]:
+    return {name: item.get("type", "") for name, item in _extract_cli_field_refs(payload).items()}
+
+
+def _cache_cli_field_refs(app_token: str, table_id: str, field_refs: dict[str, dict[str, str]]) -> None:
+    app = str(app_token or "").strip()
+    table = str(table_id or "").strip()
+    if not app or not table:
+        return
+    for name, item in field_refs.items():
+        field_id = str(item.get("id") or "").strip()
+        if name:
+            _CLI_FIELD_ID_CACHE[(app, table, name)] = field_id or name
+
+
+def _find_cli_field_id(payload: dict[str, Any]) -> str:
+    return _find_cli_path_value(
+        payload,
+        (
+            ("field", "id"),
+            ("field", "field_id"),
+            ("data", "field", "id"),
+            ("data", "field", "field_id"),
+            ("data", "id"),
+            ("data", "field_id"),
+        ),
+    ) or _find_cli_value(payload, ("field_id", "fieldId"))
+
+
+def _resolve_cli_bitable_field_identifier(*, app_token: str, table_id: str, field_name: str) -> str:
+    name = str(field_name or "").strip()
+    if not name:
+        return _ARCHIVE_ATTACHMENT_COLUMN
+    if name.startswith("fld"):
+        return name
+    cache_key = (str(app_token or "").strip(), str(table_id or "").strip(), name)
+    cached = _CLI_FIELD_ID_CACHE.get(cache_key, "")
+    if cached:
+        return cached
+    payload = _run_lark_cli_json([
+        "base",
+        "+field-list",
+        "--as",
+        "user",
+        "--base-token",
+        app_token,
+        "--table-id",
+        table_id,
+    ])
+    _cache_cli_field_refs(app_token, table_id, _extract_cli_field_refs(payload))
+    return _CLI_FIELD_ID_CACHE.get(cache_key, "") or name
 
 
 def _next_attachment_field_name(existing_fields: dict[str, str]) -> str:
@@ -1000,7 +1112,23 @@ def _next_attachment_field_name(existing_fields: dict[str, str]) -> str:
     return f"{preferred}{index}"
 
 
-def _ensure_cli_bitable_fields(*, app_token: str, table_id: str, columns: tuple[str, ...] = _ARCHIVE_COLUMNS) -> str:
+def _preferred_existing_attachment_field(existing_fields: dict[str, str]) -> str:
+    for name in (_ARCHIVE_ATTACHMENT_COLUMN, _ARCHIVE_ATTACHMENT_TEXT_COLUMN, "图片附件2", "附件", "图片"):
+        if existing_fields.get(name) == "attachment":
+            return name
+    for name, field_type in existing_fields.items():
+        if field_type == "attachment":
+            return name
+    return ""
+
+
+def _ensure_cli_bitable_fields(
+    *,
+    app_token: str,
+    table_id: str,
+    columns: tuple[str, ...] = _ARCHIVE_BITABLE_COLUMNS,
+    preferred_attachment_field_name: str = "",
+) -> str:
     payload = _run_lark_cli_json([
         "base",
         "+field-list",
@@ -1011,31 +1139,49 @@ def _ensure_cli_bitable_fields(*, app_token: str, table_id: str, columns: tuple[
         "--table-id",
         table_id,
     ])
-    existing_fields = _extract_cli_fields(payload)
-    attachment_field_name = _ARCHIVE_ATTACHMENT_COLUMN
+    field_refs = _extract_cli_field_refs(payload)
+    _cache_cli_field_refs(app_token, table_id, field_refs)
+    existing_fields = {name: item.get("type", "") for name, item in field_refs.items()}
+    preferred_attachment_field_name = str(preferred_attachment_field_name or "").strip()
+    canonical_attachment_field_name = _preferred_existing_attachment_field(existing_fields)
+    if canonical_attachment_field_name:
+        attachment_field_name = canonical_attachment_field_name
+    elif preferred_attachment_field_name and existing_fields.get(preferred_attachment_field_name) == "attachment":
+        attachment_field_name = preferred_attachment_field_name
+    else:
+        attachment_field_name = _ARCHIVE_ATTACHMENT_COLUMN
     for column in columns:
-        if column == _ARCHIVE_ATTACHMENT_COLUMN and column in existing_fields:
+        if column == _ARCHIVE_ATTACHMENT_COLUMN:
             if existing_fields.get(column) == "attachment":
                 attachment_field_name = column
-            else:
+                continue
+            if column in existing_fields:
+                attachment_field_name = _preferred_existing_attachment_field(existing_fields)
+                if attachment_field_name:
+                    continue
                 attachment_field_name = _next_attachment_field_name(existing_fields)
-                _run_lark_cli_json([
-                    "base",
-                    "+field-create",
-                    "--as",
-                    "user",
-                    "--base-token",
-                    app_token,
-                    "--table-id",
-                    table_id,
-                    "--json",
-                    json.dumps({"name": attachment_field_name, "type": "attachment"}, ensure_ascii=False),
-                ])
-                existing_fields[attachment_field_name] = "attachment"
+            else:
+                attachment_field_name = column
+            created_field_payload = _run_lark_cli_json([
+                "base",
+                "+field-create",
+                "--as",
+                "user",
+                "--base-token",
+                app_token,
+                "--table-id",
+                table_id,
+                "--json",
+                json.dumps({"name": attachment_field_name, "type": "attachment"}, ensure_ascii=False),
+            ])
+            existing_fields[attachment_field_name] = "attachment"
+            field_id = _find_cli_field_id(created_field_payload)
+            if field_id:
+                _CLI_FIELD_ID_CACHE[(app_token, table_id, attachment_field_name)] = field_id
             continue
         if column in existing_fields:
             continue
-        _run_lark_cli_json([
+        created_field_payload = _run_lark_cli_json([
             "base",
             "+field-create",
             "--as",
@@ -1048,6 +1194,9 @@ def _ensure_cli_bitable_fields(*, app_token: str, table_id: str, columns: tuple[
             json.dumps(_archive_cli_field_spec(column), ensure_ascii=False),
         ])
         existing_fields[column] = _archive_cli_field_spec(column)["type"]
+        field_id = _find_cli_field_id(created_field_payload)
+        if field_id:
+            _CLI_FIELD_ID_CACHE[(app_token, table_id, column)] = field_id
     return attachment_field_name
 
 
@@ -1169,14 +1318,18 @@ def _write_cli_bitable_archive(
             "--name",
             category[:100] or "归档",
             "--fields",
-            json.dumps([_archive_cli_field_spec(column) for column in _ARCHIVE_COLUMNS], ensure_ascii=False),
+            json.dumps([_archive_cli_field_spec(column) for column in _ARCHIVE_BITABLE_COLUMNS], ensure_ascii=False),
         ])
         table_id = _find_cli_table_id(table_payload)
         created = True
     if not table_id:
         raise RuntimeError("缺少 table_id，无法通过 lark-cli 追加多维表格记录")
     if had_existing_table:
-        attachment_field_name = _ensure_cli_bitable_fields(app_token=app_token, table_id=table_id)
+        attachment_field_name = _ensure_cli_bitable_fields(
+            app_token=app_token,
+            table_id=table_id,
+            preferred_attachment_field_name=attachment_field_name,
+        )
     record_fields = _archive_record_fields_for_bitable(fields)
     record_payload = _run_lark_cli_json([
         "base",
@@ -1200,6 +1353,11 @@ def _write_cli_bitable_archive(
             record_id=record_id,
             attachments=attachments,
             field_name=attachment_field_name,
+        )
+    elif attachments:
+        logger.warning(
+            "skip feishu bitable attachment upload because record_id was not found",
+            extra={"table_id": table_id, "attachment_count": len(attachments)},
         )
     return {
         "app_token": app_token,
@@ -1452,6 +1610,8 @@ def archive_feishu_task_message(
         "sheet_id": str(record.get("sheet_id") or ""),
         "table_id": str(record.get("table_id") or ""),
         "record_id": str(record.get("record_id") or ""),
+        "attachment_upload_count": int(record.get("last_attachment_upload_count") or 0),
+        "attachment_field_name": str(record.get("attachment_field_name") or ""),
         "message": f"已保存到：{document_title}",
         "client_token": f"archive-{uuid.uuid4().hex[:12]}",
     }
@@ -1507,7 +1667,11 @@ def append_feishu_archive_attachments(
 
         if writer_mode == "lark_cli_user":
             if local_files:
-                attachment_field_name = _ensure_cli_bitable_fields(app_token=app_token, table_id=table_id)
+                attachment_field_name = _ensure_cli_bitable_fields(
+                    app_token=app_token,
+                    table_id=table_id,
+                    preferred_attachment_field_name=attachment_field_name,
+                )
                 uploaded_count = _upload_cli_bitable_attachments(
                     app_token=app_token,
                     table_id=table_id,

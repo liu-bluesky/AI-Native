@@ -9,6 +9,7 @@ import logging
 import mimetypes
 import os
 import re
+import subprocess
 import uuid
 from email.message import Message
 from pathlib import Path
@@ -19,11 +20,7 @@ import requests
 
 try:
     import lark_oapi as lark
-    from lark_oapi.api.im.v1 import (
-        P2ImMessageReceiveV1,
-        ReplyMessageRequest,
-        ReplyMessageRequestBody,
-    )
+    from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 except ModuleNotFoundError as exc:
     lark = None
     P2ImMessageReceiveV1 = Any
@@ -46,6 +43,7 @@ from services.global_assistant_task_service import (
     list_global_assistant_tasks,
     process_global_assistant_tasks_for_event,
 )
+from services.feishu_scheduled_reminder_service import create_feishu_meeting_reminder_task
 from services.system_speech_service import enqueue_system_speech
 
 logger = logging.getLogger(__name__)
@@ -283,6 +281,32 @@ def _download_feishu_message_resource(
         ),
         "content_type": content_type,
     }
+
+
+def _cleanup_downloaded_feishu_resources(resources: list[dict[str, str]]) -> None:
+    root = _feishu_resource_root().resolve()
+    touched_dirs: list[Path] = []
+    for item in resources:
+        raw_path = str(item.get("path") or "").strip()
+        if not raw_path:
+            continue
+        try:
+            path = Path(raw_path).resolve()
+            if root not in path.parents or not path.is_file():
+                continue
+            touched_dirs.append(path.parent)
+            path.unlink()
+        except Exception:
+            logger.warning("failed to cleanup downloaded feishu resource: %s", raw_path, exc_info=True)
+
+    for directory in sorted(set(touched_dirs), key=lambda value: len(value.parts), reverse=True):
+        current = directory
+        while root in current.parents:
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
 
 
 def _get_feishu_tenant_access_token(connector: dict[str, Any]) -> str:
@@ -754,6 +778,16 @@ def _build_feishu_task_listener_speech_text(
     return f"{source_label}有新事项，机器人已回复，请查看。"
 
 
+def _build_feishu_meeting_reminder_reply(result: dict[str, Any] | None) -> str:
+    payload = result if isinstance(result, dict) else {}
+    status = str(payload.get("status") or "").strip()
+    if status == "created":
+        return str(payload.get("message") or "").strip() or "已创建会议提醒，到点会通知本群。"
+    if status == "ambiguous":
+        return str(payload.get("message") or "").strip() or "要创建会议提醒还缺少具体时间，请补充日期和时间。"
+    return ""
+
+
 def _build_feishu_archive_truth_prompt(connector: dict[str, Any], source_context: dict[str, Any]) -> str:
     bot_name = str(connector.get("agent_name") or connector.get("name") or "当前机器人").strip() or "当前机器人"
     group_name = str(source_context.get("external_chat_name") or source_context.get("group_name") or "当前飞书群").strip() or "当前飞书群"
@@ -765,6 +799,63 @@ def _build_feishu_archive_truth_prompt(connector: dict[str, Any], source_context
         "如果消息中提到图片或附件但系统没有提供可访问链接，应在结构化内容中标记图片/附件待补充，不能编造链接。"
         "除非系统工具已经明确返回创建/追加飞书文档成功，否则禁止回复“已归档”“已保存”“已写入”“保存到”。"
         "如果只是识别并整理了字段，只能回复“已整理为待归档记录”，并说明尚未写入群文档。"
+    )
+
+
+def _normalize_feishu_reply_identity(connector: dict[str, Any]) -> str:
+    value = str(connector.get("reply_identity") or "bot").strip().lower()
+    return value if value in {"bot", "user"} else "bot"
+
+
+def _repo_root_from_service() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _resolve_feishu_skill_resource_directory(project_id: str, projects_router: Any) -> str:
+    workspace_path = ""
+    try:
+        project = projects_router.project_store.get(project_id)
+        workspace_path = str(getattr(project, "workspace_path", "") or "").strip()
+    except Exception:
+        workspace_path = ""
+    roots = []
+    if workspace_path:
+        roots.append(Path(workspace_path) / "skills")
+    repo_root = _repo_root_from_service()
+    roots.extend([repo_root / "skills", repo_root / ".ai-employee" / "skills" / "host-marketplace"])
+    for root in roots:
+        if root.exists():
+            return str(root)
+    return ""
+
+
+def _build_feishu_agent_workflow_prompt(
+    connector: dict[str, Any],
+    source_context: dict[str, Any],
+    *,
+    skill_resource_directory: str,
+) -> str:
+    identity = _normalize_feishu_reply_identity(connector)
+    identity_label = "当前登录用户 user identity" if identity == "user" else "机器人 bot identity"
+    skill_hint = (
+        f"本地 lark-cli 技能目录：{skill_resource_directory}。"
+        if skill_resource_directory
+        else "如果可访问本地 skills/lark-* 目录，先读取相关 SKILL.md。"
+    )
+    return (
+        "飞书机器人通用工作流约束："
+        "长连接收到消息后，不按单个任务写死分支处理；先由大模型结合当前机器人提示词、项目上下文、飞书来源上下文和历史消息理解用户意图，"
+        "再决定是直接回复、追问澄清、生成项目任务/文档、调用项目工具，还是通过 lark-cli 操作飞书资源。"
+        f"{skill_hint}"
+        "凡涉及飞书命令、消息、文档、表格、多维表格、日历、任务等操作，应优先参考对应 lark-* 技能说明，"
+        "并通过可用的 project_host_run_command 执行 lark-cli，而不是臆造 API 参数。"
+        "你只生成需要回到飞书的最终回复内容；不要在模型执行过程中自行调用 lark-cli im +messages-reply 或 +messages-send 发送最终回复，"
+        f"最终回复由系统统一通过 lark-cli im +messages-reply 发送，当前配置发送身份为：{identity_label}。"
+        "如果要执行写入、发送外部通知、删除、部署或其他高风险操作，必须输出待确认方案或草稿，不得直接越权执行。"
+        f"当前飞书来源：connector_id={source_context.get('connector_id') or '-'}，"
+        f"chat_id={source_context.get('external_chat_id') or '-'}，"
+        f"chat_name={source_context.get('external_chat_name') or '-'}，"
+        f"message_id={source_context.get('external_message_id') or '-'}。"
     )
 
 
@@ -945,32 +1036,55 @@ async def _reply_feishu_text(
     content: str,
     reply_in_thread: bool = False,
 ) -> None:
-    _require_feishu_sdk()
-    client = (
-        lark.Client.builder()
-        .app_id(str(connector.get("app_id") or "").strip())
-        .app_secret(str(connector.get("app_secret") or "").strip())
-        .build()
+    await asyncio.to_thread(
+        _reply_feishu_text_with_lark_cli,
+        connector,
+        message_id=message_id,
+        content=content,
+        reply_in_thread=reply_in_thread,
     )
-    request = (
-        ReplyMessageRequest.builder()
-        .message_id(message_id)
-        .request_body(
-            ReplyMessageRequestBody.builder()
-            .content(json.dumps({"text": _build_feishu_reply_text(content)}, ensure_ascii=False))
-            .msg_type("text")
-            .reply_in_thread(bool(reply_in_thread))
-            .uuid(uuid.uuid4().hex[:32])
-            .build()
+
+
+def _reply_feishu_text_with_lark_cli(
+    connector: dict[str, Any],
+    *,
+    message_id: str,
+    content: str,
+    reply_in_thread: bool = False,
+) -> None:
+    normalized_message_id = str(message_id or "").strip()
+    if not normalized_message_id:
+        raise RuntimeError("缺少飞书 message_id，无法回复")
+    command = [
+        "lark-cli",
+        "im",
+        "+messages-reply",
+        "--message-id",
+        normalized_message_id,
+        "--text",
+        _build_feishu_reply_text(content),
+        "--as",
+        _normalize_feishu_reply_identity(connector),
+        "--idempotency-key",
+        f"feishu-reply-{normalized_message_id}",
+    ]
+    if reply_in_thread:
+        command.append("--reply-in-thread")
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
         )
-        .build()
-    )
-    response = await asyncio.to_thread(client.im.v1.message.reply, request)
-    if not response.success():
-        raise RuntimeError(
-            f"reply feishu message failed, code={response.code}, msg={response.msg}, "
-            f"log_id={response.get_log_id()}"
-        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("未找到 lark-cli，请先安装 @larksuite/cli 并重新启动服务") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("lark-cli 回复飞书消息超时，请检查飞书授权或网络状态") from exc
+    if completed.returncode != 0:
+        output = (completed.stderr or completed.stdout or "").strip()[:800]
+        raise RuntimeError(f"lark-cli 回复飞书消息失败：{output}")
 
 
 async def process_feishu_message_event(connector_id: str, event: P2ImMessageReceiveV1) -> None:
@@ -1126,7 +1240,7 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
             else:
                 assistant_text = "已接收图片并合并到最近的飞书归档记录。"
         elif image_urls:
-            assistant_text = "已接收图片，已保存到本地，等待可匹配的飞书归档记录。"
+            assistant_text = "已接收图片，已完成临时处理；当前没有可匹配的飞书归档记录。"
         else:
             assistant_text = "已接收飞书非文本消息，暂未生成可归档链接。"
         assistant_record = projects_router._append_chat_record(
@@ -1151,6 +1265,7 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
             message="当前飞书群已链接工作群",
             source_context=source_context,
         )
+        _cleanup_downloaded_feishu_resources(downloaded_resources)
         return
 
     recent_image_urls = _recent_feishu_image_urls(previous_messages, source_context)
@@ -1158,6 +1273,7 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         _merge_source_image_urls(source_context, recent_image_urls)
 
     auth_payload = {"sub": username, "role": "admin", "roles": ["admin"]}
+    skill_resource_directory = _resolve_feishu_skill_resource_directory(project_id, projects_router)
     req = ProjectChatReq(
         message=text_message,
         message_id=message_id,
@@ -1171,12 +1287,18 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
             item
             for item in (
                 str(connector.get("system_prompt") or "").strip(),
+                _build_feishu_agent_workflow_prompt(
+                    connector,
+                    source_context,
+                    skill_resource_directory=skill_resource_directory,
+                ),
                 _build_feishu_archive_truth_prompt(connector, source_context),
             )
             if item
         ),
         source_context=source_context,
         images=image_urls,
+        skill_resource_directory=skill_resource_directory,
     )
     result = await run_project_chat_once(
         project_id=project_id,
@@ -1206,6 +1328,16 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
     matched_tasks = process_global_assistant_tasks_for_event(
         username=username,
         project_id=project_id,
+        message_text=text_message,
+        source_context=source_context,
+    )
+    meeting_reminder_result = create_feishu_meeting_reminder_task(
+        username=username,
+        project_id=project_id,
+        connector=connector,
+        connector_id=connector_id,
+        chat_id=chat_id,
+        message_id=message_id,
         message_text=text_message,
         source_context=source_context,
     )
@@ -1243,6 +1375,8 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
                 },
             )
     reply_content = (
+        _build_feishu_meeting_reminder_reply(meeting_reminder_result)
+        or
         _build_confirmed_archive_reply(matched_tasks)
         or _build_failed_archive_reply(matched_tasks)
         or _downgrade_unconfirmed_archive_reply(result.content, matched_tasks)
@@ -1253,3 +1387,4 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         content=reply_content,
         reply_in_thread=bool(thread_id),
     )
+    _cleanup_downloaded_feishu_resources(downloaded_resources)

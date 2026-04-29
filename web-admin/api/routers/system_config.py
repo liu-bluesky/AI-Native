@@ -554,6 +554,7 @@ async def patch_system_config(
         "voice_output_provider_id",
         "voice_output_model_name",
         "voice_output_voice",
+        "voice_output_reminder_volume",
         "global_assistant_enabled",
         "global_assistant_greeting_enabled",
         "global_assistant_greeting_text",
@@ -679,6 +680,15 @@ async def patch_system_config(
 
     if "voice_output_voice" in updates:
         updates["voice_output_voice"] = str(updates["voice_output_voice"] or "").strip()[:200]
+
+    if "voice_output_reminder_volume" in updates:
+        try:
+            value = int(updates["voice_output_reminder_volume"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "voice_output_reminder_volume must be an integer") from exc
+        if value < 0 or value > 100:
+            raise HTTPException(400, "voice_output_reminder_volume must be between 0 and 100")
+        updates["voice_output_reminder_volume"] = value
 
     if "global_assistant_greeting_text" in updates:
         updates["global_assistant_greeting_text"] = (
@@ -923,6 +933,7 @@ async def patch_system_config(
         "voice_output_provider_id",
         "voice_output_model_name",
         "voice_output_voice",
+        "voice_output_reminder_volume",
         "global_assistant_greeting_enabled",
         "global_assistant_greeting_text",
         "global_assistant_system_prompt",

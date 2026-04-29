@@ -4175,6 +4175,15 @@ async function tryHandleTaskCreationCommand(text, options = {}) {
     title: buildTaskTitle(taskInput.description),
     description: taskInput.description,
     source: "global-assistant",
+    task_type: "workflow",
+    actions: [
+      {
+        type: "project_chat",
+        enabled: true,
+        label: "大模型动态执行",
+        params: { mode: "dynamic_task" },
+      },
+    ],
   });
   try {
     if (String(route.path || "").trim() !== "/tasks") {

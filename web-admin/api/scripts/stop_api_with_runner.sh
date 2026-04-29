@@ -43,51 +43,59 @@ if [[ "${1:-}" == "-f" || "${1:-}" == "--force" ]]; then
 fi
 
 api_pid_on_port() {
-  lsof -tiTCP:"${API_PORT}" -sTCP:LISTEN 2>/dev/null | head -n 1
+  lsof -tiTCP:"${API_PORT}" -sTCP:LISTEN 2>/dev/null || true
 }
 
 api_pid_by_cmd() {
-  pgrep -f "uvicorn server:app" 2>/dev/null || true
+  pgrep -f "${API_DIR}.*uvicorn server:app" 2>/dev/null || true
 }
 
 feishu_worker_pids_for_connector() {
   local connector_id="$1"
-  pgrep -f "feishu_long_connection_worker.py --connector-id ${connector_id}" 2>/dev/null || true
+  pgrep -f "${API_DIR}/scripts/feishu_long_connection_worker.py --connector-id ${connector_id}" 2>/dev/null || true
 }
 
-stop_feishu_pid() {
-  local pid="$1"
+start_script_pids() {
+  pgrep -f "${API_DIR}/scripts/start_api_with_runner.sh" 2>/dev/null || true
+}
+
+unique_pids() {
+  awk 'NF && !seen[$1]++ { print $1 }'
+}
+
+stop_pid() {
+  local label="$1"
+  local pid="$2"
   if [[ -z "${pid}" ]]; then
     return 0
   fi
-  echo "[feishu-worker] stopping process (pid: ${pid})..."
-  kill "${pid}" 2>/dev/null || true
-  if [[ "${FORCE}" == "1" ]]; then
-    sleep 0.5
-    if kill -0 "${pid}" 2>/dev/null; then
-      echo "[feishu-worker] forcing shutdown (pid: ${pid})..."
-      kill -9 "${pid}" 2>/dev/null || true
-    fi
+  if ! kill -0 "${pid}" 2>/dev/null; then
     return 0
   fi
+  echo "[${label}] stopping process (pid: ${pid})..."
+  kill "${pid}" 2>/dev/null || true
   for _ in $(seq 1 10); do
     if ! kill -0 "${pid}" 2>/dev/null; then
-      echo "[feishu-worker] stopped"
+      echo "[${label}] stopped"
       return 0
     fi
     sleep 0.3
   done
-  echo "[feishu-worker] did not exit after SIGTERM, forcing shutdown (pid: ${pid})..."
+  if [[ "${FORCE}" != "1" ]]; then
+    echo "[${label}] did not exit after SIGTERM, forcing shutdown (pid: ${pid})..."
+  else
+    echo "[${label}] forcing shutdown (pid: ${pid})..."
+  fi
   kill -9 "${pid}" 2>/dev/null || true
   for _ in $(seq 1 10); do
     if ! kill -0 "${pid}" 2>/dev/null; then
-      echo "[feishu-worker] stopped"
+      echo "[${label}] stopped"
       return 0
     fi
     sleep 0.2
   done
-  echo "[feishu-worker] failed to stop pid ${pid}"
-  return 1
+  echo "[${label}] pid ${pid} still appears alive after SIGKILL; continuing final verification"
+  return 0
 }
 
 stop_feishu_workers() {
@@ -105,73 +113,75 @@ stop_feishu_workers() {
     local pid
     for pid in ${pids}; do
       found=1
-      stop_feishu_pid "${pid}"
+      stop_pid "feishu-worker" "${pid}"
     done
     rm -f "${API_RUNTIME_DIR}/pids/feishu-worker-${connector_id}.pid" 2>/dev/null || true
   done
   return 0
 }
 
+stop_start_scripts() {
+  local pids=""
+  pids="$(start_script_pids | unique_pids || true)"
+  if [[ -z "${pids}" ]]; then
+    return 0
+  fi
+  local pid
+  for pid in ${pids}; do
+    [[ "${pid}" == "$$" ]] && continue
+    stop_pid "runner" "${pid}"
+  done
+}
+
+api_pids() {
+  {
+    api_pid_on_port
+    api_pid_by_cmd
+  } | unique_pids
+}
+
 stop_api() {
-  local pid="${1:-}"
-  if [[ -z "${pid}" ]]; then
+  local pids=""
+  pids="$(api_pids || true)"
+  if [[ -z "${pids}" ]]; then
     echo "[api] no API process found"
     return 0
   fi
+  local pid
+  for pid in ${pids}; do
+    stop_pid "api" "${pid}"
+  done
+}
 
-  echo "[api] stopping process (pid: ${pid})..."
-  kill "${pid}" 2>/dev/null || true
-
-  if [[ "${FORCE}" == "1" ]]; then
-    sleep 0.5
-    if kill -0 "${pid}" 2>/dev/null; then
-      echo "[api] forcing shutdown (pid: ${pid})..."
-      kill -9 "${pid}" 2>/dev/null || true
-    fi
-  else
-    for _ in $(seq 1 10); do
-      if ! kill -0 "${pid}" 2>/dev/null; then
-        echo "[api] stopped"
-        return 0
-      fi
-      sleep 0.5
-    done
-    echo "[api] did not exit after SIGTERM, use -f to force"
+verify_stopped() {
+  local remaining_api=""
+  local remaining_workers=""
+  remaining_api="$(api_pids || true)"
+  local connector_id
+  for connector_id in ${FEISHU_WORKER_CONNECTOR_IDS//,/ }; do
+    connector_id="${connector_id//[[:space:]]/}"
+    [[ -z "${connector_id}" ]] && continue
+    remaining_workers+=$'\n'"$(feishu_worker_pids_for_connector "${connector_id}" || true)"
+  done
+  remaining_workers="$(printf "%s\n" "${remaining_workers}" | unique_pids || true)"
+  if [[ -n "${remaining_api}" || -n "${remaining_workers}" ]]; then
+    echo "[stop] remaining project processes detected:" >&2
+    [[ -n "${remaining_api}" ]] && echo "[stop] api pids: ${remaining_api}" >&2
+    [[ -n "${remaining_workers}" ]] && echo "[stop] feishu worker pids: ${remaining_workers}" >&2
     return 1
   fi
-
-  if kill -0 "${pid}" 2>/dev/null; then
-    echo "[api] failed to stop pid ${pid}"
-    return 1
-  else
-    echo "[api] stopped"
-  fi
+  return 0
 }
 
 echo "=== Stopping API and Feishu workers ==="
 echo ""
 
-API_PID=""
-
-# Find API process
-API_PID_BY_PORT="$(api_pid_on_port || true)"
-API_PID_BY_CMD="$(api_pid_by_cmd || true)"
-
-if [[ -n "${API_PID_BY_PORT}" ]]; then
-  API_PID="${API_PID_BY_PORT}"
-  echo "[api] found on port ${API_PORT} (pid: ${API_PID})"
-elif [[ -n "${API_PID_BY_CMD}" ]]; then
-  API_PID="${API_PID_BY_CMD}"
-  echo "[api] found by command (pid: ${API_PID})"
-fi
-
-# Stop Feishu workers first so no new events enter while API is stopping.
+stop_start_scripts
 stop_feishu_workers
-
-# Stop API
-if [[ -n "${API_PID}" ]]; then
-  stop_api "${API_PID}"
-fi
+stop_api
+# API supervisor can spawn workers too, so run worker cleanup again after API stops.
+stop_feishu_workers
+verify_stopped
 
 echo ""
 echo "=== API and Feishu workers stopped ==="

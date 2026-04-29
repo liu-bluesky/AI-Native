@@ -427,163 +427,79 @@
                   :items="memoryOverviewItems"
                   variant="accent"
                 />
-                <div v-if="requirementRecords.length" class="memory-health-shell">
+                <div class="memory-health-shell">
                   <div class="memory-health-shell__head">
                     <div>
-                      <div class="block-eyebrow">Action Queue</div>
-                      <h5>待处理事项</h5>
+                      <h5>需求记录筛选</h5>
                     </div>
-                    <p>这里不再只做分类统计，直接给出继续处理、重建任务树和清空入口。</p>
+                    <div class="memory-health-shell__summary">
+                      <el-tag size="small" effect="plain" type="info">
+                        当前结果 {{ requirementRecords.length }} 条
+                      </el-tag>
+                      <span>{{ memoryWindowHint }}</span>
+                    </div>
+                  </div>
+                  <div class="memory-filters memory-filters--in-health">
+                    <el-input
+                      class="memory-filter-control memory-filter-control--search"
+                      v-model="memoryFilters.query"
+                      clearable
+                      placeholder="按需求记录关键词筛选"
+                      @keyup.enter="applyMemoryFilters"
+                    />
+                    <el-select
+                      class="memory-filter-control memory-filter-control--employee"
+                      v-model="memoryFilters.employeeId"
+                      clearable
+                      filterable
+                      placeholder="全部员工"
+                    >
+                      <el-option
+                        v-for="item in members"
+                        :key="item.employee_id"
+                        :label="`${item.employee_name || item.employee_id} (${item.employee_id})`"
+                        :value="item.employee_id"
+                      />
+                    </el-select>
+                    <el-select
+                      class="memory-filter-control memory-filter-control--limit"
+                      v-model="memoryFilters.limit"
+                    >
+                      <el-option
+                        v-for="size in memoryLimitOptions"
+                        :key="size"
+                        :label="`最近 ${size} 条`"
+                        :value="size"
+                      />
+                    </el-select>
+                    <div class="memory-filters__actions">
+                      <el-button
+                        type="primary"
+                        size="small"
+                        :loading="taskSessionsLoading"
+                        @click="applyMemoryFilters"
+                        >刷新</el-button
+                      >
+                      <el-button
+                        plain
+                        size="small"
+                        :loading="memoryLoading || workSessionLoading"
+                        @click="exportProjectMemories"
+                        >导出</el-button
+                      >
+                      <el-button
+                        v-if="hasActiveRequirementRecordFilters"
+                        size="small"
+                        :disabled="taskSessionsLoading"
+                        @click="resetMemoryFilters"
+                        >重置</el-button
+                      >
+                    </div>
                   </div>
                   <ProjectWorkspaceMetricStrip
                     :items="taskActionOverviewItems"
                   />
-                  <div v-if="taskActionItems.length" class="memory-health-grid">
-                    <article
-                      v-for="item in taskActionItems"
-                      :key="item.key"
-                      class="memory-health-highlight"
-                      :class="`is-${item.tone}`"
-                    >
-                      <div class="memory-health-highlight__head">
-                        <div>
-                          <div class="memory-health-highlight__eyebrow">
-                            {{ item.eyebrow }}
-                          </div>
-                          <h6>{{ item.title }}</h6>
-                        </div>
-                        <el-tag size="small" effect="plain" :type="item.tagType">
-                          {{ item.label }}
-                        </el-tag>
-                      </div>
-                      <p>{{ item.summary }}</p>
-                      <div class="memory-health-highlight__meta">
-                        <span>{{ item.progress }}</span>
-                        <span>{{ item.focus }}</span>
-                      </div>
-                      <div class="memory-health-highlight__actions">
-                        <el-button plain size="small" @click="focusRequirementRecord(item.record)">
-                          定位需求
-                        </el-button>
-                        <el-button
-                          v-if="item.canContinue"
-                          type="primary"
-                          plain
-                          size="small"
-                          @click="openProjectChat(item.round.chatSessionId)"
-                        >
-                          继续处理
-                        </el-button>
-                        <el-button
-                          v-if="canManageProject && item.canRebuildTaskTree"
-                          type="warning"
-                          plain
-                          size="small"
-                          :loading="isRequirementRecordTaskTreeRegenerating(item.record)"
-                          @click="handleRegenerateRequirementRecordTaskTree(item.record)"
-                        >
-                          重建任务树
-                        </el-button>
-                        <el-button
-                          v-if="canManageProject && item.canClearTaskTree"
-                          plain
-                          size="small"
-                          :loading="isRequirementRecordTaskTreeClearing(item.record)"
-                          @click="handleClearRequirementRecordTaskTree(item.record)"
-                        >
-                          清空任务树
-                        </el-button>
-                        <el-button
-                          v-if="canManageProject"
-                          type="danger"
-                          plain
-                          size="small"
-                          :loading="requirementRecordDeleting"
-                          @click="handleDeleteRequirementRecord(item.record)"
-                        >
-                          删除整条
-                        </el-button>
-                      </div>
-                    </article>
-                  </div>
-                  <el-empty
-                    v-else
-                    description="当前没有需要手动处理的需求"
-                    :image-size="56"
-                  />
                 </div>
-                <ProjectWorkspaceToolbar
-                  description="这里按“需求主记录 + 计划节点 + 进展记录”统一展示。未完成的需求只显示计划和状态，全部完成并验证后才显示最终结论。"
-                  :hint="memoryWindowHint"
-                  variant="panel"
-                >
-                  <template #controls>
-                    <div class="memory-filters">
-                      <el-input
-                        class="memory-filter-control memory-filter-control--search"
-                        v-model="memoryFilters.query"
-                        clearable
-                        placeholder="按内容关键词筛选"
-                        @keyup.enter="applyMemoryFilters"
-                      />
-                      <el-select
-                        class="memory-filter-control memory-filter-control--employee"
-                        v-model="memoryFilters.employeeId"
-                        clearable
-                        filterable
-                        placeholder="全部员工"
-                      >
-                        <el-option
-                          v-for="item in members"
-                          :key="item.employee_id"
-                          :label="`${item.employee_name || item.employee_id} (${item.employee_id})`"
-                          :value="item.employee_id"
-                        />
-                      </el-select>
-                      <el-select
-                        class="memory-filter-control memory-filter-control--type"
-                        v-model="memoryFilters.type"
-                        clearable
-                        placeholder="全部类型"
-                      >
-                        <el-option
-                          v-for="item in memoryTypeOptions"
-                          :key="item.value"
-                          :label="item.label"
-                          :value="item.value"
-                        />
-                      </el-select>
-                      <el-select
-                        class="memory-filter-control memory-filter-control--limit"
-                        v-model="memoryFilters.limit"
-                      >
-                        <el-option
-                          v-for="size in memoryLimitOptions"
-                          :key="size"
-                          :label="`最近 ${size} 条`"
-                          :value="size"
-                        />
-                      </el-select>
-                      <div class="memory-filters__actions">
-                        <el-button
-                          type="primary"
-                          :loading="taskSessionsLoading"
-                          @click="applyMemoryFilters"
-                          >刷新结果</el-button
-                        >
-                        <el-button
-                          plain
-                          :loading="memoryLoading || workSessionLoading"
-                          @click="exportProjectMemories"
-                          >导出</el-button
-                        >
-                        <el-button :disabled="taskSessionsLoading" @click="resetMemoryFilters"
-                          >重置</el-button
-                        >
-                      </div>
-                    </div>
-                  </template>
-                </ProjectWorkspaceToolbar>
                 <ProjectWorkspaceToolbar
                   v-if="canManageProject"
                   variant="compact"
@@ -1890,8 +1806,6 @@ const requirementNodeDetailLoading = ref(false);
 const requirementRoundTaskTreeLoadingMap = ref({});
 const workSessionDetailLoading = ref(false);
 const requirementRecordDeleting = ref(false);
-const requirementRecordTaskTreeClearingMap = ref({});
-const requirementRecordTaskTreeRegeneratingMap = ref({});
 const requirementRecordsLoaded = ref(false);
 const projectUsersPage = ref(1);
 const projectUsersPageSize = ref(10);
@@ -1933,7 +1847,6 @@ const INTERNAL_AUTO_QUERY_RESULT_TOOL_TAGS = new Set([
 const memoryFilters = ref({
   query: "",
   employeeId: "",
-  type: "",
   limit: 20,
 });
 
@@ -1988,8 +1901,6 @@ function resetProjectScopedState() {
   selectedRequirementRecordIds.value = [];
   expandedRequirementRecordId.value = "";
   requirementRoundTaskTreeLoadingMap.value = {};
-  requirementRecordTaskTreeClearingMap.value = {};
-  requirementRecordTaskTreeRegeneratingMap.value = {};
   requirementRecordsLoaded.value = false;
   tabDataLoaded.value = {
     overview: false,
@@ -2189,27 +2100,7 @@ const memberNameMap = computed(() => {
   return result;
 });
 
-const memoryTypeOptions = computed(() => {
-  const rawTypes = Array.from(
-    new Set(
-      (visibleProjectMemories.value || [])
-        .map((item) => String(item.type || "").trim())
-        .filter(Boolean),
-    ),
-  );
-  return rawTypes.map((type) => ({
-    value: type,
-    label: MEMORY_TYPE_LABELS[type] || type,
-  }));
-});
-
-const filteredMemoryRows = computed(() => {
-  const selectedType = String(memoryFilters.value.type || "").trim();
-  if (!selectedType) return enrichedProjectMemories.value || [];
-  return (enrichedProjectMemories.value || []).filter(
-    (item) => String(item.type || "").trim() === selectedType,
-  );
-});
+const filteredMemoryRows = computed(() => enrichedProjectMemories.value || []);
 
 const visibleRequirementRecordIds = computed(() =>
   (requirementRecords.value || [])
@@ -2327,7 +2218,6 @@ const derivedRequirementRecords = computed(() => {
 
   const query = String(memoryFilters.value.query || "").trim().toLowerCase();
   const selectedEmployeeId = String(memoryFilters.value.employeeId || "").trim();
-  const selectedType = String(memoryFilters.value.type || "").trim();
 
   return Array.from(grouped.entries())
     .map(([chainId, rounds]) => {
@@ -2364,13 +2254,6 @@ const derivedRequirementRecords = computed(() => {
           ]),
         ),
       ).filter(Boolean);
-      const memoryTypes = Array.from(
-        new Set(
-          sortedRounds
-            .map((item) => String(item.primaryMemory?.type || "").trim())
-            .filter(Boolean),
-        ),
-      );
       return {
         id: chainId,
         rootGoal: currentRound?.rootGoal || latestRound?.rootGoal || "",
@@ -2384,7 +2267,6 @@ const derivedRequirementRecords = computed(() => {
         activeRoundCount: sortedRounds.filter(
           (item) => !item.isFinalized && !isRequirementRoundPlaceholder(item),
         ).length,
-        memoryTypes,
         status: String(currentRound?.displayStatus || latestRound?.displayStatus || "pending").trim(),
         statusLabel: getTaskSessionStatusLabel(currentRound?.displayStatus || latestRound?.displayStatus),
         statusTagType: getTaskSessionStatusTagType(currentRound?.displayStatus || latestRound?.displayStatus),
@@ -2417,9 +2299,6 @@ const derivedRequirementRecords = computed(() => {
       };
     })
     .filter((record) => {
-      if (selectedType && !record.memoryTypes.includes(selectedType)) {
-        return false;
-      }
       if (selectedEmployeeId) {
         const hasEmployee = record.rounds.some((round) => {
           if (String(round.primaryMemory?.employee_id || "").trim() === selectedEmployeeId) {
@@ -2671,35 +2550,6 @@ const taskActionOverviewItems = computed(() => {
     },
   ];
 });
-
-const taskActionItems = computed(() =>
-  taskHealthEntries.value
-    .filter((item) => item.health.state !== "archived")
-    .slice()
-    .sort((left, right) => {
-      if (left.health.priority !== right.health.priority) {
-        return left.health.priority - right.health.priority;
-      }
-      return String(right.round.updatedAt || "").localeCompare(String(left.round.updatedAt || ""));
-    })
-    .slice(0, 6)
-    .map((item) => ({
-      key: item.key,
-      record: item.record,
-      round: item.round,
-      tone: item.health.tone,
-      tagType: item.health.tagType,
-      label: item.health.label,
-      eyebrow: item.record.roundDigest || "当前轮次",
-      title: item.record.rootGoal || item.record.currentFocus || "未命名任务链",
-      summary: item.health.summary,
-      progress: item.record.progressDigest || "暂无节点进度",
-      focus: item.record.currentFocus || "等待进入计划节点",
-      canContinue: Boolean(String(item.round.chatSessionId || "").trim()),
-      canClearTaskTree: canClearRequirementRecordTaskTree(item.record),
-      canRebuildTaskTree: canRegenerateRequirementRecordTaskTree(item.record),
-    })),
-);
 
 watch(
   requirementRecords,
@@ -3506,8 +3356,7 @@ const experienceConsolidateDialogDescription = computed(() => {
 const hasActiveRequirementRecordFilters = computed(() =>
   Boolean(
     String(memoryFilters.value.query || "").trim()
-    || String(memoryFilters.value.employeeId || "").trim()
-    || String(memoryFilters.value.type || "").trim(),
+    || String(memoryFilters.value.employeeId || "").trim(),
   ),
 );
 
@@ -4130,65 +3979,6 @@ function openRequirementRecordDetail(record) {
   openRequirementRoundDetail(targetRound);
 }
 
-function getRequirementRecordActionRound(record) {
-  return record?.detailRound || record?.currentRound || record?.latestRound || null;
-}
-
-function getRequirementRecordActionKey(record) {
-  const round = getRequirementRecordActionRound(record);
-  return String(record?.id || round?.sessionId || round?.chatSessionId || "").trim();
-}
-
-function getRequirementRecordActionChatSessionId(record) {
-  const round = getRequirementRecordActionRound(record);
-  return String(round?.chatSessionId || "").trim();
-}
-
-function getRequirementRecordActionRootGoal(record) {
-  const round = getRequirementRecordActionRound(record);
-  return String(record?.rootGoal || round?.rootGoal || "").trim();
-}
-
-function canClearRequirementRecordTaskTree(record) {
-  return Boolean(getRequirementRecordActionChatSessionId(record));
-}
-
-function canRegenerateRequirementRecordTaskTree(record) {
-  return Boolean(
-    getRequirementRecordActionChatSessionId(record)
-    && getRequirementRecordActionRootGoal(record),
-  );
-}
-
-function isRequirementRecordTaskTreeClearing(record) {
-  const actionKey = getRequirementRecordActionKey(record);
-  return Boolean(actionKey) && Boolean(requirementRecordTaskTreeClearingMap.value?.[actionKey]);
-}
-
-function isRequirementRecordTaskTreeRegenerating(record) {
-  const actionKey = getRequirementRecordActionKey(record);
-  return Boolean(actionKey) && Boolean(requirementRecordTaskTreeRegeneratingMap.value?.[actionKey]);
-}
-
-function pruneRequirementRecordTaskTreeDetails(record) {
-  const nextDetails = { ...(projectTaskTreeDetails.value || {}) };
-  for (const round of Array.isArray(record?.rounds) ? record.rounds : []) {
-    const sessionId = String(round?.sessionId || round?.id || "").trim();
-    if (sessionId) {
-      delete nextDetails[sessionId];
-    }
-  }
-  projectTaskTreeDetails.value = nextDetails;
-}
-
-function focusRequirementRecord(record) {
-  const recordId = String(record?.id || "").trim();
-  if (!recordId) return;
-  expandedRequirementRecordId.value = recordId;
-  const target = document.getElementById(`requirement-record-${recordId}`);
-  target?.scrollIntoView({ behavior: "smooth", block: "center" });
-}
-
 function isRequirementRoundTaskTreeLoading(round) {
   const sessionId = String(round?.sessionId || round?.id || "").trim();
   return Boolean(sessionId) && Boolean(requirementRoundTaskTreeLoadingMap.value?.[sessionId]);
@@ -4384,13 +4174,11 @@ async function fetchRequirementRecords(targetProjectId = projectId.value) {
   try {
     const query = String(memoryFilters.value.query || "").trim();
     const selectedEmployeeId = String(memoryFilters.value.employeeId || "").trim();
-    const selectedType = String(memoryFilters.value.type || "").trim();
     const data = await api.get(`/projects/${effectiveProjectId}/requirement-records`, {
       params: {
         limit: PROJECT_TASK_SESSION_FETCH_LIMIT,
         query: query || undefined,
         employee_id: selectedEmployeeId || undefined,
-        memory_type: selectedType || undefined,
       },
     });
     if (effectiveProjectId !== projectId.value) return;
@@ -5088,95 +4876,6 @@ async function refreshRequirementRecords() {
   await ensureMemoryTabData(projectId.value, { force: true });
 }
 
-async function handleClearRequirementRecordTaskTree(record) {
-  if (!canManageProject.value) {
-    ElMessage.warning(manageBlockedMessage());
-    return;
-  }
-  const chatSessionId = getRequirementRecordActionChatSessionId(record);
-  if (!chatSessionId) {
-    ElMessage.warning("当前需求没有可清空的任务树会话");
-    return;
-  }
-  try {
-    await ElMessageBox.confirm(
-      "清空后只会删除当前 chat_session 对应的任务树，需求记录本身仍会保留，后续可以重新生成。是否继续？",
-      "清空任务树",
-      {
-        type: "warning",
-        confirmButtonText: "清空",
-      },
-    );
-  } catch {
-    return;
-  }
-  const actionKey = getRequirementRecordActionKey(record);
-  requirementRecordTaskTreeClearingMap.value = {
-    ...requirementRecordTaskTreeClearingMap.value,
-    [actionKey]: true,
-  };
-  try {
-    await api.delete(`/projects/${projectId.value}/chat/task-tree`, {
-      params: { chat_session_id: chatSessionId },
-    });
-    pruneRequirementRecordTaskTreeDetails(record);
-    ElMessage.success("已清空任务树");
-    await refreshRequirementRecords();
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "清空任务树失败");
-  } finally {
-    const nextMap = { ...(requirementRecordTaskTreeClearingMap.value || {}) };
-    delete nextMap[actionKey];
-    requirementRecordTaskTreeClearingMap.value = nextMap;
-  }
-}
-
-async function handleRegenerateRequirementRecordTaskTree(record) {
-  if (!canManageProject.value) {
-    ElMessage.warning(manageBlockedMessage());
-    return;
-  }
-  const chatSessionId = getRequirementRecordActionChatSessionId(record);
-  const rootGoal = getRequirementRecordActionRootGoal(record);
-  if (!chatSessionId || !rootGoal) {
-    ElMessage.warning("当前需求缺少 chat_session_id 或根目标，无法重建任务树");
-    return;
-  }
-  try {
-    await ElMessageBox.confirm(
-      "会基于当前需求重新生成任务树，并覆盖现有节点结构。适合处理分类错乱、空挂或重建建议场景。",
-      "重建任务树",
-      {
-        type: "warning",
-        confirmButtonText: "重建",
-      },
-    );
-  } catch {
-    return;
-  }
-  const actionKey = getRequirementRecordActionKey(record);
-  requirementRecordTaskTreeRegeneratingMap.value = {
-    ...requirementRecordTaskTreeRegeneratingMap.value,
-    [actionKey]: true,
-  };
-  try {
-    await api.post(`/projects/${projectId.value}/chat/task-tree/generate`, {
-      chat_session_id: chatSessionId,
-      message: rootGoal,
-      force: true,
-    });
-    pruneRequirementRecordTaskTreeDetails(record);
-    ElMessage.success("已重建任务树");
-    await refreshRequirementRecords();
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "重建任务树失败");
-  } finally {
-    const nextMap = { ...(requirementRecordTaskTreeRegeneratingMap.value || {}) };
-    delete nextMap[actionKey];
-    requirementRecordTaskTreeRegeneratingMap.value = nextMap;
-  }
-}
-
 async function deleteRequirementRecords(recordIds, successLabel = "需求记录") {
   const normalizedIds = [...new Set(
     (Array.isArray(recordIds) ? recordIds : [])
@@ -5284,7 +4983,6 @@ async function resetMemoryFilters() {
   memoryFilters.value = {
     query: "",
     employeeId: "",
-    type: "",
     limit: 20,
   };
   await applyMemoryFilters();
@@ -6548,13 +6246,11 @@ onBeforeUnmount(() => {
 }
 
 .memory-health-shell {
-  margin-bottom: 16px;
-  padding: 18px;
+  margin-bottom: 12px;
+  padding: 12px;
   border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at top left, rgba(125, 211, 252, 0.12), transparent 30%),
-    rgba(248, 250, 252, 0.8);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.82);
 }
 
 .memory-health-shell__head {
@@ -6562,103 +6258,36 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .memory-health-shell__head h5 {
-  margin: 8px 0 0;
+  margin: 0;
   color: #0f172a;
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1.3;
 }
 
-.memory-health-shell__head p {
-  margin: 0;
-  max-width: 30ch;
+.memory-health-shell__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 48ch;
   color: #64748b;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 1.5;
   text-align: right;
 }
 
-.memory-health-highlight {
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.78);
-}
-.memory-health-highlight__eyebrow {
-  font-size: 11px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #7c8aa0;
-}
-
-.memory-health-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.memory-health-highlight {
-  padding: 16px;
-}
-
-.memory-health-highlight.is-warning {
-  border-color: rgba(245, 158, 11, 0.2);
-}
-
-.memory-health-highlight.is-danger {
-  border-color: rgba(239, 68, 68, 0.18);
-}
-
-.memory-health-highlight.is-info {
-  border-color: rgba(56, 189, 248, 0.16);
-}
-
-.memory-health-highlight__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.memory-health-highlight__head h6 {
-  margin: 8px 0 0;
-  color: #0f172a;
-  font-size: 16px;
-  line-height: 1.4;
-}
-
-.memory-health-highlight p {
-  margin: 12px 0 0;
-  color: #475569;
-  line-height: 1.65;
-}
-
-.memory-health-highlight__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.memory-health-highlight__meta span {
-  display: inline-flex;
+.memory-filters--in-health {
   align-items: center;
-  min-height: 32px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: rgba(248, 250, 252, 0.9);
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.memory-health-highlight__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .memory-filter-control {
@@ -6670,11 +6299,7 @@ onBeforeUnmount(() => {
 }
 
 .memory-filter-control--employee {
-  flex: 1 1 240px;
-}
-
-.memory-filter-control--type {
-  flex: 0 1 180px;
+  flex: 0.8 1 220px;
 }
 
 .memory-filter-control--limit {
@@ -6683,7 +6308,7 @@ onBeforeUnmount(() => {
 
 .memory-filters__actions {
   display: flex;
-  flex: 1 1 260px;
+  flex: 0 1 220px;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
@@ -7502,15 +7127,6 @@ code {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .memory-health-strip,
-  .memory-health-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .memory-health-highlight__actions :deep(.el-button) {
-    flex: 1 1 calc(50% - 4px);
-  }
-
   .requirement-record-toolbar__copy,
   .requirement-record-toolbar__actions {
     width: 100%;
@@ -7605,21 +7221,10 @@ code {
     flex-direction: column;
   }
 
-  .memory-health-shell__head p {
+  .memory-health-shell__summary {
+    justify-content: flex-start;
     max-width: none;
     text-align: left;
-  }
-
-  .memory-health-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .memory-health-highlight__actions {
-    flex-direction: column;
-  }
-
-  .memory-health-highlight__actions :deep(.el-button) {
-    width: 100%;
   }
 
   .memory-filter-control,

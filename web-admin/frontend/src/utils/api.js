@@ -3,6 +3,32 @@ import axios from 'axios'
 import { clearAuthSession } from './auth-storage.js'
 
 const api = axios.create({ baseURL: '/api' })
+const AUTH_PUBLIC_PATHS = new Set(['/init', '/intro', '/market', '/updates', '/login', '/register'])
+
+function normalizeHashPath(hash) {
+  return String(hash || '#/intro')
+    .replace(/^#/, '')
+    .split('?')[0]
+    .split('#')[0]
+    .trim() || '/intro'
+}
+
+function redirectToLogin() {
+  if (typeof window === 'undefined') return
+  const loginHash = '#/login'
+  try {
+    const targetWindow = window.parent && window.parent !== window ? window.parent : window
+    const currentPath = normalizeHashPath(targetWindow.location.hash)
+    if (!AUTH_PUBLIC_PATHS.has(currentPath)) {
+      targetWindow.location.hash = loginHash
+    }
+  } catch {
+    const currentPath = normalizeHashPath(window.location.hash)
+    if (!AUTH_PUBLIC_PATHS.has(currentPath)) {
+      window.location.hash = loginHash
+    }
+  }
+}
 
 function normalizeApiError(err) {
   const responseData = err?.response?.data
@@ -47,11 +73,7 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       clearAuthSession()
-      const currentPath = String(window.location.hash || '#/intro').replace(/^#/, '') || '/intro'
-      const publicPaths = new Set(['/intro', '/market', '/updates', '/login', '/register'])
-      if (!publicPaths.has(currentPath)) {
-        window.location.hash = '#/login'
-      }
+      redirectToLogin()
     }
     return Promise.reject(normalizeApiError(err))
   },

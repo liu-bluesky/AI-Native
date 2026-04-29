@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import io
 import json
+import logging
 import mimetypes
 import re
 import shlex
@@ -23,6 +24,7 @@ from collections.abc import AsyncIterator
 from tempfile import NamedTemporaryFile
 from typing import Any
 from urllib.parse import quote, urlencode, urlparse
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
@@ -32,6 +34,8 @@ import asyncio
 from services.agent_orchestrator import AgentOrchestrator
 from services.conversation_manager import ConversationManager
 from core.redis_client import get_redis_client
+
+logger = logging.getLogger(__name__)
 
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
 from core.auth import decode_token
@@ -62,6 +66,8 @@ from services.project_voice_service import get_project_voice_service
 from services.system_speech_service import enqueue_system_speech
 from services.global_assistant_task_service import (
     delete_global_assistant_task,
+    _infer_natural_schedule_time,
+    _parse_iso_datetime,
     list_global_assistant_tasks,
     update_global_assistant_task,
     upsert_global_assistant_task,
@@ -6026,7 +6032,13 @@ def _serialize_project_user_member(member: ProjectUserMember) -> dict[str, Any]:
     }
 
 
-_PROJECT_CHAT_SOURCE_TYPES = {"group_message", "private_message", "manual_ai_chat", "group_analysis"}
+_PROJECT_CHAT_SOURCE_TYPES = {
+    "group_message",
+    "private_message",
+    "manual_ai_chat",
+    "group_analysis",
+    "global_assistant_task",
+}
 _PROJECT_CHAT_PLATFORM_ALIASES = {
     "lark": "feishu",
     "飞书": "feishu",
@@ -7408,6 +7420,286 @@ async def list_global_assistant_task_items(
     return {"tasks": tasks}
 
 
+def _extract_global_task_classifier_json(value: str) -> dict[str, Any]:
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S)
+    if fenced:
+        text = fenced.group(1).strip()
+    if not text.startswith("{"):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start : end + 1]
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_classifier_task_type(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"generic", "reminder", "message_listener", "file_processing", "workflow"} else ""
+
+
+_CLASSIFIER_RECURRING_SCHEDULE_TERMS = (
+    "每天",
+    "每日",
+    "天天",
+    "每隔",
+    "每周",
+    "每月",
+    "每年",
+    "周期",
+    "定期",
+    "daily",
+    "weekly",
+    "monthly",
+)
+
+
+def _normalize_classifier_interval_seconds(value: Any, *, base_task: dict[str, Any], plan: dict[str, Any]) -> int:
+    try:
+        interval_seconds = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    if interval_seconds <= 0:
+        return 0
+    text = " ".join(
+        str(item or "").strip().lower()
+        for item in (
+            base_task.get("title"),
+            base_task.get("description"),
+            plan.get("summary"),
+        )
+        if str(item or "").strip()
+    )
+    if not any(term in text for term in _CLASSIFIER_RECURRING_SCHEDULE_TERMS):
+        return 0
+    return min(interval_seconds, 31_536_000)
+
+
+def _resolve_classifier_schedule_time(base_task: dict[str, Any], merged: dict[str, Any], plan: dict[str, Any]) -> str:
+    text = " ".join(
+        str(item or "").strip().lower()
+        for item in (
+            base_task.get("title"),
+            base_task.get("description"),
+            merged.get("title"),
+            merged.get("description"),
+            plan.get("summary"),
+        )
+        if str(item or "").strip()
+    )
+    if not any(term in text for term in _CLASSIFIER_RECURRING_SCHEDULE_TERMS):
+        return ""
+    task_for_local_parse = {
+        **base_task,
+        "title": merged.get("title") or base_task.get("title") or "",
+        "description": merged.get("description") or base_task.get("description") or "",
+        "task_type": plan.get("task_type") or plan.get("taskType") or merged.get("task_type") or base_task.get("task_type") or "",
+    }
+    base_time = _parse_iso_datetime(base_task.get("created_at") or base_task.get("createdAt"))
+    resolved = _infer_natural_schedule_time(task_for_local_parse, base_time=base_time)
+    return resolved.isoformat(timespec="seconds") if resolved is not None else ""
+
+
+def _merge_global_task_classifier_result(base_task: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    if not plan:
+        return base_task
+    merged = dict(base_task)
+    task_type = _normalize_classifier_task_type(plan.get("task_type") or plan.get("taskType"))
+    if task_type:
+        merged["task_type"] = task_type
+    title = str(plan.get("title") or "").strip()
+    if title:
+        merged["title"] = title[:60]
+    description = str(plan.get("description") or "").strip()
+    if description:
+        merged["description"] = description
+
+    triggers: list[dict[str, Any]] = []
+    raw_triggers = plan.get("triggers") if isinstance(plan.get("triggers"), list) else []
+    locally_resolved_schedule_time = _resolve_classifier_schedule_time(base_task, merged, plan)
+    for raw_trigger in raw_triggers:
+        if not isinstance(raw_trigger, dict):
+            continue
+        trigger_type = str(raw_trigger.get("type") or "").strip().lower()
+        if trigger_type == "schedule":
+            schedule = raw_trigger.get("schedule") if isinstance(raw_trigger.get("schedule"), dict) else {}
+            run_at = str(
+                raw_trigger.get("run_at")
+                or raw_trigger.get("runAt")
+                or schedule.get("run_at")
+                or schedule.get("runAt")
+                or ""
+            ).strip()
+            next_run_at = str(
+                raw_trigger.get("next_run_at")
+                or raw_trigger.get("nextRunAt")
+                or schedule.get("next_run_at")
+                or schedule.get("nextRunAt")
+                or run_at
+                or ""
+            ).strip()
+            if run_at or next_run_at or schedule.get("interval_seconds") or schedule.get("intervalSeconds"):
+                interval_seconds = _normalize_classifier_interval_seconds(
+                    schedule.get("interval_seconds") or schedule.get("intervalSeconds"),
+                    base_task=base_task,
+                    plan=plan,
+                )
+                if locally_resolved_schedule_time:
+                    run_at = locally_resolved_schedule_time
+                    next_run_at = locally_resolved_schedule_time
+                triggers.append(
+                    {
+                        "type": "schedule",
+                        "enabled": raw_trigger.get("enabled", True) is not False,
+                        "source": "llm-classifier",
+                        "schedule": {
+                            "run_at": run_at,
+                            "next_run_at": next_run_at or run_at,
+                            "interval_seconds": interval_seconds,
+                        },
+                    }
+                )
+        elif trigger_type == "event":
+            phrases = [
+                str(item or "").strip()
+                for item in (raw_trigger.get("phrases") or raw_trigger.get("trigger_phrases") or [])
+                if str(item or "").strip()
+            ]
+            if phrases:
+                triggers.append(
+                    {
+                        "type": "event",
+                        "enabled": raw_trigger.get("enabled", True) is not False,
+                        "source": str(raw_trigger.get("source") or "feishu").strip() or "feishu",
+                        "phrases": phrases,
+                    }
+                )
+    if triggers:
+        existing_event_triggers = [
+            item
+            for item in (base_task.get("triggers") if isinstance(base_task.get("triggers"), list) else [])
+            if isinstance(item, dict) and str(item.get("type") or "").strip().lower() == "event"
+        ]
+        merged["triggers"] = [*existing_event_triggers, *triggers]
+        if any(item.get("type") == "schedule" for item in triggers):
+            first_schedule = next(item for item in triggers if item.get("type") == "schedule")
+            schedule = first_schedule.get("schedule") if isinstance(first_schedule.get("schedule"), dict) else {}
+            merged["next_run_at"] = str(schedule.get("next_run_at") or schedule.get("run_at") or "").strip()
+
+    # Creation-time classification decides the type and triggers. Execution remains dynamic by default.
+    if not merged.get("actions"):
+        merged["actions"] = [
+            {
+                "type": "project_chat",
+                "enabled": True,
+                "label": "大模型动态执行",
+                "params": {"mode": "dynamic_task"},
+            }
+        ]
+    merged["classification"] = {
+        "source": "llm",
+        "summary": str(plan.get("summary") or "").strip()[:240],
+    }
+    return merged
+
+
+async def _classify_global_assistant_task_creation(
+    task: dict[str, Any],
+    *,
+    auth_payload: dict,
+) -> dict[str, Any]:
+    description = str(task.get("description") or task.get("title") or "").strip()
+    if not description:
+        return task
+    try:
+        from services.llm_provider_service import get_llm_provider_service
+
+        now_local = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是任务创建分类器。只输出严格 JSON，不要 Markdown。"
+                    "把用户的自然语言任务描述结构化为任务类型、触发器和动作意图。"
+                    "时间必须输出 ISO 8601，带 +08:00 时区；没有明确时间就不要编造 schedule。"
+                    "允许 task_type: generic, reminder, message_listener, file_processing, workflow。"
+                    "默认动作使用 project_chat 动态执行，除非用户明确要求固定记录。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "now": now_local,
+                        "timezone": "Asia/Shanghai",
+                        "task": {
+                            "title": task.get("title") or "",
+                            "description": description,
+                            "source": task.get("source") or "",
+                            "task_type": task.get("task_type") or task.get("taskType") or "",
+                        },
+                        "output_schema": {
+                            "title": "短标题",
+                            "description": "原始或整理后的任务描述",
+                            "task_type": "reminder|message_listener|file_processing|workflow|generic",
+                            "triggers": [
+                                {
+                                    "type": "schedule",
+                                    "enabled": True,
+                                    "schedule": {
+                                        "run_at": "2026-04-27T14:21:00+08:00",
+                                        "next_run_at": "2026-04-27T14:21:00+08:00",
+                                        "interval_seconds": 0,
+                                    },
+                                }
+                            ],
+                            "summary": "分类依据",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        runtime_settings = _normalize_project_chat_settings({})
+        resolved_runtime = await _resolve_global_assistant_chat_runtime(runtime_settings, auth_payload)
+        if resolved_runtime.provider_mode == "local_connector":
+            connector = _resolve_accessible_local_connector_for_llm(
+                resolved_runtime.connector_id,
+                auth_payload,
+            )
+            if connector is None:
+                return task
+            result = await chat_completion_via_connector(
+                connector,
+                model_name=resolved_runtime.model_name,
+                messages=messages,
+                temperature=0.0,
+                max_tokens=900,
+                timeout=20,
+            )
+        else:
+            llm_service = get_llm_provider_service()
+            result = await llm_service.chat_completion(
+                resolved_runtime.provider_id,
+                resolved_runtime.model_name,
+                messages,
+                temperature=0.0,
+                max_tokens=900,
+                timeout=20,
+            )
+        plan = _extract_global_task_classifier_json(str(result.get("content") or ""))
+        return _merge_global_task_classifier_result(task, plan)
+    except Exception as exc:
+        logger.info("global assistant task creation classification skipped: %s", exc)
+        return task
+
+
 @router.post("/chat/global/tasks")
 async def upsert_global_assistant_task_item(
     req: GlobalAssistantTaskReq,
@@ -7419,10 +7711,14 @@ async def upsert_global_assistant_task_item(
     if not description:
         raise HTTPException(400, "description is required")
     try:
+        task_payload = await _classify_global_assistant_task_creation(
+            req.model_dump(),
+            auth_payload=auth_payload,
+        )
         task = upsert_global_assistant_task(
             username=_current_username(auth_payload),
             project_id=str(x_project_id or "").strip(),
-            task=req.model_dump(),
+            task=task_payload,
         )
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc

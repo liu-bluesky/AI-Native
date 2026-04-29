@@ -24,7 +24,7 @@ from stores.json.system_config_store import (
 logger = logging.getLogger(__name__)
 
 _SYSTEM_SPEECH_MAX_TEXT_LENGTH = 1200
-_DARWIN_SPEECH_VOLUME = 80
+_DEFAULT_DARWIN_SPEECH_VOLUME = 40
 _system_speech_queue: asyncio.Queue[dict[str, Any]] | None = None
 _system_speech_worker_task: asyncio.Task | None = None
 
@@ -103,17 +103,28 @@ def _set_darwin_output_state(*, muted: bool | None = None, volume: int | None = 
     if volume is not None:
         scripts.append(f"set volume output volume {max(0, min(100, int(volume)))}")
     if muted is not None:
-        scripts.append(f"set volume with output muted {str(bool(muted)).lower()}")
+        scripts.append(f"set volume output muted {str(bool(muted)).lower()}")
     for script in scripts:
         _run_osascript(script)
 
 
-def _prepare_darwin_output_for_speech(target_volume: int = _DARWIN_SPEECH_VOLUME) -> dict[str, Any] | None:
+def _configured_darwin_speech_volume() -> int:
+    try:
+        config = system_config_store.get_global()
+        raw_volume = getattr(config, "voice_output_reminder_volume", _DEFAULT_DARWIN_SPEECH_VOLUME)
+        return max(0, min(100, int(raw_volume)))
+    except Exception:
+        logger.exception("failed to read configured system speech volume")
+        return _DEFAULT_DARWIN_SPEECH_VOLUME
+
+
+def _prepare_darwin_output_for_speech(target_volume: int | None = None) -> dict[str, Any] | None:
     state = _read_darwin_output_state()
     if state is None:
         return None
+    effective_volume = _configured_darwin_speech_volume() if target_volume is None else target_volume
     try:
-        _set_darwin_output_state(muted=False, volume=target_volume)
+        _set_darwin_output_state(muted=False, volume=effective_volume)
     except Exception:
         logger.exception("failed to prepare macOS output volume for speech")
         return None
@@ -126,7 +137,7 @@ def _restore_darwin_output_state(state: dict[str, Any] | None) -> None:
     try:
         _set_darwin_output_state(
             muted=bool(state.get("muted", False)),
-            volume=int(state.get("volume", _DARWIN_SPEECH_VOLUME)),
+            volume=int(state.get("volume", _DEFAULT_DARWIN_SPEECH_VOLUME)),
         )
     except Exception:
         logger.exception("failed to restore macOS output volume state")

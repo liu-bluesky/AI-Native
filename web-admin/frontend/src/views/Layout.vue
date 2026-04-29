@@ -614,21 +614,21 @@ function focusWindow(windowId, options = {}) {
   const targetId = String(windowId || "").trim();
   if (!targetId) return;
   const shouldAnimateFromDock = options.animateFromDock === true;
+  const targetWindow = desktopWindows.value.find((item) => item.id === targetId);
+  if (!targetWindow) return;
+  const wasMinimized = Boolean(targetWindow?.minimized);
+  if (activeWindowId.value === targetId && !wasMinimized && !shouldAnimateFromDock) {
+    launcherOpen.value = false;
+    return;
+  }
   clearWindowMotionTimer(targetId);
   launcherOpen.value = false;
-  const targetWindow = desktopWindows.value.find((item) => item.id === targetId);
-  const wasMinimized = Boolean(targetWindow?.minimized);
   activeWindowId.value = targetId;
   nextWindowOrder.value += 1;
-  desktopWindows.value = desktopWindows.value.map((item) =>
-    item.id === targetId
-      ? {
-          ...resetWindowMotion(item),
-          minimized: false,
-          zIndex: nextWindowOrder.value,
-        }
-      : item,
-  );
+  Object.assign(targetWindow, resetWindowMotion(targetWindow), {
+    minimized: false,
+    zIndex: nextWindowOrder.value,
+  });
   if (shouldAnimateFromDock || wasMinimized) {
     playOpenWindowMotion(targetId);
   }
@@ -922,6 +922,10 @@ async function clearDesktopCache() {
 function updateWindowFromEmbeddedPath(path, payload = {}) {
   const normalizedPath = normalizeDesktopBridgePath(path);
   if (!normalizedPath) return;
+  if (normalizedPath === "/login") {
+    void router.replace("/login");
+    return;
+  }
 
   const normalizedAppId = String(payload.appId || "").trim();
   const sourceWindowId = String(payload.windowId || "").trim();
@@ -942,7 +946,6 @@ function updateWindowFromEmbeddedPath(path, payload = {}) {
           eyebrow: String(payload.eyebrow || "").trim() || meta.appEyebrow,
           summary: String(payload.summary || "").trim() || meta.appSummary,
           sourcePath: normalizedPath,
-          embeddedUrl: buildEmbeddedAppUrl(normalizedPath, { windowId: targetWindow.id }),
         }
       : item,
   );
@@ -962,20 +965,22 @@ function openPathAsWindow(path, payload = {}) {
       || desktopWindows.value.find((item) => item.sourcePath === normalizedPath)
     : null;
   if (existing) {
-    const nextMeta = resolveDesktopAppMeta(normalizedPath);
-    desktopWindows.value = desktopWindows.value.map((item) =>
-      item.id === existing.id
-        ? {
-            ...item,
-            appId: requestedAppId,
-            title: String(payload.title || "").trim() || nextMeta.appName,
-            eyebrow: String(payload.eyebrow || "").trim() || nextMeta.appEyebrow,
-            summary: String(payload.summary || "").trim() || nextMeta.appSummary,
-            sourcePath: normalizedPath,
-            embeddedUrl: buildEmbeddedAppUrl(normalizedPath, { windowId: existing.id }),
-          }
-        : item,
-    );
+    if (existing.sourcePath !== normalizedPath || existing.appId !== requestedAppId) {
+      const nextMeta = resolveDesktopAppMeta(normalizedPath);
+      desktopWindows.value = desktopWindows.value.map((item) =>
+        item.id === existing.id
+          ? {
+              ...item,
+              appId: requestedAppId,
+              title: String(payload.title || "").trim() || nextMeta.appName,
+              eyebrow: String(payload.eyebrow || "").trim() || nextMeta.appEyebrow,
+              summary: String(payload.summary || "").trim() || nextMeta.appSummary,
+              sourcePath: normalizedPath,
+              embeddedUrl: buildEmbeddedAppUrl(normalizedPath, { windowId: existing.id }),
+            }
+          : item,
+      );
+    }
     focusWindow(existing.id, {
       animateFromDock: existing.minimized,
     });

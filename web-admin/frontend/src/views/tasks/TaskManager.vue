@@ -201,15 +201,15 @@ import {
 
 const tasks = ref([]);
 const draftText = ref("");
-const draftTaskType = ref("generic");
+const draftTaskType = ref("workflow");
 const draftTriggerText = ref("");
-const draftActionType = ref("record");
+const draftActionType = ref("project_chat");
 const draftRunAt = ref("");
 const editingTaskId = ref("");
 const editText = ref("");
 const editTaskType = ref("generic");
 const editTriggerText = ref("");
-const editActionType = ref("record");
+const editActionType = ref("project_chat");
 const editRunAt = ref("");
 const activeFilter = ref("all");
 const statusFilters = [
@@ -226,10 +226,10 @@ const taskTypeOptions = [
   { label: "提醒", value: "reminder" },
 ];
 const actionTypeOptions = [
+  { label: "大模型动态执行", value: "project_chat" },
   { label: "记录执行", value: "record" },
   { label: "通知", value: "notify" },
   { label: "系统播报", value: "system_speech" },
-  { label: "项目对话", value: "project_chat" },
   { label: "文件处理", value: "file_processing" },
 ];
 
@@ -272,9 +272,9 @@ function submitTask() {
     source: "tasks-module",
   });
   draftText.value = "";
-  draftTaskType.value = "generic";
+  draftTaskType.value = "workflow";
   draftTriggerText.value = "";
-  draftActionType.value = "record";
+  draftActionType.value = "project_chat";
   draftRunAt.value = "";
   refreshTasks();
 }
@@ -304,14 +304,16 @@ function buildTaskPayloadFromForm({ description, taskType, triggerText, actionTy
       },
     });
   }
+  const normalizedActionType = String(actionType || "project_chat").trim() || "project_chat";
+  const actionParams = normalizedActionType === "project_chat" ? { mode: "dynamic_task" } : {};
   return {
     title: buildTaskTitle(description),
     description,
-    task_type: taskType,
+    task_type: taskType || (normalizedActionType === "project_chat" ? "workflow" : "generic"),
     listen_enabled: triggerPhrases.length > 0 || Boolean(runAt),
     triggerPhrases,
     triggers,
-    actions: [{ type: actionType, enabled: true }],
+    actions: [{ type: normalizedActionType, enabled: true, params: actionParams }],
     nextRunAt: runAt,
   };
 }
@@ -358,7 +360,7 @@ function cancelEditTask() {
   editText.value = "";
   editTaskType.value = "generic";
   editTriggerText.value = "";
-  editActionType.value = "record";
+  editActionType.value = "project_chat";
   editRunAt.value = "";
 }
 

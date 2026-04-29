@@ -37,7 +37,7 @@ def _normalize_chat_context_text(value: object, limit: int = 160) -> str:
 
 def _normalize_chat_source_type(value: object) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"group_message", "private_message", "manual_ai_chat", "group_analysis"}:
+    if normalized in {"group_message", "private_message", "manual_ai_chat", "group_analysis", "global_assistant_task"}:
         return normalized
     return ""
 
@@ -261,10 +261,12 @@ class ProjectChatStore:
         username: str,
         title: str = "新对话",
         source_context: dict | None = None,
+        session_id: str = "",
     ) -> ProjectChatSession:
         context = source_context if isinstance(source_context, dict) else {}
+        normalized_session_id = str(session_id or "").strip()
         normalized = ProjectChatSession(
-            id=f"chat-session-{uuid.uuid4().hex[:12]}",
+            id=normalized_session_id or f"chat-session-{uuid.uuid4().hex[:12]}",
             project_id=str(project_id or "").strip(),
             username=str(username or "").strip(),
             title=str(title or "新对话").strip() or "新对话",

@@ -6,11 +6,16 @@
 
     <section class="statistics-hero">
       <div class="statistics-hero__copy">
-        <div class="statistics-hero__eyebrow">Operations Insight</div>
-        <h1 class="statistics-hero__title">统计不只看次数，要先给判断。</h1>
+        <div class="statistics-hero__eyebrow">Upgrade Intelligence</div>
+        <h1 class="statistics-hero__title">统计驱动下一次升级</h1>
         <p class="statistics-hero__summary">
-          这页把入口流量、真实 AI 员工、项目归因、工作会话和统计盲区压成一条判断链，不再把内容拆成只看次数的并列卡片。
+          先判断系统现在卡在哪里，再把证据、升级动作和验证口径放到同一条闭环里。
         </p>
+        <div class="upgrade-decision" :class="`is-${upgradeDecision.tone}`">
+          <span>当前判断</span>
+          <strong>{{ upgradeDecision.title }}</strong>
+          <p>{{ upgradeDecision.description }}</p>
+        </div>
         <div class="statistics-hero__meta">
           <span>统计窗口 {{ days }} 天</span>
           <span>统计范围 {{ currentScopeLabel }}</span>
@@ -19,13 +24,7 @@
         </div>
       </div>
 
-      <aside class="statistics-hero__focus">
-        <div class="statistics-hero__score">
-          <span>观测健康分</span>
-          <strong>{{ data.insights.health_score || 0 }}</strong>
-          <small>{{ healthLabel }}</small>
-        </div>
-
+      <aside class="upgrade-loop-panel">
         <div class="statistics-hero__controls">
           <div class="statistics-hero__controls-main">
             <el-select
@@ -56,11 +55,20 @@
           </div>
         </div>
 
-        <div class="statistics-hero__flow">
+        <div class="upgrade-loop-panel__head">
+          <div>
+            <span>循环升级状态</span>
+            <strong>{{ upgradeDecision.status }}</strong>
+          </div>
+          <b>{{ data.insights.health_score || 0 }}</b>
+        </div>
+
+        <div class="upgrade-loop">
           <article
-            v-for="item in data.insights.flow || []"
+            v-for="item in upgradeLoopSteps"
             :key="item.label"
-            class="statistics-hero__flow-card"
+            class="upgrade-loop__step"
+            :class="`is-${item.tone}`"
           >
             <span>{{ item.label }}</span>
             <strong>{{ item.value }}</strong>
@@ -68,6 +76,22 @@
           </article>
         </div>
       </aside>
+    </section>
+
+    <section class="upgrade-briefing">
+      <article class="upgrade-briefing__primary">
+        <span>Next Upgrade</span>
+        <strong>{{ upgradeAction.title }}</strong>
+        <p>{{ upgradeAction.description }}</p>
+        <small>{{ upgradeAction.evidence }}</small>
+      </article>
+      <div class="upgrade-briefing__signals">
+        <article v-for="card in upgradeSignalCards" :key="card.label" class="upgrade-signal-card">
+          <span>{{ card.label }}</span>
+          <strong>{{ card.value }}</strong>
+          <small>{{ card.hint }}</small>
+        </article>
+      </div>
     </section>
 
     <section class="summary-grid">
@@ -87,54 +111,68 @@
         <div class="panel-card__actions">
           <el-button size="small" @click="sendToAiAnalysis">发给 AI 分析</el-button>
           <el-button size="small" @click="copyAiReport">复制 AI 报表</el-button>
+          <el-button size="small" plain @click="aiReportExpanded = !aiReportExpanded">
+            {{ aiReportExpanded ? "收起报表" : "展开报表" }}
+          </el-button>
         </div>
       </div>
-      <div class="ai-report-grid">
-        <article class="ai-report-block">
-          <span class="ai-report-block__label">摘要</span>
-          <p class="ai-report-block__summary">{{ aiReport.summary }}</p>
-          <p class="ai-report-block__summary ai-report-block__summary--muted">{{ aiReport.conclusion }}</p>
-          <div class="ai-report-kpis">
-            <span>能力覆盖 {{ aiReport.capability_coverage_percent || 0 }}%</span>
-            <span>{{ aiReportAnalysisMode.label || "结论待生成" }}</span>
-            <span>健康分 {{ aiReportKeyMetrics.health_score || 0 }}</span>
-            <span>活跃项目 {{ aiReportKeyMetrics.active_projects || 0 }}</span>
-            <span>活跃智能体 {{ aiReportKeyMetrics.active_agents || 0 }}</span>
-            <span>完成会话 {{ aiReportKeyMetrics.completed_sessions || 0 }}</span>
-            <span>工作完成率 {{ formatPercent(aiReportKeyMetrics.completion_rate) }}</span>
-            <span>项目集中度 {{ formatPercent(aiReportKeyMetrics.project_concentration_percent) }}</span>
-            <span>模型调用 {{ aiReportKeyMetrics.model_calls || 0 }}</span>
-            <span>总 token {{ aiReportKeyMetrics.total_tokens || 0 }}</span>
-            <span>总成本 ${{ Number(aiReportKeyMetrics.total_cost_usd || 0).toFixed(4) }}</span>
-          </div>
-        </article>
-        <article class="ai-report-block">
-          <span class="ai-report-block__label">AI 当前应重点关注</span>
-          <div v-if="aiReportFocusPoints.length" class="ai-focus-list">
-            <article v-for="item in aiReportFocusPoints" :key="item.key" class="ai-focus-item" :class="`is-${item.status || 'neutral'}`">
-              <strong>{{ item.title }}</strong>
-              <small>{{ item.evidence }}</small>
-              <p>{{ item.recommended_action }}</p>
-            </article>
-          </div>
-          <el-empty v-else description="暂无 AI 关注点" />
-        </article>
-        <article class="ai-report-block">
-          <span class="ai-report-block__label">建议 AI 下一步提问</span>
-          <div v-if="aiReportQuestions.length" class="ai-question-list">
-            <article v-for="question in aiReportQuestions" :key="question" class="ai-question-item">{{ question }}</article>
-          </div>
-          <el-empty v-else description="暂无建议提问" />
-        </article>
+      <div v-if="!aiReportExpanded" class="ai-report-collapsed">
+        <strong>{{ aiReport.conclusion || aiReport.summary || "AI 报表已生成" }}</strong>
+        <div class="ai-report-collapsed__metrics">
+          <span>{{ aiReportAnalysisMode.label || "结论待生成" }}</span>
+          <span>健康分 {{ aiReportKeyMetrics.health_score || 0 }}</span>
+          <span>活跃项目 {{ aiReportKeyMetrics.active_projects || 0 }}</span>
+          <span>工作完成率 {{ formatPercent(aiReportKeyMetrics.completion_rate) }}</span>
+        </div>
       </div>
-      <div v-if="aiReportRequiredMetrics.length" class="ai-metric-gap-list">
-        <article v-for="item in aiReportRequiredMetrics" :key="item.key" class="ai-metric-gap-item">
-          <strong>{{ item.title }}</strong>
-          <small>{{ item.reason }}</small>
-        </article>
-      </div>
-      <pre v-if="aiReportStructuredPreview" class="ai-report-markdown">{{ aiReportStructuredPreview }}</pre>
-      <pre v-else-if="aiReportMarkdown" class="ai-report-markdown">{{ aiReportMarkdown }}</pre>
+      <template v-else>
+        <div class="ai-report-grid">
+          <article class="ai-report-block">
+            <span class="ai-report-block__label">摘要</span>
+            <p class="ai-report-block__summary">{{ aiReport.summary }}</p>
+            <p class="ai-report-block__summary ai-report-block__summary--muted">{{ aiReport.conclusion }}</p>
+            <div class="ai-report-kpis">
+              <span>能力覆盖 {{ aiReport.capability_coverage_percent || 0 }}%</span>
+              <span>{{ aiReportAnalysisMode.label || "结论待生成" }}</span>
+              <span>健康分 {{ aiReportKeyMetrics.health_score || 0 }}</span>
+              <span>活跃项目 {{ aiReportKeyMetrics.active_projects || 0 }}</span>
+              <span>活跃智能体 {{ aiReportKeyMetrics.active_agents || 0 }}</span>
+              <span>完成会话 {{ aiReportKeyMetrics.completed_sessions || 0 }}</span>
+              <span>工作完成率 {{ formatPercent(aiReportKeyMetrics.completion_rate) }}</span>
+              <span>项目集中度 {{ formatPercent(aiReportKeyMetrics.project_concentration_percent) }}</span>
+              <span>模型调用 {{ aiReportKeyMetrics.model_calls || 0 }}</span>
+              <span>总 token {{ aiReportKeyMetrics.total_tokens || 0 }}</span>
+              <span>总成本 ${{ Number(aiReportKeyMetrics.total_cost_usd || 0).toFixed(4) }}</span>
+            </div>
+          </article>
+          <article class="ai-report-block">
+            <span class="ai-report-block__label">AI 当前应重点关注</span>
+            <div v-if="aiReportFocusPoints.length" class="ai-focus-list">
+              <article v-for="item in aiReportFocusPoints" :key="item.key" class="ai-focus-item" :class="`is-${item.status || 'neutral'}`">
+                <strong>{{ item.title }}</strong>
+                <small>{{ item.evidence }}</small>
+                <p>{{ item.recommended_action }}</p>
+              </article>
+            </div>
+            <el-empty v-else description="暂无 AI 关注点" />
+          </article>
+          <article class="ai-report-block">
+            <span class="ai-report-block__label">建议 AI 下一步提问</span>
+            <div v-if="aiReportQuestions.length" class="ai-question-list">
+              <article v-for="question in aiReportQuestions" :key="question" class="ai-question-item">{{ question }}</article>
+            </div>
+            <el-empty v-else description="暂无建议提问" />
+          </article>
+        </div>
+        <div v-if="aiReportRequiredMetrics.length" class="ai-metric-gap-list">
+          <article v-for="item in aiReportRequiredMetrics" :key="item.key" class="ai-metric-gap-item">
+            <strong>{{ item.title }}</strong>
+            <small>{{ item.reason }}</small>
+          </article>
+        </div>
+        <pre v-if="aiReportStructuredPreview" class="ai-report-markdown">{{ aiReportStructuredPreview }}</pre>
+        <pre v-else-if="aiReportMarkdown" class="ai-report-markdown">{{ aiReportMarkdown }}</pre>
+      </template>
     </section>
 
     <section class="story-grid">
@@ -217,81 +255,54 @@
           </div>
           <div class="panel-card__tag">真实员工和入口流量分开看</div>
         </div>
-        <div class="compact-split">
-          <div class="compact-split__block">
-            <div class="compact-split__title">智能体</div>
-            <p class="compact-split__hint">这里只统计真实 AI 员工调用，不再把 `mcp:query` 当成智能体。</p>
-            <div v-if="agentActivityItems.length" class="agent-list">
-              <article v-for="item in agentActivityItems" :key="item.employee_id" class="agent-list__item">
-                <div class="agent-list__meta">
-                  <strong>{{ item.employee_name || item.label || item.employee_id }}</strong>
-                  <small>调用 {{ item.cnt || 0 }} · 在线 {{ item.active_entries || 0 }} · 项目 {{ item.project_count || 0 }}</small>
-                </div>
-                <span class="agent-list__score">{{ item.activity_score }}</span>
-              </article>
-            </div>
-            <el-empty
-              v-else
-              :description="Number(data?.usage?.summary?.query_scope_events || 0) > 0
-                ? '当前只有 query 入口流量，尚未稳定归因到真实 AI 员工'
-                : '当前窗口内没有真实 AI 员工调用记录'"
-            />
+        <div class="activity-judgement">
+          <strong>{{ activityJudgement.title }}</strong>
+          <span>{{ activityJudgement.meta }}</span>
+        </div>
+        <div v-if="activityChartItems.length" class="activity-chart">
+          <div ref="activityChartRef" class="activity-chart__canvas" />
+          <div class="activity-chart__legend">
+            <span v-for="item in activityLegendItems" :key="item.label">
+              <i :style="{ background: item.color }" />
+              {{ item.label }}
+            </span>
           </div>
-          <div class="compact-split__block">
-            <div class="compact-split__title">入口 / 编排器</div>
-            <p class="compact-split__hint">这里单独看 `mcp:query`、`project:*`、`employee:*` 等入口 scope，反映实际承接流量的主入口。</p>
-            <div v-if="entryScopeItems.length" class="scope-list">
-              <article v-for="item in entryScopeItems" :key="item.scope_id" class="scope-list__item">
-                <div class="scope-list__meta">
-                  <strong>{{ item.scope_label || item.scope_id }}</strong>
-                  <small>事件 {{ item.cnt || 0 }} · 工具 {{ item.tool_calls || 0 }} · 归因员工 {{ item.attributed_employee_count || 0 }}</small>
-                </div>
-                <span class="scope-list__score">{{ item.activity_score }}</span>
-              </article>
-            </div>
-            <el-empty v-else description="当前窗口内暂无入口 scope 流量" />
-          </div>
-          <div class="compact-split__block">
-            <div class="compact-split__title">开发者</div>
-            <div v-if="rankedDevelopers.length" class="mini-rank-list">
-              <article v-for="item in rankedDevelopers" :key="item.developer_name" class="mini-rank-list__item">
-                <span>{{ item.developer_name }}</span>
-                <strong>{{ item.cnt }}</strong>
-              </article>
-            </div>
-            <el-empty v-else description="暂无开发者活跃数据" />
+          <div class="activity-stat-row">
+            <article v-for="item in activityStatCards" :key="item.label" class="activity-stat-card">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+              <small>{{ item.hint }}</small>
+            </article>
           </div>
         </div>
+        <el-empty
+          v-else
+          :description="Number(data?.usage?.summary?.query_scope_events || 0) > 0
+            ? '当前只有 query 入口流量，尚未稳定归因到真实 AI 员工'
+            : '当前窗口内暂无入口、智能体或开发者活跃数据'"
+        />
       </article>
 
-      <article class="panel-card">
+      <article class="panel-card panel-card--wide">
         <div class="panel-card__head">
           <div>
             <div class="panel-card__eyebrow">Project Activity</div>
             <h2 class="panel-card__title">项目活跃度</h2>
           </div>
         </div>
-        <div v-if="projectActivityItems.length" class="rank-list">
-          <article v-for="item in projectActivityItems" :key="item.project_id || item.project_name" class="rank-list__item rank-list__item--tool">
-            <div class="rank-list__meta">
-              <div class="rank-list__meta-body">
-                <strong>{{ item.display_name }}</strong>
-                <small>
-                  归因 {{ item.cnt || 0 }}
-                  <template v-if="item.session_count || item.active_entries">
-                    · 会话 {{ item.session_count || 0 }} · 在线 {{ item.active_entries || 0 }}
-                  </template>
-                  <template v-if="Number(item.avg_duration_ms || 0) > 0">
-                    · 平均 {{ Math.round(Number(item.avg_duration_ms || 0)) }}ms
-                  </template>
-                </small>
-              </div>
-              <span class="rank-list__score">{{ item.activity_score }}</span>
-            </div>
-            <div class="rank-list__bar-shell">
-              <div class="rank-list__bar" :style="{ width: `${item.percent}%` }" />
-            </div>
-          </article>
+        <div class="activity-judgement">
+          <strong>{{ projectActivityJudgement.title }}</strong>
+          <span>{{ projectActivityJudgement.meta }}</span>
+        </div>
+        <div v-if="projectActivityItems.length" class="project-activity-chart">
+          <div ref="projectChartRef" class="project-activity-chart__canvas" />
+          <div class="activity-stat-row">
+            <article v-for="item in projectActivityCards" :key="item.label" class="activity-stat-card">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+              <small>{{ item.hint }}</small>
+            </article>
+          </div>
         </div>
         <el-empty v-else description="暂无项目活跃数据" />
       </article>
@@ -474,7 +485,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import * as echarts from "echarts/core";
-import { LineChart } from "echarts/charts";
+import { BarChart, LineChart } from "echarts/charts";
 import { GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 
@@ -483,18 +494,27 @@ import { formatDateTime } from "@/utils/date.js";
 import { useRoute, useRouter } from "vue-router";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 
-echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+echarts.use([BarChart, LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const RECENT_STATISTICS_PROJECTS_STORAGE_KEY = "statistics_recent_project_ids";
 const STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX = "statistics_analysis_draft";
 const STATISTICS_ANALYSIS_DRAFT_QUERY_KEY = "statistics_analysis_draft_key";
+const ACTIVITY_GROUP_COLORS = {
+  agent: "#2563eb",
+  entry: "#f97316",
+  developer: "#16a34a",
+  project: "#0f766e",
+};
 const route = useRoute();
 const router = useRouter();
 const loading = ref(false);
 const projectScopeLoading = ref(false);
 const days = ref(7);
+const aiReportExpanded = ref(false);
 const trendChartRef = ref(null);
 const closureTrendChartRef = ref(null);
+const activityChartRef = ref(null);
+const projectChartRef = ref(null);
 const data = ref({
   generated_at: "",
   viewer: {},
@@ -706,6 +726,126 @@ const healthLabel = computed(() => {
   return "能看见问题，但观测还偏弱";
 });
 
+const upgradeDecision = computed(() => {
+  const score = Number(data.value?.insights?.health_score || 0);
+  const completionRate = Number(workCompletionRate.value || 0);
+  const activePromptVersions = Number(usageSummary.value.active_prompt_versions || 0);
+  const totalTokens = Number(usageSummary.value.total_tokens || 0);
+  const hasCost = Number(usageSummary.value.total_cost_usd || 0) > 0;
+  if (completionRate > 0 && completionRate < 40) {
+    return {
+      tone: "warning",
+      status: "先补闭环",
+      title: "工作闭环偏低，升级先看交付完成率",
+      description: `当前完成率 ${formatPercent(completionRate)}，比继续堆工具调用更需要把进行中的会话收口到可验证结果。`,
+    };
+  }
+  if (totalTokens > 0 && (!hasCost || activePromptVersions <= 0)) {
+    return {
+      tone: "attention",
+      status: "补齐度量",
+      title: "AI 成本与 Prompt 版本还没形成 ROI 判断",
+      description: "已经能看到模型调用和 token，但缺少成本、Prompt 版本或结果指标，升级效果还不能稳定复盘。",
+    };
+  }
+  if (score >= 80) {
+    return {
+      tone: "good",
+      status: "可以优化",
+      title: "观测主链稳定，可以进入针对性优化",
+      description: "入口、项目、工具和工作会话已经能形成判断链，下一步应围绕最高价值缺口做升级。",
+    };
+  }
+  return {
+    tone: "neutral",
+    status: "先稳观测",
+    title: "统计链路还不完整，先补齐关键观测点",
+    description: "当前数据能指出方向，但还不足以支撑稳定的升级判断，需要先补齐盲区和验证口径。",
+  };
+});
+
+const upgradeAction = computed(() => {
+  const focus = aiReportFocusPoints.value[0];
+  if (focus) {
+    return {
+      title: focus.title || "优先处理 AI 关注点",
+      description: focus.recommended_action || focus.evidence || "先把 AI 报表中的最高优先级问题转成可执行升级任务。",
+      evidence: focus.evidence || "来源：AI Ready Report",
+    };
+  }
+  const alert = alertItems.value[0];
+  if (alert) {
+    return {
+      title: alert.title || "优先处理当前告警",
+      description: alert.description || "先处理影响判断质量的异常信号。",
+      evidence: "来源：当前统计告警",
+    };
+  }
+  const blindSpot = blindSpotItems.value[0];
+  if (blindSpot) {
+    return {
+      title: blindSpot.title || "先补统计盲区",
+      description: blindSpot.description || "先补齐会影响升级判断的数据缺口。",
+      evidence: "来源：统计盲区",
+    };
+  }
+  return {
+    title: "把最高频路径沉淀成下一轮升级任务",
+    description: "当前没有强告警时，优先选择最高频入口、最活跃项目或闭环缺口作为下一次升级对象。",
+    evidence: `健康分 ${data.value?.insights?.health_score || 0} · 统计窗口 ${days.value} 天`,
+  };
+});
+
+const upgradeLoopSteps = computed(() => [
+  {
+    label: "观测",
+    value: data.value?.insights?.health_score || 0,
+    meta: healthLabel.value,
+    tone: Number(data.value?.insights?.health_score || 0) >= 80 ? "good" : "neutral",
+  },
+  {
+    label: "判断",
+    value: upgradeDecision.value.status,
+    meta: upgradeDecision.value.title,
+    tone: upgradeDecision.value.tone,
+  },
+  {
+    label: "升级",
+    value: aiReportFocusPoints.value.length || alertItems.value.length || blindSpotItems.value.length || "待定",
+    meta: "可转任务的关注点",
+    tone: aiReportFocusPoints.value.length || alertItems.value.length ? "attention" : "neutral",
+  },
+  {
+    label: "验证",
+    value: formatPercent(workCompletionRate.value),
+    meta: `闭环缺口 ${workSessionSummary.value.closure_gap_sessions || 0}`,
+    tone: Number(workCompletionRate.value || 0) >= 60 ? "good" : "warning",
+  },
+]);
+
+const upgradeSignalCards = computed(() => [
+  {
+    label: "主链健康",
+    value: data.value?.insights?.health_score || 0,
+    hint: healthLabel.value,
+  },
+  {
+    label: "闭环完成",
+    value: formatPercent(workCompletionRate.value),
+    hint: `完成 ${workSessionSummary.value.completed_sessions || 0} / 进行中 ${workSessionSummary.value.in_progress_sessions || 0}`,
+  },
+  {
+    label: "主项目集中",
+    value: formatPercent(projectConcentrationPercent.value),
+    hint: leadingProject.value?.project_name || leadingProject.value?.project_id || "暂无主项目",
+  },
+  {
+    label: "ROI 可见性",
+    value: `${usageSummary.value.active_models || 0}/${usageSummary.value.active_prompt_versions || 0}`,
+    hint: `模型 / Prompt 版本 · token ${usageSummary.value.total_tokens || 0}`,
+  },
+]);
+
 const aiReport = computed(() => data.value?.ai_report || null);
 const aiReportAnalysisMode = computed(() => aiReport.value?.analysis_mode || aiReport.value?.measurement_position || {});
 const aiReportKeyMetrics = computed(() => aiReport.value?.key_metrics || aiReport.value?.snapshot || {});
@@ -804,6 +944,14 @@ const workSessionDaily = computed(() => {
 
 let trendChart = null;
 let closureTrendChart = null;
+let activityChart = null;
+let projectChart = null;
+
+function compactChartLabel(value, maxLength = 14) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "-";
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}...` : normalized;
+}
 
 const trendChartOption = computed(() => {
   const labels = usageDaily.value.map((item) => item.date || "");
@@ -1049,6 +1197,262 @@ const closureTrendChartOption = computed(() => {
   };
 });
 
+const activityLegendItems = computed(() => [
+  { label: "智能体", color: ACTIVITY_GROUP_COLORS.agent },
+  { label: "入口", color: ACTIVITY_GROUP_COLORS.entry },
+  { label: "开发者", color: ACTIVITY_GROUP_COLORS.developer },
+]);
+
+const activityChartItems = computed(() => {
+  const agentRows = agentActivityItems.value.slice(0, 4).map((item) => ({
+    key: `agent:${item.employee_id || item.employee_name}`,
+    group: "agent",
+    groupLabel: "智能体",
+    name: item.employee_name || item.label || item.employee_id || "未知智能体",
+    value: Number(item.activity_score || item.cnt || 0),
+    meta: `调用 ${item.cnt || 0} · 在线 ${item.active_entries || 0}`,
+  }));
+  const entryRows = entryScopeItems.value.slice(0, 4).map((item) => ({
+    key: `entry:${item.scope_id || item.scope_label}`,
+    group: "entry",
+    groupLabel: "入口",
+    name: item.scope_label || item.scope_id || "未知入口",
+    value: Number(item.activity_score || item.cnt || 0),
+    meta: `事件 ${item.cnt || 0} · 工具 ${item.tool_calls || 0}`,
+  }));
+  const developerRows = rankedDevelopers.value.slice(0, 4).map((item) => ({
+    key: `developer:${item.developer_name}`,
+    group: "developer",
+    groupLabel: "开发者",
+    name: item.developer_name || "未知开发者",
+    value: Number(item.cnt || 0),
+    meta: `记录 ${item.cnt || 0}`,
+  }));
+  return [...agentRows, ...entryRows, ...developerRows]
+    .filter((item) => item.value > 0)
+    .sort((left, right) => right.value - left.value)
+    .slice(0, 10);
+});
+
+const activityJudgement = computed(() => {
+  const leader = activityChartItems.value[0];
+  if (!leader) {
+    return {
+      title: "还没有足够活跃数据",
+      meta: "等入口、真实智能体或开发者产生稳定记录后再判断。",
+    };
+  }
+  const agentCount = agentActivityItems.value.length;
+  const entryCount = entryScopeItems.value.length;
+  const developerCount = rankedDevelopers.value.length;
+  return {
+    title: `当前主力是${leader.groupLabel}：${leader.name}`,
+    meta: `活跃分 ${leader.value} · 覆盖 ${entryCount} 个入口、${agentCount} 个智能体、${developerCount} 位开发者`,
+  };
+});
+
+const activityStatCards = computed(() => [
+  {
+    label: "主入口",
+    value: entryScopeItems.value[0]?.scope_label || entryScopeItems.value[0]?.scope_id || "暂无",
+    hint: entryScopeItems.value[0]
+      ? `事件 ${entryScopeItems.value[0].cnt || 0} · 工具 ${entryScopeItems.value[0].tool_calls || 0}`
+      : "入口流量不足",
+  },
+  {
+    label: "主智能体",
+    value: agentActivityItems.value[0]?.employee_name || agentActivityItems.value[0]?.employee_id || "暂无",
+    hint: agentActivityItems.value[0]
+      ? `活跃分 ${agentActivityItems.value[0].activity_score || 0}`
+      : "真实 AI 员工调用不足",
+  },
+  {
+    label: "主开发者",
+    value: rankedDevelopers.value[0]?.developer_name || "暂无",
+    hint: rankedDevelopers.value[0] ? `记录 ${rankedDevelopers.value[0].cnt || 0}` : "开发者记录不足",
+  },
+]);
+
+const activityChartOption = computed(() => {
+  const items = activityChartItems.value;
+  return {
+    animationDuration: 400,
+    grid: {
+      top: 8,
+      right: 34,
+      bottom: 8,
+      left: 116,
+      containLabel: false,
+    },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: {
+        type: "shadow",
+      },
+      backgroundColor: "rgba(15, 23, 42, 0.92)",
+      borderWidth: 0,
+      textStyle: {
+        color: "#e2e8f0",
+      },
+      formatter(params) {
+        const item = items[params?.[0]?.dataIndex] || {};
+        return `${item.groupLabel || ""}<br/>${item.name || ""}: ${item.value || 0}<br/>${item.meta || ""}`;
+      },
+    },
+    xAxis: {
+      type: "value",
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+      splitLine: {
+        lineStyle: {
+          color: "rgba(148, 163, 184, 0.16)",
+        },
+      },
+    },
+    yAxis: {
+      type: "category",
+      inverse: true,
+      data: items.map((item) => compactChartLabel(item.name)),
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: {
+        color: "#475569",
+        fontSize: 12,
+      },
+    },
+    series: [
+      {
+        type: "bar",
+        barWidth: 14,
+        borderRadius: [0, 8, 8, 0],
+        label: {
+          show: true,
+          position: "right",
+          color: "#0f172a",
+          fontSize: 12,
+          fontWeight: 700,
+        },
+        data: items.map((item) => ({
+          value: item.value,
+          itemStyle: {
+            color: ACTIVITY_GROUP_COLORS[item.group] || "#64748b",
+          },
+        })),
+      },
+    ],
+  };
+});
+
+const projectActivityJudgement = computed(() => {
+  const leader = projectActivityItems.value[0];
+  if (!leader) {
+    return {
+      title: "项目活跃度还不足以排序",
+      meta: "暂无可归因项目、在线入口或工作会话样本。",
+    };
+  }
+  const concentration = projectConcentrationPercent.value;
+  return {
+    title: `主项目：${leader.display_name}`,
+    meta: `活跃分 ${leader.activity_score || 0} · 集中度 ${formatPercent(concentration)} · 会话 ${leader.session_count || 0}`,
+  };
+});
+
+const projectActivityCards = computed(() => [
+  {
+    label: "活跃项目",
+    value: projectActivityItems.value.length,
+    hint: `统计窗口 ${days.value} 天`,
+  },
+  {
+    label: "项目集中度",
+    value: formatPercent(projectConcentrationPercent.value),
+    hint: leadingProject.value?.project_name || leadingProject.value?.project_id || "暂无主项目",
+  },
+  {
+    label: "会话最多",
+    value: projectActivityItems.value
+      .slice()
+      .sort((left, right) => Number(right.session_count || 0) - Number(left.session_count || 0))[0]?.display_name || "暂无",
+    hint: "按工作会话数判断",
+  },
+]);
+
+const projectChartOption = computed(() => {
+  const items = projectActivityItems.value.slice(0, 8);
+  return {
+    animationDuration: 400,
+    grid: {
+      top: 8,
+      right: 34,
+      bottom: 8,
+      left: 132,
+      containLabel: false,
+    },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: {
+        type: "shadow",
+      },
+      backgroundColor: "rgba(15, 23, 42, 0.92)",
+      borderWidth: 0,
+      textStyle: {
+        color: "#e2e8f0",
+      },
+      formatter(params) {
+        const item = items[params?.[0]?.dataIndex] || {};
+        return [
+          `${item.display_name || ""}: ${item.activity_score || 0}`,
+          `归因 ${item.cnt || 0} · 会话 ${item.session_count || 0} · 在线 ${item.active_entries || 0}`,
+        ].join("<br/>");
+      },
+    },
+    xAxis: {
+      type: "value",
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+      splitLine: {
+        lineStyle: {
+          color: "rgba(148, 163, 184, 0.16)",
+        },
+      },
+    },
+    yAxis: {
+      type: "category",
+      inverse: true,
+      data: items.map((item) => compactChartLabel(item.display_name, 16)),
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: {
+        color: "#475569",
+        fontSize: 12,
+      },
+    },
+    series: [
+      {
+        type: "bar",
+        barWidth: 16,
+        borderRadius: [0, 8, 8, 0],
+        label: {
+          show: true,
+          position: "right",
+          color: "#0f172a",
+          fontSize: 12,
+          fontWeight: 700,
+        },
+        data: items.map((item, index) => ({
+          value: Number(item.activity_score || 0),
+          itemStyle: {
+            color: index === 0 ? ACTIVITY_GROUP_COLORS.project : "#14b8a6",
+          },
+        })),
+      },
+    ],
+  };
+});
+
 function disposeTrendChart() {
   if (!trendChart) return;
   trendChart.dispose();
@@ -1061,6 +1465,18 @@ function disposeClosureTrendChart() {
   closureTrendChart = null;
 }
 
+function disposeActivityChart() {
+  if (!activityChart) return;
+  activityChart.dispose();
+  activityChart = null;
+}
+
+function disposeProjectChart() {
+  if (!projectChart) return;
+  projectChart.dispose();
+  projectChart = null;
+}
+
 function resizeTrendChart() {
   if (!trendChart) return;
   trendChart.resize();
@@ -1069,6 +1485,16 @@ function resizeTrendChart() {
 function resizeClosureTrendChart() {
   if (!closureTrendChart) return;
   closureTrendChart.resize();
+}
+
+function resizeActivityChart() {
+  if (!activityChart) return;
+  activityChart.resize();
+}
+
+function resizeProjectChart() {
+  if (!projectChart) return;
+  projectChart.resize();
 }
 
 async function renderTrendChart() {
@@ -1093,6 +1519,32 @@ async function renderClosureTrendChart() {
     echarts.init(closureTrendChartRef.value);
   closureTrendChart.setOption(closureTrendChartOption.value, true);
   closureTrendChart.resize();
+}
+
+async function renderActivityChart() {
+  await nextTick();
+  if (!activityChartItems.value.length || !activityChartRef.value) {
+    disposeActivityChart();
+    return;
+  }
+  activityChart =
+    echarts.getInstanceByDom(activityChartRef.value) ||
+    echarts.init(activityChartRef.value);
+  activityChart.setOption(activityChartOption.value, true);
+  activityChart.resize();
+}
+
+async function renderProjectChart() {
+  await nextTick();
+  if (!projectActivityItems.value.length || !projectChartRef.value) {
+    disposeProjectChart();
+    return;
+  }
+  projectChart =
+    echarts.getInstanceByDom(projectChartRef.value) ||
+    echarts.init(projectChartRef.value);
+  projectChart.setOption(projectChartOption.value, true);
+  projectChart.resize();
 }
 
 function withPercent(list, key) {
@@ -1493,6 +1945,8 @@ onMounted(() => {
   }
   window.addEventListener("resize", resizeTrendChart);
   window.addEventListener("resize", resizeClosureTrendChart);
+  window.addEventListener("resize", resizeActivityChart);
+  window.addEventListener("resize", resizeProjectChart);
   fetchProjectScopes();
   refresh();
 });
@@ -1500,8 +1954,12 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("resize", resizeTrendChart);
   window.removeEventListener("resize", resizeClosureTrendChart);
+  window.removeEventListener("resize", resizeActivityChart);
+  window.removeEventListener("resize", resizeProjectChart);
   disposeTrendChart();
   disposeClosureTrendChart();
+  disposeActivityChart();
+  disposeProjectChart();
 });
 
 watch(usageDaily, () => {
@@ -1510,6 +1968,14 @@ watch(usageDaily, () => {
 
 watch(workSessionDaily, () => {
   renderClosureTrendChart();
+});
+
+watch(activityChartItems, () => {
+  renderActivityChart();
+});
+
+watch(projectActivityItems, () => {
+  renderProjectChart();
 });
 
 watch(scopedProjectId, () => {
@@ -1570,6 +2036,7 @@ watch(scopedProjectId, () => {
 }
 
 .statistics-hero,
+.upgrade-briefing,
 .summary-grid,
 .story-grid,
 .statistics-layout {
@@ -1579,14 +2046,16 @@ watch(scopedProjectId, () => {
 
 .statistics-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 420px);
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 520px);
+  gap: 18px;
   align-items: stretch;
   margin-bottom: 18px;
 }
 
 .statistics-hero__copy,
 .statistics-hero__focus,
+.upgrade-loop-panel,
+.upgrade-briefing__primary,
 .summary-card,
 .story-card,
 .panel-card {
@@ -1597,8 +2066,11 @@ watch(scopedProjectId, () => {
 }
 
 .statistics-hero__copy {
-  padding: 28px;
-  border-radius: 34px;
+  display: grid;
+  gap: 18px;
+  min-height: 398px;
+  padding: 30px;
+  border-radius: 30px;
   min-width: 0;
 }
 
@@ -1613,27 +2085,70 @@ watch(scopedProjectId, () => {
 }
 
 .statistics-hero__title {
-  max-width: 13ch;
-  margin: 10px 0 0;
+  max-width: 16ch;
+  margin: 0;
   color: #0f172a;
-  font-size: clamp(38px, 6vw, 72px);
-  line-height: 0.96;
-  letter-spacing: -0.06em;
+  font-size: 46px;
+  line-height: 1.04;
+  letter-spacing: 0;
 }
 
 .statistics-hero__summary {
-  max-width: 54ch;
-  margin: 16px 0 0;
+  max-width: 50ch;
+  margin: 0;
   color: #475569;
   font-size: 15px;
-  line-height: 1.75;
+  line-height: 1.7;
+}
+
+.upgrade-decision {
+  display: grid;
+  gap: 8px;
+  max-width: 680px;
+  padding: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 22px;
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.upgrade-decision.is-good {
+  background: rgba(236, 253, 245, 0.72);
+}
+
+.upgrade-decision.is-warning,
+.upgrade-decision.is-attention {
+  background: rgba(255, 247, 237, 0.82);
+}
+
+.upgrade-decision span,
+.upgrade-loop-panel__head span,
+.upgrade-briefing__primary span,
+.upgrade-signal-card span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.upgrade-decision strong {
+  color: #0f172a;
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.upgrade-decision p {
+  margin: 0;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 .statistics-hero__meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 20px;
+  gap: 8px;
+  margin-top: auto;
 }
 
 .statistics-hero__meta span,
@@ -1646,6 +2161,187 @@ watch(scopedProjectId, () => {
   color: #526071;
   font-size: 12px;
   font-weight: 700;
+}
+
+.statistics-hero__meta span {
+  padding: 6px 9px;
+  font-size: 11px;
+}
+
+.upgrade-loop-panel {
+  display: grid;
+  gap: 16px;
+  padding: 22px;
+  border-radius: 30px;
+  background:
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.12), transparent 36%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.78));
+  min-width: 0;
+}
+
+.upgrade-loop-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.upgrade-loop-panel__head div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.upgrade-loop-panel__head strong {
+  color: #0f172a;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.upgrade-loop-panel__head b {
+  display: inline-grid;
+  width: 82px;
+  height: 82px;
+  place-items: center;
+  border-radius: 28px;
+  background: #0f172a;
+  color: #ffffff;
+  font-size: 38px;
+  line-height: 1;
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.16);
+}
+
+.upgrade-loop {
+  display: grid;
+  gap: 10px;
+}
+
+.upgrade-loop__step {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 4px 12px;
+  align-items: center;
+  padding: 13px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.upgrade-loop__step span {
+  grid-row: span 2;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.upgrade-loop__step strong {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 18px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upgrade-loop__step small {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upgrade-loop__step.is-good {
+  border-color: rgba(22, 163, 74, 0.18);
+  background: rgba(236, 253, 245, 0.74);
+}
+
+.upgrade-loop__step.is-warning,
+.upgrade-loop__step.is-attention {
+  border-color: rgba(249, 115, 22, 0.2);
+  background: rgba(255, 247, 237, 0.82);
+}
+
+.upgrade-briefing {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.55fr);
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.upgrade-briefing__primary {
+  display: grid;
+  gap: 10px;
+  padding: 22px;
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at top right, rgba(103, 232, 249, 0.16), transparent 40%),
+    #0f172a;
+  color: #e2e8f0;
+}
+
+.upgrade-briefing__primary span,
+.upgrade-briefing__primary small {
+  color: #a7b5c8;
+}
+
+.upgrade-briefing__primary strong {
+  color: #ffffff;
+  font-size: 23px;
+  line-height: 1.35;
+}
+
+.upgrade-briefing__primary p {
+  margin: 0;
+  color: #dbeafe;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.upgrade-briefing__primary small {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.upgrade-briefing__signals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.upgrade-signal-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(20px);
+}
+
+.upgrade-signal-card strong {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 28px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upgrade-signal-card small {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .statistics-hero__focus {
@@ -1680,7 +2376,7 @@ watch(scopedProjectId, () => {
   font-size: 60px;
   line-height: 1;
   color: #ffffff;
-  letter-spacing: -0.06em;
+  letter-spacing: 0;
 }
 
 .statistics-hero__controls {
@@ -1688,6 +2384,10 @@ watch(scopedProjectId, () => {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: start;
+}
+
+.upgrade-loop-panel .statistics-hero__controls {
+  grid-template-columns: 1fr;
 }
 
 .statistics-hero__controls-main {
@@ -1736,7 +2436,7 @@ watch(scopedProjectId, () => {
 .statistics-hero__flow-card strong {
   color: #0f172a;
   font-size: 28px;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .statistics-hero__flow-card small,
@@ -1768,7 +2468,7 @@ watch(scopedProjectId, () => {
   color: #0f172a;
   font-size: 36px;
   line-height: 1;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
 }
 
 .story-grid {
@@ -1875,7 +2575,7 @@ watch(scopedProjectId, () => {
   color: #0f172a;
   font-size: 30px;
   line-height: 1;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
 }
 
 .signal-list__meta,
@@ -2033,7 +2733,111 @@ watch(scopedProjectId, () => {
   color: #0f172a;
   font-size: 26px;
   font-weight: 700;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
+}
+
+.activity-judgement {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 16px 0 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.activity-judgement strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.activity-judgement span {
+  flex: 0 1 auto;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.activity-chart,
+.project-activity-chart {
+  display: grid;
+  gap: 14px;
+}
+
+.activity-chart__canvas,
+.project-activity-chart__canvas {
+  width: 100%;
+  height: 330px;
+}
+
+.project-activity-chart__canvas {
+  height: 300px;
+}
+
+.activity-chart__legend,
+.activity-stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.activity-chart__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.activity-chart__legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.activity-stat-card {
+  display: grid;
+  flex: 1 1 180px;
+  min-width: 0;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.activity-stat-card span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.activity-stat-card strong {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 17px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-stat-card small {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .rank-list__bar-shell {
@@ -2132,8 +2936,44 @@ watch(scopedProjectId, () => {
 
 .ai-report-panel {
   display: grid;
-  gap: 18px;
-  margin-bottom: 28px;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.ai-report-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.ai-report-collapsed strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.ai-report-collapsed__metrics {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ai-report-collapsed__metrics span {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .ai-report-grid {
@@ -2283,7 +3123,7 @@ watch(scopedProjectId, () => {
   color: #0f172a;
   font-size: 28px;
   line-height: 1;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .session-list {
@@ -2353,6 +3193,7 @@ watch(scopedProjectId, () => {
 
 @media (max-width: 1180px) {
   .statistics-hero,
+  .upgrade-briefing,
   .story-grid,
   .statistics-layout,
   .compact-split,
@@ -2374,6 +3215,10 @@ watch(scopedProjectId, () => {
     padding: 22px;
   }
 
+  .upgrade-briefing__signals {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .statistics-hero__controls {
     grid-template-columns: 1fr;
   }
@@ -2383,6 +3228,7 @@ watch(scopedProjectId, () => {
   }
 
   .statistics-hero__flow,
+  .upgrade-loop,
   .session-summary-grid,
   .live-grid,
   .runtime-grid,
@@ -2394,6 +3240,11 @@ watch(scopedProjectId, () => {
   .trend-chart__canvas {
     height: 280px;
   }
+
+  .activity-chart__canvas,
+  .project-activity-chart__canvas {
+    height: 300px;
+  }
 }
 
 @media (max-width: 680px) {
@@ -2403,6 +3254,8 @@ watch(scopedProjectId, () => {
 
   .statistics-hero__copy,
   .statistics-hero__focus,
+  .upgrade-loop-panel,
+  .upgrade-briefing__primary,
   .story-card,
   .panel-card,
   .summary-card {
@@ -2412,7 +3265,31 @@ watch(scopedProjectId, () => {
 
   .statistics-hero__title {
     max-width: none;
-    font-size: clamp(30px, 10vw, 42px);
+    font-size: 28px;
+  }
+
+  .statistics-hero__copy {
+    min-height: 0;
+    padding: 18px;
+    border-radius: 22px;
+  }
+
+  .upgrade-decision,
+  .upgrade-loop-panel__head,
+  .upgrade-signal-card {
+    border-radius: 18px;
+  }
+
+  .upgrade-loop-panel__head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .upgrade-loop-panel__head b {
+    width: 68px;
+    height: 68px;
+    border-radius: 22px;
+    font-size: 32px;
   }
 
   .statistics-hero__score strong {
@@ -2435,6 +3312,8 @@ watch(scopedProjectId, () => {
   }
 
   .statistics-hero__flow,
+  .upgrade-loop,
+  .upgrade-briefing__signals,
   .session-summary-grid,
   .live-grid,
   .runtime-grid,
@@ -2442,6 +3321,20 @@ watch(scopedProjectId, () => {
   .tool-overview-grid,
   .runtime-columns {
     grid-template-columns: 1fr;
+  }
+
+  .activity-judgement,
+  .ai-report-collapsed {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .activity-judgement span {
+    text-align: left;
+  }
+
+  .ai-report-collapsed__metrics {
+    justify-content: flex-start;
   }
 }
 </style>

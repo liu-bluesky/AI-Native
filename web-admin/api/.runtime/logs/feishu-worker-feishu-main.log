@@ -157,3 +157,102 @@ subprocess.CalledProcessError: Command '['osascript', '-e', 'set volume with out
 2026-04-26 23:00:07,828 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
 [Lark] [2026-04-26 23:00:08,241] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633082881913441243&access_key=816d88442a78c84c931264ee4a8b0b8a&service_id=33554678&ticket=cc0f7ded-f8b0-4825-b502-2121bd786dcc [conn_id=7633082881913441243]
 2026-04-26 23:00:08,241 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633082881913441243&access_key=816d88442a78c84c931264ee4a8b0b8a&service_id=33554678&ticket=cc0f7ded-f8b0-4825-b502-2121bd786dcc [conn_id=7633082881913441243]
+2026-04-27 08:39:26,072 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-27 08:39:56,082] [ERROR] connect failed, err: HTTPSConnectionPool(host='open.feishu.cn', port=443): Max retries exceeded with url: /callback/ws/endpoint (Caused by NameResolutionError("HTTPSConnection(host='open.feishu.cn', port=443): Failed to resolve 'open.feishu.cn' ([Errno 8] nodename nor servname provided, or not known)"))
+2026-04-27 08:39:56,082 ERROR Lark: connect failed, err: HTTPSConnectionPool(host='open.feishu.cn', port=443): Max retries exceeded with url: /callback/ws/endpoint (Caused by NameResolutionError("HTTPSConnection(host='open.feishu.cn', port=443): Failed to resolve 'open.feishu.cn' ([Errno 8] nodename nor servname provided, or not known)"))
+[Lark] [2026-04-27 08:40:01,195] [INFO] trying to reconnect for the 1st time
+2026-04-27 08:40:01,195 INFO Lark: trying to reconnect for the 1st time
+[Lark] [2026-04-27 08:40:31,199] [ERROR] connect failed, err: HTTPSConnectionPool(host='open.feishu.cn', port=443): Max retries exceeded with url: /callback/ws/endpoint (Caused by NameResolutionError("HTTPSConnection(host='open.feishu.cn', port=443): Failed to resolve 'open.feishu.cn' ([Errno 8] nodename nor servname provided, or not known)"))
+2026-04-27 08:40:31,199 ERROR Lark: connect failed, err: HTTPSConnectionPool(host='open.feishu.cn', port=443): Max retries exceeded with url: /callback/ws/endpoint (Caused by NameResolutionError("HTTPSConnection(host='open.feishu.cn', port=443): Failed to resolve 'open.feishu.cn' ([Errno 8] nodename nor servname provided, or not known)"))
+[Lark] [2026-04-27 08:42:31,202] [INFO] trying to reconnect for the 2nd time
+2026-04-27 08:42:31,202 INFO Lark: trying to reconnect for the 2nd time
+[Lark] [2026-04-27 08:43:01,208] [ERROR] connect failed, err: HTTPSConnectionPool(host='open.feishu.cn', port=443): Max retries exceeded with url: /callback/ws/endpoint (Caused by NameResolutionError("HTTPSConnection(host='open.feishu.cn', port=443): Failed to resolve 'open.feishu.cn' ([Errno 8] nodename nor servname provided, or not known)"))
+2026-04-27 08:43:01,208 ERROR Lark: connect failed, err: HTTPSConnectionPool(host='open.feishu.cn', port=443): Max retries exceeded with url: /callback/ws/endpoint (Caused by NameResolutionError("HTTPSConnection(host='open.feishu.cn', port=443): Failed to resolve 'open.feishu.cn' ([Errno 8] nodename nor servname provided, or not known)"))
+[Lark] [2026-04-27 08:45:01,055] [INFO] trying to reconnect for the 3rd time
+2026-04-27 08:45:01,055 INFO Lark: trying to reconnect for the 3rd time
+[Lark] [2026-04-27 08:45:02,430] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633233580807113950&access_key=b2d8740cf36b6b479f1ae1e3e9283ec2&service_id=33554678&ticket=ba4cb203-a425-41c6-b984-2ad72b280a49 [conn_id=7633233580807113950]
+2026-04-27 08:45:02,430 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633233580807113950&access_key=b2d8740cf36b6b479f1ae1e3e9283ec2&service_id=33554678&ticket=ba4cb203-a425-41c6-b984-2ad72b280a49 [conn_id=7633233580807113950]
+[Lark] [2026-04-27 08:58:12,477] [ERROR] receive message loop exit, err: sent 1011 (internal error) keepalive ping timeout; no close frame received [conn_id=7633233580807113950]
+2026-04-27 08:58:12,477 ERROR Lark: receive message loop exit, err: sent 1011 (internal error) keepalive ping timeout; no close frame received [conn_id=7633233580807113950]
+[Lark] [2026-04-27 08:58:12,478] [INFO] disconnected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633233580807113950&access_key=b2d8740cf36b6b479f1ae1e3e9283ec2&service_id=33554678&ticket=ba4cb203-a425-41c6-b984-2ad72b280a49 [conn_id=7633233580807113950]
+2026-04-27 08:58:12,478 INFO Lark: disconnected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633233580807113950&access_key=b2d8740cf36b6b479f1ae1e3e9283ec2&service_id=33554678&ticket=ba4cb203-a425-41c6-b984-2ad72b280a49 [conn_id=7633233580807113950]
+[Lark] [2026-04-27 08:58:37,214] [INFO] trying to reconnect for the 1st time
+2026-04-27 08:58:37,214 INFO Lark: trying to reconnect for the 1st time
+[Lark] [2026-04-27 08:58:37,884] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633237123013201095&access_key=70471ad6fe6f7f79429dadc918361058&service_id=33554678&ticket=30fbf9ee-f279-440b-b392-943bd847e0a1 [conn_id=7633237123013201095]
+2026-04-27 08:58:37,884 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633237123013201095&access_key=70471ad6fe6f7f79429dadc918361058&service_id=33554678&ticket=30fbf9ee-f279-440b-b392-943bd847e0a1 [conn_id=7633237123013201095]
+2026-04-27 09:01:23,370 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-27 09:01:23,905] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633237818215369916&access_key=6eff34a6a3d5f2f98de5d5f72e0f809b&service_id=33554678&ticket=c4b2fd9c-be7a-409a-a8aa-9a2bbcb6fc71 [conn_id=7633237818215369916]
+2026-04-27 09:01:23,905 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633237818215369916&access_key=6eff34a6a3d5f2f98de5d5f72e0f809b&service_id=33554678&ticket=c4b2fd9c-be7a-409a-a8aa-9a2bbcb6fc71 [conn_id=7633237818215369916]
+2026-04-27 09:32:06,614 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-27 09:32:07,294] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633245739502193884&access_key=13955b7dc825171935e4825a1ab2bcef&service_id=33554678&ticket=2e7139ec-15ff-49b3-960f-18e999a7861e [conn_id=7633245739502193884]
+2026-04-27 09:32:07,294 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633245739502193884&access_key=13955b7dc825171935e4825a1ab2bcef&service_id=33554678&ticket=2e7139ec-15ff-49b3-960f-18e999a7861e [conn_id=7633245739502193884]
+2026-04-27 09:32:30 [info     ] agent_loop_start               has_system_prompt=True loop=1 tools_count=25
+2026-04-27 09:32:32,934 INFO httpx: HTTP Request: POST https://api.ikuncode.cc/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-27 09:32:32 [info     ] llm_chunk_sample               chunk_index=1 chunk_keys=['content'] chunk_type=dict
+2026-04-27 09:32:32 [info     ] llm_chunk_sample               chunk_index=2 chunk_keys=['content'] chunk_type=dict
+2026-04-27 09:32:32 [info     ] llm_chunk_sample               chunk_index=3 chunk_keys=['content'] chunk_type=dict
+2026-04-27 09:32:38,346 WARNING services.llm_provider_service: Failed to parse SSE line: data: {"id":"chatcmpl-202604270132317364641898268d9d6OpeK9B6C","object":"chat.completion.chunk","cre, error: list index out of range
+2026-04-27 09:32:38 [info     ] agent_loop_response            has_tool_calls=False response_length=461
+2026-04-27 09:32:38 [info     ] conversation_completed         duration_ms=7679 loops=1 project_id=proj-d16591a6
+2026-04-27 09:32:40,754 ERROR services.system_speech_service: failed to prepare macOS output volume for speech
+Traceback (most recent call last):
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 116, in _prepare_darwin_output_for_speech
+    _set_darwin_output_state(muted=False, volume=target_volume)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 108, in _set_darwin_output_state
+    _run_osascript(script)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 70, in _run_osascript
+    result = subprocess.run(
+             ^^^^^^^^^^^^^^^
+  File "/Users/liulantian/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['osascript', '-e', 'set volume with output muted false']' returned non-zero exit status 1.
+2026-04-27 09:38:52,033 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-27 09:38:52,676] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633247481287019709&access_key=667d9810d86fad014f537d9470c2f9f8&service_id=33554678&ticket=32d40a35-bee3-4e07-b2e2-ff7f122c0102 [conn_id=7633247481287019709]
+2026-04-27 09:38:52,676 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633247481287019709&access_key=667d9810d86fad014f537d9470c2f9f8&service_id=33554678&ticket=32d40a35-bee3-4e07-b2e2-ff7f122c0102 [conn_id=7633247481287019709]
+2026-04-27 09:39:11 [info     ] agent_loop_start               has_system_prompt=True loop=1 tools_count=25
+2026-04-27 09:39:13,823 INFO httpx: HTTP Request: POST https://api.ikuncode.cc/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-27 09:39:13 [info     ] llm_chunk_sample               chunk_index=1 chunk_keys=['content'] chunk_type=dict
+2026-04-27 09:39:13 [info     ] llm_chunk_sample               chunk_index=2 chunk_keys=['content'] chunk_type=dict
+2026-04-27 09:39:13 [info     ] llm_chunk_sample               chunk_index=3 chunk_keys=['content'] chunk_type=dict
+2026-04-27 09:39:19,163 WARNING services.llm_provider_service: Failed to parse SSE line: data: {"id":"chatcmpl-202604270139123342897848268d9d6c5C7c6iu","object":"chat.completion.chunk","cre, error: list index out of range
+2026-04-27 09:39:19 [info     ] agent_loop_response            has_tool_calls=False response_length=461
+2026-04-27 09:39:19 [info     ] conversation_completed         duration_ms=8060 loops=1 project_id=proj-d16591a6
+2026-04-27 09:39:21,608 ERROR services.system_speech_service: failed to prepare macOS output volume for speech
+Traceback (most recent call last):
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 116, in _prepare_darwin_output_for_speech
+    _set_darwin_output_state(muted=False, volume=target_volume)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 108, in _set_darwin_output_state
+    _run_osascript(script)
+  File "/Volumes/苹果1_5T/self/ai-employee/web-admin/api/services/system_speech_service.py", line 70, in _run_osascript
+    result = subprocess.run(
+             ^^^^^^^^^^^^^^^
+  File "/Users/liulantian/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['osascript', '-e', 'set volume with output muted false']' returned non-zero exit status 1.
+2026-04-27 10:05:48,140 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-27 10:05:49,146] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633254432381373628&access_key=7e40a40ae5bd3f1f53632351ce51a9ce&service_id=33554678&ticket=eb7a9cf7-7949-44b5-818c-6c890e971f23 [conn_id=7633254432381373628]
+2026-04-27 10:05:49,146 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633254432381373628&access_key=7e40a40ae5bd3f1f53632351ce51a9ce&service_id=33554678&ticket=eb7a9cf7-7949-44b5-818c-6c890e971f23 [conn_id=7633254432381373628]
+2026-04-27 10:18:03,292 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-27 10:18:04,248] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633257566554197211&access_key=ebf2cb165781a8d0ffa564d6dc9b5271&service_id=33554678&ticket=4ceff302-a26b-4c7b-8aae-bb019d257fea [conn_id=7633257566554197211]
+2026-04-27 10:18:04,248 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633257566554197211&access_key=ebf2cb165781a8d0ffa564d6dc9b5271&service_id=33554678&ticket=4ceff302-a26b-4c7b-8aae-bb019d257fea [conn_id=7633257566554197211]
+2026-04-27 10:22:07,896 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-27 10:22:08,859] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633258631576112348&access_key=e1b5c4ce635e74ba7b99d132ba3f1dd6&service_id=33554678&ticket=374bae1e-3bd3-4c53-9a4a-0fcfc2b112e3 [conn_id=7633258631576112348]
+2026-04-27 10:22:08,859 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633258631576112348&access_key=e1b5c4ce635e74ba7b99d132ba3f1dd6&service_id=33554678&ticket=374bae1e-3bd3-4c53-9a4a-0fcfc2b112e3 [conn_id=7633258631576112348]
+2026-04-27 10:22:56,032 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-27 10:22:56,606] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633258822606359750&access_key=7eaa6b08782a6c0cb04420cfb6a7ff71&service_id=33554678&ticket=0b5ec4ed-7c99-4213-9cc6-8b96c90f42ea [conn_id=7633258822606359750]
+2026-04-27 10:22:56,606 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633258822606359750&access_key=7eaa6b08782a6c0cb04420cfb6a7ff71&service_id=33554678&ticket=0b5ec4ed-7c99-4213-9cc6-8b96c90f42ea [conn_id=7633258822606359750]
+2026-04-27 10:30:27,131 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-27 10:30:27,702] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633260753021635789&access_key=638fd6d3d9e5b2209877022da5295c08&service_id=33554678&ticket=8836845b-cec1-4655-bf89-1ce8db85643f [conn_id=7633260753021635789]
+2026-04-27 10:30:27,702 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633260753021635789&access_key=638fd6d3d9e5b2209877022da5295c08&service_id=33554678&ticket=8836845b-cec1-4655-bf89-1ce8db85643f [conn_id=7633260753021635789]
+2026-04-27 10:30:38 [info     ] agent_loop_start               has_system_prompt=True loop=1 tools_count=25
+2026-04-27 10:30:41,038 INFO httpx: HTTP Request: POST https://api.ikuncode.cc/v1/chat/completions "HTTP/1.1 200 OK"
+2026-04-27 10:30:41 [info     ] llm_chunk_sample               chunk_index=1 chunk_keys=['content'] chunk_type=dict
+2026-04-27 10:30:41 [info     ] llm_chunk_sample               chunk_index=2 chunk_keys=['content'] chunk_type=dict
+2026-04-27 10:30:41 [info     ] llm_chunk_sample               chunk_index=3 chunk_keys=['content'] chunk_type=dict
+2026-04-27 10:30:46,434 WARNING services.llm_provider_service: Failed to parse SSE line: data: {"id":"chatcmpl-202604270230398918361468268d9d695cfIJx6","object":"chat.completion.chunk","cre, error: list index out of range
+2026-04-27 10:30:46 [info     ] agent_loop_response            has_tool_calls=False response_length=461
+2026-04-27 10:30:46 [info     ] conversation_completed         duration_ms=7677 loops=1 project_id=proj-d16591a6
+2026-04-27 10:30:48,946 WARNING services.feishu_archive_writer_service: skip feishu bitable attachment upload because record_id was not found
+2026-04-27 10:54:56,678 INFO feishu_long_connection_worker: Starting Feishu long-connection worker for connector feishu-main
+[Lark] [2026-04-27 10:54:57,470] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633267096062987202&access_key=fae440e02a2efa59aa385b56f8e4bb44&service_id=33554678&ticket=2a902bd2-fe61-40c3-946a-33ccf4c4bd69 [conn_id=7633267096062987202]
+2026-04-27 10:54:57,470 INFO Lark: connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7633267096062987202&access_key=fae440e02a2efa59aa385b56f8e4bb44&service_id=33554678&ticket=2a902bd2-fe61-40c3-946a-33ccf4c4bd69 [conn_id=7633267096062987202]

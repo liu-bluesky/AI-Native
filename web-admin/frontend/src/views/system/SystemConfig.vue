@@ -546,6 +546,18 @@
                   </div>
                 </el-form-item>
 
+                <el-form-item label="提醒音量">
+                  <el-input-number
+                    v-model="form.voice_output_reminder_volume"
+                    :min="0"
+                    :max="100"
+                    :step="5"
+                  />
+                  <div class="field-desc">
+                    后台提醒使用系统原生播报时临时设置的输出音量，默认 40。
+                  </div>
+                </el-form-item>
+
                 <div class="voice-config-divider" />
 
                 <div class="voice-config-section__head">
@@ -1465,6 +1477,7 @@ const form = ref({
   voice_output_provider_id: "",
   voice_output_model_name: "",
   voice_output_voice: "",
+  voice_output_reminder_volume: 40,
   global_assistant_enabled: true,
   global_assistant_greeting_enabled: true,
   global_assistant_greeting_text: DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
@@ -2079,6 +2092,10 @@ function applyConfigToForm(config, options = {}) {
     voice_output_provider_id: String(payload.voice_output_provider_id || ""),
     voice_output_model_name: String(payload.voice_output_model_name || ""),
     voice_output_voice: String(payload.voice_output_voice || ""),
+    voice_output_reminder_volume: Math.max(
+      0,
+      Math.min(100, Number(payload.voice_output_reminder_volume ?? 40) || 40),
+    ),
     global_assistant_enabled: payload.global_assistant_enabled !== false,
     global_assistant_greeting_enabled:
       payload.global_assistant_greeting_enabled !== false,
@@ -2723,6 +2740,13 @@ async function saveConfig() {
       voice_output_provider_id: String(form.value.voice_output_provider_id || ""),
       voice_output_model_name: String(form.value.voice_output_model_name || ""),
       voice_output_voice: String(form.value.voice_output_voice || "").trim(),
+      voice_output_reminder_volume: Math.max(
+        0,
+        Math.min(
+          100,
+          Number(form.value.voice_output_reminder_volume ?? 40) || 40,
+        ),
+      ),
       global_assistant_enabled: Boolean(form.value.global_assistant_enabled),
       global_assistant_greeting_enabled: Boolean(
         form.value.global_assistant_greeting_enabled,

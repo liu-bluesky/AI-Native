@@ -712,6 +712,37 @@
                                 : '')
                             "
                           ></div>
+                          <div
+                            v-if="formJsonArtifactsForMessage(item).length"
+                            class="message-form-json-artifacts"
+                          >
+                            <article
+                              v-for="(artifact, artifactIndex) in formJsonArtifactsForMessage(item)"
+                              :key="`form-json-${idx}-${artifactIndex}`"
+                              class="message-form-json-card"
+                            >
+                              <div class="message-form-json-card__head">
+                                <div>
+                                  <strong>{{ artifact.title }}</strong>
+                                  <p>{{ artifact.fieldCount }} 个字段，可复制 formJson 或直接预览。</p>
+                                </div>
+                                <el-button
+                                  size="small"
+                                  type="primary"
+                                  plain
+                                  @click="copyFormJsonArtifact(artifact)"
+                                >
+                                  复制 JSON
+                                </el-button>
+                              </div>
+                              <div class="message-form-json-card__preview">
+                                <ElementEasyForm
+                                  :form-json="artifact.formJson"
+                                  class="message-form-json-card__easy-form"
+                                />
+                              </div>
+                            </article>
+                          </div>
                         </template>
                         <!-- Images -->
                         <div
@@ -3104,7 +3135,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { ElementEasyForm } from "element-easy-form";
@@ -3477,6 +3508,7 @@ const mcpModules = ref({
 });
 const runtimeExternalTools = ref([]);
 const messages = ref([]);
+const formJsonArtifactCache = new Map();
 const chatSessions = ref([]);
 const groupChatDialogVisible = ref(false);
 const groupChatCreating = ref(false);
@@ -5153,6 +5185,16 @@ const composerSlashCommands = computed(() => {
         "强制优先使用 lark-cli 执行飞书相关操作，例如 /lark-cli auth status 或 /feishucli 给某人发 test。",
       assistActionId: "",
     },
+    {
+      id: "form_json",
+      kind: "form_json",
+      command: "/form-json",
+      aliases: ["/form", "/表单", "/表单数据"],
+      label: "表单数据",
+      description:
+        "让大模型根据字段描述生成 ElementEasyForm formJson，并在消息里长期保留预览和复制入口。",
+      assistActionId: "",
+    },
   ];
   for (const action of composerAssistActions.value) {
     commands.push({
@@ -6700,6 +6742,111 @@ function formatContent(text) {
     return marked.parse(displayText, { renderer: markdownRenderer });
   } catch (e) {
     return displayText;
+  }
+}
+
+function extractFormJsonCodeBlocks(text) {
+  const blocks = [];
+  const pattern = /```([^\n`]*)\n([\s\S]*?)```/g;
+  for (const match of String(text || "").matchAll(pattern)) {
+    const language = normalizeCodeLanguage(match?.[1] || "");
+    if (!["form-json", "formjson", "element-easy-form"].includes(language)) {
+      continue;
+    }
+    const content = String(match?.[2] || "").trim();
+    if (content) blocks.push(content);
+  }
+  return blocks;
+}
+
+function normalizeFormJsonArtifact(rawJson) {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(String(rawJson || "").trim());
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const model =
+    parsed.model && typeof parsed.model === "object" && !Array.isArray(parsed.model)
+      ? parsed.model
+      : {};
+  const schema = Array.isArray(parsed.schema) ? parsed.schema : [];
+  if (!schema.length) return null;
+  const formJson = reactive({
+    model,
+    formAttrs:
+      parsed.formAttrs && typeof parsed.formAttrs === "object"
+        ? parsed.formAttrs
+        : { "label-position": "top", "status-icon": true },
+    rowAttrs:
+      parsed.rowAttrs && typeof parsed.rowAttrs === "object"
+        ? parsed.rowAttrs
+        : { gutter: 16 },
+    schema,
+  });
+  return {
+    formJson,
+    rawText: JSON.stringify(
+      {
+        model,
+        formAttrs:
+          parsed.formAttrs && typeof parsed.formAttrs === "object"
+            ? parsed.formAttrs
+            : { "label-position": "top", "status-icon": true },
+        rowAttrs:
+          parsed.rowAttrs && typeof parsed.rowAttrs === "object"
+            ? parsed.rowAttrs
+            : { gutter: 16 },
+        schema,
+      },
+      null,
+      2,
+    ),
+  };
+}
+
+function getFormJsonArtifactCacheKey(item, block, index) {
+  const messageKey = String(item?.id || item?.created_at || item?.time || "").trim();
+  if (messageKey) return `${messageKey}:${index}:${block}`;
+  return `${String(item?.role || "assistant")}:${index}:${block}`;
+}
+
+function formJsonArtifactsForMessage(item) {
+  if (String(item?.role || "").trim() === "user") return [];
+  return extractFormJsonCodeBlocks(item?.content)
+    .map((block, index) => {
+      const cacheKey = getFormJsonArtifactCacheKey(item, block, index);
+      const cached = formJsonArtifactCache.get(cacheKey);
+      if (cached) return cached;
+      const artifact = normalizeFormJsonArtifact(block);
+      if (artifact) {
+        formJsonArtifactCache.set(cacheKey, artifact);
+      }
+      return artifact;
+    })
+    .filter(Boolean)
+    .map((artifact, index) => ({
+      ...artifact,
+      title: index === 0 ? "表单数据预览" : `表单数据预览 ${index + 1}`,
+      fieldCount: artifact.formJson.schema.length,
+    }));
+}
+
+async function copyFormJsonArtifact(artifact) {
+  const formJson = artifact?.formJson;
+  const content = formJson
+    ? JSON.stringify(formJson, null, 2)
+    : String(artifact?.rawText || "").trim();
+  if (!content) {
+    ElMessage.warning("当前表单 JSON 无法复制");
+    return;
+  }
+  try {
+    await writeClipboardText(content);
+    ElMessage.success("已复制表单 JSON");
+  } catch {
+    ElMessage.error("复制失败");
   }
 }
 
@@ -9473,6 +9620,46 @@ function buildLarkCliCommandPrompt(commandPrompt) {
     "- 如果卡在浏览器授权、系统确认或人工输入阻塞点，先执行到阻塞点，再明确说明当前等待什么，不要提前收口。",
     "",
     `本轮目标：${normalizedPrompt}`,
+  ].join("\n");
+}
+
+function buildFormJsonCommandPrompt(commandPrompt) {
+  const normalizedPrompt = String(commandPrompt || "").trim();
+  return [
+    "请根据下面的字段或表单需求，生成 element-easy-form 的 ElementEasyForm 可直接渲染的 formJson。",
+    "",
+    "输出要求：",
+    "- 必须输出一个严格 JSON 代码块，代码块语言标记必须是 form-json。",
+    "- JSON 顶层必须包含 model、formAttrs、rowAttrs、schema。",
+    "- schema[].componentName 只允许使用 ElInput、ElInputNumber、ElSelect、ElOption、ElDatePicker、ElSwitch、ElRadioGroup、ElRadioButton、ElCheckboxGroup、ElCheckbox。",
+    "- 允许输出 element-easy-form/drag-form 支持的动态能力：hidden、rules、events；不要输出 render、renderLabel 或自定义组件。",
+    "- 需要动态显示/隐藏时，必须给目标字段配置 schema[].hidden。优先使用 hidden.type=\"function\" 和 hidden.dataJs，格式固定为：function hidden(config,data){ return <布尔表达式>; }，返回 true 表示隐藏，返回 false 表示显示。",
+    "- hidden.dataJs 只能访问 config 和 data，不能访问 window、document、localStorage、fetch、XMLHttpRequest、eval、Function、import、globalThis、this、prototype、constructor，也不能写异步代码或副作用代码。",
+    "- 简单条件也可以使用 hidden.type=\"select\"，格式为 {\"matchPattern\":\"&&\",\"type\":\"select\",\"dataSelect\":[{\"prop\":\"字段prop\",\"type\":\"string\",\"compare\":\"!=\",\"value\":\"\"}],\"value\":false}；value=false 表示条件成立时显示、条件不成立时隐藏。",
+    "- 需要联动、格式化或清空依赖字段时，可以输出 events 数组；事件函数必须是字符串形式的 Element Plus 事件处理函数，例如 {\"prop\":\"change\",\"defaultValue\":\"function event(config,data,val){ data.department = ''; }\"}，同样不能访问浏览器全局对象或执行副作用。",
+    "- 校验规则使用 Element Plus rules；必填字段必须输出 rules，非必填字段不要加 required。",
+    "- model 必须包含每个 schema 字段的初始值。",
+    "- schema[].prop 必须和 model 字段一一对应，字段名使用英文 snake_case。",
+    "- 下拉、单选、多选必须提供 children，并给子组件 attrs.label 和 attrs.value。",
+    "- ElInput 建议 attrs.clearable=true；ElSelect 建议 attrs.clearable=true、filterable=true；ElDatePicker 建议提供 type 和 value-format；ElSwitch 初始值必须是 boolean。",
+    "- 表单属性建议使用 label-position、status-icon；布局建议 rowAttrs.gutter=16，字段 colAttrs 使用 xs/sm/span。",
+    "- 除 JSON 代码块外，可以在前面用一句话说明生成结果，但不要把 JSON 拆成多个代码块。",
+    "",
+    "示例输出格式：",
+    "```form-json",
+    "{",
+    '  "model": { "name": "" },',
+    '  "formAttrs": { "label-position": "top", "status-icon": true },',
+    '  "rowAttrs": { "gutter": 16 },',
+    '  "schema": [',
+    '    { "label": "姓名", "prop": "name", "componentName": "ElInput", "attrs": { "placeholder": "请输入姓名", "clearable": true }, "rules": [{ "required": true, "message": "请输入姓名", "trigger": "blur" }], "colAttrs": { "xs": 24, "sm": 12 } },',
+    '    { "label": "部门", "prop": "department", "componentName": "ElSelect", "attrs": { "placeholder": "请选择部门", "clearable": true, "filterable": true }, "children": [{ "componentName": "ElOption", "attrs": { "label": "研发部", "value": "rd" } }], "hidden": { "matchPattern": "&&", "type": "function", "dataSelect": [], "value": false, "dataJs": "function hidden(config,data){ return !data.phone; }" }, "colAttrs": { "xs": 24, "sm": 12 } }',
+    "  ]",
+    "}",
+    "```",
+    "",
+    "用户字段/需求：",
+    normalizedPrompt || "请先根据常见业务表单生成一个包含 5 个字段的示例表单。",
   ].join("\n");
 }
 
@@ -13940,6 +14127,12 @@ async function doSend() {
       setSkillResourceDirectory(resolveLarkCliSkillDirectory(), { silent: true });
     }
     userPrompt = buildLarkCliCommandPrompt(slashCommand.prompt);
+  } else if (slashCommand?.entry?.kind === "form_json") {
+    if (!slashCommand.prompt) {
+      ElMessage.warning("请在 /form-json 后输入字段或表单需求");
+      return;
+    }
+    userPrompt = buildFormJsonCommandPrompt(slashCommand.prompt);
   } else if (slashCommand?.entry?.kind === "assist") {
     userPrompt =
       slashCommand.prompt || String(slashAssistAction?.seedText || "").trim();
@@ -16268,6 +16461,57 @@ onUnmounted(() => {
   display: grid;
   gap: 10px;
   margin-bottom: 12px;
+}
+
+.message-form-json-artifacts {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.message-form-json-card {
+  display: grid;
+  gap: 12px;
+  max-width: 760px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94)),
+    rgba(255, 255, 255, 0.96);
+}
+
+.message-form-json-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.message-form-json-card__head strong {
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.message-form-json-card__head p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.message-form-json-card__preview {
+  max-height: 420px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: #fff;
+}
+
+.message-form-json-card__easy-form :deep(.el-row) {
+  row-gap: 2px;
 }
 
 .message-operation-card {

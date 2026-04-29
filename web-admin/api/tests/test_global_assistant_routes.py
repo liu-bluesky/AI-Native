@@ -1313,6 +1313,7 @@ def test_bot_connectors_route_persists_to_dedicated_store(tmp_path, monkeypatch)
                     "app_secret": "feishu-app-secret",
                     "verification_token": "verify-token",
                     "encrypt_key": "encrypt-key",
+                    "reply_identity": "user",
                     "project_id": "proj-d16591a6",
                     "guide_url": "https://example.com/feishu",
                     "sort_order": 15,
@@ -1341,6 +1342,8 @@ def test_bot_connectors_route_persists_to_dedicated_store(tmp_path, monkeypatch)
     assert items[0]["system_prompt"] == "你是飞书主机器人，只处理项目协作问题。"
     assert items[0]["verification_token"] == "verify-token"
     assert items[0]["encrypt_key"] == "encrypt-key"
+    assert items[0]["reply_identity"] == "user"
+    assert items[1]["reply_identity"] == "bot"
     assert items[1]["name"] == "测试用例机器人"
     assert store_factory.bot_connector_store.list_all() == items
 

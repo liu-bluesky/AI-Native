@@ -87,10 +87,12 @@ class ProjectChatStorePostgres:
         username: str,
         title: str = "新对话",
         source_context: dict | None = None,
+        session_id: str = "",
     ) -> ProjectChatSession:
         context = source_context if isinstance(source_context, dict) else {}
+        normalized_session_id = str(session_id or "").strip()
         normalized = ProjectChatSession(
-            id=f"chat-session-{uuid.uuid4().hex[:12]}",
+            id=normalized_session_id or f"chat-session-{uuid.uuid4().hex[:12]}",
             project_id=str(project_id or "").strip(),
             username=str(username or "").strip(),
             title=str(title or "新对话").strip() or "新对话",
@@ -110,6 +112,17 @@ class ProjectChatStorePostgres:
                     created_at, updated_at, last_message_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    project_id = EXCLUDED.project_id,
+                    username = EXCLUDED.username,
+                    title = EXCLUDED.title,
+                    source_type = EXCLUDED.source_type,
+                    platform = EXCLUDED.platform,
+                    connector_id = EXCLUDED.connector_id,
+                    external_chat_id = EXCLUDED.external_chat_id,
+                    external_chat_name = EXCLUDED.external_chat_name,
+                    thread_key = EXCLUDED.thread_key,
+                    updated_at = NOW()
                 """,
                 (
                     normalized.id,

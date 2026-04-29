@@ -100,7 +100,7 @@
               'is-resizing': resizingWindowId === window.id,
             }"
             :style="windowStyle(window)"
-            @pointerdown="$emit('focus-window', window.id)"
+            @pointerdown="handleWindowPointerDown(window)"
           >
             <div
               class="desktop-system__window-bar"
@@ -147,7 +147,7 @@
               </div>
             </div>
 
-            <div v-if="!window.minimized" class="desktop-system__window-body">
+            <div v-show="!window.minimized" class="desktop-system__window-body">
               <div class="desktop-system__window-summary">
                 <p>{{ window.summary }}</p>
               </div>
@@ -202,62 +202,66 @@
           {{ dockTooltipLabel }}
         </span>
 
-        <button
-          type="button"
-          class="desktop-system__dock-item desktop-system__dock-item--launcher"
-          :class="{ 'is-active': showLauncher }"
-          :style="dockLauncherStyle"
-          aria-label="启动台"
-          @pointerenter="showDockTooltip('启动台', $event)"
-          @pointerleave="clearDockTooltip"
-          @focus="showDockTooltip('启动台', $event)"
-          @blur="clearDockTooltip"
-          @click="$emit('toggle-launcher')"
-        >
-          <span class="desktop-system__dock-icon">+</span>
-        </button>
-
-        <span
-          v-for="item in dockItems"
-          :key="item.id"
-          class="desktop-system__dock-item-shell"
-          :style="dockItemShellStyle(item)"
-          :data-dock-app-id="item.id"
-          :class="{
-            'is-dock-dragging': draggingDockAppId === item.id,
-            'is-dock-drop-target': dockDropTargetId === item.id && draggingDockAppId !== item.id,
-          }"
-          @pointerenter="showDockTooltip(item.label, $event)"
-          @pointerleave="clearDockTooltip"
-          @pointerdown="startDockDrag($event, item)"
-        >
+        <div class="desktop-system__dock-scroll">
           <button
             type="button"
-            class="desktop-system__dock-item"
-            :class="{
-              'is-active': activeWindow?.appId === item.id,
-              'is-open': openAppIds.includes(item.id),
-            }"
-            :style="dockItemStyle(item)"
-            :aria-label="item.label"
-            @focus="showDockTooltip(item.label, $event)"
+            class="desktop-system__dock-item desktop-system__dock-item--launcher"
+            :class="{ 'is-active': showLauncher }"
+            :style="dockLauncherStyle"
+            aria-label="启动台"
+            @pointerenter="showDockTooltip('启动台', $event)"
+            @pointerleave="clearDockTooltip"
+            @focus="showDockTooltip('启动台', $event)"
             @blur="clearDockTooltip"
-            @click="handleDockItemClick(item)"
+            @click="$emit('toggle-launcher')"
           >
-            <span class="desktop-system__dock-icon" :style="desktopIconStyle(item)">{{
-              item.icon?.label || item.shortLabel
-            }}</span>
+            <span class="desktop-system__dock-icon">+</span>
+            <span class="desktop-system__dock-label">启动台</span>
           </button>
-          <button
-            v-if="item.dockRemovable === true"
-            type="button"
-            class="desktop-system__dock-remove"
-            aria-label="从 Dock 移除"
-            @click.stop="$emit('unpin-dock-app', item)"
+
+          <span
+            v-for="item in dockItems"
+            :key="item.id"
+            class="desktop-system__dock-item-shell"
+            :style="dockItemShellStyle(item)"
+            :data-dock-app-id="item.id"
+            :class="{
+              'is-dock-dragging': draggingDockAppId === item.id,
+              'is-dock-drop-target': dockDropTargetId === item.id && draggingDockAppId !== item.id,
+            }"
+            @pointerenter="showDockTooltip(item.label, $event)"
+            @pointerleave="clearDockTooltip"
+            @pointerdown="startDockDrag($event, item)"
           >
-            ×
-          </button>
-        </span>
+            <button
+              type="button"
+              class="desktop-system__dock-item"
+              :class="{
+                'is-active': activeWindow?.appId === item.id,
+                'is-open': openAppIds.includes(item.id),
+              }"
+              :style="dockItemStyle(item)"
+              :aria-label="item.label"
+              @focus="showDockTooltip(item.label, $event)"
+              @blur="clearDockTooltip"
+              @click="handleDockItemClick(item)"
+            >
+              <span class="desktop-system__dock-icon" :style="desktopIconStyle(item)">{{
+                item.icon?.label || item.shortLabel
+              }}</span>
+              <span class="desktop-system__dock-label">{{ item.label }}</span>
+            </button>
+            <button
+              v-if="item.dockRemovable === true"
+              type="button"
+              class="desktop-system__dock-remove"
+              aria-label="从 Dock 移除"
+              @click.stop="$emit('unpin-dock-app', item)"
+            >
+              ×
+            </button>
+          </span>
+        </div>
       </nav>
     </div>
   </div>
@@ -333,11 +337,7 @@ const activeWindow = computed(
   () => props.windows.find((item) => item.id === props.activeWindowId) || null,
 );
 
-const visibleWindows = computed(() =>
-  [...props.windows].sort(
-    (left, right) => Number(left.zIndex || 0) - Number(right.zIndex || 0),
-  ),
-);
+const visibleWindows = computed(() => props.windows);
 
 const openAppIds = computed(() => props.windows.map((item) => item.appId));
 const hasMaximizedWindow = computed(() =>
@@ -735,6 +735,12 @@ function showDockTooltip(label, event) {
 
 function clearDockTooltip() {
   dockTooltipVisible.value = false;
+}
+
+function handleWindowPointerDown(desktopWindow) {
+  const targetId = String(desktopWindow?.id || "").trim();
+  if (!targetId || targetId === props.activeWindowId) return;
+  emit("focus-window", targetId);
 }
 
 function startWindowDrag(event, desktopWindow) {
@@ -1660,9 +1666,8 @@ onBeforeUnmount(() => {
   bottom: max(12px, env(safe-area-inset-bottom));
   z-index: 80;
   transform: translateX(-50%);
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
+  max-width: calc(100vw - 24px);
+  display: block;
   padding: 9px 12px;
   border-radius: 999px;
   border: 1px solid var(--dock-surface-border);
@@ -1681,6 +1686,25 @@ onBeforeUnmount(() => {
   will-change: transform, opacity;
   overflow: visible;
   isolation: isolate;
+}
+
+.desktop-system__dock-scroll {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  max-width: calc(100vw - 48px);
+  margin: -8px;
+  padding: 8px;
+  overflow-x: auto;
+  overflow-y: visible;
+  scrollbar-width: none;
+}
+
+.desktop-system__dock-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .desktop-system__dock::before,
@@ -1789,10 +1813,11 @@ onBeforeUnmount(() => {
 }
 
 .desktop-system__dock-item {
-  min-width: 62px;
+  min-width: 76px;
   display: grid;
+  gap: 5px;
   justify-items: center;
-  padding: 9px 10px;
+  padding: 8px 10px 13px;
   border: 0;
   border-radius: 16px;
   background: linear-gradient(
@@ -1830,7 +1855,7 @@ onBeforeUnmount(() => {
   width: 6px;
   height: 6px;
   position: absolute;
-  bottom: 2px;
+  bottom: 3px;
   border-radius: 999px;
   background: var(--dock-indicator);
   opacity: 1;
@@ -1841,9 +1866,9 @@ onBeforeUnmount(() => {
 }
 
 .desktop-system__dock-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 14px;
+  width: 36px;
+  height: 36px;
+  border-radius: 13px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1860,6 +1885,19 @@ onBeforeUnmount(() => {
   font-weight: 800;
   color: var(--desktop-app-icon-text, var(--dock-icon-text));
   text-shadow: 0 1px 1px rgba(15, 23, 42, 0.18);
+}
+
+.desktop-system__dock-label {
+  width: 100%;
+  max-width: 72px;
+  overflow: hidden;
+  color: var(--dock-label-color);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.15;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .desktop-system__dock-remove {
@@ -1920,14 +1958,18 @@ onBeforeUnmount(() => {
 
   .desktop-system__dock {
     width: calc(100% - 20px);
-    justify-content: space-between;
-    gap: 6px;
     padding: 8px 10px;
+  }
+
+  .desktop-system__dock-scroll {
+    width: 100%;
+    max-width: none;
+    gap: 6px;
   }
 
   .desktop-system__dock-item {
     min-width: 0;
-    flex: 1 1 0;
+    width: 68px;
   }
 
   .desktop-system__window {

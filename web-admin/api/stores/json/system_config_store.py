@@ -721,6 +721,11 @@ def normalize_bot_platform_connectors(value: object) -> list[dict[str, object]]:
                 "encrypt_key": str(raw_item.get("encrypt_key") or "").strip()[:200],
                 "event_receive_mode": event_receive_mode,
                 "auto_start_worker": bool(raw_item.get("auto_start_worker", False)),
+                "reply_identity": (
+                    str(raw_item.get("reply_identity") or "bot").strip().lower()
+                    if str(raw_item.get("reply_identity") or "bot").strip().lower() in {"bot", "user"}
+                    else "bot"
+                ),
                 "project_id": str(raw_item.get("project_id") or "").strip()[:80],
                 "guide_url": str(raw_item.get("guide_url") or "").strip()[:500],
                 "sort_order": sort_order,
@@ -968,6 +973,7 @@ class SystemConfig:
     voice_output_provider_id: str = ""
     voice_output_model_name: str = ""
     voice_output_voice: str = ""
+    voice_output_reminder_volume: int = 40
     global_assistant_enabled: bool = True
     global_assistant_greeting_enabled: bool = True
     global_assistant_greeting_text: str = DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT
@@ -1058,6 +1064,11 @@ class SystemConfig:
         self.voice_output_provider_id = str(self.voice_output_provider_id or "").strip()[:120]
         self.voice_output_model_name = str(self.voice_output_model_name or "").strip()[:160]
         self.voice_output_voice = str(self.voice_output_voice or "").strip()[:200]
+        try:
+            self.voice_output_reminder_volume = int(self.voice_output_reminder_volume)
+        except (TypeError, ValueError):
+            self.voice_output_reminder_volume = 40
+        self.voice_output_reminder_volume = max(0, min(100, self.voice_output_reminder_volume))
         self.global_assistant_chat_provider_id = str(
             self.global_assistant_chat_provider_id or ""
         ).strip()[:120]
