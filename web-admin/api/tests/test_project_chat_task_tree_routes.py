@@ -1889,6 +1889,65 @@ def test_project_requirement_records_route_hides_query_cli_shadow_chain_near_rea
     assert payload["task_sessions"][0]["chat_session_id"] == "cli.proj-1.20260416T075700.host01.1001.abc123"
 
 
+def test_project_requirement_records_route_hides_query_cli_short_title_shadow_chain(
+    tmp_path,
+    monkeypatch,
+):
+    from routers import projects as projects_router
+    from stores.json.project_chat_task_store import ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+
+    projects_router._project_requirement_records_local_cache.clear()
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-shadow-short", name="项目一"))
+
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-query-cli-short",
+            project_id="proj-shadow-short",
+            username="tester",
+            chat_session_id="query-cli.proj-1.tester.req-1",
+            source_session_id="ws-query-cli-short",
+            title="UI 登录页 记住密码 app h5",
+            root_goal="UI 登录页 记住密码 app h5",
+            status="verifying",
+            lifecycle_status="active",
+            created_at="2026-04-29T09:29:10+00:00",
+            updated_at="2026-04-29T09:29:10+00:00",
+        )
+    )
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-formal-login",
+            project_id="proj-shadow-short",
+            username="tester",
+            chat_session_id="chat-session-89ec4d773d54",
+            source_chat_session_id="chat-session-89ec4d773d54",
+            source_session_id="ws-formal-login",
+            title="#/pages/login 登录页调整按照图片，并且添加记住密码操作，兼容 app h5",
+            root_goal="#/pages/login 登录页调整按照图片，并且添加记住密码操作，兼容 app h5",
+            status="done",
+            lifecycle_status="archived",
+            archived_reason="completed_task_closed",
+            created_at="2026-04-29T09:28:13+00:00",
+            updated_at="2026-04-29T09:38:30+00:00",
+        )
+    )
+
+    response = client.get("/api/projects/proj-shadow-short/requirement-records")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["detailRound"]["chatSessionId"] == "chat-session-89ec4d773d54"
+    assert len(payload["task_sessions"]) == 1
+    assert payload["task_sessions"][0]["chat_session_id"] == "chat-session-89ec4d773d54"
+
+
 def test_project_requirement_records_route_keeps_same_goal_query_cli_history_when_time_gap_is_large(
     tmp_path,
     monkeypatch,

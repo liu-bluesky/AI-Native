@@ -12886,6 +12886,78 @@ def test_query_mcp_list_recent_project_requirements_supports_recent_and_date_fil
     assert filtered["requirements"][0]["requirement_title"] == "恢复统一查询 MCP 地址配置"
 
 
+def test_query_mcp_requirement_history_filters_query_cli_short_title_shadow(monkeypatch):
+    registered_tools, _registered_resources, _saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    formal_session_id = registered_tools["start_work_session"](
+        "proj-1",
+        employee_id="emp-1",
+        goal="#/pages/login 登录页调整按照图片，并且添加记住密码操作，兼容 app h5",
+        phase="analysis",
+        step="梳理 /pages/login 的现状与改动范围",
+        chat_session_id="chat-session-89ec4d773d54",
+    )["session_id"]
+    registered_tools["save_work_facts"](
+        "proj-1",
+        employee_id="emp-1",
+        session_id=formal_session_id,
+        chat_session_id="chat-session-89ec4d773d54",
+        goal="#/pages/login 登录页调整按照图片，并且添加记住密码操作，兼容 app h5",
+        phase="completed",
+        step="delivery",
+        facts=["登录页已按图片重构，并新增 rememberLoginInfo 本地记住密码逻辑。"],
+        status="done",
+        verification=["node 静态解析 pages/login.vue script 通过"],
+    )
+
+    shadow_session_id = registered_tools["start_work_session"](
+        "proj-1",
+        employee_id="emp-1",
+        goal="UI 登录页 记住密码 app h5",
+        phase="analysis",
+        step="梳理 当前需求 的现状与改动范围",
+        chat_session_id="query-cli.proj-1.emp-1.req-1",
+    )["session_id"]
+    registered_tools["append_session_event"](
+        "proj-1",
+        employee_id="emp-1",
+        session_id=shadow_session_id,
+        chat_session_id="query-cli.proj-1.emp-1.req-1",
+        event_type="task_node_progressed",
+        content="影子任务进入验证中",
+        goal="UI 登录页 记住密码 app h5",
+        phase="analysis",
+        step="梳理 当前需求 的现状与改动范围",
+        status="verifying",
+    )
+
+    timestamps = [
+        "2026-04-29T09:28:13+00:00",
+        "2026-04-29T09:38:30+00:00",
+        "2026-04-29T09:29:10+00:00",
+        "2026-04-29T09:29:20+00:00",
+    ]
+    for event, timestamp in zip(saved_work_session_events, timestamps):
+        event.created_at = timestamp
+        event.updated_at = timestamp
+    saved_work_session_events[0].task_tree_chat_session_id = "chat-session-89ec4d773d54"
+    saved_work_session_events[1].task_tree_chat_session_id = "chat-session-89ec4d773d54"
+    saved_work_session_events[2].task_tree_chat_session_id = "query-cli.proj-1.emp-1.req-1"
+    saved_work_session_events[3].task_tree_chat_session_id = "query-cli.proj-1.emp-1.req-1"
+
+    result = registered_tools["get_requirement_history"](
+        "proj-1",
+        keyword="登录页 记住密码 app h5",
+        employee_id="emp-1",
+        limit=5,
+    )
+
+    assert result["source"] == "work-session"
+    assert result["total"] == 1
+    assert result["matched_requirement"]["requirement_title"] == "#/pages/login 登录页调整按照图片，并且添加记住密码操作，兼容 app h5"
+    assert result["matched_requirement"]["task_tree_chat_session_ids"] == ["chat-session-89ec4d773d54"]
+
+
 def test_query_mcp_get_requirement_history_returns_latest_modified_time(monkeypatch):
     registered_tools, _registered_resources, _saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
 

@@ -247,9 +247,18 @@ def _keyword_match(keyword: str, *values: object) -> bool:
     keyword_value = str(keyword or "").strip().lower()
     if not keyword_value:
         return True
+    keyword_tokens = [
+        token
+        for token in re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", keyword_value)
+        if token
+    ]
     for value in values:
         text = str(value or "").strip().lower()
-        if text and keyword_value in text:
+        if not text:
+            continue
+        if keyword_value in text:
+            return True
+        if keyword_tokens and all(token in text for token in keyword_tokens):
             return True
     return False
 
@@ -2251,6 +2260,101 @@ def _normalize_requirement_key(title: str, *, item: dict) -> str:
     return f"requirement:{uuid.uuid4().hex[:12]}"
 
 
+def _is_query_cli_task_tree_chat_session_id(value: object) -> bool:
+    return _normalize_text(value, 120).lower().startswith("query-cli.")
+
+
+def _requirement_title_tokens(value: object) -> list[str]:
+    normalized = _normalize_requirement_key(str(value or ""), item={})
+    if not normalized:
+        return []
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", normalized)
+        if token
+    ]
+
+
+def _requirement_titles_similar(left: object, right: object) -> bool:
+    left_key = _normalize_requirement_key(str(left or ""), item={})
+    right_key = _normalize_requirement_key(str(right or ""), item={})
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    left_compact = re.sub(r"\s+", "", left_key)
+    right_compact = re.sub(r"\s+", "", right_key)
+    if left_compact and right_compact and (
+        left_compact in right_compact or right_compact in left_compact
+    ):
+        return True
+    left_tokens = _requirement_title_tokens(left_key)
+    right_tokens = _requirement_title_tokens(right_key)
+    smaller_tokens = left_tokens if len(left_tokens) <= len(right_tokens) else right_tokens
+    if len(smaller_tokens) < 3:
+        return False
+    matched_count = 0
+    for token in smaller_tokens:
+        if token in left_compact and token in right_compact:
+            matched_count += 1
+    return matched_count >= 3 and matched_count / max(len(smaller_tokens), 1) >= 0.6
+
+
+def _filter_shadow_query_cli_requirement_items(items: list[dict]) -> list[dict]:
+    if len(items) < 2:
+        return items
+    session_title_lookup = _session_requirement_title_lookup(items)
+    duplicate_window_seconds = 15 * 60
+    query_cli_items: list[dict] = []
+    formal_items: list[dict] = []
+    for item in items:
+        trajectory = item.get("trajectory") if isinstance(item.get("trajectory"), dict) else {}
+        chat_session_id = _normalize_text(trajectory.get("task_tree_chat_session_id"), 120)
+        if _is_query_cli_task_tree_chat_session_id(chat_session_id):
+            query_cli_items.append(item)
+        else:
+            formal_items.append(item)
+    if not query_cli_items or not formal_items:
+        return items
+
+    dropped_ids: set[str] = set()
+    for query_cli_item in query_cli_items:
+        query_cli_id = _normalize_text(query_cli_item.get("id"), 120)
+        if not query_cli_id:
+            continue
+        query_cli_title = _derive_requirement_title(
+            query_cli_item,
+            session_title_lookup=session_title_lookup,
+        )
+        query_cli_timestamp = _history_datetime_or_min(_item_modified_at(query_cli_item)).timestamp()
+        query_cli_employee_id = _normalize_text(query_cli_item.get("employee_id"), 120)
+        for formal_item in formal_items:
+            formal_title = _derive_requirement_title(
+                formal_item,
+                session_title_lookup=session_title_lookup,
+            )
+            if not _requirement_titles_similar(query_cli_title, formal_title):
+                continue
+            formal_employee_id = _normalize_text(formal_item.get("employee_id"), 120)
+            if (
+                query_cli_employee_id
+                and formal_employee_id
+                and query_cli_employee_id != formal_employee_id
+            ):
+                continue
+            formal_timestamp = _history_datetime_or_min(_item_modified_at(formal_item)).timestamp()
+            if abs(formal_timestamp - query_cli_timestamp) <= duplicate_window_seconds:
+                dropped_ids.add(query_cli_id)
+                break
+    if not dropped_ids:
+        return items
+    return [
+        item
+        for item in items
+        if _normalize_text(item.get("id"), 120) not in dropped_ids
+    ]
+
+
 def _filter_requirement_history_items(
     items: list[dict],
     *,
@@ -2383,8 +2487,12 @@ def _group_requirement_history(
         if created_at < requirement["_first_seen_dt"]:
             requirement["_first_seen_dt"] = created_at
             requirement["first_seen_at"] = history_item.get("created_at") or history_item.get("modified_at") or ""
-        for field in ("session_ids", "task_tree_session_ids", "task_tree_chat_session_ids"):
-            value = _normalize_text(history_item.get(field) or "")
+        for field, history_field in (
+            ("session_ids", "session_id"),
+            ("task_tree_session_ids", "task_tree_session_id"),
+            ("task_tree_chat_session_ids", "task_tree_chat_session_id"),
+        ):
+            value = _normalize_text(history_item.get(history_field) or "")
             if value and value not in requirement[field]:
                 requirement[field].append(value)
         employee_id = _normalize_text(item.get("employee_id"))
@@ -2434,10 +2542,27 @@ def _collect_requirement_history_items(
         _collect_work_session_records(
             project_id=project_id,
             employee_id=employee_id,
-            query=keyword,
+            query="",
             limit=fetch_limit,
         )
     )
+    if keyword:
+        filtered_shadow_context_items, error = _filter_requirement_history_items(
+            work_items,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        if error:
+            return [], "", error
+        visible_work_item_ids = {
+            _normalize_text(item.get("id"), 120)
+            for item in _filter_shadow_query_cli_requirement_items(filtered_shadow_context_items)
+        }
+        work_items = [
+            item
+            for item in work_items
+            if _normalize_text(item.get("id"), 120) in visible_work_item_ids
+        ]
     filtered_work_items, error = _filter_requirement_history_items(
         work_items,
         keyword=keyword,
@@ -2446,6 +2571,7 @@ def _collect_requirement_history_items(
     )
     if error:
         return [], "", error
+    filtered_work_items = _filter_shadow_query_cli_requirement_items(filtered_work_items)
     if filtered_work_items:
         return filtered_work_items, "work-session", ""
 

@@ -5347,6 +5347,42 @@ def _normalize_project_requirement_goal_key(value: Any) -> str:
     return re.sub(r"\s+", " ", _normalize_project_record_token(value, limit=1000)).strip().lower()
 
 
+def _project_requirement_goal_tokens(value: Any) -> list[str]:
+    normalized = _normalize_project_requirement_goal_key(value)
+    if not normalized:
+        return []
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", normalized)
+        if token
+    ]
+
+
+def _project_requirement_goals_similar(left: Any, right: Any) -> bool:
+    left_key = _normalize_project_requirement_goal_key(left)
+    right_key = _normalize_project_requirement_goal_key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    left_compact = re.sub(r"\s+", "", left_key)
+    right_compact = re.sub(r"\s+", "", right_key)
+    if left_compact and right_compact and (
+        left_compact in right_compact or right_compact in left_compact
+    ):
+        return True
+    left_tokens = _project_requirement_goal_tokens(left_key)
+    right_tokens = _project_requirement_goal_tokens(right_key)
+    smaller_tokens = left_tokens if len(left_tokens) <= len(right_tokens) else right_tokens
+    if len(smaller_tokens) < 3:
+        return False
+    matched_count = 0
+    for token in smaller_tokens:
+        if token in left_compact and token in right_compact:
+            matched_count += 1
+    return matched_count >= 3 and matched_count / max(len(smaller_tokens), 1) >= 0.6
+
+
 def _is_query_cli_chat_session_id(value: Any) -> bool:
     return _normalize_project_record_token(value, limit=120).lower().startswith("query-cli.")
 
@@ -5407,54 +5443,46 @@ def _dedupe_query_cli_requirement_records(records: list[dict[str, Any]]) -> list
         return records
 
     duplicate_window_seconds = 15 * 60
-    grouped_by_goal: dict[str, list[dict[str, Any]]] = {}
+    query_cli_records: list[dict[str, Any]] = []
+    formal_records: list[dict[str, Any]] = []
     for record in records:
         if not isinstance(record, dict):
             continue
-        goal_key = _normalize_project_requirement_goal_key(record.get("rootGoal"))
-        if not goal_key:
-            continue
-        grouped_by_goal.setdefault(goal_key, []).append(record)
+        if _is_query_cli_chat_session_id(_project_requirement_record_chat_session_id(record)):
+            query_cli_records.append(record)
+        else:
+            formal_records.append(record)
+    if not query_cli_records or not formal_records:
+        return records
 
     dropped_ids: set[str] = set()
-    for grouped_records in grouped_by_goal.values():
-        if len(grouped_records) < 2:
+    for query_cli_record in query_cli_records:
+        query_cli_id = _normalize_project_record_token(query_cli_record.get("id"), limit=80)
+        if not query_cli_id:
             continue
-        query_cli_records = [
-            record
-            for record in grouped_records
-            if _is_query_cli_chat_session_id(_project_requirement_record_chat_session_id(record))
-        ]
-        formal_records = [
-            record
-            for record in grouped_records
-            if not _is_query_cli_chat_session_id(_project_requirement_record_chat_session_id(record))
-        ]
-        if not query_cli_records or not formal_records:
+        query_cli_timestamp = _project_requirement_record_timestamp(query_cli_record)
+        query_cli_usernames = _project_requirement_record_usernames(query_cli_record)
+        if query_cli_timestamp is None:
             continue
-        for query_cli_record in query_cli_records:
-            query_cli_id = _normalize_project_record_token(query_cli_record.get("id"), limit=80)
-            if not query_cli_id:
+        for formal_record in formal_records:
+            if not _project_requirement_goals_similar(
+                query_cli_record.get("rootGoal"),
+                formal_record.get("rootGoal"),
+            ):
                 continue
-            query_cli_timestamp = _project_requirement_record_timestamp(query_cli_record)
-            query_cli_usernames = _project_requirement_record_usernames(query_cli_record)
-            if query_cli_timestamp is None:
+            formal_timestamp = _project_requirement_record_timestamp(formal_record)
+            if formal_timestamp is None:
                 continue
-            for formal_record in formal_records:
-                formal_timestamp = _project_requirement_record_timestamp(formal_record)
-                if formal_timestamp is None:
-                    continue
-                formal_usernames = _project_requirement_record_usernames(formal_record)
-                if (
-                    query_cli_usernames
-                    and formal_usernames
-                    and not query_cli_usernames.intersection(formal_usernames)
-                ):
-                    continue
-                if abs(formal_timestamp - query_cli_timestamp) <= duplicate_window_seconds:
-                    dropped_ids.add(query_cli_id)
-                    break
-
+            formal_usernames = _project_requirement_record_usernames(formal_record)
+            if (
+                query_cli_usernames
+                and formal_usernames
+                and not query_cli_usernames.intersection(formal_usernames)
+            ):
+                continue
+            if abs(formal_timestamp - query_cli_timestamp) <= duplicate_window_seconds:
+                dropped_ids.add(query_cli_id)
+                break
     if not dropped_ids:
         return records
     return [

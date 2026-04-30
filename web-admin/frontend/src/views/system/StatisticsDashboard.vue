@@ -251,7 +251,7 @@
         <div class="panel-card__head">
           <div>
             <div class="panel-card__eyebrow">AI Employee Usage</div>
-            <h2 class="panel-card__title">入口 / 智能体 / 开发者活跃度</h2>
+            <h2 class="panel-card__title">入口 / 智能体 / 开发中账户统计</h2>
           </div>
           <div class="panel-card__tag">真实员工和入口流量分开看</div>
         </div>
@@ -259,13 +259,38 @@
           <strong>{{ activityJudgement.title }}</strong>
           <span>{{ activityJudgement.meta }}</span>
         </div>
-        <div v-if="activityChartItems.length" class="activity-chart">
-          <div ref="activityChartRef" class="activity-chart__canvas" />
+        <div v-if="hasActivityCharts" class="activity-chart">
           <div class="activity-chart__legend">
             <span v-for="item in activityLegendItems" :key="item.label">
               <i :style="{ background: item.color }" />
               {{ item.label }}
             </span>
+          </div>
+          <div class="activity-chart-grid">
+            <article class="activity-chart-card">
+              <div class="activity-chart-card__head">
+                <strong>入口活跃度</strong>
+                <span>{{ entryActivityChartItems.length }} 个入口</span>
+              </div>
+              <div v-if="entryActivityChartItems.length" ref="entryActivityChartRef" class="activity-chart__canvas" />
+              <el-empty v-else description="暂无入口活跃数据" />
+            </article>
+            <article class="activity-chart-card">
+              <div class="activity-chart-card__head">
+                <strong>智能体活跃度</strong>
+                <span>{{ agentActivityChartItems.length }} 个智能体</span>
+              </div>
+              <div v-if="agentActivityChartItems.length" ref="agentActivityChartRef" class="activity-chart__canvas" />
+              <el-empty v-else description="暂无智能体活跃数据" />
+            </article>
+            <article class="activity-chart-card">
+              <div class="activity-chart-card__head">
+                <strong>开发中账户统计</strong>
+                <span>{{ developerActivityChartItems.length }} 个账户</span>
+              </div>
+              <div v-if="developerActivityChartItems.length" ref="developerActivityChartRef" class="activity-chart__canvas" />
+              <el-empty v-else description="暂无用户管理账户数据" />
+            </article>
           </div>
           <div class="activity-stat-row">
             <article v-for="item in activityStatCards" :key="item.label" class="activity-stat-card">
@@ -486,7 +511,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { ElMessage } from "element-plus";
 import * as echarts from "echarts/core";
 import { BarChart, LineChart } from "echarts/charts";
-import { GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
+import { DataZoomComponent, GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 
 import api from "@/utils/api.js";
@@ -494,7 +519,7 @@ import { formatDateTime } from "@/utils/date.js";
 import { useRoute, useRouter } from "vue-router";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 
-echarts.use([BarChart, LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+echarts.use([BarChart, LineChart, DataZoomComponent, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const RECENT_STATISTICS_PROJECTS_STORAGE_KEY = "statistics_recent_project_ids";
 const STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX = "statistics_analysis_draft";
@@ -513,7 +538,9 @@ const days = ref(7);
 const aiReportExpanded = ref(false);
 const trendChartRef = ref(null);
 const closureTrendChartRef = ref(null);
-const activityChartRef = ref(null);
+const entryActivityChartRef = ref(null);
+const agentActivityChartRef = ref(null);
+const developerActivityChartRef = ref(null);
 const projectChartRef = ref(null);
 const data = ref({
   generated_at: "",
@@ -558,6 +585,7 @@ const data = ref({
 });
 const projectScopeOptions = ref([]);
 const recentProjectIds = ref([]);
+const userAccounts = ref([]);
 
 function loadRecentProjectIds() {
   try {
@@ -944,13 +972,51 @@ const workSessionDaily = computed(() => {
 
 let trendChart = null;
 let closureTrendChart = null;
-let activityChart = null;
+let entryActivityChart = null;
+let agentActivityChart = null;
+let developerActivityChart = null;
 let projectChart = null;
 
 function compactChartLabel(value, maxLength = 14) {
   const normalized = String(value || "").trim();
   if (!normalized) return "-";
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}...` : normalized;
+}
+
+function normalizeActivityKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function createHorizontalDataZoom(itemCount, visibleCount = 7) {
+  const total = Math.max(0, Number(itemCount || 0));
+  const end = total > visibleCount ? Math.round((visibleCount / total) * 100) : 100;
+  return [
+    {
+      type: "slider",
+      show: true,
+      height: 16,
+      left: 42,
+      right: 22,
+      bottom: 8,
+      start: 0,
+      end,
+      brushSelect: false,
+      borderColor: "rgba(148, 163, 184, 0.24)",
+      fillerColor: "rgba(37, 99, 235, 0.12)",
+      handleStyle: {
+        color: "#2563eb",
+        borderColor: "#2563eb",
+      },
+      textStyle: {
+        color: "#64748b",
+      },
+    },
+    {
+      type: "inside",
+      start: 0,
+      end,
+    },
+  ];
 }
 
 const trendChartOption = computed(() => {
@@ -964,10 +1030,11 @@ const trendChartOption = computed(() => {
     grid: {
       top: 42,
       right: 16,
-      bottom: 24,
+      bottom: 52,
       left: 16,
       containLabel: true,
     },
+    dataZoom: createHorizontalDataZoom(labels.length, 7),
     legend: {
       top: 0,
       icon: "circle",
@@ -1075,10 +1142,11 @@ const closureTrendChartOption = computed(() => {
     grid: {
       top: 42,
       right: 18,
-      bottom: 24,
+      bottom: 52,
       left: 16,
       containLabel: true,
     },
+    dataZoom: createHorizontalDataZoom(labels.length, 7),
     legend: {
       top: 0,
       icon: "circle",
@@ -1200,39 +1268,49 @@ const closureTrendChartOption = computed(() => {
 const activityLegendItems = computed(() => [
   { label: "智能体", color: ACTIVITY_GROUP_COLORS.agent },
   { label: "入口", color: ACTIVITY_GROUP_COLORS.entry },
-  { label: "开发者", color: ACTIVITY_GROUP_COLORS.developer },
+  { label: "开发中账户", color: ACTIVITY_GROUP_COLORS.developer },
 ]);
 
-const activityChartItems = computed(() => {
-  const agentRows = agentActivityItems.value.slice(0, 4).map((item) => ({
+const agentActivityChartItems = computed(() => (
+  agentActivityItems.value.map((item) => ({
     key: `agent:${item.employee_id || item.employee_name}`,
     group: "agent",
     groupLabel: "智能体",
     name: item.employee_name || item.label || item.employee_id || "未知智能体",
     value: Number(item.activity_score || item.cnt || 0),
     meta: `调用 ${item.cnt || 0} · 在线 ${item.active_entries || 0}`,
-  }));
-  const entryRows = entryScopeItems.value.slice(0, 4).map((item) => ({
+  })).filter((item) => item.value > 0)
+));
+
+const entryActivityChartItems = computed(() => (
+  entryScopeItems.value.map((item) => ({
     key: `entry:${item.scope_id || item.scope_label}`,
     group: "entry",
     groupLabel: "入口",
     name: item.scope_label || item.scope_id || "未知入口",
     value: Number(item.activity_score || item.cnt || 0),
     meta: `事件 ${item.cnt || 0} · 工具 ${item.tool_calls || 0}`,
-  }));
-  const developerRows = rankedDevelopers.value.slice(0, 4).map((item) => ({
-    key: `developer:${item.developer_name}`,
+  })).filter((item) => item.value > 0)
+));
+
+const developerActivityChartItems = computed(() => (
+  userManagementAccountItems.value.map((item) => ({
+    key: `account:${item.username}`,
     group: "developer",
-    groupLabel: "开发者",
-    name: item.developer_name || "未知开发者",
+    groupLabel: "开发中账户",
+    name: item.username || "未知账户",
     value: Number(item.cnt || 0),
-    meta: `记录 ${item.cnt || 0}`,
-  }));
-  return [...agentRows, ...entryRows, ...developerRows]
-    .filter((item) => item.value > 0)
-    .sort((left, right) => right.value - left.value)
-    .slice(0, 10);
-});
+    meta: `${item.role_name || item.role || "未标记角色"} · 交互 ${item.cnt || 0}`,
+  }))
+));
+
+const activityChartItems = computed(() => [
+  ...entryActivityChartItems.value,
+  ...agentActivityChartItems.value,
+  ...developerActivityChartItems.value,
+].sort((left, right) => right.value - left.value));
+
+const hasActivityCharts = computed(() => activityChartItems.value.length > 0);
 
 const activityJudgement = computed(() => {
   const leader = activityChartItems.value[0];
@@ -1244,10 +1322,10 @@ const activityJudgement = computed(() => {
   }
   const agentCount = agentActivityItems.value.length;
   const entryCount = entryScopeItems.value.length;
-  const developerCount = rankedDevelopers.value.length;
+  const developerCount = userManagementAccountItems.value.length;
   return {
     title: `当前主力是${leader.groupLabel}：${leader.name}`,
-    meta: `活跃分 ${leader.value} · 覆盖 ${entryCount} 个入口、${agentCount} 个智能体、${developerCount} 位开发者`,
+    meta: `活跃分 ${leader.value} · 覆盖 ${entryCount} 个入口、${agentCount} 个智能体、${developerCount} 个账户`,
   };
 });
 
@@ -1267,23 +1345,25 @@ const activityStatCards = computed(() => [
       : "真实 AI 员工调用不足",
   },
   {
-    label: "主开发者",
-    value: rankedDevelopers.value[0]?.developer_name || "暂无",
-    hint: rankedDevelopers.value[0] ? `记录 ${rankedDevelopers.value[0].cnt || 0}` : "开发者记录不足",
+    label: "主账户",
+    value: userManagementAccountItems.value[0]?.username || "暂无",
+    hint: userManagementAccountItems.value[0]
+      ? `交互 ${userManagementAccountItems.value[0].cnt || 0}`
+      : "用户管理账户不足",
   },
 ]);
 
-const activityChartOption = computed(() => {
-  const items = activityChartItems.value;
+function createActivityChartOption(items, color, maxLabelLength = 14) {
   return {
     animationDuration: 400,
     grid: {
-      top: 8,
-      right: 34,
-      bottom: 8,
-      left: 116,
-      containLabel: false,
+      top: 18,
+      right: 18,
+      bottom: 62,
+      left: 34,
+      containLabel: true,
     },
+    dataZoom: createHorizontalDataZoom(items.length, 6),
     tooltip: {
       trigger: "axis",
       axisPointer: {
@@ -1300,20 +1380,23 @@ const activityChartOption = computed(() => {
       },
     },
     xAxis: {
-      type: "value",
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { show: false },
-      splitLine: {
+      type: "category",
+      data: items.map((item) => compactChartLabel(item.name, maxLabelLength)),
+      axisLine: {
         lineStyle: {
-          color: "rgba(148, 163, 184, 0.16)",
+          color: "rgba(148, 163, 184, 0.35)",
         },
+      },
+      axisTick: { show: false },
+      axisLabel: {
+        color: "#64748b",
+        fontSize: 11,
+        interval: 0,
+        rotate: 32,
       },
     },
     yAxis: {
-      type: "category",
-      inverse: true,
-      data: items.map((item) => compactChartLabel(item.name)),
+      type: "value",
       axisLine: { show: false },
       axisTick: { show: false },
       axisLabel: {
@@ -1324,11 +1407,11 @@ const activityChartOption = computed(() => {
     series: [
       {
         type: "bar",
-        barWidth: 14,
-        borderRadius: [0, 8, 8, 0],
+        barMaxWidth: 34,
+        borderRadius: [8, 8, 0, 0],
         label: {
           show: true,
-          position: "right",
+          position: "top",
           color: "#0f172a",
           fontSize: 12,
           fontWeight: 700,
@@ -1336,13 +1419,25 @@ const activityChartOption = computed(() => {
         data: items.map((item) => ({
           value: item.value,
           itemStyle: {
-            color: ACTIVITY_GROUP_COLORS[item.group] || "#64748b",
+            color,
           },
         })),
       },
     ],
   };
-});
+}
+
+const entryActivityChartOption = computed(() => (
+  createActivityChartOption(entryActivityChartItems.value, ACTIVITY_GROUP_COLORS.entry)
+));
+
+const agentActivityChartOption = computed(() => (
+  createActivityChartOption(agentActivityChartItems.value, ACTIVITY_GROUP_COLORS.agent)
+));
+
+const developerActivityChartOption = computed(() => (
+  createActivityChartOption(developerActivityChartItems.value, ACTIVITY_GROUP_COLORS.developer)
+));
 
 const projectActivityJudgement = computed(() => {
   const leader = projectActivityItems.value[0];
@@ -1380,16 +1475,17 @@ const projectActivityCards = computed(() => [
 ]);
 
 const projectChartOption = computed(() => {
-  const items = projectActivityItems.value.slice(0, 8);
+  const items = projectActivityItems.value;
   return {
     animationDuration: 400,
     grid: {
-      top: 8,
-      right: 34,
-      bottom: 8,
-      left: 132,
-      containLabel: false,
+      top: 18,
+      right: 18,
+      bottom: 62,
+      left: 34,
+      containLabel: true,
     },
+    dataZoom: createHorizontalDataZoom(items.length, 8),
     tooltip: {
       trigger: "axis",
       axisPointer: {
@@ -1409,20 +1505,23 @@ const projectChartOption = computed(() => {
       },
     },
     xAxis: {
-      type: "value",
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { show: false },
-      splitLine: {
+      type: "category",
+      data: items.map((item) => compactChartLabel(item.display_name, 16)),
+      axisLine: {
         lineStyle: {
-          color: "rgba(148, 163, 184, 0.16)",
+          color: "rgba(148, 163, 184, 0.35)",
         },
+      },
+      axisTick: { show: false },
+      axisLabel: {
+        color: "#64748b",
+        fontSize: 11,
+        interval: 0,
+        rotate: 32,
       },
     },
     yAxis: {
-      type: "category",
-      inverse: true,
-      data: items.map((item) => compactChartLabel(item.display_name, 16)),
+      type: "value",
       axisLine: { show: false },
       axisTick: { show: false },
       axisLabel: {
@@ -1433,11 +1532,11 @@ const projectChartOption = computed(() => {
     series: [
       {
         type: "bar",
-        barWidth: 16,
-        borderRadius: [0, 8, 8, 0],
+        barMaxWidth: 34,
+        borderRadius: [8, 8, 0, 0],
         label: {
           show: true,
-          position: "right",
+          position: "top",
           color: "#0f172a",
           fontSize: 12,
           fontWeight: 700,
@@ -1465,10 +1564,28 @@ function disposeClosureTrendChart() {
   closureTrendChart = null;
 }
 
-function disposeActivityChart() {
-  if (!activityChart) return;
-  activityChart.dispose();
-  activityChart = null;
+function disposeEntryActivityChart() {
+  if (!entryActivityChart) return;
+  entryActivityChart.dispose();
+  entryActivityChart = null;
+}
+
+function disposeAgentActivityChart() {
+  if (!agentActivityChart) return;
+  agentActivityChart.dispose();
+  agentActivityChart = null;
+}
+
+function disposeDeveloperActivityChart() {
+  if (!developerActivityChart) return;
+  developerActivityChart.dispose();
+  developerActivityChart = null;
+}
+
+function disposeActivityCharts() {
+  disposeEntryActivityChart();
+  disposeAgentActivityChart();
+  disposeDeveloperActivityChart();
 }
 
 function disposeProjectChart() {
@@ -1487,9 +1604,10 @@ function resizeClosureTrendChart() {
   closureTrendChart.resize();
 }
 
-function resizeActivityChart() {
-  if (!activityChart) return;
-  activityChart.resize();
+function resizeActivityCharts() {
+  entryActivityChart?.resize();
+  agentActivityChart?.resize();
+  developerActivityChart?.resize();
 }
 
 function resizeProjectChart() {
@@ -1521,17 +1639,49 @@ async function renderClosureTrendChart() {
   closureTrendChart.resize();
 }
 
-async function renderActivityChart() {
+async function renderEntryActivityChart() {
   await nextTick();
-  if (!activityChartItems.value.length || !activityChartRef.value) {
-    disposeActivityChart();
+  if (!entryActivityChartItems.value.length || !entryActivityChartRef.value) {
+    disposeEntryActivityChart();
     return;
   }
-  activityChart =
-    echarts.getInstanceByDom(activityChartRef.value) ||
-    echarts.init(activityChartRef.value);
-  activityChart.setOption(activityChartOption.value, true);
-  activityChart.resize();
+  entryActivityChart =
+    echarts.getInstanceByDom(entryActivityChartRef.value) ||
+    echarts.init(entryActivityChartRef.value);
+  entryActivityChart.setOption(entryActivityChartOption.value, true);
+  entryActivityChart.resize();
+}
+
+async function renderAgentActivityChart() {
+  await nextTick();
+  if (!agentActivityChartItems.value.length || !agentActivityChartRef.value) {
+    disposeAgentActivityChart();
+    return;
+  }
+  agentActivityChart =
+    echarts.getInstanceByDom(agentActivityChartRef.value) ||
+    echarts.init(agentActivityChartRef.value);
+  agentActivityChart.setOption(agentActivityChartOption.value, true);
+  agentActivityChart.resize();
+}
+
+async function renderDeveloperActivityChart() {
+  await nextTick();
+  if (!developerActivityChartItems.value.length || !developerActivityChartRef.value) {
+    disposeDeveloperActivityChart();
+    return;
+  }
+  developerActivityChart =
+    echarts.getInstanceByDom(developerActivityChartRef.value) ||
+    echarts.init(developerActivityChartRef.value);
+  developerActivityChart.setOption(developerActivityChartOption.value, true);
+  developerActivityChart.resize();
+}
+
+function renderActivityCharts() {
+  renderEntryActivityChart();
+  renderAgentActivityChart();
+  renderDeveloperActivityChart();
 }
 
 async function renderProjectChart() {
@@ -1558,6 +1708,36 @@ function withPercent(list, key) {
 
 const rankedTools = computed(() => withPercent(data.value?.usage?.top_tools, "cnt"));
 const rankedDevelopers = computed(() => withPercent(data.value?.usage?.top_developers, "cnt"));
+const userManagementAccountItems = computed(() => {
+  const usageByAccount = new Map();
+  for (const item of rankedDevelopers.value) {
+    const key = normalizeActivityKey(item?.developer_name);
+    if (!key) continue;
+    usageByAccount.set(key, Number(item?.cnt || 0));
+  }
+  const accounts = Array.isArray(userAccounts.value) ? userAccounts.value : [];
+  return withPercent(
+    accounts
+      .map((item) => {
+        const username = String(item?.username || "").trim();
+        const cnt = usageByAccount.get(normalizeActivityKey(username)) || 0;
+        return {
+          username,
+          role: String(item?.role || "").trim(),
+          role_name: String(item?.role_name || item?.role || "").trim(),
+          created_by: String(item?.created_by || "").trim(),
+          cnt,
+        };
+      })
+      .filter((item) => item.username)
+      .sort((left, right) => {
+        const countDiff = Number(right.cnt || 0) - Number(left.cnt || 0);
+        if (countDiff !== 0) return countDiff;
+        return left.username.localeCompare(right.username, "zh-CN");
+      }),
+    "cnt",
+  );
+});
 const endpointItems = computed(() => withPercent(data.value?.live_activity?.endpoint_breakdown, "count"));
 const runtimeCounterItems = computed(() => {
   const counters = Array.isArray(data.value?.runtime_metrics?.top_counters)
@@ -1599,8 +1779,7 @@ const entryScopeItems = computed(() => {
           Number(row?.tool_calls || 0) +
           Number(row?.attributed_employee_count || 0),
       }))
-      .sort((left, right) => Number(right.activity_score || 0) - Number(left.activity_score || 0))
-      .slice(0, 6),
+      .sort((left, right) => Number(right.activity_score || 0) - Number(left.activity_score || 0)),
     "activity_score",
   );
 });
@@ -1696,8 +1875,7 @@ const agentActivityItems = computed(() => {
   }
 
   return [...merged.values()]
-    .sort((left, right) => Number(right.activity_score || 0) - Number(left.activity_score || 0))
-    .slice(0, 6);
+    .sort((left, right) => Number(right.activity_score || 0) - Number(left.activity_score || 0));
 });
 
 const projectActivityItems = computed(() => {
@@ -1784,11 +1962,22 @@ const projectActivityItems = computed(() => {
           Number(row.active_entries || 0) +
           Number(row.session_count || 0),
       }))
-      .sort((left, right) => Number(right.activity_score || 0) - Number(left.activity_score || 0))
-      .slice(0, 8),
+      .sort((left, right) => Number(right.activity_score || 0) - Number(left.activity_score || 0)),
     "activity_score",
   );
 });
+
+async function fetchUserAccounts() {
+  try {
+    const response = await api.get("/users");
+    userAccounts.value = Array.isArray(response?.users) ? response.users : [];
+  } catch (err) {
+    userAccounts.value = [];
+    if (Number(err?.status || 0) !== 403) {
+      ElMessage.error(err?.message || "用户管理账户加载失败");
+    }
+  }
+}
 
 async function copyAiReport() {
   const textToCopy = aiReportStructuredPreview.value || aiReportMarkdown.value;
@@ -1945,20 +2134,21 @@ onMounted(() => {
   }
   window.addEventListener("resize", resizeTrendChart);
   window.addEventListener("resize", resizeClosureTrendChart);
-  window.addEventListener("resize", resizeActivityChart);
+  window.addEventListener("resize", resizeActivityCharts);
   window.addEventListener("resize", resizeProjectChart);
   fetchProjectScopes();
+  fetchUserAccounts();
   refresh();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", resizeTrendChart);
   window.removeEventListener("resize", resizeClosureTrendChart);
-  window.removeEventListener("resize", resizeActivityChart);
+  window.removeEventListener("resize", resizeActivityCharts);
   window.removeEventListener("resize", resizeProjectChart);
   disposeTrendChart();
   disposeClosureTrendChart();
-  disposeActivityChart();
+  disposeActivityCharts();
   disposeProjectChart();
 });
 
@@ -1971,7 +2161,7 @@ watch(workSessionDaily, () => {
 });
 
 watch(activityChartItems, () => {
-  renderActivityChart();
+  renderActivityCharts();
 });
 
 watch(projectActivityItems, () => {
@@ -2770,10 +2960,54 @@ watch(scopedProjectId, () => {
   gap: 14px;
 }
 
+.activity-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.activity-chart-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.activity-chart-card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.activity-chart-card__head strong {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 16px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-chart-card__head span {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .activity-chart__canvas,
 .project-activity-chart__canvas {
   width: 100%;
   height: 330px;
+}
+
+.activity-chart-card .activity-chart__canvas {
+  height: 260px;
 }
 
 .project-activity-chart__canvas {
@@ -3200,6 +3434,7 @@ watch(scopedProjectId, () => {
   .ai-report-grid,
   .ai-metric-gap-list,
   .summary-grid,
+  .activity-chart-grid,
   .tool-overview-grid,
   .runtime-columns {
     grid-template-columns: 1fr;
@@ -3244,6 +3479,10 @@ watch(scopedProjectId, () => {
   .activity-chart__canvas,
   .project-activity-chart__canvas {
     height: 300px;
+  }
+
+  .activity-chart-card .activity-chart__canvas {
+    height: 260px;
   }
 }
 
