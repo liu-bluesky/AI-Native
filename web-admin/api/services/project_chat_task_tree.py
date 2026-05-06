@@ -255,6 +255,21 @@ _TASK_TREE_UI_TEMPLATE_TERMS = (
     "设置页",
     "路由",
 )
+_REQUIREMENT_CHAIN_FEATURE_TERMS = (
+    "高级筛选",
+    "筛选标签",
+    "筛选条件",
+    "分页",
+    "翻页",
+    "任务树",
+    "需求链",
+    "需求链路",
+    "requirement chain",
+    "query-mcp",
+    "query mcp",
+    "mcp",
+    "提示词",
+)
 
 
 def _normalize_text(value: Any, limit: int = 2000) -> str:
@@ -429,12 +444,45 @@ def _goal_terms(value: str) -> set[str]:
     return {term.strip() for term in terms if term.strip() and term.strip() not in stop_terms}
 
 
+def _goal_route_terms(value: str) -> set[str]:
+    normalized = _normalize_text(value, 1000).lower()
+    return {item.rstrip("/") for item in _ROUTE_PATH_RE.findall(normalized) if item.rstrip("/")}
+
+
+def _goal_requirement_chain_feature_terms(value: str) -> set[str]:
+    normalized = _normalize_text(value, 1000).lower()
+    return {
+        term.lower()
+        for term in _REQUIREMENT_CHAIN_FEATURE_TERMS
+        if term.lower() in normalized
+    }
+
+
+def _goals_belong_to_same_requirement_chain(current_goal: str, next_goal: str) -> bool:
+    current = _normalize_text(current_goal, 1000).lower()
+    next_text = _normalize_text(next_goal, 1000).lower()
+    if not current or not next_text:
+        return False
+    if current == next_text or current in next_text or next_text in current:
+        return True
+    shared_routes = _goal_route_terms(current) & _goal_route_terms(next_text)
+    if not shared_routes:
+        return False
+    shared_features = (
+        _goal_requirement_chain_feature_terms(current)
+        & _goal_requirement_chain_feature_terms(next_text)
+    )
+    return bool(shared_features)
+
+
 def _goals_are_substantially_different(current_goal: str, next_goal: str) -> bool:
     current = _normalize_text(current_goal, 1000).lower()
     next_text = _normalize_text(next_goal, 1000).lower()
     if not current or not next_text or current == next_text:
         return False
     if current in next_text or next_text in current:
+        return False
+    if _goals_belong_to_same_requirement_chain(current, next_text):
         return False
     current_terms = _goal_terms(current)
     next_terms = _goal_terms(next_text)
@@ -489,6 +537,97 @@ def _refine_task_tree_in_place(
     rebuilt.source_chat_session_id = existing.source_chat_session_id
     rebuilt.updated_at = existing.updated_at
     return project_chat_task_store.save(_recompute_session(rebuilt))
+
+
+def _task_tree_chat_lineage_matches(session: ProjectChatTaskSession, chat_session_id: str) -> bool:
+    normalized_chat_session_id = _normalize_text(chat_session_id, 80)
+    if not normalized_chat_session_id:
+        return False
+    session_chat_session_id = _normalize_text(session.chat_session_id, 80)
+    source_chat_session_id = _normalize_text(session.source_chat_session_id, 80)
+    if normalized_chat_session_id in {session_chat_session_id, source_chat_session_id}:
+        return True
+    return session_chat_session_id.startswith(f"{normalized_chat_session_id}.archived.")
+
+
+def _requirement_chain_source_session_id(session: ProjectChatTaskSession) -> str:
+    return _normalize_text(session.source_session_id, 80) or _task_tree_work_session_id(session)
+
+
+def _next_requirement_chain_round_index(
+    *,
+    project_id: str,
+    username: str,
+    chain_source_session_id: str,
+) -> int:
+    normalized_project_id = _normalize_text(project_id, 80)
+    normalized_username = _normalize_text(username, 80)
+    normalized_chain_source_session_id = _normalize_text(chain_source_session_id, 80)
+    if not (normalized_project_id and normalized_chain_source_session_id):
+        return 1
+    max_round_index = 0
+    for item in project_chat_task_store.list_by_project(normalized_project_id, limit=500):
+        if normalized_username and _normalize_text(item.username, 80) != normalized_username:
+            continue
+        if _requirement_chain_source_session_id(item) != normalized_chain_source_session_id:
+            continue
+        try:
+            max_round_index = max(max_round_index, int(item.round_index or 1))
+        except (TypeError, ValueError):
+            max_round_index = max(max_round_index, 1)
+    return min(max_round_index + 1, 999) if max_round_index else 1
+
+
+def _find_related_requirement_chain_session(
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    root_goal: str,
+) -> ProjectChatTaskSession | None:
+    normalized_project_id = _normalize_text(project_id, 80)
+    normalized_username = _normalize_text(username, 80)
+    normalized_root_goal = _normalize_text(root_goal, 1000)
+    if not (normalized_project_id and normalized_root_goal):
+        return None
+    candidates: list[ProjectChatTaskSession] = []
+    for item in project_chat_task_store.list_by_project(normalized_project_id, limit=500):
+        if normalized_username and _normalize_text(item.username, 80) != normalized_username:
+            continue
+        if not _task_tree_chat_lineage_matches(item, chat_session_id):
+            continue
+        item_goal = _normalize_text(item.root_goal or item.title, 1000)
+        if not _goals_belong_to_same_requirement_chain(item_goal, normalized_root_goal):
+            continue
+        candidates.append(item)
+    candidates.sort(
+        key=lambda item: (
+            _normalize_text(item.updated_at, 40),
+            _normalize_text(item.created_at, 40),
+            _normalize_text(item.id, 80),
+        ),
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _attach_task_tree_to_requirement_chain(
+    session: ProjectChatTaskSession,
+    related_session: ProjectChatTaskSession | None,
+) -> ProjectChatTaskSession:
+    if related_session is None:
+        return session
+    chain_source_session_id = _requirement_chain_source_session_id(related_session)
+    if not chain_source_session_id:
+        return session
+    session.source_session_id = chain_source_session_id
+    session.record_kind = "repair"
+    session.round_index = _next_requirement_chain_round_index(
+        project_id=session.project_id,
+        username=session.username,
+        chain_source_session_id=chain_source_session_id,
+    )
+    return session
 
 
 def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
@@ -1900,6 +2039,7 @@ def ensure_task_tree(
     max_steps: int = 6,
 ) -> ProjectChatTaskSession:
     existing = get_task_tree(project_id, username, chat_session_id)
+    related_chain_session: ProjectChatTaskSession | None = None
     if existing is not None:
         if _can_refine_task_tree_in_place(existing, root_goal, force=force):
             refined = _refine_task_tree_in_place(
@@ -1928,7 +2068,22 @@ def ensure_task_tree(
         archive_reason = "new_goal_rebuild"
         if _normalize_status(getattr(existing, "status", "")) == "done":
             archive_reason = "completed_task_closed"
-        archive_task_tree(existing, reason=archive_reason, delete_current=True)
+        archived_existing = archive_task_tree(existing, reason=archive_reason, delete_current=True)
+        if (
+            not force
+            and _goals_belong_to_same_requirement_chain(
+                _normalize_text(existing.root_goal or existing.title, 1000),
+                root_goal,
+            )
+        ):
+            related_chain_session = archived_existing
+    elif not force:
+        related_chain_session = _find_related_requirement_chain_session(
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+            root_goal=root_goal,
+        )
     session = build_task_tree_session(
         project_id=project_id,
         username=username,
@@ -1936,6 +2091,7 @@ def ensure_task_tree(
         root_goal=root_goal,
         max_steps=max_steps,
     )
+    session = _attach_task_tree_to_requirement_chain(session, related_chain_session)
     saved_session = project_chat_task_store.save(session)
     current_node = next(
         (item for item in saved_session.nodes if item.id == saved_session.current_node_id),

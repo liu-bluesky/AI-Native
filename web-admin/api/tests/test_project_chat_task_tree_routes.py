@@ -301,6 +301,108 @@ def test_project_chat_task_tree_keeps_active_tree_for_short_continuation(tmp_pat
     assert continued.id == initial.id
     assert continued.root_goal == "发送飞书消息时等待浏览器授权后继续执行"
 
+
+def test_project_chat_task_tree_groups_same_route_feature_repair_round(tmp_path, monkeypatch):
+    from services.project_chat_task_tree import archive_task_tree, ensure_task_tree
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    initial = ensure_task_tree(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=chat_session_id,
+        root_goal="#/contact 高级筛选 联系人 651 第二页 无数据",
+    )
+    for node in initial.nodes:
+        node.status = "done"
+        node.verification_result = "ok"
+    initial.status = "done"
+    initial.progress_percent = 100
+    initial = store_factory.project_chat_task_store.save(initial)
+    archived = archive_task_tree(initial, reason="completed_task_closed", delete_current=True)
+
+    repair = ensure_task_tree(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=chat_session_id,
+        root_goal="#/contact 高级筛选只选择了一个条件，但筛选条件标签显示了多个：关联客户、是否PK、负责人",
+    )
+
+    assert repair.id != initial.id
+    assert repair.record_kind == "repair"
+    assert repair.round_index == 2
+    assert repair.source_session_id == archived.source_session_id
+
+    records_response = client.get("/api/projects/proj-1/requirement-records")
+    assert records_response.status_code == 200
+    records = records_response.json()["items"]
+    assert len(records) == 1
+    assert records[0]["repairRoundCount"] == 1
+    assert [item["sessionId"] for item in records[0]["rounds"]] == [
+        archived.id,
+        repair.id,
+    ]
+
+
+def test_project_chat_task_tree_starts_new_chain_for_different_route_after_archive(tmp_path, monkeypatch):
+    from services.project_chat_task_tree import archive_task_tree, ensure_task_tree
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    initial = ensure_task_tree(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=chat_session_id,
+        root_goal="#/contact 高级筛选 联系人 651 第二页 无数据",
+    )
+    for node in initial.nodes:
+        node.status = "done"
+        node.verification_result = "ok"
+    initial.status = "done"
+    initial.progress_percent = 100
+    initial = store_factory.project_chat_task_store.save(initial)
+    archived = archive_task_tree(initial, reason="completed_task_closed", delete_current=True)
+
+    next_chain = ensure_task_tree(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=chat_session_id,
+        root_goal="#/settings 用户权限保存失败",
+    )
+
+    assert next_chain.record_kind == "requirement"
+    assert next_chain.round_index == 1
+    assert next_chain.source_session_id != archived.source_session_id
+
+    source_session_ids = {
+        item.source_session_id
+        for item in store_factory.project_chat_task_store.list_by_project("proj-1")
+    }
+    assert archived.source_session_id in source_session_ids
+    assert next_chain.source_session_id in source_session_ids
+    assert len(source_session_ids) == 2
+
+
 def test_project_workflow_skill_routes_enable_and_set_default(tmp_path, monkeypatch):
     from stores import mcp_bridge
     from stores.json.project_store import ProjectConfig

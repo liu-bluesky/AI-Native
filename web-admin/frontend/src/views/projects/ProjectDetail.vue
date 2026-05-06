@@ -20,10 +20,15 @@
         <template #actions>
           <div class="project-hero__actions">
             <div class="project-hero__actions-primary">
-              <el-button v-if="canOpenProjectChat" type="primary" @click="openProjectChat"
+              <el-button
+                v-if="canOpenProjectChat"
+                type="primary"
+                @click="openProjectChat"
                 >AI 对话</el-button
               >
-              <el-button type="primary" plain @click="openMaterialLibrary">素材库</el-button>
+              <el-button type="primary" plain @click="openMaterialLibrary"
+                >素材库</el-button
+              >
             </div>
             <div class="project-hero__actions-secondary">
               <el-button
@@ -33,7 +38,9 @@
                 @click="openExperienceSummaryDialog"
                 >总结经验</el-button
               >
-              <el-button v-if="canManageProject" plain @click="openEditDialog">编辑项目</el-button>
+              <el-button v-if="canManageProject" plain @click="openEditDialog"
+                >编辑项目</el-button
+              >
               <el-button
                 :loading="manualLoading"
                 plain
@@ -41,7 +48,6 @@
                 >使用手册</el-button
               >
               <el-button @click="openProjectList">返回列表</el-button>
-              <el-button @click="refresh">刷新</el-button>
             </div>
           </div>
         </template>
@@ -53,7 +59,6 @@
         description="概览、协作设置、需求记录和 MCP 接入都作为这个项目应用里的不同工作页签。"
         class="project-detail-tabs-shell"
       >
-
         <el-tabs v-model="activeProjectTab" class="project-detail-tabs">
           <el-tab-pane name="overview">
             <template #label>
@@ -72,7 +77,11 @@
                 title="项目概览"
                 block-class="block--overview"
               >
-                <el-descriptions :column="2" border class="project-descriptions">
+                <el-descriptions
+                  :column="2"
+                  border
+                  class="project-descriptions"
+                >
                   <el-descriptions-item label="项目 ID">{{
                     project.id
                   }}</el-descriptions-item>
@@ -120,18 +129,31 @@
                   show-icon
                 />
                 <div v-if="boundUiRules.length" class="ui-rule-list">
-                  <div v-for="rule in boundUiRules" :key="rule.id" class="ui-rule-card">
-                    <div class="ui-rule-card__title">{{ rule.title || rule.id }}</div>
+                  <div
+                    v-for="rule in boundUiRules"
+                    :key="rule.id"
+                    class="ui-rule-card"
+                  >
+                    <div class="ui-rule-card__title">
+                      {{ rule.title || rule.id }}
+                    </div>
                     <div class="ui-rule-card__meta">
                       <span>{{ rule.id }}</span>
                       <span>{{ rule.domain || "未分类" }}</span>
                     </div>
                   </div>
                 </div>
-                <el-empty v-else description="当前项目未绑定 UI 规则" :image-size="60" />
+                <el-empty
+                  v-else
+                  description="当前项目未绑定 UI 规则"
+                  :image-size="60"
+                />
               </ProjectWorkspaceBlock>
 
-              <ProjectWorkspaceBlock eyebrow="Experience Rules" title="经验规则">
+              <ProjectWorkspaceBlock
+                eyebrow="Experience Rules"
+                title="经验规则"
+              >
                 <template #actions>
                   <div v-if="canManageProject" class="block-header__actions">
                     <el-button
@@ -170,15 +192,29 @@
                   :closable="false"
                   show-icon
                 />
-                <div v-if="experienceSummaryActiveJob" class="experience-summary-job-panel">
+                <div
+                  v-if="experienceSummaryActiveJob"
+                  class="experience-summary-job-panel"
+                >
                   <div class="experience-summary-job-panel__header">
                     <div>
-                      <div class="experience-summary-job-panel__title">当前正在总结开发经验</div>
+                      <div class="experience-summary-job-panel__title">
+                        当前正在总结开发经验
+                      </div>
                       <div class="experience-summary-job-panel__meta">
-                        <span>{{ experienceSummaryActiveJob.status_label || "处理中" }}</span>
-                        <span>{{ experienceSummaryActiveJob.stage_label || "后台执行中" }}</span>
+                        <span>{{
+                          experienceSummaryActiveJob.status_label || "处理中"
+                        }}</span>
+                        <span>{{
+                          experienceSummaryActiveJob.stage_label || "后台执行中"
+                        }}</span>
                         <span v-if="experienceSummaryActiveJob.updated_at">
-                          {{ formatRelativeTime(experienceSummaryActiveJob.updated_at) }} 更新
+                          {{
+                            formatRelativeTime(
+                              experienceSummaryActiveJob.updated_at,
+                            )
+                          }}
+                          更新
                         </span>
                       </div>
                     </div>
@@ -188,11 +224,15 @@
                   </div>
                   <div class="experience-summary-job-panel__message">
                     {{
-                      experienceSummaryActiveJob.status_message
-                        || "后台正在处理这次经验总结；刷新页面后也会继续显示当前进度。"
+                      experienceSummaryActiveJob.status_message ||
+                      "后台正在处理这次经验总结；刷新页面后也会继续显示当前进度。"
                     }}
                   </div>
-                  <el-progress :percentage="Number(experienceSummaryActiveJob.progress || 0)" />
+                  <el-progress
+                    :percentage="
+                      Number(experienceSummaryActiveJob.progress || 0)
+                    "
+                  />
                 </div>
                 <div v-if="boundExperienceRules.length" class="ui-rule-list">
                   <div
@@ -200,22 +240,39 @@
                     :key="rule.id"
                     class="ui-rule-card"
                   >
-                    <div class="ui-rule-card__title">{{ rule.displayTitle || rule.title || rule.id }}</div>
+                    <div class="ui-rule-card__title">
+                      {{ rule.displayTitle || rule.title || rule.id }}
+                    </div>
                     <div class="ui-rule-card__meta">
                       <span>{{ rule.id }}</span>
                       <span>{{ rule.domain || "项目经验" }}</span>
-                      <span>{{ rule.systemSource === "project_experience" ? "项目私有" : "开发经验" }}</span>
-                      <span v-if="rule.updatedAt" :title="rule.updatedAt">更新于 {{ formatRelativeTime(rule.updatedAt) }}</span>
+                      <span>{{
+                        rule.systemSource === "project_experience"
+                          ? "项目私有"
+                          : "开发经验"
+                      }}</span>
+                      <span v-if="rule.updatedAt" :title="rule.updatedAt"
+                        >更新于 {{ formatRelativeTime(rule.updatedAt) }}</span
+                      >
                     </div>
-                    <p v-if="rule.preview" class="experience-rule-card__preview">
+                    <p
+                      v-if="rule.preview"
+                      class="experience-rule-card__preview"
+                    >
                       {{ rule.preview }}
                     </p>
-                    <div v-if="canManageProject" class="experience-rule-card__actions">
+                    <div
+                      v-if="canManageProject"
+                      class="experience-rule-card__actions"
+                    >
                       <el-button
                         text
                         type="primary"
                         size="small"
-                        :loading="experienceRuleEditingLoading && editingExperienceRuleId === rule.id"
+                        :loading="
+                          experienceRuleEditingLoading &&
+                          editingExperienceRuleId === rule.id
+                        "
                         @click="openExperienceRuleEditDialog(rule)"
                         >编辑规则</el-button
                       >
@@ -223,14 +280,21 @@
                         text
                         type="danger"
                         size="small"
-                        :loading="experienceRuleDeletingLoading && deletingExperienceRuleId === rule.id"
+                        :loading="
+                          experienceRuleDeletingLoading &&
+                          deletingExperienceRuleId === rule.id
+                        "
                         @click="handleDeleteExperienceRule(rule)"
                         >删除规则</el-button
                       >
                     </div>
                   </div>
                 </div>
-                <el-empty v-else description="当前项目还没有沉淀经验规则" :image-size="60" />
+                <el-empty
+                  v-else
+                  description="当前项目还没有沉淀经验规则"
+                  :image-size="60"
+                />
               </ProjectWorkspaceBlock>
             </div>
           </el-tab-pane>
@@ -257,10 +321,18 @@
                   >
                 </template>
 
-                <el-table :data="pagedProjectUsers" stripe class="section-table">
+                <el-table
+                  :data="pagedProjectUsers"
+                  stripe
+                  class="section-table"
+                >
                   <el-table-column prop="username" label="用户名" width="180" />
                   <el-table-column prop="role" label="项目角色" width="120" />
-                  <el-table-column prop="user_role" label="系统角色" width="140">
+                  <el-table-column
+                    prop="user_role"
+                    label="系统角色"
+                    width="140"
+                  >
                     <template #default="{ row }">
                       <span>{{ row.user_role || "-" }}</span>
                     </template>
@@ -279,10 +351,21 @@
                       }}</el-tag>
                     </template>
                   </el-table-column>
-                  <el-table-column label="加入时间" min-width="220" show-overflow-tooltip>
-                    <template #default="{ row }">{{ row.joined_at || "-" }}</template>
+                  <el-table-column
+                    label="加入时间"
+                    min-width="220"
+                    show-overflow-tooltip
+                  >
+                    <template #default="{ row }">{{
+                      row.joined_at || "-"
+                    }}</template>
                   </el-table-column>
-                  <el-table-column label="操作" min-width="140" fixed="right" class-name="table-action-column">
+                  <el-table-column
+                    label="操作"
+                    min-width="140"
+                    fixed="right"
+                    class-name="table-action-column"
+                  >
                     <template #default="{ row }">
                       <el-button
                         text
@@ -307,7 +390,10 @@
                   />
                 </div>
 
-                <el-empty v-if="!projectUsers.length" description="暂无可见用户" />
+                <el-empty
+                  v-if="!projectUsers.length"
+                  description="暂无可见用户"
+                />
               </ProjectWorkspaceBlock>
 
               <ProjectWorkspaceBlock eyebrow="Members" title="成员管理">
@@ -322,7 +408,11 @@
                 </template>
 
                 <el-table :data="pagedMembers" stripe class="section-table">
-                  <el-table-column prop="employee_id" label="员工 ID" width="150" />
+                  <el-table-column
+                    prop="employee_id"
+                    label="员工 ID"
+                    width="150"
+                  />
                   <el-table-column label="员工名称" width="180">
                     <template #default="{ row }">
                       <el-button
@@ -345,15 +435,28 @@
                   </el-table-column>
                   <el-table-column label="员工 MCP" width="120">
                     <template #default="{ row }">
-                      <el-tag :type="row.employee_mcp_enabled ? 'success' : 'warning'">
+                      <el-tag
+                        :type="row.employee_mcp_enabled ? 'success' : 'warning'"
+                      >
                         {{ row.employee_mcp_enabled ? "可用" : "关闭" }}
                       </el-tag>
                     </template>
                   </el-table-column>
-                  <el-table-column label="加入时间" min-width="220" show-overflow-tooltip>
-                    <template #default="{ row }">{{ row.joined_at || "-" }}</template>
+                  <el-table-column
+                    label="加入时间"
+                    min-width="220"
+                    show-overflow-tooltip
+                  >
+                    <template #default="{ row }">{{
+                      row.joined_at || "-"
+                    }}</template>
                   </el-table-column>
-                  <el-table-column label="操作" min-width="190" fixed="right" class-name="table-action-column">
+                  <el-table-column
+                    label="操作"
+                    min-width="190"
+                    fixed="right"
+                    class-name="table-action-column"
+                  >
                     <template #default="{ row }">
                       <el-button
                         text
@@ -393,13 +496,13 @@
 
           <el-tab-pane name="memory">
             <template #label>
-                <span class="project-detail-tab-label">
-                  <span class="project-detail-tab-label__title">需求记录</span>
-                  <span class="project-detail-tab-label__meta">
+              <span class="project-detail-tab-label">
+                <span class="project-detail-tab-label__title">需求记录</span>
+                <span class="project-detail-tab-label__meta">
                   {{ requirementRecordTabMeta }}
-                  </span>
                 </span>
-              </template>
+              </span>
+            </template>
 
             <div class="project-detail-tab-pane">
               <ProjectWorkspaceBlock
@@ -410,13 +513,19 @@
               >
                 <template #actions>
                   <div class="toolbar-actions">
-                    <el-tag size="small" effect="plain" :type="taskTreeStorageBackendTagType">
+                    <el-tag
+                      size="small"
+                      effect="plain"
+                      :type="taskTreeStorageBackendTagType"
+                    >
                       {{ taskTreeStorageBackendLabel }}
                     </el-tag>
                     <el-button
                       text
                       size="small"
-                      :loading="loading || taskSessionsLoading || taskTreeDetailsLoading"
+                      :loading="
+                        loading || taskSessionsLoading || taskTreeDetailsLoading
+                      "
                       @click="refreshRequirementRecords"
                     >
                       刷新映射
@@ -473,13 +582,13 @@
                       />
                     </el-select>
                     <div class="memory-filters__actions">
-                      <el-button
+                      <!-- <el-button
                         type="primary"
                         size="small"
                         :loading="taskSessionsLoading"
                         @click="applyMemoryFilters"
                         >刷新</el-button
-                      >
+                      > -->
                       <el-button
                         plain
                         size="small"
@@ -507,7 +616,8 @@
                   <template #summary>
                     <div class="requirement-record-toolbar__copy">
                       <el-tag effect="plain" type="info">
-                        已选 {{ selectedRequirementRecordCount }} / {{ requirementRecords.length }}
+                        已选 {{ selectedRequirementRecordCount }} /
+                        {{ requirementRecords.length }}
                       </el-tag>
                       <span>删除全部仅作用于当前筛选结果。</span>
                     </div>
@@ -519,17 +629,27 @@
                         type="primary"
                         size="small"
                         :loading="experienceSummaryLoading"
-                        :disabled="!requirementRecords.length || requirementRecordDeleting"
+                        :disabled="
+                          !requirementRecords.length ||
+                          requirementRecordDeleting
+                        "
                         @click="openExperienceSummaryDialog"
                       >
                         总结为开发经验
                       </el-button>
                       <el-button
                         size="small"
-                        :disabled="!requirementRecords.length || requirementRecordDeleting"
+                        :disabled="
+                          !requirementRecords.length ||
+                          requirementRecordDeleting
+                        "
                         @click="toggleSelectAllRequirementRecords"
                       >
-                        {{ allRequirementRecordsSelected ? "取消全选" : "全选当前结果" }}
+                        {{
+                          allRequirementRecordsSelected
+                            ? "取消全选"
+                            : "全选当前结果"
+                        }}
                       </el-button>
                       <el-button
                         plain
@@ -567,13 +687,25 @@
                     :selected="isRequirementRecordSelected(record)"
                     :can-manage-project="canManageProject"
                     :deleting="requirementRecordDeleting"
-                    :tree-loading="isRequirementRoundTaskTreeLoading(record.detailRound)"
-                    :round-kind-label="record.detailRound ? getRequirementRecordKindLabel(record.detailRound.recordKind) : ''"
+                    :tree-loading="
+                      isRequirementRoundTaskTreeLoading(record.detailRound)
+                    "
+                    :round-kind-label="
+                      record.detailRound
+                        ? getRequirementRecordKindLabel(
+                            record.detailRound.recordKind,
+                          )
+                        : ''
+                    "
                     @toggle-expand="toggleRequirementRecordExpansion(record)"
                     @open-detail="openRequirementRecordDetail(record)"
                     @delete="handleDeleteRequirementRecord(record)"
-                    @toggle-select="toggleRequirementRecordSelection(record.id, $event)"
-                    @open-node-detail="openRequirementNodeDetail($event, record.detailRound)"
+                    @toggle-select="
+                      toggleRequirementRecordSelection(record.id, $event)
+                    "
+                    @open-node-detail="
+                      openRequirementNodeDetail($event, record.detailRound)
+                    "
                   />
 
                   <el-empty
@@ -582,7 +714,10 @@
                   />
                 </div>
 
-                <div v-if="requirementRecords.length" class="table-panel__pagination">
+                <div
+                  v-if="requirementRecords.length"
+                  class="table-panel__pagination"
+                >
                   <el-pagination
                     v-model:current-page="requirementRecordsPage"
                     v-model:page-size="requirementRecordsPageSize"
@@ -606,7 +741,11 @@
 
             <div class="project-detail-tab-pane">
               <ProjectWorkspaceBlock eyebrow="MCP" title="项目 MCP 地址">
-                <el-descriptions :column="1" border class="project-descriptions">
+                <el-descriptions
+                  :column="1"
+                  border
+                  class="project-descriptions"
+                >
                   <el-descriptions-item label="SSE">
                     <code>{{ projectMcpSseUrl }}</code>
                   </el-descriptions-item>
@@ -620,1068 +759,1387 @@
         </el-tabs>
       </ProjectAppSection>
 
-    <el-dialog v-model="showAddDialog" title="添加项目成员" width="520px">
-      <el-form :model="addForm" label-width="100px">
-        <el-form-item label="员工" required>
-          <el-select
-            v-model="addForm.employee_ids"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            filterable
-            placeholder="请选择员工（可多选）"
-            style="width: 100%"
-          >
-            <el-option
-              v-for="item in availableEmployeeOptions"
-              :key="item.id"
-              :label="`${item.name} (${item.id})`"
-              :value="item.id"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="角色">
-          <el-input v-model="addForm.role" placeholder="member / owner" />
-        </el-form-item>
-        <el-form-item label="启用">
-          <el-switch v-model="addForm.enabled" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showAddDialog = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="addMember"
-          >保存</el-button
-        >
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="showAddUserDialog" title="添加可见用户" width="520px">
-      <el-form :model="userForm" label-width="100px">
-        <el-form-item label="用户" required>
-          <el-select
-            v-model="userForm.usernames"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            filterable
-            placeholder="请选择用户（可多选）"
-            style="width: 100%"
-          >
-            <el-option
-              v-for="item in availableUserOptions"
-              :key="item.username"
-              :label="`${item.username} (${item.role_name || item.role || '-'})`"
-              :value="item.username"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="项目角色">
-          <el-input v-model="userForm.role" placeholder="member / owner" />
-        </el-form-item>
-        <el-form-item label="启用">
-          <el-switch v-model="userForm.enabled" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showAddUserDialog = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="addProjectUsers"
-          >保存</el-button
-        >
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="showUiRuleDialog" title="UI 规则绑定" width="620px">
-      <el-form :model="uiRuleForm" label-width="100px">
-        <el-form-item label="绑定规则">
-          <el-select
-            v-model="uiRuleForm.rule_ids"
-            multiple
-            filterable
-            collapse-tags
-            collapse-tags-tooltip
-            placeholder="请选择项目级 UI 规则"
-            style="width: 100%"
-          >
-            <el-option
-              v-for="item in ruleOptions"
-              :key="item.id"
-              :label="item.domain ? `${item.title} (${item.domain})` : item.title"
-              :value="item.id"
-            />
-          </el-select>
-          <div class="ui-rule-help">
-            这里只绑定项目级 UI 规范。保存后，项目聊天会优先注入这些规则。
-          </div>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showUiRuleDialog = false">取消</el-button>
-        <el-button type="primary" :loading="uiRuleSaving" @click="saveUiRuleBindings"
-          >保存</el-button
-        >
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="showEditDialog" title="编辑项目" width="520px">
-      <el-form :model="editForm" label-width="110px">
-        <el-form-item label="项目名称" required>
-          <el-input v-model="editForm.name" />
-        </el-form-item>
-        <el-form-item label="项目描述">
-          <el-input v-model="editForm.description" type="textarea" :rows="3" />
-        </el-form-item>
-        <el-form-item label="项目类型">
-          <el-select v-model="editForm.type" style="width: 100%">
-            <el-option
-              v-for="item in projectTypeOptions"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
+      <el-dialog v-model="showAddDialog" title="添加项目成员" width="520px">
+        <el-form :model="addForm" label-width="100px">
+          <el-form-item label="员工" required>
+            <el-select
+              v-model="addForm.employee_ids"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              filterable
+              placeholder="请选择员工（可多选）"
+              style="width: 100%"
             >
-              <div class="project-type-option">
-                <div class="project-type-option__label">{{ item.label }}</div>
-                <div class="project-type-option__desc">{{ item.description }}</div>
-              </div>
-            </el-option>
-          </el-select>
-          <div class="project-type-help">{{ getProjectTypeDescription(editForm.type) }}</div>
-        </el-form-item>
-        <el-form-item label="MCP 使用说明">
-          <el-input
-            v-model="editForm.mcp_instruction"
-            type="textarea"
-            :rows="4"
-            placeholder="给外部模型看的接入说明，例如先读 usage guide，再看项目成员和工具"
-          />
-        </el-form-item>
-        <el-form-item v-if="showProjectLocationFields" label="工作区路径">
-          <el-input v-model="editForm.workspace_path" placeholder="可手动输入或点击选择目录">
-            <template #append>
-              <el-button @click="selectWorkspaceDirectory">选择目录</el-button>
-            </template>
-          </el-input>
-        </el-form-item>
-        <el-form-item v-if="showProjectLocationFields" label="AI 入口文件">
-          <el-input v-model="editForm.ai_entry_file" placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md">
-            <template #append>
-              <el-button @click="selectAiEntryFile">选择文件</el-button>
-            </template>
-          </el-input>
-        </el-form-item>
-        <el-form-item label="启用 MCP">
-          <el-switch v-model="editForm.mcp_enabled" />
-        </el-form-item>
-        <el-form-item label="反馈升级">
-          <el-switch v-model="editForm.feedback_upgrade_enabled" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showEditDialog = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveEdit">保存</el-button>
-      </template>
-    </el-dialog>
+              <el-option
+                v-for="item in availableEmployeeOptions"
+                :key="item.id"
+                :label="`${item.name} (${item.id})`"
+                :value="item.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="角色">
+            <el-input v-model="addForm.role" placeholder="member / owner" />
+          </el-form-item>
+          <el-form-item label="启用">
+            <el-switch v-model="addForm.enabled" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="showAddDialog = false">取消</el-button>
+          <el-button type="primary" :loading="saving" @click="addMember"
+            >保存</el-button
+          >
+        </template>
+      </el-dialog>
 
-    <el-dialog
-      v-model="showManualDialog"
-      :title="manualDialogTitle"
-      width="760px"
-    >
-      <div v-loading="manualLoading">
-        <el-alert
-          v-if="generatedManual"
-          title="项目使用手册加载成功"
-          type="success"
-          show-icon
-          :closable="false"
-          style="margin-bottom: 16px"
-        />
-        <div v-if="generatedManual" class="prompt-content">
-          <div class="prompt-rendered" v-html="renderedManualHtml"></div>
+      <el-dialog v-model="showAddUserDialog" title="添加可见用户" width="520px">
+        <el-form :model="userForm" label-width="100px">
+          <el-form-item label="用户" required>
+            <el-select
+              v-model="userForm.usernames"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              filterable
+              placeholder="请选择用户（可多选）"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="item in availableUserOptions"
+                :key="item.username"
+                :label="`${item.username} (${item.role_name || item.role || '-'})`"
+                :value="item.username"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="项目角色">
+            <el-input v-model="userForm.role" placeholder="member / owner" />
+          </el-form-item>
+          <el-form-item label="启用">
+            <el-switch v-model="userForm.enabled" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="showAddUserDialog = false">取消</el-button>
+          <el-button type="primary" :loading="saving" @click="addProjectUsers"
+            >保存</el-button
+          >
+        </template>
+      </el-dialog>
+
+      <el-dialog v-model="showUiRuleDialog" title="UI 规则绑定" width="620px">
+        <el-form :model="uiRuleForm" label-width="100px">
+          <el-form-item label="绑定规则">
+            <el-select
+              v-model="uiRuleForm.rule_ids"
+              multiple
+              filterable
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="请选择项目级 UI 规则"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="item in ruleOptions"
+                :key="item.id"
+                :label="
+                  item.domain ? `${item.title} (${item.domain})` : item.title
+                "
+                :value="item.id"
+              />
+            </el-select>
+            <div class="ui-rule-help">
+              这里只绑定项目级 UI 规范。保存后，项目聊天会优先注入这些规则。
+            </div>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="showUiRuleDialog = false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="uiRuleSaving"
+            @click="saveUiRuleBindings"
+            >保存</el-button
+          >
+        </template>
+      </el-dialog>
+
+      <el-dialog v-model="showEditDialog" title="编辑项目" width="520px">
+        <el-form :model="editForm" label-width="110px">
+          <el-form-item label="项目名称" required>
+            <el-input v-model="editForm.name" />
+          </el-form-item>
+          <el-form-item label="项目描述">
+            <el-input
+              v-model="editForm.description"
+              type="textarea"
+              :rows="3"
+            />
+          </el-form-item>
+          <el-form-item label="项目类型">
+            <el-select v-model="editForm.type" style="width: 100%">
+              <el-option
+                v-for="item in projectTypeOptions"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value"
+              >
+                <div class="project-type-option">
+                  <div class="project-type-option__label">{{ item.label }}</div>
+                  <div class="project-type-option__desc">
+                    {{ item.description }}
+                  </div>
+                </div>
+              </el-option>
+            </el-select>
+            <div class="project-type-help">
+              {{ getProjectTypeDescription(editForm.type) }}
+            </div>
+          </el-form-item>
+          <el-form-item label="MCP 使用说明">
+            <el-input
+              v-model="editForm.mcp_instruction"
+              type="textarea"
+              :rows="4"
+              placeholder="给外部模型看的接入说明，例如先读 usage guide，再看项目成员和工具"
+            />
+          </el-form-item>
+          <el-form-item v-if="showProjectLocationFields" label="工作区路径">
+            <el-input
+              v-model="editForm.workspace_path"
+              placeholder="可手动输入或点击选择目录"
+            >
+              <template #append>
+                <el-button @click="selectWorkspaceDirectory"
+                  >选择目录</el-button
+                >
+              </template>
+            </el-input>
+          </el-form-item>
+          <el-form-item v-if="showProjectLocationFields" label="AI 入口文件">
+            <el-input
+              v-model="editForm.ai_entry_file"
+              placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
+            >
+              <template #append>
+                <el-button @click="selectAiEntryFile">选择文件</el-button>
+              </template>
+            </el-input>
+          </el-form-item>
+          <el-form-item label="启用 MCP">
+            <el-switch v-model="editForm.mcp_enabled" />
+          </el-form-item>
+          <el-form-item label="反馈升级">
+            <el-switch v-model="editForm.feedback_upgrade_enabled" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="showEditDialog = false">取消</el-button>
+          <el-button type="primary" :loading="saving" @click="saveEdit"
+            >保存</el-button
+          >
+        </template>
+      </el-dialog>
+
+      <el-dialog
+        v-model="showManualDialog"
+        :title="manualDialogTitle"
+        width="760px"
+      >
+        <div v-loading="manualLoading">
+          <el-alert
+            v-if="generatedManual"
+            title="项目使用手册加载成功"
+            type="success"
+            show-icon
+            :closable="false"
+            style="margin-bottom: 16px"
+          />
+          <div v-if="generatedManual" class="prompt-content">
+            <div class="prompt-rendered" v-html="renderedManualHtml"></div>
+          </div>
+          <el-empty
+            v-else
+            description="点击下方按钮加载使用手册"
+            :image-size="60"
+          />
+        </div>
+        <template #footer>
+          <el-button v-if="generatedManual" type="primary" @click="copyManual"
+            >复制使用手册</el-button
+          >
+          <el-button
+            type="success"
+            :loading="manualLoading"
+            @click="showProjectManual"
+            >加载使用手册</el-button
+          >
+          <el-button @click="showManualDialog = false">关闭</el-button>
+        </template>
+      </el-dialog>
+
+      <ModelProviderPickerDialog
+        v-model="showExperienceSummaryDialog"
+        title="选择总结模型"
+        :description="experienceSummaryDialogDescription"
+        :confirm-text="experienceSummaryDialogConfirmText"
+        :internal-providers="experienceProviderOptions"
+        :loading="experienceProvidersLoading || experienceSummaryLoading"
+        :provider-id="experienceSummaryProviderId"
+        :model-name="experienceSummaryModelName"
+        @update:provider-id="experienceSummaryProviderId = $event"
+        @update:model-name="experienceSummaryModelName = $event"
+        @confirm="handleConfirmExperienceSummary"
+      >
+        <template #default>
+          <div class="experience-summary-review-mode">
+            <div class="experience-summary-review-mode__copy">
+              <div class="experience-summary-review-mode__eyebrow">
+                Review Mode
+              </div>
+              <strong>人工复核开关</strong>
+              <p>
+                自动模式会在评审通过且覆盖完整时清理原始记录。人工复核模式会保留原始记录，并弹出本次评审详情供人工确认。
+              </p>
+            </div>
+            <el-switch
+              v-model="experienceSummaryManualReviewEnabled"
+              inline-prompt
+              active-text="开"
+              inactive-text="关"
+            />
+          </div>
+        </template>
+      </ModelProviderPickerDialog>
+      <ModelProviderPickerDialog
+        v-model="showExperienceConsolidateDialog"
+        title="选择汇总模型"
+        :description="experienceConsolidateDialogDescription"
+        confirm-text="按主题汇总经验规则"
+        :internal-providers="experienceProviderOptions"
+        :loading="experienceProvidersLoading || experienceRuleConsolidating"
+        :provider-id="experienceSummaryProviderId"
+        :model-name="experienceSummaryModelName"
+        @update:provider-id="experienceSummaryProviderId = $event"
+        @update:model-name="experienceSummaryModelName = $event"
+        @confirm="handleConfirmConsolidateExperienceRules"
+      />
+
+      <el-dialog
+        v-model="showExperienceReviewDialog"
+        class="experience-review-dialog"
+        width="960px"
+        top="6vh"
+      >
+        <template #header>
+          <div class="memory-detail-dialog__header">
+            <div>
+              <div class="memory-detail-dialog__eyebrow">Experience Review</div>
+              <h3>本次经验评审结果</h3>
+            </div>
+            <div class="memory-detail-dialog__header-tags">
+              <el-tag
+                effect="plain"
+                :type="
+                  getExperienceSummaryStatusTagType(
+                    lastExperienceSummaryResult?.status,
+                  )
+                "
+              >
+                {{
+                  getExperienceSummaryStatusLabel(
+                    lastExperienceSummaryResult?.status,
+                  )
+                }}
+              </el-tag>
+              <el-tag
+                effect="plain"
+                :type="
+                  experienceSummaryManualReviewRequired ? 'warning' : 'success'
+                "
+              >
+                {{
+                  experienceSummaryManualReviewRequired
+                    ? "人工复核"
+                    : "自动评审"
+                }}
+              </el-tag>
+            </div>
+          </div>
+        </template>
+        <div v-if="lastExperienceSummaryResult" class="experience-review-shell">
+          <section class="experience-review-hero">
+            <div class="experience-review-hero__copy">
+              <div class="memory-detail-dialog__eyebrow">Summary</div>
+              <h4>{{ project.name || projectId || "当前项目" }}</h4>
+              <p>{{ experienceReviewHeadline }}</p>
+            </div>
+            <div class="experience-review-hero__stats">
+              <div class="experience-review-stat">
+                <span>源记录</span>
+                <strong>{{
+                  lastExperienceSummaryResult?.source_record_count || 0
+                }}</strong>
+              </div>
+              <div class="experience-review-stat">
+                <span>候选卡片</span>
+                <strong>{{
+                  lastExperienceSummaryResult?.candidate_card_count || 0
+                }}</strong>
+              </div>
+              <div class="experience-review-stat">
+                <span>通过入库</span>
+                <strong>{{
+                  experienceReviewSummary.approved_card_count || 0
+                }}</strong>
+              </div>
+              <div class="experience-review-stat">
+                <span>清理记录</span>
+                <strong>{{
+                  lastExperienceSummaryResult?.clear_result?.deleted_count || 0
+                }}</strong>
+              </div>
+            </div>
+          </section>
+
+          <el-alert
+            :title="experienceReviewBannerTitle"
+            :type="experienceReviewBannerType"
+            :description="experienceReviewBannerDescription"
+            :closable="false"
+            show-icon
+          />
+
+          <section
+            v-if="experienceReviewBlockingReasons.length"
+            class="experience-review-section"
+          >
+            <div class="experience-review-section__header">
+              <div>
+                <div class="memory-detail-dialog__eyebrow">
+                  Blocking Reasons
+                </div>
+                <h4>阻断与保留原因</h4>
+              </div>
+            </div>
+            <div class="experience-review-list">
+              <div
+                v-for="(reason, index) in experienceReviewBlockingReasons"
+                :key="`reason-${index}`"
+                class="experience-review-list__item"
+              >
+                {{ reason }}
+              </div>
+            </div>
+          </section>
+
+          <section class="experience-review-section">
+            <div class="experience-review-section__header">
+              <div>
+                <div class="memory-detail-dialog__eyebrow">Card Decisions</div>
+                <h4>候选卡片评审</h4>
+              </div>
+            </div>
+            <div
+              v-if="experienceReviewCards.length"
+              class="experience-review-card-list"
+            >
+              <article
+                v-for="card in experienceReviewCards"
+                :key="
+                  card.topic_key ||
+                  card.reviewed_card?.topic_key ||
+                  card.revised_card?.topic_key
+                "
+                class="experience-review-card"
+              >
+                <div class="experience-review-card__head">
+                  <div>
+                    <h5>
+                      {{
+                        getExperienceReviewDisplayCard(card)?.title ||
+                        card.topic_key ||
+                        "未命名卡片"
+                      }}
+                    </h5>
+                    <p>
+                      {{
+                        getExperienceReviewDisplayCard(card)?.topic_key ||
+                        card.topic_key ||
+                        "-"
+                      }}
+                    </p>
+                  </div>
+                  <div class="experience-review-card__head-tags">
+                    <el-tag
+                      effect="plain"
+                      :type="getExperienceReviewDecisionTagType(card.decision)"
+                    >
+                      {{ getExperienceReviewDecisionLabel(card.decision) }}
+                    </el-tag>
+                    <el-tag effect="plain" type="info">
+                      置信度
+                      {{ formatExperienceReviewConfidence(card.confidence) }}
+                    </el-tag>
+                    <el-tag
+                      v-if="card.allow_upsert"
+                      effect="plain"
+                      type="success"
+                    >
+                      可入库
+                    </el-tag>
+                  </div>
+                </div>
+
+                <div class="experience-review-card__meta">
+                  <span
+                    >覆盖记录：{{
+                      (card.covered_record_ids || []).length
+                    }}</span
+                  >
+                  <span
+                    >证据链接：{{ (card.evidence_links || []).length }}</span
+                  >
+                  <span>问题数：{{ (card.issues || []).length }}</span>
+                </div>
+
+                <div
+                  v-if="card.covered_record_ids?.length"
+                  class="experience-review-chip-group"
+                >
+                  <span
+                    v-for="recordId in card.covered_record_ids"
+                    :key="`${card.topic_key}-${recordId}`"
+                    class="experience-review-chip"
+                  >
+                    {{ recordId }}
+                  </span>
+                </div>
+
+                <div
+                  v-if="card.evidence_links?.length"
+                  class="experience-review-chip-group"
+                >
+                  <span
+                    v-for="(link, index) in card.evidence_links"
+                    :key="`${card.topic_key}-evidence-${index}`"
+                    class="experience-review-chip experience-review-chip--muted"
+                  >
+                    {{ link.record_id }} / 片段
+                    {{ Number(link.snippet_index || 0) + 1 }}
+                  </span>
+                </div>
+
+                <div
+                  v-if="card.issues?.length"
+                  class="experience-review-issue-list"
+                >
+                  <div
+                    v-for="(issue, index) in card.issues"
+                    :key="`${card.topic_key}-issue-${index}`"
+                    class="experience-review-issue"
+                  >
+                    <el-tag
+                      size="small"
+                      effect="plain"
+                      :type="getExperienceReviewIssueTagType(issue.severity)"
+                    >
+                      {{ String(issue.severity || "major").toUpperCase() }}
+                    </el-tag>
+                    <span>{{
+                      issue.message || issue.code || "未返回问题说明"
+                    }}</span>
+                  </div>
+                </div>
+
+                <div
+                  v-if="getExperienceReviewDisplayCard(card)"
+                  class="experience-review-card__body"
+                >
+                  <div class="experience-review-card__section">
+                    <span>适用场景</span>
+                    <p>
+                      {{
+                        (
+                          getExperienceReviewDisplayCard(card)
+                            ?.applicable_when || []
+                        ).join(" / ") || "未返回适用场景"
+                      }}
+                    </p>
+                  </div>
+                  <div class="experience-review-card__section">
+                    <span>推荐做法</span>
+                    <ul>
+                      <li
+                        v-for="(item, index) in getExperienceReviewDisplayCard(
+                          card,
+                        )?.recommended_actions || []"
+                        :key="`${card.topic_key}-action-${index}`"
+                      >
+                        {{ item }}
+                      </li>
+                    </ul>
+                  </div>
+                  <div class="experience-review-card__section">
+                    <span>验证方式</span>
+                    <ul>
+                      <li
+                        v-for="(item, index) in getExperienceReviewDisplayCard(
+                          card,
+                        )?.verification || []"
+                        :key="`${card.topic_key}-verification-${index}`"
+                      >
+                        {{ item }}
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </article>
+            </div>
+            <el-empty
+              v-else
+              description="当前没有返回可展示的评审卡片"
+              :image-size="56"
+            />
+          </section>
+
+          <section
+            v-if="experienceReviewSourceRecords.length"
+            class="experience-review-section"
+          >
+            <div class="experience-review-section__header">
+              <div>
+                <div class="memory-detail-dialog__eyebrow">Source Records</div>
+                <h4>评审参考记录</h4>
+              </div>
+            </div>
+            <div class="experience-review-source-list">
+              <article
+                v-for="record in experienceReviewSourceRecords"
+                :key="record.record_id"
+                class="experience-review-source-card"
+              >
+                <div class="experience-review-source-card__head">
+                  <strong>{{ record.record_id }}</strong>
+                  <span>{{ record.current_focus || "当前无聚焦节点" }}</span>
+                </div>
+                <p>
+                  {{
+                    record.root_goal || record.summary_text || "未返回目标摘要"
+                  }}
+                </p>
+                <div
+                  v-if="record.evidence_snippets?.length"
+                  class="experience-review-source-card__snippets"
+                >
+                  <div
+                    v-for="(snippet, index) in record.evidence_snippets"
+                    :key="`${record.record_id}-snippet-${index}`"
+                    class="experience-review-source-card__snippet"
+                  >
+                    <span>片段 {{ index + 1 }}</span>
+                    <small>{{ snippet }}</small>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
         </div>
         <el-empty
           v-else
-          description="点击下方按钮加载使用手册"
-          :image-size="60"
+          description="当前还没有可展示的评审结果"
+          :image-size="56"
         />
-      </div>
-      <template #footer>
-        <el-button v-if="generatedManual" type="primary" @click="copyManual"
-          >复制使用手册</el-button
-        >
-        <el-button
-          type="success"
-          :loading="manualLoading"
-          @click="showProjectManual"
-          >加载使用手册</el-button
-        >
-        <el-button @click="showManualDialog = false">关闭</el-button>
-      </template>
-    </el-dialog>
+        <template #footer>
+          <el-button @click="showExperienceReviewDialog = false"
+            >关闭</el-button
+          >
+        </template>
+      </el-dialog>
 
-    <ModelProviderPickerDialog
-      v-model="showExperienceSummaryDialog"
-      title="选择总结模型"
-      :description="experienceSummaryDialogDescription"
-      :confirm-text="experienceSummaryDialogConfirmText"
-      :internal-providers="experienceProviderOptions"
-      :loading="experienceProvidersLoading || experienceSummaryLoading"
-      :provider-id="experienceSummaryProviderId"
-      :model-name="experienceSummaryModelName"
-      @update:provider-id="experienceSummaryProviderId = $event"
-      @update:model-name="experienceSummaryModelName = $event"
-      @confirm="handleConfirmExperienceSummary"
-    >
-      <template #default>
-        <div class="experience-summary-review-mode">
-          <div class="experience-summary-review-mode__copy">
-            <div class="experience-summary-review-mode__eyebrow">Review Mode</div>
-            <strong>人工复核开关</strong>
-            <p>
-              自动模式会在评审通过且覆盖完整时清理原始记录。人工复核模式会保留原始记录，并弹出本次评审详情供人工确认。
-            </p>
-          </div>
-          <el-switch
-            v-model="experienceSummaryManualReviewEnabled"
-            inline-prompt
-            active-text="开"
-            inactive-text="关"
-          />
-        </div>
-      </template>
-    </ModelProviderPickerDialog>
-    <ModelProviderPickerDialog
-      v-model="showExperienceConsolidateDialog"
-      title="选择汇总模型"
-      :description="experienceConsolidateDialogDescription"
-      confirm-text="按主题汇总经验规则"
-      :internal-providers="experienceProviderOptions"
-      :loading="experienceProvidersLoading || experienceRuleConsolidating"
-      :provider-id="experienceSummaryProviderId"
-      :model-name="experienceSummaryModelName"
-      @update:provider-id="experienceSummaryProviderId = $event"
-      @update:model-name="experienceSummaryModelName = $event"
-      @confirm="handleConfirmConsolidateExperienceRules"
-    />
+      <el-dialog
+        v-model="showExperienceRuleEditDialog"
+        title="编辑经验规则"
+        width="760px"
+      >
+        <el-form label-width="92px">
+          <el-form-item label="标题">
+            <el-input
+              v-model="experienceRuleEditForm.title"
+              placeholder="输入经验规则标题"
+            />
+          </el-form-item>
+          <el-form-item label="内容">
+            <el-input
+              v-model="experienceRuleEditForm.content"
+              type="textarea"
+              :rows="18"
+              placeholder="输入经验规则正文"
+            />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="showExperienceRuleEditDialog = false"
+            >取消</el-button
+          >
+          <el-button
+            type="primary"
+            :loading="experienceRuleEditSaving"
+            @click="handleSaveExperienceRuleEdit"
+            >保存</el-button
+          >
+        </template>
+      </el-dialog>
 
-    <el-dialog
-      v-model="showExperienceReviewDialog"
-      class="experience-review-dialog"
-      width="960px"
-      top="6vh"
-    >
-      <template #header>
-        <div class="memory-detail-dialog__header">
-          <div>
-            <div class="memory-detail-dialog__eyebrow">Experience Review</div>
-            <h3>本次经验评审结果</h3>
-          </div>
-          <div class="memory-detail-dialog__header-tags">
-            <el-tag effect="plain" :type="getExperienceSummaryStatusTagType(lastExperienceSummaryResult?.status)">
-              {{ getExperienceSummaryStatusLabel(lastExperienceSummaryResult?.status) }}
-            </el-tag>
-            <el-tag effect="plain" :type="experienceSummaryManualReviewRequired ? 'warning' : 'success'">
-              {{ experienceSummaryManualReviewRequired ? "人工复核" : "自动评审" }}
-            </el-tag>
-          </div>
-        </div>
-      </template>
-      <div v-if="lastExperienceSummaryResult" class="experience-review-shell">
-        <section class="experience-review-hero">
-          <div class="experience-review-hero__copy">
-            <div class="memory-detail-dialog__eyebrow">Summary</div>
-            <h4>{{ project.name || projectId || "当前项目" }}</h4>
-            <p>{{ experienceReviewHeadline }}</p>
-          </div>
-          <div class="experience-review-hero__stats">
-            <div class="experience-review-stat">
-              <span>源记录</span>
-              <strong>{{ lastExperienceSummaryResult?.source_record_count || 0 }}</strong>
-            </div>
-            <div class="experience-review-stat">
-              <span>候选卡片</span>
-              <strong>{{ lastExperienceSummaryResult?.candidate_card_count || 0 }}</strong>
-            </div>
-            <div class="experience-review-stat">
-              <span>通过入库</span>
-              <strong>{{ experienceReviewSummary.approved_card_count || 0 }}</strong>
-            </div>
-            <div class="experience-review-stat">
-              <span>清理记录</span>
-              <strong>{{ lastExperienceSummaryResult?.clear_result?.deleted_count || 0 }}</strong>
-            </div>
-          </div>
-        </section>
-
-        <el-alert
-          :title="experienceReviewBannerTitle"
-          :type="experienceReviewBannerType"
-          :description="experienceReviewBannerDescription"
-          :closable="false"
-          show-icon
-        />
-
-        <section v-if="experienceReviewBlockingReasons.length" class="experience-review-section">
-          <div class="experience-review-section__header">
+      <el-dialog
+        v-model="showRequirementNodeDetailDialog"
+        class="memory-detail-dialog"
+        width="920px"
+        top="8vh"
+      >
+        <template #header>
+          <div class="memory-detail-dialog__header">
             <div>
-              <div class="memory-detail-dialog__eyebrow">Blocking Reasons</div>
-              <h4>阻断与保留原因</h4>
+              <div class="memory-detail-dialog__eyebrow">
+                {{
+                  selectedRequirementNodeIsRoot
+                    ? "Requirement Chain"
+                    : "Task Node Detail"
+                }}
+              </div>
+              <h3>{{ selectedRequirementNodeDetailTitle }}</h3>
+            </div>
+            <div class="memory-detail-dialog__header-tags">
+              <el-tag
+                v-if="selectedRequirementNode"
+                effect="plain"
+                :type="
+                  getTaskSessionStatusTagType(selectedRequirementNode.status)
+                "
+              >
+                {{ getTaskSessionStatusLabel(selectedRequirementNode.status) }}
+              </el-tag>
+              <el-tag
+                v-if="selectedRequirementNodeRound"
+                effect="plain"
+                :type="
+                  getRequirementRecordKindTagType(
+                    selectedRequirementNodeRound.recordKind,
+                  )
+                "
+              >
+                {{
+                  getRequirementRecordKindLabel(
+                    selectedRequirementNodeRound.recordKind,
+                  )
+                }}
+              </el-tag>
             </div>
           </div>
-          <div class="experience-review-list">
-            <div
-              v-for="(reason, index) in experienceReviewBlockingReasons"
-              :key="`reason-${index}`"
-              class="experience-review-list__item"
-            >
-              {{ reason }}
-            </div>
-          </div>
-        </section>
-
-        <section class="experience-review-section">
-          <div class="experience-review-section__header">
-            <div>
-              <div class="memory-detail-dialog__eyebrow">Card Decisions</div>
-              <h4>候选卡片评审</h4>
-            </div>
-          </div>
-          <div v-if="experienceReviewCards.length" class="experience-review-card-list">
-            <article
-              v-for="card in experienceReviewCards"
-              :key="card.topic_key || card.reviewed_card?.topic_key || card.revised_card?.topic_key"
-              class="experience-review-card"
-            >
-              <div class="experience-review-card__head">
-                <div>
-                  <h5>{{ getExperienceReviewDisplayCard(card)?.title || card.topic_key || "未命名卡片" }}</h5>
-                  <p>{{ getExperienceReviewDisplayCard(card)?.topic_key || card.topic_key || "-" }}</p>
+        </template>
+        <div v-loading="requirementNodeDetailLoading">
+          <template v-if="selectedRequirementNode">
+            <div class="memory-detail-shell">
+              <section class="memory-detail-hero">
+                <div class="memory-detail-hero__content">
+                  <div class="memory-detail-hero__eyebrow">
+                    {{
+                      selectedRequirementNodeIsRoot
+                        ? "Requirement Chain"
+                        : "Task Node"
+                    }}
+                  </div>
+                  <h4>{{ selectedRequirementNode.title || "-" }}</h4>
+                  <p>{{ selectedRequirementNodeDescriptionText }}</p>
                 </div>
-                <div class="experience-review-card__head-tags">
-                  <el-tag effect="plain" :type="getExperienceReviewDecisionTagType(card.decision)">
-                    {{ getExperienceReviewDecisionLabel(card.decision) }}
-                  </el-tag>
-                  <el-tag effect="plain" type="info">
-                    置信度 {{ formatExperienceReviewConfidence(card.confidence) }}
-                  </el-tag>
+                <div class="memory-detail-hero__status">
+                  <div class="memory-detail-status-card">
+                    <span>所属轮次</span>
+                    <strong>{{ selectedRequirementNodeRoundLabel }}</strong>
+                  </div>
+                  <div class="memory-detail-status-card">
+                    <span>工作细节</span>
+                    <strong
+                      >{{ selectedRequirementNodeEvents.length }} 条</strong
+                    >
+                  </div>
+                  <div class="memory-detail-status-card">
+                    <span>测试结果</span>
+                    <strong
+                      >{{
+                        selectedRequirementNodeVerificationItems.length
+                      }}
+                      条</strong
+                    >
+                  </div>
+                </div>
+              </section>
+
+              <section class="memory-detail-meta-grid">
+                <div class="memory-detail-meta-card">
+                  <span class="memory-detail-meta-card__label">完成条件</span>
+                  <strong>{{
+                    selectedRequirementNode.completion_criteria || "-"
+                  }}</strong>
+                </div>
+                <div class="memory-detail-meta-card">
+                  <span class="memory-detail-meta-card__label">验证方式</span>
+                  <strong>{{
+                    selectedRequirementNodeVerificationMethodText || "-"
+                  }}</strong>
+                </div>
+                <div class="memory-detail-meta-card">
+                  <span class="memory-detail-meta-card__label">当前结果</span>
+                  <strong>{{ selectedRequirementNodeOutcomeText }}</strong>
+                </div>
+                <div class="memory-detail-meta-card">
+                  <span class="memory-detail-meta-card__label">验证结果</span>
+                  <strong>{{
+                    selectedRequirementNodeVerificationResultText
+                  }}</strong>
+                </div>
+              </section>
+
+              <section class="memory-detail-section">
+                <div class="memory-detail-section__header">
+                  <div>
+                    <div class="memory-detail-section__eyebrow">
+                      Execution Detail
+                    </div>
+                    <h4>工作细节</h4>
+                  </div>
+                </div>
+                <div
+                  v-if="selectedRequirementNodeEvents.length"
+                  class="memory-detail-task-events"
+                >
+                  <div
+                    v-for="event in selectedRequirementNodeEvents"
+                    :key="event.id || `${event.session_id}-${event.created_at}`"
+                    class="memory-detail-plan__event"
+                  >
+                    <div class="memory-detail-plan__event-row">
+                      <div class="memory-detail-plan__event-title">
+                        {{ event.phase || event.event_type || "工作轨迹" }}
+                        <template v-if="event.step">
+                          / {{ event.step }}</template
+                        >
+                      </div>
+                      <el-tag
+                        size="small"
+                        effect="plain"
+                        :type="getWorkSessionStatusTagType(event.status)"
+                      >
+                        {{ event.status || event.event_type || "-" }}
+                      </el-tag>
+                    </div>
+                    <p>{{ summarizeProjectWorkEvent(event) }}</p>
+                    <div
+                      v-if="event.changed_files?.length"
+                      class="memory-detail-plan__event-meta"
+                    >
+                      文件：{{ event.changed_files.join(" / ") }}
+                    </div>
+                    <div class="memory-detail-plan__event-meta">
+                      {{ event.session_id || "-" }} ·
+                      {{ event.employee_name || "-" }} ·
+                      {{ formatDateTime(event.created_at) }}
+                    </div>
+                  </div>
+                </div>
+                <el-empty
+                  v-else
+                  :description="
+                    selectedRequirementNodeIsRoot
+                      ? '当前总目标还没有汇总出整轮工作细节'
+                      : '当前节点还没有写入工作细节'
+                  "
+                  :image-size="56"
+                />
+              </section>
+
+              <section class="memory-detail-section">
+                <div class="memory-detail-section__header">
+                  <div>
+                    <div class="memory-detail-section__eyebrow">
+                      Verification
+                    </div>
+                    <h4>测试结果</h4>
+                  </div>
+                </div>
+                <div
+                  v-if="selectedRequirementNodeVerificationItems.length"
+                  class="memory-detail-tags"
+                >
                   <el-tag
-                    v-if="card.allow_upsert"
+                    v-for="(
+                      item, index
+                    ) in selectedRequirementNodeVerificationItems"
+                    :key="`${selectedRequirementNode?.id || 'node'}-${index}`"
                     effect="plain"
                     type="success"
                   >
-                    可入库
+                    {{ item }}
                   </el-tag>
                 </div>
-              </div>
-
-              <div class="experience-review-card__meta">
-                <span>覆盖记录：{{ (card.covered_record_ids || []).length }}</span>
-                <span>证据链接：{{ (card.evidence_links || []).length }}</span>
-                <span>问题数：{{ (card.issues || []).length }}</span>
-              </div>
-
-              <div v-if="card.covered_record_ids?.length" class="experience-review-chip-group">
-                <span
-                  v-for="recordId in card.covered_record_ids"
-                  :key="`${card.topic_key}-${recordId}`"
-                  class="experience-review-chip"
-                >
-                  {{ recordId }}
-                </span>
-              </div>
-
-              <div v-if="card.evidence_links?.length" class="experience-review-chip-group">
-                <span
-                  v-for="(link, index) in card.evidence_links"
-                  :key="`${card.topic_key}-evidence-${index}`"
-                  class="experience-review-chip experience-review-chip--muted"
-                >
-                  {{ link.record_id }} / 片段 {{ Number(link.snippet_index || 0) + 1 }}
-                </span>
-              </div>
-
-              <div v-if="card.issues?.length" class="experience-review-issue-list">
-                <div
-                  v-for="(issue, index) in card.issues"
-                  :key="`${card.topic_key}-issue-${index}`"
-                  class="experience-review-issue"
-                >
-                  <el-tag size="small" effect="plain" :type="getExperienceReviewIssueTagType(issue.severity)">
-                    {{ String(issue.severity || "major").toUpperCase() }}
-                  </el-tag>
-                  <span>{{ issue.message || issue.code || "未返回问题说明" }}</span>
+                <div v-else class="memory-detail-block">
+                  {{
+                    selectedRequirementNodeIsRoot
+                      ? "当前总目标还没有汇总出测试结果。"
+                      : "当前节点还没有测试结果。"
+                  }}
                 </div>
-              </div>
-
-              <div v-if="getExperienceReviewDisplayCard(card)" class="experience-review-card__body">
-                <div class="experience-review-card__section">
-                  <span>适用场景</span>
-                  <p>
-                    {{
-                      (getExperienceReviewDisplayCard(card)?.applicable_when || []).join(" / ")
-                        || "未返回适用场景"
-                    }}
-                  </p>
-                </div>
-                <div class="experience-review-card__section">
-                  <span>推荐做法</span>
-                  <ul>
-                    <li
-                      v-for="(item, index) in (getExperienceReviewDisplayCard(card)?.recommended_actions || [])"
-                      :key="`${card.topic_key}-action-${index}`"
-                    >
-                      {{ item }}
-                    </li>
-                  </ul>
-                </div>
-                <div class="experience-review-card__section">
-                  <span>验证方式</span>
-                  <ul>
-                    <li
-                      v-for="(item, index) in (getExperienceReviewDisplayCard(card)?.verification || [])"
-                      :key="`${card.topic_key}-verification-${index}`"
-                    >
-                      {{ item }}
-                    </li>
-                  </ul>
-                </div>
-              </div>
-            </article>
-          </div>
-          <el-empty v-else description="当前没有返回可展示的评审卡片" :image-size="56" />
-        </section>
-
-        <section v-if="experienceReviewSourceRecords.length" class="experience-review-section">
-          <div class="experience-review-section__header">
-            <div>
-              <div class="memory-detail-dialog__eyebrow">Source Records</div>
-              <h4>评审参考记录</h4>
+              </section>
             </div>
-          </div>
-          <div class="experience-review-source-list">
-            <article
-              v-for="record in experienceReviewSourceRecords"
-              :key="record.record_id"
-              class="experience-review-source-card"
-            >
-              <div class="experience-review-source-card__head">
-                <strong>{{ record.record_id }}</strong>
-                <span>{{ record.current_focus || "当前无聚焦节点" }}</span>
-              </div>
-              <p>{{ record.root_goal || record.summary_text || "未返回目标摘要" }}</p>
-              <div v-if="record.evidence_snippets?.length" class="experience-review-source-card__snippets">
-                <div
-                  v-for="(snippet, index) in record.evidence_snippets"
-                  :key="`${record.record_id}-snippet-${index}`"
-                  class="experience-review-source-card__snippet"
-                >
-                  <span>片段 {{ index + 1 }}</span>
-                  <small>{{ snippet }}</small>
-                </div>
-              </div>
-            </article>
-          </div>
-        </section>
-      </div>
-      <el-empty v-else description="当前还没有可展示的评审结果" :image-size="56" />
-      <template #footer>
-        <el-button @click="showExperienceReviewDialog = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="showExperienceRuleEditDialog"
-      title="编辑经验规则"
-      width="760px"
-    >
-      <el-form label-width="92px">
-        <el-form-item label="标题">
-          <el-input
-            v-model="experienceRuleEditForm.title"
-            placeholder="输入经验规则标题"
-          />
-        </el-form-item>
-        <el-form-item label="内容">
-          <el-input
-            v-model="experienceRuleEditForm.content"
-            type="textarea"
-            :rows="18"
-            placeholder="输入经验规则正文"
-          />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showExperienceRuleEditDialog = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="experienceRuleEditSaving"
-          @click="handleSaveExperienceRuleEdit"
-          >保存</el-button
-        >
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="showRequirementNodeDetailDialog"
-      class="memory-detail-dialog"
-      width="920px"
-      top="8vh"
-    >
-      <template #header>
-        <div class="memory-detail-dialog__header">
-          <div>
-            <div class="memory-detail-dialog__eyebrow">
-              {{ selectedRequirementNodeIsRoot ? "Requirement Chain" : "Task Node Detail" }}
-            </div>
-            <h3>{{ selectedRequirementNodeDetailTitle }}</h3>
-          </div>
-          <div class="memory-detail-dialog__header-tags">
-            <el-tag
-              v-if="selectedRequirementNode"
-              effect="plain"
-              :type="getTaskSessionStatusTagType(selectedRequirementNode.status)"
-            >
-              {{ getTaskSessionStatusLabel(selectedRequirementNode.status) }}
-            </el-tag>
-            <el-tag
-              v-if="selectedRequirementNodeRound"
-              effect="plain"
-              :type="getRequirementRecordKindTagType(selectedRequirementNodeRound.recordKind)"
-            >
-              {{ getRequirementRecordKindLabel(selectedRequirementNodeRound.recordKind) }}
-            </el-tag>
-          </div>
+          </template>
+          <el-empty v-else description="未加载到节点详情" :image-size="56" />
         </div>
-      </template>
-      <div v-loading="requirementNodeDetailLoading">
-        <template v-if="selectedRequirementNode">
+        <template #footer>
+          <el-button @click="showRequirementNodeDetailDialog = false"
+            >关闭</el-button
+          >
+        </template>
+      </el-dialog>
+
+      <el-dialog
+        v-model="showMemoryDetailDialog"
+        class="memory-detail-dialog"
+        width="960px"
+        top="6vh"
+      >
+        <template #header>
+          <div class="memory-detail-dialog__header">
+            <div>
+              <div class="memory-detail-dialog__eyebrow">
+                Requirement Detail
+              </div>
+              <h3>需求详情</h3>
+            </div>
+            <div class="memory-detail-dialog__header-tags">
+              <el-tag
+                v-if="selectedMemoryDetail"
+                effect="plain"
+                :type="
+                  getMemorySolveStatusTagType(selectedMemoryDetail.solve_status)
+                "
+              >
+                {{
+                  getMemorySolveStatusLabel(selectedMemoryDetail.solve_status)
+                }}
+              </el-tag>
+              <el-tag
+                v-if="selectedMemoryHasTaskTree"
+                effect="plain"
+                type="success"
+              >
+                已关联任务树
+              </el-tag>
+            </div>
+          </div>
+        </template>
+        <template v-if="selectedMemoryDetail">
           <div class="memory-detail-shell">
-            <section class="memory-detail-hero">
+            <section class="memory-detail-hero memory-detail-hero--story">
               <div class="memory-detail-hero__content">
                 <div class="memory-detail-hero__eyebrow">
-                  {{ selectedRequirementNodeIsRoot ? "Requirement Chain" : "Task Node" }}
+                  Requirement Record
                 </div>
-                <h4>{{ selectedRequirementNode.title || "-" }}</h4>
-                <p>{{ selectedRequirementNodeDescriptionText }}</p>
+                <h4>
+                  {{ selectedMemoryQuestionText || "未提取到结构化问题" }}
+                </h4>
+                <p>
+                  {{
+                    selectedMemorySolutionText ||
+                    selectedMemoryConclusionText ||
+                    selectedMemoryProcessSummary ||
+                    "这条需求记录保留了本轮会话的核心内容和任务映射。"
+                  }}
+                </p>
+                <div class="memory-detail-hero__meta">
+                  <span class="memory-detail-hero__meta-item">
+                    <span>执行人</span>
+                    <strong>{{
+                      selectedMemoryDetail.employee_name ||
+                      selectedMemoryDetail.employee_id ||
+                      "-"
+                    }}</strong>
+                  </span>
+                  <span class="memory-detail-hero__meta-item">
+                    <span>记录类型</span>
+                    <strong>{{
+                      getMemoryTypeLabel(selectedMemoryDetail.type)
+                    }}</strong>
+                  </span>
+                  <span class="memory-detail-hero__meta-item">
+                    <span>任务树</span>
+                    <strong>{{ selectedMemoryTaskSessionLabel }}</strong>
+                  </span>
+                  <span class="memory-detail-hero__meta-item">
+                    <span>记录时间</span>
+                    <strong>{{
+                      formatDateTime(selectedMemoryDetail.created_at)
+                    }}</strong>
+                  </span>
+                </div>
+                <div
+                  v-if="selectedMemoryDetail.purpose_tags?.length"
+                  class="memory-detail-hero__tags"
+                >
+                  <el-tag
+                    v-for="tag in selectedMemoryDetail.purpose_tags"
+                    :key="`${selectedMemoryDetail.id}-${tag}`"
+                    size="small"
+                    effect="plain"
+                  >
+                    {{ tag }}
+                  </el-tag>
+                </div>
               </div>
               <div class="memory-detail-hero__status">
                 <div class="memory-detail-status-card">
-                  <span>所属轮次</span>
-                  <strong>{{ selectedRequirementNodeRoundLabel }}</strong>
+                  <span>解决状态</span>
+                  <strong>{{
+                    getMemorySolveStatusLabel(selectedMemoryDetail.solve_status)
+                  }}</strong>
                 </div>
                 <div class="memory-detail-status-card">
-                  <span>工作细节</span>
-                  <strong>{{ selectedRequirementNodeEvents.length }} 条</strong>
-                </div>
-                <div class="memory-detail-status-card">
-                  <span>测试结果</span>
-                  <strong>{{ selectedRequirementNodeVerificationItems.length }} 条</strong>
-                </div>
-              </div>
-            </section>
-
-            <section class="memory-detail-meta-grid">
-              <div class="memory-detail-meta-card">
-                <span class="memory-detail-meta-card__label">完成条件</span>
-                <strong>{{ selectedRequirementNode.completion_criteria || "-" }}</strong>
-              </div>
-              <div class="memory-detail-meta-card">
-                <span class="memory-detail-meta-card__label">验证方式</span>
-                <strong>{{ selectedRequirementNodeVerificationMethodText || "-" }}</strong>
-              </div>
-              <div class="memory-detail-meta-card">
-                <span class="memory-detail-meta-card__label">当前结果</span>
-                <strong>{{ selectedRequirementNodeOutcomeText }}</strong>
-              </div>
-              <div class="memory-detail-meta-card">
-                <span class="memory-detail-meta-card__label">验证结果</span>
-                <strong>{{ selectedRequirementNodeVerificationResultText }}</strong>
-              </div>
-            </section>
-
-            <section class="memory-detail-section">
-              <div class="memory-detail-section__header">
-                <div>
-                  <div class="memory-detail-section__eyebrow">Execution Detail</div>
-                  <h4>工作细节</h4>
-                </div>
-              </div>
-              <div v-if="selectedRequirementNodeEvents.length" class="memory-detail-task-events">
-                <div
-                  v-for="event in selectedRequirementNodeEvents"
-                  :key="event.id || `${event.session_id}-${event.created_at}`"
-                  class="memory-detail-plan__event"
-                >
-                  <div class="memory-detail-plan__event-row">
-                    <div class="memory-detail-plan__event-title">
-                      {{ event.phase || event.event_type || "工作轨迹" }}
-                      <template v-if="event.step"> / {{ event.step }}</template>
-                    </div>
-                    <el-tag
-                      size="small"
-                      effect="plain"
-                      :type="getWorkSessionStatusTagType(event.status)"
-                    >
-                      {{ event.status || event.event_type || "-" }}
-                    </el-tag>
-                  </div>
-                  <p>{{ summarizeProjectWorkEvent(event) }}</p>
-                  <div v-if="event.changed_files?.length" class="memory-detail-plan__event-meta">
-                    文件：{{ event.changed_files.join(" / ") }}
-                  </div>
-                  <div class="memory-detail-plan__event-meta">
-                    {{ event.session_id || "-" }} · {{ event.employee_name || "-" }} ·
-                    {{ formatDateTime(event.created_at) }}
-                  </div>
-                </div>
-              </div>
-              <el-empty
-                v-else
-                :description="selectedRequirementNodeIsRoot ? '当前总目标还没有汇总出整轮工作细节' : '当前节点还没有写入工作细节'"
-                :image-size="56"
-              />
-            </section>
-
-            <section class="memory-detail-section">
-              <div class="memory-detail-section__header">
-                <div>
-                  <div class="memory-detail-section__eyebrow">Verification</div>
-                  <h4>测试结果</h4>
-                </div>
-              </div>
-              <div v-if="selectedRequirementNodeVerificationItems.length" class="memory-detail-tags">
-                <el-tag
-                  v-for="(item, index) in selectedRequirementNodeVerificationItems"
-                  :key="`${selectedRequirementNode?.id || 'node'}-${index}`"
-                  effect="plain"
-                  type="success"
-                >
-                  {{ item }}
-                </el-tag>
-              </div>
-              <div v-else class="memory-detail-block">
-                {{ selectedRequirementNodeIsRoot ? "当前总目标还没有汇总出测试结果。" : "当前节点还没有测试结果。" }}
-              </div>
-            </section>
-          </div>
-        </template>
-        <el-empty v-else description="未加载到节点详情" :image-size="56" />
-      </div>
-      <template #footer>
-        <el-button @click="showRequirementNodeDetailDialog = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="showMemoryDetailDialog"
-      class="memory-detail-dialog"
-      width="960px"
-      top="6vh"
-    >
-      <template #header>
-        <div class="memory-detail-dialog__header">
-          <div>
-            <div class="memory-detail-dialog__eyebrow">Requirement Detail</div>
-            <h3>需求详情</h3>
-          </div>
-          <div class="memory-detail-dialog__header-tags">
-            <el-tag
-              v-if="selectedMemoryDetail"
-              effect="plain"
-              :type="getMemorySolveStatusTagType(selectedMemoryDetail.solve_status)"
-            >
-              {{ getMemorySolveStatusLabel(selectedMemoryDetail.solve_status) }}
-            </el-tag>
-            <el-tag v-if="selectedMemoryHasTaskTree" effect="plain" type="success">
-              已关联任务树
-            </el-tag>
-          </div>
-        </div>
-      </template>
-      <template v-if="selectedMemoryDetail">
-        <div class="memory-detail-shell">
-          <section class="memory-detail-hero memory-detail-hero--story">
-            <div class="memory-detail-hero__content">
-              <div class="memory-detail-hero__eyebrow">Requirement Record</div>
-              <h4>{{ selectedMemoryQuestionText || "未提取到结构化问题" }}</h4>
-              <p>
-                {{
-                  selectedMemorySolutionText
-                    || selectedMemoryConclusionText
-                    || selectedMemoryProcessSummary
-                    || "这条需求记录保留了本轮会话的核心内容和任务映射。"
-                }}
-              </p>
-              <div class="memory-detail-hero__meta">
-                <span class="memory-detail-hero__meta-item">
-                  <span>执行人</span>
-                  <strong>{{ selectedMemoryDetail.employee_name || selectedMemoryDetail.employee_id || "-" }}</strong>
-                </span>
-                <span class="memory-detail-hero__meta-item">
-                  <span>记录类型</span>
-                  <strong>{{ getMemoryTypeLabel(selectedMemoryDetail.type) }}</strong>
-                </span>
-                <span class="memory-detail-hero__meta-item">
-                  <span>任务树</span>
+                  <span>任务树绑定</span>
                   <strong>{{ selectedMemoryTaskSessionLabel }}</strong>
-                </span>
-                <span class="memory-detail-hero__meta-item">
-                  <span>记录时间</span>
-                  <strong>{{ formatDateTime(selectedMemoryDetail.created_at) }}</strong>
-                </span>
-              </div>
-              <div
-                v-if="selectedMemoryDetail.purpose_tags?.length"
-                class="memory-detail-hero__tags"
-              >
-                <el-tag
-                  v-for="tag in selectedMemoryDetail.purpose_tags"
-                  :key="`${selectedMemoryDetail.id}-${tag}`"
-                  size="small"
-                  effect="plain"
-                >
-                  {{ tag }}
-                </el-tag>
-              </div>
-            </div>
-            <div class="memory-detail-hero__status">
-              <div class="memory-detail-status-card">
-                <span>解决状态</span>
-                <strong>{{ getMemorySolveStatusLabel(selectedMemoryDetail.solve_status) }}</strong>
-              </div>
-              <div class="memory-detail-status-card">
-                <span>任务树绑定</span>
-                <strong>{{ selectedMemoryTaskSessionLabel }}</strong>
-              </div>
-              <div class="memory-detail-status-card">
-                <span>进展记录</span>
-                <strong>{{ Number(memoryDetailWorkEvents.length || 0) }}</strong>
-              </div>
-            </div>
-          </section>
-
-          <section class="memory-detail-task-tree">
-            <div class="memory-detail-section__header">
-              <div>
-                <div class="memory-detail-section__eyebrow">Plan Nodes First</div>
-                <h4>执行谱系</h4>
-              </div>
-              <div v-if="memoryDetailTaskTree" class="memory-detail-task-tree__summary-tag">
-                <el-tag effect="plain" :type="getTaskSessionStatusTagType(memoryDetailTaskTree.status)">
-                  {{ memoryDetailTaskTree.is_archived ? "已归档完成" : memoryDetailTaskTree.status || "进行中" }}
-                </el-tag>
-              </div>
-            </div>
-            <div v-loading="memoryDetailTaskTreeLoading">
-              <template v-if="memoryDetailTaskTree">
-                <div class="memory-detail-task-tree__hero">
-                  <div class="memory-detail-task-tree__goal">
-                    <span>主链目标</span>
-                    <strong>{{ memoryDetailTaskTree.root_goal || "-" }}</strong>
-                    <p>{{ selectedMemoryProcessSummary || "当前按任务树节点逐项推进。" }}</p>
-                  </div>
-                  <div class="memory-detail-task-tree__stats">
-                    <div class="memory-detail-task-tree__stat">
-                      <span>进度</span>
-                      <strong>{{ resolveTaskTreeProgressPercent(memoryDetailTaskTree) }}%</strong>
-                    </div>
-                    <div class="memory-detail-task-tree__stat">
-                      <span>节点完成</span>
-                      <strong>
-                        {{ Number(memoryDetailTaskTree.done_leaf_total || 0) }}/{{ Number(memoryDetailTaskTree.leaf_total || 0) }}
-                      </strong>
-                    </div>
-                    <div class="memory-detail-task-tree__stat">
-                      <span>当前焦点</span>
-                      <strong>{{ memoryDetailTaskTree.current_node?.title || "-" }}</strong>
-                    </div>
-                    <div class="memory-detail-task-tree__stat">
-                      <span>轨迹</span>
-                      <strong>{{ Number(memoryDetailWorkEvents.length || 0) }}</strong>
-                    </div>
-                  </div>
                 </div>
-                <div class="memory-detail-plan">
-                  <div
-                    v-for="(node, index) in memoryDetailTaskNodes"
-                    :key="node.id"
-                    class="memory-detail-plan__item"
+                <div class="memory-detail-status-card">
+                  <span>进展记录</span>
+                  <strong>{{
+                    Number(memoryDetailWorkEvents.length || 0)
+                  }}</strong>
+                </div>
+              </div>
+            </section>
+
+            <section class="memory-detail-task-tree">
+              <div class="memory-detail-section__header">
+                <div>
+                  <div class="memory-detail-section__eyebrow">
+                    Plan Nodes First
+                  </div>
+                  <h4>执行谱系</h4>
+                </div>
+                <div
+                  v-if="memoryDetailTaskTree"
+                  class="memory-detail-task-tree__summary-tag"
+                >
+                  <el-tag
+                    effect="plain"
+                    :type="
+                      getTaskSessionStatusTagType(memoryDetailTaskTree.status)
+                    "
                   >
-                    <div class="memory-detail-plan__row">
-                      <div class="memory-detail-plan__title-group">
-                        <span class="memory-detail-plan__index">{{
-                          formatTaskTreeStepIndex(node, index)
-                        }}</span>
-                        <strong>{{ node.title }}</strong>
-                      </div>
-                      <el-tag
-                        size="small"
-                        effect="plain"
-                        :type="getTaskSessionStatusTagType(node.status)"
-                      >
-                        {{ node.status }}
-                      </el-tag>
-                    </div>
-                    <div v-if="node.objective || node.description" class="memory-detail-plan__desc">
-                      {{ node.objective || node.description }}
-                    </div>
-                    <div class="memory-detail-plan__summary">
-                      <span>{{ getMemoryDetailNodeWorkEvents(node).length }} 条轨迹</span>
-                      <span>
+                    {{
+                      memoryDetailTaskTree.is_archived
+                        ? "已归档完成"
+                        : memoryDetailTaskTree.status || "进行中"
+                    }}
+                  </el-tag>
+                </div>
+              </div>
+              <div v-loading="memoryDetailTaskTreeLoading">
+                <template v-if="memoryDetailTaskTree">
+                  <div class="memory-detail-task-tree__hero">
+                    <div class="memory-detail-task-tree__goal">
+                      <span>主链目标</span>
+                      <strong>{{
+                        memoryDetailTaskTree.root_goal || "-"
+                      }}</strong>
+                      <p>
                         {{
-                          node.verification_result
-                            ? "已写验证结果"
-                            : node.latest_outcome
-                              ? "已有阶段结果"
-                              : "等待结果"
+                          selectedMemoryProcessSummary ||
+                          "当前按任务树节点逐项推进。"
                         }}
-                      </span>
+                      </p>
                     </div>
-                    <div
-                      v-if="node.verification_result || node.latest_outcome"
-                      class="memory-detail-plan__verification"
-                    >
-                      <span>{{ node.verification_result ? "验证结果" : "当前结果" }}</span>
-                      <p>{{ node.verification_result || node.latest_outcome }}</p>
+                    <div class="memory-detail-task-tree__stats">
+                      <div class="memory-detail-task-tree__stat">
+                        <span>进度</span>
+                        <strong
+                          >{{
+                            resolveTaskTreeProgressPercent(
+                              memoryDetailTaskTree,
+                            )
+                          }}%</strong
+                        >
+                      </div>
+                      <div class="memory-detail-task-tree__stat">
+                        <span>节点完成</span>
+                        <strong>
+                          {{
+                            Number(memoryDetailTaskTree.done_leaf_total || 0)
+                          }}/{{ Number(memoryDetailTaskTree.leaf_total || 0) }}
+                        </strong>
+                      </div>
+                      <div class="memory-detail-task-tree__stat">
+                        <span>当前焦点</span>
+                        <strong>{{
+                          memoryDetailTaskTree.current_node?.title || "-"
+                        }}</strong>
+                      </div>
+                      <div class="memory-detail-task-tree__stat">
+                        <span>轨迹</span>
+                        <strong>{{
+                          Number(memoryDetailWorkEvents.length || 0)
+                        }}</strong>
+                      </div>
                     </div>
+                  </div>
+                  <div class="memory-detail-plan">
                     <div
-                      v-if="getMemoryDetailNodeWorkEvents(node).length"
-                      class="memory-detail-plan__events"
+                      v-for="(node, index) in memoryDetailTaskNodes"
+                      :key="node.id"
+                      class="memory-detail-plan__item"
                     >
-                      <div class="memory-detail-plan__events-head">
-                        <span>关联轨迹</span>
-                        <strong>{{ getMemoryDetailNodeWorkEvents(node).length }} 条</strong>
+                      <div class="memory-detail-plan__row">
+                        <div class="memory-detail-plan__title-group">
+                          <span class="memory-detail-plan__index">{{
+                            formatTaskTreeStepIndex(node, index)
+                          }}</span>
+                          <strong>{{ node.title }}</strong>
+                        </div>
+                        <el-tag
+                          size="small"
+                          effect="plain"
+                          :type="getTaskSessionStatusTagType(node.status)"
+                        >
+                          {{ node.status }}
+                        </el-tag>
                       </div>
                       <div
-                        v-for="event in getMemoryDetailNodeWorkEvents(node)"
-                        :key="event.id || `${node.id}-${event.session_id}-${event.created_at}`"
-                        class="memory-detail-plan__event"
+                        v-if="node.objective || node.description"
+                        class="memory-detail-plan__desc"
                       >
-                        <div class="memory-detail-plan__event-row">
-                          <div class="memory-detail-plan__event-title">
-                            {{ event.phase || event.event_type || "工作轨迹" }}
-                            <template v-if="event.step"> / {{ event.step }}</template>
-                          </div>
-                          <el-tag
-                            size="small"
-                            effect="plain"
-                            :type="getWorkSessionStatusTagType(event.status)"
+                        {{ node.objective || node.description }}
+                      </div>
+                      <div class="memory-detail-plan__summary">
+                        <span
+                          >{{
+                            getMemoryDetailNodeWorkEvents(node).length
+                          }}
+                          条轨迹</span
+                        >
+                        <span>
+                          {{
+                            node.verification_result
+                              ? "已写验证结果"
+                              : node.latest_outcome
+                                ? "已有阶段结果"
+                                : "等待结果"
+                          }}
+                        </span>
+                      </div>
+                      <div
+                        v-if="node.verification_result || node.latest_outcome"
+                        class="memory-detail-plan__verification"
+                      >
+                        <span>{{
+                          node.verification_result ? "验证结果" : "当前结果"
+                        }}</span>
+                        <p>
+                          {{ node.verification_result || node.latest_outcome }}
+                        </p>
+                      </div>
+                      <div
+                        v-if="getMemoryDetailNodeWorkEvents(node).length"
+                        class="memory-detail-plan__events"
+                      >
+                        <div class="memory-detail-plan__events-head">
+                          <span>关联轨迹</span>
+                          <strong
+                            >{{
+                              getMemoryDetailNodeWorkEvents(node).length
+                            }}
+                            条</strong
                           >
-                            {{ event.status || event.event_type || "-" }}
-                          </el-tag>
                         </div>
-                        <p>{{ summarizeProjectWorkEvent(event) }}</p>
-                        <div class="memory-detail-plan__event-meta">
-                          {{ event.session_id || "-" }} · {{ event.employee_name || "-" }} ·
-                          {{ formatDateTime(event.created_at) }}
+                        <div
+                          v-for="event in getMemoryDetailNodeWorkEvents(node)"
+                          :key="
+                            event.id ||
+                            `${node.id}-${event.session_id}-${event.created_at}`
+                          "
+                          class="memory-detail-plan__event"
+                        >
+                          <div class="memory-detail-plan__event-row">
+                            <div class="memory-detail-plan__event-title">
+                              {{
+                                event.phase || event.event_type || "工作轨迹"
+                              }}
+                              <template v-if="event.step">
+                                / {{ event.step }}</template
+                              >
+                            </div>
+                            <el-tag
+                              size="small"
+                              effect="plain"
+                              :type="getWorkSessionStatusTagType(event.status)"
+                            >
+                              {{ event.status || event.event_type || "-" }}
+                            </el-tag>
+                          </div>
+                          <p>{{ summarizeProjectWorkEvent(event) }}</p>
+                          <div class="memory-detail-plan__event-meta">
+                            {{ event.session_id || "-" }} ·
+                            {{ event.employee_name || "-" }} ·
+                            {{ formatDateTime(event.created_at) }}
+                          </div>
                         </div>
                       </div>
                     </div>
                   </div>
-                </div>
-                <div
-                  v-if="memoryDetailWorkEventsLoading || memoryDetailUnassignedWorkEvents.length"
-                  class="memory-detail-task-events"
-                  v-loading="memoryDetailWorkEventsLoading"
+                  <div
+                    v-if="
+                      memoryDetailWorkEventsLoading ||
+                      memoryDetailUnassignedWorkEvents.length
+                    "
+                    class="memory-detail-task-events"
+                    v-loading="memoryDetailWorkEventsLoading"
+                  >
+                    <div class="memory-detail-task-events__head">
+                      <div>
+                        <div class="memory-detail-section__eyebrow">
+                          Execution Trace
+                        </div>
+                        <h4>未归属到具体节点的轨迹</h4>
+                      </div>
+                      <el-tag
+                        v-if="memoryDetailUnassignedWorkEvents.length"
+                        size="small"
+                        effect="plain"
+                        type="info"
+                      >
+                        {{ memoryDetailUnassignedWorkEvents.length }} 条
+                      </el-tag>
+                    </div>
+                    <div
+                      v-for="event in memoryDetailUnassignedWorkEvents"
+                      :key="
+                        event.id || `${event.session_id}-${event.created_at}`
+                      "
+                      class="memory-detail-plan__event"
+                    >
+                      <div class="memory-detail-plan__event-row">
+                        <div class="memory-detail-plan__event-title">
+                          {{ event.phase || event.event_type || "工作轨迹" }}
+                          <template v-if="event.step">
+                            / {{ event.step }}</template
+                          >
+                        </div>
+                        <el-tag
+                          size="small"
+                          effect="plain"
+                          :type="getWorkSessionStatusTagType(event.status)"
+                        >
+                          {{ event.status || event.event_type || "-" }}
+                        </el-tag>
+                      </div>
+                      <p>{{ summarizeProjectWorkEvent(event) }}</p>
+                      <div class="memory-detail-plan__event-meta">
+                        {{ event.session_id || "-" }} ·
+                        {{ event.employee_name || "-" }} ·
+                        {{ formatDateTime(event.created_at) }}
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <template
+                  v-else-if="
+                    memoryDetailWorkEventsLoading ||
+                    memoryDetailWorkEvents.length
+                  "
                 >
-                  <div class="memory-detail-task-events__head">
-                    <div>
-                      <div class="memory-detail-section__eyebrow">Execution Trace</div>
-                      <h4>未归属到具体节点的轨迹</h4>
-                    </div>
-                    <el-tag
-                      v-if="memoryDetailUnassignedWorkEvents.length"
-                      size="small"
-                      effect="plain"
-                      type="info"
-                    >
-                      {{ memoryDetailUnassignedWorkEvents.length }} 条
-                    </el-tag>
-                  </div>
                   <div
-                    v-for="event in memoryDetailUnassignedWorkEvents"
-                    :key="event.id || `${event.session_id}-${event.created_at}`"
-                    class="memory-detail-plan__event"
+                    class="memory-detail-task-events"
+                    v-loading="memoryDetailWorkEventsLoading"
                   >
-                    <div class="memory-detail-plan__event-row">
-                      <div class="memory-detail-plan__event-title">
-                        {{ event.phase || event.event_type || "工作轨迹" }}
-                        <template v-if="event.step"> / {{ event.step }}</template>
+                    <div class="memory-detail-task-events__head">
+                      <div>
+                        <div class="memory-detail-section__eyebrow">
+                          Execution Trace
+                        </div>
+                        <h4>关联工作轨迹</h4>
                       </div>
                       <el-tag
+                        v-if="memoryDetailWorkEvents.length"
                         size="small"
                         effect="plain"
-                        :type="getWorkSessionStatusTagType(event.status)"
+                        type="info"
                       >
-                        {{ event.status || event.event_type || "-" }}
+                        {{ memoryDetailWorkEvents.length }} 条
                       </el-tag>
                     </div>
-                    <p>{{ summarizeProjectWorkEvent(event) }}</p>
-                    <div class="memory-detail-plan__event-meta">
-                      {{ event.session_id || "-" }} · {{ event.employee_name || "-" }} ·
-                      {{ formatDateTime(event.created_at) }}
-                    </div>
-                  </div>
-                </div>
-              </template>
-              <template v-else-if="memoryDetailWorkEventsLoading || memoryDetailWorkEvents.length">
-                <div class="memory-detail-task-events" v-loading="memoryDetailWorkEventsLoading">
-                  <div class="memory-detail-task-events__head">
-                    <div>
-                      <div class="memory-detail-section__eyebrow">Execution Trace</div>
-                      <h4>关联工作轨迹</h4>
-                    </div>
-                    <el-tag
-                      v-if="memoryDetailWorkEvents.length"
-                      size="small"
-                      effect="plain"
-                      type="info"
+                    <div
+                      v-for="event in memoryDetailWorkEvents"
+                      :key="
+                        event.id || `${event.session_id}-${event.created_at}`
+                      "
+                      class="memory-detail-plan__event"
                     >
-                      {{ memoryDetailWorkEvents.length }} 条
-                    </el-tag>
-                  </div>
-                  <div
-                    v-for="event in memoryDetailWorkEvents"
-                    :key="event.id || `${event.session_id}-${event.created_at}`"
-                    class="memory-detail-plan__event"
-                  >
-                    <div class="memory-detail-plan__event-row">
-                      <div class="memory-detail-plan__event-title">
-                        {{ event.phase || event.event_type || "工作轨迹" }}
-                        <template v-if="event.step"> / {{ event.step }}</template>
+                      <div class="memory-detail-plan__event-row">
+                        <div class="memory-detail-plan__event-title">
+                          {{ event.phase || event.event_type || "工作轨迹" }}
+                          <template v-if="event.step">
+                            / {{ event.step }}</template
+                          >
+                        </div>
+                        <el-tag
+                          size="small"
+                          effect="plain"
+                          :type="getWorkSessionStatusTagType(event.status)"
+                        >
+                          {{ event.status || event.event_type || "-" }}
+                        </el-tag>
                       </div>
-                      <el-tag
-                        size="small"
-                        effect="plain"
-                        :type="getWorkSessionStatusTagType(event.status)"
-                      >
-                        {{ event.status || event.event_type || "-" }}
-                      </el-tag>
-                    </div>
-                    <p>{{ summarizeProjectWorkEvent(event) }}</p>
-                    <div class="memory-detail-plan__event-meta">
-                      {{ event.session_id || "-" }} · {{ event.employee_name || "-" }} ·
-                      {{ formatDateTime(event.created_at) }}
+                      <p>{{ summarizeProjectWorkEvent(event) }}</p>
+                      <div class="memory-detail-plan__event-meta">
+                        {{ event.session_id || "-" }} ·
+                        {{ event.employee_name || "-" }} ·
+                        {{ formatDateTime(event.created_at) }}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </template>
-              <el-empty
-                v-else
-                description="这条需求记录没有关联到可读取的任务树"
-                :image-size="64"
-              />
-            </div>
-          </section>
+                </template>
+                <el-empty
+                  v-else
+                  description="这条需求记录没有关联到可读取的任务树"
+                  :image-size="64"
+                />
+              </div>
+            </section>
 
-          <section class="memory-detail-content-stack">
-            <article class="memory-detail-section">
-              <div class="memory-detail-section__header">
-                <div>
-                  <div class="memory-detail-section__eyebrow">Process</div>
-                  <h4>过程脉络</h4>
+            <section class="memory-detail-content-stack">
+              <article class="memory-detail-section">
+                <div class="memory-detail-section__header">
+                  <div>
+                    <div class="memory-detail-section__eyebrow">Process</div>
+                    <h4>过程脉络</h4>
+                  </div>
                 </div>
-              </div>
-              <div class="memory-detail-block">
-                {{ selectedMemoryProcessSummary || "-" }}
-              </div>
-            </article>
-
-            <article class="memory-detail-section">
-              <div class="memory-detail-section__header">
-                <div>
-                  <div class="memory-detail-section__eyebrow">Approach</div>
-                  <h4>解决方案</h4>
+                <div class="memory-detail-block">
+                  {{ selectedMemoryProcessSummary || "-" }}
                 </div>
-              </div>
-              <div class="memory-detail-block">
-                {{ selectedMemorySolutionText || "-" }}
-              </div>
-            </article>
+              </article>
 
-            <article class="memory-detail-section">
-              <div class="memory-detail-section__header">
-                <div>
-                  <div class="memory-detail-section__eyebrow">Outcome</div>
-                  <h4>最终结论</h4>
+              <article class="memory-detail-section">
+                <div class="memory-detail-section__header">
+                  <div>
+                    <div class="memory-detail-section__eyebrow">Approach</div>
+                    <h4>解决方案</h4>
+                  </div>
                 </div>
-              </div>
-              <div class="memory-detail-block">
-                {{ selectedMemoryConclusionText || "-" }}
-              </div>
-            </article>
-
-            <article
-              v-if="selectedMemoryRawContentText"
-              class="memory-detail-section"
-            >
-              <div class="memory-detail-section__header">
-                <div>
-                  <div class="memory-detail-section__eyebrow">Source</div>
-                  <h4>原始内容</h4>
+                <div class="memory-detail-block">
+                  {{ selectedMemorySolutionText || "-" }}
                 </div>
-              </div>
-              <div class="memory-detail-block">
-                {{ selectedMemoryRawContentText }}
-              </div>
-            </article>
-          </section>
-        </div>
-      </template>
-      <template #footer>
-        <el-button @click="showMemoryDetailDialog = false">关闭</el-button>
-        <el-button
-          plain
-          :disabled="!(selectedMemoryDetail?.linked_work_session?.session_id || selectedMemoryDetail?.execution_session_id)"
-          @click="openMemoryLinkedWorkSession()"
-        >
-          查看轨迹
-        </el-button>
-        <el-button
-          type="primary"
-          :disabled="!canOpenProjectChat || !(selectedMemoryDetail?.chat_session_id)"
-          @click="openProjectChat(selectedMemoryDetail?.chat_session_id || '')"
-        >
-          打开会话
-        </el-button>
-      </template>
-    </el-dialog>
+              </article>
 
-    <el-dialog
-      v-model="showWorkSessionDetailDialog"
-      class="memory-detail-dialog"
-      width="960px"
-      top="6vh"
-    >
-      <template #header>
-        <div class="memory-detail-dialog__header">
-          <div>
-            <div class="memory-detail-dialog__eyebrow">Execution Trace</div>
-            <h3>工作轨迹详情</h3>
+              <article class="memory-detail-section">
+                <div class="memory-detail-section__header">
+                  <div>
+                    <div class="memory-detail-section__eyebrow">Outcome</div>
+                    <h4>最终结论</h4>
+                  </div>
+                </div>
+                <div class="memory-detail-block">
+                  {{ selectedMemoryConclusionText || "-" }}
+                </div>
+              </article>
+
+              <article
+                v-if="selectedMemoryRawContentText"
+                class="memory-detail-section"
+              >
+                <div class="memory-detail-section__header">
+                  <div>
+                    <div class="memory-detail-section__eyebrow">Source</div>
+                    <h4>原始内容</h4>
+                  </div>
+                </div>
+                <div class="memory-detail-block">
+                  {{ selectedMemoryRawContentText }}
+                </div>
+              </article>
+            </section>
           </div>
-          <div class="memory-detail-dialog__header-tags">
-            <el-tag
-              v-if="selectedWorkSession"
-              effect="plain"
-              :type="getWorkSessionStatusTagType(selectedWorkSession.latest_status)"
-            >
-              {{ selectedWorkSession?.latest_status || "-" }}
-            </el-tag>
-          </div>
-        </div>
-      </template>
-      <div v-loading="workSessionDetailLoading">
-        <template v-if="selectedWorkSession">
-          <WorkSessionDetailPanel
-            :session="selectedWorkSession"
-            :events="selectedWorkSessionEvents"
-          />
         </template>
-        <el-empty v-else description="未加载到工作轨迹详情" :image-size="60" />
-      </div>
-      <template #footer>
-        <el-button @click="showWorkSessionDetailDialog = false">关闭</el-button>
-      </template>
-    </el-dialog>
+        <template #footer>
+          <el-button @click="showMemoryDetailDialog = false">关闭</el-button>
+          <el-button
+            plain
+            :disabled="
+              !(
+                selectedMemoryDetail?.linked_work_session?.session_id ||
+                selectedMemoryDetail?.execution_session_id
+              )
+            "
+            @click="openMemoryLinkedWorkSession()"
+          >
+            查看轨迹
+          </el-button>
+          <el-button
+            type="primary"
+            :disabled="
+              !canOpenProjectChat || !selectedMemoryDetail?.chat_session_id
+            "
+            @click="
+              openProjectChat(selectedMemoryDetail?.chat_session_id || '')
+            "
+          >
+            打开会话
+          </el-button>
+        </template>
+      </el-dialog>
+
+      <el-dialog
+        v-model="showWorkSessionDetailDialog"
+        class="memory-detail-dialog"
+        width="960px"
+        top="6vh"
+      >
+        <template #header>
+          <div class="memory-detail-dialog__header">
+            <div>
+              <div class="memory-detail-dialog__eyebrow">Execution Trace</div>
+              <h3>工作轨迹详情</h3>
+            </div>
+            <div class="memory-detail-dialog__header-tags">
+              <el-tag
+                v-if="selectedWorkSession"
+                effect="plain"
+                :type="
+                  getWorkSessionStatusTagType(selectedWorkSession.latest_status)
+                "
+              >
+                {{ selectedWorkSession?.latest_status || "-" }}
+              </el-tag>
+            </div>
+          </div>
+        </template>
+        <div v-loading="workSessionDetailLoading">
+          <template v-if="selectedWorkSession">
+            <WorkSessionDetailPanel
+              :session="selectedWorkSession"
+              :events="selectedWorkSessionEvents"
+            />
+          </template>
+          <el-empty
+            v-else
+            description="未加载到工作轨迹详情"
+            :image-size="60"
+          />
+        </div>
+        <template #footer>
+          <el-button @click="showWorkSessionDetailDialog = false"
+            >关闭</el-button
+          >
+        </template>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -1709,7 +2167,10 @@ import {
   toWorkspaceRelativePath,
 } from "@/utils/workspace-picker.js";
 import { hasPermission } from "@/utils/permissions.js";
-import { buildRuntimeUrl, fetchConfiguredRuntimeOrigin } from "@/utils/runtime-url.js";
+import {
+  buildRuntimeUrl,
+  fetchConfiguredRuntimeOrigin,
+} from "@/utils/runtime-url.js";
 import { setStoredProjectContextId } from "@/utils/desktop-shell.js";
 
 const route = useRoute();
@@ -1977,14 +2438,18 @@ async function fetchRuntimeOrigin() {
 }
 
 const taskTreeStorageBackendLabel = computed(() => {
-  const normalized = String(taskTreeStorageBackend.value || "").trim().toLowerCase();
+  const normalized = String(taskTreeStorageBackend.value || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "postgres") return "任务存储: Postgres";
   if (normalized) return `任务存储: ${normalized}`;
   return "任务存储: 未知";
 });
 
 const taskTreeStorageBackendTagType = computed(() => {
-  return String(taskTreeStorageBackend.value || "").trim().toLowerCase() === "postgres"
+  return String(taskTreeStorageBackend.value || "")
+    .trim()
+    .toLowerCase() === "postgres"
     ? "success"
     : "warning";
 });
@@ -2037,7 +2502,9 @@ const projectMemberCount = computed(() => {
   }
   return Math.max(
     0,
-    Number(project.value?.active_member_count ?? project.value?.member_count ?? 0),
+    Number(
+      project.value?.active_member_count ?? project.value?.member_count ?? 0,
+    ),
   );
 });
 
@@ -2045,7 +2512,10 @@ const projectUserCount = computed(() => {
   if (tabDataLoaded.value.access || projectUsers.value.length) {
     return projectUsers.value.length;
   }
-  return Math.max(0, Number(project.value?.active_user_count ?? project.value?.user_count ?? 0));
+  return Math.max(
+    0,
+    Number(project.value?.active_user_count ?? project.value?.user_count ?? 0),
+  );
 });
 
 const visibleProjectMemories = computed(() => {
@@ -2068,10 +2538,14 @@ const visibleProjectMemories = computed(() => {
   return Array.from(grouped.values())
     .map((items) => pickPrimaryProjectMemory(items))
     .filter(Boolean)
-    .sort((a, b) => String(b?.created_at || "").localeCompare(String(a?.created_at || "")));
+    .sort((a, b) =>
+      String(b?.created_at || "").localeCompare(String(a?.created_at || "")),
+    );
 });
 
-const accessTabMeta = computed(() => `${projectUserCount.value} 用户 · ${projectMemberCount.value} 成员`);
+const accessTabMeta = computed(
+  () => `${projectUserCount.value} 用户 · ${projectMemberCount.value} 成员`,
+);
 
 const availableProjectDetailTabs = computed(() => {
   const tabs = ["overview", "access", "memory"];
@@ -2108,15 +2582,23 @@ const visibleRequirementRecordIds = computed(() =>
     .filter(Boolean),
 );
 
-const selectedRequirementRecordIdSet = computed(() => new Set(selectedRequirementRecordIds.value || []));
-
-const selectedRequirementRecordCount = computed(() =>
-  visibleRequirementRecordIds.value.filter((item) => selectedRequirementRecordIdSet.value.has(item)).length,
+const selectedRequirementRecordIdSet = computed(
+  () => new Set(selectedRequirementRecordIds.value || []),
 );
 
-const allRequirementRecordsSelected = computed(() =>
-  visibleRequirementRecordIds.value.length > 0
-  && visibleRequirementRecordIds.value.every((item) => selectedRequirementRecordIdSet.value.has(item)),
+const selectedRequirementRecordCount = computed(
+  () =>
+    visibleRequirementRecordIds.value.filter((item) =>
+      selectedRequirementRecordIdSet.value.has(item),
+    ).length,
+);
+
+const allRequirementRecordsSelected = computed(
+  () =>
+    visibleRequirementRecordIds.value.length > 0 &&
+    visibleRequirementRecordIds.value.every((item) =>
+      selectedRequirementRecordIdSet.value.has(item),
+    ),
 );
 
 const derivedRequirementRecords = computed(() => {
@@ -2127,44 +2609,59 @@ const derivedRequirementRecords = computed(() => {
     const sessionId = String(summary?.id || "").trim();
     if (!sessionId) continue;
     const taskTreeSummary = normalizeTaskTreePayload(summary);
-    const taskTree = detailMap[sessionId] && typeof detailMap[sessionId] === "object"
-      ? detailMap[sessionId]
-      : taskTreeSummary;
-    const sourceSessionId = String(taskTree?.source_session_id || summary?.source_session_id || "").trim();
+    const taskTree =
+      detailMap[sessionId] && typeof detailMap[sessionId] === "object"
+        ? detailMap[sessionId]
+        : taskTreeSummary;
+    const sourceSessionId = String(
+      taskTree?.source_session_id || summary?.source_session_id || "",
+    ).trim();
     const chatSessionId = String(
-      taskTree?.source_chat_session_id
-      || taskTree?.chat_session_id
-      || summary?.source_chat_session_id
-      || summary?.chat_session_id
-      || "",
+      taskTree?.source_chat_session_id ||
+        taskTree?.chat_session_id ||
+        summary?.source_chat_session_id ||
+        summary?.chat_session_id ||
+        "",
     ).trim();
     const memoryMatches = (filteredMemoryRows.value || []).filter((item) => {
-      const memoryTaskSessionId = String(item?.task_session_id || item?.task_tree_session_id || "").trim();
-      const memoryChatSessionId = String(item?.task_tree_chat_session_id || item?.chat_session_id || "").trim();
+      const memoryTaskSessionId = String(
+        item?.task_session_id || item?.task_tree_session_id || "",
+      ).trim();
+      const memoryChatSessionId = String(
+        item?.task_tree_chat_session_id || item?.chat_session_id || "",
+      ).trim();
       return (
-        (memoryTaskSessionId && memoryTaskSessionId === sessionId)
-        || (chatSessionId && memoryChatSessionId === chatSessionId)
+        (memoryTaskSessionId && memoryTaskSessionId === sessionId) ||
+        (chatSessionId && memoryChatSessionId === chatSessionId)
       );
     });
     const workSessions = (projectWorkSessions.value || [])
       .filter((item) => {
-        const primaryTaskSessionId = String(item?.task_tree_session_id || "").trim();
+        const primaryTaskSessionId = String(
+          item?.task_tree_session_id || "",
+        ).trim();
         const taskSessionIds = Array.isArray(item?.task_tree_session_ids)
           ? item.task_tree_session_ids
           : [];
-        const workChatSessionId = String(item?.task_tree_chat_session_id || "").trim();
+        const workChatSessionId = String(
+          item?.task_tree_chat_session_id || "",
+        ).trim();
         return (
-          (primaryTaskSessionId && primaryTaskSessionId === sessionId)
-          || taskSessionIds.includes(sessionId)
-          || (chatSessionId && workChatSessionId === chatSessionId)
+          (primaryTaskSessionId && primaryTaskSessionId === sessionId) ||
+          taskSessionIds.includes(sessionId) ||
+          (chatSessionId && workChatSessionId === chatSessionId)
         );
       })
       .slice()
       .sort(compareTaskSessionByCreatedAtDesc);
-    const primaryMemory = memoryMatches
-      .slice()
-      .sort((left, right) => String(right?.created_at || "").localeCompare(String(left?.created_at || "")))[0]
-      || null;
+    const primaryMemory =
+      memoryMatches
+        .slice()
+        .sort((left, right) =>
+          String(right?.created_at || "").localeCompare(
+            String(left?.created_at || ""),
+          ),
+        )[0] || null;
     const round = {
       id: sessionId,
       sessionId,
@@ -2172,24 +2669,56 @@ const derivedRequirementRecords = computed(() => {
       chatSessionId,
       taskTree,
       rootNode: taskTree?.tree?.[0] || null,
-      rootGoal: String(taskTree?.root_goal || summary?.root_goal || summary?.title || "").trim(),
-      title: String(taskTree?.title || summary?.title || "").trim(),
-      recordKind: String(taskTree?.record_kind || summary?.record_kind || "requirement").trim() || "requirement",
-      roundIndex: Math.max(1, Number(taskTree?.round_index || summary?.round_index || 1)),
-      status: String(taskTree?.status || summary?.status || "pending").trim(),
-      progressPercent: Number(resolveTaskTreeProgressPercent(taskTree || summary)),
-      currentNodeId: String(taskTree?.current_node_id || summary?.current_node_id || "").trim(),
-      currentNodeTitle: String(
-        taskTree?.current_node?.title || summary?.current_node?.title || summary?.current_node_title || "",
+      rootGoal: String(
+        taskTree?.root_goal || summary?.root_goal || summary?.title || "",
       ).trim(),
-      leafTotal: Number(taskTree?.leaf_total ?? taskTree?.stats?.leaf_total ?? summary?.leaf_total ?? 0),
-      doneLeafTotal: Number(
-        taskTree?.done_leaf_total ?? taskTree?.stats?.done_leaf_total ?? summary?.done_leaf_total ?? 0,
+      title: String(taskTree?.title || summary?.title || "").trim(),
+      recordKind:
+        String(
+          taskTree?.record_kind || summary?.record_kind || "requirement",
+        ).trim() || "requirement",
+      roundIndex: Math.max(
+        1,
+        Number(taskTree?.round_index || summary?.round_index || 1),
       ),
-      nodeTotal: Number(taskTree?.node_total ?? taskTree?.stats?.node_total ?? summary?.node_total ?? 0),
+      status: String(taskTree?.status || summary?.status || "pending").trim(),
+      progressPercent: Number(
+        resolveTaskTreeProgressPercent(taskTree || summary),
+      ),
+      currentNodeId: String(
+        taskTree?.current_node_id || summary?.current_node_id || "",
+      ).trim(),
+      currentNodeTitle: String(
+        taskTree?.current_node?.title ||
+          summary?.current_node?.title ||
+          summary?.current_node_title ||
+          "",
+      ).trim(),
+      leafTotal: Number(
+        taskTree?.leaf_total ??
+          taskTree?.stats?.leaf_total ??
+          summary?.leaf_total ??
+          0,
+      ),
+      doneLeafTotal: Number(
+        taskTree?.done_leaf_total ??
+          taskTree?.stats?.done_leaf_total ??
+          summary?.done_leaf_total ??
+          0,
+      ),
+      nodeTotal: Number(
+        taskTree?.node_total ??
+          taskTree?.stats?.node_total ??
+          summary?.node_total ??
+          0,
+      ),
       isArchived: Boolean(taskTree?.is_archived || summary?.is_archived),
-      createdAt: String(taskTree?.created_at || summary?.created_at || "").trim(),
-      updatedAt: String(taskTree?.updated_at || summary?.updated_at || "").trim(),
+      createdAt: String(
+        taskTree?.created_at || summary?.created_at || "",
+      ).trim(),
+      updatedAt: String(
+        taskTree?.updated_at || summary?.updated_at || "",
+      ).trim(),
       primaryMemory,
       workSessions,
       primaryWorkSession: workSessions[0] || null,
@@ -2197,18 +2726,14 @@ const derivedRequirementRecords = computed(() => {
     };
     round.displayStatus = resolveRequirementRoundDisplayStatus(round);
     const summaryText = round.isFinalized
-      ? (
-        primaryMemory?.conclusion_preview
-        || primaryMemory?.solution_preview
-        || String(taskTree?.current_node?.latest_outcome || "").trim()
-        || "全部计划节点已完成并写入验证结果。"
-      )
-      : (
-        primaryMemory?.solution_preview
-        || primaryMemory?.display_preview
-        || round.currentNodeTitle
-        || "计划已入树，当前按节点推进并逐项验证。"
-      );
+      ? primaryMemory?.conclusion_preview ||
+        primaryMemory?.solution_preview ||
+        String(taskTree?.current_node?.latest_outcome || "").trim() ||
+        "全部计划节点已完成并写入验证结果。"
+      : primaryMemory?.solution_preview ||
+        primaryMemory?.display_preview ||
+        round.currentNodeTitle ||
+        "计划已入树，当前按节点推进并逐项验证。";
     round.summaryText = String(summaryText || "").trim();
     const chainKey = sourceSessionId || sessionId;
     const currentItems = grouped.get(chainKey) || [];
@@ -2216,8 +2741,12 @@ const derivedRequirementRecords = computed(() => {
     grouped.set(chainKey, currentItems);
   }
 
-  const query = String(memoryFilters.value.query || "").trim().toLowerCase();
-  const selectedEmployeeId = String(memoryFilters.value.employeeId || "").trim();
+  const query = String(memoryFilters.value.query || "")
+    .trim()
+    .toLowerCase();
+  const selectedEmployeeId = String(
+    memoryFilters.value.employeeId || "",
+  ).trim();
 
   return Array.from(grouped.entries())
     .map(([chainId, rounds]) => {
@@ -2225,7 +2754,9 @@ const derivedRequirementRecords = computed(() => {
         if (left.roundIndex !== right.roundIndex) {
           return left.roundIndex - right.roundIndex;
         }
-        return String(left.createdAt || "").localeCompare(String(right.createdAt || ""));
+        return String(left.createdAt || "").localeCompare(
+          String(right.createdAt || ""),
+        );
       });
       const latestRound = sortedRounds[sortedRounds.length - 1] || null;
       let currentRound = latestRound;
@@ -2239,18 +2770,27 @@ const derivedRequirementRecords = computed(() => {
         const activeRoundWithProgress = sortedRounds
           .slice()
           .reverse()
-          .find((item) => !item.isFinalized && !isRequirementRoundPlaceholder(item));
+          .find(
+            (item) => !item.isFinalized && !isRequirementRoundPlaceholder(item),
+          );
         const finalizedRound = sortedRounds
           .slice()
           .reverse()
           .find((item) => item.isFinalized);
-        currentRound = activeRoundWithProgress || finalizedRound || currentRound;
+        currentRound =
+          activeRoundWithProgress || finalizedRound || currentRound;
       }
       const actorNames = Array.from(
         new Set(
           sortedRounds.flatMap((item) => [
-            String(item.primaryMemory?.employee_name || item.primaryMemory?.employee_id || "").trim(),
-            ...item.workSessions.map((entry) => String(entry.employee_name || entry.employee_id || "").trim()),
+            String(
+              item.primaryMemory?.employee_name ||
+                item.primaryMemory?.employee_id ||
+                "",
+            ).trim(),
+            ...item.workSessions.map((entry) =>
+              String(entry.employee_name || entry.employee_id || "").trim(),
+            ),
           ]),
         ),
       ).filter(Boolean);
@@ -2263,49 +2803,78 @@ const derivedRequirementRecords = computed(() => {
         currentRound,
         detailRound: currentRound || latestRound || null,
         rounds: sortedRounds,
-        repairRoundCount: sortedRounds.filter((item) => item.recordKind === "repair").length,
+        repairRoundCount: sortedRounds.filter(
+          (item) => item.recordKind === "repair",
+        ).length,
         activeRoundCount: sortedRounds.filter(
           (item) => !item.isFinalized && !isRequirementRoundPlaceholder(item),
         ).length,
-        status: String(currentRound?.displayStatus || latestRound?.displayStatus || "pending").trim(),
-        statusLabel: getTaskSessionStatusLabel(currentRound?.displayStatus || latestRound?.displayStatus),
-        statusTagType: getTaskSessionStatusTagType(currentRound?.displayStatus || latestRound?.displayStatus),
-        progressPercent: Number(currentRound?.progressPercent || latestRound?.progressPercent || 0),
-        currentFocus: currentRound?.currentNodeTitle || latestRound?.currentNodeTitle || "等待进入计划节点",
+        status: String(
+          currentRound?.displayStatus ||
+            latestRound?.displayStatus ||
+            "pending",
+        ).trim(),
+        statusLabel: getTaskSessionStatusLabel(
+          currentRound?.displayStatus || latestRound?.displayStatus,
+        ),
+        statusTagType: getTaskSessionStatusTagType(
+          currentRound?.displayStatus || latestRound?.displayStatus,
+        ),
+        progressPercent: Number(
+          currentRound?.progressPercent || latestRound?.progressPercent || 0,
+        ),
+        currentFocus:
+          currentRound?.currentNodeTitle ||
+          latestRound?.currentNodeTitle ||
+          "等待进入计划节点",
         completionGate: currentRound?.isFinalized
           ? "全部计划节点已完成并通过验证，本轮可视为结束。"
           : "只有所有计划节点完成并写入验证结果，需求才算真正结束。",
-        summaryText: currentRound?.summaryText || latestRound?.summaryText || "",
-        roundDigest: sortedRounds.length > 1
-          ? `${(currentRound || latestRound)?.isFinalized ? "最近" : "当前"}第 ${
-            Math.max(1, Number((currentRound || latestRound)?.roundIndex || sortedRounds.length || 1))
-          } 轮，共 ${sortedRounds.length} 轮`
-          : "单轮处理",
-        progressDigest: `${
-          Math.max(0, Number((currentRound || latestRound)?.doneLeafTotal || 0))
-        }/${
-          Math.max(
-            0,
-            Number(
-              (currentRound || latestRound)?.leafTotal
-              || (currentRound || latestRound)?.nodeTotal
-              || 0,
-            ),
-          )
-        } 已完成`,
-        detailWorkSessionCount: Number((currentRound || latestRound)?.workSessions?.length || 0),
-        updatedAt: String(currentRound?.updatedAt || latestRound?.updatedAt || "").trim(),
+        summaryText:
+          currentRound?.summaryText || latestRound?.summaryText || "",
+        roundDigest:
+          sortedRounds.length > 1
+            ? `${(currentRound || latestRound)?.isFinalized ? "最近" : "当前"}第 ${Math.max(
+                1,
+                Number(
+                  (currentRound || latestRound)?.roundIndex ||
+                    sortedRounds.length ||
+                    1,
+                ),
+              )} 轮，共 ${sortedRounds.length} 轮`
+            : "单轮处理",
+        progressDigest: `${Math.max(
+          0,
+          Number((currentRound || latestRound)?.doneLeafTotal || 0),
+        )}/${Math.max(
+          0,
+          Number(
+            (currentRound || latestRound)?.leafTotal ||
+              (currentRound || latestRound)?.nodeTotal ||
+              0,
+          ),
+        )} 已完成`,
+        detailWorkSessionCount: Number(
+          (currentRound || latestRound)?.workSessions?.length || 0,
+        ),
+        updatedAt: String(
+          currentRound?.updatedAt || latestRound?.updatedAt || "",
+        ).trim(),
         createdAt: String(sortedRounds[0]?.createdAt || "").trim(),
       };
     })
     .filter((record) => {
       if (selectedEmployeeId) {
         const hasEmployee = record.rounds.some((round) => {
-          if (String(round.primaryMemory?.employee_id || "").trim() === selectedEmployeeId) {
+          if (
+            String(round.primaryMemory?.employee_id || "").trim() ===
+            selectedEmployeeId
+          ) {
             return true;
           }
           return round.workSessions.some(
-            (entry) => String(entry.employee_id || "").trim() === selectedEmployeeId,
+            (entry) =>
+              String(entry.employee_id || "").trim() === selectedEmployeeId,
           );
         });
         if (!hasEmployee) {
@@ -2334,13 +2903,21 @@ const derivedRequirementRecords = computed(() => {
           ]),
         ]),
       ]
-        .map((item) => String(item || "").trim().toLowerCase())
+        .map((item) =>
+          String(item || "")
+            .trim()
+            .toLowerCase(),
+        )
         .filter(Boolean);
       return searchValues.some((item) => item.includes(query));
     })
     .sort((left, right) => {
-      const leftUpdatedAt = parseComparableTimestamp(left.updatedAt || left.createdAt);
-      const rightUpdatedAt = parseComparableTimestamp(right.updatedAt || right.createdAt);
+      const leftUpdatedAt = parseComparableTimestamp(
+        left.updatedAt || left.createdAt,
+      );
+      const rightUpdatedAt = parseComparableTimestamp(
+        right.updatedAt || right.createdAt,
+      );
       if (Number.isFinite(leftUpdatedAt) || Number.isFinite(rightUpdatedAt)) {
         if (!Number.isFinite(leftUpdatedAt)) return 1;
         if (!Number.isFinite(rightUpdatedAt)) return -1;
@@ -2357,53 +2934,61 @@ function hydrateRequirementRound(round) {
     return null;
   }
   const sessionId = String(round.sessionId || round.id || "").trim();
-  const detailTaskTree = sessionId && projectTaskTreeDetails.value?.[sessionId]
-    ? normalizeTaskTreePayload(projectTaskTreeDetails.value[sessionId])
-    : null;
-  const fallbackTaskTree = round.taskTree && typeof round.taskTree === "object"
-    ? normalizeTaskTreePayload(round.taskTree)
-    : null;
+  const detailTaskTree =
+    sessionId && projectTaskTreeDetails.value?.[sessionId]
+      ? normalizeTaskTreePayload(projectTaskTreeDetails.value[sessionId])
+      : null;
+  const fallbackTaskTree =
+    round.taskTree && typeof round.taskTree === "object"
+      ? normalizeTaskTreePayload(round.taskTree)
+      : null;
   const taskTree = detailTaskTree || fallbackTaskTree || null;
   const workSessions = Array.isArray(round.workSessions)
     ? round.workSessions.map((item) => normalizeWorkSessionSummary(item))
     : [];
-  const primaryWorkSessionSource = round.primaryWorkSession && typeof round.primaryWorkSession === "object"
-    ? round.primaryWorkSession
-    : workSessions[0] || null;
+  const primaryWorkSessionSource =
+    round.primaryWorkSession && typeof round.primaryWorkSession === "object"
+      ? round.primaryWorkSession
+      : workSessions[0] || null;
   const primaryWorkSession = primaryWorkSessionSource
     ? normalizeWorkSessionSummary(primaryWorkSessionSource)
     : null;
-  const primaryMemory = round.primaryMemory && typeof round.primaryMemory === "object"
-    ? {
-        ...normalizeMemory(round.primaryMemory, round.primaryMemory.employee_id || ""),
-        ...round.primaryMemory,
-      }
-    : null;
+  const primaryMemory =
+    round.primaryMemory && typeof round.primaryMemory === "object"
+      ? {
+          ...normalizeMemory(
+            round.primaryMemory,
+            round.primaryMemory.employee_id || "",
+          ),
+          ...round.primaryMemory,
+        }
+      : null;
   const hydrated = {
     ...round,
     sessionId: sessionId || String(round.sessionId || round.id || "").trim(),
     id: String(round.id || sessionId || "").trim(),
     sourceSessionId: String(round.sourceSessionId || "").trim(),
     chatSessionId: String(
-      round.chatSessionId
-      || taskTree?.source_chat_session_id
-      || taskTree?.chat_session_id
-      || "",
+      round.chatSessionId ||
+        taskTree?.source_chat_session_id ||
+        taskTree?.chat_session_id ||
+        "",
     ).trim(),
     taskTree,
     rootNode: taskTree?.tree?.[0] || null,
-    currentNodeId: String(round.currentNodeId || taskTree?.current_node_id || "").trim(),
+    currentNodeId: String(
+      round.currentNodeId || taskTree?.current_node_id || "",
+    ).trim(),
     currentNodeTitle: String(
-      round.currentNodeTitle
-      || taskTree?.current_node?.title
-      || "",
+      round.currentNodeTitle || taskTree?.current_node?.title || "",
     ).trim(),
     primaryMemory,
     workSessions,
     primaryWorkSession,
-    isFinalized: typeof round.isFinalized === "boolean"
-      ? round.isFinalized
-      : isTaskTreeFinalized(taskTree || round),
+    isFinalized:
+      typeof round.isFinalized === "boolean"
+        ? round.isFinalized
+        : isTaskTreeFinalized(taskTree || round),
   };
   hydrated.displayStatus = String(
     round.displayStatus || resolveRequirementRoundDisplayStatus(hydrated),
@@ -2418,25 +3003,47 @@ function hydrateRequirementRecord(record) {
   const rounds = Array.isArray(record.rounds)
     ? record.rounds.map((item) => hydrateRequirementRound(item)).filter(Boolean)
     : [];
-  const latestRoundId = String(record.latestRound?.sessionId || record.latestRound?.id || "").trim();
-  const currentRoundId = String(record.currentRound?.sessionId || record.currentRound?.id || "").trim();
-  const detailRoundId = String(record.detailRound?.sessionId || record.detailRound?.id || "").trim();
-  const latestRound = rounds.find((item) => String(item?.sessionId || item?.id || "").trim() === latestRoundId)
-    || rounds[rounds.length - 1]
-    || null;
-  const currentRound = rounds.find((item) => String(item?.sessionId || item?.id || "").trim() === currentRoundId)
-    || latestRound;
-  const detailRound = rounds.find((item) => String(item?.sessionId || item?.id || "").trim() === detailRoundId)
-    || currentRound
-    || latestRound
-    || null;
+  const latestRoundId = String(
+    record.latestRound?.sessionId || record.latestRound?.id || "",
+  ).trim();
+  const currentRoundId = String(
+    record.currentRound?.sessionId || record.currentRound?.id || "",
+  ).trim();
+  const detailRoundId = String(
+    record.detailRound?.sessionId || record.detailRound?.id || "",
+  ).trim();
+  const latestRound =
+    rounds.find(
+      (item) =>
+        String(item?.sessionId || item?.id || "").trim() === latestRoundId,
+    ) ||
+    rounds[rounds.length - 1] ||
+    null;
+  const currentRound =
+    rounds.find(
+      (item) =>
+        String(item?.sessionId || item?.id || "").trim() === currentRoundId,
+    ) || latestRound;
+  const detailRound =
+    rounds.find(
+      (item) =>
+        String(item?.sessionId || item?.id || "").trim() === detailRoundId,
+    ) ||
+    currentRound ||
+    latestRound ||
+    null;
   return {
     ...record,
     latestRound,
     currentRound,
     detailRound,
     rounds,
-    updatedAt: String(record.updatedAt || currentRound?.updatedAt || latestRound?.updatedAt || "").trim(),
+    updatedAt: String(
+      record.updatedAt ||
+        currentRound?.updatedAt ||
+        latestRound?.updatedAt ||
+        "",
+    ).trim(),
     createdAt: String(record.createdAt || rounds[0]?.createdAt || "").trim(),
   };
 }
@@ -2445,22 +3052,28 @@ const requirementRecords = computed(() => {
   if (!requirementRecordsLoaded.value) {
     return [];
   }
-  return (projectRequirementRecords.value || []).map((item) => hydrateRequirementRecord(item)).filter(Boolean);
+  return (projectRequirementRecords.value || [])
+    .map((item) => hydrateRequirementRecord(item))
+    .filter(Boolean);
 });
 
 const pagedRequirementRecords = computed(() => {
-  const start = Math.max(0, (requirementRecordsPage.value - 1) * requirementRecordsPageSize.value);
-  return requirementRecords.value.slice(start, start + requirementRecordsPageSize.value);
+  const start = Math.max(
+    0,
+    (requirementRecordsPage.value - 1) * requirementRecordsPageSize.value,
+  );
+  return requirementRecords.value.slice(
+    start,
+    start + requirementRecordsPageSize.value,
+  );
 });
 
 const requirementRecordTabMeta = computed(() =>
   tabDataLoaded.value.memory
     ? `${requirementRecords.value.length} 条记录`
-    : (
-      taskSessionsLoading.value
-        ? "加载中"
-        : "待加载"
-    ),
+    : taskSessionsLoading.value
+      ? "加载中"
+      : "待加载",
 );
 
 const memoryWindowHint = computed(() => {
@@ -2468,14 +3081,17 @@ const memoryWindowHint = computed(() => {
     return "";
   }
   const limitValue = Number(memoryFilters.value.limit || 20);
-  const safeLimit = Number.isFinite(limitValue) && limitValue > 0 ? limitValue : 20;
+  const safeLimit =
+    Number.isFinite(limitValue) && limitValue > 0 ? limitValue : 20;
   const total = Math.max(projectMemoryTotal.value, safeLimit);
   return `当前只展示最近 ${safeLimit} 条命中的项目记忆，现有命中 ${total} 条。删除后若还有更早记录，会自动补位，所以当前结果数可能保持不变。`;
 });
 
 const memoryOverviewItems = computed(() => {
   const rounds = requirementRecords.value.flatMap((item) => item.rounds);
-  const repairRounds = rounds.filter((item) => item.recordKind === "repair").length;
+  const repairRounds = rounds.filter(
+    (item) => item.recordKind === "repair",
+  ).length;
   const activeRounds = rounds.filter((item) => !item.isFinalized).length;
   const completedRecords = requirementRecords.value.filter(
     (item) => item.currentRound?.isFinalized,
@@ -2494,12 +3110,16 @@ const memoryOverviewItems = computed(() => {
     {
       label: "修复记录",
       value: `${repairRounds} 轮`,
-      meta: repairRounds ? "问题回归后会继续挂到原需求链上" : "当前没有修复轮次",
+      meta: repairRounds
+        ? "问题回归后会继续挂到原需求链上"
+        : "当前没有修复轮次",
     },
     {
       label: "已闭环",
       value: `${completedRecords} 条`,
-      meta: completedRecords ? "已经完成全部节点并写入验证结果" : "当前还没有完整闭环的需求",
+      meta: completedRecords
+        ? "已经完成全部节点并写入验证结果"
+        : "当前还没有完整闭环的需求",
     },
   ];
 });
@@ -2523,29 +3143,42 @@ const taskHealthEntries = computed(() =>
 const taskActionOverviewItems = computed(() => {
   const entries = taskHealthEntries.value;
   const pendingActionCount = entries.filter((item) =>
-    ["needs_rebuild", "needs_verification", "needs_closure", "placeholder"].includes(item.health.state),
+    [
+      "needs_rebuild",
+      "needs_verification",
+      "needs_closure",
+      "placeholder",
+    ].includes(item.health.state),
   ).length;
   const resumableCount = entries.filter((item) =>
     ["resumable", "active"].includes(item.health.state),
   ).length;
-  const archivedCount = entries.filter((item) => item.health.state === "archived").length;
+  const archivedCount = entries.filter(
+    (item) => item.health.state === "archived",
+  ).length;
   return [
     {
       label: "待手动处理",
       value: `${pendingActionCount} 条`,
-      meta: pendingActionCount ? "优先处理待验证、待收口、空挂和建议重建的需求。" : "当前没有必须手动修复的需求。",
+      meta: pendingActionCount
+        ? "优先处理待验证、待收口、空挂和建议重建的需求。"
+        : "当前没有必须手动修复的需求。",
       tone: pendingActionCount ? "danger" : "neutral",
     },
     {
       label: "可继续推进",
       value: `${resumableCount} 条`,
-      meta: resumableCount ? "会话锚点和任务树都还在，可以直接进入对话继续处理。" : "当前没有可直接续跑的需求。",
+      meta: resumableCount
+        ? "会话锚点和任务树都还在，可以直接进入对话继续处理。"
+        : "当前没有可直接续跑的需求。",
       tone: resumableCount ? "info" : "neutral",
     },
     {
       label: "已归档",
       value: `${archivedCount} 条`,
-      meta: archivedCount ? "任务树已完成闭环，可以直接回看历史。" : "当前还没有完成归档的任务链。",
+      meta: archivedCount
+        ? "任务树已完成闭环，可以直接回看历史。"
+        : "当前还没有完成归档的任务链。",
       tone: archivedCount ? "success" : "neutral",
     },
   ];
@@ -2559,19 +3192,23 @@ watch(
         .map((item) => String(item?.id || "").trim())
         .filter(Boolean),
     );
-    selectedRequirementRecordIds.value = (selectedRequirementRecordIds.value || []).filter((item) =>
-      visibleIds.has(String(item || "").trim()),
-    );
+    selectedRequirementRecordIds.value = (
+      selectedRequirementRecordIds.value || []
+    ).filter((item) => visibleIds.has(String(item || "").trim()));
     const totalPages = Math.max(
       1,
-      Math.ceil(visibleIds.size / Math.max(1, Number(requirementRecordsPageSize.value || 10))),
+      Math.ceil(
+        visibleIds.size /
+          Math.max(1, Number(requirementRecordsPageSize.value || 10)),
+      ),
     );
     if (requirementRecordsPage.value > totalPages) {
       requirementRecordsPage.value = totalPages;
     }
     if (!expandedRequirementRecordId.value) return;
     const stillExists = (records || []).some(
-      (item) => String(item?.id || "").trim() === expandedRequirementRecordId.value,
+      (item) =>
+        String(item?.id || "").trim() === expandedRequirementRecordId.value,
     );
     if (!stillExists) {
       expandedRequirementRecordId.value = "";
@@ -2593,14 +3230,21 @@ const selectedRequirementNodeRoundLabel = computed(() => {
   return `第 ${Math.max(1, Number(round.roundIndex || 1))} 轮 · ${getRequirementRecordKindLabel(round.recordKind)}`;
 });
 
-const selectedRequirementNodeIsRoot = computed(() => (
-  isTaskTreeRootNode(selectedRequirementNode.value, selectedRequirementNodeRound.value)
-));
+const selectedRequirementNodeIsRoot = computed(() =>
+  isTaskTreeRootNode(
+    selectedRequirementNode.value,
+    selectedRequirementNodeRound.value,
+  ),
+);
 
 const selectedRequirementNodeDetailTitle = computed(() => {
   if (!selectedRequirementNode.value) return "节点详情";
   if (selectedRequirementNodeIsRoot.value) {
-    return selectedRequirementNode.value?.title || selectedRequirementNodeRound.value?.rootGoal || "需求总览";
+    return (
+      selectedRequirementNode.value?.title ||
+      selectedRequirementNodeRound.value?.rootGoal ||
+      "需求总览"
+    );
   }
   return selectedRequirementNode.value?.title || "节点详情";
 });
@@ -2613,10 +3257,10 @@ const selectedRequirementNodeDescriptionText = computed(() => {
   if (directText) return directText;
   if (selectedRequirementNodeIsRoot.value) {
     return String(
-      round?.summaryText
-      || round?.rootGoal
-      || round?.currentNodeTitle
-      || "当前总目标暂无描述，后续会随着子任务推进逐步沉淀整轮结果。",
+      round?.summaryText ||
+        round?.rootGoal ||
+        round?.currentNodeTitle ||
+        "当前总目标暂无描述，后续会随着子任务推进逐步沉淀整轮结果。",
     ).trim();
   }
   return "该节点暂无目标描述。";
@@ -2625,7 +3269,10 @@ const selectedRequirementNodeDescriptionText = computed(() => {
 const selectedRequirementNodeVerificationMethodText = computed(() => {
   const node = selectedRequirementNode.value;
   if (Array.isArray(node?.verification_method)) {
-    return node.verification_method.map((item) => String(item || "").trim()).filter(Boolean).join(" / ");
+    return node.verification_method
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .join(" / ");
   }
   return String(node?.verification_method || "").trim();
 });
@@ -2641,7 +3288,9 @@ const selectedRequirementNodeVerificationItems = computed(() => {
   };
   pushItem(selectedRequirementNode.value?.verification_result);
   for (const event of selectedRequirementNodeEvents.value || []) {
-    for (const entry of Array.isArray(event?.verification) ? event.verification : []) {
+    for (const entry of Array.isArray(event?.verification)
+      ? event.verification
+      : []) {
       pushItem(entry);
     }
   }
@@ -2651,18 +3300,29 @@ const selectedRequirementNodeVerificationItems = computed(() => {
 const selectedRequirementNodeOutcomeText = computed(() => {
   const node = selectedRequirementNode.value;
   const round = selectedRequirementNodeRound.value;
-  const text = String(node?.latest_outcome || node?.summary_for_model || "").trim();
+  const text = String(
+    node?.latest_outcome || node?.summary_for_model || "",
+  ).trim();
   if (text) return text;
   if (selectedRequirementNodeIsRoot.value) {
-    return String(round?.summaryText || round?.currentNodeTitle || round?.rootGoal || "-").trim() || "-";
+    return (
+      String(
+        round?.summaryText || round?.currentNodeTitle || round?.rootGoal || "-",
+      ).trim() || "-"
+    );
   }
   return "-";
 });
 
 const selectedRequirementNodeVerificationResultText = computed(() => {
-  const text = String(selectedRequirementNode.value?.verification_result || "").trim();
+  const text = String(
+    selectedRequirementNode.value?.verification_result || "",
+  ).trim();
   if (text) return text;
-  if (selectedRequirementNodeIsRoot.value && selectedRequirementNodeVerificationItems.value.length) {
+  if (
+    selectedRequirementNodeIsRoot.value &&
+    selectedRequirementNodeVerificationItems.value.length
+  ) {
     return `已汇总 ${selectedRequirementNodeVerificationItems.value.length} 条验证结果`;
   }
   return "-";
@@ -2673,12 +3333,16 @@ const selectedMemorySections = computed(() =>
 );
 
 function isCompletedLikeStatus(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   return normalized === "completed" || normalized === "done";
 }
 
 function resolveRequirementRoundDisplayStatus(round) {
-  const rawStatus = String(round?.status || "").trim().toLowerCase();
+  const rawStatus = String(round?.status || "")
+    .trim()
+    .toLowerCase();
   if (!round) {
     return "pending";
   }
@@ -2688,10 +3352,16 @@ function resolveRequirementRoundDisplayStatus(round) {
   if (rawStatus === "blocked") {
     return "blocked";
   }
-  const workSessionStatus = String(round?.primaryWorkSession?.latest_status || "").trim().toLowerCase();
+  const workSessionStatus = String(
+    round?.primaryWorkSession?.latest_status || "",
+  )
+    .trim()
+    .toLowerCase();
   if (
-    (rawStatus === "pending" || rawStatus === "in_progress" || rawStatus === "verifying")
-    && isCompletedLikeStatus(workSessionStatus)
+    (rawStatus === "pending" ||
+      rawStatus === "in_progress" ||
+      rawStatus === "verifying") &&
+    isCompletedLikeStatus(workSessionStatus)
   ) {
     return "paused";
   }
@@ -2702,7 +3372,9 @@ function isRequirementRoundPlaceholder(round) {
   if (!round || round.isFinalized) {
     return false;
   }
-  const rawStatus = String(round.status || "").trim().toLowerCase();
+  const rawStatus = String(round.status || "")
+    .trim()
+    .toLowerCase();
   if (rawStatus !== "pending") {
     return false;
   }
@@ -2726,21 +3398,31 @@ function resolveRequirementRoundHealth(round) {
       priority: 5,
     };
   }
-  const taskStatus = String(round.status || "").trim().toLowerCase();
-  const currentNodeStatus = String(round.taskTree?.current_node?.status || "").trim().toLowerCase();
-  const workSessionStatus = String(round.primaryWorkSession?.latest_status || "").trim().toLowerCase();
+  const taskStatus = String(round.status || "")
+    .trim()
+    .toLowerCase();
+  const currentNodeStatus = String(round.taskTree?.current_node?.status || "")
+    .trim()
+    .toLowerCase();
+  const workSessionStatus = String(
+    round.primaryWorkSession?.latest_status || "",
+  )
+    .trim()
+    .toLowerCase();
   const taskTreeHealth = round.taskTree?.task_tree_health || null;
   const hasResumeAnchor = Boolean(
-    round.primaryWorkSession?.session_id || round.sessionId || round.chatSessionId,
+    round.primaryWorkSession?.session_id ||
+    round.sessionId ||
+    round.chatSessionId,
   );
   if (!round.isFinalized && taskTreeHealth?.rebuild_recommended) {
     return {
       state: "needs_rebuild",
       label: "建议重建",
       summary: String(
-        taskTreeHealth.rebuild_reason
-        || taskTreeHealth.issues?.[0]?.message
-        || "当前任务树和真实目标不匹配，建议先重建后再继续。",
+        taskTreeHealth.rebuild_reason ||
+          taskTreeHealth.issues?.[0]?.message ||
+          "当前任务树和真实目标不匹配，建议先重建后再继续。",
       ).trim(),
       tone: "danger",
       tagType: "danger",
@@ -2788,8 +3470,10 @@ function resolveRequirementRoundHealth(round) {
     };
   }
   if (
-    hasResumeAnchor
-    && (taskStatus === "pending" || taskStatus === "in_progress" || currentNodeStatus === "in_progress")
+    hasResumeAnchor &&
+    (taskStatus === "pending" ||
+      taskStatus === "in_progress" ||
+      currentNodeStatus === "in_progress")
   ) {
     return {
       state: "resumable",
@@ -2802,10 +3486,15 @@ function resolveRequirementRoundHealth(round) {
   }
   return {
     state: "active",
-    label: getTaskSessionStatusLabel(taskStatus || currentNodeStatus || "pending"),
+    label: getTaskSessionStatusLabel(
+      taskStatus || currentNodeStatus || "pending",
+    ),
     summary: "当前轮次正在正常推进，没有发现需要优先处理的健康信号。",
     tone: "neutral",
-    tagType: getTaskSessionStatusTagType(taskStatus || currentNodeStatus || "pending") || "info",
+    tagType:
+      getTaskSessionStatusTagType(
+        taskStatus || currentNodeStatus || "pending",
+      ) || "info",
     priority: 4,
   };
 }
@@ -2814,11 +3503,16 @@ function isTaskTreeFinalized(taskTree) {
   if (!taskTree || typeof taskTree !== "object") {
     return false;
   }
-  const status = String(taskTree.status || "").trim().toLowerCase();
+  const status = String(taskTree.status || "")
+    .trim()
+    .toLowerCase();
   const progressPercent = Number(taskTree.progress_percent || 0);
-  const stats = taskTree.stats && typeof taskTree.stats === "object" ? taskTree.stats : {};
+  const stats =
+    taskTree.stats && typeof taskTree.stats === "object" ? taskTree.stats : {};
   const leafTotal = Number(taskTree.leaf_total ?? stats.leaf_total ?? 0);
-  const doneLeafTotal = Number(taskTree.done_leaf_total ?? stats.done_leaf_total ?? 0);
+  const doneLeafTotal = Number(
+    taskTree.done_leaf_total ?? stats.done_leaf_total ?? 0,
+  );
   if (Boolean(taskTree.is_archived) && status === "done") {
     return true;
   }
@@ -2842,9 +3536,12 @@ function resolveTaskTreeProgressPercent(taskTree) {
   if (isTaskTreeFinalized(taskTree)) {
     return 100;
   }
-  const stats = taskTree.stats && typeof taskTree.stats === "object" ? taskTree.stats : {};
+  const stats =
+    taskTree.stats && typeof taskTree.stats === "object" ? taskTree.stats : {};
   const leafTotal = Number(taskTree.leaf_total ?? stats.leaf_total ?? 0);
-  const doneLeafTotal = Number(taskTree.done_leaf_total ?? stats.done_leaf_total ?? 0);
+  const doneLeafTotal = Number(
+    taskTree.done_leaf_total ?? stats.done_leaf_total ?? 0,
+  );
   if (leafTotal > 0 && doneLeafTotal > 0) {
     return Math.round((doneLeafTotal / leafTotal) * 100);
   }
@@ -2853,9 +3550,9 @@ function resolveTaskTreeProgressPercent(taskTree) {
 
 const selectedMemoryHasTaskTree = computed(() =>
   Boolean(
-    memoryDetailTaskTree.value
-    || selectedMemoryDetail.value?.task_tree_session_id
-    || selectedMemoryDetail.value?.task_tree_chat_session_id,
+    memoryDetailTaskTree.value ||
+    selectedMemoryDetail.value?.task_tree_session_id ||
+    selectedMemoryDetail.value?.task_tree_chat_session_id,
   ),
 );
 
@@ -2864,21 +3561,21 @@ const selectedMemoryTaskSessionLabel = computed(() => {
     return "未关联";
   }
   return (
-    String(memoryDetailTaskTree.value?.id || "").trim()
-    || String(selectedMemoryDetail.value?.task_session_id || "").trim()
-    || String(selectedMemoryDetail.value?.task_tree_session_id || "").trim()
-    || "已关联"
+    String(memoryDetailTaskTree.value?.id || "").trim() ||
+    String(selectedMemoryDetail.value?.task_session_id || "").trim() ||
+    String(selectedMemoryDetail.value?.task_tree_session_id || "").trim() ||
+    "已关联"
   );
 });
 
 const selectedMemoryQuestionText = computed(() => {
   return (
-    selectedMemorySections.value.question
-    || String(
-      selectedMemoryDetail.value?.question_preview
-      || selectedMemoryDetail.value?.root_goal
-      || selectedMemoryDetail.value?.title
-      || "",
+    selectedMemorySections.value.question ||
+    String(
+      selectedMemoryDetail.value?.question_preview ||
+        selectedMemoryDetail.value?.root_goal ||
+        selectedMemoryDetail.value?.title ||
+        "",
     ).trim()
   );
 });
@@ -2902,10 +3599,10 @@ const selectedMemorySolutionText = computed(() => {
     return selectedMemorySections.value.conclusion;
   }
   return (
-    selectedMemoryTaskTreeFallbackText.value
-    || selectedMemoryWorkEventFallbackText.value
-    || selectedMemoryRawContentText.value
-    || ""
+    selectedMemoryTaskTreeFallbackText.value ||
+    selectedMemoryWorkEventFallbackText.value ||
+    selectedMemoryRawContentText.value ||
+    ""
   );
 });
 
@@ -2916,10 +3613,18 @@ const selectedMemoryIsFinalized = computed(() => {
   if (isTaskTreeFinalized(memoryDetailTaskTree.value)) {
     return true;
   }
-  if (isCompletedLikeStatus(selectedMemoryDetail.value?.linked_work_session?.latest_status)) {
+  if (
+    isCompletedLikeStatus(
+      selectedMemoryDetail.value?.linked_work_session?.latest_status,
+    )
+  ) {
     return true;
   }
-  return String(selectedMemoryDetail.value?.solve_status || "").trim().toLowerCase() === "resolved";
+  return (
+    String(selectedMemoryDetail.value?.solve_status || "")
+      .trim()
+      .toLowerCase() === "resolved"
+  );
 });
 
 const selectedMemoryConclusionText = computed(() => {
@@ -2930,15 +3635,18 @@ const selectedMemoryConclusionText = computed(() => {
     return "当前需求尚未全部完成，最终结论会在所有计划项完成并完成验证后生成。";
   }
   return (
-    selectedMemoryWorkEventFallbackText.value
-    || selectedMemoryTaskTreeFallbackText.value
-    || selectedMemoryRawContentText.value
-    || ""
+    selectedMemoryWorkEventFallbackText.value ||
+    selectedMemoryTaskTreeFallbackText.value ||
+    selectedMemoryRawContentText.value ||
+    ""
   );
 });
 
 const selectedMemoryRawContentText = computed(() => {
-  return shouldDisplayRawMemoryContent(selectedMemoryDetail.value, selectedMemorySections.value)
+  return shouldDisplayRawMemoryContent(
+    selectedMemoryDetail.value,
+    selectedMemorySections.value,
+  )
     ? String(selectedMemoryDetail.value?.content || "").trim()
     : "";
 });
@@ -2976,18 +3684,27 @@ function compareTaskSessionByCreatedAtAsc(left, right) {
 
 function findLinkedWorkSessionForMemory(memory) {
   const sections = parseMemorySections(memory?.content || "");
-  const questionText = String(sections?.question || "").replace(/\s+/g, " ").trim();
+  const questionText = String(sections?.question || "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!questionText) {
     return null;
   }
   const candidates = (projectWorkSessions.value || [])
-    .filter((item) => String(item?.goal || "").replace(/\s+/g, " ").trim() === questionText)
+    .filter(
+      (item) =>
+        String(item?.goal || "")
+          .replace(/\s+/g, " ")
+          .trim() === questionText,
+    )
     .slice()
     .sort(compareTaskSessionByCreatedAtDesc);
   if (!candidates.length) {
     return null;
   }
-  const completedCandidates = candidates.filter((item) => isCompletedLikeStatus(item?.latest_status));
+  const completedCandidates = candidates.filter((item) =>
+    isCompletedLikeStatus(item?.latest_status),
+  );
   const memoryCreatedAt = parseComparableTimestamp(memory?.created_at);
   if (!Number.isFinite(memoryCreatedAt)) {
     return completedCandidates[0] || candidates[0] || null;
@@ -2995,7 +3712,9 @@ function findLinkedWorkSessionForMemory(memory) {
   const futureCompletedCandidates = completedCandidates
     .filter((item) => {
       const sessionCreatedAt = parseComparableTimestamp(item?.created_at);
-      return Number.isFinite(sessionCreatedAt) && sessionCreatedAt >= memoryCreatedAt;
+      return (
+        Number.isFinite(sessionCreatedAt) && sessionCreatedAt >= memoryCreatedAt
+      );
     })
     .slice()
     .sort(compareTaskSessionByCreatedAtAsc);
@@ -3004,13 +3723,22 @@ function findLinkedWorkSessionForMemory(memory) {
   }
   const historyCompletedCandidates = completedCandidates.filter((item) => {
     const sessionCreatedAt = parseComparableTimestamp(item?.created_at);
-    return Number.isFinite(sessionCreatedAt) && sessionCreatedAt <= memoryCreatedAt;
+    return (
+      Number.isFinite(sessionCreatedAt) && sessionCreatedAt <= memoryCreatedAt
+    );
   });
-  return historyCompletedCandidates[0] || completedCandidates[0] || candidates[0] || null;
+  return (
+    historyCompletedCandidates[0] ||
+    completedCandidates[0] ||
+    candidates[0] ||
+    null
+  );
 }
 
 function findLinkedTaskSessionForMemory(memory, linkedWorkSession = null) {
-  const explicitTaskSessionId = String(memory?.task_tree_session_id || "").trim();
+  const explicitTaskSessionId = String(
+    memory?.task_tree_session_id || "",
+  ).trim();
   if (explicitTaskSessionId) {
     const exactMatch = (projectTaskSessions.value || []).find(
       (item) => String(item?.id || "").trim() === explicitTaskSessionId,
@@ -3025,22 +3753,31 @@ function findLinkedTaskSessionForMemory(memory, linkedWorkSession = null) {
   }
   const sections = parseMemorySections(memory?.content || "");
   const questionText = String(sections?.question || "").trim();
-  const explicitTaskTreeChatSessionId = String(memory?.task_tree_chat_session_id || "").trim();
+  const explicitTaskTreeChatSessionId = String(
+    memory?.task_tree_chat_session_id || "",
+  ).trim();
   let candidates = (projectTaskSessions.value || [])
     .filter((item) => {
       const itemChatSessionId = String(item?.chat_session_id || "").trim();
-      const itemSourceChatSessionId = String(item?.source_chat_session_id || "").trim();
-      return chatSessionId === itemChatSessionId || chatSessionId === itemSourceChatSessionId;
+      const itemSourceChatSessionId = String(
+        item?.source_chat_session_id || "",
+      ).trim();
+      return (
+        chatSessionId === itemChatSessionId ||
+        chatSessionId === itemSourceChatSessionId
+      );
     })
     .slice()
     .sort(compareTaskSessionByCreatedAtDesc);
   if (explicitTaskTreeChatSessionId) {
     const scopedCandidates = candidates.filter((item) => {
       const itemChatSessionId = String(item?.chat_session_id || "").trim();
-      const itemSourceChatSessionId = String(item?.source_chat_session_id || "").trim();
+      const itemSourceChatSessionId = String(
+        item?.source_chat_session_id || "",
+      ).trim();
       return (
-        explicitTaskTreeChatSessionId === itemChatSessionId
-        || explicitTaskTreeChatSessionId === itemSourceChatSessionId
+        explicitTaskTreeChatSessionId === itemChatSessionId ||
+        explicitTaskTreeChatSessionId === itemSourceChatSessionId
       );
     });
     if (scopedCandidates.length) {
@@ -3050,7 +3787,9 @@ function findLinkedTaskSessionForMemory(memory, linkedWorkSession = null) {
   if (questionText) {
     const normalizedQuestion = questionText.replace(/\s+/g, " ").trim();
     const matchedByGoal = candidates.filter((item) => {
-      const rootGoal = String(item?.root_goal || item?.title || "").replace(/\s+/g, " ").trim();
+      const rootGoal = String(item?.root_goal || item?.title || "")
+        .replace(/\s+/g, " ")
+        .trim();
       return rootGoal === normalizedQuestion;
     });
     if (matchedByGoal.length) {
@@ -3063,15 +3802,18 @@ function findLinkedTaskSessionForMemory(memory, linkedWorkSession = null) {
   const archivedCandidates = candidates
     .filter(
       (item) =>
-        Boolean(item?.is_archived) || String(item?.status || "").trim().toLowerCase() === "done",
+        Boolean(item?.is_archived) ||
+        String(item?.status || "")
+          .trim()
+          .toLowerCase() === "done",
     )
     .slice()
     .sort(compareTaskSessionByCreatedAtDesc);
   if (
-    !explicitTaskSessionId
-    && !archivedCandidates.length
-    && linkedWorkSession
-    && isCompletedLikeStatus(linkedWorkSession?.latest_status)
+    !explicitTaskSessionId &&
+    !archivedCandidates.length &&
+    linkedWorkSession &&
+    isCompletedLikeStatus(linkedWorkSession?.latest_status)
   ) {
     return null;
   }
@@ -3081,7 +3823,10 @@ function findLinkedTaskSessionForMemory(memory, linkedWorkSession = null) {
     const futureArchivedCandidates = archivedCandidates
       .filter((item) => {
         const sessionCreatedAt = parseComparableTimestamp(item?.created_at);
-        return Number.isFinite(sessionCreatedAt) && sessionCreatedAt >= memoryCreatedAt;
+        return (
+          Number.isFinite(sessionCreatedAt) &&
+          sessionCreatedAt >= memoryCreatedAt
+        );
       })
       .slice()
       .sort(compareTaskSessionByCreatedAtAsc);
@@ -3094,7 +3839,9 @@ function findLinkedTaskSessionForMemory(memory, linkedWorkSession = null) {
   }
   const historyCandidates = candidates.filter((item) => {
     const sessionCreatedAt = parseComparableTimestamp(item?.created_at);
-    return Number.isFinite(sessionCreatedAt) && sessionCreatedAt <= memoryCreatedAt;
+    return (
+      Number.isFinite(sessionCreatedAt) && sessionCreatedAt <= memoryCreatedAt
+    );
   });
   return historyCandidates[0] || archivedCandidates[0] || candidates[0] || null;
 }
@@ -3102,13 +3849,23 @@ function findLinkedTaskSessionForMemory(memory, linkedWorkSession = null) {
 const enrichedProjectMemories = computed(() =>
   (visibleProjectMemories.value || []).map((memory) => {
     const linkedWorkSession = findLinkedWorkSessionForMemory(memory);
-    const linkedTask = findLinkedTaskSessionForMemory(memory, linkedWorkSession);
+    const linkedTask = findLinkedTaskSessionForMemory(
+      memory,
+      linkedWorkSession,
+    );
     const sections = parseMemorySections(memory.content || "");
-    const solveStatus = deriveMemorySolveStatus(memory, linkedTask, linkedWorkSession, sections);
+    const solveStatus = deriveMemorySolveStatus(
+      memory,
+      linkedTask,
+      linkedWorkSession,
+      sections,
+    );
     const rawPreview = shouldDisplayRawMemoryContent(memory, sections)
       ? clipText(memory.content || "", 160)
       : "";
-    const workSessionStatus = String(linkedWorkSession?.latest_status || "").trim();
+    const workSessionStatus = String(
+      linkedWorkSession?.latest_status || "",
+    ).trim();
     const workSessionStep = Array.isArray(linkedWorkSession?.steps)
       ? linkedWorkSession.steps.find((item) => String(item || "").trim())
       : "";
@@ -3117,15 +3874,21 @@ const enrichedProjectMemories = computed(() =>
       question_preview: sections.question || "",
       solution_preview: sections.solution || "",
       conclusion_preview: sections.conclusion || "",
-      display_preview: sections.solution || sections.conclusion || sections.process || rawPreview,
+      display_preview:
+        sections.solution ||
+        sections.conclusion ||
+        sections.process ||
+        rawPreview,
       solve_status: solveStatus,
       task_status: String(linkedTask?.status || workSessionStatus || "").trim(),
       task_status_label: linkedTask?.status || workSessionStatus || "-",
       task_session_id: String(linkedTask?.id || "").trim(),
-      current_node_title: String(linkedTask?.current_node_title || workSessionStep || "").trim(),
+      current_node_title: String(
+        linkedTask?.current_node_title || workSessionStep || "",
+      ).trim(),
       progress_percent: Number(
-        resolveTaskTreeProgressPercent(linkedTask)
-        || (isCompletedLikeStatus(workSessionStatus) ? 100 : 0),
+        resolveTaskTreeProgressPercent(linkedTask) ||
+          (isCompletedLikeStatus(workSessionStatus) ? 100 : 0),
       ),
       has_task_tree: Boolean(linkedTask),
       has_execution_session: Boolean(linkedWorkSession),
@@ -3140,22 +3903,31 @@ const selectedMemoryProcessSummary = computed(() => {
   if (selectedMemorySections.value.process) {
     return selectedMemorySections.value.process;
   }
-  if (shouldDisplayRawMemoryContent(selectedMemoryDetail.value, selectedMemorySections.value)) {
+  if (
+    shouldDisplayRawMemoryContent(
+      selectedMemoryDetail.value,
+      selectedMemorySections.value,
+    )
+  ) {
     return "";
   }
   if (
-    memoryDetailTaskTree.value
-    && (
-      Boolean(memoryDetailTaskTree.value?.is_archived)
-      || String(memoryDetailTaskTree.value?.status || "").trim().toLowerCase() === "done"
-    )
+    memoryDetailTaskTree.value &&
+    (Boolean(memoryDetailTaskTree.value?.is_archived) ||
+      String(memoryDetailTaskTree.value?.status || "")
+        .trim()
+        .toLowerCase() === "done")
   ) {
-    const doneLeafTotal = Number(memoryDetailTaskTree.value?.done_leaf_total || 0);
+    const doneLeafTotal = Number(
+      memoryDetailTaskTree.value?.done_leaf_total || 0,
+    );
     const leafTotal = Number(memoryDetailTaskTree.value?.leaf_total || 0);
     return `可结合关联任务树回看本轮处理过程，本轮任务已归档完成，已完成 ${doneLeafTotal}/${leafTotal} 个叶子节点。`;
   }
   if (memoryDetailTaskTree.value?.current_node?.title) {
-    const doneLeafTotal = Number(memoryDetailTaskTree.value?.done_leaf_total || 0);
+    const doneLeafTotal = Number(
+      memoryDetailTaskTree.value?.done_leaf_total || 0,
+    );
     const leafTotal = Number(memoryDetailTaskTree.value?.leaf_total || 0);
     return `可结合关联任务树回看本轮处理过程，当前节点为“${memoryDetailTaskTree.value.current_node.title}”，已完成 ${doneLeafTotal}/${leafTotal} 个叶子节点。`;
   }
@@ -3192,12 +3964,17 @@ const memoryDetailWorkEventsByNodeId = computed(() => {
 });
 
 const memoryDetailUnassignedWorkEvents = computed(() =>
-  (memoryDetailWorkEvents.value || []).filter((item) => !String(item?.task_node_id || "").trim()),
+  (memoryDetailWorkEvents.value || []).filter(
+    (item) => !String(item?.task_node_id || "").trim(),
+  ),
 );
 
 const pagedProjectUsers = computed(() => {
   const start = (projectUsersPage.value - 1) * projectUsersPageSize.value;
-  return (projectUsers.value || []).slice(start, start + projectUsersPageSize.value);
+  return (projectUsers.value || []).slice(
+    start,
+    start + projectUsersPageSize.value,
+  );
 });
 
 const pagedMembers = computed(() => {
@@ -3219,7 +3996,10 @@ watch([projectUsersPageSize, projectUsers], () => {
 watch(
   () => projectId.value,
   async (nextProjectId, previousProjectId) => {
-    if (nextProjectId === previousProjectId && previousProjectId !== undefined) {
+    if (
+      nextProjectId === previousProjectId &&
+      previousProjectId !== undefined
+    ) {
       return;
     }
     resetProjectScopedState();
@@ -3302,7 +4082,9 @@ const boundExperienceRules = computed(() => {
     return bindings.map((item) => ({
       id: String(item.id || "").trim(),
       title: String(item.title || item.id || "").trim(),
-      displayTitle: stripExperienceRuleTitlePrefix(String(item.title || item.id || "").trim()),
+      displayTitle: stripExperienceRuleTitlePrefix(
+        String(item.title || item.id || "").trim(),
+      ),
       domain: String(item.domain || "").trim(),
       preview: String(item.preview || "").trim(),
       experienceScope: String(item.experience_scope || "").trim(),
@@ -3310,19 +4092,23 @@ const boundExperienceRules = computed(() => {
       updatedAt: String(item.updated_at || "").trim(),
     }));
   }
-  return normalizeStringList(project.value?.experience_rule_ids || []).map((ruleId) => ({
-    id: ruleId,
-    title: `${ruleId} (历史配置)`,
-    displayTitle: `${ruleId} (历史配置)`,
-    domain: "项目经验",
-    preview: "",
-    experienceScope: "project",
-    systemSource: "project_experience",
-  }));
+  return normalizeStringList(project.value?.experience_rule_ids || []).map(
+    (ruleId) => ({
+      id: ruleId,
+      title: `${ruleId} (历史配置)`,
+      displayTitle: `${ruleId} (历史配置)`,
+      domain: "项目经验",
+      preview: "",
+      experienceScope: "project",
+      systemSource: "project_experience",
+    }),
+  );
 });
 
 const hasLegacyProjectExperienceRules = computed(() =>
-  boundExperienceRules.value.some((item) => item.systemSource === "project_experience"),
+  boundExperienceRules.value.some(
+    (item) => item.systemSource === "project_experience",
+  ),
 );
 
 const experienceSummaryDialogDescription = computed(() => {
@@ -3341,9 +4127,11 @@ const experienceSummaryDialogDescription = computed(() => {
   return `${scopeText}，只沉淀可复用的开发工作经验，不沉淀“新增审核门/新增平台流程”这类系统改造需求；评审通过且覆盖完整后才会自动清空原始记录。`;
 });
 
-const experienceSummaryDialogConfirmText = computed(() => (
-  experienceSummaryManualReviewEnabled.value ? "开启人工复核流程" : "开启总结经验工作流"
-));
+const experienceSummaryDialogConfirmText = computed(() =>
+  experienceSummaryManualReviewEnabled.value
+    ? "开启人工复核流程"
+    : "开启总结经验工作流",
+);
 
 const experienceConsolidateDialogDescription = computed(() => {
   const totalCount = boundExperienceRules.value.length;
@@ -3355,14 +4143,14 @@ const experienceConsolidateDialogDescription = computed(() => {
 
 const hasActiveRequirementRecordFilters = computed(() =>
   Boolean(
-    String(memoryFilters.value.query || "").trim()
-    || String(memoryFilters.value.employeeId || "").trim(),
+    String(memoryFilters.value.query || "").trim() ||
+    String(memoryFilters.value.employeeId || "").trim(),
   ),
 );
 
-const experienceSummaryManualReviewRequired = computed(() => (
-  Boolean(lastExperienceSummaryResult.value?.manual_review_required)
-));
+const experienceSummaryManualReviewRequired = computed(() =>
+  Boolean(lastExperienceSummaryResult.value?.manual_review_required),
+);
 
 const experienceReviewSummary = computed(() => {
   const summary = lastExperienceSummaryResult.value?.review_result?.summary;
@@ -3385,58 +4173,90 @@ const experienceReviewBlockingReasons = computed(() => {
 });
 
 const experienceReviewHeadline = computed(() => {
-  const approvedCount = Number(experienceReviewSummary.value?.approved_card_count || 0);
-  const totalCount = Number(lastExperienceSummaryResult.value?.candidate_card_count || 0);
+  const approvedCount = Number(
+    experienceReviewSummary.value?.approved_card_count || 0,
+  );
+  const totalCount = Number(
+    lastExperienceSummaryResult.value?.candidate_card_count || 0,
+  );
   if (experienceSummaryManualReviewRequired.value) {
     return `本次有 ${approvedCount}/${totalCount} 张候选卡片通过入库门禁，原始记录已保留，等待人工复核。`;
   }
-  if (String(lastExperienceSummaryResult.value?.status || "") === "review_blocked") {
+  if (
+    String(lastExperienceSummaryResult.value?.status || "") === "review_blocked"
+  ) {
     return `本次 ${totalCount} 张候选卡片都没有通过最终门禁，系统没有写入经验库。`;
   }
-  if (String(lastExperienceSummaryResult.value?.status || "") === "partial_completed") {
+  if (
+    String(lastExperienceSummaryResult.value?.status || "") ===
+    "partial_completed"
+  ) {
     return `本次已写入 ${approvedCount} 张经验卡片，但仍有源记录未覆盖或未满足清理条件，因此保留了原始记录。`;
   }
   return `本次已写入 ${approvedCount} 张经验卡片，并完成原始记录清理。`;
 });
 
 const experienceReviewBannerType = computed(() => {
-  if (String(lastExperienceSummaryResult.value?.status || "") === "review_blocked") {
+  if (
+    String(lastExperienceSummaryResult.value?.status || "") === "review_blocked"
+  ) {
     return "warning";
   }
   if (experienceSummaryManualReviewRequired.value) {
     return "info";
   }
-  if (String(lastExperienceSummaryResult.value?.status || "") === "partial_completed") {
+  if (
+    String(lastExperienceSummaryResult.value?.status || "") ===
+    "partial_completed"
+  ) {
     return "warning";
   }
   return "success";
 });
 
 const experienceReviewBannerTitle = computed(() => {
-  if (String(lastExperienceSummaryResult.value?.status || "") === "review_blocked") {
+  if (
+    String(lastExperienceSummaryResult.value?.status || "") === "review_blocked"
+  ) {
     return "评审未通过，未入库也未清理原记录";
   }
   if (experienceSummaryManualReviewRequired.value) {
     return "人工复核模式已开启";
   }
-  if (String(lastExperienceSummaryResult.value?.status || "") === "partial_completed") {
+  if (
+    String(lastExperienceSummaryResult.value?.status || "") ===
+    "partial_completed"
+  ) {
     return "已完成入库，但保留原始记录";
   }
   return "评审通过，经验沉淀完成";
 });
 
 const experienceReviewBannerDescription = computed(() => {
-  if (String(lastExperienceSummaryResult.value?.status || "") === "review_blocked") {
-    return experienceReviewBlockingReasons.value[0] || "请根据下方问题修正卡片后再重试。";
+  if (
+    String(lastExperienceSummaryResult.value?.status || "") === "review_blocked"
+  ) {
+    return (
+      experienceReviewBlockingReasons.value[0] ||
+      "请根据下方问题修正卡片后再重试。"
+    );
   }
-  const autoClearEligible = Boolean(experienceReviewSummary.value?.allow_clear_requirement_records);
+  const autoClearEligible = Boolean(
+    experienceReviewSummary.value?.allow_clear_requirement_records,
+  );
   if (experienceSummaryManualReviewRequired.value) {
     return autoClearEligible
       ? "当前卡片已满足自动清理条件，但因为人工复核开关开启，系统保留了原始记录。"
       : "当前卡片已入库，但系统保留了原始记录，便于你先检查评审结果。";
   }
-  if (String(lastExperienceSummaryResult.value?.status || "") === "partial_completed") {
-    return experienceReviewBlockingReasons.value[0] || "请先处理未覆盖记录或阻断问题，再决定是否再次执行清理。";
+  if (
+    String(lastExperienceSummaryResult.value?.status || "") ===
+    "partial_completed"
+  ) {
+    return (
+      experienceReviewBlockingReasons.value[0] ||
+      "请先处理未覆盖记录或阻断问题，再决定是否再次执行清理。"
+    );
   }
   return "当前结果已经完成评审、入库和记录清理，可以直接复用这些经验规则。";
 });
@@ -3446,7 +4266,9 @@ function normalizeExperienceSummaryJob(job) {
 }
 
 function isExperienceSummaryJobActive(job) {
-  const normalized = String(job?.status || "").trim().toLowerCase();
+  const normalized = String(job?.status || "")
+    .trim()
+    .toLowerCase();
   return normalized === "queued" || normalized === "processing";
 }
 
@@ -3458,10 +4280,16 @@ function stopExperienceSummaryPolling() {
 }
 
 function notifyExperienceSummaryCompletion(result) {
-  const createdCount = Array.isArray(result?.created_rule_ids) ? result.created_rule_ids.length : 0;
-  const updatedCount = Array.isArray(result?.updated_rule_ids) ? result.updated_rule_ids.length : 0;
+  const createdCount = Array.isArray(result?.created_rule_ids)
+    ? result.created_rule_ids.length
+    : 0;
+  const updatedCount = Array.isArray(result?.updated_rule_ids)
+    ? result.updated_rule_ids.length
+    : 0;
   const clearCount = Number(result?.clear_result?.deleted_count || 0);
-  const blockingReasons = Array.isArray(result?.review_result?.summary?.blocking_reasons)
+  const blockingReasons = Array.isArray(
+    result?.review_result?.summary?.blocking_reasons,
+  )
     ? result.review_result.summary.blocking_reasons.filter(Boolean)
     : [];
   const blockingText = blockingReasons.length ? `：${blockingReasons[0]}` : "";
@@ -3487,11 +4315,7 @@ function notifyExperienceSummaryCompletion(result) {
 }
 
 async function finalizeExperienceSummaryJob(job, options = {}) {
-  const {
-    refreshData = true,
-    showDialog = false,
-    notify = false,
-  } = options;
+  const { refreshData = true, showDialog = false, notify = false } = options;
   stopExperienceSummaryPolling();
   experienceSummaryActiveJob.value = null;
   experienceSummaryLoading.value = false;
@@ -3510,15 +4334,22 @@ async function finalizeExperienceSummaryJob(job, options = {}) {
   }
 }
 
-async function pollExperienceSummaryJob(targetProjectId = projectId.value, jobId = "") {
+async function pollExperienceSummaryJob(
+  targetProjectId = projectId.value,
+  jobId = "",
+) {
   const effectiveProjectId = String(targetProjectId || "").trim();
-  const effectiveJobId = String(jobId || experienceSummaryActiveJob.value?.id || "").trim();
+  const effectiveJobId = String(
+    jobId || experienceSummaryActiveJob.value?.id || "",
+  ).trim();
   if (!effectiveProjectId || !effectiveJobId) {
     stopExperienceSummaryPolling();
     return;
   }
   try {
-    const data = await api.get(`/projects/${effectiveProjectId}/experience-summary-jobs/${effectiveJobId}`);
+    const data = await api.get(
+      `/projects/${effectiveProjectId}/experience-summary-jobs/${effectiveJobId}`,
+    );
     if (effectiveProjectId !== projectId.value) return;
     const job = normalizeExperienceSummaryJob(data?.job);
     if (!job) {
@@ -3551,9 +4382,12 @@ async function restoreExperienceSummaryJob(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
   if (!effectiveProjectId) return;
   try {
-    const data = await api.get(`/projects/${effectiveProjectId}/experience-summary-jobs`, {
-      params: { limit: 10 },
-    });
+    const data = await api.get(
+      `/projects/${effectiveProjectId}/experience-summary-jobs`,
+      {
+        params: { limit: 10 },
+      },
+    );
     if (effectiveProjectId !== projectId.value) return;
     const currentJob = normalizeExperienceSummaryJob(data?.current_job);
     const latestJob = normalizeExperienceSummaryJob(data?.latest_job);
@@ -3618,7 +4452,9 @@ function stripExperienceRuleTitlePrefix(value) {
 
 function ensureUiRuleOptionCoverage() {
   const next = [...(ruleOptions.value || [])];
-  const known = new Set(next.map((item) => String(item.id || "").trim()).filter(Boolean));
+  const known = new Set(
+    next.map((item) => String(item.id || "").trim()).filter(Boolean),
+  );
   for (const item of boundUiRules.value) {
     const ruleId = String(item.id || "").trim();
     if (!ruleId || known.has(ruleId)) continue;
@@ -3681,7 +4517,9 @@ async function fetchProject(targetProjectId = projectId.value) {
     ...(data.project || {}),
     type: normalizeProjectType(data.project?.type),
     ui_rule_ids: normalizeStringList(data.project?.ui_rule_ids || []),
-    experience_rule_ids: normalizeStringList(data.project?.experience_rule_ids || []),
+    experience_rule_ids: normalizeStringList(
+      data.project?.experience_rule_ids || [],
+    ),
   };
   ensureUiRuleOptionCoverage();
 }
@@ -3698,20 +4536,28 @@ async function fetchExperienceProviders() {
         id: String(item.id || "").trim(),
         name: String(item.name || item.id || "未命名模型源").trim(),
         models: Array.isArray(item.models)
-          ? item.models.map((model) => String(model || "").trim()).filter(Boolean)
+          ? item.models
+              .map((model) => String(model || "").trim())
+              .filter(Boolean)
           : [],
         default_model: String(item.default_model || "").trim(),
         is_default: !!item.is_default,
       }))
       .filter((item) => item.id && item.models.length);
     const preferred =
-      experienceProviderOptions.value.find((item) => item.id === experienceSummaryProviderId.value)
-      || experienceProviderOptions.value.find((item) => item.is_default)
-      || experienceProviderOptions.value[0]
-      || null;
+      experienceProviderOptions.value.find(
+        (item) => item.id === experienceSummaryProviderId.value,
+      ) ||
+      experienceProviderOptions.value.find((item) => item.is_default) ||
+      experienceProviderOptions.value[0] ||
+      null;
     experienceSummaryProviderId.value = preferred?.id || "";
     const availableModels = preferred?.models || [];
-    if (!availableModels.includes(String(experienceSummaryModelName.value || "").trim())) {
+    if (
+      !availableModels.includes(
+        String(experienceSummaryModelName.value || "").trim(),
+      )
+    ) {
       experienceSummaryModelName.value =
         preferred?.default_model || availableModels[0] || "";
     }
@@ -3743,7 +4589,9 @@ function getProjectTypeDescription(value) {
   const matched = projectTypeOptions.find(
     (item) => item.value === normalizeProjectType(value),
   );
-  return matched?.description || "适合图文混合或方向未定的项目，默认工作流更中性。";
+  return (
+    matched?.description || "适合图文混合或方向未定的项目，默认工作流更中性。"
+  );
 }
 
 function getProjectTypeTagType(value) {
@@ -3754,7 +4602,9 @@ function getProjectTypeTagType(value) {
 }
 
 function getTaskSessionStatusTagType(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "done") return "success";
   if (normalized === "blocked") return "danger";
   if (normalized === "verifying") return "warning";
@@ -3764,7 +4614,9 @@ function getTaskSessionStatusTagType(value) {
 }
 
 function getTaskSessionStatusLabel(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "done") return "已完成";
   if (normalized === "blocked") return "阻塞";
   if (normalized === "verifying") return "验证中";
@@ -3775,13 +4627,19 @@ function getTaskSessionStatusLabel(value) {
 }
 
 function getRequirementRecordKindLabel(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "repair") return "修复记录";
   return "需求主记录";
 }
 
 function getRequirementRecordKindTagType(value) {
-  return String(value || "").trim().toLowerCase() === "repair" ? "warning" : "info";
+  return String(value || "")
+    .trim()
+    .toLowerCase() === "repair"
+    ? "warning"
+    : "info";
 }
 
 function formatTaskTreeStepIndex(node, index = 0) {
@@ -3792,40 +4650,50 @@ function formatTaskTreeStepIndex(node, index = 0) {
 }
 
 function getWorkSessionStatusTagType(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "completed" || normalized === "done") return "success";
   if (normalized === "blocked" || normalized === "failed") return "danger";
-  if (normalized === "in_progress" || normalized === "verifying") return "warning";
+  if (normalized === "in_progress" || normalized === "verifying")
+    return "warning";
   return "info";
 }
 
 async function openMemoryDetail(row) {
-  selectedMemoryDetail.value = row && typeof row === "object" ? { ...row } : null;
+  selectedMemoryDetail.value =
+    row && typeof row === "object" ? { ...row } : null;
   showMemoryDetailDialog.value = true;
   memoryDetailTaskTree.value = null;
   memoryDetailWorkEvents.value = [];
-  const explicitTaskSessionId = String(selectedMemoryDetail.value?.task_tree_session_id || "").trim();
-  const taskSessionId = String(
-    selectedMemoryDetail.value?.task_session_id
-    || explicitTaskSessionId
-    || "",
+  const explicitTaskSessionId = String(
+    selectedMemoryDetail.value?.task_tree_session_id || "",
   ).trim();
-  const chatSessionId = String(selectedMemoryDetail.value?.chat_session_id || "").trim();
+  const taskSessionId = String(
+    selectedMemoryDetail.value?.task_session_id || explicitTaskSessionId || "",
+  ).trim();
+  const chatSessionId = String(
+    selectedMemoryDetail.value?.chat_session_id || "",
+  ).trim();
   const linkedWorkSessionId = String(
     selectedMemoryDetail.value?.linked_work_session?.session_id || "",
   ).trim();
   const shouldPreferWorkSessionFallback =
-    !explicitTaskSessionId
-    && linkedWorkSessionId
-    && isCompletedLikeStatus(selectedMemoryDetail.value?.linked_work_session?.latest_status)
-    && !selectedMemoryDetail.value?.has_task_tree;
+    !explicitTaskSessionId &&
+    linkedWorkSessionId &&
+    isCompletedLikeStatus(
+      selectedMemoryDetail.value?.linked_work_session?.latest_status,
+    ) &&
+    !selectedMemoryDetail.value?.has_task_tree;
   if (shouldPreferWorkSessionFallback) {
     await fetchMemoryDetailWorkEvents(null, { sessionId: linkedWorkSessionId });
     return;
   }
   if (!taskSessionId && !chatSessionId) {
     if (linkedWorkSessionId) {
-      await fetchMemoryDetailWorkEvents(null, { sessionId: linkedWorkSessionId });
+      await fetchMemoryDetailWorkEvents(null, {
+        sessionId: linkedWorkSessionId,
+      });
     }
     return;
   }
@@ -3840,7 +4708,9 @@ async function openMemoryDetail(row) {
     const data = await api.get(`/projects/${projectId.value}/chat/task-tree`, {
       params,
     });
-    memoryDetailTaskTree.value = normalizeTaskTreePayload(resolveTaskTreeResponsePayload(data));
+    memoryDetailTaskTree.value = normalizeTaskTreePayload(
+      resolveTaskTreeResponsePayload(data),
+    );
     await fetchMemoryDetailWorkEvents(memoryDetailTaskTree.value);
   } catch (err) {
     memoryDetailTaskTree.value = null;
@@ -3855,10 +4725,10 @@ async function fetchMemoryDetailWorkEvents(taskTree, options = {}) {
   const sessionId = String(options?.sessionId || "").trim();
   const taskTreeSessionId = String(taskTree?.id || "").trim();
   const taskTreeChatSessionId = String(
-    taskTree?.source_chat_session_id
-    || taskTree?.chat_session_id
-    || selectedMemoryDetail.value?.task_tree_chat_session_id
-    || "",
+    taskTree?.source_chat_session_id ||
+      taskTree?.chat_session_id ||
+      selectedMemoryDetail.value?.task_tree_chat_session_id ||
+      "",
   ).trim();
   if (!sessionId && !taskTreeSessionId && !taskTreeChatSessionId) {
     memoryDetailWorkEvents.value = [];
@@ -3876,7 +4746,10 @@ async function fetchMemoryDetailWorkEvents(taskTree, options = {}) {
     if (taskTreeChatSessionId) {
       params.task_tree_chat_session_id = taskTreeChatSessionId;
     }
-    const data = await api.get(`/projects/${projectId.value}/work-session-events`, { params });
+    const data = await api.get(
+      `/projects/${projectId.value}/work-session-events`,
+      { params },
+    );
     memoryDetailWorkEvents.value = Array.isArray(data?.items)
       ? data.items.map((item) => normalizeProjectWorkEvent(item))
       : [];
@@ -3896,24 +4769,33 @@ async function openWorkSessionDetail(row) {
   selectedWorkSession.value = normalizeWorkSessionSummary(row);
   selectedWorkSessionEvents.value = [];
   try {
-    const data = await api.get(`/projects/${projectId.value}/work-sessions/${encodeURIComponent(sessionId)}`, {
-      params: {
-        employee_id: row?.employee_id || undefined,
+    const data = await api.get(
+      `/projects/${projectId.value}/work-sessions/${encodeURIComponent(sessionId)}`,
+      {
+        params: {
+          employee_id: row?.employee_id || undefined,
+        },
       },
-    });
-    selectedWorkSession.value = normalizeWorkSessionSummary(data?.session || row);
+    );
+    selectedWorkSession.value = normalizeWorkSessionSummary(
+      data?.session || row,
+    );
     selectedWorkSessionEvents.value = Array.isArray(data?.items)
       ? data.items.map((item) => ({
           ...item,
           employee_name:
-            String(item?.employee_name || "").trim()
-            || memberNameMap.value.get(String(item?.employee_id || "").trim())
-            || String(item?.employee_id || "").trim(),
+            String(item?.employee_name || "").trim() ||
+            memberNameMap.value.get(String(item?.employee_id || "").trim()) ||
+            String(item?.employee_id || "").trim(),
           verification: Array.isArray(item?.verification)
-            ? item.verification.map((entry) => String(entry || "").trim()).filter(Boolean)
+            ? item.verification
+                .map((entry) => String(entry || "").trim())
+                .filter(Boolean)
             : [],
           facts: Array.isArray(item?.facts)
-            ? item.facts.map((entry) => String(entry || "").trim()).filter(Boolean)
+            ? item.facts
+                .map((entry) => String(entry || "").trim())
+                .filter(Boolean)
             : [],
         }))
       : [];
@@ -3931,28 +4813,38 @@ function buildSyntheticMemoryFromRound(round) {
   }
   return {
     id: `task-tree:${round.sessionId || round.id || ""}`,
-    employee_id: String(round.primaryMemory?.employee_id || round.primaryWorkSession?.employee_id || "").trim(),
+    employee_id: String(
+      round.primaryMemory?.employee_id ||
+        round.primaryWorkSession?.employee_id ||
+        "",
+    ).trim(),
     employee_name: String(
-      round.primaryMemory?.employee_name
-      || round.primaryWorkSession?.employee_name
-      || round.primaryMemory?.employee_id
-      || round.primaryWorkSession?.employee_id
-      || "",
+      round.primaryMemory?.employee_name ||
+        round.primaryWorkSession?.employee_name ||
+        round.primaryMemory?.employee_id ||
+        round.primaryWorkSession?.employee_id ||
+        "",
     ).trim(),
     type: String(round.primaryMemory?.type || "").trim(),
     content: "",
-    purpose_tags: [round.recordKind === "repair" ? "repair-record" : "requirement-record"],
+    purpose_tags: [
+      round.recordKind === "repair" ? "repair-record" : "requirement-record",
+    ],
     chat_session_id: String(round.chatSessionId || "").trim(),
     task_tree_session_id: String(round.sessionId || round.id || "").trim(),
     task_tree_chat_session_id: String(round.chatSessionId || "").trim(),
     task_session_id: String(round.sessionId || round.id || "").trim(),
     question_preview: String(round.rootGoal || round.title || "").trim(),
-    display_preview: String(round.summaryText || round.currentNodeTitle || "").trim(),
+    display_preview: String(
+      round.summaryText || round.currentNodeTitle || "",
+    ).trim(),
     solve_status: round.isFinalized ? "resolved" : "processing",
     progress_percent: Number(round.progressPercent || 0),
     has_task_tree: true,
     has_execution_session: Boolean(round.primaryWorkSession),
-    execution_session_id: String(round.primaryWorkSession?.session_id || "").trim(),
+    execution_session_id: String(
+      round.primaryWorkSession?.session_id || "",
+    ).trim(),
     linked_work_session: round.primaryWorkSession || null,
     root_goal: String(round.rootGoal || round.title || "").trim(),
     title: String(round.title || round.rootGoal || "").trim(),
@@ -3974,14 +4866,18 @@ function openRequirementRoundDetail(round) {
 }
 
 function openRequirementRecordDetail(record) {
-  const targetRound = record?.detailRound || record?.currentRound || record?.latestRound || null;
+  const targetRound =
+    record?.detailRound || record?.currentRound || record?.latestRound || null;
   if (!targetRound) return;
   openRequirementRoundDetail(targetRound);
 }
 
 function isRequirementRoundTaskTreeLoading(round) {
   const sessionId = String(round?.sessionId || round?.id || "").trim();
-  return Boolean(sessionId) && Boolean(requirementRoundTaskTreeLoadingMap.value?.[sessionId]);
+  return (
+    Boolean(sessionId) &&
+    Boolean(requirementRoundTaskTreeLoadingMap.value?.[sessionId])
+  );
 }
 
 async function ensureRequirementRoundTaskTree(round, options = {}) {
@@ -4004,7 +4900,9 @@ async function ensureRequirementRoundTaskTree(round, options = {}) {
     const data = await api.get(`/projects/${projectId.value}/chat/task-tree`, {
       params: { session_id: sessionId },
     });
-    const payload = normalizeTaskTreePayload(resolveTaskTreeResponsePayload(data));
+    const payload = normalizeTaskTreePayload(
+      resolveTaskTreeResponsePayload(data),
+    );
     if (payload) {
       projectTaskTreeDetails.value = {
         ...(projectTaskTreeDetails.value || {}),
@@ -4017,7 +4915,9 @@ async function ensureRequirementRoundTaskTree(round, options = {}) {
     ElMessage.error(err?.detail || err?.message || "加载任务树详情失败");
     return null;
   } finally {
-    const nextLoadingMap = { ...(requirementRoundTaskTreeLoadingMap.value || {}) };
+    const nextLoadingMap = {
+      ...(requirementRoundTaskTreeLoadingMap.value || {}),
+    };
     delete nextLoadingMap[sessionId];
     requirementRoundTaskTreeLoadingMap.value = nextLoadingMap;
   }
@@ -4025,7 +4925,9 @@ async function ensureRequirementRoundTaskTree(round, options = {}) {
 
 function isRequirementRecordSelected(record) {
   const recordId = String(record?.id || "").trim();
-  return Boolean(recordId) && selectedRequirementRecordIdSet.value.has(recordId);
+  return (
+    Boolean(recordId) && selectedRequirementRecordIdSet.value.has(recordId)
+  );
 }
 
 function toggleRequirementRecordSelection(recordId, checked = undefined) {
@@ -4049,7 +4951,8 @@ function toggleSelectAllRequirementRecords() {
     selectedRequirementRecordIds.value = [];
     return;
   }
-  selectedRequirementRecordIds.value = visibleRequirementRecordIds.value.slice();
+  selectedRequirementRecordIds.value =
+    visibleRequirementRecordIds.value.slice();
 }
 
 function isRequirementRecordExpanded(record) {
@@ -4065,7 +4968,8 @@ function toggleRequirementRecordExpansion(record) {
   if (!shouldExpand) {
     return;
   }
-  const targetRound = record?.detailRound || record?.currentRound || record?.latestRound || null;
+  const targetRound =
+    record?.detailRound || record?.currentRound || record?.latestRound || null;
   void ensureRequirementRoundTaskTree(targetRound);
 }
 
@@ -4074,8 +4978,10 @@ async function openRequirementNodeDetail(node, round) {
   const taskNodeId = String(node?.id || "").trim();
   if (!taskTreeSessionId || !taskNodeId) return;
   const shouldLoadWholeRound = isTaskTreeRootNode(node, round);
-  selectedRequirementNode.value = node && typeof node === "object" ? { ...node } : null;
-  selectedRequirementNodeRound.value = round && typeof round === "object" ? { ...round } : null;
+  selectedRequirementNode.value =
+    node && typeof node === "object" ? { ...node } : null;
+  selectedRequirementNodeRound.value =
+    round && typeof round === "object" ? { ...round } : null;
   selectedRequirementNodeEvents.value = [];
   showRequirementNodeDetailDialog.value = true;
   requirementNodeDetailLoading.value = true;
@@ -4087,9 +4993,12 @@ async function openRequirementNodeDetail(node, round) {
     if (!shouldLoadWholeRound) {
       params.task_node_id = taskNodeId;
     }
-    const data = await api.get(`/projects/${projectId.value}/work-session-events`, {
-      params,
-    });
+    const data = await api.get(
+      `/projects/${projectId.value}/work-session-events`,
+      {
+        params,
+      },
+    );
     selectedRequirementNodeEvents.value = Array.isArray(data?.items)
       ? data.items.map((item) => normalizeProjectWorkEvent(item))
       : [];
@@ -4103,7 +5012,9 @@ async function openRequirementNodeDetail(node, round) {
 
 function openMemoryLinkedWorkSession() {
   const linkedSession = selectedMemoryDetail.value?.linked_work_session;
-  const fallbackSessionId = String(selectedMemoryDetail.value?.execution_session_id || "").trim();
+  const fallbackSessionId = String(
+    selectedMemoryDetail.value?.execution_session_id || "",
+  ).trim();
   if (linkedSession?.session_id) {
     void openWorkSessionDetail(linkedSession);
     return;
@@ -4139,9 +5050,12 @@ async function fetchProjectTaskSessions(targetProjectId = projectId.value) {
   if (!effectiveProjectId) return;
   taskSessionsLoading.value = true;
   try {
-    const data = await api.get(`/projects/${effectiveProjectId}/chat/task-tree/sessions`, {
-      params: { limit: PROJECT_TASK_SESSION_FETCH_LIMIT },
-    });
+    const data = await api.get(
+      `/projects/${effectiveProjectId}/chat/task-tree/sessions`,
+      {
+        params: { limit: PROJECT_TASK_SESSION_FETCH_LIMIT },
+      },
+    );
     if (effectiveProjectId !== projectId.value) return;
     projectTaskSessions.value = Array.isArray(data.items) ? data.items : [];
     taskTreeStorageBackend.value = String(data.storage_backend || "").trim();
@@ -4151,7 +5065,9 @@ async function fetchProjectTaskSessions(targetProjectId = projectId.value) {
         .filter(Boolean),
     );
     projectTaskTreeDetails.value = Object.fromEntries(
-      Object.entries(projectTaskTreeDetails.value || {}).filter(([sessionId]) => validSessionIds.has(sessionId)),
+      Object.entries(projectTaskTreeDetails.value || {}).filter(([sessionId]) =>
+        validSessionIds.has(sessionId),
+      ),
     );
   } catch (err) {
     if (effectiveProjectId !== projectId.value) return;
@@ -4173,17 +5089,26 @@ async function fetchRequirementRecords(targetProjectId = projectId.value) {
   requirementRecordsLoaded.value = false;
   try {
     const query = String(memoryFilters.value.query || "").trim();
-    const selectedEmployeeId = String(memoryFilters.value.employeeId || "").trim();
-    const data = await api.get(`/projects/${effectiveProjectId}/requirement-records`, {
-      params: {
-        limit: PROJECT_TASK_SESSION_FETCH_LIMIT,
-        query: query || undefined,
-        employee_id: selectedEmployeeId || undefined,
+    const selectedEmployeeId = String(
+      memoryFilters.value.employeeId || "",
+    ).trim();
+    const data = await api.get(
+      `/projects/${effectiveProjectId}/requirement-records`,
+      {
+        params: {
+          limit: PROJECT_TASK_SESSION_FETCH_LIMIT,
+          query: query || undefined,
+          employee_id: selectedEmployeeId || undefined,
+        },
       },
-    });
+    );
     if (effectiveProjectId !== projectId.value) return;
-    projectRequirementRecords.value = Array.isArray(data?.items) ? data.items : [];
-    projectTaskSessions.value = Array.isArray(data?.task_sessions) ? data.task_sessions : [];
+    projectRequirementRecords.value = Array.isArray(data?.items)
+      ? data.items
+      : [];
+    projectTaskSessions.value = Array.isArray(data?.task_sessions)
+      ? data.task_sessions
+      : [];
     taskTreeStorageBackend.value = String(data?.storage_backend || "").trim();
     const validSessionIds = new Set(
       (projectTaskSessions.value || [])
@@ -4191,7 +5116,9 @@ async function fetchRequirementRecords(targetProjectId = projectId.value) {
         .filter(Boolean),
     );
     projectTaskTreeDetails.value = Object.fromEntries(
-      Object.entries(projectTaskTreeDetails.value || {}).filter(([sessionId]) => validSessionIds.has(sessionId)),
+      Object.entries(projectTaskTreeDetails.value || {}).filter(([sessionId]) =>
+        validSessionIds.has(sessionId),
+      ),
     );
   } catch (err) {
     if (effectiveProjectId !== projectId.value) return;
@@ -4215,8 +5142,11 @@ async function fetchProjectWorkSessions(targetProjectId = projectId.value) {
   try {
     const query = String(memoryFilters.value.query || "").trim();
     const limitValue = Number(memoryFilters.value.limit || 20);
-    const safeLimit = Number.isFinite(limitValue) && limitValue > 0 ? limitValue : 20;
-    const selectedEmployeeId = String(memoryFilters.value.employeeId || "").trim();
+    const safeLimit =
+      Number.isFinite(limitValue) && limitValue > 0 ? limitValue : 20;
+    const selectedEmployeeId = String(
+      memoryFilters.value.employeeId || "",
+    ).trim();
     const params = { limit: safeLimit };
     if (query) {
       params.query = query;
@@ -4224,7 +5154,10 @@ async function fetchProjectWorkSessions(targetProjectId = projectId.value) {
     if (selectedEmployeeId) {
       params.employee_id = selectedEmployeeId;
     }
-    const data = await api.get(`/projects/${effectiveProjectId}/work-sessions`, { params });
+    const data = await api.get(
+      `/projects/${effectiveProjectId}/work-sessions`,
+      { params },
+    );
     if (effectiveProjectId !== projectId.value) return;
     projectWorkSessions.value = Array.isArray(data?.items)
       ? data.items.map((item) => normalizeWorkSessionSummary(item))
@@ -4241,7 +5174,9 @@ async function fetchProjectWorkSessions(targetProjectId = projectId.value) {
 }
 
 function normalizeMemory(memory, employeeId = "") {
-  const currentEmployeeId = String(memory?.employee_id || employeeId || "").trim();
+  const currentEmployeeId = String(
+    memory?.employee_id || employeeId || "",
+  ).trim();
   const scope = String(memory?.scope || "").trim();
   const purposeTags = Array.isArray(memory?.purpose_tags)
     ? memory.purpose_tags
@@ -4269,17 +5204,31 @@ function normalizeMemory(memory, employeeId = "") {
     last_accessed: String(memory?.last_accessed || ""),
     ttl_days: Number(memory?.ttl_days ?? 0),
     related_rules: Array.isArray(memory?.related_rules)
-      ? memory.related_rules.map((item) => String(item || "").trim()).filter(Boolean)
+      ? memory.related_rules
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
       : [],
     related_memories: Array.isArray(memory?.related_memories)
-      ? memory.related_memories.map((item) => String(item || "").trim()).filter(Boolean)
+      ? memory.related_memories
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
       : [],
     expires_at: String(memory?.expires_at || ""),
     chat_session_id: chatSessionId,
-    task_tree_session_id: String(memory?.task_tree_session_id || trajectory?.task_tree_session_id || "").trim(),
-    task_tree_chat_session_id: String(memory?.task_tree_chat_session_id || trajectory?.task_tree_chat_session_id || "").trim(),
-    task_node_id: String(memory?.task_node_id || trajectory?.task_node_id || "").trim(),
-    task_node_title: String(memory?.task_node_title || trajectory?.task_node_title || "").trim(),
+    task_tree_session_id: String(
+      memory?.task_tree_session_id || trajectory?.task_tree_session_id || "",
+    ).trim(),
+    task_tree_chat_session_id: String(
+      memory?.task_tree_chat_session_id ||
+        trajectory?.task_tree_chat_session_id ||
+        "",
+    ).trim(),
+    task_node_id: String(
+      memory?.task_node_id || trajectory?.task_node_id || "",
+    ).trim(),
+    task_node_title: String(
+      memory?.task_node_title || trajectory?.task_node_title || "",
+    ).trim(),
     trajectory,
     created_at: String(memory?.created_at || ""),
   };
@@ -4293,21 +5242,27 @@ function normalizeWorkSessionSummary(session) {
     project_name: String(session?.project_name || "").trim(),
     employee_id: currentEmployeeId,
     employee_name:
-      String(session?.employee_name || "").trim()
-      || memberNameMap.value.get(currentEmployeeId)
-      || currentEmployeeId,
+      String(session?.employee_name || "").trim() ||
+      memberNameMap.value.get(currentEmployeeId) ||
+      currentEmployeeId,
     latest_status: String(session?.latest_status || "").trim(),
     latest_event_type: String(session?.latest_event_type || "").trim(),
     goal: String(session?.goal || "").trim(),
     task_tree_session_id: String(session?.task_tree_session_id || "").trim(),
-    task_tree_chat_session_id: String(session?.task_tree_chat_session_id || "").trim(),
+    task_tree_chat_session_id: String(
+      session?.task_tree_chat_session_id || "",
+    ).trim(),
     task_node_id: String(session?.task_node_id || "").trim(),
     task_node_title: String(session?.task_node_title || "").trim(),
     task_tree_session_ids: Array.isArray(session?.task_tree_session_ids)
-      ? session.task_tree_session_ids.map((item) => String(item || "").trim()).filter(Boolean)
+      ? session.task_tree_session_ids
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
       : [],
     task_node_titles: Array.isArray(session?.task_node_titles)
-      ? session.task_node_titles.map((item) => String(item || "").trim()).filter(Boolean)
+      ? session.task_node_titles
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
       : [],
     phases: Array.isArray(session?.phases)
       ? session.phases.map((item) => String(item || "").trim()).filter(Boolean)
@@ -4316,19 +5271,27 @@ function normalizeWorkSessionSummary(session) {
       ? session.steps.map((item) => String(item || "").trim()).filter(Boolean)
       : [],
     event_types: Array.isArray(session?.event_types)
-      ? session.event_types.map((item) => String(item || "").trim()).filter(Boolean)
+      ? session.event_types
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
       : [],
     changed_files: Array.isArray(session?.changed_files)
-      ? session.changed_files.map((item) => String(item || "").trim()).filter(Boolean)
+      ? session.changed_files
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
       : [],
     verification: Array.isArray(session?.verification)
-      ? session.verification.map((item) => String(item || "").trim()).filter(Boolean)
+      ? session.verification
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
       : [],
     risks: Array.isArray(session?.risks)
       ? session.risks.map((item) => String(item || "").trim()).filter(Boolean)
       : [],
     next_steps: Array.isArray(session?.next_steps)
-      ? session.next_steps.map((item) => String(item || "").trim()).filter(Boolean)
+      ? session.next_steps
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
       : [],
     event_count: Number(session?.event_count || 0),
     updated_at: String(session?.updated_at || ""),
@@ -4342,7 +5305,9 @@ function normalizeProjectWorkEvent(item) {
     ? item.facts.map((entry) => String(entry || "").trim()).filter(Boolean)
     : [];
   const verification = Array.isArray(item?.verification)
-    ? item.verification.map((entry) => String(entry || "").trim()).filter(Boolean)
+    ? item.verification
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean)
     : [];
   return {
     id: String(item?.id || "").trim(),
@@ -4351,10 +5316,10 @@ function normalizeProjectWorkEvent(item) {
     project_name: String(item?.project_name || "").trim(),
     employee_id: currentEmployeeId,
     employee_name:
-      String(item?.employee_name || "").trim()
-      || memberNameMap.value.get(currentEmployeeId)
-      || currentEmployeeId
-      || "团队协作",
+      String(item?.employee_name || "").trim() ||
+      memberNameMap.value.get(currentEmployeeId) ||
+      currentEmployeeId ||
+      "团队协作",
     source_kind: String(item?.source_kind || "").trim(),
     event_type: String(item?.event_type || "").trim(),
     phase: String(item?.phase || "").trim(),
@@ -4365,7 +5330,9 @@ function normalizeProjectWorkEvent(item) {
     facts,
     verification,
     task_tree_session_id: String(item?.task_tree_session_id || "").trim(),
-    task_tree_chat_session_id: String(item?.task_tree_chat_session_id || "").trim(),
+    task_tree_chat_session_id: String(
+      item?.task_tree_chat_session_id || "",
+    ).trim(),
     task_node_id: String(item?.task_node_id || "").trim(),
     task_node_title: String(item?.task_node_title || "").trim(),
     created_at: String(item?.created_at || "").trim(),
@@ -4374,10 +5341,10 @@ function normalizeProjectWorkEvent(item) {
 
 function summarizeProjectWorkEvent(item) {
   return (
-    String(item?.content || "").trim()
-    || (Array.isArray(item?.facts) ? item.facts.join(" / ") : "")
-    || String(item?.goal || "").trim()
-    || "-"
+    String(item?.content || "").trim() ||
+    (Array.isArray(item?.facts) ? item.facts.join(" / ") : "") ||
+    String(item?.goal || "").trim() ||
+    "-"
   );
 }
 
@@ -4390,17 +5357,23 @@ function parseMemorySections(content) {
   const text = String(content || "");
   return {
     question:
-      text.match(/\[(?:用户问题|用户提问)\]\s*([\s\S]*?)(?:\n\[[^\n]+\]|$)/)?.[1]?.trim() || "",
+      text
+        .match(/\[(?:用户问题|用户提问)\]\s*([\s\S]*?)(?:\n\[[^\n]+\]|$)/)?.[1]
+        ?.trim() || "",
     process:
-      text.match(/\[(?:处理过程|过程摘要)\]\s*([\s\S]*?)(?:\n\[[^\n]+\]|$)/)?.[1]?.trim() || "",
+      text
+        .match(/\[(?:处理过程|过程摘要)\]\s*([\s\S]*?)(?:\n\[[^\n]+\]|$)/)?.[1]
+        ?.trim() || "",
     solution:
-      text.match(/\[解决方案\]\s*([\s\S]*?)(?:\n\[[^\n]+\]|$)/)?.[1]?.trim() || "",
+      text.match(/\[解决方案\]\s*([\s\S]*?)(?:\n\[[^\n]+\]|$)/)?.[1]?.trim() ||
+      "",
     conclusion:
-      text.match(/\[最终结论\]\s*([\s\S]*?)(?:\n\[[^\n]+\]|$)/)?.[1]?.trim() || "",
+      text.match(/\[最终结论\]\s*([\s\S]*?)(?:\n\[[^\n]+\]|$)/)?.[1]?.trim() ||
+      "",
     solveStatus:
-      text.match(/\[解决状态\]\s*([\s\S]*?)(?:\n\[[^\n]+\]|$)/)?.[1]?.trim() || "",
-    chatSessionId:
-      text.match(/\[关联会话\]\s*([^\n]+)/)?.[1]?.trim() || "",
+      text.match(/\[解决状态\]\s*([\s\S]*?)(?:\n\[[^\n]+\]|$)/)?.[1]?.trim() ||
+      "",
+    chatSessionId: text.match(/\[关联会话\]\s*([^\n]+)/)?.[1]?.trim() || "",
   };
 }
 
@@ -4433,7 +5406,9 @@ function getTaskTreeRootNode(taskTree) {
 function isTaskTreeRootNode(node, round = null) {
   if (!node || typeof node !== "object") return false;
   const nodeId = String(node?.id || "").trim();
-  const roundRootId = String(round?.rootNode?.id || round?.taskTree?.tree?.[0]?.id || "").trim();
+  const roundRootId = String(
+    round?.rootNode?.id || round?.taskTree?.tree?.[0]?.id || "",
+  ).trim();
   if (nodeId && roundRootId) {
     return nodeId === roundRootId;
   }
@@ -4449,7 +5424,9 @@ function extractAnswerSummaryFromText(value) {
   if (!text) {
     return "";
   }
-  const matched = text.match(/回答摘要[:：]\s*([\s\S]*?)(?:\s+(?:执行证据|问题目标)[:：]|$)/);
+  const matched = text.match(
+    /回答摘要[:：]\s*([\s\S]*?)(?:\s+(?:执行证据|问题目标)[:：]|$)/,
+  );
   return matched?.[1]?.trim() || "";
 }
 
@@ -4461,7 +5438,9 @@ function extractTaskTreeFallbackText(taskTree) {
   const nodes = Array.isArray(taskTree?.nodes) ? taskTree.nodes : [];
   const completedLeafNodes = nodes.filter((item) => {
     const level = Number(item?.level || 0);
-    const status = String(item?.status || "").trim().toLowerCase();
+    const status = String(item?.status || "")
+      .trim()
+      .toLowerCase();
     return level > 0 && status === "done";
   });
   const candidates = [
@@ -4480,23 +5459,40 @@ function summarizeMemoryFallbackWorkEvent(events) {
     return "";
   }
   const ranked = items.slice().sort((left, right) => {
-    const leftDone = ["completed", "done"].includes(String(left?.status || "").trim().toLowerCase());
-    const rightDone = ["completed", "done"].includes(String(right?.status || "").trim().toLowerCase());
+    const leftDone = ["completed", "done"].includes(
+      String(left?.status || "")
+        .trim()
+        .toLowerCase(),
+    );
+    const rightDone = ["completed", "done"].includes(
+      String(right?.status || "")
+        .trim()
+        .toLowerCase(),
+    );
     if (leftDone !== rightDone) {
       return rightDone ? 1 : -1;
     }
-    return String(right?.created_at || "").localeCompare(String(left?.created_at || ""));
+    return String(right?.created_at || "").localeCompare(
+      String(left?.created_at || ""),
+    );
   });
   for (const item of ranked) {
     const factSummary = Array.isArray(item?.facts)
-      ? item.facts.map((entry) => String(entry || "").trim()).filter(Boolean).join(" / ")
+      ? item.facts
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean)
+          .join(" / ")
       : "";
     const verificationSummary = Array.isArray(item?.verification)
-      ? item.verification.map((entry) => String(entry || "").trim()).filter(Boolean).join(" / ")
+      ? item.verification
+          .map((entry) => String(entry || "").trim())
+          .filter(Boolean)
+          .join(" / ")
       : "";
     const contentSummary = String(item?.content || "").trim();
     const goalSummary = String(item?.goal || "").trim();
-    const summary = factSummary || verificationSummary || contentSummary || goalSummary;
+    const summary =
+      factSummary || verificationSummary || contentSummary || goalSummary;
     if (summary) {
       return summary;
     }
@@ -4504,19 +5500,33 @@ function summarizeMemoryFallbackWorkEvent(events) {
   return "";
 }
 
-function deriveMemorySolveStatus(memory, linkedTask, linkedWorkSession, sections) {
+function deriveMemorySolveStatus(
+  memory,
+  linkedTask,
+  linkedWorkSession,
+  sections,
+) {
   const explicit = String(sections?.solveStatus || "").trim();
   if (explicit.includes("已解决")) return "resolved";
   if (explicit.includes("部分")) return "partial";
-  if (explicit.includes("阻塞") || explicit.includes("未解决")) return "unresolved";
-  const taskStatus = String(linkedTask?.status || "").trim().toLowerCase();
+  if (explicit.includes("阻塞") || explicit.includes("未解决"))
+    return "unresolved";
+  const taskStatus = String(linkedTask?.status || "")
+    .trim()
+    .toLowerCase();
   if (taskStatus === "done") return "resolved";
   if (taskStatus === "blocked") return "unresolved";
-  if (taskStatus === "verifying" || taskStatus === "in_progress") return "processing";
-  const workSessionStatus = String(linkedWorkSession?.latest_status || "").trim().toLowerCase();
-  if (workSessionStatus === "completed" || workSessionStatus === "done") return "resolved";
-  if (workSessionStatus === "blocked" || workSessionStatus === "failed") return "unresolved";
-  if (workSessionStatus === "verifying" || workSessionStatus === "in_progress") return "processing";
+  if (taskStatus === "verifying" || taskStatus === "in_progress")
+    return "processing";
+  const workSessionStatus = String(linkedWorkSession?.latest_status || "")
+    .trim()
+    .toLowerCase();
+  if (workSessionStatus === "completed" || workSessionStatus === "done")
+    return "resolved";
+  if (workSessionStatus === "blocked" || workSessionStatus === "failed")
+    return "unresolved";
+  if (workSessionStatus === "verifying" || workSessionStatus === "in_progress")
+    return "processing";
   if (memory?.chat_session_id) return "tracked";
   return "untracked";
 }
@@ -4563,16 +5573,18 @@ function isInternalAutoQueryResultSnapshot(memory) {
   if (!tags.has("auto-capture") || !tags.has("query-result")) {
     return false;
   }
-  return Array.from(INTERNAL_AUTO_QUERY_RESULT_TOOL_TAGS).some((tag) => tags.has(tag));
+  return Array.from(INTERNAL_AUTO_QUERY_RESULT_TOOL_TAGS).some((tag) =>
+    tags.has(tag),
+  );
 }
 
 function hasConversationMemorySections(sections) {
   return Boolean(
     String(sections?.question || "").trim() ||
-      String(sections?.process || "").trim() ||
-      String(sections?.solution || "").trim() ||
-      String(sections?.conclusion || "").trim() ||
-      String(sections?.solveStatus || "").trim(),
+    String(sections?.process || "").trim() ||
+    String(sections?.solution || "").trim() ||
+    String(sections?.conclusion || "").trim() ||
+    String(sections?.solveStatus || "").trim(),
   );
 }
 
@@ -4609,17 +5621,19 @@ function getProjectMemoryDisplayScore(memory, sections) {
 function pickPrimaryProjectMemory(items) {
   const candidates = Array.isArray(items) ? items.filter(Boolean) : [];
   if (!candidates.length) return null;
-  return candidates
-    .slice()
-    .sort((left, right) => {
-      const leftSections = parseMemorySections(left.content || "");
-      const rightSections = parseMemorySections(right.content || "");
-      const scoreDiff = getProjectMemoryDisplayScore(right, rightSections) - getProjectMemoryDisplayScore(left, leftSections);
-      if (scoreDiff !== 0) {
-        return scoreDiff;
-      }
-      return String(right?.created_at || "").localeCompare(String(left?.created_at || ""));
-    })[0];
+  return candidates.slice().sort((left, right) => {
+    const leftSections = parseMemorySections(left.content || "");
+    const rightSections = parseMemorySections(right.content || "");
+    const scoreDiff =
+      getProjectMemoryDisplayScore(right, rightSections) -
+      getProjectMemoryDisplayScore(left, leftSections);
+    if (scoreDiff !== 0) {
+      return scoreDiff;
+    }
+    return String(right?.created_at || "").localeCompare(
+      String(left?.created_at || ""),
+    );
+  })[0];
 }
 
 function shouldDisplayRawMemoryContent(memory, sections) {
@@ -4669,18 +5683,22 @@ function normalizeTaskTreeNode(node) {
       : [];
   return {
     ...node,
-    node_kind: String(node.node_kind || (Number(node.level || 0) === 0 ? "goal" : "plan_step")).trim(),
+    node_kind: String(
+      node.node_kind || (Number(node.level || 0) === 0 ? "goal" : "plan_step"),
+    ).trim(),
     stage_key: String(node.stage_key || "").trim(),
     objective: String(node.objective || node.description || "").trim(),
-    completion_criteria: String(node.completion_criteria || node.done_definition || "").trim(),
+    completion_criteria: String(
+      node.completion_criteria || node.done_definition || "",
+    ).trim(),
     verification_method: verificationMethod
       .map((item) => String(item || "").trim())
       .filter(Boolean),
     latest_outcome: String(
-      node.latest_outcome
-      || node.summary_for_model
-      || node.verification_result
-      || "",
+      node.latest_outcome ||
+        node.summary_for_model ||
+        node.verification_result ||
+        "",
     ).trim(),
     children: Array.isArray(node.children)
       ? node.children.map((item) => normalizeTaskTreeNode(item)).filter(Boolean)
@@ -4699,7 +5717,8 @@ function normalizeTaskTreePayload(taskTree) {
     ? taskTree.tree.map((item) => normalizeTaskTreeNode(item)).filter(Boolean)
     : [];
   const currentNodeId = String(taskTree.current_node_id || "").trim();
-  const stats = taskTree.stats && typeof taskTree.stats === "object" ? taskTree.stats : {};
+  const stats =
+    taskTree.stats && typeof taskTree.stats === "object" ? taskTree.stats : {};
   const normalizedCurrentNode = normalizeTaskTreeNode(taskTree.current_node);
   return {
     ...taskTree,
@@ -4707,14 +5726,16 @@ function normalizeTaskTreePayload(taskTree) {
     progress_percent: resolveTaskTreeProgressPercent(taskTree),
     node_total: Number(taskTree.node_total ?? stats.node_total ?? nodes.length),
     leaf_total: Number(taskTree.leaf_total ?? stats.leaf_total ?? 0),
-    done_leaf_total: Number(taskTree.done_leaf_total ?? stats.done_leaf_total ?? 0),
+    done_leaf_total: Number(
+      taskTree.done_leaf_total ?? stats.done_leaf_total ?? 0,
+    ),
     nodes,
     tree,
     task_tree_health: normalizeTaskTreeHealth(taskTree.task_tree_health),
-    current_node:
-      normalizedCurrentNode
-        ? normalizedCurrentNode
-        : nodes.find((item) => String(item?.id || "").trim() === currentNodeId) || null,
+    current_node: normalizedCurrentNode
+      ? normalizedCurrentNode
+      : nodes.find((item) => String(item?.id || "").trim() === currentNodeId) ||
+        null,
   };
 }
 
@@ -4725,12 +5746,15 @@ function resolveTaskTreeResponsePayload(payload) {
   if (payload.task_tree && typeof payload.task_tree === "object") {
     return payload.task_tree;
   }
-  if (payload.history_task_tree && typeof payload.history_task_tree === "object") {
+  if (
+    payload.history_task_tree &&
+    typeof payload.history_task_tree === "object"
+  ) {
     return payload.history_task_tree;
   }
   if (
-    Object.prototype.hasOwnProperty.call(payload, "task_tree")
-    || Object.prototype.hasOwnProperty.call(payload, "history_task_tree")
+    Object.prototype.hasOwnProperty.call(payload, "task_tree") ||
+    Object.prototype.hasOwnProperty.call(payload, "history_task_tree")
   ) {
     return null;
   }
@@ -4738,7 +5762,9 @@ function resolveTaskTreeResponsePayload(payload) {
 }
 
 function getMemorySolveStatusLabel(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "resolved") return "已解决";
   if (normalized === "partial") return "部分解决";
   if (normalized === "unresolved") return "未解决";
@@ -4748,7 +5774,9 @@ function getMemorySolveStatusLabel(value) {
 }
 
 function getMemorySolveStatusTagType(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "resolved") return "success";
   if (normalized === "partial") return "warning";
   if (normalized === "unresolved") return "danger";
@@ -4771,7 +5799,9 @@ function getMemoryTypeLabel(type) {
 }
 
 function buildMemoryExportFilename() {
-  const projectName = String(project.value?.name || projectId.value || "project").trim() || "project";
+  const projectName =
+    String(project.value?.name || projectId.value || "project").trim() ||
+    "project";
   const safeProjectName = projectName.replace(/[\\/:*?"<>|]+/g, "-");
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   return `${safeProjectName}-project-memories-${timestamp}.csv`;
@@ -4786,7 +5816,16 @@ function escapeCsvField(value) {
 }
 
 function buildMemoryExportCsv(rows) {
-  const headers = ["员工", "员工ID", "类型", "内容", "重要度", "作用域", "项目名称", "创建时间"];
+  const headers = [
+    "员工",
+    "员工ID",
+    "类型",
+    "内容",
+    "重要度",
+    "作用域",
+    "项目名称",
+    "创建时间",
+  ];
   const lines = rows.map((row) =>
     [
       row.employee_name || row.employee_id || "",
@@ -4804,7 +5843,11 @@ function buildMemoryExportCsv(rows) {
   return `\uFEFF${headers.join(",")}\n${lines.join("\n")}`;
 }
 
-function downloadTextFile(content, filename, mimeType = "text/plain;charset=utf-8;") {
+function downloadTextFile(
+  content,
+  filename,
+  mimeType = "text/plain;charset=utf-8;",
+) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -4825,7 +5868,11 @@ async function exportProjectMemories() {
   }
   try {
     const content = buildMemoryExportCsv(filteredMemoryRows.value);
-    downloadTextFile(content, buildMemoryExportFilename(), "text/csv;charset=utf-8;");
+    downloadTextFile(
+      content,
+      buildMemoryExportFilename(),
+      "text/csv;charset=utf-8;",
+    );
     ElMessage.success(`已导出 ${filteredMemoryRows.value.length} 条项目记忆`);
   } catch {
     ElMessage.error("导出项目记忆失败");
@@ -4839,8 +5886,11 @@ async function fetchProjectMemories(targetProjectId = projectId.value) {
   try {
     const query = String(memoryFilters.value.query || "").trim();
     const limitValue = Number(memoryFilters.value.limit || 20);
-    const safeLimit = Number.isFinite(limitValue) && limitValue > 0 ? limitValue : 20;
-    const selectedEmployeeId = String(memoryFilters.value.employeeId || "").trim();
+    const safeLimit =
+      Number.isFinite(limitValue) && limitValue > 0 ? limitValue : 20;
+    const selectedEmployeeId = String(
+      memoryFilters.value.employeeId || "",
+    ).trim();
     const params = { limit: safeLimit };
     if (query) {
       params.query = query;
@@ -4848,7 +5898,9 @@ async function fetchProjectMemories(targetProjectId = projectId.value) {
     if (selectedEmployeeId) {
       params.employee_id = selectedEmployeeId;
     }
-    const data = await api.get(`/projects/${effectiveProjectId}/memories`, { params });
+    const data = await api.get(`/projects/${effectiveProjectId}/memories`, {
+      params,
+    });
     if (effectiveProjectId !== projectId.value) return;
     projectMemories.value = Array.isArray(data?.items)
       ? data.items.map((item) => normalizeMemory(item))
@@ -4877,11 +5929,13 @@ async function refreshRequirementRecords() {
 }
 
 async function deleteRequirementRecords(recordIds, successLabel = "需求记录") {
-  const normalizedIds = [...new Set(
-    (Array.isArray(recordIds) ? recordIds : [])
-      .map((item) => String(item || "").trim())
-      .filter(Boolean),
-  )];
+  const normalizedIds = [
+    ...new Set(
+      (Array.isArray(recordIds) ? recordIds : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    ),
+  ];
   if (!normalizedIds.length) {
     ElMessage.warning("请先选择要删除的需求记录");
     return null;
@@ -4892,14 +5946,22 @@ async function deleteRequirementRecords(recordIds, successLabel = "需求记录"
   }
   requirementRecordDeleting.value = true;
   try {
-    const data = await api.post(`/projects/${projectId.value}/requirement-records/batch-delete`, {
-      record_ids: normalizedIds,
-    });
-    const deletedIds = Array.isArray(data?.deleted_record_ids) ? data.deleted_record_ids : [];
-    selectedRequirementRecordIds.value = (selectedRequirementRecordIds.value || []).filter(
-      (item) => !deletedIds.includes(item),
+    const data = await api.post(
+      `/projects/${projectId.value}/requirement-records/batch-delete`,
+      {
+        record_ids: normalizedIds,
+      },
     );
-    if (expandedRequirementRecordId.value && deletedIds.includes(expandedRequirementRecordId.value)) {
+    const deletedIds = Array.isArray(data?.deleted_record_ids)
+      ? data.deleted_record_ids
+      : [];
+    selectedRequirementRecordIds.value = (
+      selectedRequirementRecordIds.value || []
+    ).filter((item) => !deletedIds.includes(item));
+    if (
+      expandedRequirementRecordId.value &&
+      deletedIds.includes(expandedRequirementRecordId.value)
+    ) {
       expandedRequirementRecordId.value = "";
     }
     const deletedCount = Number(data?.deleted_count || 0);
@@ -4995,7 +6057,10 @@ function setTabDataLoaded(tab, loaded = true) {
   };
 }
 
-async function ensureOverviewTabData(targetProjectId = projectId.value, options = {}) {
+async function ensureOverviewTabData(
+  targetProjectId = projectId.value,
+  options = {},
+) {
   const force = Boolean(options?.force);
   if (!force && tabDataLoaded.value.overview) {
     return;
@@ -5012,7 +6077,10 @@ async function ensureOverviewTabData(targetProjectId = projectId.value, options 
   return tabDataPromises.overview;
 }
 
-async function ensureAccessTabData(targetProjectId = projectId.value, options = {}) {
+async function ensureAccessTabData(
+  targetProjectId = projectId.value,
+  options = {},
+) {
   const force = Boolean(options?.force);
   if (!force && tabDataLoaded.value.access) {
     return;
@@ -5033,7 +6101,10 @@ async function ensureAccessTabData(targetProjectId = projectId.value, options = 
   return tabDataPromises.access;
 }
 
-async function ensureMemoryTabData(targetProjectId = projectId.value, options = {}) {
+async function ensureMemoryTabData(
+  targetProjectId = projectId.value,
+  options = {},
+) {
   const force = Boolean(options?.force);
   if (!force && tabDataLoaded.value.memory) {
     return;
@@ -5053,7 +6124,11 @@ async function ensureMemoryTabData(targetProjectId = projectId.value, options = 
   return tabDataPromises.memory;
 }
 
-async function ensureProjectTabData(tab = activeProjectTab.value, targetProjectId = projectId.value, options = {}) {
+async function ensureProjectTabData(
+  tab = activeProjectTab.value,
+  targetProjectId = projectId.value,
+  options = {},
+) {
   const normalizedTab = normalizeProjectDetailTab(tab);
   const effectiveProjectId = String(targetProjectId || "").trim();
   if (!effectiveProjectId) {
@@ -5077,9 +6152,13 @@ async function refresh(targetProjectId = projectId.value) {
   try {
     await fetchProject(effectiveProjectId);
     await restoreExperienceSummaryJob(effectiveProjectId);
-    await ensureProjectTabData(route.query.tab || activeProjectTab.value, effectiveProjectId, {
-      force: true,
-    });
+    await ensureProjectTabData(
+      route.query.tab || activeProjectTab.value,
+      effectiveProjectId,
+      {
+        force: true,
+      },
+    );
   } catch (err) {
     if (effectiveProjectId !== projectId.value) return;
     const message = err?.detail || err?.message || "加载失败";
@@ -5095,7 +6174,9 @@ async function refresh(targetProjectId = projectId.value) {
 }
 
 function openProjectChat(chatSessionId = "") {
-  const currentProjectId = String(project.value?.id || projectId.value || "").trim();
+  const currentProjectId = String(
+    project.value?.id || projectId.value || "",
+  ).trim();
   if (!currentProjectId) {
     ElMessage.warning("当前项目 ID 无效");
     return;
@@ -5107,28 +6188,38 @@ function openProjectChat(chatSessionId = "") {
   if (normalizedChatSessionId) {
     query.chat_session_id = normalizedChatSessionId;
   }
-  void openRouteInDesktop(router, { path: "/ai/chat", query }, {
-    mode: "new-window",
-    appId: "chat",
-    title: "AI 对话",
-    eyebrow: "AI Workspace",
-    summary: "项目对话作为独立应用窗口打开，可与项目详情并排处理。",
-  });
+  void openRouteInDesktop(
+    router,
+    { path: "/ai/chat", query },
+    {
+      mode: "new-window",
+      appId: "chat",
+      title: "AI 对话",
+      eyebrow: "AI Workspace",
+      summary: "项目对话作为独立应用窗口打开，可与项目详情并排处理。",
+    },
+  );
 }
 
 function openMaterialLibrary() {
-  const currentProjectId = String(project.value?.id || projectId.value || "").trim();
+  const currentProjectId = String(
+    project.value?.id || projectId.value || "",
+  ).trim();
   if (!currentProjectId) {
     ElMessage.warning("当前项目 ID 无效");
     return;
   }
-  void openRouteInDesktop(router, { path: "/materials", query: { project_id: currentProjectId } }, {
-    mode: "new-window",
-    appId: "materials",
-    title: "素材库",
-    eyebrow: "Asset Workspace",
-    summary: "项目素材库作为桌面应用窗口打开，和项目详情并行处理素材。",
-  });
+  void openRouteInDesktop(
+    router,
+    { path: "/materials", query: { project_id: currentProjectId } },
+    {
+      mode: "new-window",
+      appId: "materials",
+      title: "素材库",
+      eyebrow: "Asset Workspace",
+      summary: "项目素材库作为桌面应用窗口打开，和项目详情并行处理素材。",
+    },
+  );
 }
 
 function openProjectList() {
@@ -5220,7 +6311,9 @@ async function openExperienceSummaryDialog() {
 }
 
 function getExperienceSummaryStatusLabel(status) {
-  const normalized = String(status || "").trim().toLowerCase();
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "completed") return "已完成";
   if (normalized === "partial_completed") return "部分完成";
   if (normalized === "review_blocked") return "评审阻断";
@@ -5228,7 +6321,9 @@ function getExperienceSummaryStatusLabel(status) {
 }
 
 function getExperienceSummaryStatusTagType(status) {
-  const normalized = String(status || "").trim().toLowerCase();
+  const normalized = String(status || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "completed") return "success";
   if (normalized === "partial_completed") return "warning";
   if (normalized === "review_blocked") return "danger";
@@ -5236,7 +6331,9 @@ function getExperienceSummaryStatusTagType(status) {
 }
 
 function getExperienceReviewDecisionLabel(decision) {
-  const normalized = String(decision || "").trim().toLowerCase();
+  const normalized = String(decision || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "accept") return "接受";
   if (normalized === "revise") return "修订后接受";
   if (normalized === "reject") return "拒绝";
@@ -5244,7 +6341,9 @@ function getExperienceReviewDecisionLabel(decision) {
 }
 
 function getExperienceReviewDecisionTagType(decision) {
-  const normalized = String(decision || "").trim().toLowerCase();
+  const normalized = String(decision || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "accept") return "success";
   if (normalized === "revise") return "warning";
   if (normalized === "reject") return "danger";
@@ -5252,7 +6351,9 @@ function getExperienceReviewDecisionTagType(decision) {
 }
 
 function getExperienceReviewIssueTagType(severity) {
-  const normalized = String(severity || "").trim().toLowerCase();
+  const normalized = String(severity || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "blocker") return "danger";
   if (normalized === "major") return "warning";
   return "info";
@@ -5290,7 +6391,9 @@ async function openExperienceRuleEditDialog(rule) {
     const data = await api.get(`/rules/${ruleId}`);
     const currentRule = data?.rule || {};
     experienceRuleEditForm.value = {
-      title: stripExperienceRuleTitlePrefix(currentRule.title || rule.title || ""),
+      title: stripExperienceRuleTitlePrefix(
+        currentRule.title || rule.title || "",
+      ),
       content: String(currentRule.content || "").trim(),
     };
     showExperienceRuleEditDialog.value = true;
@@ -5345,10 +6448,12 @@ async function handleDeleteExperienceRule(rule) {
     ElMessage.warning("当前经验规则缺少 ID");
     return;
   }
-  const scopeLabel = rule?.systemSource === "project_experience" ? "项目私有经验" : "开发经验";
-  const deleteMessage = rule?.systemSource === "development_experience"
-    ? "如果还有其他项目引用这条开发经验，只会移除当前项目绑定；没有其他引用时才会真正删除规则。"
-    : "删除后会从当前项目移除这条项目私有经验规则。";
+  const scopeLabel =
+    rule?.systemSource === "project_experience" ? "项目私有经验" : "开发经验";
+  const deleteMessage =
+    rule?.systemSource === "development_experience"
+      ? "如果还有其他项目引用这条开发经验，只会移除当前项目绑定；没有其他引用时才会真正删除规则。"
+      : "删除后会从当前项目移除这条项目私有经验规则。";
   try {
     await ElMessageBox.confirm(
       `确定删除「${rule.displayTitle || rule.title || ruleId}」？\n${deleteMessage}`,
@@ -5364,13 +6469,17 @@ async function handleDeleteExperienceRule(rule) {
   experienceRuleDeletingLoading.value = true;
   deletingExperienceRuleId.value = ruleId;
   try {
-    const data = await api.delete(`/projects/${projectId.value}/experience-rules/${ruleId}`);
+    const data = await api.delete(
+      `/projects/${projectId.value}/experience-rules/${ruleId}`,
+    );
     await fetchProject();
     const remainingCount = Number(data?.remaining_project_binding_count || 0);
     if (data?.rule_deleted) {
       ElMessage.success("经验规则已删除");
     } else if (remainingCount > 0) {
-      ElMessage.success(`已移除当前项目引用，该经验仍被 ${remainingCount} 个其他项目使用`);
+      ElMessage.success(
+        `已移除当前项目引用，该经验仍被 ${remainingCount} 个其他项目使用`,
+      );
     } else {
       ElMessage.success("已从当前项目移除经验规则");
     }
@@ -5405,11 +6514,19 @@ async function handleMigrateExperienceRulesToDevelopment() {
   }
   experienceRuleMigrating.value = true;
   try {
-    const data = await api.post(`/projects/${projectId.value}/experience-rules/migrate-to-development`);
+    const data = await api.post(
+      `/projects/${projectId.value}/experience-rules/migrate-to-development`,
+    );
     await fetchProject();
-    const createdCount = Array.isArray(data?.created_rule_ids) ? data.created_rule_ids.length : 0;
-    const updatedCount = Array.isArray(data?.updated_rule_ids) ? data.updated_rule_ids.length : 0;
-    const deletedCount = Array.isArray(data?.deleted_rule_ids) ? data.deleted_rule_ids.length : 0;
+    const createdCount = Array.isArray(data?.created_rule_ids)
+      ? data.created_rule_ids.length
+      : 0;
+    const updatedCount = Array.isArray(data?.updated_rule_ids)
+      ? data.updated_rule_ids.length
+      : 0;
+    const deletedCount = Array.isArray(data?.deleted_rule_ids)
+      ? data.deleted_rule_ids.length
+      : 0;
     ElMessage.success(
       `迁移完成：新增 ${createdCount} 条，归并更新 ${updatedCount} 条，清理 ${deletedCount} 条旧规则`,
     );
@@ -5440,19 +6557,30 @@ async function handleConsolidateExperienceRules() {
 async function handleConfirmConsolidateExperienceRules() {
   experienceRuleConsolidating.value = true;
   try {
-    const data = await api.post(`/projects/${projectId.value}/experience-rules/consolidate`, {
-      provider_id: String(experienceSummaryProviderId.value || "").trim(),
-      model_name: String(experienceSummaryModelName.value || "").trim(),
-    });
+    const data = await api.post(
+      `/projects/${projectId.value}/experience-rules/consolidate`,
+      {
+        provider_id: String(experienceSummaryProviderId.value || "").trim(),
+        model_name: String(experienceSummaryModelName.value || "").trim(),
+      },
+    );
     await fetchProject();
-    const deletedCount = Array.isArray(data?.deleted_rule_ids) ? data.deleted_rule_ids.length : 0;
-    const consolidatedCount = Array.isArray(data?.consolidated_rule_ids) ? data.consolidated_rule_ids.length : 0;
+    const deletedCount = Array.isArray(data?.deleted_rule_ids)
+      ? data.deleted_rule_ids.length
+      : 0;
+    const consolidatedCount = Array.isArray(data?.consolidated_rule_ids)
+      ? data.consolidated_rule_ids.length
+      : 0;
     const remainingCount = Number(data?.remaining_rule_count || 0);
     if (!consolidatedCount && !deletedCount) {
-      ElMessage.success(`未发现可合并的重复主题，当前保留 ${remainingCount} 条经验规则`);
+      ElMessage.success(
+        `未发现可合并的重复主题，当前保留 ${remainingCount} 条经验规则`,
+      );
       return;
     }
-    ElMessage.success(`已按主题汇总 ${consolidatedCount} 组经验规则，当前保留 ${remainingCount} 条，清理 ${deletedCount} 条重复规则`);
+    ElMessage.success(
+      `已按主题汇总 ${consolidatedCount} 组经验规则，当前保留 ${remainingCount} 条，清理 ${deletedCount} 条重复规则`,
+    );
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "汇总经验规则失败");
   } finally {
@@ -5506,7 +6634,10 @@ async function pickAiEntryFile(currentPath = "", workspacePath = "") {
     basePath: workspacePath,
   });
   if (picked === null) return null;
-  return toWorkspaceRelativePath(picked, workspacePath) || String(picked || "").trim();
+  return (
+    toWorkspaceRelativePath(picked, workspacePath) ||
+    String(picked || "").trim()
+  );
 }
 
 async function saveEdit() {
@@ -5575,32 +6706,33 @@ async function handleConfirmExperienceSummary() {
     ElMessage.warning(getExperienceSummaryUnavailableMessage());
     return;
   }
-  const manualReviewEnabled = Boolean(experienceSummaryManualReviewEnabled.value);
+  const manualReviewEnabled = Boolean(
+    experienceSummaryManualReviewEnabled.value,
+  );
   const confirmText = manualReviewEnabled
     ? `本次会总结 ${targetRecordIds.length} 条需求记录，先完成模型评审和经验入库，但会保留原始记录等待人工复核。是否继续？`
     : `本次会总结 ${targetRecordIds.length} 条需求记录，生成可复用的开发经验规则。只有评审通过且覆盖完整时，才会清空这批记录。是否继续？`;
   try {
-    await ElMessageBox.confirm(
-      confirmText,
-      "开启开发经验沉淀",
-      {
-        type: "warning",
-        confirmButtonText: "开始总结",
-      },
-    );
+    await ElMessageBox.confirm(confirmText, "开启开发经验沉淀", {
+      type: "warning",
+      confirmButtonText: "开始总结",
+    });
   } catch {
     return;
   }
   experienceSummaryLoading.value = true;
   try {
-    const data = await api.post(`/projects/${projectId.value}/experience-summary-jobs`, {
-      provider_id: String(experienceSummaryProviderId.value || "").trim(),
-      model_name: String(experienceSummaryModelName.value || "").trim(),
-      record_ids: targetRecordIds,
-      clear_requirement_records: !manualReviewEnabled,
-      experience_scope: "development",
-      review_mode: manualReviewEnabled ? "manual" : "auto",
-    });
+    const data = await api.post(
+      `/projects/${projectId.value}/experience-summary-jobs`,
+      {
+        provider_id: String(experienceSummaryProviderId.value || "").trim(),
+        model_name: String(experienceSummaryModelName.value || "").trim(),
+        record_ids: targetRecordIds,
+        clear_requirement_records: !manualReviewEnabled,
+        experience_scope: "development",
+        review_mode: manualReviewEnabled ? "manual" : "auto",
+      },
+    );
     const job = normalizeExperienceSummaryJob(data?.job);
     if (!job?.id) {
       throw new Error("总结任务创建成功，但未返回任务信息");
@@ -5613,7 +6745,9 @@ async function handleConfirmExperienceSummary() {
     experienceSummaryPollingTimer = window.setTimeout(() => {
       void pollExperienceSummaryJob(projectId.value, job.id);
     }, 1200);
-    ElMessage.success("总结任务已创建，后台处理中；刷新页面后也可以继续查看进度");
+    ElMessage.success(
+      "总结任务已创建，后台处理中；刷新页面后也可以继续查看进度",
+    );
   } catch (err) {
     experienceSummaryActiveJob.value = null;
     experienceSummaryLoading.value = false;
@@ -5715,7 +6849,8 @@ async function addProjectUsers() {
   }
   saving.value = true;
   try {
-    const roleValue = String(userForm.value.role || "member").trim() || "member";
+    const roleValue =
+      String(userForm.value.role || "member").trim() || "member";
     const results = await Promise.allSettled(
       toAdd.map((username) =>
         api.post(`/projects/${projectId.value}/users`, {
@@ -5779,7 +6914,9 @@ async function removeProjectUser(row) {
     { type: "warning" },
   );
   try {
-    await api.delete(`/projects/${projectId.value}/users/${encodeURIComponent(row.username)}`);
+    await api.delete(
+      `/projects/${projectId.value}/users/${encodeURIComponent(row.username)}`,
+    );
     ElMessage.success("用户访问权限已移除");
     await fetchProjectUsers();
   } catch (err) {
@@ -5805,8 +6942,16 @@ onBeforeUnmount(() => {
   min-height: 100%;
   padding: 14px 0 32px;
   background:
-    radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.16), transparent 26%),
-    radial-gradient(circle at 82% 14%, rgba(103, 232, 249, 0.12), transparent 22%),
+    radial-gradient(
+      circle at 18% 0%,
+      rgba(125, 211, 252, 0.16),
+      transparent 26%
+    ),
+    radial-gradient(
+      circle at 82% 14%,
+      rgba(103, 232, 249, 0.12),
+      transparent 22%
+    ),
     linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%);
 }
 
@@ -5943,7 +7088,9 @@ onBeforeUnmount(() => {
   box-shadow: 0 18px 28px rgba(15, 23, 42, 0.14);
 }
 
-.project-detail-tabs :deep(.el-tabs__item:not(.is-active):hover) .project-detail-tab-label {
+.project-detail-tabs
+  :deep(.el-tabs__item:not(.is-active):hover)
+  .project-detail-tab-label {
   background: rgba(248, 250, 252, 0.92);
   transform: translateY(-1px);
 }
@@ -6042,7 +7189,7 @@ onBeforeUnmount(() => {
 .block :deep(.el-descriptions__table),
 .memory-detail-task-tree :deep(.el-descriptions__table) {
   background: rgba(255, 255, 255, 0.68);
- }
+}
 
 .block :deep(.el-descriptions__label),
 .memory-detail-task-tree :deep(.el-descriptions__label) {
@@ -6058,7 +7205,11 @@ onBeforeUnmount(() => {
   padding: 16px 18px;
   border: 1px solid rgba(245, 158, 11, 0.22);
   border-radius: 20px;
-  background: linear-gradient(135deg, rgba(255, 251, 235, 0.92), rgba(255, 255, 255, 0.74));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 251, 235, 0.92),
+    rgba(255, 255, 255, 0.74)
+  );
 }
 
 .experience-summary-job-panel__header {
@@ -6352,7 +7503,11 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 34px;
   background:
-    radial-gradient(circle at top left, rgba(125, 211, 252, 0.18), transparent 30%),
+    radial-gradient(
+      circle at top left,
+      rgba(125, 211, 252, 0.18),
+      transparent 30%
+    ),
     linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.9));
   box-shadow: 0 24px 64px rgba(15, 23, 42, 0.08);
   overflow: hidden;
@@ -6580,8 +7735,16 @@ onBeforeUnmount(() => {
   padding: 18px;
   border-radius: 24px;
   background:
-    radial-gradient(circle at top left, rgba(103, 232, 249, 0.14), transparent 32%),
-    linear-gradient(135deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.92));
+    radial-gradient(
+      circle at top left,
+      rgba(103, 232, 249, 0.14),
+      transparent 32%
+    ),
+    linear-gradient(
+      135deg,
+      rgba(248, 250, 252, 0.96),
+      rgba(241, 245, 249, 0.92)
+    );
   border: 1px solid rgba(148, 163, 184, 0.18);
 }
 
@@ -6622,7 +7785,11 @@ onBeforeUnmount(() => {
   bottom: 18px;
   width: 3px;
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(15, 118, 110, 0.72), rgba(125, 211, 252, 0.36));
+  background: linear-gradient(
+    180deg,
+    rgba(15, 118, 110, 0.72),
+    rgba(125, 211, 252, 0.36)
+  );
 }
 
 .memory-detail-plan__row {
@@ -6829,7 +7996,11 @@ code {
   border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 34px;
   background:
-    radial-gradient(circle at top left, rgba(125, 211, 252, 0.18), transparent 30%),
+    radial-gradient(
+      circle at top left,
+      rgba(125, 211, 252, 0.18),
+      transparent 30%
+    ),
     linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.9));
   box-shadow: 0 24px 64px rgba(15, 23, 42, 0.08);
   overflow: hidden;
