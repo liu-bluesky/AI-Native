@@ -3,20 +3,15 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from core.deps import require_auth, role_store, usage_store
+from core.deps import ensure_permission, require_auth, usage_store
 from models.requests import CreateApiKeyReq
-from core.role_permissions import has_permission
 
 router = APIRouter(prefix="/api/usage", dependencies=[Depends(require_auth)])
 _LEGACY_DELETABLE_KEY_OWNERS = {"", "unknown", "system-external-agent"}
 
 
 def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
-    role_id = str(auth_payload.get("role") or "").strip().lower()
-    role = role_store.get(role_id)
-    role_permissions = getattr(role, "permissions", None)
-    if not has_permission(role_permissions, permission_key, role_id=role_id):
-        raise HTTPException(403, f"Permission denied: {permission_key}")
+    ensure_permission(auth_payload, permission_key)
 
 
 def _current_username(auth_payload: dict) -> str:

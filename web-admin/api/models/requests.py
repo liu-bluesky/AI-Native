@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 
 
 class InitSetupReq(BaseModel):
-    username: str
+    username: str = "admin"
+    display_name: str = ""
     password: str
 
 
@@ -21,13 +22,23 @@ class RegisterReq(BaseModel):
     username: str = ""
     email: str = ""
     password: str
+    invite_token: str = ""
+
+
+class RegisterInvitationCreateReq(BaseModel):
+    department_ids: list[str] = []
+    primary_department_id: str = ""
+    expires_in_hours: int = 168
 
 
 class UserCreateReq(BaseModel):
     username: str
     password: str
+    display_name: str = ""
     role: str = "user"
     role_ids: list[str] = []
+    department_ids: list[str] = []
+    primary_department_id: str = ""
 
 
 class UserPasswordUpdateReq(BaseModel):
@@ -35,13 +46,45 @@ class UserPasswordUpdateReq(BaseModel):
 
 
 class UserUpdateReq(BaseModel):
+    display_name: str | None = None
     role: str = ""
     role_ids: list[str] = []
     password: str = ""
+    department_ids: list[str] | None = None
+    primary_department_id: str = ""
 
 
 class UserSettingsUpdateReq(BaseModel):
     default_ai_provider_id: str = ""
+
+
+class DepartmentCreateReq(BaseModel):
+    name: str
+    parent_id: str = ""
+    manager_username: str = ""
+    description: str = ""
+    enabled: bool = True
+    sort_order: int = 100
+    user_names: list[str] = []
+
+
+class DepartmentUpdateReq(BaseModel):
+    name: str | None = None
+    parent_id: str | None = None
+    manager_username: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+    sort_order: int | None = None
+    user_names: list[str] | None = None
+
+
+class DepartmentUserAssignReq(BaseModel):
+    usernames: list[str] = []
+
+
+class UserDepartmentAssignReq(BaseModel):
+    department_ids: list[str] = []
+    primary_department_id: str = ""
 
 
 class OnlineUserHeartbeatReq(BaseModel):

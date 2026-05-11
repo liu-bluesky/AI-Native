@@ -31,7 +31,9 @@ class UserStorePostgres:
         return User(
             username=str(payload.get("username") or ""),
             password_hash=str(payload.get("password_hash") or ""),
+            display_name=str(payload.get("display_name") or "").strip(),
             role=str(payload.get("role") or "user"),
+            role_ids=payload.get("role_ids") if isinstance(payload.get("role_ids"), list) else [],
             default_ai_provider_id=str(payload.get("default_ai_provider_id") or "").strip(),
             created_by=str(payload.get("created_by") or "").strip(),
             created_at=str(payload.get("created_at") or _now_iso()),
@@ -42,7 +44,9 @@ class UserStorePostgres:
             {
                 "username": user.username,
                 "password_hash": user.password_hash,
+                "display_name": str(user.display_name or "").strip(),
                 "role": user.role,
+                "role_ids": list(user.role_ids or []),
                 "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
                 "created_by": str(user.created_by or "").strip(),
                 "created_at": user.created_at,

@@ -51,7 +51,7 @@
       </el-form-item>
 
       <div class="register-form__hint">
-        创建成功后不会自动登录，会先返回登录页。
+        {{ inviteToken ? "当前链接包含邀请配置，创建成功后会按邀请加入对应部门。" : "创建成功后不会自动登录，会先返回登录页。" }}
       </div>
 
       <el-form-item class="register-form__submit">
@@ -76,7 +76,7 @@
 </template>
 
 <script setup>
-import { reactive, ref } from "vue";
+import { computed, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import AuthDesktopShell from "@/components/auth/AuthDesktopShell.vue";
@@ -89,6 +89,7 @@ const formRef = ref(null);
 const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
 const dockPreview = ["AI", "PR", "MT", "MK", "SE"];
+const inviteToken = computed(() => String(route.query.invite || "").trim());
 const registerFeatures = [
   {
     title: "统一入口",
@@ -146,6 +147,7 @@ async function handleRegister() {
     await registerWithEmail({
       email,
       password: form.password,
+      invite_token: inviteToken.value,
     });
     ElMessage.success("注册成功，请登录");
     const redirect = resolveSafeRedirectPath(route.query.redirect, "");

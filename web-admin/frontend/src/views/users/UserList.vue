@@ -15,8 +15,10 @@
 
       <div class="settings-hero__actions">
         <el-button v-if="canViewRoles" plain @click="$router.push('/roles')">角色管理</el-button>
+        <el-button v-if="canViewDepartments" plain @click="$router.push('/departments')">部门管理</el-button>
         <el-button @click="fetchUsers">刷新</el-button>
         <el-button plain :disabled="!filteredUsers.length" @click="exportUsers">导出</el-button>
+        <el-button v-if="canCreateUser" plain @click="openInviteDialog">邀请注册</el-button>
         <el-button v-if="canCreateUser" type="primary" @click="openCreateDialog">新增用户</el-button>
       </div>
     </section>
@@ -34,6 +36,15 @@
             v-for="item in roleOptions"
             :key="item.id"
             :label="`${item.name} (${item.id})`"
+            :value="item.id"
+          />
+        </el-select>
+        <el-select v-model="filters.departmentId" clearable placeholder="筛选部门">
+          <el-option label="全部部门" value="" />
+          <el-option
+            v-for="item in departmentOptions"
+            :key="item.id"
+            :label="`${indentLabel(item.depth)}${item.name}`"
             :value="item.id"
           />
         </el-select>
@@ -72,6 +83,21 @@
         </el-table-column>
         <el-table-column label="创建人" width="160">
           <template #default="{ row }">{{ row.created_by || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="部门" min-width="180">
+          <template #default="{ row }">
+            <div class="department-tags">
+              <el-tag
+                v-for="item in row.departments || []"
+                :key="item.id"
+                size="small"
+                :type="item.is_primary ? 'success' : 'info'"
+              >
+                {{ item.name || item.id }}
+              </el-tag>
+              <span v-if="!(row.departments || []).length" class="muted-text">未分配</span>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column label="创建时间" min-width="220">
           <template #default="{ row }">
@@ -132,6 +158,34 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item v-if="canAssignDepartments" label="部门">
+          <el-select
+            v-model="createForm.department_ids"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            style="width: 100%"
+            placeholder="选择用户部门"
+          >
+            <el-option
+              v-for="item in departmentOptions"
+              :key="item.id"
+              :label="`${indentLabel(item.depth)}${item.name}`"
+              :value="item.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="canAssignDepartments && createForm.department_ids.length" label="主部门">
+          <el-select v-model="createForm.primary_department_id" style="width: 100%">
+            <el-option
+              v-for="departmentId in createForm.department_ids"
+              :key="departmentId"
+              :label="departmentName(departmentId)"
+              :value="departmentId"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="密码" prop="password">
           <el-input
             v-model="createForm.password"
@@ -159,6 +213,34 @@
               :key="item.id"
               :label="`${item.name} (${item.id})`"
               :value="item.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="canAssignDepartments" label="部门">
+          <el-select
+            v-model="editForm.department_ids"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            style="width: 100%"
+            placeholder="选择用户部门"
+          >
+            <el-option
+              v-for="item in departmentOptions"
+              :key="item.id"
+              :label="`${indentLabel(item.depth)}${item.name}`"
+              :value="item.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="canAssignDepartments && editForm.department_ids.length" label="主部门">
+          <el-select v-model="editForm.primary_department_id" style="width: 100%">
+            <el-option
+              v-for="departmentId in editForm.department_ids"
+              :key="departmentId"
+              :label="departmentName(departmentId)"
+              :value="departmentId"
             />
           </el-select>
         </el-form-item>
@@ -199,6 +281,64 @@
         <el-button type="primary" :loading="saving" @click="updatePassword">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="showInviteDialog" title="邀请注册" width="560px">
+      <el-form :model="inviteForm" label-width="90px">
+        <el-form-item v-if="canAssignDepartments" label="部门">
+          <el-select
+            v-model="inviteForm.department_ids"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            style="width: 100%"
+            placeholder="选择注册后加入的部门"
+          >
+            <el-option
+              v-for="item in departmentOptions"
+              :key="item.id"
+              :label="`${indentLabel(item.depth)}${item.name}`"
+              :value="item.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="canAssignDepartments && inviteForm.department_ids.length" label="主部门">
+          <el-select v-model="inviteForm.primary_department_id" style="width: 100%">
+            <el-option
+              v-for="departmentId in inviteForm.department_ids"
+              :key="departmentId"
+              :label="departmentName(departmentId)"
+              :value="departmentId"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="有效期">
+          <el-input-number
+            v-model="inviteForm.expires_in_hours"
+            :min="1"
+            :max="720"
+            :step="24"
+            style="width: 180px"
+          />
+          <span class="dialog-inline-suffix">小时</span>
+        </el-form-item>
+        <el-form-item v-if="inviteResult.link" label="邀请链接">
+          <div class="invite-link-field">
+            <el-input v-model="inviteResult.link" readonly />
+            <el-button type="primary" plain @click="copyInviteLink">复制</el-button>
+          </div>
+        </el-form-item>
+        <div v-if="inviteResult.expires_at" class="dialog-inline-hint">
+          链接有效至 {{ formatDateTime(inviteResult.expires_at, { withSeconds: true }) }}。
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="showInviteDialog = false">关闭</el-button>
+        <el-button type="primary" :loading="inviteGenerating" @click="generateInviteLink">
+          生成链接
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -216,18 +356,22 @@ const loading = ref(false)
 const saving = ref(false)
 const users = ref([])
 const roleOptions = ref([])
+const departmentOptions = ref([])
 const showCreateDialog = ref(false)
 const showEditDialog = ref(false)
 const showPasswordDialog = ref(false)
+const showInviteDialog = ref(false)
 const createFormRef = ref(null)
 const editFormRef = ref(null)
 const passwordFormRef = ref(null)
 const currentPage = ref(1)
 const pageSize = ref(10)
+const inviteGenerating = ref(false)
 
 const filters = reactive({
   query: '',
   role: '',
+  departmentId: '',
   sort: 'created_desc',
 })
 
@@ -235,17 +379,33 @@ const createForm = reactive({
   username: '',
   role: 'user',
   password: '',
+  department_ids: [],
+  primary_department_id: '',
 })
 
 const editForm = reactive({
   username: '',
   role: 'user',
   password: '',
+  department_ids: [],
+  primary_department_id: '',
 })
 
 const passwordForm = reactive({
   username: '',
   password: '',
+})
+
+const inviteForm = reactive({
+  department_ids: [],
+  primary_department_id: '',
+  expires_in_hours: 168,
+})
+
+const inviteResult = reactive({
+  token: '',
+  link: '',
+  expires_at: '',
 })
 
 const validateOptionalPassword = (_rule, value, callback) => {
@@ -298,6 +458,8 @@ const canManageAnyUser = computed(() => hasPermission('button.users.update'))
 const canManageAnyUserPassword = computed(() => hasPermission('button.users.update_password'))
 const canDeleteUser = computed(() => hasPermission('button.users.delete'))
 const canViewRoles = computed(() => hasPermission('menu.roles'))
+const canViewDepartments = computed(() => hasPermission('menu.departments'))
+const canAssignDepartments = computed(() => hasPermission('button.departments.assign_users'))
 const isEditingCurrentUser = computed(() => editForm.username === currentUsername.value)
 
 function isCurrentUserRow(row) {
@@ -330,11 +492,12 @@ function buildUserExportFilename() {
 }
 
 function buildUserExportCsv(list) {
-  const headers = ['账号', '角色ID', '角色名称', '创建人', '创建时间']
+  const headers = ['账号', '角色ID', '角色名称', '部门', '创建人', '创建时间']
   const rows = list.map((item) => [
     item?.username || '',
     item?.role || '',
     item?.role_name || item?.role || '',
+    (item?.departments || []).map((department) => department.name || department.id).join(';'),
     item?.created_by || '',
     formatDateTime(item?.created_at, { withSeconds: true }) || '',
   ])
@@ -356,13 +519,20 @@ function downloadTextFile(content, filename, mimeType = 'text/plain;charset=utf-
 const filteredUsers = computed(() => {
   const keyword = String(filters.query || '').trim().toLowerCase()
   const role = String(filters.role || '').trim()
+  const departmentId = String(filters.departmentId || '').trim()
   const list = (users.value || []).filter((item) => {
     const matchesKeyword =
       !keyword ||
       String(item?.username || '').toLowerCase().includes(keyword) ||
-      String(item?.created_by || '').toLowerCase().includes(keyword)
+      String(item?.created_by || '').toLowerCase().includes(keyword) ||
+      (item?.departments || []).some((department) =>
+        String(department?.name || department?.id || '').toLowerCase().includes(keyword),
+      )
     const matchesRole = !role || String(item?.role || '').trim() === role
-    return matchesKeyword && matchesRole
+    const matchesDepartment =
+      !departmentId ||
+      (item?.department_ids || []).some((itemDepartmentId) => itemDepartmentId === departmentId)
+    return matchesKeyword && matchesRole && matchesDepartment
   })
   return list.sort((left, right) => {
     if (filters.sort === 'created_asc') {
@@ -381,9 +551,30 @@ const pagedUsers = computed(() => {
 })
 
 watch(
-  () => [filters.query, filters.role, filters.sort, pageSize.value],
+  () => [filters.query, filters.role, filters.departmentId, filters.sort, pageSize.value],
   () => {
     currentPage.value = 1
+  },
+)
+
+watch(
+  () => inviteForm.department_ids.slice(),
+  () => {
+    if (!inviteForm.department_ids.includes(inviteForm.primary_department_id)) {
+      inviteForm.primary_department_id = inviteForm.department_ids[0] || ''
+    }
+    inviteResult.token = ''
+    inviteResult.link = ''
+    inviteResult.expires_at = ''
+  },
+)
+
+watch(
+  () => [inviteForm.primary_department_id, inviteForm.expires_in_hours],
+  () => {
+    inviteResult.token = ''
+    inviteResult.link = ''
+    inviteResult.expires_at = ''
   },
 )
 
@@ -391,6 +582,8 @@ function resetCreateForm() {
   createForm.username = ''
   createForm.role = roleOptions.value[0]?.id || 'user'
   createForm.password = ''
+  createForm.department_ids = []
+  createForm.primary_department_id = ''
 }
 
 function openCreateDialog() {
@@ -406,6 +599,8 @@ function openEditDialog(row) {
   editForm.username = String(row?.username || '')
   editForm.role = String(row?.role || roleOptions.value[0]?.id || 'user')
   editForm.password = ''
+  editForm.department_ids = Array.isArray(row?.department_ids) ? row.department_ids.slice() : []
+  editForm.primary_department_id = String(row?.primary_department_id || editForm.department_ids[0] || '')
   showEditDialog.value = true
 }
 
@@ -413,6 +608,20 @@ function openPasswordDialog(row) {
   passwordForm.username = String(row?.username || '')
   passwordForm.password = ''
   showPasswordDialog.value = true
+}
+
+function resetInviteForm() {
+  inviteForm.department_ids = []
+  inviteForm.primary_department_id = ''
+  inviteForm.expires_in_hours = 168
+  inviteResult.token = ''
+  inviteResult.link = ''
+  inviteResult.expires_at = ''
+}
+
+function openInviteDialog() {
+  resetInviteForm()
+  showInviteDialog.value = true
 }
 
 async function fetchUsers() {
@@ -425,6 +634,19 @@ async function fetchUsers() {
     users.value = []
   } finally {
     loading.value = false
+  }
+}
+
+async function fetchDepartments() {
+  if (!canViewDepartments.value) {
+    departmentOptions.value = []
+    return
+  }
+  try {
+    const data = await api.get('/departments/options')
+    departmentOptions.value = Array.isArray(data?.departments) ? data.departments : []
+  } catch {
+    departmentOptions.value = []
   }
 }
 
@@ -445,11 +667,16 @@ async function createUser() {
   await createFormRef.value.validate()
   saving.value = true
   try {
-    await api.post('/users', {
+    const payload = {
       username: createForm.username,
       role: createForm.role,
       password: createForm.password,
-    })
+    }
+    if (canAssignDepartments.value) {
+      payload.department_ids = createForm.department_ids
+      payload.primary_department_id = createForm.primary_department_id || createForm.department_ids[0] || ''
+    }
+    await api.post('/users', payload)
     ElMessage.success('用户创建成功')
     showCreateDialog.value = false
     await fetchUsers()
@@ -464,10 +691,15 @@ async function updateUser() {
   await editFormRef.value.validate()
   saving.value = true
   try {
-    await api.put(`/users/${encodeURIComponent(editForm.username)}`, {
+    const payload = {
       role: editForm.role,
       password: editForm.password,
-    })
+    }
+    if (canAssignDepartments.value) {
+      payload.department_ids = editForm.department_ids
+      payload.primary_department_id = editForm.primary_department_id || editForm.department_ids[0] || ''
+    }
+    await api.put(`/users/${encodeURIComponent(editForm.username)}`, payload)
     ElMessage.success('账户更新成功')
     showEditDialog.value = false
     await fetchUsers()
@@ -491,6 +723,49 @@ async function updatePassword() {
     ElMessage.error(err?.detail || err?.message || '更新密码失败')
   } finally {
     saving.value = false
+  }
+}
+
+function buildInviteRegisterUrl(token) {
+  const baseUrl = `${window.location.origin}${window.location.pathname}`
+  return `${baseUrl}#/register?invite=${encodeURIComponent(token)}`
+}
+
+async function generateInviteLink() {
+  inviteGenerating.value = true
+  try {
+    const payload = {
+      department_ids: canAssignDepartments.value ? inviteForm.department_ids : [],
+      primary_department_id:
+        canAssignDepartments.value
+          ? inviteForm.primary_department_id || inviteForm.department_ids[0] || ''
+          : '',
+      expires_in_hours: inviteForm.expires_in_hours,
+    }
+    const data = await api.post('/auth/invitations', payload)
+    inviteResult.token = String(data?.token || '')
+    inviteResult.link = buildInviteRegisterUrl(inviteResult.token)
+    inviteResult.expires_at = String(data?.expires_at || '')
+    ElMessage.success('邀请链接已生成')
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || '生成邀请链接失败')
+  } finally {
+    inviteGenerating.value = false
+  }
+}
+
+async function copyInviteLink() {
+  if (!inviteResult.link) {
+    return
+  }
+  try {
+    if (!navigator?.clipboard?.writeText) {
+      throw new Error('clipboard_unavailable')
+    }
+    await navigator.clipboard.writeText(inviteResult.link)
+    ElMessage.success('邀请链接已复制')
+  } catch {
+    ElMessage.warning('当前浏览器不支持自动复制，请手动复制链接')
   }
 }
 
@@ -521,6 +796,16 @@ function exportUsers() {
 
 onMounted(fetchUsers)
 onMounted(fetchRoles)
+onMounted(fetchDepartments)
+
+function indentLabel(depth) {
+  return '　'.repeat(Math.max(0, Number(depth || 0)))
+}
+
+function departmentName(departmentId) {
+  const item = departmentOptions.value.find((department) => department.id === departmentId)
+  return item?.name || departmentId
+}
 </script>
 
 <style scoped>
@@ -529,6 +814,31 @@ onMounted(fetchRoles)
   font-size: 12px;
   line-height: 1.6;
   color: #7c8aa0;
+}
+
+.dialog-inline-suffix {
+  margin-left: 10px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.invite-link-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  width: 100%;
+}
+
+.department-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.muted-text {
+  color: #94a3b8;
+  font-size: 13px;
 }
 
 .settings-page {
@@ -603,7 +913,7 @@ onMounted(fetchRoles)
 
 .filter-panel__grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 

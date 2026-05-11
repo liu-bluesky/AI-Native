@@ -16,9 +16,7 @@ from core.deps import (
     is_admin_like,
     local_connector_store,
     require_auth,
-    role_store,
 )
-from core.role_permissions import resolve_role_permissions
 from core.ownership import assert_can_manage_record, current_username, ownership_payload
 from models.requests import (
     AgentTemplateBatchDeleteReq,
@@ -103,11 +101,7 @@ def _current_role_id(auth_payload: dict) -> str:
 
 
 def _is_admin_like(auth_payload: dict) -> bool:
-    role_id = _current_role_id(auth_payload)
-    role = role_store.get(role_id)
-    permissions = getattr(role, "permissions", [])
-    resolved = resolve_role_permissions(permissions, role_id)
-    return "*" in set(resolved)
+    return is_admin_like(auth_payload)
 
 
 def _now_utc() -> datetime:

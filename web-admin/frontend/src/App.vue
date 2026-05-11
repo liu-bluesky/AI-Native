@@ -16,7 +16,7 @@ const router = useRouter()
 const ONLINE_HEARTBEAT_INTERVAL_MS = 60 * 1000
 let onlineHeartbeatTimer = null
 let onlineHeartbeatPending = false
-const AUTH_PUBLIC_PATHS = new Set(['/init', '/intro', '/market', '/updates', '/login', '/register'])
+const AUTH_PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
 
 function stopOnlineHeartbeat() {
   if (onlineHeartbeatTimer !== null) {
@@ -71,13 +71,20 @@ onMounted(async () => {
 
   const currentPath = router.currentRoute.value.path
   const publicPaths = AUTH_PUBLIC_PATHS
-  const initBypassPaths = new Set(['/intro', '/market'])
   window.addEventListener('storage', handleAuthStorageChange)
 
   try {
-    const { initialized } = await api.get('/init/status')
-    if (!initialized && !initBypassPaths.has(currentPath)) {
+    const { initialized, setup_required: setupRequired } = await api.get('/init/status')
+    const setupRequiredValue = setupRequired === true || initialized === false
+    if (currentPath === '/loading') {
+      return
+    }
+    if (setupRequiredValue && currentPath !== '/init') {
       router.replace('/init')
+      return
+    }
+    if (!setupRequiredValue && currentPath === '/init') {
+      router.replace(getStoredToken() ? '/workbench' : '/login')
       return
     }
 
@@ -101,7 +108,7 @@ onMounted(async () => {
     }
   } catch {
     stopOnlineHeartbeat()
-    if (!initBypassPaths.has(currentPath)) {
+    if (!publicPaths.has(currentPath)) {
       router.replace('/login')
     }
   }

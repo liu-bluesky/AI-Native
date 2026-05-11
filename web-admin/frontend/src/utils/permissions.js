@@ -8,6 +8,7 @@ const PATH_PERMISSION_MAP = [
   { prefix: '/ai/chat', permission: 'menu.ai.chat' },
   { prefix: '/user/settings', permission: '' },
   { prefix: '/users', permission: 'menu.users' },
+  { prefix: '/departments', permission: 'menu.departments' },
   { prefix: '/roles', permission: 'menu.roles' },
   { prefix: '/projects', permission: 'menu.projects' },
   { prefix: '/materials', permission: 'menu.projects' },
@@ -50,6 +51,7 @@ const FALLBACK_PATHS = [
   '/projects',
   '/skill-resources',
   '/users',
+  '/departments',
   '/roles',
   '/skills',
   '/rules',
@@ -62,7 +64,9 @@ const FALLBACK_PATHS = [
 ]
 
 export function isSuperAdmin() {
-  return String(localStorage.getItem('role') || 'user').trim().toLowerCase() === 'admin'
+  const role = String(localStorage.getItem('role') || 'user').trim().toLowerCase()
+  const username = String(localStorage.getItem('username') || '').trim().toLowerCase()
+  return role === 'admin' || username === 'admin'
 }
 
 function parsePermissionArray(rawValue) {
@@ -105,6 +109,7 @@ export function clearPermissionArray() {
 function hasSinglePermission(permissionKey) {
   const target = String(permissionKey || '').trim()
   if (!target) return true
+  if (isSuperAdmin()) return true
   if (localStorage.getItem(PERMISSION_STORAGE_KEY) === null) {
     return legacyUserFallback(target)
   }

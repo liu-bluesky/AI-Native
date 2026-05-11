@@ -23,9 +23,10 @@ from core.deps import (
     employee_store,
     ensure_permission,
     is_admin_like,
+    resolve_role_ids_permissions,
+    get_auth_role_ids,
     project_store,
     require_auth,
-    role_store,
     system_config_store,
 )
 from core.role_permissions import has_permission
@@ -53,15 +54,11 @@ def _require_employee_permission(auth_payload: dict = Depends(require_auth)) -> 
 
 def _has_employee_action_permission(auth_payload: dict | None, permission_key: str) -> bool:
     payload = auth_payload or {}
-    role_id = str(payload.get("role") or "").strip().lower()
-    if not role_id:
+    role_ids = get_auth_role_ids(payload)
+    role_id = role_ids[0] if role_ids else ""
+    if not role_ids:
         return False
-    try:
-        role = role_store.get(role_id)
-    except ValueError:
-        return False
-    role_permissions = getattr(role, "permissions", None)
-    return has_permission(role_permissions, permission_key, role_id=role_id)
+    return has_permission(resolve_role_ids_permissions(role_ids), permission_key, role_id=role_id)
 
 
 def _assert_can_manage_employee_action(

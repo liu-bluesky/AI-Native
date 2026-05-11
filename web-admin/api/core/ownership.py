@@ -52,6 +52,8 @@ def shared_usernames(item: Any) -> list[str]:
 
 
 def can_view_record(item: Any, auth_payload: dict | None) -> bool:
+    from core.data_scope import can_view_username_data
+
     if isinstance(auth_payload, dict) and is_admin_like(auth_payload):
         return True
     created_by = created_by_username(item)
@@ -63,6 +65,8 @@ def can_view_record(item: Any, auth_payload: dict | None) -> bool:
     if username == created_by:
         return True
     scope = share_scope(item)
+    if not can_view_username_data(auth_payload, created_by):
+        return False
     if scope == "all_users":
         return True
     if scope == "selected_users" and username in shared_usernames(item):

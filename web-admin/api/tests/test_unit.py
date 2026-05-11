@@ -14720,6 +14720,100 @@ def _build_user_account_test_client(tmp_path, monkeypatch, auth_payload):
     return TestClient(app), store_factory.user_store
 
 
+def _build_init_auth_test_client(tmp_path, monkeypatch):
+    from core import config as core_config
+    from core.deps import require_auth
+    from core.server import create_app
+    from stores import factory as store_factory
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    for proxy_name in ("user_store", "role_store", "system_config_store"):
+        getattr(store_factory, proxy_name)._instance = None
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = require_auth
+    return TestClient(app), store_factory.user_store
+
+
+def test_first_run_init_setup_creates_fixed_admin_with_display_name(tmp_path, monkeypatch):
+    client, user_store = _build_init_auth_test_client(tmp_path, monkeypatch)
+
+    status_response = client.get("/api/init/status")
+    assert status_response.status_code == 200
+    assert status_response.json()["initialized"] is False
+    assert status_response.json()["setup_required"] is True
+
+    response = client.post(
+        "/api/init/setup",
+        json={"display_name": "平台管理员", "password": "admin-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["username"] == "admin"
+    assert response.json()["display_name"] == "平台管理员"
+
+    admin = user_store.get("admin")
+    assert admin is not None
+    assert admin.username == "admin"
+    assert admin.display_name == "平台管理员"
+    assert admin.role == "admin"
+    assert admin.role_ids == ["admin"]
+    assert admin.created_by == "system"
+
+    initialized_response = client.get("/api/init/status")
+    assert initialized_response.status_code == 200
+    assert initialized_response.json()["initialized"] is True
+    assert initialized_response.json()["setup_required"] is False
+
+
+def test_first_run_init_setup_rejects_non_admin_username(tmp_path, monkeypatch):
+    client, user_store = _build_init_auth_test_client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/api/init/setup",
+        json={"username": "root", "display_name": "Root", "password": "admin-secret"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Initial super admin username must be admin"
+    assert user_store.has_any() is False
+
+
+def test_login_and_auth_me_return_display_name_after_init(tmp_path, monkeypatch):
+    client, _user_store = _build_init_auth_test_client(tmp_path, monkeypatch)
+    client.post(
+        "/api/init/setup",
+        json={"display_name": "平台管理员", "password": "admin-secret"},
+    )
+
+    login_response = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin-secret"},
+    )
+
+    assert login_response.status_code == 200
+    login_payload = login_response.json()
+    assert login_payload["username"] == "admin"
+    assert login_payload["display_name"] == "平台管理员"
+    assert login_payload["role"] == "admin"
+    assert login_payload["permissions"] == ["*"]
+
+    me_response = client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {login_payload['token']}"},
+    )
+
+    assert me_response.status_code == 200
+    me_payload = me_response.json()
+    assert me_payload["username"] == "admin"
+    assert me_payload["display_name"] == "平台管理员"
+    assert me_payload["role"] == "admin"
+    assert me_payload["permissions"] == ["*"]
+
+
 def test_user_can_update_own_account_without_user_update_permission(tmp_path, monkeypatch):
     from stores.json.user_store import verify_password
 
@@ -14775,6 +14869,56 @@ def test_admin_can_update_other_account(tmp_path, monkeypatch):
     updated = user_store.get("bob")
     assert updated is not None
     assert verify_password("bob-new-password", updated.password_hash)
+
+
+def test_super_admin_username_has_all_permissions_without_role_assignment(tmp_path, monkeypatch):
+    from stores.json.role_store import RoleConfig
+
+    client, _user_store = _build_user_account_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "limited", "roles": ["limited"]},
+    )
+    from stores import factory as store_factory
+
+    store_factory.role_store.save(
+        RoleConfig(
+            id="limited",
+            name="Limited",
+            permissions=[],
+        )
+    )
+
+    response = client.get("/api/users")
+
+    assert response.status_code == 200
+    usernames = {item["username"] for item in response.json()["users"]}
+    assert {"admin", "alice", "bob"}.issubset(usernames)
+
+
+def test_super_admin_payload_bypasses_permission_lookup(tmp_path, monkeypatch):
+    from core import config as core_config
+    from core.deps import ensure_permission, is_admin_like
+    from stores import factory as store_factory
+    from stores.json.role_store import RoleConfig
+
+    monkeypatch.setenv("CORE_STORE_BACKEND", "json")
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+    store_factory.role_store._instance = None
+    store_factory.role_store.save(
+        RoleConfig(
+            id="limited",
+            name="Limited",
+            permissions=[],
+        )
+    )
+
+    payload = {"sub": "admin", "role": "limited", "roles": ["limited"]}
+
+    ensure_permission(payload, "button.roles.delete")
+    assert is_admin_like(payload) is True
 
 
 def test_build_project_chat_operation_event_for_start():

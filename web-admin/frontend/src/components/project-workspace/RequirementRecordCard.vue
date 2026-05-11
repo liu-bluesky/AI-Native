@@ -185,6 +185,8 @@ defineEmits([
     border-color 180ms ease,
     box-shadow 180ms ease,
     transform 180ms ease;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .requirement-record--expanded {
@@ -201,6 +203,7 @@ defineEmits([
 
 .requirement-record__hero-copy,
 .requirement-record__hero-actions,
+.requirement-record__supporting span,
 .requirement-record__lineage-item {
   min-width: 0;
 }
@@ -219,6 +222,7 @@ defineEmits([
   color: #0f172a;
   font-size: clamp(20px, 2.4vw, 28px);
   line-height: 1.18;
+  overflow-wrap: anywhere;
 }
 
 .requirement-record__hero-copy p {
@@ -229,6 +233,7 @@ defineEmits([
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .requirement-record__hero-actions {
@@ -253,11 +258,15 @@ defineEmits([
 .requirement-record__supporting span {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   min-height: 28px;
   padding: 0 12px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(148, 163, 184, 0.14);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .requirement-record__lineage {
@@ -272,6 +281,7 @@ defineEmits([
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 22px;
   background: rgba(248, 250, 252, 0.84);
+  overflow: hidden;
 }
 
 .requirement-record__lineage-item strong {
@@ -281,6 +291,7 @@ defineEmits([
   color: #0f172a;
   line-height: 1.45;
   word-break: break-word;
+  overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -292,6 +303,7 @@ defineEmits([
   overflow: hidden;
   color: #64748b;
   line-height: 1.5;
+  overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -367,12 +379,32 @@ defineEmits([
 }
 
 @media (max-width: 640px) {
+  .requirement-record {
+    padding: 14px;
+    border-radius: 22px;
+  }
+
   .requirement-record__hero-actions {
     width: 100%;
+    justify-content: stretch;
   }
 
   .requirement-record__hero-actions :deep(.el-button) {
     flex: 1 1 calc(50% - 8px);
+    min-width: 0;
+  }
+
+  .requirement-record__hero-actions :deep(.el-button > span),
+  .requirement-record__hero-actions :deep(.el-checkbox__label),
+  .requirement-record__hero-actions :deep(.el-tag__content) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .requirement-record__supporting span {
+    flex: 1 1 100%;
   }
 }
 </style>

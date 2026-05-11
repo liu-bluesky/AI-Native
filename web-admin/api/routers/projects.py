@@ -40,8 +40,9 @@ logger = logging.getLogger(__name__)
 # from ai_decision import ai_decide_action, execute_db_query, recommend_better_project  # 已废弃
 from core.auth import decode_token
 from core.config import get_api_data_dir, get_project_root, get_settings
+from core.data_scope import can_view_username_data, filter_records_by_data_scope
 from core.redis_client import get_redis_client
-from core.deps import employee_store, external_mcp_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_runtime_store, project_chat_store, project_chat_task_store, project_experience_summary_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_session_store
+from core.deps import employee_store, ensure_any_permission, ensure_permission, external_mcp_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_runtime_store, project_chat_store, project_chat_task_store, project_experience_summary_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_session_store
 from services.feedback_service import get_feedback_service
 from services.global_assistant_service import (
     build_global_assistant_builtin_tools,
@@ -2924,11 +2925,7 @@ def _format_rule_domain_summary(rule_bindings: list[dict[str, str]]) -> str:
 
 
 def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
-    role_ids = get_auth_role_ids(auth_payload)
-    role_id = role_ids[0] if role_ids else ""
-    permissions = resolve_role_ids_permissions(role_ids)
-    if not has_permission(permissions, permission_key, role_id=role_id):
-        raise HTTPException(403, f"Permission denied: {permission_key}")
+    ensure_permission(auth_payload, permission_key)
 
 
 def _has_permission(auth_payload: dict, permission_key: str) -> bool:
@@ -2939,12 +2936,7 @@ def _has_permission(auth_payload: dict, permission_key: str) -> bool:
 
 
 def _ensure_any_permission(auth_payload: dict, permission_keys: list[str]) -> None:
-    role_ids = get_auth_role_ids(auth_payload)
-    role_id = role_ids[0] if role_ids else ""
-    permissions = resolve_role_ids_permissions(role_ids)
-    if any(has_permission(permissions, key, role_id=role_id) for key in permission_keys):
-        return
-    raise HTTPException(403, f"Permission denied: {permission_keys}")
+    ensure_any_permission(auth_payload, permission_keys)
 
 
 def _project_chat_employee_candidates(project_id: str) -> list[dict[str, Any]]:
@@ -4847,6 +4839,9 @@ def _ensure_project_access(project_id: str, auth_payload: dict) -> ProjectConfig
     if _is_admin_like(auth_payload):
         return project
     username = _current_username(auth_payload)
+    created_by = str(getattr(project, "created_by", "") or "").strip()
+    if created_by and not can_view_username_data(auth_payload, created_by):
+        raise HTTPException(403, f"Project access denied: {project_id}")
     member = _get_project_user_member(project_id, username)
     if member is None or not bool(getattr(member, "enabled", True)):
         raise HTTPException(403, f"Project access denied: {project_id}")
@@ -5696,6 +5691,29 @@ def _is_project_requirement_round_placeholder(round_payload: dict[str, Any]) -> 
     return not (isinstance(work_sessions, list) and work_sessions)
 
 
+def _project_requirement_record_chain_key(
+    *,
+    session_id: Any = "",
+    source_session_id: Any = "",
+    chat_session_id: Any = "",
+    root_goal: Any = "",
+) -> str:
+    normalized_session_id = _normalize_project_record_token(session_id, limit=80)
+    normalized_source_session_id = _normalize_project_record_token(source_session_id, limit=80)
+    auto_source_session_id = f"ws_{normalized_session_id}" if normalized_session_id else ""
+    if normalized_source_session_id and normalized_source_session_id != auto_source_session_id:
+        return normalized_source_session_id
+    normalized_root_goal = _normalize_project_record_token(root_goal, limit=160)
+    normalized_chat_session_id = _normalize_project_record_token(chat_session_id, limit=80)
+    if normalized_chat_session_id and normalized_root_goal:
+        return f"chat:{normalized_chat_session_id}:goal:{normalized_root_goal.lower()}"
+    if normalized_chat_session_id:
+        return f"chat:{normalized_chat_session_id}"
+    if normalized_root_goal:
+        return f"goal:{normalized_root_goal.lower()}"
+    return normalized_session_id
+
+
 def _build_project_requirement_records(
     project: ProjectConfig,
     *,
@@ -5851,7 +5869,12 @@ def _build_project_requirement_records(
                 or "计划已入树，当前按节点推进并逐项验证。"
             )
         round_payload["summaryText"] = summary_text
-        chain_key = source_session_id or session_id
+        chain_key = _project_requirement_record_chain_key(
+            session_id=session_id,
+            source_session_id=source_session_id,
+            chat_session_id=chat_session_id,
+            root_goal=round_payload["rootGoal"],
+        )
         grouped_records.setdefault(chain_key, []).append(round_payload)
 
     records: list[dict[str, Any]] = []
@@ -9117,6 +9140,7 @@ async def list_projects(
             for item in projects
             if bool(getattr(membership_map.get(str(getattr(item, "id", "") or "").strip()), "enabled", False))
         ]
+        visible_projects = filter_records_by_data_scope(visible_projects, auth_payload)
     visible_project_ids = [
         str(getattr(item, "id", "") or "").strip()
         for item in visible_projects
@@ -9408,8 +9432,12 @@ async def list_project_materials(
 ):
     _ensure_permission(auth_payload, "menu.projects")
     _ensure_project_access(project_id, auth_payload)
-    items = _filter_project_material_assets(
+    visible_assets = filter_records_by_data_scope(
         project_material_store.list_by_project(project_id),
+        auth_payload,
+    )
+    items = _filter_project_material_assets(
+        visible_assets,
         group_type=group_type,
         asset_type=asset_type,
         query=query,
@@ -10813,8 +10841,12 @@ async def list_project_users(project_id: str, auth_payload: dict = Depends(requi
     _ensure_permission(auth_payload, "menu.projects")
     _ensure_project_access(project_id, auth_payload)
     roles = {item.id: item for item in role_store.list_all()}
-    project_user_members = project_store.list_user_members(project_id)
     can_manage = _can_manage_project(project_id, auth_payload)
+    project_user_members = [
+        item
+        for item in project_store.list_user_members(project_id)
+        if can_manage or can_view_username_data(auth_payload, getattr(item, "username", ""))
+    ]
     member_map = {
         str(item.username or "").strip(): item
         for item in project_user_members
@@ -10822,7 +10854,7 @@ async def list_project_users(project_id: str, auth_payload: dict = Depends(requi
     }
     all_users = []
     if can_manage:
-        for user in user_store.list_all():
+        for user in filter_records_by_data_scope(user_store.list_all(), auth_payload):
             member = member_map.get(user.username)
             all_users.append(
                 {
@@ -11303,9 +11335,25 @@ async def list_project_requirement_records(
             limit=limit,
         )
         await _save_project_requirement_records_cache(project.id, cache_key, payload)
+    visible_record_items = [
+        item
+        for item in payload.get("items", [])
+        if can_view_username_data(
+            auth_payload,
+            item.get("created_by", "") or item.get("username", ""),
+        )
+    ]
+    visible_task_sessions = [
+        item
+        for item in payload.get("task_sessions", [])
+        if can_view_username_data(
+            auth_payload,
+            item.get("username", "") or item.get("created_by", ""),
+        )
+    ]
     return {
-        "items": payload.get("items", []),
-        "task_sessions": payload.get("task_sessions", []),
+        "items": visible_record_items,
+        "task_sessions": visible_task_sessions,
         "storage_backend": str(settings.core_store_backend or "").strip() or "json",
         "project_id": project.id,
         "project_name": project.name,
@@ -11327,6 +11375,7 @@ async def list_project_memories(
         employee_id=employee_id,
         query=query,
     )
+    memories = filter_records_by_data_scope(memories, auth_payload)
     total = len(memories)
     return {
         "items": [_serialize_project_memory_record(item) for item in memories[:safe_limit]],

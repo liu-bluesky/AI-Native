@@ -584,6 +584,7 @@ import {
 } from "@/utils/auth-storage.js";
 import { formatRelativeDateTime } from "@/utils/date.js";
 import { hasPermission } from "@/utils/permissions.js";
+import { fetchAllVisibleProjects } from "@/utils/projects.js";
 import {
   ensureAssistantBrowserBridgeInstalled,
   executeAssistantBrowserToolCall,
@@ -4498,8 +4499,7 @@ async function loadWorkLogProjects(force = false) {
     return;
   workLogLoadingProjects.value = true;
   try {
-    const projectsPayload = await api.get("/projects");
-    let items = resolveWorkLogProjectItems(projectsPayload);
+    let items = await fetchAllVisibleProjects();
     if (!items.length) {
       const metaPayload = await api.get("/work-sessions/meta");
       items = resolveWorkLogProjectItems(metaPayload);

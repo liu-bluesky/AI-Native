@@ -1,10 +1,12 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { getFallbackPath, hasPermission, isSuperAdmin, pathPermission } from '@/utils/permissions.js'
 import { isChatSettingsRoutePath, resolveSettingsAwarePath } from '@/utils/chat-settings-route.js'
+import api from '@/utils/api.js'
 
 const SettingsCenterChatStub = { render: () => null }
 
 const routes = [
+  { path: '/loading', component: () => import('../views/auth/LoadingPage.vue') },
   { path: '/init', component: () => import('../views/auth/InitPage.vue') },
   { path: '/intro', component: () => import('../views/public/IntroPage.vue') },
   { path: '/market', component: () => import('../views/public/MarketPage.vue') },
@@ -14,7 +16,7 @@ const routes = [
   {
     path: '/',
     component: () => import('../views/Layout.vue'),
-    redirect: '/intro',
+    redirect: '/loading',
     children: [
       { path: 'workbench', component: () => import('../views/desktop/DesktopWorkbench.vue') },
       { path: 'tasks', component: () => import('../views/tasks/TaskManager.vue') },
@@ -64,10 +66,12 @@ const routes = [
           { path: 'feedback/:id/batch-analyze', component: () => import('../views/evolution/FeedbackBatchAnalyze.vue') },
           { path: 'feedback/:id/:feedbackId', component: () => import('../views/evolution/FeedbackDetail.vue') },
           { path: 'users', component: () => import('../views/users/UserList.vue') },
+          { path: 'departments', component: () => import('../views/users/DepartmentManager.vue') },
           { path: 'roles', component: () => import('../views/users/RoleList.vue') },
         ],
       },
       { path: 'users', component: () => import('../views/users/UserList.vue') },
+      { path: 'departments', component: () => import('../views/users/DepartmentManager.vue') },
       { path: 'roles', component: () => import('../views/users/RoleList.vue') },
       { path: 'user/settings', component: () => import('../views/users/UserSettings.vue') },
       { path: 'projects', component: () => import('../views/projects/ProjectList.vue') },
@@ -125,11 +129,56 @@ const router = createRouter({
   routes,
 })
 
-const PUBLIC_PATHS = new Set(['/init', '/intro', '/market', '/updates', '/login', '/register'])
-router.beforeEach((to, from) => {
+const PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
+let initializationStatus = null
+let initializationStatusPromise = null
+
+export function markSystemInitialized() {
+  initializationStatus = true
+  initializationStatusPromise = null
+}
+
+async function isSystemInitialized() {
+  if (initializationStatus !== null) {
+    return initializationStatus
+  }
+  if (!initializationStatusPromise) {
+    initializationStatusPromise = api
+      .get('/init/status')
+      .then(({ initialized, setup_required: setupRequired }) => {
+        initializationStatus = setupRequired === true ? false : Boolean(initialized)
+        return initializationStatus
+      })
+      .finally(() => {
+        initializationStatusPromise = null
+      })
+  }
+  return initializationStatusPromise
+}
+
+router.beforeEach(async (to, from) => {
   const normalizedPath = String(to.path || '').trim() || '/'
+
   if (normalizedPath === '/') {
-    return '/intro'
+    return '/loading'
+  }
+
+  if (normalizedPath === '/loading') {
+    return true
+  }
+
+  try {
+    const initialized = await isSystemInitialized()
+    if (!initialized && normalizedPath !== '/init') {
+      return '/init'
+    }
+    if (initialized && normalizedPath === '/init') {
+      return localStorage.getItem('token') ? getFallbackPath() : '/login'
+    }
+  } catch {
+    if (normalizedPath === '/') {
+      return '/init'
+    }
   }
 
   const token = localStorage.getItem('token')

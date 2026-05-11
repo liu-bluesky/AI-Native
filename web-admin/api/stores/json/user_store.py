@@ -16,6 +16,10 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_USERNAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,63}")
+_EMAIL_USERNAME_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
 def hash_password(password: str, salt: bytes | None = None) -> str:
     """PBKDF2-SHA256 密码哈希（不依赖 bcrypt 外部库）"""
     if salt is None:
@@ -35,6 +39,7 @@ def verify_password(password: str, stored: str) -> bool:
 class User:
     username: str
     password_hash: str
+    display_name: str = ""
     role: str = "admin"
     role_ids: list[str] = field(default_factory=list)
     default_ai_provider_id: str = ""
@@ -65,7 +70,10 @@ class UserStore:
 
     def _normalize_username(self, username: str) -> str:
         value = str(username or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{1,63}", value):
+        if not (
+            _USERNAME_PATTERN.fullmatch(value)
+            or _EMAIL_USERNAME_PATTERN.fullmatch(value)
+        ):
             raise ValueError("Invalid username")
         return value
 
@@ -77,6 +85,7 @@ class UserStore:
         payload = {
             "username": user.username,
             "password_hash": user.password_hash,
+            "display_name": str(user.display_name or "").strip(),
             "role": user.role,
             "role_ids": user.role_ids,
             "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
@@ -118,6 +127,7 @@ class UserStore:
         return User(
             username=str(data.get("username") or ""),
             password_hash=str(data.get("password_hash") or ""),
+            display_name=str(data.get("display_name") or "").strip(),
             role=str(data.get("role") or "user"),
             role_ids=data.get("role_ids") if isinstance(data.get("role_ids"), list) else [],
             default_ai_provider_id=str(data.get("default_ai_provider_id") or "").strip(),

@@ -28,6 +28,7 @@ export function hasStoredToken() {
 export function persistAuthSession(payload = {}) {
   setStorageValue('token', payload.token)
   setStorageValue('username', payload.username || payload.email || '')
+  setStorageValue('display_name', payload.display_name || '')
   setStorageValue('role', payload.role || 'user')
   setPermissionArray(payload.permissions || [])
   bumpAuthState()
@@ -35,6 +36,7 @@ export function persistAuthSession(payload = {}) {
 
 export function syncStoredProfile(payload = {}) {
   setStorageValue('username', payload.username || '')
+  setStorageValue('display_name', payload.display_name || '')
   setStorageValue('role', payload.role || 'user')
   setPermissionArray(payload.permissions || [])
   bumpAuthState()
@@ -43,6 +45,7 @@ export function syncStoredProfile(payload = {}) {
 export function clearAuthSession() {
   localStorage.removeItem('token')
   localStorage.removeItem('username')
+  localStorage.removeItem('display_name')
   localStorage.removeItem('role')
   clearPermissionArray()
   bumpAuthState()
@@ -53,6 +56,7 @@ export function getStoredAuthProfile() {
     authenticated: hasStoredToken(),
     token: getStoredToken(),
     username: String(localStorage.getItem('username') || '').trim(),
+    displayName: String(localStorage.getItem('display_name') || '').trim(),
     role: String(localStorage.getItem('role') || 'user').trim() || 'user',
   }
 }

@@ -582,13 +582,13 @@
                       />
                     </el-select>
                     <div class="memory-filters__actions">
-                      <!-- <el-button
+                      <el-button
                         type="primary"
                         size="small"
                         :loading="taskSessionsLoading"
                         @click="applyMemoryFilters"
-                        >刷新</el-button
-                      > -->
+                        >筛选</el-button
+                      >
                       <el-button
                         plain
                         size="small"
@@ -2601,6 +2601,40 @@ const allRequirementRecordsSelected = computed(
     ),
 );
 
+function resolveRequirementRecordChainKey({
+  sessionId = "",
+  sourceSessionId = "",
+  chatSessionId = "",
+  rootGoal = "",
+} = {}) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  const normalizedSourceSessionId = String(sourceSessionId || "").trim();
+  const autoSourceSessionId = normalizedSessionId
+    ? `ws_${normalizedSessionId}`
+    : "";
+  if (
+    normalizedSourceSessionId &&
+    normalizedSourceSessionId !== autoSourceSessionId
+  ) {
+    return normalizedSourceSessionId;
+  }
+  const normalizedRootGoal = String(rootGoal || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 160);
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (normalizedChatSessionId && normalizedRootGoal) {
+    return `chat:${normalizedChatSessionId}:goal:${normalizedRootGoal}`;
+  }
+  if (normalizedChatSessionId) {
+    return `chat:${normalizedChatSessionId}`;
+  }
+  if (normalizedRootGoal) {
+    return `goal:${normalizedRootGoal}`;
+  }
+  return normalizedSessionId;
+}
+
 const derivedRequirementRecords = computed(() => {
   const detailMap = projectTaskTreeDetails.value || {};
   const grouped = new Map();
@@ -2735,7 +2769,12 @@ const derivedRequirementRecords = computed(() => {
         round.currentNodeTitle ||
         "计划已入树，当前按节点推进并逐项验证。";
     round.summaryText = String(summaryText || "").trim();
-    const chainKey = sourceSessionId || sessionId;
+    const chainKey = resolveRequirementRecordChainKey({
+      sessionId,
+      sourceSessionId,
+      chatSessionId,
+      rootGoal: round.rootGoal,
+    });
     const currentItems = grouped.get(chainKey) || [];
     currentItems.push(round);
     grouped.set(chainKey, currentItems);
@@ -5082,8 +5121,18 @@ async function fetchProjectTaskSessions(targetProjectId = projectId.value) {
   }
 }
 
+function normalizeProjectIdTarget(targetProjectId = projectId.value) {
+  if (
+    typeof targetProjectId === "string" ||
+    typeof targetProjectId === "number"
+  ) {
+    return String(targetProjectId || "").trim();
+  }
+  return String(projectId.value || "").trim();
+}
+
 async function fetchRequirementRecords(targetProjectId = projectId.value) {
-  const effectiveProjectId = String(targetProjectId || "").trim();
+  const effectiveProjectId = normalizeProjectIdTarget(targetProjectId);
   if (!effectiveProjectId) return;
   taskSessionsLoading.value = true;
   requirementRecordsLoaded.value = false;
@@ -5920,8 +5969,9 @@ async function fetchProjectMemories(targetProjectId = projectId.value) {
   }
 }
 
-async function applyMemoryFilters(targetProjectId = projectId.value) {
-  await fetchRequirementRecords(targetProjectId);
+async function applyMemoryFilters() {
+  requirementRecordsPage.value = 1;
+  await fetchRequirementRecords(projectId.value);
 }
 
 async function refreshRequirementRecords() {

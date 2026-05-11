@@ -3150,6 +3150,7 @@ import { createProjectChatWsClient } from "@/utils/ws-chat.js";
 import { hasPermission, isSuperAdmin } from "@/utils/permissions.js";
 import { clearAuthSession } from "@/utils/auth-storage.js";
 import { fetchDictionary } from "@/utils/dictionaries.js";
+import { fetchAllVisibleProjects } from "@/utils/projects.js";
 import {
   Delete,
   Picture,
@@ -11145,8 +11146,7 @@ async function fetchChatParameterOptions() {
 }
 
 async function fetchProjects() {
-  const data = await api.get("/projects");
-  projects.value = data.projects || [];
+  projects.value = await fetchAllVisibleProjects();
   if (!projects.value.length) {
     localStorage.removeItem("project_id");
     return;

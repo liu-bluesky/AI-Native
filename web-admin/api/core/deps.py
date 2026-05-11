@@ -10,6 +10,7 @@ from stores.factory import (
     agent_template_store,
     bot_connector_store,
     changelog_entry_store,
+    department_store,
     employee_store,
     external_mcp_store,
     local_connector_store,
@@ -64,6 +65,14 @@ def get_auth_role_ids(auth_payload: dict | None) -> list[str]:
     return normalized
 
 
+def is_super_admin_payload(auth_payload: dict | None) -> bool:
+    payload = auth_payload if isinstance(auth_payload, dict) else {}
+    username = str(payload.get("sub") or payload.get("username") or "").strip().lower()
+    if username == "admin":
+        return True
+    return "admin" in set(get_auth_role_ids(payload))
+
+
 def get_primary_role_id(auth_payload: dict | None) -> str:
     role_ids = get_auth_role_ids(auth_payload)
     return role_ids[0] if role_ids else ""
@@ -93,6 +102,8 @@ def resolve_role_ids_permissions(role_ids: list[str] | tuple[str, ...] | set[str
 
 def _resolve_role_permissions_from_payload(auth_payload: dict | None) -> tuple[list[str], list[str]]:
     role_ids = get_auth_role_ids(auth_payload)
+    if is_super_admin_payload(auth_payload):
+        return role_ids or ["admin"], ["*"]
     return role_ids, resolve_role_ids_permissions(role_ids)
 
 

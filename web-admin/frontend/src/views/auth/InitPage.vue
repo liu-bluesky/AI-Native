@@ -6,14 +6,14 @@
           <div class="init-brand__mark">AI</div>
           <div>
             <div class="init-brand__name">AI 员工工厂</div>
-            <div class="init-brand__meta">首次初始化</div>
+            <div class="init-brand__meta">Docker 首次初始化</div>
           </div>
         </div>
 
         <div class="init-hero__copy">
-          <h1 class="init-hero__title">先完成系统初始化</h1>
+          <h1 class="init-hero__title">创建超级管理员</h1>
           <p class="init-hero__text">
-            为平台创建第一个管理员账号，初始化完成后即可登录并进入 AI 对话与管理功能。
+            首次部署时先设置内置 admin 账号的登录密码和管理员姓名，完成后即可进入系统。
           </p>
         </div>
 
@@ -22,7 +22,7 @@
           <div class="init-hero__list">
             <div class="init-hero__item">
               <div class="init-hero__item-name">管理员账号</div>
-              <div class="init-hero__item-text">创建首个可登录的系统管理员用户。</div>
+              <div class="init-hero__item-text">固定创建 admin 超级管理员，避免首个入口身份不明确。</div>
             </div>
             <div class="init-hero__item">
               <div class="init-hero__item-name">基础入口</div>
@@ -30,7 +30,7 @@
             </div>
             <div class="init-hero__item">
               <div class="init-hero__item-name">后续流程</div>
-              <div class="init-hero__item-text">初始化成功后会直接跳转登录页。</div>
+              <div class="init-hero__item-text">初始化成功后使用 admin 和新密码登录。</div>
             </div>
           </div>
         </div>
@@ -39,8 +39,8 @@
       <section class="init-panel">
         <div class="init-panel__header">
           <div class="init-panel__eyebrow">系统初始化</div>
-          <div class="init-panel__title">创建管理员</div>
-          <div class="init-panel__text">填写管理员账号和密码，完成首次系统启动。</div>
+          <div class="init-panel__title">设置 admin</div>
+          <div class="init-panel__text">账号固定为 admin，只需要设置超级管理员姓名和密码。</div>
         </div>
 
         <el-form
@@ -50,11 +50,16 @@
           label-position="top"
           class="init-form"
         >
-          <el-form-item label="管理员账号" prop="username">
+          <div class="init-account">
+            <div class="init-account__label">超级管理员账号</div>
+            <div class="init-account__value">admin</div>
+          </div>
+
+          <el-form-item label="超级管理员姓名" prop="displayName">
             <el-input
-              v-model="form.username"
-              placeholder="请输入管理员账号"
-              autocomplete="username"
+              v-model="form.displayName"
+              placeholder="例如：管理员"
+              autocomplete="name"
             />
           </el-form-item>
 
@@ -82,7 +87,7 @@
           <el-form-item class="init-form__submit">
             <el-button
               type="primary"
-              :loading="loading"
+              :loading="loading || checkingStatus"
               class="init-submit"
               @click="handleSubmit"
             >
@@ -96,23 +101,30 @@
 </template>
 
 <script setup>
-import { reactive, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
+import { markSystemInitialized } from "@/router/index.js";
+import { getStoredToken } from "@/utils/auth-storage.js";
 
 const router = useRouter();
 const formRef = ref(null);
 const loading = ref(false);
+const checkingStatus = ref(false);
 
 const form = reactive({
   username: "admin",
+  displayName: "",
   password: "",
   confirm: "",
 });
 
 const rules = {
-  username: [{ required: true, message: "请输入账号", trigger: "blur" }],
+  displayName: [
+    { required: true, message: "请输入超级管理员姓名", trigger: "blur" },
+    { max: 64, message: "姓名最多 64 个字符", trigger: "blur" },
+  ],
   password: [
     { required: true, message: "请输入密码", trigger: "blur" },
     { min: 6, message: "密码至少6位", trigger: "blur" },
@@ -128,22 +140,57 @@ const rules = {
   ],
 };
 
+function isSetupRequired(payload = {}) {
+  return payload.setup_required === true || payload.initialized === false;
+}
+
+async function redirectInitializedSystem(message = "") {
+  markSystemInitialized();
+  if (message) {
+    ElMessage.info(message);
+  }
+  await router.replace(getStoredToken() ? "/workbench" : "/login");
+}
+
+async function checkInitStatus() {
+  checkingStatus.value = true;
+  try {
+    const status = await api.get("/init/status");
+    if (!isSetupRequired(status)) {
+      await redirectInitializedSystem("系统已初始化，请直接登录");
+    }
+  } finally {
+    checkingStatus.value = false;
+  }
+}
+
 async function handleSubmit() {
+  if (checkingStatus.value) return;
   await formRef.value.validate();
   loading.value = true;
   try {
     await api.post("/init/setup", {
-      username: form.username,
+      username: "admin",
+      display_name: form.displayName.trim(),
       password: form.password,
     });
-    ElMessage.success("初始化成功，请登录");
+    markSystemInitialized();
+    ElMessage.success("初始化成功，请使用 admin 登录");
     router.replace("/login");
   } catch (e) {
+    if (String(e?.detail || e?.message || "").includes("Already initialized")) {
+      await redirectInitializedSystem("系统已初始化，请直接登录");
+      return;
+    }
     ElMessage.error(e.detail || "初始化失败");
   } finally {
     loading.value = false;
   }
 }
+
+onMounted(() => {
+  void checkInitStatus();
+});
 </script>
 
 <style scoped>
@@ -331,6 +378,32 @@ async function handleSubmit() {
 
 .init-form {
   width: 100%;
+}
+
+.init-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 48px;
+  margin-bottom: 18px;
+  padding: 0 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.init-account__label {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.init-account__value {
+  color: #111827;
+  font-size: 15px;
+  font-weight: 700;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 .init-form :deep(.el-form-item) {

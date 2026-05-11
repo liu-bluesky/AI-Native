@@ -3,7 +3,7 @@ import axios from 'axios'
 import { clearAuthSession } from './auth-storage.js'
 
 const api = axios.create({ baseURL: '/api' })
-const AUTH_PUBLIC_PATHS = new Set(['/init', '/intro', '/market', '/updates', '/login', '/register'])
+const AUTH_PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
 
 function normalizeHashPath(hash) {
   return String(hash || '#/intro')

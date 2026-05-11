@@ -1933,6 +1933,68 @@ def test_project_requirement_records_route_uses_short_ttl_cache(
     assert call_count == 1
 
 
+def test_project_requirement_records_route_groups_same_chat_session_without_work_session(
+    tmp_path,
+    monkeypatch,
+):
+    from routers import projects as projects_router
+    from stores.json.project_chat_task_store import ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+
+    projects_router._project_requirement_records_local_cache.clear()
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-same-chat", name="项目一"))
+
+    root_goal = "修复需求记录窄窗口文字溢出"
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-analysis",
+            project_id="proj-same-chat",
+            username="tester",
+            chat_session_id="chat-session-1-analysis",
+            source_chat_session_id="chat-session-1",
+            source_session_id="",
+            title=root_goal,
+            root_goal=root_goal,
+            status="in_progress",
+            lifecycle_status="active",
+            round_index=1,
+            created_at="2026-05-08T11:00:00+08:00",
+            updated_at="2026-05-08T11:00:00+08:00",
+        )
+    )
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-implementation",
+            project_id="proj-same-chat",
+            username="tester",
+            chat_session_id="chat-session-1-implementation",
+            source_chat_session_id="chat-session-1",
+            source_session_id="",
+            title=root_goal,
+            root_goal=root_goal,
+            status="in_progress",
+            lifecycle_status="active",
+            round_index=1,
+            created_at="2026-05-08T11:03:00+08:00",
+            updated_at="2026-05-08T11:03:00+08:00",
+        )
+    )
+
+    response = client.get("/api/projects/proj-same-chat/requirement-records")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["items"]) == 1
+    assert len(payload["items"][0]["rounds"]) == 2
+    assert payload["items"][0]["id"] == "chat:chat-session-1:goal:修复需求记录窄窗口文字溢出"
+    assert len(payload["task_sessions"]) == 2
+
+
 def test_project_requirement_records_route_hides_query_cli_shadow_chain_near_real_cli_chain(
     tmp_path,
     monkeypatch,

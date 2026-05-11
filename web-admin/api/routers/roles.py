@@ -7,9 +7,9 @@ from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.deps import require_auth, role_store, user_store
+from core.deps import ensure_permission, require_auth, role_store, user_store
 from models.requests import RoleCreateReq, RoleUpdateReq
-from core.role_permissions import has_permission, permission_catalog, resolve_role_permissions
+from core.role_permissions import permission_catalog, resolve_role_permissions
 from stores.json.role_store import RoleConfig
 
 router = APIRouter(prefix="/api/roles", dependencies=[Depends(require_auth)])
@@ -25,11 +25,7 @@ def _normalize_role_id(raw: str) -> str:
 
 
 def _ensure_permission(auth_payload: dict, permission_key: str) -> None:
-    role_id = str(auth_payload.get("role") or "").strip().lower()
-    role = role_store.get(role_id)
-    role_permissions = getattr(role, "permissions", None)
-    if not has_permission(role_permissions, permission_key, role_id=role_id):
-        raise HTTPException(403, f"Permission denied: {permission_key}")
+    ensure_permission(auth_payload, permission_key)
 
 
 @router.get("")
