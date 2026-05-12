@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -31,6 +32,50 @@ def _build_project_chat_runtime_test_client(tmp_path, monkeypatch, auth_payload)
     app = create_app()
     app.dependency_overrides[require_auth] = lambda: auth_payload
     return TestClient(app), store_factory
+
+
+def test_feishu_project_chat_session_id_isolates_group_and_private_messages():
+    from services.feishu_bot_service import _resolve_feishu_project_chat_session_id
+
+    group_sender_1 = _resolve_feishu_project_chat_session_id(
+        connector_id="conn-feishu-1",
+        chat_type="group",
+        chat_id="oc_group_1",
+        thread_id="",
+        sender_open_id="ou_sender_1",
+    )
+    group_sender_2 = _resolve_feishu_project_chat_session_id(
+        connector_id="conn-feishu-1",
+        chat_type="group",
+        chat_id="oc_group_1",
+        thread_id="",
+        sender_open_id="ou_sender_2",
+    )
+    other_group = _resolve_feishu_project_chat_session_id(
+        connector_id="conn-feishu-1",
+        chat_type="group",
+        chat_id="oc_group_2",
+        thread_id="",
+        sender_open_id="ou_sender_1",
+    )
+    private_sender_1 = _resolve_feishu_project_chat_session_id(
+        connector_id="conn-feishu-1",
+        chat_type="p2p",
+        chat_id="oc_private",
+        thread_id="",
+        sender_open_id="ou_sender_1",
+    )
+    private_sender_2 = _resolve_feishu_project_chat_session_id(
+        connector_id="conn-feishu-1",
+        chat_type="p2p",
+        chat_id="oc_private",
+        thread_id="",
+        sender_open_id="ou_sender_2",
+    )
+
+    assert group_sender_1 == group_sender_2
+    assert group_sender_1 != other_group
+    assert private_sender_1 != private_sender_2
 
 
 
@@ -217,9 +262,10 @@ def test_project_chat_session_resolve_source_uses_feishu_search(tmp_path, monkey
     assert create_response.status_code == 200
     session = create_response.json()["session"]
 
-    def fake_resolve(connector, chat_name):
+    def fake_resolve(connector, chat_name, *, identity="bot"):
         assert connector["id"] == "conn-feishu-1"
         assert chat_name == "产品研发群"
+        assert identity == "bot"
         return {"chat_id": "oc_real_group_1", "name": "产品研发群"}
 
     monkeypatch.setattr(
@@ -235,6 +281,68 @@ def test_project_chat_session_resolve_source_uses_feishu_search(tmp_path, monkey
     resolved_context = payload["session"]["source_context"]
     assert resolved_context["external_chat_id"] == "oc_real_group_1"
     assert resolved_context["thread_key"] == "feishu:conn-feishu-1:chat:oc_real_group_1"
+
+
+def test_project_chat_session_resolve_source_can_use_user_identity(tmp_path, monkeypatch):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    store_factory.bot_connector_store.replace_all(
+        [
+            {
+                "id": "conn-feishu-1",
+                "platform": "feishu",
+                "name": "飞书机器人",
+                "enabled": True,
+                "project_id": "",
+                "app_id": "cli_xxx",
+                "app_secret": "secret_xxx",
+            }
+        ]
+    )
+    create_response = client.post(
+        "/api/projects/proj-1/chat/sessions",
+        json={
+            "title": "飞书群：产品研发群",
+            "source_context": {
+                "source_type": "group_message",
+                "platform": "feishu",
+                "connector_id": "conn-feishu-1",
+                "external_chat_name": "产品研发群",
+                "resolve_identity": "user",
+            },
+        },
+    )
+    assert create_response.status_code == 200
+    session = create_response.json()["session"]
+    calls = []
+
+    def fake_resolve(connector, chat_name, *, identity="bot"):
+        calls.append({"connector": connector, "chat_name": chat_name, "identity": identity})
+        return {"chat_id": "oc_user_visible_group", "name": "产品研发群"}
+
+    monkeypatch.setattr(
+        "services.feishu_bot_service.resolve_feishu_chat_by_name",
+        fake_resolve,
+    )
+    resolve_response = client.post(
+        f"/api/projects/proj-1/chat/sessions/{session['id']}/resolve-source",
+        json={"identity": "user"},
+    )
+    assert resolve_response.status_code == 200
+    payload = resolve_response.json()
+    assert calls[0]["connector"]["id"] == "conn-feishu-1"
+    assert calls[0]["connector"]["app_id"] == "cli_xxx"
+    assert calls[0]["chat_name"] == "产品研发群"
+    assert calls[0]["identity"] == "user"
+    resolved_context = payload["session"]["source_context"]
+    assert resolved_context["external_chat_id"] == "oc_user_visible_group"
+    assert resolved_context["resolve_identity"] == "user"
 
 
 def test_feishu_message_event_routes_by_project_chat_session_binding(tmp_path, monkeypatch):
@@ -353,6 +461,193 @@ def test_feishu_message_event_routes_by_project_chat_session_binding(tmp_path, m
     assert replies[0][1]["message_id"] == "om_message_1"
 
 
+def test_feishu_message_event_auto_binds_unbound_group_to_connector_project(tmp_path, monkeypatch):
+    from services.feishu_bot_service import process_feishu_message_event
+    from stores.json.project_store import ProjectConfig, ProjectUserMember
+
+    client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一", created_by="tester"))
+    store_factory.project_store.upsert_user_member(
+        ProjectUserMember(project_id="proj-1", username="tester", role="owner")
+    )
+    store_factory.bot_connector_store.replace_all(
+        [
+            {
+                "id": "conn-feishu-1",
+                "platform": "feishu",
+                "name": "飞书机器人",
+                "enabled": True,
+                "project_id": "proj-1",
+                "app_id": "cli_xxx",
+                "app_secret": "secret_xxx",
+                "system_prompt": "你是飞书群里的需求协作机器人。",
+                "provider_id": "provider-bot",
+                "model_name": "bot-model",
+            }
+        ]
+    )
+
+    calls = []
+    replies = []
+
+    class FakeResult:
+        content = "请补充复现步骤、期望结果和实际结果。"
+
+    async def fake_run_project_chat_once(**kwargs):
+        calls.append(kwargs)
+        return FakeResult()
+
+    async def fake_reply_feishu_text(connector, **kwargs):
+        replies.append((connector, kwargs))
+
+    monkeypatch.setattr(
+        "services.feishu_bot_service.run_project_chat_once",
+        fake_run_project_chat_once,
+    )
+    monkeypatch.setattr(
+        "services.feishu_bot_service._reply_feishu_text",
+        fake_reply_feishu_text,
+    )
+    monkeypatch.setattr(
+        "services.feishu_bot_service._resolve_feishu_chat_name_by_id",
+        lambda connector, chat_id: "数转CRM技术小组",
+    )
+
+    class Obj:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    event = Obj(
+        event=Obj(
+            sender=Obj(sender_type="user", sender_id=Obj(open_id="ou_sender_1")),
+            message=Obj(
+                chat_type="group",
+                chat_id="oc_unbound_group_1",
+                thread_id="",
+                message_id="om_unbound_1",
+                message_type="text",
+                content='{"text":"@_user_1 记录bug：客户列表筛选重置异常"}',
+                mentions=[Obj(key="@_user_1")],
+            ),
+        )
+    )
+
+    import asyncio
+
+    asyncio.run(process_feishu_message_event("conn-feishu-1", event))
+
+    assert len(calls) == 1
+    assert calls[0]["project_id"] == "proj-1"
+    assert calls[0]["username"] == "tester"
+    req = calls[0]["req"]
+    assert req.message == "记录bug：客户列表筛选重置异常"
+    assert req.provider_id == "provider-bot"
+    assert req.model_name == "bot-model"
+    assert req.source_context["platform"] == "feishu"
+    assert req.source_context["connector_id"] == "conn-feishu-1"
+    assert req.source_context["external_chat_id"] == "oc_unbound_group_1"
+    assert req.source_context["external_chat_name"] == "数转CRM技术小组"
+    assert req.source_context["thread_key"] == "feishu:conn-feishu-1:chat:oc_unbound_group_1"
+    sessions = store_factory.project_chat_store.list_sessions("proj-1", "tester", limit=20)
+    created = next(item for item in sessions if item.id == req.chat_session_id)
+    assert created.title == "飞书群：数转CRM技术小组"
+    assert created.external_chat_id == "oc_unbound_group_1"
+    assert replies[0][1]["message_id"] == "om_unbound_1"
+
+    event.event.message.message_id = "om_unbound_2"
+    event.event.message.content = '{"text":"@_user_1 补充：期望能清空筛选，实际没有清空"}'
+    asyncio.run(process_feishu_message_event("conn-feishu-1", event))
+
+    assert len(calls) == 2
+    assert calls[1]["req"].chat_session_id == req.chat_session_id
+
+
+def test_feishu_message_event_unbound_group_without_project_binding_still_replies(tmp_path, monkeypatch):
+    from services.feishu_bot_service import process_feishu_message_event
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    store_factory.project_store.save(ProjectConfig(id="proj-2", name="项目二"))
+    store_factory.bot_connector_store.replace_all(
+        [
+            {
+                "id": "conn-feishu-1",
+                "platform": "feishu",
+                "name": "飞书机器人",
+                "enabled": True,
+                "project_id": "",
+                "app_id": "cli_xxx",
+                "app_secret": "secret_xxx",
+            }
+        ]
+    )
+
+    calls = []
+    replies = []
+
+    async def fake_run_project_chat_once(**kwargs):
+        calls.append(kwargs)
+        class FakeResult:
+            content = "收到，我先按当前飞书群上下文处理。"
+
+        return FakeResult()
+
+    async def fake_reply_feishu_text(connector, **kwargs):
+        replies.append((connector, kwargs))
+
+    monkeypatch.setattr(
+        "services.feishu_bot_service.run_project_chat_once",
+        fake_run_project_chat_once,
+    )
+    monkeypatch.setattr(
+        "services.feishu_bot_service._reply_feishu_text",
+        fake_reply_feishu_text,
+    )
+
+    class Obj:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    event = Obj(
+        event=Obj(
+            sender=Obj(sender_type="user", sender_id=Obj(open_id="ou_sender_1")),
+            message=Obj(
+                chat_type="group",
+                chat_id="oc_unbound_group_1",
+                thread_id="",
+                message_id="om_unbound_1",
+                message_type="text",
+                content='{"text":"@_user_1 记录需求：新增客户标签"}',
+                mentions=[Obj(key="@_user_1")],
+            ),
+        )
+    )
+
+    import asyncio
+
+    asyncio.run(process_feishu_message_event("conn-feishu-1", event))
+
+    assert len(calls) == 1
+    assert calls[0]["project_id"] == "proj-1"
+    assert calls[0]["username"] == "admin"
+    req = calls[0]["req"]
+    assert req.message == "记录需求：新增客户标签"
+    assert req.source_context["source_type"] == "group_message"
+    assert req.source_context["external_chat_id"] == "oc_unbound_group_1"
+    assert req.source_context["thread_key"] == "feishu:conn-feishu-1:chat:oc_unbound_group_1"
+    assert store_factory.project_chat_store.get_session("proj-1", "admin", req.chat_session_id) is not None
+    assert replies[0][1]["message_id"] == "om_unbound_1"
+
+
 def test_feishu_reply_uses_lark_cli_with_configured_identity(monkeypatch):
     from services import feishu_bot_service as service
 
@@ -383,6 +678,84 @@ def test_feishu_reply_uses_lark_cli_with_configured_identity(monkeypatch):
     assert command[command.index("--as") + 1] == "user"
     assert command[command.index("--idempotency-key") + 1] == "feishu-reply-om_message_1"
     assert "--reply-in-thread" in command
+
+
+def test_feishu_bot_reply_uses_open_api_without_lark_cli(monkeypatch):
+    from services import feishu_bot_service as service
+
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_run(*args, **kwargs):
+        raise AssertionError("bot reply should not call lark-cli")
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/tenant_access_token/internal"):
+            return FakeResponse({"code": 0, "tenant_access_token": "tenant-token"})
+        if url.endswith("/im/v1/messages/om_message_1/reply"):
+            return FakeResponse({"code": 0, "data": {"message_id": "om_reply_1"}})
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(service.subprocess, "run", fake_run)
+    monkeypatch.setattr(service.requests, "post", fake_post)
+
+    import asyncio
+
+    asyncio.run(service._reply_feishu_text(
+        {"reply_identity": "bot", "app_id": "cli_xxx", "app_secret": "secret_xxx"},
+        message_id="om_message_1",
+        content="收到",
+        reply_in_thread=True,
+    ))
+
+    reply_kwargs = calls[1][1]
+    assert reply_kwargs["headers"]["Authorization"] == "Bearer tenant-token"
+    assert reply_kwargs["params"]["uuid"] == "feishu-reply-om_message_1"
+    assert reply_kwargs["json"] == {
+        "msg_type": "text",
+        "content": json.dumps({"text": "收到"}, ensure_ascii=False),
+        "reply_in_thread": True,
+    }
+
+
+def test_feishu_bot_reply_open_api_error_is_clear(monkeypatch):
+    from services import feishu_bot_service as service
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/tenant_access_token/internal"):
+            return FakeResponse({"code": 0, "tenant_access_token": "tenant-token"})
+        if url.endswith("/im/v1/messages/om_message_1/reply"):
+            return FakeResponse({"code": 230001, "msg": "message not found"})
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(service.requests, "post", fake_post)
+
+    with pytest.raises(RuntimeError, match="message not found"):
+        service._reply_feishu_text_with_open_api(
+            {"reply_identity": "bot", "app_id": "cli_xxx", "app_secret": "secret_xxx"},
+            message_id="om_message_1",
+            content="收到",
+        )
 
 
 def test_feishu_non_text_message_event_is_recorded_without_group_reply(tmp_path, monkeypatch):
@@ -2196,7 +2569,7 @@ def test_feishu_message_event_creates_group_meeting_reminder(tmp_path, monkeypat
     assert tasks[0]["actions"][0]["params"]["chat_id"] == "oc_real_group_1"
     assert tasks[0]["actions"][0]["params"]["identity"] == "user"
     assert tasks[0]["actions"][0]["params"]["remind_before_minutes"] == 10
-    assert "14:50" in tasks[0]["next_run_at"] or tasks[0]["next_run_at"] == "2026-04-28T06:50:00+00:00"
+    assert "14:50" in tasks[0]["next_run_at"] or tasks[0]["next_run_at"].endswith("T06:50:00+00:00")
     assert "已创建会议提醒" in replies[0][1]["content"]
 
 
@@ -2813,6 +3186,11 @@ def test_feishu_archive_writer_cli_user_bitable_writes_friendly_structured_field
     assert record_payloads[0]["来源群"] == "aitest"
     assert record_payloads[0]["图片/附件"] == "https://tenant.feishu.cn/file/image-1"
     assert record_payloads[0]["消息链接"] == "https://tenant.feishu.cn/message/om-1"
+    assert record_payloads[0]["问题描述"] == "设置多项筛选条件后，点击重置按钮无法清空。"
+    assert "进入客户列表" in record_payloads[0]["复现步骤"]
+    assert record_payloads[0]["期望结果"] == "筛选条件被清空"
+    assert record_payloads[0]["实际结果"] == "筛选条件仍保留"
+    assert record_payloads[0]["影响范围"] == "手机端和电脑端均出现"
     assert "复现步骤" in record_payloads[0]["详细内容"]
     assert "聊天记录" in record_payloads[0]
     assert "external_chat_id" not in record_payloads[0]
@@ -3121,7 +3499,16 @@ def test_feishu_archive_writer_cli_user_bitable_existing_table_adds_friendly_fie
                 "categories": {"bug": "bitable"},
             },
         },
-        message_text="新增bug：登录页报错",
+        message_text=(
+            "【结构化内容】\n"
+            "- 标题：登录页报错\n"
+            "- 问题描述：输入账号密码后页面直接报错。\n"
+            "- 复现步骤：打开登录页，输入账号密码，点击登录。\n"
+            "- 期望结果：正常进入系统。\n"
+            "- 实际结果：页面提示 500。\n"
+            "- 验收标准：修复后可正常登录。\n"
+            "- 优先级：高"
+        ),
         source_context={"connector_id": "feishu-main", "external_chat_id": "oc-1", "external_chat_name": "aitest"},
     )
 
@@ -3129,8 +3516,242 @@ def test_feishu_archive_writer_cli_user_bitable_existing_table_adds_friendly_fie
     created_field_names = [item["name"] for item in created_fields]
     assert "标题" in created_field_names
     assert "摘要" in created_field_names
+    assert "问题描述" in created_field_names
+    assert "复现步骤" in created_field_names
+    assert "期望结果" in created_field_names
+    assert "实际结果" in created_field_names
+    assert "验收标准" in created_field_names
     assert {"name": "图片附件", "type": "attachment"} in created_fields
     assert "external_chat_id" not in created_field_names
+
+
+def test_feishu_archive_writer_uses_pending_archive_type_for_requirement_bitable(tmp_path, monkeypatch):
+    from core import config as core_config
+
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+
+    from services import feishu_archive_writer_service as writer
+
+    monkeypatch.setattr(
+        writer,
+        "get_bot_connector",
+        lambda connector_id: {"id": connector_id, "platform": "feishu", "agent_name": "飞书机器人"},
+    )
+    monkeypatch.setattr(
+        writer,
+        "_get_tenant_access_token",
+        lambda connector: (_ for _ in ()).throw(AssertionError("CLI user mode must not use bot token")),
+    )
+
+    table_field_payloads = []
+    record_payloads = []
+
+    def fake_cli(args, *, timeout=90):
+        if args[:2] == ["base", "+base-create"]:
+            return {"base": {"app_token": "app-req", "url": "https://tenant.feishu.cn/base/app-req"}}
+        if args[:2] == ["base", "+table-create"]:
+            table_field_payloads.append(json.loads(args[args.index("--fields") + 1]))
+            return {"table": {"id": "tbl-req"}}
+        if args[:2] == ["base", "+record-upsert"]:
+            record_payloads.append(json.loads(args[args.index("--json") + 1]))
+            return {"record": {"id": "rec-req"}}
+        return {}
+
+    monkeypatch.setattr(writer, "_run_lark_cli_json", fake_cli)
+
+    result = writer.archive_feishu_task_message(
+        task={"title": "飞书机器人多轮信息归档到分类文档表格", "description": "按分类自动归档 bug、需求、功能、会议"},
+        action={
+            "id": "action-1",
+            "type": "project_chat",
+            "params": {
+                "workflow": "feishu_bot_auto_archive_to_doc_table",
+                "writer_mode": "lark_cli_user",
+                "categories": {"bug": "bitable", "需求": "bitable", "功能": "bitable", "会议": "docx"},
+            },
+        },
+        message_text=(
+            "创建一个新的 UI 风格\n\n"
+            "机器人整理结果：\n"
+            "【待归档类型】\n需求\n\n"
+            "【待归档状态】\n已整理，尚未写入群文档\n\n"
+            "【结构化内容】\n"
+            "- 标题：创建一个新的 UI 风格\n"
+            "- 背景：现有界面风格需要升级\n"
+            "- 目标：提供新的 UI 视觉风格\n"
+            "- 详细说明：设计一套新的 UI 风格\n"
+            "- 验收标准：可在页面中查看并应用\n"
+            "- 优先级：中\n"
+            "- 负责人：未指定\n"
+            "- 提出人：张三\n"
+            "- 来源群：产品群\n"
+            "- 消息链接：无\n"
+            "- 创建时间：2026-05-12"
+        ),
+        source_context={
+            "platform": "feishu",
+            "archive_input": "assistant_structured_reply",
+            "connector_id": "feishu-main",
+            "external_chat_id": "oc-1",
+            "external_chat_name": "产品群",
+        },
+    )
+
+    assert result["status"] == "saved"
+    assert result["category"] == "需求"
+    assert result["archive_key"] == "feishu-main|oc-1|需求|bitable|lark_cli_user"
+    assert result["document_title"] == "产品群-需求表格【飞书机器人】"
+    created_field_names = [item["name"] for item in table_field_payloads[0]]
+    assert "背景" in created_field_names
+    assert "目标" in created_field_names
+    assert "详细说明" in created_field_names
+    assert "验收标准" in created_field_names
+    assert record_payloads[0]["类型"] == "需求"
+    assert record_payloads[0]["标题"] == "创建一个新的 UI 风格"
+    assert record_payloads[0]["背景"] == "现有界面风格需要升级"
+
+
+def test_feishu_archive_writer_skips_raw_feishu_auto_archive_message(tmp_path, monkeypatch):
+    from core import config as core_config
+
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+
+    from services import feishu_archive_writer_service as writer
+
+    monkeypatch.setattr(
+        writer,
+        "get_bot_connector",
+        lambda connector_id: {"id": connector_id, "platform": "feishu", "agent_name": "飞书机器人"},
+    )
+
+    cli_calls = []
+    monkeypatch.setattr(writer, "_run_lark_cli_json", lambda *args, **kwargs: cli_calls.append(args) or {})
+
+    result = writer.archive_feishu_task_message(
+        task={"title": "监听需求", "description": "按分类自动归档 bug、需求、功能、会议"},
+        action={
+            "id": "action-1",
+            "type": "project_chat",
+            "params": {
+                "workflow": "feishu_bot_auto_archive_to_doc_table",
+                "writer_mode": "lark_cli_user",
+                "categories": {"bug": "bitable", "需求": "bitable"},
+            },
+        },
+        message_text="创建一个新的 UI 风格",
+        source_context={
+            "platform": "feishu",
+            "connector_id": "feishu-main",
+            "external_chat_id": "oc-1",
+            "external_chat_name": "产品群",
+        },
+    )
+
+    assert result["status"] == "skipped"
+    assert "结构化字段" in result["message"]
+    assert cli_calls == []
+
+
+def test_feishu_archive_writer_cli_user_bitable_recreates_deleted_base(tmp_path, monkeypatch):
+    from core import config as core_config
+
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+
+    from services import feishu_archive_writer_service as writer
+
+    monkeypatch.setattr(
+        writer,
+        "get_bot_connector",
+        lambda connector_id: {"id": connector_id, "platform": "feishu", "agent_name": "飞书机器人"},
+    )
+    monkeypatch.setattr(
+        writer,
+        "_get_tenant_access_token",
+        lambda connector: (_ for _ in ()).throw(AssertionError("CLI user mode must not use bot token")),
+    )
+    state_path = tmp_path / "api-data" / "feishu-archive-docs.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "archives": {
+                    "feishu-main|oc-1|bug|bitable|lark_cli_user": {
+                        "app_token": "app-deleted",
+                        "doc_id": "app-deleted",
+                        "document_id": "app-deleted",
+                        "table_id": "tbl-deleted",
+                        "doc_url": "https://tenant.feishu.cn/base/app-deleted",
+                        "created_at": "2026-05-12T01:00:00+00:00",
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    commands = []
+    record_payloads = []
+
+    def fake_cli(args, *, timeout=90):
+        commands.append(args)
+        if args[:2] == ["base", "+field-list"]:
+            raise RuntimeError(
+                'lark-cli 执行失败，请先确认已执行 lark-cli auth login：{"ok":false,"identity":"user",'
+                '"error":{"type":"api_error","code":1002,"message":"API call failed: [1002] note has been deleted"}}'
+            )
+        if args[:2] == ["base", "+base-create"]:
+            return {"base": {"app_token": "app-new", "url": "https://tenant.feishu.cn/base/app-new"}}
+        if args[:2] == ["base", "+table-create"]:
+            return {"table": {"id": "tbl-new"}}
+        if args[:2] == ["base", "+record-upsert"]:
+            record_payloads.append(json.loads(args[args.index("--json") + 1]))
+            return {"record": {"id": "rec-new"}}
+        return {}
+
+    monkeypatch.setattr(writer, "_run_lark_cli_json", fake_cli)
+
+    result = writer.archive_feishu_task_message(
+        task={"title": "监听 bug", "description": "监听新增bug后归档"},
+        action={
+            "id": "action-1",
+            "type": "project_chat",
+            "params": {
+                "workflow": "feishu_bot_auto_archive_to_doc_table",
+                "writer_mode": "lark_cli_user",
+                "writer_type": "bitable",
+                "categories": {"bug": "bitable"},
+            },
+        },
+        message_text="新增bug：登录页报错",
+        source_context={"connector_id": "feishu-main", "external_chat_id": "oc-1", "external_chat_name": "aitest"},
+    )
+
+    command_pairs = [item[:2] for item in commands]
+    assert command_pairs[:4] == [
+        ["base", "+field-list"],
+        ["base", "+base-create"],
+        ["base", "+table-create"],
+        ["base", "+record-upsert"],
+    ]
+    assert result["status"] == "saved"
+    assert result["created"] is True
+    assert result["doc_id"] == "app-new"
+    assert result["table_id"] == "tbl-new"
+    assert result["record_id"] == "rec-new"
+    assert record_payloads[0]["标题"] == "新增bug：登录页报错"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    record = state["archives"]["feishu-main|oc-1|bug|bitable|lark_cli_user"]
+    assert record["doc_id"] == "app-new"
+    assert record["table_id"] == "tbl-new"
+    assert record["recreated_from_deleted"] is True
 
 
 def test_global_assistant_archive_action_returns_saved(tmp_path, monkeypatch):
@@ -3191,6 +3812,60 @@ def test_global_assistant_archive_action_returns_saved(tmp_path, monkeypatch):
     assert result["doc_id"] == "doc-1"
 
 
+def test_global_assistant_archive_action_preserves_skipped_status(tmp_path, monkeypatch):
+    from core import config as core_config
+
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+
+    from services import global_assistant_task_service as tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "archive_feishu_task_message",
+        lambda **kwargs: {
+            "status": "skipped",
+            "created": False,
+            "archive_key": "",
+            "category": "",
+            "message": "飞书自动归档需要先由机器人整理出结构化字段，已跳过原始消息写入",
+        },
+    )
+
+    tasks.upsert_global_assistant_task(
+        username="tester",
+        project_id="proj-1",
+        task={
+            "id": "task-archive",
+            "title": "监听需求",
+            "description": "按分类自动归档 bug、需求、功能、会议",
+            "status": "todo",
+            "triggers": [{"type": "event", "enabled": True, "source": "feishu", "phrases": ["UI"]}],
+            "actions": [
+                {
+                    "id": "action-archive",
+                    "type": "project_chat",
+                    "label": "归档到群文档",
+                    "params": {"workflow": "feishu_bot_auto_archive_to_doc_table"},
+                }
+            ],
+        },
+    )
+
+    matches = tasks.process_global_assistant_tasks_for_event(
+        username="tester",
+        project_id="proj-1",
+        message_text="创建一个新的 UI 风格",
+        source_context={"platform": "feishu", "connector_id": "feishu-main", "external_chat_id": "oc-1"},
+    )
+
+    result = matches[0]["latest_execution"]["action_results"][0]
+    assert result["status"] == "skipped"
+    assert "结构化字段" in result["message"]
+    assert not result["archive_key"]
+
+
 def test_feishu_confirmed_archive_reply_overrides_model_text():
     from services.feishu_bot_service import _build_confirmed_archive_reply
 
@@ -3233,6 +3908,55 @@ def test_feishu_archive_truth_prompt_binds_current_group_and_bot():
     assert "aitest" in prompt
     assert "当前群 + 当前机器人 + 分类" in prompt
     assert "禁止回复“已归档”" in prompt
+    assert "标题、问题描述、复现步骤" not in prompt
+
+
+def test_feishu_archive_clarification_request_is_skipped(tmp_path, monkeypatch):
+    from services import feishu_archive_writer_service as writer
+
+    monkeypatch.setattr(
+        writer,
+        "get_bot_connector",
+        lambda connector_id: {
+            "id": connector_id,
+            "platform": "feishu",
+            "name": "飞书机器人",
+            "agent_name": "飞书机器人",
+        },
+    )
+
+    archive_calls = []
+    monkeypatch.setattr(writer, "_write_docx_archive", lambda **kwargs: archive_calls.append(kwargs) or None)
+    monkeypatch.setattr(writer, "_write_sheet_archive", lambda **kwargs: archive_calls.append(kwargs) or None)
+    monkeypatch.setattr(writer, "_write_bitable_archive", lambda **kwargs: archive_calls.append(kwargs) or None)
+    monkeypatch.setattr(writer, "_write_cli_docx_archive", lambda **kwargs: archive_calls.append(kwargs) or None)
+    monkeypatch.setattr(writer, "_write_cli_sheet_archive", lambda **kwargs: archive_calls.append(kwargs) or None)
+    monkeypatch.setattr(writer, "_write_cli_bitable_archive", lambda **kwargs: archive_calls.append(kwargs) or None)
+
+    result = writer.archive_feishu_task_message(
+        task={
+            "id": "task-archive",
+            "title": "飞书机器人多轮信息归档到分类文档表格",
+            "description": "按分类自动归档 bug、需求、功能、会议",
+        },
+        action={
+            "id": "action-archive",
+            "type": "project_chat",
+            "label": "归档到群文档",
+            "params": {"workflow": "feishu_bot_auto_archive_to_doc_table"},
+        },
+        message_text="我提问：记录 bug 需要什么信息？请提供模板。",
+        source_context={
+            "platform": "feishu",
+            "connector_id": "feishu-main",
+            "external_chat_id": "oc-1",
+            "external_chat_name": "aitest",
+        },
+    )
+
+    assert result["status"] == "skipped"
+    assert result["category"] == "澄清请求"
+    assert archive_calls == []
 
 
 def test_feishu_structured_pending_archive_reply_executes_archive_task(tmp_path, monkeypatch):
@@ -3245,10 +3969,11 @@ def test_feishu_structured_pending_archive_reply_executes_archive_task(tmp_path,
     from services import global_assistant_task_service as tasks
     from services.feishu_bot_service import _process_feishu_archive_tasks_after_reply
 
-    monkeypatch.setattr(
-        tasks,
-        "archive_feishu_task_message",
-        lambda **kwargs: {
+    archive_calls = []
+
+    def fake_archive(**kwargs):
+        archive_calls.append(kwargs)
+        return {
             "status": "saved",
             "archive_key": "feishu-main|oc-1|bug",
             "category": "bug",
@@ -3258,8 +3983,9 @@ def test_feishu_structured_pending_archive_reply_executes_archive_task(tmp_path,
             "doc_id": "doc-1",
             "created": True,
             "message": "已保存到：aitest-bug文档【飞书机器人】",
-        },
-    )
+        }
+
+    monkeypatch.setattr(tasks, "archive_feishu_task_message", fake_archive)
     tasks.upsert_global_assistant_task(
         username="tester",
         project_id="proj-1",
@@ -3281,19 +4007,117 @@ def test_feishu_structured_pending_archive_reply_executes_archive_task(tmp_path,
         },
     )
 
+    pre_reply_matches = tasks.process_global_assistant_tasks_for_event(
+        username="tester",
+        project_id="proj-1",
+        message_text="CRM 登录页在微信浏览器顶部导航丢失 bug",
+        source_context={"platform": "feishu", "connector_id": "feishu-main", "external_chat_id": "oc-1"},
+        skip_auto_archive_actions=True,
+    )
+
+    assert pre_reply_matches == []
+    assert archive_calls == []
+
     processed = _process_feishu_archive_tasks_after_reply(
         username="tester",
         project_id="proj-1",
         message_text="CRM 登录页在微信浏览器顶部导航丢失",
-        reply_content="【待归档类型】\nbug\n\n【待归档状态】\n已整理，尚未写入群文档\n\n【结构化内容】\n- 标题：CRM 登录页在微信浏览器顶部导航丢失",
+        reply_content=(
+            "【待归档类型】\nbug\n\n"
+            "【待归档状态】\n已整理，尚未写入群文档\n\n"
+            "【结构化内容】\n"
+            "- 标题：CRM 登录页在微信浏览器顶部导航丢失\n"
+            "- 问题描述：微信浏览器内顶部导航区域丢失"
+        ),
         source_context={"platform": "feishu", "connector_id": "feishu-main", "external_chat_id": "oc-1"},
         already_matched_tasks=[],
     )
 
+    assert len(archive_calls) == 1
+    assert "机器人整理结果" in archive_calls[0]["message_text"]
+    assert "问题描述：微信浏览器内顶部导航区域丢失" in archive_calls[0]["message_text"]
     assert [item["id"] for item in processed] == ["task-archive"]
     result = processed[0]["latest_execution"]["action_results"][0]
     assert result["status"] == "saved"
     assert result["document_title"] == "aitest-bug文档【飞书机器人】"
+
+
+def test_feishu_archive_writer_docx_entry_includes_structured_category_fields(tmp_path, monkeypatch):
+    from core import config as core_config
+
+    monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
+    core_config.get_settings.cache_clear()
+    core_config._file_env_values.cache_clear()
+
+    from services import feishu_archive_writer_service as writer
+
+    monkeypatch.setattr(
+        writer,
+        "get_bot_connector",
+        lambda connector_id: {
+            "id": connector_id,
+            "platform": "feishu",
+            "agent_name": "飞书机器人",
+            "app_id": "cli-app",
+            "app_secret": "cli-secret",
+        },
+    )
+    monkeypatch.setattr(writer, "_get_tenant_access_token", lambda connector: "tenant-token")
+
+    archive_calls = []
+
+    def fake_write_docx_archive(**kwargs):
+        archive_calls.append(kwargs)
+        return {
+            "document_id": "doc-1",
+            "doc_id": "doc-1",
+            "doc_url": "https://tenant.feishu.cn/docx/doc-1",
+        }, True
+
+    monkeypatch.setattr(writer, "_write_docx_archive", fake_write_docx_archive)
+
+    result = writer.archive_feishu_task_message(
+        task={"title": "监听 bug", "description": "按分类自动归档 bug、需求、功能、会议"},
+        action={
+            "id": "action-archive",
+            "type": "project_chat",
+            "params": {"workflow": "feishu_bot_auto_archive_to_doc_table"},
+        },
+        message_text=(
+            "机器人整理结果：\n"
+            "【待归档类型】\nbug\n\n"
+            "【待归档状态】\n已整理，尚未写入群文档\n\n"
+            "【结构化内容】\n"
+            "- 标题：登录页报错\n"
+            "- 问题描述：输入账号密码后页面直接报错。\n"
+            "- 复现步骤：打开登录页，输入账号密码，点击登录。\n"
+            "- 期望结果：正常进入系统。\n"
+            "- 实际结果：页面提示 500。\n"
+            "- 影响范围：全部用户。\n"
+            "- 优先级：高\n"
+            "- 负责人：张三\n"
+            "- 提出人：李四\n"
+            "- 来源群：产品群\n"
+            "- 消息链接：无\n"
+            "- 创建时间：2026-05-12"
+        ),
+        source_context={
+            "platform": "feishu",
+            "archive_input": "assistant_structured_reply",
+            "connector_id": "feishu-main",
+            "external_chat_id": "oc-1",
+            "external_chat_name": "产品群",
+        },
+    )
+
+    assert result["status"] == "saved"
+    assert result["writer_type"] == "docx"
+    entry = archive_calls[0]["entry"]
+    assert "结构化内容：" in entry
+    assert "复现步骤：打开登录页，输入账号密码，点击登录。" in entry
+    assert "期望结果：正常进入系统。" in entry
+    assert "实际结果：页面提示 500。" in entry
+    assert "影响范围：全部用户。" in entry
 
 
 def test_feishu_failed_archive_reply_reports_failure():
@@ -3433,7 +4257,7 @@ def test_feishu_unconfirmed_archive_reply_is_downgraded():
     assert "待归档" in reply
 
 
-def test_feishu_message_event_without_session_binding_is_ignored(tmp_path, monkeypatch):
+def test_feishu_message_event_without_session_binding_auto_creates_session_and_replies(tmp_path, monkeypatch):
     from services.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
@@ -3461,13 +4285,18 @@ def test_feishu_message_event_without_session_binding_is_ignored(tmp_path, monke
     )
 
     calls = []
+    replies = []
 
     async def fake_run_project_chat_once(**kwargs):
         calls.append(kwargs)
-        raise AssertionError("unbound feishu messages must not run project chat")
+
+        class FakeResult:
+            content = "你好"
+
+        return FakeResult()
 
     async def fake_reply_feishu_text(connector, **kwargs):
-        raise AssertionError("unbound feishu messages must not reply")
+        replies.append((connector, kwargs))
 
     monkeypatch.setattr(
         "services.feishu_bot_service.run_project_chat_once",
@@ -3501,7 +4330,16 @@ def test_feishu_message_event_without_session_binding_is_ignored(tmp_path, monke
 
     asyncio.run(process_feishu_message_event("conn-feishu-1", event))
 
-    assert calls == []
+    assert len(calls) == 1
+    assert calls[0]["project_id"] == "proj-1"
+    assert calls[0]["username"] == "admin"
+    req = calls[0]["req"]
+    assert req.message == "你好"
+    assert req.source_context["source_type"] == "group_message"
+    assert req.source_context["external_chat_id"] == "oc_unbound_group"
+    assert req.source_context["thread_key"] == "feishu:conn-feishu-1:chat:oc_unbound_group"
+    assert store_factory.project_chat_store.get_session("proj-1", "admin", req.chat_session_id) is not None
+    assert replies[0][1]["message_id"] == "om_message_1"
 
 
 def test_resolve_feishu_chat_by_name_reads_search_meta_data(monkeypatch):
@@ -3555,3 +4393,86 @@ def test_resolve_feishu_chat_by_name_reads_search_meta_data(monkeypatch):
         "description": "研发讨论",
     }
     assert calls[1][1]["json"]["query"] == "产品研发群"
+
+
+def test_resolve_feishu_chat_by_name_user_identity_uses_lark_cli(monkeypatch):
+    from services.feishu_bot_service import resolve_feishu_chat_by_name
+
+    calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "data": {
+                    "items": [
+                        {
+                            "chat_id": "oc_user_visible_group",
+                            "name": "产品研发群",
+                        }
+                    ]
+                }
+            },
+            ensure_ascii=False,
+        )
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append({"command": command, "kwargs": kwargs})
+        return Completed()
+
+    monkeypatch.setattr("services.feishu_bot_service.subprocess.run", fake_run)
+
+    chat = resolve_feishu_chat_by_name(
+        {"app_id": "cli_xxx", "app_secret": "secret_xxx"},
+        "产品研发群",
+        identity="user",
+    )
+
+    assert chat["chat_id"] == "oc_user_visible_group"
+    command = calls[0]["command"]
+    assert command[:3] == ["lark-cli", "im", "+chat-search"]
+    assert command[command.index("--as") + 1] == "user"
+    assert command[command.index("--query") + 1] == "产品研发群"
+
+
+def test_resolve_feishu_chat_by_name_user_identity_reports_authorization_hint(monkeypatch):
+    from services.feishu_bot_service import resolve_feishu_chat_by_name
+
+    class Completed:
+        returncode = 1
+        stdout = json.dumps(
+            {
+                "ok": False,
+                "identity": "user",
+                "error": {
+                    "type": "api_error",
+                    "message": "API call failed: need_user_authorization (user: ou_xxx)",
+                },
+                "_notice": {
+                    "update": {
+                        "current": "1.0.18",
+                        "latest": "1.0.20",
+                    }
+                },
+            },
+            ensure_ascii=False,
+        )
+        stderr = ""
+
+    monkeypatch.setattr(
+        "services.feishu_bot_service.subprocess.run",
+        lambda *args, **kwargs: Completed(),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        resolve_feishu_chat_by_name(
+            {"app_id": "cli_xxx", "app_secret": "secret_xxx"},
+            "产品研发群",
+            identity="user",
+        )
+
+    message = str(exc_info.value)
+    assert "用户身份搜索飞书群需要先完成 lark-cli 用户授权" in message
+    assert "lark-cli auth login --scope \"im:chat:read\"" in message
+    assert "当前 1.0.18，最新 1.0.20" in message

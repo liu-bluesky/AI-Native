@@ -77,6 +77,7 @@ class ProjectChatSession:
     source_type: str = ""
     platform: str = ""
     connector_id: str = ""
+    resolve_identity: str = ""
     external_chat_id: str = ""
     external_chat_name: str = ""
     thread_key: str = ""
@@ -244,6 +245,7 @@ class ProjectChatStore:
             source_type=str(getattr(existing, "source_type", "") or first_user.source_type or "").strip(),
             platform=str(getattr(existing, "platform", "") or first_user.platform or "").strip(),
             connector_id=str(getattr(existing, "connector_id", "") or first_user.connector_id or "").strip(),
+            resolve_identity=str(getattr(existing, "resolve_identity", "") or "").strip(),
             external_chat_id=str(getattr(existing, "external_chat_id", "") or first_user.external_chat_id or "").strip(),
             external_chat_name=str(getattr(existing, "external_chat_name", "") or first_user.external_chat_name or "").strip(),
             thread_key=str(getattr(existing, "thread_key", "") or first_user.thread_key or "").strip(),
@@ -273,6 +275,7 @@ class ProjectChatStore:
             source_type=_normalize_chat_source_type(context.get("source_type")),
             platform=_normalize_chat_context_text(context.get("platform"), 40).lower(),
             connector_id=_normalize_chat_context_text(context.get("connector_id"), 120),
+            resolve_identity=_normalize_chat_context_text(context.get("resolve_identity"), 20),
             external_chat_id=_normalize_chat_context_text(context.get("external_chat_id"), 200),
             external_chat_name=_normalize_chat_context_text(context.get("external_chat_name"), 200),
             thread_key=_normalize_chat_context_text(context.get("thread_key"), 240),
@@ -307,6 +310,7 @@ class ProjectChatStore:
             existing.source_type = _normalize_chat_source_type(context.get("source_type")) or existing.source_type
             existing.platform = _normalize_chat_context_text(context.get("platform") or existing.platform, 40).lower()
             existing.connector_id = _normalize_chat_context_text(context.get("connector_id") or existing.connector_id, 120)
+            existing.resolve_identity = _normalize_chat_context_text(context.get("resolve_identity") or existing.resolve_identity, 20)
             existing.external_chat_id = _normalize_chat_context_text(context.get("external_chat_id") or existing.external_chat_id, 200)
             existing.external_chat_name = _normalize_chat_context_text(context.get("external_chat_name") or existing.external_chat_name, 200)
             existing.thread_key = _normalize_chat_context_text(context.get("thread_key") or existing.thread_key, 240)
@@ -332,6 +336,7 @@ class ProjectChatStore:
             source_type=str(getattr(last_item, "source_type", "") or ""),
             platform=str(getattr(last_item, "platform", "") or ""),
             connector_id=str(getattr(last_item, "connector_id", "") or ""),
+            resolve_identity="",
             external_chat_id=str(getattr(last_item, "external_chat_id", "") or ""),
             external_chat_name=str(getattr(last_item, "external_chat_name", "") or ""),
             thread_key=str(getattr(last_item, "thread_key", "") or ""),
@@ -452,6 +457,7 @@ class ProjectChatStore:
                     source_type=normalized.source_type,
                     platform=normalized.platform,
                     connector_id=normalized.connector_id,
+                    resolve_identity=str(getattr(existing_session, "resolve_identity", "") or ""),
                     external_chat_id=normalized.external_chat_id,
                     external_chat_name=normalized.external_chat_name,
                     thread_key=normalized.thread_key,
@@ -466,6 +472,7 @@ class ProjectChatStore:
                 existing.source_type = str(existing.source_type or normalized.source_type or "").strip()
                 existing.platform = str(existing.platform or normalized.platform or "").strip()
                 existing.connector_id = str(existing.connector_id or normalized.connector_id or "").strip()
+                existing.resolve_identity = str(existing.resolve_identity or getattr(existing_session, "resolve_identity", "") or "").strip()
                 existing.external_chat_id = str(existing.external_chat_id or normalized.external_chat_id or "").strip()
                 existing.external_chat_name = str(existing.external_chat_name or normalized.external_chat_name or "").strip()
                 existing.thread_key = str(existing.thread_key or normalized.thread_key or "").strip()

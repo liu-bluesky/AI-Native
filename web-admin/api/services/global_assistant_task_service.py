@@ -11,7 +11,7 @@ import uuid
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from core.config import get_api_data_dir
@@ -765,10 +765,13 @@ def _execute_actions(
     trigger_type: str,
     message_text: str = "",
     source_context: dict[str, Any] | None = None,
+    action_filter: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for action in task.get("actions") or []:
         if not isinstance(action, dict) or not bool(action.get("enabled", True)):
+            continue
+        if action_filter is not None and not action_filter(action):
             continue
         action_type = str(action.get("type") or "record").strip() or "record"
         if action_type == "system_speech":
@@ -823,11 +826,13 @@ def _execute_actions(
                     }
                 )
             else:
+                archive_status = str(archive_result.get("status") or "").strip().lower()
+                result_status = "saved" if archive_status in {"saved", "archived", "written"} else (archive_status or "saved")
                 results.append(
                     {
                         "action_id": str(action.get("id") or "").strip(),
                         "action_type": action_type,
-                        "status": "saved",
+                        "status": result_status,
                         "trigger_type": trigger_type,
                         "message": str(archive_result.get("message") or "飞书群文档写入成功").strip()[:200],
                         "archive_key": archive_result.get("archive_key") or "",
@@ -920,7 +925,7 @@ def _execute_actions(
                 "message": str(action.get("label") or action_type).strip()[:200],
             }
         )
-    if not results:
+    if not results and action_filter is None:
         results.append(
             {
                 "action_id": "",
@@ -1292,6 +1297,7 @@ def execute_global_assistant_task(
     message_text: str = "",
     match_reason: str = "",
     source_context: dict[str, Any] | None = None,
+    action_filter: Callable[[dict[str, Any]], bool] | None = None,
 ) -> dict[str, Any] | None:
     owner = _normalize_username(username)
     normalized_project_id = str(project_id or "").strip()
@@ -1316,7 +1322,10 @@ def execute_global_assistant_task(
                 trigger_type=trigger_type,
                 message_text=message_text,
                 source_context=source_context,
+                action_filter=action_filter,
             )
+            if not action_results:
+                return None
             has_failed_action = any(str(item.get("status") or "").strip().lower() == "failed" for item in action_results)
             execution_record = {
                 "id": f"run-{uuid.uuid4().hex[:12]}",
@@ -1529,8 +1538,15 @@ def process_global_assistant_tasks_for_event(
     project_id: str = "",
     message_text: str,
     source_context: dict[str, Any] | None = None,
+    skip_auto_archive_actions: bool = False,
 ) -> list[dict[str, Any]]:
     processed: list[dict[str, Any]] = []
+    action_filter: Callable[[dict[str, Any]], bool] | None = None
+    if skip_auto_archive_actions:
+        action_filter = lambda action: not (
+            str(action.get("type") or "record").strip() == "project_chat"
+            and is_feishu_auto_archive_action(action)
+        )
     for task in match_global_assistant_tasks_for_event(
         username=username,
         project_id=project_id,
@@ -1545,6 +1561,8 @@ def process_global_assistant_tasks_for_event(
             message_text=message_text,
             match_reason=str(task.get("match_reason") or ""),
             source_context=source_context,
+            action_filter=action_filter,
         )
-        processed.append({**task, "latest_execution": (executed or {}).get("latest_execution")})
+        if executed:
+            processed.append({**task, "latest_execution": executed.get("latest_execution")})
     return processed

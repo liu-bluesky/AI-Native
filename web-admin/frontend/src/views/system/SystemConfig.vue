@@ -1239,7 +1239,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 import api from "@/utils/api.js";
 import { resolveSettingsAwarePath } from "@/utils/chat-settings-route.js";
@@ -1383,33 +1383,6 @@ const EMPLOYEE_AUTO_RULE_SOURCE_OPTIONS = [
   },
 ];
 const RISK_LEVEL_OPTIONS = ["none", "low", "medium", "high", "critical"];
-const DESKTOP_ARTIFACT_TARGET_OPTIONS = [
-  {
-    label: "Windows 安装版",
-    value: "windows:setup",
-    platform: "windows",
-    variant: "setup",
-    accept: ".exe",
-    hint: "上传 `.exe` 安装包。新文件会覆盖之前的 Windows 安装版。",
-  },
-  {
-    label: "Windows 便携版",
-    value: "windows:portable",
-    platform: "windows",
-    variant: "portable",
-    accept: ".exe",
-    hint: "上传 `.exe` 便携包。新文件会覆盖之前的 Windows 便携版。",
-  },
-  {
-    label: "macOS 安装包",
-    value: "macos:dmg",
-    platform: "macos",
-    variant: "dmg",
-    accept: ".dmg",
-    hint: "上传 `.dmg` 文件。新文件会覆盖之前的 macOS 安装包。",
-  },
-];
-
 function cloneConfig(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -1420,22 +1393,8 @@ const activeTab = ref("defaults");
 const route = useRoute();
 const router = useRouter();
 const skillsLoading = ref(false);
-const connectorsLoading = ref(false);
-const uploadingDesktopArtifact = ref(false);
-const downloadingDesktopArtifactKey = ref("");
-const deletingConnectorId = ref("");
-const connectorShareOptionsLoading = ref(false);
-const savingConnectorLlmSharing = ref(false);
 const refreshingPanels = ref(false);
 const mcpServers = ref([]);
-const connectorItems = ref([]);
-const desktopArtifactItems = ref([]);
-const desktopArtifactUploadRef = ref(null);
-const desktopArtifactUploadFile = ref(null);
-const desktopArtifactUploadFileList = ref([]);
-const showConnectorLlmSharingDialog = ref(false);
-const connectorShareUserOptions = ref([]);
-const connectorShareRoleOptions = ref([]);
 const globalAssistantChatProviderOptions = ref([]);
 const voiceProviderOptions = ref([]);
 const voiceUserOptions = ref([]);
@@ -1445,17 +1404,6 @@ const voiceOutputVoiceOptions = ref([]);
 const projectOptions = ref([]);
 const voiceOutputVoiceCatalogLoading = ref(false);
 const voiceOutputVoiceCatalogMessage = ref("");
-const desktopArtifactUploadForm = ref({
-  target: "windows:setup",
-  version: "",
-});
-const connectorLlmSharingForm = ref({
-  connector_id: "",
-  connector_name: "",
-  llm_shared_with_usernames: [],
-  llm_shared_with_roles: [],
-});
-
 const form = ref({
   enable_project_manual_generation: false,
   enable_employee_manual_generation: false,
@@ -1520,24 +1468,6 @@ const totalErrorCount = computed(() =>
     0,
   ),
 );
-const onlineConnectorCount = computed(
-  () => connectorItems.value.filter((item) => item?.online).length,
-);
-const selectedDesktopArtifactTarget = computed(() =>
-  DESKTOP_ARTIFACT_TARGET_OPTIONS.find(
-    (item) => item.value === desktopArtifactUploadForm.value.target,
-  ) || DESKTOP_ARTIFACT_TARGET_OPTIONS[0],
-);
-const desktopArtifactUploadAccept = computed(
-  () => selectedDesktopArtifactTarget.value?.accept || ".exe,.dmg",
-);
-const canUploadDesktopArtifact = computed(
-  () =>
-    !!desktopArtifactUploadFile.value &&
-    !!String(desktopArtifactUploadForm.value.version || "").trim() &&
-    !!selectedDesktopArtifactTarget.value,
-);
-
 const configLineCount = computed(
   () => String(form.value.mcp_config_text || "").split("\n").length,
 );
@@ -2224,337 +2154,6 @@ function toggleMcpServer(serverName, enabled) {
     });
   } catch (err) {
     ElMessage.error(err?.message || "切换 MCP 服务状态失败");
-  }
-}
-
-function parseDateTime(value) {
-  const raw = String(value || "").trim();
-  if (!raw) {
-    return null;
-  }
-  const date = new Date(raw);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function formatDateTime(value) {
-  const date = parseDateTime(value);
-  if (!date) {
-    return "-";
-  }
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(date);
-}
-
-function formatPlatform(value) {
-  const raw = String(value || "").trim().toLowerCase();
-  if (!raw) {
-    return "-";
-  }
-  if (raw === "macos" || raw === "darwin") {
-    return "macOS";
-  }
-  if (raw === "windows" || raw === "win32" || raw === "nt") {
-    return "Windows";
-  }
-  return raw;
-}
-
-function formatFileSize(value) {
-  const size = Number(value || 0);
-  if (!Number.isFinite(size) || size <= 0) {
-    return "-";
-  }
-  if (size < 1024) {
-    return `${size} B`;
-  }
-  if (size < 1024 * 1024) {
-    return `${(size / 1024).toFixed(1)} KB`;
-  }
-  if (size < 1024 * 1024 * 1024) {
-    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
-
-function handleDesktopArtifactFileChange(uploadFile, uploadFiles) {
-  desktopArtifactUploadFileList.value = uploadFiles.slice(-1);
-  desktopArtifactUploadFile.value = uploadFile?.raw || null;
-}
-
-function handleDesktopArtifactFileRemove() {
-  desktopArtifactUploadFileList.value = [];
-  desktopArtifactUploadFile.value = null;
-}
-
-function handleDesktopArtifactFileExceed() {
-  ElMessage.warning("每次只能上传一个安装包文件");
-}
-
-function resetDesktopArtifactUploadForm(options = {}) {
-  const preserveTarget = options.preserveTarget !== false;
-  const nextTarget = preserveTarget
-    ? String(desktopArtifactUploadForm.value.target || "windows:setup")
-    : "windows:setup";
-  desktopArtifactUploadForm.value = {
-    target: nextTarget,
-    version: "",
-  };
-  desktopArtifactUploadFile.value = null;
-  desktopArtifactUploadFileList.value = [];
-  desktopArtifactUploadRef.value?.clearFiles?.();
-}
-
-function connectorCapabilityLabels(item) {
-  const capabilities =
-    item?.capabilities && typeof item.capabilities === "object"
-      ? item.capabilities
-      : {};
-  const labels = [];
-  if (capabilities.workspace) {
-    labels.push("本地目录");
-  }
-  if (capabilities.exec_stream) {
-    labels.push("命令执行");
-  }
-  if (capabilities.pty) {
-    labels.push("终端 PTY");
-  }
-  if (capabilities.local_llm_bridge) {
-    labels.push("本地模型桥接");
-  }
-  return labels.length ? labels : ["已注册"];
-}
-
-function connectorLlmSharingSummary(item) {
-  const usernames = Array.isArray(item?.llm_shared_with_usernames)
-    ? item.llm_shared_with_usernames
-        .map((entry) => String(entry || "").trim())
-        .filter(Boolean)
-    : [];
-  const roleIds = Array.isArray(item?.llm_shared_with_roles)
-    ? item.llm_shared_with_roles
-        .map((entry) => String(entry || "").trim())
-        .filter(Boolean)
-    : [];
-  if (!usernames.length && !roleIds.length) {
-    return "未共享";
-  }
-  const parts = [];
-  if (usernames.length) {
-    parts.push(`用户 ${usernames.join("、")}`);
-  }
-  if (roleIds.length) {
-    const roleNames = roleIds.map((roleId) => {
-      const matched = connectorShareRoleOptions.value.find((item) => item.id === roleId);
-      return matched?.name || roleId;
-    });
-    parts.push(`角色 ${roleNames.join("、")}`);
-  }
-  return parts.join("；");
-}
-
-async function copyText(value) {
-  const text = String(value || "").trim();
-  if (!text) {
-    ElMessage.warning("没有可复制的内容");
-    return;
-  }
-  try {
-    if (navigator?.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      const textarea = document.createElement("textarea");
-      textarea.value = text;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textarea);
-    }
-    ElMessage.success("已复制");
-  } catch {
-    ElMessage.error("复制失败，请手动复制");
-  }
-}
-
-async function fetchLocalConnectors(options = {}) {
-  connectorItems.value = [];
-  desktopArtifactItems.value = [];
-  connectorsLoading.value = false;
-}
-
-async function ensureConnectorShareOptionsLoaded() {
-  if (connectorShareUserOptions.value.length || connectorShareRoleOptions.value.length) {
-    return;
-  }
-  connectorShareOptionsLoading.value = true;
-  try {
-    const data = await api.get("/local-connectors/llm-share-options");
-    connectorShareUserOptions.value = Array.isArray(data?.users) ? data.users : [];
-    connectorShareRoleOptions.value = Array.isArray(data?.roles) ? data.roles : [];
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "加载共享范围失败");
-    throw err;
-  } finally {
-    connectorShareOptionsLoading.value = false;
-  }
-}
-
-async function openConnectorLlmSharingDialog(item) {
-  if (!item?.can_manage_llm_sharing) {
-    return;
-  }
-  try {
-    await ensureConnectorShareOptionsLoaded();
-  } catch {
-    return;
-  }
-  connectorLlmSharingForm.value = {
-    connector_id: String(item?.id || "").trim(),
-    connector_name: String(item?.connector_name || item?.id || "").trim(),
-    llm_shared_with_usernames: Array.isArray(item?.llm_shared_with_usernames)
-      ? item.llm_shared_with_usernames
-          .map((entry) => String(entry || "").trim())
-          .filter(Boolean)
-      : [],
-    llm_shared_with_roles: Array.isArray(item?.llm_shared_with_roles)
-      ? item.llm_shared_with_roles
-          .map((entry) => String(entry || "").trim())
-          .filter(Boolean)
-      : [],
-  };
-  showConnectorLlmSharingDialog.value = true;
-}
-
-async function saveConnectorLlmSharing() {
-  const connectorId = String(connectorLlmSharingForm.value.connector_id || "").trim();
-  if (!connectorId) {
-    ElMessage.warning("缺少连接器 ID");
-    return;
-  }
-  savingConnectorLlmSharing.value = true;
-  try {
-    const data = await api.patch(
-      `/local-connectors/${encodeURIComponent(connectorId)}/llm-sharing`,
-      {
-        llm_shared_with_usernames: connectorLlmSharingForm.value.llm_shared_with_usernames,
-        llm_shared_with_roles: connectorLlmSharingForm.value.llm_shared_with_roles,
-      },
-    );
-    const updatedConnector = data?.connector;
-    if (updatedConnector?.id) {
-      connectorItems.value = connectorItems.value.map((item) =>
-        item.id === updatedConnector.id ? updatedConnector : item,
-      );
-    }
-    showConnectorLlmSharingDialog.value = false;
-    ElMessage.success("本地模型共享设置已更新");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "保存共享设置失败");
-  } finally {
-    savingConnectorLlmSharing.value = false;
-  }
-}
-
-async function downloadDesktopArtifact(item) {
-  const filename = String(item?.filename || "").trim();
-  if (!filename) {
-    ElMessage.warning("缺少桌面包文件名");
-    return;
-  }
-  downloadingDesktopArtifactKey.value = filename;
-  try {
-    const response = await api.get("/local-connectors/desktop-artifacts/download", {
-      params: { name: filename },
-      responseType: "blob",
-    });
-    const url = URL.createObjectURL(response);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-    ElMessage.success("桌面安装包已下载");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "下载桌面安装包失败");
-  } finally {
-    downloadingDesktopArtifactKey.value = "";
-  }
-}
-
-async function uploadDesktopArtifact() {
-  const target = selectedDesktopArtifactTarget.value;
-  const version = String(desktopArtifactUploadForm.value.version || "").trim();
-  const file = desktopArtifactUploadFile.value;
-  if (!target) {
-    ElMessage.warning("请选择安装包类型");
-    return;
-  }
-  if (!version) {
-    ElMessage.warning("请输入版本号");
-    return;
-  }
-  if (!file) {
-    ElMessage.warning("请先选择安装包文件");
-    return;
-  }
-  if (!String(file.name || "").toLowerCase().endsWith(target.accept.toLowerCase())) {
-    ElMessage.warning(`当前类型只支持上传 ${target.accept} 文件`);
-    return;
-  }
-
-  uploadingDesktopArtifact.value = true;
-  try {
-    const payload = new FormData();
-    payload.append("platform", target.platform);
-    payload.append("variant", target.variant);
-    payload.append("version", version);
-    payload.append("file", file);
-    await api.post("/local-connectors/desktop-artifacts/upload", payload, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
-    resetDesktopArtifactUploadForm();
-    await fetchLocalConnectors({ silent: true });
-    ElMessage.success(`${target.label} 已上传，旧包已覆盖`);
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "上传桌面安装包失败");
-  } finally {
-    uploadingDesktopArtifact.value = false;
-  }
-}
-
-async function deleteConnector(item) {
-  const connectorId = String(item?.id || "").trim();
-  if (!connectorId) {
-    return;
-  }
-  try {
-    await ElMessageBox.confirm(
-      `确定删除本地连接器「${item?.connector_name || connectorId}」？`,
-      "删除连接器",
-      {
-        type: "warning",
-      },
-    );
-  } catch {
-    return;
-  }
-  deletingConnectorId.value = connectorId;
-  try {
-    await api.delete(`/local-connectors/${connectorId}`);
-    connectorItems.value = connectorItems.value.filter((entry) => entry.id !== connectorId);
-    ElMessage.success("连接器已删除");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "删除连接器失败");
-  } finally {
-    deletingConnectorId.value = "";
   }
 }
 
@@ -3366,192 +2965,6 @@ watch(activeTab, (value) => {
   margin-top: 16px;
 }
 
-.connector-panel {
-  margin-top: 16px;
-}
-
-.connector-metric-row {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.connector-metric {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px 16px;
-  border-radius: 18px;
-  border: 1px solid rgba(112, 128, 144, 0.14);
-  background: rgba(248, 250, 252, 0.9);
-}
-
-.connector-metric span {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.connector-metric strong {
-  color: var(--text-main);
-  font-size: 28px;
-  line-height: 1;
-}
-
-.connector-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
-  gap: 16px;
-}
-
-.connector-column {
-  min-width: 0;
-}
-
-.connector-subhead {
-  margin-bottom: 14px;
-}
-
-.connector-subhead h4 {
-  margin: 0;
-  color: var(--text-main);
-  font-size: 15px;
-}
-
-.connector-subhead p {
-  margin: 6px 0 0;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.pair-create-card,
-.pair-code-card,
-.connector-device-card {
-  padding: 16px;
-  border-radius: 18px;
-  border: 1px solid rgba(112, 128, 144, 0.14);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.98),
-    rgba(248, 250, 252, 0.92)
-  );
-}
-
-.pair-create-card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.pair-create-row {
-  display: flex;
-  gap: 10px;
-}
-
-.pair-ttl-select {
-  flex: 1;
-}
-
-.pair-custom-ttl-input {
-  width: 160px;
-  flex-shrink: 0;
-}
-
-.pair-code-list,
-.connector-card-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.pair-code-top,
-.connector-device-top {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.pair-code-value,
-.connector-device-title {
-  color: var(--text-main);
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.pair-code-meta,
-.connector-device-subtitle {
-  margin-top: 6px;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-.pair-code-info,
-.connector-device-info {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 12px;
-  margin-top: 14px;
-}
-
-.pair-code-info span,
-.connector-device-info span {
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-.pair-code-actions,
-.connector-device-actions {
-  display: flex;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.connector-device-tags {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.connector-capability-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 14px;
-}
-
-.connector-share-summary {
-  margin-top: 12px;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.7;
-  word-break: break-word;
-}
-
-.connector-error {
-  margin-top: 14px;
-}
-
-.connector-sharing-copy {
-  margin-bottom: 16px;
-  color: var(--text-muted);
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.connector-sharing-form {
-  display: grid;
-  gap: 4px;
-}
-
 .server-list {
   display: flex;
   flex-direction: column;
@@ -3721,121 +3134,6 @@ watch(activeTab, (value) => {
   border: 1px solid rgba(112, 128, 144, 0.14);
 }
 
-.desktop-artifact-card {
-  margin-bottom: 16px;
-}
-
-.desktop-artifact-card__head {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.desktop-artifact-card__title {
-  color: var(--text-main);
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.desktop-artifact-card__desc {
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.desktop-artifact-upload-form {
-  margin-bottom: 14px;
-  padding: 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(112, 128, 144, 0.14);
-  background: rgba(247, 249, 251, 0.92);
-}
-
-.desktop-artifact-upload-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.desktop-artifact-upload {
-  width: 100%;
-}
-
-.desktop-artifact-upload__hint {
-  margin-top: 6px;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.desktop-artifact-upload-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.desktop-artifact-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.desktop-artifact-item {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 14px;
-  text-align: left;
-  border: 1px solid rgba(112, 128, 144, 0.14);
-  border-radius: 14px;
-  background: #f7f9fb;
-  cursor: pointer;
-  transition:
-    border-color 0.2s ease,
-    transform 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-.desktop-artifact-item:hover {
-  border-color: rgba(40, 94, 255, 0.28);
-  transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(28, 55, 90, 0.08);
-}
-
-.desktop-artifact-item:disabled {
-  cursor: not-allowed;
-  opacity: 0.65;
-  transform: none;
-  box-shadow: none;
-}
-
-.desktop-artifact-item__top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.desktop-artifact-item__label {
-  color: var(--text-main);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.desktop-artifact-item__size,
-.desktop-artifact-item__meta {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.desktop-artifact-item__desc {
-  color: var(--text-main);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
 .check-item-top {
   display: flex;
   align-items: center;
@@ -3872,11 +3170,8 @@ watch(activeTab, (value) => {
 
 @media (max-width: 1100px) {
   .content-grid,
-  .connector-grid,
-  .connector-metric-row,
   .employee-skill-site-card__grid,
   .guide-module-meta-grid,
-  .desktop-artifact-upload-grid,
   .skill-section-grid,
   .check-list,
   .overview-grid,
@@ -3906,9 +3201,7 @@ watch(activeTab, (value) => {
   .switch-card,
   .voice-output-voice-field,
   .employee-skill-site-card__top,
-  .server-switch-item,
-  .pair-code-top,
-  .connector-device-top {
+  .server-switch-item {
     flex-direction: column;
     align-items: stretch;
   }
@@ -3918,25 +3211,16 @@ watch(activeTab, (value) => {
     width: 100%;
   }
 
-  .number-grid,
-  .pair-code-info,
-  .connector-device-info,
-  .desktop-artifact-list {
+  .number-grid {
     grid-template-columns: 1fr;
   }
 
-  .server-switch-actions,
-  .pair-create-row {
+  .server-switch-actions {
     justify-content: space-between;
   }
 
   .server-summary {
     white-space: normal;
-  }
-
-  .desktop-artifact-upload-actions {
-    flex-direction: column;
-    align-items: stretch;
   }
 
   .hero-highlights {

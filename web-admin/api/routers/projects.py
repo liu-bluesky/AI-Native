@@ -133,6 +133,7 @@ from models.requests import (
     ProjectChatTaskNodeUpdateReq,
     ProjectChatTaskTreeGenerateReq,
     ProjectCreateReq,
+    ProjectWorkspaceFileWriteReq,
     ProjectWorkflowSkillUpdateReq,
     ProjectMaterialAssetCreateReq,
     ProjectMaterialAssetUpdateReq,
@@ -6135,6 +6136,7 @@ def _project_chat_source_context_from_raw(raw: Any) -> dict[str, Any]:
         "source_type",
         "platform",
         "connector_id",
+        "resolve_identity",
         "external_chat_id",
         "external_chat_name",
         "group_name",
@@ -6191,6 +6193,7 @@ def _normalize_project_chat_source_context(raw: Any, *, project_id: str = "", de
             "source_type",
             "platform",
             "connector_id",
+            "resolve_identity",
             "external_chat_id",
             "external_chat_name",
             "group_name",
@@ -6220,6 +6223,7 @@ def _normalize_project_chat_source_context(raw: Any, *, project_id: str = "", de
         "source_type": source_type or "manual_ai_chat",
         "platform": platform,
         "connector_id": connector_id,
+        "resolve_identity": _normalize_project_chat_context_text(context.get("resolve_identity"), 20),
         "external_chat_id": external_chat_id,
         "external_chat_name": external_chat_name,
         "external_message_id": _normalize_project_chat_context_text(context.get("external_message_id"), 200),
@@ -6238,6 +6242,7 @@ def _project_chat_session_context(item: Any) -> dict[str, str]:
             "source_type": _normalize_project_chat_source_type(getattr(item, "source_type", "")),
             "platform": _normalize_project_chat_platform(getattr(item, "platform", "")),
             "connector_id": _normalize_project_chat_context_text(getattr(item, "connector_id", ""), 120),
+            "resolve_identity": _normalize_project_chat_context_text(getattr(item, "resolve_identity", ""), 20),
             "external_chat_id": _normalize_project_chat_context_text(getattr(item, "external_chat_id", ""), 200),
             "external_chat_name": _normalize_project_chat_context_text(getattr(item, "external_chat_name", ""), 200),
             "thread_key": _normalize_project_chat_context_text(getattr(item, "thread_key", ""), 240),
@@ -9260,6 +9265,155 @@ async def pick_workspace_file(
     return {"path": selected, "cancelled": False, "source": "native_dialog"}
 
 
+def _resolve_project_workspace_root(project: ProjectConfig) -> Path:
+    workspace_path = str(getattr(project, "workspace_path", "") or "").strip()
+    if not workspace_path:
+        raise HTTPException(400, "项目未配置工作区路径")
+    root = Path(workspace_path).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(400, "项目工作区不存在或不是目录")
+    return root
+
+
+def _resolve_project_workspace_child(root: Path, raw_path: Any = "") -> Path:
+    raw_value = str(raw_path or "").strip()
+    candidate = Path(raw_value).expanduser() if raw_value else root
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(400, "路径必须位于项目工作区内") from exc
+    return resolved
+
+
+def _project_workspace_relative_path(root: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return path.name
+
+
+@router.get("/{project_id}/workspace/files")
+async def list_project_workspace_files(
+    project_id: str,
+    path: str = Query("", max_length=1000),
+    auth_payload: dict = Depends(require_auth),
+):
+    project = _ensure_project_access(project_id, auth_payload)
+    root = _resolve_project_workspace_root(project)
+    directory = _resolve_project_workspace_child(root, path)
+    if not directory.exists():
+        raise HTTPException(404, "目录不存在")
+    if not directory.is_dir():
+        raise HTTPException(400, "路径不是目录")
+    items: list[dict[str, Any]] = []
+    try:
+        children = sorted(
+            directory.iterdir(),
+            key=lambda item: (not item.is_dir(), item.name.lower()),
+        )
+    except OSError as exc:
+        raise HTTPException(400, f"无法读取目录：{exc}") from exc
+    for child in children[:500]:
+        try:
+            stat = child.stat()
+        except OSError:
+            continue
+        if child.name in {".git", "node_modules", ".venv", "__pycache__"}:
+            hidden_weight = 1
+        else:
+            hidden_weight = 0
+        items.append(
+            {
+                "name": child.name,
+                "path": _project_workspace_relative_path(root, child),
+                "kind": "directory" if child.is_dir() else "file",
+                "size": stat.st_size,
+                "modified_at": datetime.fromtimestamp(
+                    stat.st_mtime,
+                    tz=timezone.utc,
+                ).isoformat(),
+                "hidden_weight": hidden_weight,
+            }
+        )
+    items.sort(key=lambda item: (int(item.get("hidden_weight") or 0), item["kind"] != "directory", item["name"].lower()))
+    for item in items:
+        item.pop("hidden_weight", None)
+    return {
+        "root": str(root),
+        "path": _project_workspace_relative_path(root, directory),
+        "items": items,
+    }
+
+
+@router.get("/{project_id}/workspace/file")
+async def read_project_workspace_file(
+    project_id: str,
+    path: str = Query(..., min_length=1, max_length=1000),
+    auth_payload: dict = Depends(require_auth),
+):
+    project = _ensure_project_access(project_id, auth_payload)
+    root = _resolve_project_workspace_root(project)
+    target = _resolve_project_workspace_child(root, path)
+    if not target.exists():
+        raise HTTPException(404, "文件不存在")
+    if not target.is_file():
+        raise HTTPException(400, "路径不是文件")
+    stat = target.stat()
+    if stat.st_size > 1024 * 1024:
+        raise HTTPException(413, "文件超过 1MB，暂不支持在侧栏直接打开")
+    try:
+        raw = target.read_bytes()
+    except OSError as exc:
+        raise HTTPException(400, f"无法读取文件：{exc}") from exc
+    try:
+        content = raw.decode("utf-8")
+        encoding = "utf-8"
+    except UnicodeDecodeError:
+        content = raw.decode("utf-8", errors="replace")
+        encoding = "utf-8-replace"
+    return {
+        "root": str(root),
+        "path": _project_workspace_relative_path(root, target),
+        "name": target.name,
+        "size": stat.st_size,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        "encoding": encoding,
+        "content": content,
+    }
+
+
+@router.put("/{project_id}/workspace/file")
+async def write_project_workspace_file(
+    project_id: str,
+    req: ProjectWorkspaceFileWriteReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    project = _ensure_project_access(project_id, auth_payload)
+    root = _resolve_project_workspace_root(project)
+    target = _resolve_project_workspace_child(root, req.path)
+    if target.exists() and not target.is_file():
+        raise HTTPException(400, "路径不是文件")
+    content = str(req.content or "")
+    if len(content.encode("utf-8")) > 1024 * 1024:
+        raise HTTPException(413, "文件超过 1MB，暂不支持在侧栏直接保存")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        stat = target.stat()
+    except OSError as exc:
+        raise HTTPException(400, f"无法写入文件：{exc}") from exc
+    return {
+        "saved": True,
+        "root": str(root),
+        "path": _project_workspace_relative_path(root, target),
+        "size": stat.st_size,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+    }
+
+
 @router.post("")
 async def create_project(req: ProjectCreateReq, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.projects")
@@ -11056,6 +11210,7 @@ def _serialize_chat_session(item: Any) -> dict[str, Any]:
         "source_type": str(getattr(item, "source_type", "") or ""),
         "platform": str(getattr(item, "platform", "") or ""),
         "connector_id": str(getattr(item, "connector_id", "") or ""),
+        "resolve_identity": str(getattr(item, "resolve_identity", "") or ""),
         "external_chat_id": str(getattr(item, "external_chat_id", "") or ""),
         "external_chat_name": str(getattr(item, "external_chat_name", "") or ""),
         "thread_key": str(getattr(item, "thread_key", "") or ""),
@@ -13691,6 +13846,7 @@ async def update_project_chat_session(
 async def resolve_project_chat_session_source(
     project_id: str,
     chat_session_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
     auth_payload: dict = Depends(require_auth),
 ):
     from services.feishu_bot_service import get_feishu_connector, resolve_feishu_chat_by_name
@@ -13717,8 +13873,11 @@ async def resolve_project_chat_session_source(
     connector = get_feishu_connector(connector_id)
     if connector is None or not bool(connector.get("enabled", True)):
         raise HTTPException(404, "飞书机器人连接器不存在或未启用")
+    resolve_identity = str((payload or {}).get("identity") or source_context.get("resolve_identity") or "bot").strip().lower()
+    if resolve_identity not in {"bot", "user"}:
+        resolve_identity = "bot"
     try:
-        chat = resolve_feishu_chat_by_name(connector, external_chat_name)
+        chat = resolve_feishu_chat_by_name(connector, external_chat_name, identity=resolve_identity)
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
     next_context = _normalize_project_chat_source_context(
@@ -13729,6 +13888,7 @@ async def resolve_project_chat_session_source(
             "connector_id": connector_id,
             "external_chat_id": chat.get("chat_id") or "",
             "external_chat_name": chat.get("name") or external_chat_name,
+            "resolve_identity": resolve_identity,
             "thread_key": "",
         },
         project_id=project_id,

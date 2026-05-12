@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 from core.config import get_api_data_dir
 from models.requests import ProjectChatReq
 from services.bot_connector_service import list_bot_connectors
-from services.feishu_archive_writer_service import append_feishu_archive_attachments
+from services.feishu_archive_writer_service import append_feishu_archive_attachments, is_feishu_auto_archive_action
 from services.project_chat_execution_service import run_project_chat_once
 from services.global_assistant_task_service import (
     execute_global_assistant_task,
@@ -360,10 +360,118 @@ def check_feishu_connector_credentials(connector: dict[str, Any]) -> dict[str, A
     return {"ok": bool(token), "message": "飞书应用凭证有效"}
 
 
-def resolve_feishu_chat_by_name(connector: dict[str, Any], chat_name: str) -> dict[str, Any]:
+def _normalize_feishu_chat_resolve_identity(raw: Any) -> str:
+    value = str(raw or "bot").strip().lower()
+    if value in {"user", "user_access_token", "lark_cli_user"}:
+        return "user"
+    return "bot"
+
+
+def _extract_feishu_chat_search_items(payload: Any) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    for container in (payload, data):
+        for key in ("items", "chats", "chatters", "groups", "results"):
+            raw_items = container.get(key)
+            if isinstance(raw_items, list):
+                return raw_items
+    return []
+
+
+def _select_feishu_chat_search_candidate(items: list[dict[str, str]], query: str, *, identity: str) -> dict[str, str]:
+    exact = [item for item in items if item.get("name") == query]
+    candidates = exact or items
+    if not candidates:
+        subject = "当前登录用户可见" if identity == "user" else "机器人可见"
+        raise RuntimeError(
+            f"没有搜索到{subject}的飞书群，请确认"
+            + (
+                "已完成 lark-cli 用户授权、用户在群内"
+                if identity == "user"
+                else "机器人在群内、应用权限已开通 im:chat:read"
+            )
+            + "，或换更精确的群名"
+        )
+    if len(candidates) > 1:
+        preview = "、".join(f"{item.get('name') or '未命名'}({item.get('chat_id')})" for item in candidates[:5])
+        raise RuntimeError(f"搜索到多个飞书群，请把群名称填得更精确：{preview}")
+    return candidates[0]
+
+
+def _format_lark_cli_chat_search_error(output: str, *, identity: str) -> str:
+    text = str(output or "").strip()
+    try:
+        payload = json.loads(text or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    error = payload.get("error") if isinstance(payload, dict) and isinstance(payload.get("error"), dict) else {}
+    error_type = str(error.get("type") or "").strip()
+    message = str(error.get("message") or "").strip()
+    update = payload.get("_notice", {}).get("update", {}) if isinstance(payload, dict) else {}
+    update_hint = ""
+    if isinstance(update, dict) and update.get("latest") and update.get("current"):
+        update_hint = f"；检测到 lark-cli 可更新：当前 {update.get('current')}，最新 {update.get('latest')}"
+    if identity == "user" and ("need_user_authorization" in message or error_type == "api_error"):
+        return (
+            "用户身份搜索飞书群需要先完成 lark-cli 用户授权。"
+            "请在 API 服务运行环境执行：lark-cli auth login --scope \"im:chat:read\"，"
+            "并用当前报错里的用户完成授权后再重试。"
+            f"{update_hint}"
+        )
+    if message:
+        return f"lark-cli 搜索飞书群失败：{message}{update_hint}"
+    return f"lark-cli 搜索飞书群失败：{text[:800]}"
+
+
+def _resolve_feishu_chat_by_name_with_lark_cli(chat_name: str, *, identity: str) -> dict[str, Any]:
+    command = [
+        "lark-cli",
+        "im",
+        "+chat-search",
+        "--as",
+        identity,
+        "--query",
+        chat_name,
+        "--search-types",
+        "private,public_joined",
+        "--page-size",
+        "20",
+        "--format",
+        "json",
+        "--disable-search-by-user",
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError("未找到 lark-cli，请先安装 @larksuite/cli 并重新启动服务") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("lark-cli 搜索飞书群超时，请检查飞书授权或网络状态") from exc
+    if completed.returncode != 0:
+        output = (completed.stderr or completed.stdout or "").strip()[:800]
+        raise RuntimeError(_format_lark_cli_chat_search_error(output, identity=identity))
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        output = (completed.stdout or "").strip()[:800]
+        raise RuntimeError(f"lark-cli 搜索飞书群返回了非 JSON 内容：{output}") from exc
+    items = [
+        item
+        for item in (_normalize_feishu_chat_search_item(raw) for raw in _extract_feishu_chat_search_items(payload) if isinstance(raw, dict))
+        if item.get("chat_id")
+    ]
+    return _select_feishu_chat_search_candidate(items, chat_name, identity=identity)
+
+
+def resolve_feishu_chat_by_name(connector: dict[str, Any], chat_name: str, *, identity: str = "bot") -> dict[str, Any]:
     query = str(chat_name or "").strip()
     if not query:
         raise RuntimeError("请先填写群名称")
+    normalized_identity = _normalize_feishu_chat_resolve_identity(identity)
+    if normalized_identity == "user":
+        return _resolve_feishu_chat_by_name_with_lark_cli(query, identity=normalized_identity)
     token = _get_feishu_tenant_access_token(connector)
     response = requests.post(
         _feishu_open_api_url("/open-apis/im/v2/chats/search"),
@@ -379,21 +487,12 @@ def resolve_feishu_chat_by_name(connector: dict[str, Any], chat_name: str) -> di
     payload = response.json()
     if int(payload.get("code") or 0) != 0:
         raise RuntimeError(str(payload.get("msg") or "飞书群搜索失败"))
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    raw_items = data.get("items") or data.get("chats") or data.get("chatters") or []
     items = [
         item
-        for item in (_normalize_feishu_chat_search_item(raw) for raw in raw_items if isinstance(raw, dict))
+        for item in (_normalize_feishu_chat_search_item(raw) for raw in _extract_feishu_chat_search_items(payload) if isinstance(raw, dict))
         if item.get("chat_id")
     ]
-    exact = [item for item in items if item.get("name") == query]
-    candidates = exact or items
-    if not candidates:
-        raise RuntimeError("没有搜索到机器人可见的飞书群，请确认机器人在群内、应用权限已开通 im:chat:read，或换更精确的群名")
-    if len(candidates) > 1:
-        preview = "、".join(f"{item.get('name') or '未命名'}({item.get('chat_id')})" for item in candidates[:5])
-        raise RuntimeError(f"搜索到多个飞书群，请把群名称填得更精确：{preview}")
-    return candidates[0]
+    return _select_feishu_chat_search_candidate(items, query, identity=normalized_identity)
 
 
 def build_feishu_event_handler(
@@ -661,6 +760,130 @@ def _find_or_bind_feishu_manual_chat_session(
     return str(getattr(target, "id", "") or "").strip(), projects_router._project_chat_session_context(target)
 
 
+def _fallback_feishu_chat_name(chat_id: str, chat_type: str) -> str:
+    suffix = _safe_resource_token(str(chat_id or "").strip()[-8:] or "unknown")
+    prefix = "飞书私聊" if str(chat_type or "").strip().lower() == "p2p" else "飞书群"
+    return f"{prefix}-{suffix}"
+
+
+def _resolve_feishu_chat_name_by_id(connector: dict[str, Any], chat_id: str) -> str:
+    normalized_chat_id = str(chat_id or "").strip()
+    if not normalized_chat_id:
+        return ""
+    try:
+        token = _get_feishu_tenant_access_token(connector)
+        response = requests.get(
+            _feishu_open_api_url(f"/open-apis/im/v1/chats/{quote(normalized_chat_id, safe='')}"),
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        logger.debug(
+            "failed to resolve feishu chat name by id",
+            extra={"chat_id": normalized_chat_id, "connector_id": str(connector.get("id") or "")},
+            exc_info=True,
+        )
+        return ""
+    if int(payload.get("code") or 0) != 0:
+        return ""
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    return str(data.get("name") or data.get("chat_name") or "").strip()
+
+
+def _resolve_feishu_fallback_project(connector: dict[str, Any], projects_router: Any) -> tuple[str, str] | None:
+    configured_project_id = str(connector.get("project_id") or "").strip()
+    if configured_project_id:
+        project = projects_router.project_store.get(configured_project_id)
+        if project is not None:
+            return configured_project_id, _project_chat_username(project)
+        logger.warning(
+            "feishu connector configured project was not found, falling back to any available runtime project",
+            extra={
+                "connector_id": str(connector.get("id") or "").strip(),
+                "project_id": configured_project_id,
+            },
+        )
+
+    projects = [
+        project
+        for project in projects_router.project_store.list_all()
+        if str(getattr(project, "id", "") or "").strip()
+    ]
+    if not projects:
+        logger.warning(
+            "feishu message ignored because no runtime project is available",
+            extra={
+                "connector_id": str(connector.get("id") or "").strip(),
+            },
+        )
+        return None
+    project = projects[0]
+    project_id = str(getattr(project, "id", "") or "").strip()
+    if len(projects) > 1:
+        logger.info(
+            "feishu connector has no project binding; using first available runtime project",
+            extra={
+                "connector_id": str(connector.get("id") or "").strip(),
+                "project_id": project_id,
+                "project_count": len(projects),
+            },
+        )
+    return project_id, _project_chat_username(project)
+
+
+def _create_feishu_fallback_chat_session(
+    connector: dict[str, Any],
+    *,
+    connector_id: str,
+    chat_id: str,
+    chat_type: str,
+    thread_id: str,
+    sender_open_id: str,
+    projects_router: Any,
+) -> tuple[str, str, str, dict[str, str]] | None:
+    resolved_project = _resolve_feishu_fallback_project(connector, projects_router)
+    if resolved_project is None:
+        return None
+    project_id, username = resolved_project
+    chat_name = _resolve_feishu_chat_name_by_id(connector, chat_id) or _fallback_feishu_chat_name(chat_id, chat_type)
+    source_type = _feishu_chat_source_type(chat_type)
+    source_context = projects_router._normalize_project_chat_source_context(
+        {
+            "source_type": source_type,
+            "platform": "feishu",
+            "connector_id": connector_id,
+            "external_chat_id": chat_id,
+            "external_chat_name": chat_name,
+            "thread_key": "",
+        },
+        project_id=project_id,
+        default_source_type=source_type,
+    )
+    chat_session_id = _resolve_feishu_project_chat_session_id(
+        connector_id=connector_id,
+        chat_type=chat_type,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        sender_open_id=sender_open_id,
+    )
+    title_prefix = "飞书私聊" if source_type == "private_message" else "飞书群"
+    session = projects_router.project_chat_store.create_session(
+        project_id,
+        username,
+        title=f"{title_prefix}：{chat_name}",
+        source_context=source_context,
+        session_id=chat_session_id,
+    )
+    return (
+        project_id,
+        username,
+        str(getattr(session, "id", "") or "").strip(),
+        projects_router._project_chat_session_context(session),
+    )
+
+
 def _parse_feishu_text_message(event: P2ImMessageReceiveV1) -> str:
     message = getattr(getattr(event, "event", None), "message", None)
     raw_content = str(getattr(message, "content", "") or "").strip()
@@ -795,7 +1018,7 @@ def _build_feishu_archive_truth_prompt(connector: dict[str, Any], source_context
         "飞书归档真实性约束："
         f"当前执行主体是“{bot_name}”，不是泛指每个机器人；归档范围必须绑定到当前飞书群“{group_name}”。"
         "分类文档/表格应按当前群 + 当前机器人 + 分类维护，不能写到无群归属的全局文档。"
-        "识别归档内容时必须结合当前群上下文和最近多轮对话，不要只看最后一句；若上下文已经补齐字段，可以整理为结构化待归档记录。"
+        "识别归档内容时必须结合当前群上下文和最近多轮对话，不要只看最后一句。"
         "如果消息中提到图片或附件但系统没有提供可访问链接，应在结构化内容中标记图片/附件待补充，不能编造链接。"
         "除非系统工具已经明确返回创建/追加飞书文档成功，否则禁止回复“已归档”“已保存”“已写入”“保存到”。"
         "如果只是识别并整理了字段，只能回复“已整理为待归档记录”，并说明尚未写入群文档。"
@@ -837,6 +1060,12 @@ def _build_feishu_agent_workflow_prompt(
 ) -> str:
     identity = _normalize_feishu_reply_identity(connector)
     identity_label = "当前登录用户 user identity" if identity == "user" else "机器人 bot identity"
+    source_type = str(source_context.get("source_type") or "").strip()
+    conversation_scope = (
+        "当前是飞书私聊用户对话；按当前用户与当前机器人的一对一上下文连续处理。"
+        if source_type == "private_message"
+        else "当前是飞书群聊；按当前群、当前机器人和当前消息线程的上下文连续处理。"
+    )
     skill_hint = (
         f"本地 lark-cli 技能目录：{skill_resource_directory}。"
         if skill_resource_directory
@@ -846,11 +1075,12 @@ def _build_feishu_agent_workflow_prompt(
         "飞书机器人通用工作流约束："
         "长连接收到消息后，不按单个任务写死分支处理；先由大模型结合当前机器人提示词、项目上下文、飞书来源上下文和历史消息理解用户意图，"
         "再决定是直接回复、追问澄清、生成项目任务/文档、调用项目工具，还是通过 lark-cli 操作飞书资源。"
+        f"{conversation_scope}"
         f"{skill_hint}"
         "凡涉及飞书命令、消息、文档、表格、多维表格、日历、任务等操作，应优先参考对应 lark-* 技能说明，"
         "并通过可用的 project_host_run_command 执行 lark-cli，而不是臆造 API 参数。"
         "你只生成需要回到飞书的最终回复内容；不要在模型执行过程中自行调用 lark-cli im +messages-reply 或 +messages-send 发送最终回复，"
-        f"最终回复由系统统一通过 lark-cli im +messages-reply 发送，当前配置发送身份为：{identity_label}。"
+        f"最终回复由系统统一发送，当前配置发送身份为：{identity_label}；bot 身份走飞书 OpenAPI，user 身份走 lark-cli。"
         "如果要执行写入、发送外部通知、删除、部署或其他高风险操作，必须输出待确认方案或草稿，不得直接越权执行。"
         f"当前飞书来源：connector_id={source_context.get('connector_id') or '-'}，"
         f"chat_id={source_context.get('external_chat_id') or '-'}，"
@@ -863,10 +1093,16 @@ def _task_uses_auto_archive_workflow(task: dict[str, Any]) -> bool:
     for action in task.get("actions") or []:
         if not isinstance(action, dict):
             continue
-        params = action.get("params") if isinstance(action.get("params"), dict) else {}
-        if str(params.get("workflow") or "").strip() == "feishu_bot_auto_archive_to_doc_table":
+        if is_feishu_auto_archive_action(action):
             return True
     return False
+
+
+def _is_auto_archive_project_chat_action(action: dict[str, Any]) -> bool:
+    return (
+        str(action.get("type") or "record").strip() == "project_chat"
+        and is_feishu_auto_archive_action(action)
+    )
 
 
 def _task_archive_write_succeeded(task: dict[str, Any]) -> bool:
@@ -877,7 +1113,20 @@ def _task_archive_write_succeeded(task: dict[str, Any]) -> bool:
         if str(result.get("action_type") or "").strip() != "project_chat":
             continue
         status = str(result.get("status") or "").strip().lower()
-        if status in {"completed", "success", "succeeded", "saved", "archived", "written"}:
+        archive_marker = any(
+            str(result.get(key) or "").strip()
+            for key in (
+                "archive_key",
+                "document_title",
+                "doc_id",
+                "document_id",
+                "doc_url",
+                "sheet_id",
+                "table_id",
+                "record_id",
+            )
+        )
+        if archive_marker and status in {"completed", "success", "succeeded", "saved", "archived", "written"}:
             return True
     return False
 
@@ -935,7 +1184,8 @@ def _process_feishu_archive_tasks_after_reply(
             trigger_type="event",
             message_text=archive_message,
             match_reason="assistant-structured-archive",
-            source_context=source_context,
+            source_context={**source_context, "archive_input": "assistant_structured_reply"},
+            action_filter=_is_auto_archive_project_chat_action,
         )
         if executed:
             processed.append({**task, "latest_execution": executed.get("latest_execution")})
@@ -1036,6 +1286,15 @@ async def _reply_feishu_text(
     content: str,
     reply_in_thread: bool = False,
 ) -> None:
+    if _normalize_feishu_reply_identity(connector) == "bot":
+        await asyncio.to_thread(
+            _reply_feishu_text_with_open_api,
+            connector,
+            message_id=message_id,
+            content=content,
+            reply_in_thread=reply_in_thread,
+        )
+        return
     await asyncio.to_thread(
         _reply_feishu_text_with_lark_cli,
         connector,
@@ -1087,6 +1346,37 @@ def _reply_feishu_text_with_lark_cli(
         raise RuntimeError(f"lark-cli 回复飞书消息失败：{output}")
 
 
+def _reply_feishu_text_with_open_api(
+    connector: dict[str, Any],
+    *,
+    message_id: str,
+    content: str,
+    reply_in_thread: bool = False,
+) -> None:
+    normalized_message_id = str(message_id or "").strip()
+    if not normalized_message_id:
+        raise RuntimeError("缺少飞书 message_id，无法回复")
+    token = _get_feishu_tenant_access_token(connector)
+    response = requests.post(
+        _feishu_open_api_url(f"/open-apis/im/v1/messages/{quote(normalized_message_id)}/reply"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        params={"uuid": f"feishu-reply-{normalized_message_id}"},
+        json={
+            "msg_type": "text",
+            "content": json.dumps({"text": _build_feishu_reply_text(content)}, ensure_ascii=False),
+            "reply_in_thread": bool(reply_in_thread),
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if int(payload.get("code") or 0) != 0:
+        raise RuntimeError(str(payload.get("msg") or "飞书机器人回复失败"))
+
+
 async def process_feishu_message_event(connector_id: str, event: P2ImMessageReceiveV1) -> None:
     from routers import projects as projects_router
 
@@ -1122,6 +1412,16 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         chat_type=chat_type,
         projects_router=projects_router,
     )
+    if binding is None:
+        binding = _create_feishu_fallback_chat_session(
+            connector,
+            connector_id=connector_id,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            thread_id=thread_id,
+            sender_open_id=sender_open_id,
+            projects_router=projects_router,
+        )
     if binding is None:
         logger.warning(
             "feishu message ignored because no project chat session binding was found",
@@ -1281,6 +1581,8 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         chat_session_id=chat_session_id,
         chat_mode="system",
         chat_surface="main-chat",
+        provider_id=str(connector.get("provider_id") or "").strip(),
+        model_name=str(connector.get("model_name") or "").strip(),
         history=history,
         employee_id=_resolve_employee_id_from_connector(project_id, connector),
         system_prompt="\n\n".join(
@@ -1330,6 +1632,7 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         project_id=project_id,
         message_text=text_message,
         source_context=source_context,
+        skip_auto_archive_actions=True,
     )
     meeting_reminder_result = create_feishu_meeting_reminder_task(
         username=username,

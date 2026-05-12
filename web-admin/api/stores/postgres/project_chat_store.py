@@ -75,6 +75,7 @@ class ProjectChatStorePostgres:
                     ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS connector_id TEXT NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS resolve_identity TEXT NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS external_chat_id TEXT NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS external_chat_name TEXT NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS thread_key TEXT NOT NULL DEFAULT '';
@@ -99,6 +100,7 @@ class ProjectChatStorePostgres:
             source_type=_normalize_chat_source_type(context.get("source_type")),
             platform=_normalize_chat_context_text(context.get("platform"), 40).lower(),
             connector_id=_normalize_chat_context_text(context.get("connector_id"), 120),
+            resolve_identity=_normalize_chat_context_text(context.get("resolve_identity"), 20),
             external_chat_id=_normalize_chat_context_text(context.get("external_chat_id"), 200),
             external_chat_name=_normalize_chat_context_text(context.get("external_chat_name"), 200),
             thread_key=_normalize_chat_context_text(context.get("thread_key"), 240),
@@ -108,10 +110,10 @@ class ProjectChatStorePostgres:
                 """
                 INSERT INTO project_chat_sessions (
                     id, project_id, username, title, preview, message_count,
-                    source_type, platform, connector_id, external_chat_id, external_chat_name, thread_key,
+                    source_type, platform, connector_id, resolve_identity, external_chat_id, external_chat_name, thread_key,
                     created_at, updated_at, last_message_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     project_id = EXCLUDED.project_id,
                     username = EXCLUDED.username,
@@ -119,6 +121,7 @@ class ProjectChatStorePostgres:
                     source_type = EXCLUDED.source_type,
                     platform = EXCLUDED.platform,
                     connector_id = EXCLUDED.connector_id,
+                    resolve_identity = EXCLUDED.resolve_identity,
                     external_chat_id = EXCLUDED.external_chat_id,
                     external_chat_name = EXCLUDED.external_chat_name,
                     thread_key = EXCLUDED.thread_key,
@@ -134,6 +137,7 @@ class ProjectChatStorePostgres:
                     normalized.source_type,
                     normalized.platform,
                     normalized.connector_id,
+                    normalized.resolve_identity,
                     normalized.external_chat_id,
                     normalized.external_chat_name,
                     normalized.thread_key,
@@ -158,6 +162,7 @@ class ProjectChatStorePostgres:
         next_source_type = existing.source_type
         next_platform = existing.platform
         next_connector_id = existing.connector_id
+        next_resolve_identity = str(getattr(existing, "resolve_identity", "") or "")
         next_external_chat_id = existing.external_chat_id
         next_external_chat_name = existing.external_chat_name
         next_thread_key = existing.thread_key
@@ -165,6 +170,7 @@ class ProjectChatStorePostgres:
             next_source_type = _normalize_chat_source_type(context.get("source_type")) or next_source_type
             next_platform = _normalize_chat_context_text(context.get("platform") or next_platform, 40).lower()
             next_connector_id = _normalize_chat_context_text(context.get("connector_id") or next_connector_id, 120)
+            next_resolve_identity = _normalize_chat_context_text(context.get("resolve_identity") or next_resolve_identity, 20)
             next_external_chat_id = _normalize_chat_context_text(context.get("external_chat_id") or next_external_chat_id, 200)
             next_external_chat_name = _normalize_chat_context_text(context.get("external_chat_name") or next_external_chat_name, 200)
             next_thread_key = _normalize_chat_context_text(context.get("thread_key") or next_thread_key, 240)
@@ -176,6 +182,7 @@ class ProjectChatStorePostgres:
                     source_type = %s,
                     platform = %s,
                     connector_id = %s,
+                    resolve_identity = %s,
                     external_chat_id = %s,
                     external_chat_name = %s,
                     thread_key = %s,
@@ -187,6 +194,7 @@ class ProjectChatStorePostgres:
                     next_source_type,
                     next_platform,
                     next_connector_id,
+                    next_resolve_identity,
                     next_external_chat_id,
                     next_external_chat_name,
                     next_thread_key,
@@ -213,6 +221,7 @@ class ProjectChatStorePostgres:
             source_type=str(getattr(last_item, "source_type", "") or ""),
             platform=str(getattr(last_item, "platform", "") or ""),
             connector_id=str(getattr(last_item, "connector_id", "") or ""),
+            resolve_identity="",
             external_chat_id=str(getattr(last_item, "external_chat_id", "") or ""),
             external_chat_name=str(getattr(last_item, "external_chat_name", "") or ""),
             thread_key=str(getattr(last_item, "thread_key", "") or ""),
@@ -227,7 +236,7 @@ class ProjectChatStorePostgres:
             cur.execute(
                 """
                 SELECT id, project_id, username, title, preview, message_count,
-                       source_type, platform, connector_id, external_chat_id, external_chat_name, thread_key,
+                       source_type, platform, connector_id, resolve_identity, external_chat_id, external_chat_name, thread_key,
                        created_at, updated_at, last_message_at
                 FROM project_chat_sessions
                 WHERE project_id = %s AND username = %s
@@ -248,6 +257,7 @@ class ProjectChatStorePostgres:
                 source_type=str(row.get("source_type") or ""),
                 platform=str(row.get("platform") or ""),
                 connector_id=str(row.get("connector_id") or ""),
+                resolve_identity=str(row.get("resolve_identity") or ""),
                 external_chat_id=str(row.get("external_chat_id") or ""),
                 external_chat_name=str(row.get("external_chat_name") or ""),
                 thread_key=str(row.get("thread_key") or ""),
@@ -272,7 +282,7 @@ class ProjectChatStorePostgres:
             cur.execute(
                 """
                 SELECT id, project_id, username, title, preview, message_count,
-                       source_type, platform, connector_id, external_chat_id, external_chat_name, thread_key,
+                       source_type, platform, connector_id, resolve_identity, external_chat_id, external_chat_name, thread_key,
                        created_at, updated_at, last_message_at
                 FROM project_chat_sessions
                 WHERE project_id = %s AND username = %s AND id = %s
@@ -292,6 +302,7 @@ class ProjectChatStorePostgres:
             source_type=str(row.get("source_type") or ""),
             platform=str(row.get("platform") or ""),
             connector_id=str(row.get("connector_id") or ""),
+            resolve_identity=str(row.get("resolve_identity") or ""),
             external_chat_id=str(row.get("external_chat_id") or ""),
             external_chat_name=str(row.get("external_chat_name") or ""),
             thread_key=str(row.get("thread_key") or ""),
@@ -472,10 +483,10 @@ class ProjectChatStorePostgres:
                     """
                     INSERT INTO project_chat_sessions (
                         id, project_id, username, title, preview, message_count,
-                        source_type, platform, connector_id, external_chat_id, external_chat_name, thread_key,
+                        source_type, platform, connector_id, resolve_identity, external_chat_id, external_chat_name, thread_key,
                         created_at, updated_at, last_message_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
+                    VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
                     ON CONFLICT (id) DO UPDATE
                     SET preview = EXCLUDED.preview,
                         updated_at = NOW(),
@@ -484,6 +495,7 @@ class ProjectChatStorePostgres:
                         source_type = COALESCE(NULLIF(project_chat_sessions.source_type, ''), EXCLUDED.source_type),
                         platform = COALESCE(NULLIF(project_chat_sessions.platform, ''), EXCLUDED.platform),
                         connector_id = COALESCE(NULLIF(project_chat_sessions.connector_id, ''), EXCLUDED.connector_id),
+                        resolve_identity = COALESCE(NULLIF(project_chat_sessions.resolve_identity, ''), EXCLUDED.resolve_identity),
                         external_chat_id = COALESCE(NULLIF(project_chat_sessions.external_chat_id, ''), EXCLUDED.external_chat_id),
                         external_chat_name = COALESCE(NULLIF(project_chat_sessions.external_chat_name, ''), EXCLUDED.external_chat_name),
                         thread_key = COALESCE(NULLIF(project_chat_sessions.thread_key, ''), EXCLUDED.thread_key),
@@ -502,6 +514,7 @@ class ProjectChatStorePostgres:
                         normalized.source_type,
                         normalized.platform,
                         normalized.connector_id,
+                        str(getattr(existing_session, "resolve_identity", "") or ""),
                         normalized.external_chat_id,
                         normalized.external_chat_name,
                         normalized.thread_key,

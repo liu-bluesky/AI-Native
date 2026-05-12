@@ -100,6 +100,10 @@
             <strong>{{ connector.project_label || '未关联' }}</strong>
           </div>
           <div class="bot-card__meta-item">
+            <span>对话模型</span>
+            <strong>{{ connector.model_label }}</strong>
+          </div>
+          <div class="bot-card__meta-item">
             <span>App ID</span>
             <strong>{{ connector.app_id || '未填写' }}</strong>
           </div>
@@ -278,6 +282,45 @@
                 }}
               </div>
             </el-form-item>
+            <el-form-item label="机器人对话供应商">
+              <el-select
+                v-model="draft.provider_id"
+                filterable
+                clearable
+                :loading="loadingBotChatModelOptions"
+                placeholder="跟随项目/系统默认"
+                @change="handleBotChatProviderChange"
+              >
+                <el-option
+                  v-for="item in botChatProviderOptions"
+                  :key="item.id"
+                  :label="item.name"
+                  :value="item.id"
+                />
+              </el-select>
+              <div class="connector-dialog__hint">
+                留空时不覆盖当前项目或系统默认模型。
+              </div>
+            </el-form-item>
+            <el-form-item label="机器人对话模型">
+              <el-select
+                v-model="draft.model_name"
+                filterable
+                clearable
+                :disabled="!draft.provider_id || !selectedBotChatProviderModels.length"
+                placeholder="使用供应商默认模型"
+              >
+                <el-option
+                  v-for="item in selectedBotChatProviderModels"
+                  :key="`${draft.provider_id}-${item.name}`"
+                  :label="item.name"
+                  :value="item.name"
+                />
+              </el-select>
+              <div class="connector-dialog__hint">
+                只影响当前机器人收到平台消息后的回复；不修改全局 AI 对话框配置。
+              </div>
+            </el-form-item>
             <el-form-item v-if="showVerificationTokenField" label="Verification Token">
               <el-input
                 v-model="draft.verification_token"
@@ -311,14 +354,14 @@
             <el-input
               v-model="draft.system_prompt"
               type="textarea"
-              :rows="5"
+              :rows="10"
               resize="vertical"
               maxlength="4000"
               show-word-limit
               placeholder="选填。用于约束当前机器人在飞书群里回复时的身份、语气、边界和输出格式。"
             />
             <div class="connector-dialog__hint">
-              这个字段会作为当前机器人的系统提示词参与 AI 回复；留空时使用项目 AI 对话默认提示词。
+              这个字段会作为当前机器人的系统提示词参与飞书群回复；保存后运行时只读取这里的内容。
             </div>
           </el-form-item>
           <el-form-item label="回复身份">
@@ -420,7 +463,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
 
@@ -551,6 +594,8 @@ function normalizeConnector(item) {
     agent_name: String(raw.agent_name || "").trim().slice(0, 120),
     description: String(raw.description || "").trim().slice(0, 280),
     system_prompt: String(raw.system_prompt || "").trim().slice(0, 4000),
+    provider_id: String(raw.provider_id || "").trim().slice(0, 120),
+    model_name: String(raw.model_name || "").trim().slice(0, 160),
     app_id: String(raw.app_id || "").trim().slice(0, 160),
     app_secret: String(raw.app_secret || "").trim().slice(0, 200),
     verification_token: String(raw.verification_token || "").trim().slice(0, 200),
@@ -583,6 +628,27 @@ const projectLabelMap = computed(() =>
     accumulator[item.value] = item.label;
     return accumulator;
   }, {}),
+);
+
+const botChatProviderOptions = ref([]);
+const loadingBotChatModelOptions = ref(false);
+
+const botChatProviderMap = computed(() =>
+  botChatProviderOptions.value.reduce((accumulator, item) => {
+    accumulator[String(item.id || "").trim()] = item;
+    return accumulator;
+  }, {}),
+);
+
+const selectedBotChatProvider = computed(() => {
+  const providerId = String(draft.value.provider_id || "").trim();
+  return providerId ? botChatProviderMap.value[providerId] || null : null;
+});
+
+const selectedBotChatProviderModels = computed(() =>
+  Array.isArray(selectedBotChatProvider.value?.model_configs)
+    ? selectedBotChatProvider.value.model_configs
+    : [],
 );
 
 const normalizedConnectors = computed(() => {
@@ -619,6 +685,7 @@ const connectorCards = computed(() =>
         projectLabelMap.value[connector.project_id] ||
         connector.project_id ||
         "",
+      model_label: botChatModelLabel(connector),
       connected: Boolean(
         connector.enabled &&
           connector.app_id &&
@@ -645,6 +712,8 @@ const draft = ref({
   agent_name: "",
   description: "",
   system_prompt: "",
+  provider_id: "",
+  model_name: "",
   app_id: "",
   app_secret: "",
   verification_token: "",
@@ -741,6 +810,8 @@ function openDialog(platform, connector = null) {
       agent_name: "",
       description: "",
       system_prompt: "",
+      provider_id: "",
+      model_name: "",
       app_id: "",
       app_secret: "",
       verification_token: "",
@@ -788,6 +859,35 @@ function findProjectLabel(projectId) {
     return "";
   }
   return projectLabelMap.value[normalizedProjectId] || normalizedProjectId;
+}
+
+function botChatModelLabel(connector) {
+  const providerId = String(connector?.provider_id || "").trim();
+  const modelName = String(connector?.model_name || "").trim();
+  if (!providerId) {
+    return "跟随默认";
+  }
+  const provider = botChatProviderMap.value[providerId] || null;
+  const providerName = String(provider?.name || providerId).trim();
+  const modelLabel = modelName || String(provider?.default_model || "").trim() || "供应商默认";
+  return `${providerName} · ${modelLabel}`;
+}
+
+function handleBotChatProviderChange(value) {
+  draft.value.provider_id = String(value || "").trim();
+  draft.value.model_name = "";
+}
+
+async function fetchBotChatModelOptions() {
+  loadingBotChatModelOptions.value = true;
+  try {
+    const data = await api.get("/system-config/global-assistant-chat/options");
+    botChatProviderOptions.value = Array.isArray(data?.providers) ? data.providers : [];
+  } catch {
+    botChatProviderOptions.value = [];
+  } finally {
+    loadingBotChatModelOptions.value = false;
+  }
 }
 
 async function persistNextConnectors(nextConnectors, successMessage) {
@@ -847,6 +947,10 @@ async function duplicateConnector(connector) {
     "机器人配置已复制",
   );
 }
+
+onMounted(() => {
+  fetchBotChatModelOptions();
+});
 </script>
 
 <style scoped>

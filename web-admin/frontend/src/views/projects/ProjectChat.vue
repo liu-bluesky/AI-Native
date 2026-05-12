@@ -11,14 +11,17 @@
     <div class="chat-layout__mesh" aria-hidden="true" />
 
     <div class="chat-main">
-      <div class="chat-shell">
+      <div
+        class="chat-shell"
+        :class="{ 'chat-shell--local-runner': isLocalRunnerSurface }"
+      >
         <aside class="chat-conversation-sidebar">
           <div class="chat-sidebar-brand-panel">
             <div class="chat-sidebar-brand">
-              <div class="chat-sidebar-brand__mark">AI</div>
+              <div class="chat-sidebar-brand__mark">{{ chatSurfaceMark }}</div>
               <div>
-                <div class="chat-sidebar-brand__name">AI 对话</div>
-                <div class="chat-sidebar-brand__meta">项目会话</div>
+                <div class="chat-sidebar-brand__name">{{ chatSurfaceName }}</div>
+                <div class="chat-sidebar-brand__meta">{{ chatSurfaceMeta }}</div>
               </div>
             </div>
             <el-button
@@ -88,7 +91,9 @@
               text
               class="chat-group-conversation-button"
               @click="openGroupChatDialog"
-              :disabled="chatLoading || creatingChatSession || !hasSelectedProject"
+              :disabled="
+                chatLoading || creatingChatSession || !hasSelectedProject
+              "
             >
               群对话
             </el-button>
@@ -192,11 +197,17 @@
               <div class="chat-context-bar__copy">
                 <div class="chat-context-bar__eyebrow">AI Operating System</div>
                 <div class="chat-context-bar__title">
-                  {{ hasSelectedProject ? currentProjectLabel : "AI 对话" }}
+                  {{
+                    hasSelectedProject
+                      ? currentProjectLabel
+                      : chatSurfaceName
+                  }}
                 </div>
                 <p class="chat-context-bar__summary">
                   {{
-                    hasSelectedProject
+                    isLocalRunnerSurface
+                      ? "直接使用系统大模型，在本机工作区推进命令、文件、飞书和项目工具操作。"
+                      : hasSelectedProject
                       ? "在同一项目里继续推进前端、后端、数据库更新，以及对话、规则与资产。"
                       : "先建立判断，再展开步骤与执行。"
                   }}
@@ -259,22 +270,18 @@
               </div>
             </div>
           </div>
-          <div
-            v-if="ongoingTaskRestoreNotice"
-            class="chat-restore-banner"
-          >
+          <div v-if="ongoingTaskRestoreNotice" class="chat-restore-banner">
             <div class="chat-restore-banner__copy">
               <div class="chat-restore-banner__eyebrow">
                 {{
-                  currentChatSessionId === ongoingTaskRestoreNotice.chat_session_id
+                  currentChatSessionId ===
+                  ongoingTaskRestoreNotice.chat_session_id
                     ? "任务已恢复"
                     : "发现可恢复任务"
                 }}
               </div>
               <div class="chat-restore-banner__title">
-                {{
-                  ongoingTaskRestoreNotice.title || "已恢复进行中的任务"
-                }}
+                {{ ongoingTaskRestoreNotice.title || "已恢复进行中的任务" }}
               </div>
               <div class="chat-restore-banner__meta">
                 <span v-if="ongoingTaskRestoreNotice.current_node_title">
@@ -292,16 +299,17 @@
                 <span v-if="ongoingTaskRestoreNotice.updated_at">
                   最近更新
                   {{
-                    formatRelativeDateTime(
-                      ongoingTaskRestoreNotice.updated_at,
-                    )
+                    formatRelativeDateTime(ongoingTaskRestoreNotice.updated_at)
                   }}
                 </span>
               </div>
             </div>
             <div class="chat-restore-banner__actions">
               <el-button
-                v-if="currentChatSessionId !== ongoingTaskRestoreNotice.chat_session_id"
+                v-if="
+                  currentChatSessionId !==
+                  ongoingTaskRestoreNotice.chat_session_id
+                "
                 size="small"
                 type="primary"
                 class="chat-restore-banner__button"
@@ -527,12 +535,20 @@
                                 class="message-operation-card__actions"
                               >
                                 <el-button
-                                  v-for="action in operationActionButtons(operation)"
+                                  v-for="action in operationActionButtons(
+                                    operation,
+                                  )"
                                   :key="`${operation.id}-${action.key}`"
                                   size="small"
-                                  :type="action.type === 'danger' ? 'danger' : 'primary'"
+                                  :type="
+                                    action.type === 'danger'
+                                      ? 'danger'
+                                      : 'primary'
+                                  "
                                   :plain="action.type !== 'danger'"
-                                  @click="handleOperationAction(operation, action.key)"
+                                  @click="
+                                    handleOperationAction(operation, action.key)
+                                  "
                                 >
                                   {{ action.label }}
                                 </el-button>
@@ -571,15 +587,24 @@
                             v-if="terminalInteractionFormForMessage(item, idx)"
                             class="message-terminal-form"
                             :class="{
-                              'is-submitted': terminalStructuredSubmissionHintForMessage(idx),
+                              'is-submitted':
+                                terminalStructuredSubmissionHintForMessage(idx),
                             }"
                           >
                             <div class="message-terminal-form__head">
                               <div>
-                                <strong>{{ terminalStructuredInteraction.title }}</strong>
-                                <p>{{ terminalStructuredInteraction.description }}</p>
+                                <strong>{{
+                                  terminalStructuredInteraction.title
+                                }}</strong>
+                                <p>
+                                  {{
+                                    terminalStructuredInteraction.description
+                                  }}
+                                </p>
                               </div>
-                              <el-tag size="small" effect="plain">表单交互</el-tag>
+                              <el-tag size="small" effect="plain"
+                                >表单交互</el-tag
+                              >
                             </div>
                             <ElementEasyForm
                               :form-json="terminalInteractionFormJson"
@@ -587,7 +612,11 @@
                             />
                             <div class="message-terminal-form__actions">
                               <el-button
-                                v-if="!terminalStructuredSubmissionHintForMessage(idx)"
+                                v-if="
+                                  !terminalStructuredSubmissionHintForMessage(
+                                    idx,
+                                  )
+                                "
                                 text
                                 @click="dismissTerminalStructuredInteraction"
                               >
@@ -597,12 +626,18 @@
                                 type="primary"
                                 :disabled="
                                   !canSubmitTerminalStructuredInteraction ||
-                                  Boolean(terminalStructuredSubmissionHintForMessage(idx))
+                                  Boolean(
+                                    terminalStructuredSubmissionHintForMessage(
+                                      idx,
+                                    ),
+                                  )
                                 "
                                 @click="submitTerminalStructuredInteraction"
                               >
                                 {{
-                                  terminalStructuredSubmissionHintForMessage(idx)
+                                  terminalStructuredSubmissionHintForMessage(
+                                    idx,
+                                  )
                                     ? "已提交，继续执行中"
                                     : "确认并继续"
                                 }}
@@ -610,17 +645,23 @@
                             </div>
                           </div>
                           <div
-                            v-if="terminalStructuredSubmissionHintForMessage(idx)"
+                            v-if="
+                              terminalStructuredSubmissionHintForMessage(idx)
+                            "
                             class="message-terminal-form__submitted"
                           >
-                            {{ terminalStructuredSubmissionHintForMessage(idx) }}
+                            {{
+                              terminalStructuredSubmissionHintForMessage(idx)
+                            }}
                           </div>
                           <div
                             v-if="messageStatusNotes(item).length"
                             class="message-status-notes"
                           >
                             <div
-                              v-for="(note, noteIdx) in messageStatusNotes(item)"
+                              v-for="(note, noteIdx) in messageStatusNotes(
+                                item,
+                              )"
                               :key="`status-${noteIdx}`"
                               class="message-status-note"
                               v-html="formatContent(note)"
@@ -680,12 +721,20 @@
                                 class="message-operation-card__actions"
                               >
                                 <el-button
-                                  v-for="action in operationActionButtons(operation)"
+                                  v-for="action in operationActionButtons(
+                                    operation,
+                                  )"
                                   :key="`${operation.id}-${action.key}`"
                                   size="small"
-                                  :type="action.type === 'danger' ? 'danger' : 'primary'"
+                                  :type="
+                                    action.type === 'danger'
+                                      ? 'danger'
+                                      : 'primary'
+                                  "
                                   :plain="action.type !== 'danger'"
-                                  @click="handleOperationAction(operation, action.key)"
+                                  @click="
+                                    handleOperationAction(operation, action.key)
+                                  "
                                 >
                                   {{ action.label }}
                                 </el-button>
@@ -697,7 +746,9 @@
                             class="message-status-notes"
                           >
                             <div
-                              v-for="(note, noteIdx) in messageStatusNotes(item)"
+                              v-for="(note, noteIdx) in messageStatusNotes(
+                                item,
+                              )"
                               :key="`status-${noteIdx}`"
                               class="message-status-note"
                               v-html="formatContent(note)"
@@ -717,14 +768,19 @@
                             class="message-form-json-artifacts"
                           >
                             <article
-                              v-for="(artifact, artifactIndex) in formJsonArtifactsForMessage(item)"
+                              v-for="(
+                                artifact, artifactIndex
+                              ) in formJsonArtifactsForMessage(item)"
                               :key="`form-json-${idx}-${artifactIndex}`"
                               class="message-form-json-card"
                             >
                               <div class="message-form-json-card__head">
                                 <div>
                                   <strong>{{ artifact.title }}</strong>
-                                  <p>{{ artifact.fieldCount }} 个字段，可复制 formJson 或直接预览。</p>
+                                  <p>
+                                    {{ artifact.fieldCount }} 个字段，可复制
+                                    formJson 或直接预览。
+                                  </p>
                                 </div>
                                 <el-button
                                   size="small"
@@ -949,7 +1005,9 @@
                             v-if="item.taskTreeAudit.recommended_action"
                             class="message-task-tree-audit__action"
                           >
-                            建议动作：{{ item.taskTreeAudit.recommended_action }}
+                            建议动作：{{
+                              item.taskTreeAudit.recommended_action
+                            }}
                           </div>
                           <div class="message-task-tree-audit__meta">
                             当前节点：
@@ -960,13 +1018,9 @@
                               v-if="item.taskTreeAudit.suggested_status"
                             >
                               · 建议状态
-                              {{
-                                item.taskTreeAudit.suggested_status
-                              }}
+                              {{ item.taskTreeAudit.suggested_status }}
                             </template>
-                            <template
-                              v-if="item.taskTreeAudit.auto_updated"
-                            >
+                            <template v-if="item.taskTreeAudit.auto_updated">
                               · 已自动保留
                             </template>
                           </div>
@@ -974,12 +1028,15 @@
                             v-if="item.taskTreeAudit.evidence?.length"
                             class="message-task-tree-audit__evidence"
                           >
-                            <div class="message-task-tree-audit__evidence-label">
+                            <div
+                              class="message-task-tree-audit__evidence-label"
+                            >
                               证据
                             </div>
                             <ul class="message-task-tree-audit__evidence-list">
                               <li
-                                v-for="(evidence, evidenceIndex) in item.taskTreeAudit.evidence"
+                                v-for="(evidence, evidenceIndex) in item
+                                  .taskTreeAudit.evidence"
                                 :key="`task-audit-evidence-${evidenceIndex}`"
                               >
                                 {{ evidence }}
@@ -987,11 +1044,14 @@
                             </ul>
                           </div>
                           <div
-                            v-if="item.taskTreeAudit.executed_tool_names?.length"
+                            v-if="
+                              item.taskTreeAudit.executed_tool_names?.length
+                            "
                             class="message-task-tree-audit__tags"
                           >
                             <el-tag
-                              v-for="toolName in item.taskTreeAudit.executed_tool_names"
+                              v-for="toolName in item.taskTreeAudit
+                                .executed_tool_names"
                               :key="`task-audit-${toolName}`"
                               size="small"
                               effect="plain"
@@ -1141,7 +1201,171 @@
             </div>
           </div>
 
+          <aside v-if="isLocalRunnerSurface" class="local-runner-panel">
+            <section class="local-runner-card local-runner-card--approval">
+              <div class="local-runner-card__head">
+                <div>
+                  <div class="local-runner-card__eyebrow">Approval Queue</div>
+                  <div class="local-runner-card__title">命令审批</div>
+                </div>
+                <el-tag
+                  size="small"
+                  :type="terminalApprovalPrompt ? 'warning' : 'success'"
+                  effect="plain"
+                >
+                  {{ terminalApprovalPrompt ? "等待确认" : "空闲" }}
+                </el-tag>
+              </div>
+              <div
+                v-if="terminalApprovalPrompt"
+                class="local-approval-panel"
+              >
+                <div class="local-approval-panel__title">
+                  {{ terminalApprovalPrompt.title }}
+                </div>
+                <p
+                  v-if="terminalApprovalPrompt.description"
+                  class="local-approval-panel__desc"
+                >
+                  {{ terminalApprovalPrompt.description }}
+                </p>
+                <pre
+                  v-if="terminalApprovalPrompt.message"
+                  class="local-approval-panel__message"
+                  >{{ terminalApprovalPrompt.message }}</pre
+                >
+                <div class="local-approval-panel__actions">
+                  <el-button
+                    size="small"
+                    type="danger"
+                    plain
+                    @click="sendTerminalApprovalChoice('3')"
+                  >
+                    取消
+                  </el-button>
+                  <el-button
+                    size="small"
+                    @click="sendTerminalApprovalChoice('2')"
+                  >
+                    本会话批准
+                  </el-button>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    @click="sendTerminalApprovalChoice('1')"
+                  >
+                    批准一次
+                  </el-button>
+                </div>
+              </div>
+              <div v-else class="local-runner-empty">
+                当前没有待确认命令；需要审批时会固定显示在这里。
+              </div>
+            </section>
+
+            <section class="local-runner-card local-runner-card--workspace">
+              <div class="local-runner-card__head">
+                <div>
+                  <div class="local-runner-card__eyebrow">Workspace</div>
+                  <div class="local-runner-card__title">文件树 / 编辑器</div>
+                </div>
+                <el-button
+                  size="small"
+                  text
+                  :loading="workspaceFileTreeLoading"
+                  :disabled="!canUseWorkspaceFiles"
+                  @click="refreshWorkspaceFileTree"
+                >
+                  刷新
+                </el-button>
+              </div>
+              <div class="local-workspace-root">
+                {{ projectWorkspaceResolved || "未配置项目工作区" }}
+              </div>
+              <div v-if="!canUseWorkspaceFiles" class="local-runner-empty">
+                先在设置中保存项目工作区后，才能直接浏览和编辑本机文件。
+              </div>
+              <template v-else>
+                <div class="local-file-browser">
+                  <div class="local-file-browser__toolbar">
+                    <el-button
+                      size="small"
+                      text
+                      :disabled="!workspaceFileTreePath"
+                      @click="openWorkspaceDirectory(workspaceParentPath)"
+                    >
+                      上一级
+                    </el-button>
+                    <span>{{ workspaceFileTreePath || "." }}</span>
+                  </div>
+                  <div class="local-file-list">
+                    <button
+                      v-for="item in workspaceFileItems"
+                      :key="`${item.kind}:${item.path}`"
+                      type="button"
+                      class="local-file-item"
+                      :class="{
+                        'is-active': item.path === activeWorkspaceFilePath,
+                      }"
+                      @click="handleWorkspaceFileClick(item)"
+                    >
+                      <span class="local-file-item__icon">
+                        {{ item.kind === "directory" ? "DIR" : "TXT" }}
+                      </span>
+                      <span class="local-file-item__name">{{ item.name }}</span>
+                    </button>
+                    <div
+                      v-if="!workspaceFileItems.length"
+                      class="local-runner-empty"
+                    >
+                      当前目录没有可展示文件。
+                    </div>
+                  </div>
+                </div>
+                <div class="local-editor">
+                  <div class="local-editor__head">
+                    <span>{{ activeWorkspaceFilePath || "未选择文件" }}</span>
+                    <el-button
+                      size="small"
+                      type="primary"
+                      :loading="workspaceFileSaving"
+                      :disabled="
+                        !activeWorkspaceFilePath || !workspaceFileDirty
+                      "
+                      @click="saveActiveWorkspaceFile"
+                    >
+                      保存
+                    </el-button>
+                  </div>
+                  <el-input
+                    v-model="workspaceFileDraft"
+                    type="textarea"
+                    resize="none"
+                    :autosize="{ minRows: 8, maxRows: 14 }"
+                    :disabled="!activeWorkspaceFilePath || workspaceFileLoading"
+                    placeholder="从上方文件树选择文本文件后可在这里编辑。"
+                    class="local-editor__textarea"
+                  />
+                </div>
+              </template>
+            </section>
+
+            <section class="local-runner-card local-runner-card--terminal">
+              <div class="local-runner-card__head">
+                <div>
+                  <div class="local-runner-card__eyebrow">Terminal</div>
+                  <div class="local-runner-card__title">终端输出</div>
+                </div>
+                <el-tag size="small" effect="plain">
+                  {{ terminalPanelStatusText }}
+                </el-tag>
+              </div>
+              <pre class="local-terminal-output">{{ terminalPanelText }}</pre>
+            </section>
+          </aside>
+
           <el-dialog
+            v-if="!isLocalRunnerSurface"
             v-model="terminalApprovalDialogVisible"
             title="等待操作确认"
             width="min(560px, calc(100vw - 32px))"
@@ -1238,10 +1462,7 @@
                   class="chat-textarea"
                 />
 
-                <div
-                  v-if="isSlashCommandMenuVisible"
-                  class="chat-slash-menu"
-                >
+                <div v-if="isSlashCommandMenuVisible" class="chat-slash-menu">
                   <div class="chat-slash-menu__head">
                     <span class="chat-slash-menu__title">可用命令</span>
                     <span class="chat-slash-menu__summary">
@@ -1253,7 +1474,9 @@
                     :key="item.id"
                     type="button"
                     class="chat-slash-menu__item"
-                    :class="{ 'is-active': index === slashCommandHighlightIndex }"
+                    :class="{
+                      'is-active': index === slashCommandHighlightIndex,
+                    }"
                     @mousedown.prevent="applySlashCommandSelection(item)"
                   >
                     <div class="chat-slash-menu__item-main">
@@ -1524,18 +1747,28 @@
                     {{ taskTreeIsReadonly ? "Task Snapshot" : "Task Flow" }}
                   </div>
                   <div class="task-tree-panel__title">
-                    {{ displayedChatTaskTree?.root_goal || "当前会话还没有任务树" }}
+                    {{
+                      displayedChatTaskTree?.root_goal || "当前会话还没有任务树"
+                    }}
                   </div>
                   <div class="task-tree-panel__meta">
-                    <span>状态 {{ displayedChatTaskTree?.status || "pending" }}</span>
+                    <span
+                      >状态
+                      {{ displayedChatTaskTree?.status || "pending" }}</span
+                    >
                     <span>进度 {{ taskTreeProgressLabel }}</span>
                     <span v-if="displayedChatTaskTree?.stats?.leaf_total">
-                      已完成 {{ displayedChatTaskTree?.stats?.done_leaf_total || 0 }} / {{ displayedChatTaskTree?.stats?.leaf_total || 0 }}
+                      已完成
+                      {{ displayedChatTaskTree?.stats?.done_leaf_total || 0 }} /
+                      {{ displayedChatTaskTree?.stats?.leaf_total || 0 }}
                     </span>
                     <span v-if="taskTreeIsReadonly">只读快照</span>
                   </div>
                 </div>
-                <div v-if="hasChatTaskTree && !taskTreeIsReadonly" class="task-tree-panel__actions">
+                <div
+                  v-if="hasChatTaskTree && !taskTreeIsReadonly"
+                  class="task-tree-panel__actions"
+                >
                   <el-button
                     text
                     type="danger"
@@ -1557,11 +1790,14 @@
                 <div class="task-tree-panel__outline">
                   <div class="task-tree-panel__section-head">
                     <div>
-                      <div class="task-tree-panel__section-eyebrow">Task Nodes</div>
+                      <div class="task-tree-panel__section-eyebrow">
+                        Task Nodes
+                      </div>
                       <div class="task-tree-panel__section-title">执行路径</div>
                     </div>
                     <div class="task-tree-panel__section-meta">
-                      {{ displayedChatTaskTree?.stats?.leaf_total || 0 }} 个执行节点
+                      {{ displayedChatTaskTree?.stats?.leaf_total || 0 }}
+                      个执行节点
                     </div>
                   </div>
                   <el-tree
@@ -1577,7 +1813,10 @@
                     <template #default="{ data }">
                       <div class="task-tree-node">
                         <div class="task-tree-node__copy">
-                          <span class="task-tree-node__title" :title="data.title">
+                          <span
+                            class="task-tree-node__title"
+                            :title="data.title"
+                          >
                             {{ data.title }}
                           </span>
                           <span
@@ -1591,7 +1830,17 @@
                           size="small"
                           effect="plain"
                           class="task-tree-node__status"
-                          :type="data.status === 'done' ? 'success' : data.status === 'blocked' ? 'danger' : data.status === 'verifying' ? 'warning' : data.status === 'in_progress' ? '' : 'info'"
+                          :type="
+                            data.status === 'done'
+                              ? 'success'
+                              : data.status === 'blocked'
+                                ? 'danger'
+                                : data.status === 'verifying'
+                                  ? 'warning'
+                                  : data.status === 'in_progress'
+                                    ? ''
+                                    : 'info'
+                          "
                         >
                           {{ formatTaskTreeStatusLabel(data.status) }}
                         </el-tag>
@@ -1604,11 +1853,15 @@
                   <div class="task-tree-editor__head">
                     <div>
                       <div class="task-tree-editor__eyebrow">需求详情</div>
-                      <div class="task-tree-editor__title">{{ taskTreeSelectedNode.title }}</div>
+                      <div class="task-tree-editor__title">
+                        {{ taskTreeSelectedNode.title }}
+                      </div>
                     </div>
                     <div class="task-tree-editor__meta">
                       <span class="task-tree-editor__pill">
-                        {{ formatTaskTreeStatusLabel(taskTreeSelectedNode.status) }}
+                        {{
+                          formatTaskTreeStatusLabel(taskTreeSelectedNode.status)
+                        }}
                       </span>
                       <span
                         v-if="isTaskTreeNodeCurrent(taskTreeSelectedNode)"
@@ -1624,7 +1877,10 @@
                       </span>
                     </div>
                   </div>
-                  <p v-if="taskTreeSelectedNode.description" class="task-tree-editor__desc">
+                  <p
+                    v-if="taskTreeSelectedNode.description"
+                    class="task-tree-editor__desc"
+                  >
                     {{ taskTreeSelectedNode.description }}
                   </p>
                   <div
@@ -1655,14 +1911,18 @@
                       v-if="taskTreeSelectedNode.verification_result"
                       class="task-tree-editor__section task-tree-editor__section--result"
                     >
-                      <div class="task-tree-editor__section-label">验证结果</div>
+                      <div class="task-tree-editor__section-label">
+                        验证结果
+                      </div>
                       <p>{{ taskTreeSelectedNode.verification_result }}</p>
                     </div>
                     <div
                       v-if="taskTreeSelectedNode.summary_for_model"
                       class="task-tree-editor__section"
                     >
-                      <div class="task-tree-editor__section-label">节点摘要</div>
+                      <div class="task-tree-editor__section-label">
+                        节点摘要
+                      </div>
                       <p>{{ taskTreeSelectedNode.summary_for_model }}</p>
                     </div>
                     <p
@@ -1678,7 +1938,10 @@
                   <template v-else>
                     <div class="task-tree-editor__field">
                       <div class="task-tree-editor__field-label">节点状态</div>
-                      <el-select v-model="taskTreeStatusDraft" class="task-tree-editor__select">
+                      <el-select
+                        v-model="taskTreeStatusDraft"
+                        class="task-tree-editor__select"
+                      >
                         <el-option
                           v-for="option in taskTreeStatusOptions"
                           :key="option.value"
@@ -1828,7 +2091,31 @@
           @keyup.enter="submitGroupChatDialog"
         />
         <div class="group-chat-dialog__hint">
-          群稳定 ID 需要通过飞书 API 或真实消息事件补齐；当前状态：{{ groupChatEditingResolved ? "已解析" : "待解析 ID" }}。
+          群稳定 ID 需要通过飞书 API 或真实消息事件补齐；当前状态：{{
+            groupChatEditingResolved ? "已解析" : "待解析 ID"
+          }}。
+        </div>
+      </el-form-item>
+      <el-form-item label="解析身份">
+        <el-select
+          v-model="groupChatDraft.resolve_identity"
+          class="full-width"
+          placeholder="选择解析群 ID 时使用的身份"
+        >
+          <el-option
+            v-for="item in groupChatResolveIdentityOptions"
+            :key="item.value"
+            :label="item.label"
+            :value="item.value"
+          >
+            <div class="group-chat-dialog__connector-option">
+              <strong>{{ item.label }}</strong>
+              <span>{{ item.description }}</span>
+            </div>
+          </el-option>
+        </el-select>
+        <div class="group-chat-dialog__hint">
+          机器人身份搜索应用可见群；用户身份搜索当前登录用户可见群。解析失败时先切换身份再重试。
         </div>
       </el-form-item>
     </el-form>
@@ -2118,7 +2405,9 @@
               <div class="settings-center-brand__mark">AI</div>
               <div>
                 <div class="settings-center-brand__name">对话设置</div>
-                <div class="settings-center-brand__meta">仅作用于当前对话上下文</div>
+                <div class="settings-center-brand__meta">
+                  仅作用于当前对话上下文
+                </div>
               </div>
             </div>
             <el-button
@@ -2187,7 +2476,11 @@
             <div class="settings-center-context-bar__meta">
               <span>项目：{{ currentProjectLabel }}</span>
               <span>模式：系统对话</span>
-              <span>面板：{{ activeSettingsPanelMeta?.contextLabel || "设置" }}</span>
+              <span
+                >面板：{{
+                  activeSettingsPanelMeta?.contextLabel || "设置"
+                }}</span
+              >
             </div>
           </div>
           <div class="settings-center-context-bar__actions">
@@ -2266,9 +2559,9 @@
                     }}</span>
                   </div>
                   <div class="settings-chat-fact">
-                    <span class="settings-chat-fact__label">本地连接器</span>
+                    <span class="settings-chat-fact__label">本机运行</span>
                     <span class="settings-chat-fact__value">{{
-                      localConnectorSummary
+                      localRunnerSummary
                     }}</span>
                   </div>
                   <div class="settings-chat-fact">
@@ -2459,7 +2752,8 @@
                               当前已保存：{{ projectWorkspaceResolved }}
                             </template>
                             <template v-else>
-                              当前项目还没有配置工作区路径，AI 不能直接在本机执行项目命令。
+                              当前项目还没有配置工作区路径，AI
+                              不能直接在本机执行项目命令。
                             </template>
                             <template v-if="projectWorkspaceDirty">
                               当前输入尚未保存。
@@ -2504,7 +2798,12 @@
                             </el-button>
                           </div>
                           <div class="workspace-path-hint">
-                            <template v-if="projectWorkspaceDraftNormalized || projectWorkspacePath">
+                            <template
+                              v-if="
+                                projectWorkspaceDraftNormalized ||
+                                projectWorkspacePath
+                              "
+                            >
                               当前项目工作区：{{
                                 projectWorkspaceDraftNormalized ||
                                 projectWorkspacePath
@@ -3090,7 +3389,6 @@
         <div v-else class="settings-center-stage__body">
           <router-view />
         </div>
-
       </section>
     </div>
   </div>
@@ -3135,7 +3433,15 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch, nextTick } from "vue";
+import {
+  computed,
+  onMounted,
+  onUnmounted,
+  reactive,
+  ref,
+  watch,
+  nextTick,
+} from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { ElementEasyForm } from "element-easy-form";
@@ -3253,7 +3559,6 @@ function escapeHtml(value) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
-
 
 function normalizeCodeLanguage(value) {
   return String(value || "")
@@ -3478,7 +3783,7 @@ const externalAgentInfo = ref({
   command_source: "missing",
   runtime_model_name: "codex-cli",
   exact_model_name: "",
-  execution_mode: "local_connector",
+  execution_mode: "local",
   runner_url: "",
   materialized_by: "",
   available: false,
@@ -3521,6 +3826,7 @@ const groupChatDraft = ref({
   platform: "feishu",
   connector_id: "",
   external_chat_name: "",
+  resolve_identity: "bot",
 });
 const groupChatPlatformOptions = [
   { label: "飞书", value: "feishu" },
@@ -3644,6 +3950,14 @@ const terminalStructuredFormModel = ref({ choices: [], choice: "" });
 const terminalDismissedStructuredInteractionKeys = ref(new Set());
 const terminalStructuredSubmissionHint = ref(null);
 const terminalActiveCommand = ref("");
+const workspaceFileTreeLoading = ref(false);
+const workspaceFileLoading = ref(false);
+const workspaceFileSaving = ref(false);
+const workspaceFileTreePath = ref("");
+const workspaceFileItems = ref([]);
+const activeWorkspaceFilePath = ref("");
+const workspaceFileDraft = ref("");
+const workspaceFileOriginal = ref("");
 const terminalAutoOpenedUrls = new Set();
 const LARK_AUTH_DOMAIN_OPTIONS = [
   "approval",
@@ -3669,16 +3983,17 @@ const TERMINAL_CHOICE_FALLBACK_PROVIDERS = [
       const terminalText = String(text || "").trim();
       const command = String(activeCommand || "").trim();
       const hasAuthLoginCommand = /\blark-cli\s+auth\s+login\b/.test(command);
-      const hasDomainPrompt = /(?:请选择|选择|select|choose).{0,30}业务域|业务域.{0,30}(?:请选择|选择|select|choose|enter confirm)/i.test(
-        terminalText,
-      );
+      const hasDomainPrompt =
+        /(?:请选择|选择|select|choose).{0,30}业务域|业务域.{0,30}(?:请选择|选择|select|choose|enter confirm)/i.test(
+          terminalText,
+        );
       return Boolean(
         hasDomainPrompt ||
-          (hasAuthLoginCommand &&
-            /业务域/.test(terminalText) &&
-            /选择|select|choose|enter confirm|上下键|方向键|回车/i.test(
-              terminalText,
-            ))
+        (hasAuthLoginCommand &&
+          /业务域/.test(terminalText) &&
+          /选择|select|choose|enter confirm|上下键|方向键|回车/i.test(
+            terminalText,
+          )),
       );
     },
     options() {
@@ -3730,9 +4045,31 @@ const mcpDialogProjectLabel = computed(() => {
   );
   return String(matched?.name || projectId).trim();
 });
+const chatSurface = computed(() => {
+  const queryValue = String(
+    route.query.surface || route.query.chat_surface || "",
+  )
+    .trim()
+    .toLowerCase();
+  return queryValue === "local-runner" ? "local-runner" : "main-chat";
+});
+const isLocalRunnerSurface = computed(
+  () => chatSurface.value === "local-runner",
+);
+const chatSurfaceMark = computed(() =>
+  isLocalRunnerSurface.value ? "LR" : "AI",
+);
+const chatSurfaceName = computed(() =>
+  isLocalRunnerSurface.value ? "本地运行" : "AI 对话",
+);
+const chatSurfaceMeta = computed(() =>
+  isLocalRunnerSurface.value ? "系统模型 · 本机执行" : "项目会话",
+);
 const canUseExternalAgent = computed(() => false);
 const isExternalAgentMode = computed(() => false);
-const chatModeLabel = computed(() => "系统对话");
+const chatModeLabel = computed(() =>
+  isLocalRunnerSurface.value ? "本地运行" : "系统对话",
+);
 const wsStatusText = computed(() => (wsConnected.value ? "已连接" : "未连接"));
 const wsStatusType = computed(() => (wsConnected.value ? "success" : "info"));
 const projectWorkspaceResolved = computed(() =>
@@ -3755,7 +4092,8 @@ const aiEntryFileDraftNormalized = computed(() =>
 );
 const workspacePathConfigured = computed(() => !!workspacePathResolved.value);
 const projectWorkspaceDirty = computed(
-  () => projectWorkspaceDraftNormalized.value !== projectWorkspaceResolved.value,
+  () =>
+    projectWorkspaceDraftNormalized.value !== projectWorkspaceResolved.value,
 );
 const canUseHostTerminal = computed(
   () =>
@@ -3767,9 +4105,20 @@ const canUseHostTerminal = computed(
     ) &&
     Boolean(String(currentChatSessionId.value || "").trim()),
 );
-const externalAgentConnectorRequired = computed(
-  () => isExternalAgentMode.value && !usingLocalConnector.value,
+const canUseWorkspaceFiles = computed(
+  () => hasSelectedProject.value && Boolean(projectWorkspaceResolved.value),
 );
+const workspaceParentPath = computed(() => {
+  const current = String(workspaceFileTreePath.value || "").trim();
+  if (!current) return "";
+  const parts = current.split("/").filter(Boolean);
+  parts.pop();
+  return parts.join("/");
+});
+const workspaceFileDirty = computed(
+  () => workspaceFileDraft.value !== workspaceFileOriginal.value,
+);
+const externalAgentConnectorRequired = computed(() => false);
 const workspacePathDirty = computed(() => {
   if (!isExternalAgentMode.value) return false;
   return workspacePathDraftNormalized.value !== workspacePathResolved.value;
@@ -3973,13 +4322,13 @@ async function logoutFromChat() {
 
 const localConnectorSummary = computed(() => {
   if (!isExternalAgentMode.value) {
-    return usingLocalConnector.value ? "已绑定连接器" : "未使用";
+    return projectWorkspaceResolved.value ? "项目工作区可用" : "未配置工作区";
   }
   if (externalAgentConnectorRequired.value) {
-    return "待选择连接器";
+    return "待配置本机运行";
   }
   if (!activeLocalConnector.value) {
-    return "未连接";
+    return projectWorkspaceResolved.value ? "本机运行" : "未配置工作区";
   }
   const connectorName = String(
     activeLocalConnector.value.connector_name ||
@@ -3987,9 +4336,17 @@ const localConnectorSummary = computed(() => {
       "",
   ).trim();
   const onlineText = activeLocalConnector.value.online ? "在线" : "离线";
-  return [connectorName || "本地连接器", onlineText]
+  return [connectorName || "旧版本地连接器", onlineText]
     .filter(Boolean)
     .join(" · ");
+});
+const localRunnerSummary = computed(() => {
+  if (!isLocalRunnerSurface.value) {
+    return projectWorkspaceResolved.value ? "项目工作区可用" : "未配置工作区";
+  }
+  if (!hasSelectedProject.value) return "待选择项目";
+  if (!projectWorkspaceResolved.value) return "待配置工作区";
+  return "系统模型 · 本机执行";
 });
 const currentProjectLabel = computed(() => {
   const projectId = String(selectedProjectId.value || "").trim();
@@ -4010,12 +4367,8 @@ const skillResourceDirectoryResolved = computed(() =>
     skillResourceDirectoryDraft.value || skillResourceDirectoryStored.value,
   ).trim(),
 );
-const settingsCenterItems = computed(() =>
-  SETTINGS_CENTER_ITEM_DEFS,
-);
-const settingsInternalItems = computed(() =>
-  settingsCenterItems.value,
-);
+const settingsCenterItems = computed(() => SETTINGS_CENTER_ITEM_DEFS);
+const settingsInternalItems = computed(() => settingsCenterItems.value);
 const activeSettingsPanelMeta = computed(() => {
   const panelId = String(activeSettingsPanel.value || "").trim() || "chat";
   return (
@@ -4377,7 +4730,8 @@ const groupChatDialogTitle = computed(() =>
 const groupChatEditingSession = computed(
   () =>
     (chatSessions.value || []).find(
-      (item) => item.id === String(groupChatEditingSessionId.value || "").trim(),
+      (item) =>
+        item.id === String(groupChatEditingSessionId.value || "").trim(),
     ) || null,
 );
 const groupChatEditingSource = computed(() =>
@@ -4390,7 +4744,9 @@ const groupChatDialogStatus = computed(() => {
   const sessionId = String(groupChatEditingSessionId.value || "").trim();
   const live = sessionId ? groupChatLiveStatuses.value[sessionId] : null;
   if (live?.message) {
-    const status = String(live.status || "").trim().toLowerCase();
+    const status = String(live.status || "")
+      .trim()
+      .toLowerCase();
     return {
       title: status === "processing" ? "群通讯中" : "群链接状态",
       text: String(live.message || "").trim(),
@@ -4419,11 +4775,14 @@ const groupChatDialogStatus = computed(() => {
   };
 });
 function normalizeBotPlatformConnector(item) {
-  const raw = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+  const raw =
+    item && typeof item === "object" && !Array.isArray(item) ? item : {};
   return {
     id: String(raw.id || "").trim(),
     enabled: raw.enabled !== false,
-    platform: String(raw.platform || "").trim().toLowerCase(),
+    platform: String(raw.platform || "")
+      .trim()
+      .toLowerCase(),
     name: String(raw.name || "").trim(),
     agent_name: String(raw.agent_name || "").trim(),
     description: String(raw.description || "").trim(),
@@ -4434,7 +4793,9 @@ function normalizeBotPlatformConnector(item) {
 }
 
 const groupBotConnectorOptions = computed(() => {
-  const platform = String(groupChatDraft.value.platform || "").trim().toLowerCase();
+  const platform = String(groupChatDraft.value.platform || "")
+    .trim()
+    .toLowerCase();
   const projectId = String(selectedProjectId.value || "").trim();
   if (!platform) return [];
   return (botPlatformConnectors.value || [])
@@ -4445,7 +4806,10 @@ const groupBotConnectorOptions = computed(() => {
       return !item.project_id || !projectId || item.project_id === projectId;
     })
     .map((item) => {
-      const name = item.name || item.agent_name || `${formatChatPlatformLabel(item.platform)}机器人`;
+      const name =
+        item.name ||
+        item.agent_name ||
+        `${formatChatPlatformLabel(item.platform)}机器人`;
       const scope = item.project_id ? "当前项目" : "全局配置";
       return {
         value: item.id,
@@ -4464,9 +4828,28 @@ const groupBotConnectorHint = computed(() => {
   return `当前项目没有可用的${platformLabel}机器人，请先到第三方机器人接入页面添加并关联项目。`;
 });
 
+const groupChatResolveIdentityOptions = [
+  {
+    label: "机器人",
+    value: "bot",
+    description: "使用应用身份解析群 ID，适合机器人可见的群。",
+  },
+  {
+    label: "用户",
+    value: "user",
+    description: "使用当前登录用户身份解析群 ID，适合用户授权可见的群。",
+  },
+];
+
 const canSubmitGroupChatDialog = computed(
   () =>
-    Boolean(String(groupChatDraft.value.title || groupChatDraft.value.external_chat_name || "").trim()) &&
+    Boolean(
+      String(
+        groupChatDraft.value.title ||
+          groupChatDraft.value.external_chat_name ||
+          "",
+      ).trim(),
+    ) &&
     Boolean(String(groupChatDraft.value.platform || "").trim()) &&
     Boolean(String(groupChatDraft.value.connector_id || "").trim()) &&
     Boolean(String(groupChatDraft.value.external_chat_name || "").trim()) &&
@@ -4505,6 +4888,13 @@ const groupedChatSessions = computed(() => {
   }));
 });
 const starterPrompts = computed(() => {
+  if (isLocalRunnerSurface.value) {
+    return [
+      "检查当前工作区状态并给出下一步",
+      "帮我执行一个需要本机环境的任务",
+      "用系统模型分析并调用本地工具处理",
+    ];
+  }
   if (!hasSelectedProject.value && ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT) {
     return [
       "帮我梳理这个问题的思路",
@@ -4520,6 +4910,7 @@ const starterPrompts = computed(() => {
   ];
 });
 const emptyStateTitle = computed(() => {
+  if (isLocalRunnerSurface.value) return "启动本地运行窗口";
   if (!hasAccessibleProjects.value) return "暂无可访问项目";
   if (!hasSelectedProject.value) {
     return ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
@@ -4529,6 +4920,11 @@ const emptyStateTitle = computed(() => {
   return "开始一轮新的对话";
 });
 const emptyStateText = computed(() => {
+  if (isLocalRunnerSurface.value) {
+    return hasSelectedProject.value
+      ? "当前入口复用系统已配置的大模型 Provider，不使用 Ollama；需要执行命令、读写文件或调用飞书时，会通过本机运行环境和审批流程推进。"
+      : "选择项目后可带入项目工作区、员工、规则和工具；模型仍使用系统供应商配置，本地窗口只负责执行和权限边界。";
+  }
   if (!hasAccessibleProjects.value) {
     if (activeComposerAssistMeta.value?.id === "employee_create") {
       return "当前没有可访问项目，但你仍然可以直接描述岗位职责，AI 会先帮你生成员工草稿，确认后即可创建到员工管理。";
@@ -4551,20 +4947,20 @@ const composerPlaceholder = computed(() =>
   isTerminalInteractionMode.value
     ? "项目终端已连接，直接输入命令或交互内容，按 Enter 发送。"
     : isAwaitingUserInteraction.value
-    ? "已完成浏览器授权或确认后，可直接继续输入，按 Enter 发送。"
-    : !hasAccessibleProjects.value
-    ? activeComposerAssistMeta.value?.id === "employee_create"
-      ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
-      : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-        ? "当前没有可访问项目，也可以直接开始通用对话；如需创建员工，可点击上方“创建员工”。"
-        : "当前没有可访问项目；如需创建员工，可先点击上方“创建员工”。"
-    : !hasSelectedProject.value
-      ? activeComposerAssistMeta.value?.id === "employee_create"
-        ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
-        : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-          ? "直接输入问题开始通用对话；如需项目上下文，再从顶部选择项目。"
-          : "请先从顶部选择项目；如需快速创建员工，也可直接点击“创建员工”。"
-      : "输入你的问题，按 Enter 发送，Shift + Enter 换行。输入 / 可查看可用命令。",
+      ? "已完成浏览器授权或确认后，可直接继续输入，按 Enter 发送。"
+      : !hasAccessibleProjects.value
+        ? activeComposerAssistMeta.value?.id === "employee_create"
+          ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
+          : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+            ? "当前没有可访问项目，也可以直接开始通用对话；如需创建员工，可点击上方“创建员工”。"
+            : "当前没有可访问项目；如需创建员工，可先点击上方“创建员工”。"
+        : !hasSelectedProject.value
+          ? activeComposerAssistMeta.value?.id === "employee_create"
+            ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
+            : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+              ? "直接输入问题开始通用对话；如需项目上下文，再从顶部选择项目。"
+              : "请先从顶部选择项目；如需快速创建员工，也可直接点击“创建员工”。"
+          : "输入你的问题，按 Enter 发送，Shift + Enter 换行。输入 / 可查看可用命令。",
 );
 const composerHintText = computed(() => {
   if (isTerminalInteractionMode.value) {
@@ -4598,13 +4994,19 @@ const shortThreadId = computed(() => {
 });
 function isTerminalInputCandidateRow(row) {
   if (!row || String(row.role || "assistant") !== "assistant") return false;
-  const terminalOperations = (Array.isArray(row.operations) ? row.operations : []).filter(
+  const terminalOperations = (
+    Array.isArray(row.operations) ? row.operations : []
+  ).filter(
     (operation) =>
-      String(operation?.kind || "").trim().toLowerCase() === "terminal",
+      String(operation?.kind || "")
+        .trim()
+        .toLowerCase() === "terminal",
   );
   if (terminalOperations.length) {
     return terminalOperations.some((operation) => {
-      const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+      const phase = normalizeOperationPhase(
+        operation?.phase || operation?.status,
+      );
       return !["completed", "failed", "blocked"].includes(phase);
     });
   }
@@ -4615,12 +5017,17 @@ function isTerminalInputCandidateRow(row) {
 }
 
 function completeTerminalInputOperations(row, summary = "终端交互已结束") {
-  if (!row || !Array.isArray(row.operations) || !row.operations.length) return false;
+  if (!row || !Array.isArray(row.operations) || !row.operations.length)
+    return false;
   let changed = false;
   row.operations = row.operations.map((operation) => {
-    const kind = String(operation?.kind || "").trim().toLowerCase();
+    const kind = String(operation?.kind || "")
+      .trim()
+      .toLowerCase();
     if (kind !== "terminal") return operation;
-    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    const phase = normalizeOperationPhase(
+      operation?.phase || operation?.status,
+    );
     if (["completed", "failed", "blocked"].includes(phase)) return operation;
     changed = true;
     return {
@@ -4633,7 +5040,9 @@ function completeTerminalInputOperations(row, summary = "终端交互已结束")
 }
 
 function isLiveTerminalOperation(operation) {
-  const kind = String(operation?.kind || "").trim().toLowerCase();
+  const kind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
   if (kind !== "terminal") return false;
   const phase = normalizeOperationPhase(operation?.phase || operation?.status);
   return !["completed", "failed", "blocked"].includes(phase);
@@ -4678,8 +5087,8 @@ function shouldPreserveTerminalInteractionAfterDone(row, pending) {
   if (activeIndex !== assistantIndex) return false;
   const hasLiveSession = Boolean(
     terminalMirrorConnected.value ||
-      String(hostTerminalSessionId.value || "").trim() ||
-      terminalPanelStatus.value === "running",
+    String(hostTerminalSessionId.value || "").trim() ||
+    terminalPanelStatus.value === "running",
   );
   if (!hasLiveSession) return false;
   const interaction = terminalStructuredInteraction.value;
@@ -4692,9 +5101,9 @@ function shouldPreserveTerminalInteractionAfterDone(row, pending) {
   );
   return Boolean(
     hasStructuredInteraction ||
-      hasSubmittedStructuredInteraction ||
-      hasLiveTerminalOperation(row) ||
-      String(row.displayMode || "").trim() === "terminal",
+    hasSubmittedStructuredInteraction ||
+    hasLiveTerminalOperation(row) ||
+    String(row.displayMode || "").trim() === "terminal",
   );
 }
 
@@ -4733,8 +5142,8 @@ const hasLiveTerminalSession = computed(() => {
   if (!String(selectedProjectId.value || "").trim()) return false;
   return Boolean(
     terminalMirrorConnected.value ||
-      String(hostTerminalSessionId.value || "").trim() ||
-      terminalPanelStatus.value === "running",
+    String(hostTerminalSessionId.value || "").trim() ||
+    terminalPanelStatus.value === "running",
   );
 });
 const activePendingInteraction = computed(() => {
@@ -4783,7 +5192,9 @@ const isTerminalInteractionMode = computed(() => {
   const operation = activePendingInteraction.value?.operation;
   if (operation) {
     const actionType = normalizeOperationActionType(operation?.actionType);
-    const kind = String(operation?.kind || "").trim().toLowerCase();
+    const kind = String(operation?.kind || "")
+      .trim()
+      .toLowerCase();
     if (actionType === "enter_text" || kind === "terminal") {
       return hasLiveTerminalSession.value;
     }
@@ -4802,11 +5213,11 @@ function canSupersedePendingInteraction(interaction) {
   const operation = interaction?.operation;
   if (!operation) return false;
   const actionType = normalizeOperationActionType(operation?.actionType);
-  const kind = String(operation?.kind || "").trim().toLowerCase();
+  const kind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
   const meta =
-    operation?.meta && typeof operation.meta === "object"
-      ? operation.meta
-      : {};
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   if (String(meta.approval_id || meta.review_id || "").trim()) {
     return false;
   }
@@ -4814,8 +5225,7 @@ function canSupersedePendingInteraction(interaction) {
     return false;
   }
   return (
-    ["open_url", "enter_text", "select"].includes(actionType) ||
-    kind === "auth"
+    ["open_url", "enter_text", "select"].includes(actionType) || kind === "auth"
   );
 }
 
@@ -4830,15 +5240,16 @@ function releasePendingInteractionForFollowup(followupText = "") {
   const operation = interaction.operation;
   if (!row || !operation) return false;
   const preview = clipText(String(followupText || "").trim(), 80);
-  const summary = preview
-    ? `已收到继续指令：${preview}`
-    : "已切换为下一轮继续";
+  const summary = preview ? `已收到继续指令：${preview}` : "已切换为下一轮继续";
   upsertMessageOperation(row, {
     ...operation,
     summary,
     phase: "completed",
   });
-  appendAssistantStatusNote(row, "> ↻ 已结束当前等待状态，转到下一轮继续处理。");
+  appendAssistantStatusNote(
+    row,
+    "> ↻ 已结束当前等待状态，转到下一轮继续处理。",
+  );
   if (requestId && pending) {
     pending.followupReleased = true;
     resolvePendingRequest(requestId, pending, row.content || summary);
@@ -4848,7 +5259,10 @@ function releasePendingInteractionForFollowup(followupText = "") {
 
 const terminalPanelStatusText = computed(() => {
   if (terminalPanelStatus.value === "error") return "异常";
-  if (terminalMirrorConnected.value && terminalPanelStatus.value === "running") {
+  if (
+    terminalMirrorConnected.value &&
+    terminalPanelStatus.value === "running"
+  ) {
     return "运行中";
   }
   if (terminalMirrorConnected.value) {
@@ -5146,7 +5560,9 @@ const activeComposerAssistMeta = computed(
     ) || null,
 );
 function buildAssistSlashCommand(actionId) {
-  const normalized = String(actionId || "").trim().toLowerCase();
+  const normalized = String(actionId || "")
+    .trim()
+    .toLowerCase();
   if (!normalized) return "/";
   if (normalized === "employee_create") return "/employee-create";
   if (normalized === "prompt_search") return "/prompt-search";
@@ -5163,7 +5579,8 @@ const composerSlashCommands = computed(() => {
       command: PROJECT_STATS_COMMAND,
       aliases: PROJECT_STATS_COMMAND_ALIASES,
       label: "项目统计报表",
-      description: "把当前项目统计 AI 报表注入聊天，让模型继续分析优化方向和升级重点。",
+      description:
+        "把当前项目统计 AI 报表注入聊天，让模型继续分析优化方向和升级重点。",
       assistActionId: "",
     },
     {
@@ -5214,7 +5631,9 @@ const composerSlashCommands = computed(() => {
 });
 
 function normalizeSlashCommandToken(value) {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "")
+    .trim()
+    .toLowerCase();
 }
 
 function parseSlashCommandDraft(text) {
@@ -5241,7 +5660,9 @@ const inputFocused = ref(false);
 const isDragging = ref(false);
 const pendingComposerRefocusAfterExternalOpen = ref(false);
 
-const currentSlashDraftState = computed(() => parseSlashCommandDraft(draftText.value));
+const currentSlashDraftState = computed(() =>
+  parseSlashCommandDraft(draftText.value),
+);
 const filteredSlashCommands = computed(() => {
   const state = currentSlashDraftState.value;
   if (!state?.isCommandPhase) return [];
@@ -5261,13 +5682,12 @@ const filteredSlashCommands = computed(() => {
     return haystacks.some((value) => value.includes(query));
   });
 });
-const isSlashCommandMenuVisible = computed(
-  () =>
-    Boolean(
-      inputFocused.value &&
-        currentSlashDraftState.value?.isCommandPhase &&
-        filteredSlashCommands.value.length,
-    ),
+const isSlashCommandMenuVisible = computed(() =>
+  Boolean(
+    inputFocused.value &&
+    currentSlashDraftState.value?.isCommandPhase &&
+    filteredSlashCommands.value.length,
+  ),
 );
 
 watch(
@@ -5380,7 +5800,10 @@ function chatRuntimeRemoteFingerprint(projectId, chatSessionId, payload) {
 }
 
 function rememberRemotePersistedChatRuntime(projectId, chatSessionId, payload) {
-  lastChatRuntimeRemotePersistKey = chatRuntimeStorageKey(projectId, chatSessionId);
+  lastChatRuntimeRemotePersistKey = chatRuntimeStorageKey(
+    projectId,
+    chatSessionId,
+  );
   lastChatRuntimeRemotePersistFingerprint = chatRuntimeRemoteFingerprint(
     projectId,
     chatSessionId,
@@ -5397,7 +5820,10 @@ function clearRemotePersistedChatRuntimeState(projectId, chatSessionId = "") {
     return;
   }
   if (normalizedChatSessionId) {
-    const key = chatRuntimeStorageKey(normalizedProjectId, normalizedChatSessionId);
+    const key = chatRuntimeStorageKey(
+      normalizedProjectId,
+      normalizedChatSessionId,
+    );
     if (lastChatRuntimeRemotePersistKey === key) {
       lastChatRuntimeRemotePersistKey = "";
       lastChatRuntimeRemotePersistFingerprint = "";
@@ -5515,7 +5941,10 @@ function clearPersistedChatRuntime(projectId, chatSessionId = "") {
     normalizedChatSessionId,
   );
   if (normalizedChatSessionId) {
-    const key = chatRuntimeStorageKey(normalizedProjectId, normalizedChatSessionId);
+    const key = chatRuntimeStorageKey(
+      normalizedProjectId,
+      normalizedChatSessionId,
+    );
     if (key) {
       localStorage.removeItem(key);
     }
@@ -5587,7 +6016,10 @@ async function persistChatRuntimeToServer(projectId, chatSessionId, payload) {
   ) {
     return;
   }
-  const key = chatRuntimeStorageKey(normalizedProjectId, normalizedChatSessionId);
+  const key = chatRuntimeStorageKey(
+    normalizedProjectId,
+    normalizedChatSessionId,
+  );
   const fingerprint = chatRuntimeRemoteFingerprint(
     normalizedProjectId,
     normalizedChatSessionId,
@@ -5632,7 +6064,9 @@ function normalizeRuntimeMessageSnapshot(row) {
     attachments: Array.isArray(row.attachments) ? row.attachments.slice() : [],
     time: String(row.time || ""),
     displayMode: String(row.displayMode || ""),
-    effectiveTools: Array.isArray(row.effectiveTools) ? row.effectiveTools.slice() : [],
+    effectiveTools: Array.isArray(row.effectiveTools)
+      ? row.effectiveTools.slice()
+      : [],
     effectiveToolTotal: Number(row.effectiveToolTotal || 0),
     terminalLog: Array.isArray(row.terminalLog) ? row.terminalLog.slice() : [],
     processExpanded: Boolean(row.processExpanded),
@@ -5665,8 +6099,12 @@ function buildPersistedChatRuntimePayload() {
         ? terminalPanelLines.value.slice(-400)
         : [],
       mirror_connected: Boolean(terminalMirrorConnected.value),
-      host_terminal_session_id: String(hostTerminalSessionId.value || "").trim(),
-      host_terminal_workspace_path: String(hostTerminalWorkspacePath.value || "").trim(),
+      host_terminal_session_id: String(
+        hostTerminalSessionId.value || "",
+      ).trim(),
+      host_terminal_workspace_path: String(
+        hostTerminalWorkspacePath.value || "",
+      ).trim(),
       active_assistant_index: activeIndex,
       active_assistant_message_id: String(activeRow?.id || "").trim(),
     },
@@ -5684,7 +6122,9 @@ function shouldKeepRuntimeOnlyMessage(row) {
 function applyPersistedChatRuntimeRows(historyRows, runtimePayload) {
   const rows = Array.isArray(historyRows) ? historyRows : [];
   const runtimeRows = Array.isArray(runtimePayload?.messages)
-    ? runtimePayload.messages.map(normalizeRuntimeMessageSnapshot).filter(Boolean)
+    ? runtimePayload.messages
+        .map(normalizeRuntimeMessageSnapshot)
+        .filter(Boolean)
     : [];
   if (!runtimeRows.length) return rows;
   const runtimeById = new Map(runtimeRows.map((item) => [item.id, item]));
@@ -5721,7 +6161,8 @@ async function restoreInteractiveChatRuntime(
       : null;
   if (!terminal) return;
   const restoredPanelStatus = String(terminal.panel_status || "idle").trim();
-  terminalPanelStatus.value = restoredPanelStatus === "running" ? "idle" : restoredPanelStatus;
+  terminalPanelStatus.value =
+    restoredPanelStatus === "running" ? "idle" : restoredPanelStatus;
   terminalPanelExpanded.value = Boolean(terminal.panel_expanded);
   terminalPanelLines.value = Array.isArray(terminal.panel_lines)
     ? terminal.panel_lines.slice(-400)
@@ -5747,7 +6188,10 @@ function schedulePersistChatRuntime() {
     chatRuntimePersistTimer = null;
     const activeProjectId = String(selectedProjectId.value || "").trim();
     const activeChatSessionId = String(currentChatSessionId.value || "").trim();
-    if (activeProjectId !== projectId || activeChatSessionId !== chatSessionId) {
+    if (
+      activeProjectId !== projectId ||
+      activeChatSessionId !== chatSessionId
+    ) {
       return;
     }
     const payload = buildPersistedChatRuntimePayload();
@@ -5765,6 +6209,7 @@ function normalizeChatSourceContext(item) {
     source_type: String(source.source_type || "").trim(),
     platform: String(source.platform || "").trim(),
     connector_id: String(source.connector_id || "").trim(),
+    resolve_identity: String(source.resolve_identity || "").trim(),
     external_chat_id: String(source.external_chat_id || "").trim(),
     external_chat_name: String(source.external_chat_name || "").trim(),
     external_message_id: String(source.external_message_id || "").trim(),
@@ -5796,7 +6241,12 @@ function normalizeChatSession(item) {
 
 function isGroupChatSession(session) {
   const source = normalizeChatSourceContext(session || {});
-  return Boolean(source.platform || source.connector_id || source.external_chat_name || source.external_chat_id);
+  return Boolean(
+    source.platform ||
+    source.connector_id ||
+    source.external_chat_name ||
+    source.external_chat_id,
+  );
 }
 
 const chatHistoryHasMore = computed(() => {
@@ -5824,7 +6274,9 @@ function formatChatSessionTime(value) {
 }
 
 function formatChatPlatformLabel(platform) {
-  const normalized = String(platform || "").trim().toLowerCase();
+  const normalized = String(platform || "")
+    .trim()
+    .toLowerCase();
   if (normalized === "feishu") return "飞书";
   if (normalized === "wechat") return "微信/企微";
   if (normalized === "qq") return "QQ";
@@ -5837,7 +6289,8 @@ function formatChatSessionSourceLabel(session) {
   const platformLabel = formatChatPlatformLabel(source.platform);
   if (!groupName && !platformLabel) return "";
   const suffix = source.external_chat_id ? "已解析" : "待解析 ID";
-  if (groupName && platformLabel) return `${platformLabel}群 · ${groupName} · ${suffix}`;
+  if (groupName && platformLabel)
+    return `${platformLabel}群 · ${groupName} · ${suffix}`;
   if (groupName) return `群 · ${groupName} · ${suffix}`;
   return `${platformLabel}群 · ${suffix}`;
 }
@@ -6206,9 +6659,7 @@ function normalizeExternalAgentInfo(raw) {
         source.runtime_model_name || source.model_name || "codex-cli",
       ).trim() || "codex-cli",
     exact_model_name: String(source.exact_model_name || "").trim(),
-    execution_mode:
-      String(source.execution_mode || "local_connector").trim() ||
-      "local_connector",
+    execution_mode: String(source.execution_mode || "local").trim() || "local",
     runner_url: String(source.runner_url || "").trim(),
     materialized_by: String(source.materialized_by || "").trim(),
     available: Boolean(source.available),
@@ -6307,7 +6758,7 @@ function effectiveToolSourceLabel(source) {
       system_mcp: "系统 MCP",
       project_skill: "项目技能",
       builtin: "内置",
-      local_connector: "本地连接器",
+      local_connector: "旧版本地连接器",
       project_tool: "项目工具",
     }[String(source || "").trim()] || "工具"
   );
@@ -6320,7 +6771,7 @@ function effectiveToolSourceTagType(source) {
       system_mcp: "warning",
       project_skill: "",
       builtin: "info",
-      local_connector: "danger",
+      local_connector: "info",
       project_tool: "",
     }[String(source || "").trim()] || ""
   );
@@ -6375,8 +6826,7 @@ function normalizeProjectChatSettings(raw) {
       source.local_connector_id || CHAT_SETTINGS_DEFAULTS.local_connector_id,
     ).trim(),
     connector_workspace_path: String(
-      source.connector_workspace_path ||
-        CHAT_SETTINGS_DEFAULTS.connector_workspace_path,
+      CHAT_SETTINGS_DEFAULTS.connector_workspace_path,
     ).trim(),
     selected_employee_ids: selectedEmployeeIds,
     employee_coordination_mode:
@@ -6421,14 +6871,15 @@ function normalizeChatSelectedEmployeeIds(
   return validSelected.length >= available.length ? [] : validSelected;
 }
 
-
 function normalizeWorkSessionSummary(raw) {
   if (!raw || typeof raw !== "object") return null;
   const sessionId = String(raw.session_id || "").trim();
   if (!sessionId) return null;
   return {
     session_id: sessionId,
-    latest_status: String(raw.latest_status || "").trim().toLowerCase(),
+    latest_status: String(raw.latest_status || "")
+      .trim()
+      .toLowerCase(),
     goal: String(raw.goal || "").trim(),
     task_tree_session_id: String(raw.task_tree_session_id || "").trim(),
     task_tree_chat_session_id: String(
@@ -6453,7 +6904,10 @@ function resolveTaskTreeEventPayload(payload) {
   if (payload.task_tree && typeof payload.task_tree === "object") {
     return payload.task_tree;
   }
-  if (payload.history_task_tree && typeof payload.history_task_tree === "object") {
+  if (
+    payload.history_task_tree &&
+    typeof payload.history_task_tree === "object"
+  ) {
     return payload.history_task_tree;
   }
   if (
@@ -6464,7 +6918,6 @@ function resolveTaskTreeEventPayload(payload) {
   }
   return payload;
 }
-
 
 function applyTaskTreePayload(payload) {
   const normalized = normalizeTaskTreePayload(payload);
@@ -6632,7 +7085,6 @@ function syncTaskTreeDrafts(node) {
   ).trim();
 }
 
-
 function normalizeDictionaryBackedChatSettings(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   const next = { ...source };
@@ -6697,8 +7149,8 @@ const canSend = computed(() => {
   if (isTerminalInteractionMode.value) {
     return Boolean(
       String(draftText.value || "").trim() ||
-        terminalMirrorConnected.value ||
-        String(hostTerminalSessionId.value || "").trim(),
+      terminalMirrorConnected.value ||
+      String(hostTerminalSessionId.value || "").trim(),
     );
   }
   if (chatLoading.value && !isAwaitingUserInteraction.value) return false;
@@ -6769,7 +7221,9 @@ function normalizeFormJsonArtifact(rawJson) {
   }
   if (!parsed || typeof parsed !== "object") return null;
   const model =
-    parsed.model && typeof parsed.model === "object" && !Array.isArray(parsed.model)
+    parsed.model &&
+    typeof parsed.model === "object" &&
+    !Array.isArray(parsed.model)
       ? parsed.model
       : {};
   const schema = Array.isArray(parsed.schema) ? parsed.schema : [];
@@ -6808,7 +7262,9 @@ function normalizeFormJsonArtifact(rawJson) {
 }
 
 function getFormJsonArtifactCacheKey(item, block, index) {
-  const messageKey = String(item?.id || item?.created_at || item?.time || "").trim();
+  const messageKey = String(
+    item?.id || item?.created_at || item?.time || "",
+  ).trim();
   if (messageKey) return `${messageKey}:${index}:${block}`;
   return `${String(item?.role || "assistant")}:${index}:${block}`;
 }
@@ -6867,9 +7323,10 @@ function focusTerminalPanelInput() {
 function extractInteractiveBrowserUrls(value) {
   const text = String(value || "").trim();
   if (!text) return [];
-  const urls = Array.from(
-    text.matchAll(/https?:\/\/[^\s)>"]+/gi),
-    (match) => String(match?.[0] || "").trim().replace(/[),.;:!?]+$/g, ""),
+  const urls = Array.from(text.matchAll(/https?:\/\/[^\s)>"]+/gi), (match) =>
+    String(match?.[0] || "")
+      .trim()
+      .replace(/[),.;:!?]+$/g, ""),
   ).filter(Boolean);
   if (!urls.length) return [];
   const hasOpenHint =
@@ -6882,22 +7339,24 @@ function extractInteractiveBrowserUrls(value) {
 
 function pickAwaitingInteractionOperation(row, options = {}) {
   if (!row) return null;
-  const operations = [...messageOperations(row)]
-    .reverse()
-    .filter((item) => {
-      if (!isOperationAwaitingInteraction(item)) return false;
-      if (options?.allowTerminal !== false) return true;
-      const actionType = normalizeOperationActionType(item?.actionType);
-      const kind = String(item?.kind || "").trim().toLowerCase();
-      return actionType !== "enter_text" && kind !== "terminal";
-    });
+  const operations = [...messageOperations(row)].reverse().filter((item) => {
+    if (!isOperationAwaitingInteraction(item)) return false;
+    if (options?.allowTerminal !== false) return true;
+    const actionType = normalizeOperationActionType(item?.actionType);
+    const kind = String(item?.kind || "")
+      .trim()
+      .toLowerCase();
+    return actionType !== "enter_text" && kind !== "terminal";
+  });
   if (!operations.length) return null;
   if (options?.allowTerminal === false) return operations[0];
   if (!hasLiveTerminalSession.value) return operations[0];
   return (
     operations.find((item) => {
       const actionType = normalizeOperationActionType(item?.actionType);
-      const kind = String(item?.kind || "").trim().toLowerCase();
+      const kind = String(item?.kind || "")
+        .trim()
+        .toLowerCase();
       return actionType === "enter_text" || kind === "terminal";
     }) || operations[0]
   );
@@ -7013,7 +7472,10 @@ async function autoOpenTerminalBrowserUrls(value, row = null) {
 
 function restoreComposerFocusAfterExternalOpen() {
   if (!pendingComposerRefocusAfterExternalOpen.value) return;
-  if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+  if (
+    typeof document !== "undefined" &&
+    document.visibilityState === "hidden"
+  ) {
     return;
   }
   pendingComposerRefocusAfterExternalOpen.value = false;
@@ -7053,6 +7515,93 @@ function resetTerminalPanel() {
   terminalApprovalHandledKey.value = "";
   clearTerminalApprovalFallback();
   scrollTerminalPanelBottom();
+}
+
+function resetWorkspaceFilePanel() {
+  workspaceFileTreePath.value = "";
+  workspaceFileItems.value = [];
+  activeWorkspaceFilePath.value = "";
+  workspaceFileDraft.value = "";
+  workspaceFileOriginal.value = "";
+}
+
+async function openWorkspaceDirectory(path = "") {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId || !projectWorkspaceResolved.value) {
+    resetWorkspaceFilePanel();
+    return;
+  }
+  workspaceFileTreeLoading.value = true;
+  try {
+    const data = await api.get(
+      `/projects/${encodeURIComponent(projectId)}/workspace/files`,
+      { params: { path: String(path || "").trim() } },
+    );
+    workspaceFileTreePath.value = String(data?.path || "").trim();
+    workspaceFileItems.value = Array.isArray(data?.items) ? data.items : [];
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "加载工作区文件失败");
+  } finally {
+    workspaceFileTreeLoading.value = false;
+  }
+}
+
+async function refreshWorkspaceFileTree() {
+  await openWorkspaceDirectory(workspaceFileTreePath.value);
+}
+
+async function openWorkspaceFile(path = "") {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const normalizedPath = String(path || "").trim();
+  if (!projectId || !normalizedPath) return;
+  workspaceFileLoading.value = true;
+  try {
+    const data = await api.get(
+      `/projects/${encodeURIComponent(projectId)}/workspace/file`,
+      { params: { path: normalizedPath } },
+    );
+    activeWorkspaceFilePath.value = String(data?.path || normalizedPath).trim();
+    workspaceFileDraft.value = String(data?.content || "");
+    workspaceFileOriginal.value = workspaceFileDraft.value;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "读取工作区文件失败");
+  } finally {
+    workspaceFileLoading.value = false;
+  }
+}
+
+function handleWorkspaceFileClick(item) {
+  const itemPath = String(item?.path || "").trim();
+  if (!itemPath && String(item?.kind || "") !== "directory") return;
+  if (String(item?.kind || "").trim() === "directory") {
+    void openWorkspaceDirectory(itemPath);
+    return;
+  }
+  void openWorkspaceFile(itemPath);
+}
+
+async function saveActiveWorkspaceFile() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const path = String(activeWorkspaceFilePath.value || "").trim();
+  if (!projectId || !path) return;
+  workspaceFileSaving.value = true;
+  try {
+    const data = await api.put(
+      `/projects/${encodeURIComponent(projectId)}/workspace/file`,
+      {
+        path,
+        content: workspaceFileDraft.value,
+      },
+    );
+    activeWorkspaceFilePath.value = String(data?.path || path).trim();
+    workspaceFileOriginal.value = workspaceFileDraft.value;
+    await openWorkspaceDirectory(workspaceFileTreePath.value);
+    ElMessage.success("文件已保存");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存工作区文件失败");
+  } finally {
+    workspaceFileSaving.value = false;
+  }
 }
 
 async function startTerminalMirror(options = {}) {
@@ -7164,9 +7713,7 @@ async function sendTerminalMirrorContent(content, options = {}) {
     }
   }
   if (options?.echo !== false) {
-    const echoText = String(
-      options?.echoLabel ?? normalizedContent,
-    ).trim();
+    const echoText = String(options?.echoLabel ?? normalizedContent).trim();
     if (echoText) {
       const inputLine = `› ${echoText}`;
       appendTerminalPanelLine(inputLine);
@@ -7240,19 +7787,24 @@ function appendAssistantStatusNote(row, text) {
 function removeAssistantStatusNotes(row, predicate) {
   if (!row || typeof predicate !== "function") return;
   const notes = Array.isArray(row.statusNotes) ? row.statusNotes.slice() : [];
-  row.statusNotes = notes.filter((note) => !predicate(String(note || "").trim()));
+  row.statusNotes = notes.filter(
+    (note) => !predicate(String(note || "").trim()),
+  );
 }
 
 function isTransientExecutionStatusNote(note) {
   const normalized = String(note || "").trim();
-  return /有执行步骤未完成，正在等待模型给出下一步|执行过程中出现提示，正在等待后续处理/i.test(normalized);
+  return /有执行步骤未完成，正在等待模型给出下一步|执行过程中出现提示，正在等待后续处理/i.test(
+    normalized,
+  );
 }
 
 function isInternalStatusNote(note) {
   const normalized = String(note || "").trim();
   return (
-    /工具调用|正在调用工具|tokens\s+in=|正在处理任务|命令已进入交互模式|已切换到项目终端/i.test(normalized) ||
-    isTransientExecutionStatusNote(normalized)
+    /工具调用|正在调用工具|tokens\s+in=|正在处理任务|命令已进入交互模式|已切换到项目终端/i.test(
+      normalized,
+    ) || isTransientExecutionStatusNote(normalized)
   );
 }
 
@@ -7265,11 +7817,18 @@ function messageStatusNotes(row) {
 }
 
 function normalizeOperationPhase(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (
-    ["pending", "running", "waiting_user", "blocked", "completed", "failed"].includes(
-      normalized,
-    )
+    [
+      "pending",
+      "running",
+      "waiting_user",
+      "blocked",
+      "completed",
+      "failed",
+    ].includes(normalized)
   ) {
     return normalized;
   }
@@ -7277,8 +7836,12 @@ function normalizeOperationPhase(value) {
 }
 
 function normalizeOperationActionType(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (["open_url", "approve", "enter_text", "select", "none"].includes(normalized)) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    ["open_url", "approve", "enter_text", "select", "none"].includes(normalized)
+  ) {
     return normalized;
   }
   return "none";
@@ -7300,15 +7863,21 @@ function buildMessageOperation(source = {}) {
     source.meta && typeof source.meta === "object"
       ? { ...source.meta }
       : {
-          request_id: String(source.requestId || source.request_id || "").trim(),
+          request_id: String(
+            source.requestId || source.request_id || "",
+          ).trim(),
           approval_id: String(
             source.approvalId || source.approval_id || "",
           ).trim(),
           review_id: String(source.reviewId || source.review_id || "").trim(),
-          prompt_key: String(source.promptKey || source.prompt_key || source.key || "").trim(),
+          prompt_key: String(
+            source.promptKey || source.prompt_key || source.key || "",
+          ).trim(),
           message: String(source.message || "").trim(),
           description: String(source.description || "").trim(),
-          approval_mode: String(source.approvalMode || source.approval_mode || "").trim(),
+          approval_mode: String(
+            source.approvalMode || source.approval_mode || "",
+          ).trim(),
           diff_summary:
             source.diffSummary && typeof source.diffSummary === "object"
               ? source.diffSummary
@@ -7316,7 +7885,7 @@ function buildMessageOperation(source = {}) {
                 ? source.diff_summary
                 : null,
           risk_signals: Array.isArray(source.riskSignals || source.risk_signals)
-            ? (source.riskSignals || source.risk_signals)
+            ? source.riskSignals || source.risk_signals
             : [],
         };
   return {
@@ -7330,8 +7899,12 @@ function buildMessageOperation(source = {}) {
     detail,
     phase,
     actionType,
-    createdAt: String(source.createdAt || source.created_at || nowText()).trim(),
-    updatedAt: String(source.updatedAt || source.updated_at || nowText()).trim(),
+    createdAt: String(
+      source.createdAt || source.created_at || nowText(),
+    ).trim(),
+    updatedAt: String(
+      source.updatedAt || source.updated_at || nowText(),
+    ).trim(),
     meta,
   };
 }
@@ -7339,21 +7912,28 @@ function buildMessageOperation(source = {}) {
 function findMessageOperationMatchIndex(items, operation) {
   const byId = items.findIndex((item) => item.id === operation.id);
   if (byId >= 0) return byId;
-  const operationKind = String(operation?.kind || "").trim().toLowerCase();
+  const operationKind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
   if (operationKind !== "request") return -1;
   const requestId = String(operation?.meta?.request_id || "").trim();
   if (requestId) {
     const byRequestId = items.findIndex(
       (item) =>
-        String(item?.kind || "").trim().toLowerCase() === "request" &&
+        String(item?.kind || "")
+          .trim()
+          .toLowerCase() === "request" &&
         String(item?.meta?.request_id || "").trim() === requestId,
     );
     if (byRequestId >= 0) return byRequestId;
   }
   return items.findIndex(
     (item) =>
-      String(item?.kind || "").trim().toLowerCase() === "request" &&
-      String(item?.title || "").trim() === String(operation?.title || "").trim(),
+      String(item?.kind || "")
+        .trim()
+        .toLowerCase() === "request" &&
+      String(item?.title || "").trim() ===
+        String(operation?.title || "").trim(),
   );
 }
 
@@ -7379,7 +7959,11 @@ function upsertMessageOperation(row, source = {}) {
 }
 
 function isInternalToolOperation(operation) {
-  return String(operation?.kind || "").trim().toLowerCase() === "tool";
+  return (
+    String(operation?.kind || "")
+      .trim()
+      .toLowerCase() === "tool"
+  );
 }
 
 function messageOperations(row) {
@@ -7395,7 +7979,9 @@ function isOperationAwaitingInteraction(operation) {
   const phase = normalizeOperationPhase(operation?.phase || operation?.status);
   if (phase !== "waiting_user") return false;
   const actionType = normalizeOperationActionType(operation?.actionType);
-  const kind = String(operation?.kind || "").trim().toLowerCase();
+  const kind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
   if (["open_url", "approve", "enter_text", "select"].includes(actionType)) {
     return true;
   }
@@ -7421,7 +8007,9 @@ function operationActionHint(operation) {
     return "等待你确认或批准后继续。";
   }
   if (actionType === "enter_text") {
-    const kind = String(operation?.kind || "").trim().toLowerCase();
+    const kind = String(operation?.kind || "")
+      .trim()
+      .toLowerCase();
     if (kind === "terminal") {
       if (terminalStructuredSubmissionHint.value) {
         return "已提交表单，终端已继续执行；如已打开浏览器授权，请完成后回到这里。";
@@ -7443,14 +8031,15 @@ function extractOperationUrl(operation) {
   const detail = String(operation?.detail || "").trim();
   if (!detail) return "";
   const match = detail.match(/https?:\/\/[^\s)>"]+/i);
-  return String(match?.[0] || "").trim().replace(/[),.;:!?]+$/g, "");
+  return String(match?.[0] || "")
+    .trim()
+    .replace(/[),.;:!?]+$/g, "");
 }
 
 function operationPrimaryActionLabel(operation) {
   const buttons = operationActionButtons(operation);
   return buttons.length ? buttons[0].label : "";
 }
-
 
 function buildTerminalChoiceChildren(componentName) {
   const interaction = terminalStructuredInteraction.value;
@@ -7498,7 +8087,9 @@ const terminalInteractionFormJson = computed(() => {
                     trigger: "change",
                   },
             ],
-            children: buildTerminalChoiceChildren(isMulti ? "ElCheckbox" : "ElRadio"),
+            children: buildTerminalChoiceChildren(
+              isMulti ? "ElCheckbox" : "ElRadio",
+            ),
           },
         ]
       : [],
@@ -7514,7 +8105,9 @@ const canSubmitTerminalStructuredInteraction = computed(() => {
       : [];
     return Boolean(choices.length);
   }
-  return Boolean(String(terminalStructuredFormModel.value?.choice || "").trim());
+  return Boolean(
+    String(terminalStructuredFormModel.value?.choice || "").trim(),
+  );
 });
 
 function terminalInteractionDismissKey(interaction) {
@@ -7544,7 +8137,9 @@ function scheduleTerminalStructuredInteractionRefresh(row, index) {
 function terminalStructuredSubmissionHintForMessage(index) {
   const hint = terminalStructuredSubmissionHint.value;
   if (!hint) return "";
-  return Number(hint.assistantIndex) === Number(index) ? String(hint.text || "") : "";
+  return Number(hint.assistantIndex) === Number(index)
+    ? String(hint.text || "")
+    : "";
 }
 
 function terminalInteractionFormForMessage(row, index) {
@@ -7560,10 +8155,16 @@ function markTerminalInteractionOperationRunning(assistantIndex) {
   const row = messages.value[Number(assistantIndex)];
   if (!row || !Array.isArray(row.operations)) return;
   row.operations = row.operations.map((operation) => {
-    if (String(operation?.kind || "").trim().toLowerCase() !== "terminal") {
+    if (
+      String(operation?.kind || "")
+        .trim()
+        .toLowerCase() !== "terminal"
+    ) {
       return operation;
     }
-    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    const phase = normalizeOperationPhase(
+      operation?.phase || operation?.status,
+    );
     if (!["waiting_user", "running"].includes(phase)) return operation;
     return {
       ...operation,
@@ -7594,7 +8195,9 @@ function markTerminalInteractionContentSubmitted(assistantIndex) {
 }
 
 function dismissTerminalStructuredInteraction() {
-  rememberDismissedTerminalStructuredInteraction(terminalStructuredInteraction.value);
+  rememberDismissedTerminalStructuredInteraction(
+    terminalStructuredInteraction.value,
+  );
   terminalStructuredInteraction.value = null;
 }
 
@@ -7619,9 +8222,7 @@ function hasTerminalChoiceControlSignal(lines, text) {
   const terminalText = String(text || "").trim();
   if (!terminalText) return false;
   const hasVisibleChoiceMarker = (lines || []).some((line) =>
-    /^\s*(?:[>❯]\s*)?(?:\[[ xX]\]|[◉●○◯◎✓✔])\s*\S+/u.test(
-      String(line || ""),
-    ),
+    /^\s*(?:[>❯]\s*)?(?:\[[ xX]\]|[◉●○◯◎✓✔])\s*\S+/u.test(String(line || "")),
   );
   if (hasVisibleChoiceMarker) return true;
   return /enter confirm|enter to (?:select|confirm)|use .*arrow|arrow keys|press .*enter|上下键|方向键|回车(?:确认|选择)|空格(?:选择|切换)|select one|choose one|choose from|请选择以下/i.test(
@@ -7634,24 +8235,33 @@ function isPlainTerminalChoiceLabel(value) {
   if (!text) return false;
   if (/\s/.test(text)) return false;
   if (/[，。；：、,.!?！？*`#()[\]{}<>]/.test(text)) return false;
-  return /^[A-Za-z][\w:-]{1,40}$/.test(text) || /^[\u4e00-\u9fff]{1,12}$/u.test(text);
+  return (
+    /^[A-Za-z][\w:-]{1,40}$/.test(text) || /^[\u4e00-\u9fff]{1,12}$/u.test(text)
+  );
 }
 
 function parseTerminalChoiceLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
-  if (/toggle|enter confirm|ctrl\+a|filter|请至少选择|选择要|select all/i.test(raw)) {
+  if (
+    /toggle|enter confirm|ctrl\+a|filter|请至少选择|选择要|select all/i.test(
+      raw,
+    )
+  ) {
     return null;
   }
   if (/^(?:[#>$]|---|\/|```|[-*+]\s+|\d+[.)、]\s+|\*\s*请)/.test(raw)) {
     return null;
   }
-  const match = raw.match(/^(?<cursor>[>❯])?\s*(?<marker>\[[ xX]\]|[◉●○◯◎✓✔•])?\s*(?<label>[A-Za-z][\w:-]{1,80}|[\u4e00-\u9fff][^\s]{0,40})(?:\s.*)?$/u);
+  const match = raw.match(
+    /^(?<cursor>[>❯])?\s*(?<marker>\[[ xX]\]|[◉●○◯◎✓✔•])?\s*(?<label>[A-Za-z][\w:-]{1,80}|[\u4e00-\u9fff][^\s]{0,40})(?:\s.*)?$/u,
+  );
   if (!match?.groups?.label) return null;
   const cursor = String(match.groups.cursor || "").trim();
   const marker = String(match.groups.marker || "").trim();
   const label = String(match.groups.label || "").trim();
-  if (!label || ["RUN", "pwd", "echo", "login", "auth"].includes(label)) return null;
+  if (!label || ["RUN", "pwd", "echo", "login", "auth"].includes(label))
+    return null;
   if (!cursor && !marker && !isPlainTerminalChoiceLabel(raw)) return null;
   return {
     label,
@@ -7673,9 +8283,16 @@ function detectTerminalChoiceInteraction(row, assistantIndex) {
   let parsedOptions = [];
   let highlightedIndex = 0;
   if (fallbackProvider) {
-    parsedOptions = fallbackProvider.options({ text, lines: recentLines, activeCommand, row });
+    parsedOptions = fallbackProvider.options({
+      text,
+      lines: recentLines,
+      activeCommand,
+      row,
+    });
   } else {
-    if (!/(选择|请选择|至少选择|select|choose|toggle|enter confirm)/i.test(text)) {
+    if (
+      !/(选择|请选择|至少选择|select|choose|toggle|enter confirm)/i.test(text)
+    ) {
       return null;
     }
     if (!hasTerminalChoiceControlSignal(recentLines, text)) {
@@ -7708,7 +8325,9 @@ function detectTerminalChoiceInteraction(row, assistantIndex) {
     type: interactionType,
     title: "需要你选择后继续",
     description: terminalChoiceDescription(interactionType),
-    fieldLabel: String(promptLine || "选择选项").replace(/^\*\s*/, "").trim(),
+    fieldLabel: String(promptLine || "选择选项")
+      .replace(/^\*\s*/, "")
+      .trim(),
     options: parsedOptions,
     selectedValues,
     selectedValue,
@@ -7716,7 +8335,10 @@ function detectTerminalChoiceInteraction(row, assistantIndex) {
   };
 }
 
-function refreshTerminalStructuredInteraction(row, assistantIndexOverride = null) {
+function refreshTerminalStructuredInteraction(
+  row,
+  assistantIndexOverride = null,
+) {
   const fallbackIndex = Number(activeTerminalMirrorAssistantIndex.value ?? -1);
   const assistantIndex =
     assistantIndexOverride === null || assistantIndexOverride === undefined
@@ -7729,14 +8351,22 @@ function refreshTerminalStructuredInteraction(row, assistantIndexOverride = null
   if (!interaction) {
     return;
   }
-  if (terminalDismissedStructuredInteractionKeys.value.has(terminalInteractionDismissKey(interaction))) {
+  if (
+    terminalDismissedStructuredInteractionKeys.value.has(
+      terminalInteractionDismissKey(interaction),
+    )
+  ) {
     return;
   }
   const current = terminalStructuredInteraction.value;
-  const currentChoices = Array.isArray(terminalStructuredFormModel.value?.choices)
+  const currentChoices = Array.isArray(
+    terminalStructuredFormModel.value?.choices,
+  )
     ? terminalStructuredFormModel.value.choices
     : [];
-  const currentChoice = String(terminalStructuredFormModel.value?.choice || "").trim();
+  const currentChoice = String(
+    terminalStructuredFormModel.value?.choice || "",
+  ).trim();
   terminalStructuredSubmissionHint.value = null;
   terminalStructuredInteraction.value = interaction;
   if (interaction.type === "checkbox") {
@@ -7767,7 +8397,9 @@ async function submitTerminalStructuredInteraction() {
   if (!interaction) return;
   const isMulti = interaction.type === "checkbox";
   const choices = Array.isArray(terminalStructuredFormModel.value?.choices)
-    ? terminalStructuredFormModel.value.choices.map((item) => String(item || "").trim())
+    ? terminalStructuredFormModel.value.choices.map((item) =>
+        String(item || "").trim(),
+      )
     : [];
   const choice = String(terminalStructuredFormModel.value?.choice || "").trim();
   if (isMulti ? !choices.length : !choice) {
@@ -7820,19 +8452,17 @@ async function handleOperationPrimaryAction(operation) {
 function operationActionButtons(operation) {
   const actionType = normalizeOperationActionType(operation?.actionType);
   const meta =
-    operation?.meta && typeof operation.meta === "object"
-      ? operation.meta
-      : {};
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   if (actionType === "open_url" && extractOperationUrl(operation)) {
     return [{ key: "open_url", label: "打开链接" }];
   }
   if (actionType === "enter_text") {
-    const kind = String(operation?.kind || "").trim().toLowerCase();
+    const kind = String(operation?.kind || "")
+      .trim()
+      .toLowerCase();
     if (kind === "terminal") {
       if (terminalStructuredInteraction.value) return [];
-      return [
-        { key: "terminal_ctrl_c", label: "中止", type: "danger" },
-      ];
+      return [{ key: "terminal_ctrl_c", label: "中止", type: "danger" }];
     }
   }
   if (actionType === "approve") {
@@ -7864,9 +8494,7 @@ async function handleOperationAction(operation, actionKey) {
   if (!normalizedActionKey) return;
   const actionType = normalizeOperationActionType(operation?.actionType);
   const meta =
-    operation?.meta && typeof operation.meta === "object"
-      ? operation.meta
-      : {};
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   if (normalizedActionKey === "open_url" && actionType === "open_url") {
     const url = extractOperationUrl(operation);
     if (!url) return;
@@ -7888,7 +8516,10 @@ async function handleOperationAction(operation, actionKey) {
     }
     return;
   }
-  if (normalizedActionKey === "approval_approve" || normalizedActionKey === "approval_reject") {
+  if (
+    normalizedActionKey === "approval_approve" ||
+    normalizedActionKey === "approval_reject"
+  ) {
     const requestId = String(meta.request_id || "").trim();
     const approvalId = String(meta.approval_id || "").trim();
     if (!requestId || !approvalId) {
@@ -7902,7 +8533,10 @@ async function handleOperationAction(operation, actionKey) {
     );
     return;
   }
-  if (normalizedActionKey === "review_approve" || normalizedActionKey === "review_reject") {
+  if (
+    normalizedActionKey === "review_approve" ||
+    normalizedActionKey === "review_reject"
+  ) {
     const requestId = String(meta.request_id || "").trim();
     const reviewId = String(meta.review_id || "").trim();
     if (!requestId || !reviewId) {
@@ -7942,9 +8576,11 @@ async function handleOperationAction(operation, actionKey) {
     return;
   }
   if (
-    ["terminal_approve_once", "terminal_approve_session", "terminal_cancel"].includes(
-      normalizedActionKey,
-    )
+    [
+      "terminal_approve_once",
+      "terminal_approve_session",
+      "terminal_cancel",
+    ].includes(normalizedActionKey)
   ) {
     const choiceMap = {
       terminal_approve_once: "1",
@@ -8039,7 +8675,8 @@ function appendToolResultLogs(row, eventData) {
   if (!row) return;
   const toolName = String(eventData?.tool_name || "工具").trim() || "工具";
   const label = toolProgressLabel(eventData, toolName);
-  const statusText = String(eventData?.status || "completed").trim() || "completed";
+  const statusText =
+    String(eventData?.status || "completed").trim() || "completed";
   const normalizedStatus = statusText.toLowerCase();
   upsertMessageOperation(row, {
     operationId: `tool:${String(toolName || "tool").trim()}:${Number(eventData?.tool_index || 0) || 0}`,
@@ -8089,21 +8726,33 @@ function isMissingLarkChatTargetContext(value) {
   const text = String(value || "").trim();
   if (!text) return false;
   return (
-    /缺少(?:目标)?(?:群|群聊|chat_id)|没有(?:给|提供).*(?:群名|群聊|chat_id)|不能盲发|未知群|目标群/i.test(text) ||
-    /missing.*(?:chat|chat_id|recipient|target)|chat_id.*required|recipient.*required/i.test(text)
+    /缺少(?:目标)?(?:群|群聊|chat_id)|没有(?:给|提供).*(?:群名|群聊|chat_id)|不能盲发|未知群|目标群/i.test(
+      text,
+    ) ||
+    /missing.*(?:chat|chat_id|recipient|target)|chat_id.*required|recipient.*required/i.test(
+      text,
+    )
   );
 }
 
 function isReferenceOnlyProjectHostOutput(value) {
   const text = String(value || "").trim();
   if (!text) return false;
-  return isLarkSkillReferenceOutput(text) && !extractInteractiveBrowserUrls(text).length;
+  return (
+    isLarkSkillReferenceOutput(text) &&
+    !extractInteractiveBrowserUrls(text).length
+  );
 }
 
 function hasInteractiveCommandHint(value) {
-  const text = String(value || "").trim().toLowerCase();
+  const text = String(value || "")
+    .trim()
+    .toLowerCase();
   if (!text) return false;
-  if (isMissingLarkChatTargetContext(text) || isReferenceOnlyProjectHostOutput(text)) {
+  if (
+    isMissingLarkChatTargetContext(text) ||
+    isReferenceOnlyProjectHostOutput(text)
+  ) {
     return false;
   }
   return [
@@ -8136,7 +8785,9 @@ function buildProjectHostCommandOutput(eventData) {
 }
 
 function shouldUseBrowserInteractionForProjectHostCommand(eventData) {
-  if (String(eventData?.tool_name || "").trim() !== "project_host_run_command") {
+  if (
+    String(eventData?.tool_name || "").trim() !== "project_host_run_command"
+  ) {
     return false;
   }
   const command = String(eventData?.command || "").trim();
@@ -8199,11 +8850,9 @@ async function handoffProjectHostCommandToTerminal(row, pending, eventData) {
   );
   row.terminalLog = [];
   row.processExpanded = true;
-  appendTerminalLog(
-    row,
-    `# 正在连接项目终端并接管交互\n$ ${command}`,
-    { mirrorToPanel: false },
-  );
+  appendTerminalLog(row, `# 正在连接项目终端并接管交互\n$ ${command}`, {
+    mirrorToPanel: false,
+  });
   upsertMessageOperation(row, {
     operationId: `terminal:handoff:${Number(pending.assistantIndex ?? -1)}`,
     kind: "terminal",
@@ -8291,9 +8940,7 @@ function messageRoleName(item) {
 function avatarLabel(item) {
   if (String(item?.role || "").trim() === "user") return "登";
   const source = String(
-    String(item?.displayMode || "").trim() === "terminal"
-      ? "机器人"
-      : "机器人",
+    String(item?.displayMode || "").trim() === "terminal" ? "机器人" : "机器人",
   ).trim();
   return source.slice(0, 1).toUpperCase() || "机";
 }
@@ -9161,8 +9808,8 @@ function resolveSettingsRouteProjectId() {
   }
   const scopedPath = stripChatSettingsPrefix(route.path);
   if (
-    scopedPath === `/projects/${routeParamProjectId}`
-    || scopedPath.startsWith(`/projects/${routeParamProjectId}/`)
+    scopedPath === `/projects/${routeParamProjectId}` ||
+    scopedPath.startsWith(`/projects/${routeParamProjectId}/`)
   ) {
     return routeParamProjectId;
   }
@@ -9180,7 +9827,10 @@ function routeChatTarget() {
 
 function consumeStatisticsAnalysisDraft(storageKey) {
   const normalizedKey = String(storageKey || "").trim();
-  if (!normalizedKey || !normalizedKey.startsWith(STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX)) {
+  if (
+    !normalizedKey ||
+    !normalizedKey.startsWith(STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX)
+  ) {
     return null;
   }
   try {
@@ -9207,7 +9857,10 @@ function consumeStatisticsAnalysisDraft(storageKey) {
 
 function consumePluginInstallDraft(storageKey) {
   const normalizedKey = String(storageKey || "").trim();
-  if (!normalizedKey || !normalizedKey.startsWith(PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX)) {
+  if (
+    !normalizedKey ||
+    !normalizedKey.startsWith(PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX)
+  ) {
     return null;
   }
   try {
@@ -9243,7 +9896,9 @@ async function focusChatComposerTextarea() {
 }
 
 async function applyStatisticsAnalysisDraftFromRoute() {
-  const draftKey = String(route.query[STATISTICS_ANALYSIS_DRAFT_QUERY_KEY] || "").trim();
+  const draftKey = String(
+    route.query[STATISTICS_ANALYSIS_DRAFT_QUERY_KEY] || "",
+  ).trim();
   if (!draftKey) return;
   const payload = consumeStatisticsAnalysisDraft(draftKey);
   const prompt = String(payload?.prompt || "").trim();
@@ -9261,7 +9916,9 @@ async function applyStatisticsAnalysisDraftFromRoute() {
 }
 
 async function applyPluginInstallDraftFromRoute() {
-  const draftKey = String(route.query[PLUGIN_INSTALL_DRAFT_QUERY_KEY] || "").trim();
+  const draftKey = String(
+    route.query[PLUGIN_INSTALL_DRAFT_QUERY_KEY] || "",
+  ).trim();
   if (!draftKey) return;
   const payload = consumePluginInstallDraft(draftKey);
   const prompt = String(payload?.prompt || "").trim();
@@ -9494,8 +10151,13 @@ function resolveSlashCommand(text) {
   const prompt = String(match[2] || "").trim();
   const entry =
     composerSlashCommands.value.find((item) => {
-      const tokens = [item.command, ...(Array.isArray(item.aliases) ? item.aliases : [])];
-      return tokens.some((candidate) => normalizeSlashCommandToken(candidate) === token);
+      const tokens = [
+        item.command,
+        ...(Array.isArray(item.aliases) ? item.aliases : []),
+      ];
+      return tokens.some(
+        (candidate) => normalizeSlashCommandToken(candidate) === token,
+      );
     }) || null;
   if (!entry) {
     return null;
@@ -9589,7 +10251,9 @@ function resolveLarkCliSkillDirectory() {
   const stored = String(skillResourceDirectoryResolved.value || "").trim();
   if (stored) return stored;
   const workspaceRoot = String(
-    projectWorkspaceDraftNormalized.value || projectWorkspaceResolved.value || "",
+    projectWorkspaceDraftNormalized.value ||
+      projectWorkspaceResolved.value ||
+      "",
   ).trim();
   if (!workspaceRoot) return LARK_CLI_SKILL_ROOT_RELATIVE;
   return `${workspaceRoot.replace(/\/+$/g, "")}/${LARK_CLI_SKILL_ROOT_RELATIVE}`;
@@ -9613,7 +10277,7 @@ function buildLarkCliCommandPrompt(commandPrompt) {
     "- 如果用户给的是自然语言目标，请先把目标翻译成合适的 `lark-cli` 命令，再直接执行并返回实际结果。",
     "- 不要停在 `--help`、`auth status`、`已确认登录态`、`已确认子命令名` 这种中间状态；除非遇到真实阻塞，否则继续执行到目标完成。",
     "- 如果目标是“给某人发消息”，默认流程应是：确认发送内容与身份 -> 搜索联系人 open_id -> 如结果唯一则直接发送 -> 若缺 scope 则发起授权 -> 授权后自动重试发送。",
-    "- 搜索联系人优先使用：`lark-cli contact +search-user --query \"<姓名>\"`。",
+    '- 搜索联系人优先使用：`lark-cli contact +search-user --query "<姓名>"`。',
     "- 发送文本消息优先使用：`lark-cli im +messages-send --as user --user-id <open_id> --text '<内容>'`。",
     "- 如果 `messages-send` 返回缺少 scope，优先继续执行工具输出里的授权提示；若 `auth login --scope` 失败，再改用 `lark-cli auth login --domain <domain>` 或 `--recommend`，不要只把 hint 转述给用户。",
     "- 当输出里已经拿到唯一 open_id 时，把它当成可继续执行的结果，不要停止在“我已找到联系人”这一步。",
@@ -9634,10 +10298,10 @@ function buildFormJsonCommandPrompt(commandPrompt) {
     "- JSON 顶层必须包含 model、formAttrs、rowAttrs、schema。",
     "- schema[].componentName 只允许使用 ElInput、ElInputNumber、ElSelect、ElOption、ElDatePicker、ElSwitch、ElRadioGroup、ElRadioButton、ElCheckboxGroup、ElCheckbox。",
     "- 允许输出 element-easy-form/drag-form 支持的动态能力：hidden、rules、events；不要输出 render、renderLabel 或自定义组件。",
-    "- 需要动态显示/隐藏时，必须给目标字段配置 schema[].hidden。优先使用 hidden.type=\"function\" 和 hidden.dataJs，格式固定为：function hidden(config,data){ return <布尔表达式>; }，返回 true 表示隐藏，返回 false 表示显示。",
+    '- 需要动态显示/隐藏时，必须给目标字段配置 schema[].hidden。优先使用 hidden.type="function" 和 hidden.dataJs，格式固定为：function hidden(config,data){ return <布尔表达式>; }，返回 true 表示隐藏，返回 false 表示显示。',
     "- hidden.dataJs 只能访问 config 和 data，不能访问 window、document、localStorage、fetch、XMLHttpRequest、eval、Function、import、globalThis、this、prototype、constructor，也不能写异步代码或副作用代码。",
-    "- 简单条件也可以使用 hidden.type=\"select\"，格式为 {\"matchPattern\":\"&&\",\"type\":\"select\",\"dataSelect\":[{\"prop\":\"字段prop\",\"type\":\"string\",\"compare\":\"!=\",\"value\":\"\"}],\"value\":false}；value=false 表示条件成立时显示、条件不成立时隐藏。",
-    "- 需要联动、格式化或清空依赖字段时，可以输出 events 数组；事件函数必须是字符串形式的 Element Plus 事件处理函数，例如 {\"prop\":\"change\",\"defaultValue\":\"function event(config,data,val){ data.department = ''; }\"}，同样不能访问浏览器全局对象或执行副作用。",
+    '- 简单条件也可以使用 hidden.type="select"，格式为 {"matchPattern":"&&","type":"select","dataSelect":[{"prop":"字段prop","type":"string","compare":"!=","value":""}],"value":false}；value=false 表示条件成立时显示、条件不成立时隐藏。',
+    '- 需要联动、格式化或清空依赖字段时，可以输出 events 数组；事件函数必须是字符串形式的 Element Plus 事件处理函数，例如 {"prop":"change","defaultValue":"function event(config,data,val){ data.department = \'\'; }"}，同样不能访问浏览器全局对象或执行副作用。',
     "- 校验规则使用 Element Plus rules；必填字段必须输出 rules，非必填字段不要加 required。",
     "- model 必须包含每个 schema 字段的初始值。",
     "- schema[].prop 必须和 model 字段一一对应，字段名使用英文 snake_case。",
@@ -10293,13 +10957,17 @@ function openCurrentMaterialLibrary() {
     ElMessage.warning("请先选择项目");
     return;
   }
-  void openRouteInDesktop(router, { path: "/materials", query: { project_id: projectId } }, {
-    mode: "new-window",
-    appId: "materials",
-    title: "素材库",
-    eyebrow: "Asset Workspace",
-    summary: "项目素材库作为桌面应用窗口打开，和 AI 对话并行处理素材。",
-  });
+  void openRouteInDesktop(
+    router,
+    { path: "/materials", query: { project_id: projectId } },
+    {
+      mode: "new-window",
+      appId: "materials",
+      title: "素材库",
+      eyebrow: "Asset Workspace",
+      summary: "项目素材库作为桌面应用窗口打开，和 AI 对话并行处理素材。",
+    },
+  );
 }
 
 function openCurrentProjectDetail() {
@@ -10308,13 +10976,17 @@ function openCurrentProjectDetail() {
     ElMessage.warning("请先选择项目");
     return;
   }
-  void openRouteInDesktop(router, `/projects/${encodeURIComponent(projectId)}`, {
-    mode: "new-window",
-    appId: "projects",
-    title: currentProjectLabel.value || "项目详情",
-    eyebrow: "Project Workspace",
-    summary: "项目详情作为独立桌面窗口打开，避免在 AI 对话窗口里吞掉上下文。",
-  });
+  void openRouteInDesktop(
+    router,
+    `/projects/${encodeURIComponent(projectId)}`,
+    {
+      mode: "new-window",
+      appId: "projects",
+      title: currentProjectLabel.value || "项目详情",
+      eyebrow: "Project Workspace",
+      summary: "项目详情作为独立桌面窗口打开，避免在 AI 对话窗口里吞掉上下文。",
+    },
+  );
 }
 
 async function deleteCurrentTaskTree() {
@@ -10751,11 +11423,17 @@ function handleEditorKeydown(event) {
     if (event.key === "ArrowUp") {
       event.preventDefault();
       slashCommandHighlightIndex.value =
-        (slashCommandHighlightIndex.value - 1 + filteredSlashCommands.value.length) %
+        (slashCommandHighlightIndex.value -
+          1 +
+          filteredSlashCommands.value.length) %
         filteredSlashCommands.value.length;
       return;
     }
-    if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey && !isImeComposing) {
+    if (
+      (event.key === "Enter" || event.key === "Tab") &&
+      !event.shiftKey &&
+      !isImeComposing
+    ) {
       event.preventDefault();
       applySlashCommandSelection(
         filteredSlashCommands.value[slashCommandHighlightIndex.value] || null,
@@ -11066,7 +11744,9 @@ async function fetchSystemConfig() {
     if (data?.config?.chat_max_tokens) {
       chatMaxTokens.value = Number(data.config.chat_max_tokens);
     }
-    botPlatformConnectors.value = Array.isArray(data?.config?.bot_platform_connectors)
+    botPlatformConnectors.value = Array.isArray(
+      data?.config?.bot_platform_connectors,
+    )
       ? data.config.bot_platform_connectors.map(normalizeBotPlatformConnector)
       : [];
     employeeDraftAutoRuleGenerationEnabled.value =
@@ -11338,9 +12018,9 @@ async function fetchProvidersByProject(projectId) {
     aiEntryFileDraft.value = projectAiEntryFile.value;
     workspacePathDraft.value = String(
       settings.connector_workspace_path ||
-      data?.workspace_path ||
-      data?.external_agent?.workspace_path ||
-      "",
+        data?.workspace_path ||
+        data?.external_agent?.workspace_path ||
+        "",
     ).trim();
     mcpModules.value = normalizeMcpModules(data.mcp_modules || {});
     runtimeExternalTools.value = normalizeRuntimeExternalTools(
@@ -11667,7 +12347,9 @@ function setGroupChatLiveStatus(eventData) {
       status: String(eventData?.status || "").trim(),
       message: String(eventData?.message || "").trim(),
       updated_at: new Date().toISOString(),
-      source_context: normalizeChatSourceContext(eventData?.source_context || {}),
+      source_context: normalizeChatSourceContext(
+        eventData?.source_context || {},
+      ),
     },
   };
 }
@@ -11777,7 +12459,9 @@ async function restoreOngoingTaskFromServer(projectId, options = {}) {
                 ongoingTaskTree?.current_node?.title || "",
               ).trim(),
               updated_at: String(
-                ongoingTaskTree?.updated_at || ongoingTaskTree?.created_at || "",
+                ongoingTaskTree?.updated_at ||
+                  ongoingTaskTree?.created_at ||
+                  "",
               ).trim(),
               created_at: String(ongoingTaskTree?.created_at || "").trim(),
               phases: [],
@@ -11825,7 +12509,9 @@ async function restoreOngoingTaskFromServer(projectId, options = {}) {
           task_tree_session_id: String(payload.id || "").trim(),
           task_tree_chat_session_id: chatSessionId,
           task_node_title: String(payload?.current_node?.title || "").trim(),
-          updated_at: String(payload?.updated_at || payload?.created_at || "").trim(),
+          updated_at: String(
+            payload?.updated_at || payload?.created_at || "",
+          ).trim(),
           created_at: String(payload?.created_at || "").trim(),
           phases: [],
           steps: [],
@@ -11891,10 +12577,15 @@ async function saveTaskTreeNode({ setCurrentOnly = false } = {}) {
     return;
   }
   const nextStatus = String(taskTreeStatusDraft.value || "pending").trim();
-  const verificationResult = String(taskTreeVerificationDraft.value || "").trim();
+  const verificationResult = String(
+    taskTreeVerificationDraft.value || "",
+  ).trim();
   if (!setCurrentOnly && nextStatus === "done") {
     const childNodes = getTaskTreeChildNodes(nodeId);
-    if (childNodes.length && childNodes.some((item) => String(item?.status || "").trim() !== "done")) {
+    if (
+      childNodes.length &&
+      childNodes.some((item) => String(item?.status || "").trim() !== "done")
+    ) {
       ElMessage.warning("父节点下还有未完成的子任务，不能直接标记完成");
       return;
     }
@@ -11937,7 +12628,11 @@ function handleTaskTreeNodeClick(node) {
   syncTaskTreeDrafts(node);
 }
 
-async function fetchChatSessions(projectId, preferredSessionId = "", options = {}) {
+async function fetchChatSessions(
+  projectId,
+  preferredSessionId = "",
+  options = {},
+) {
   if (!projectId) {
     chatSessions.value = [];
     currentChatSessionId.value = "";
@@ -12045,7 +12740,10 @@ async function fetchChatHistory(
     if (append) {
       messages.value = [...historyRows, ...messages.value];
     } else {
-      messages.value = applyPersistedChatRuntimeRows(historyRows, runtimePayload);
+      messages.value = applyPersistedChatRuntimeRows(
+        historyRows,
+        runtimePayload,
+      );
     }
     chatHistoryLoadedCount.value = messages.value.length;
     rememberChatSession(projectId, normalizedSessionId);
@@ -12235,6 +12933,13 @@ async function resolveGroupChatSourceId() {
     await refreshChatSessionsKeepingCurrent();
     const data = await api.post(
       `/projects/${encodeURIComponent(projectId)}/chat/sessions/${encodeURIComponent(sessionId)}/resolve-source`,
+      {
+        identity:
+          String(groupChatDraft.value.resolve_identity || "bot").trim() ===
+          "user"
+            ? "user"
+            : "bot",
+      },
     );
     const session = normalizeChatSession(data.session || {});
     if (!session.id) {
@@ -12247,12 +12952,26 @@ async function resolveGroupChatSourceId() {
     groupChatDraft.value = {
       ...groupChatDraft.value,
       title: String(session.title || groupChatDraft.value.title || "").trim(),
-      platform: session.source_context.platform || groupChatDraft.value.platform || "feishu",
-      connector_id: session.source_context.connector_id || groupChatDraft.value.connector_id || "",
+      platform:
+        session.source_context.platform ||
+        groupChatDraft.value.platform ||
+        "feishu",
+      connector_id:
+        session.source_context.connector_id ||
+        groupChatDraft.value.connector_id ||
+        "",
       external_chat_name:
-        session.source_context.external_chat_name || groupChatDraft.value.external_chat_name || "",
+        session.source_context.external_chat_name ||
+        groupChatDraft.value.external_chat_name ||
+        "",
+      resolve_identity:
+        session.source_context.resolve_identity ||
+        groupChatDraft.value.resolve_identity ||
+        "bot",
     };
-    ElMessage.success(data.resolved === false ? "群 ID 已是解析状态" : "群 ID 已解析并绑定");
+    ElMessage.success(
+      data.resolved === false ? "群 ID 已是解析状态" : "群 ID 已解析并绑定",
+    );
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "解析群 ID 失败");
   } finally {
@@ -12424,6 +13143,7 @@ function resetGroupChatDraft() {
     platform: "feishu",
     connector_id: "",
     external_chat_name: "",
+    resolve_identity: "bot",
   };
 }
 
@@ -12436,7 +13156,11 @@ function openGroupChatDialog(session = null) {
     ElMessage.warning("请先选择项目");
     return;
   }
-  if (session && typeof session === "object" && String(session.id || "").trim()) {
+  if (
+    session &&
+    typeof session === "object" &&
+    String(session.id || "").trim()
+  ) {
     const source = normalizeChatSourceContext(session);
     groupChatEditingSessionId.value = String(session.id || "").trim();
     groupChatDraft.value = {
@@ -12444,6 +13168,7 @@ function openGroupChatDialog(session = null) {
       platform: source.platform || "feishu",
       connector_id: source.connector_id,
       external_chat_name: source.external_chat_name,
+      resolve_identity: source.resolve_identity || "bot",
     };
   } else {
     resetGroupChatDraft();
@@ -12470,17 +13195,25 @@ async function submitGroupChatDialog() {
       platform,
       connector_id: connectorId,
       external_chat_name: externalChatName,
+      resolve_identity:
+        String(groupChatDraft.value.resolve_identity || "bot").trim() === "user"
+          ? "user"
+          : "bot",
     };
     let session = null;
     if (groupChatEditingSessionId.value) {
       session = await updateChatSession(groupChatEditingSessionId.value, {
-        title: title || `${formatChatPlatformLabel(platform)}群：${externalChatName}`,
+        title:
+          title ||
+          `${formatChatPlatformLabel(platform)}群：${externalChatName}`,
         sourceContext,
       });
     } else {
       session = await createChatSession({
         switchTo: true,
-        title: title || `${formatChatPlatformLabel(platform)}群：${externalChatName}`,
+        title:
+          title ||
+          `${formatChatPlatformLabel(platform)}群：${externalChatName}`,
         sourceContext,
       });
     }
@@ -12586,7 +13319,9 @@ async function clearMessages() {
     messages.value = [];
     return;
   }
-  const currentTitle = String(activeChatSessionTitle.value || "当前会话").trim();
+  const currentTitle = String(
+    activeChatSessionTitle.value || "当前会话",
+  ).trim();
   try {
     await ElMessageBox.confirm(
       `确认清空「${currentTitle}」吗？当前会话的聊天记录会被删除，且不可恢复。`,
@@ -12715,7 +13450,9 @@ async function handleSocketMessage(eventData) {
         "",
     ).trim();
     terminalPanelExpanded.value = true;
-    terminalActiveCommand.value = String(eventData?.command || terminalActiveCommand.value || "").trim();
+    terminalActiveCommand.value = String(
+      eventData?.command || terminalActiveCommand.value || "",
+    ).trim();
     const connectedSummary = "# 项目终端已连接，完整交互会显示在这里";
     appendTerminalPanelLine(connectedSummary);
     const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
@@ -12779,7 +13516,10 @@ async function handleSocketMessage(eventData) {
       mirrorRow.displayMode = "terminal";
       mirrorRow.processExpanded = true;
       appendTerminalLog(mirrorRow, chunk, { mirrorToPanel: false });
-      refreshTerminalStructuredInteraction(mirrorRow, activeTerminalMirrorAssistantIndex.value);
+      refreshTerminalStructuredInteraction(
+        mirrorRow,
+        activeTerminalMirrorAssistantIndex.value,
+      );
     }
     void autoOpenTerminalBrowserUrls(chunk, mirrorRow);
     return;
@@ -12792,7 +13532,9 @@ async function handleSocketMessage(eventData) {
         kind: "approval",
         title: String(eventData?.title || "终端审批").trim() || "终端审批",
         summary: "等待你确认后继续",
-        detail: String(eventData?.description || eventData?.message || "").trim(),
+        detail: String(
+          eventData?.description || eventData?.message || "",
+        ).trim(),
         phase: "waiting_user",
         actionType: "approve",
         meta: {
@@ -12879,10 +13621,8 @@ async function handleSocketMessage(eventData) {
       : null;
     if (
       eventData &&
-      (
-        Object.prototype.hasOwnProperty.call(eventData, "task_tree") ||
-        Object.prototype.hasOwnProperty.call(eventData, "history_task_tree")
-      )
+      (Object.prototype.hasOwnProperty.call(eventData, "task_tree") ||
+        Object.prototype.hasOwnProperty.call(eventData, "history_task_tree"))
     ) {
       applyTaskTreePayload(taskTreePayload);
     }
@@ -13021,7 +13761,8 @@ async function handleSocketMessage(eventData) {
     upsertMessageOperation(row, {
       operationId: `review:${String(eventData?.review_id || requestId).trim()}`,
       kind: "approval",
-      title: String(eventData?.title || "文件变更审查").trim() || "文件变更审查",
+      title:
+        String(eventData?.title || "文件变更审查").trim() || "文件变更审查",
       summary: "等待你确认是否保留当前改动",
       detail: formatFileReviewMessage(eventData),
       phase: "waiting_user",
@@ -13053,9 +13794,7 @@ async function handleSocketMessage(eventData) {
     });
     appendAssistantStatusNote(
       row,
-      approved
-        ? "> ✅ 文件变更已审查通过"
-        : "> ❌ 文件变更未通过审查",
+      approved ? "> ✅ 文件变更已审查通过" : "> ❌ 文件变更未通过审查",
     );
     scrollToBottom();
     return;
@@ -13066,7 +13805,10 @@ async function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "stderr") {
-    appendAssistantStatusNote(row, "> ⚠️ 执行过程中出现提示，正在等待后续处理。");
+    appendAssistantStatusNote(
+      row,
+      "> ⚠️ 执行过程中出现提示，正在等待后续处理。",
+    );
     scrollToBottom();
     return;
   }
@@ -13077,8 +13819,9 @@ async function handleSocketMessage(eventData) {
   }
   if (eventType === "command_result") {
     const statusText =
-      String(eventData?.status || "completed").trim().toLowerCase() ||
-      "completed";
+      String(eventData?.status || "completed")
+        .trim()
+        .toLowerCase() || "completed";
     const outputPreview = String(eventData?.output_preview || "").trim();
     if (outputPreview) {
       void autoOpenTerminalBrowserUrls(outputPreview, row);
@@ -13190,19 +13933,16 @@ async function handleSocketMessage(eventData) {
   }
   if (eventType === "auto_continue") {
     const message =
-      String(
-        eventData?.message || "系统已自动继续执行后续步骤。",
-      ).trim() || "系统已自动继续执行后续步骤。";
+      String(eventData?.message || "系统已自动继续执行后续步骤。").trim() ||
+      "系统已自动继续执行后续步骤。";
     appendAssistantStatusNote(row, `> ↻ ${message}`);
     scrollToBottom();
     return;
   }
   if (eventType === "done") {
     try {
-      const preserveTerminalInteraction = shouldPreserveTerminalInteractionAfterDone(
-        row,
-        pending,
-      );
+      const preserveTerminalInteraction =
+        shouldPreserveTerminalInteractionAfterDone(row, pending);
       if (!preserveTerminalInteraction) {
         terminalPanelStatus.value = "idle";
       }
@@ -13251,10 +13991,8 @@ async function handleSocketMessage(eventData) {
         : null;
       if (
         eventData &&
-        (
-          Object.prototype.hasOwnProperty.call(eventData, "task_tree") ||
-          Object.prototype.hasOwnProperty.call(eventData, "history_task_tree")
-        )
+        (Object.prototype.hasOwnProperty.call(eventData, "task_tree") ||
+          Object.prototype.hasOwnProperty.call(eventData, "history_task_tree"))
       ) {
         applyTaskTreePayload(taskTreePayload);
       }
@@ -13453,7 +14191,9 @@ async function promptProjectWorkspaceDirectory() {
   projectWorkspacePicking.value = true;
   try {
     const pickedPath = await pickWorkspaceDirectory(
-      projectWorkspaceDraftNormalized.value || projectWorkspaceResolved.value || "",
+      projectWorkspaceDraftNormalized.value ||
+        projectWorkspaceResolved.value ||
+        "",
       {
         title: `选择项目工作区目录 · ${String(currentProjectLabel.value || "").trim() || "AI 对话中心"}`,
         placeholder: "/Volumes/苹果1_5T/self/ai-employee",
@@ -13532,7 +14272,9 @@ async function saveProjectWorkspaceDirectory(workspacePathOverride = null) {
         workspace_path: persisted,
       });
     }
-    ElMessage.success(persisted ? "项目工作区路径已保存" : "已清空项目工作区路径");
+    ElMessage.success(
+      persisted ? "项目工作区路径已保存" : "已清空项目工作区路径",
+    );
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "保存项目工作区路径失败");
   } finally {
@@ -13704,12 +14446,8 @@ async function prepareExternalAgentSession({
         projectChatSettings.value.connector_sandbox_mode || "workspace-write",
       ).trim(),
       connector_sandbox_mode_explicit: true,
-      local_connector_id: String(
-        projectChatSettings.value.local_connector_id || "",
-      ).trim(),
-      connector_workspace_path: String(
-        workspacePathDraftNormalized.value || workspacePathResolved.value || "",
-      ).trim(),
+      local_connector_id: "",
+      connector_workspace_path: "",
       skill_resource_directory: String(
         skillResourceDirectoryResolved.value || "",
       ).trim(),
@@ -14091,7 +14829,8 @@ async function doSend() {
           (item) => item.id === slashCommand.entry.assistActionId,
         ) || null
       : null;
-  const effectiveAssistAction = slashAssistAction || activeComposerAssistMeta.value;
+  const effectiveAssistAction =
+    slashAssistAction || activeComposerAssistMeta.value;
   let userPrompt = "";
   if (slashCommand?.entry?.kind === "stats_report") {
     try {
@@ -14120,11 +14859,15 @@ async function doSend() {
     userPrompt = buildHostRunCommandPrompt(slashCommand.prompt);
   } else if (slashCommand?.entry?.kind === "lark_cli") {
     if (!slashCommand.prompt) {
-      ElMessage.warning("请在 /lark-cli 后输入目标，例如 auth status 或 给屈行行发 test");
+      ElMessage.warning(
+        "请在 /lark-cli 后输入目标，例如 auth status 或 给屈行行发 test",
+      );
       return;
     }
     if (!String(skillResourceDirectoryResolved.value || "").trim()) {
-      setSkillResourceDirectory(resolveLarkCliSkillDirectory(), { silent: true });
+      setSkillResourceDirectory(resolveLarkCliSkillDirectory(), {
+        silent: true,
+      });
     }
     userPrompt = buildLarkCliCommandPrompt(slashCommand.prompt);
   } else if (slashCommand?.entry?.kind === "form_json") {
@@ -14265,7 +15008,7 @@ async function doSend() {
       assistant_message_id: assistantMessage.id,
       chat_session_id: activeChatSessionId,
       chat_mode: "system",
-      chat_surface: "main-chat",
+      chat_surface: chatSurface.value,
       source_context: activeSessionSourceContext,
       skill_resource_directory: String(
         skillResourceDirectoryResolved.value || "",
@@ -14346,7 +15089,10 @@ async function doSend() {
     await Promise.race([
       donePromise,
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("请求超时，请重试")), PENDING_TIMEOUT_MS),
+        setTimeout(
+          () => reject(new Error("请求超时，请重试")),
+          PENDING_TIMEOUT_MS,
+        ),
       ),
     ]);
     if (!String(messages.value[assistantIndex]?.content || "").trim()) {
@@ -14409,16 +15155,20 @@ watch(
     groupBotConnectorOptions.value.map((item) => item.value).join("|"),
   ],
   () => {
-    const currentConnectorId = String(groupChatDraft.value.connector_id || "").trim();
+    const currentConnectorId = String(
+      groupChatDraft.value.connector_id || "",
+    ).trim();
     const options = groupBotConnectorOptions.value;
-    if (currentConnectorId && options.some((item) => item.value === currentConnectorId)) {
+    if (
+      currentConnectorId &&
+      options.some((item) => item.value === currentConnectorId)
+    ) {
       return;
     }
     groupChatDraft.value.connector_id = options[0]?.value || "";
   },
   { immediate: true },
 );
-
 
 watch(
   () => terminalApprovalPrompt.value?.key || "",
@@ -14435,6 +15185,23 @@ watch(
     }
     terminalApprovalDialogVisible.value = true;
   },
+);
+
+watch(
+  () => [
+    isLocalRunnerSurface.value ? "local-runner" : "main-chat",
+    String(selectedProjectId.value || "").trim(),
+    String(projectWorkspaceResolved.value || "").trim(),
+  ],
+  ([surface]) => {
+    if (surface !== "local-runner") return;
+    if (!canUseWorkspaceFiles.value) {
+      resetWorkspaceFilePanel();
+      return;
+    }
+    void openWorkspaceDirectory(workspaceFileTreePath.value);
+  },
+  { immediate: true },
 );
 
 watch(
@@ -14552,7 +15319,9 @@ async function loadSelectedProjectConversation(projectId) {
     },
   );
   if (restoredTask?.chatSessionId) {
-    const restoredChatSessionId = String(restoredTask.chatSessionId || "").trim();
+    const restoredChatSessionId = String(
+      restoredTask.chatSessionId || "",
+    ).trim();
     if (
       restoredChatSessionId &&
       !chatSessions.value.some((item) => item.id === restoredChatSessionId)
@@ -14580,7 +15349,9 @@ async function loadSelectedProjectConversation(projectId) {
               "",
           ).trim(),
         },
-        ...chatSessions.value.filter((item) => item.id !== restoredChatSessionId),
+        ...chatSessions.value.filter(
+          (item) => item.id !== restoredChatSessionId,
+        ),
       ];
     }
   }
@@ -14589,7 +15360,10 @@ async function loadSelectedProjectConversation(projectId) {
     const created = await createChatSession({ switchTo: true });
     chatSessionId = String(created?.id || "").trim();
   }
-  if (!chatSessionId || projectId !== String(selectedProjectId.value || "").trim()) {
+  if (
+    !chatSessionId ||
+    projectId !== String(selectedProjectId.value || "").trim()
+  ) {
     return;
   }
   await fetchChatHistory(projectId, chatSessionId);
@@ -14616,6 +15390,7 @@ watch(selectedProjectId, async (value) => {
     rejectPendingRequests("已切换项目，当前请求取消");
     disconnectWs("switch project");
     singleRoundAnswerOnly.value = false;
+    resetWorkspaceFilePanel();
     await fetchProvidersByProject("");
     return;
   }
@@ -14627,6 +15402,7 @@ watch(selectedProjectId, async (value) => {
   chatHistoryLoadedCount.value = 0;
   applyTaskTreePayload(null);
   resetTerminalPanel();
+  resetWorkspaceFilePanel();
   try {
     await loadSelectedProjectConversation(projectId);
   } catch (err) {
@@ -15433,12 +16209,20 @@ onUnmounted(() => {
   padding: 14px;
   border: 1px solid rgba(59, 130, 246, 0.18);
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(239, 246, 255, 0.96), rgba(255, 255, 255, 0.94));
+  background: linear-gradient(
+    135deg,
+    rgba(239, 246, 255, 0.96),
+    rgba(255, 255, 255, 0.94)
+  );
 }
 
 .message-terminal-form.is-submitted {
   border-color: rgba(34, 197, 94, 0.28);
-  background: linear-gradient(135deg, rgba(240, 253, 244, 0.96), rgba(255, 255, 255, 0.94));
+  background: linear-gradient(
+    135deg,
+    rgba(240, 253, 244, 0.96),
+    rgba(255, 255, 255, 0.94)
+  );
 }
 
 .message-terminal-form.is-submitted :deep(.el-checkbox),
@@ -16477,7 +17261,11 @@ onUnmounted(() => {
   border-radius: 18px;
   border: 1px solid rgba(37, 99, 235, 0.16);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94)),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.98),
+      rgba(248, 250, 252, 0.94)
+    ),
     rgba(255, 255, 255, 0.96);
 }
 
@@ -19590,8 +20378,7 @@ onUnmounted(() => {
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.08);
   color: #0f172a;
-  font-family:
-    "SFMono-Regular", "JetBrains Mono", "Cascadia Code", monospace;
+  font-family: "SFMono-Regular", "JetBrains Mono", "Cascadia Code", monospace;
   font-size: 12px;
   font-weight: 700;
 }
@@ -19785,7 +20572,8 @@ onUnmounted(() => {
   background: rgba(240, 249, 255, 0.8);
 }
 
-.task-tree-panel__outline :deep(.el-tree-node.is-current > .el-tree-node__content) {
+.task-tree-panel__outline
+  :deep(.el-tree-node.is-current > .el-tree-node__content) {
   background: rgba(240, 249, 255, 0.96);
 }
 
@@ -20526,6 +21314,10 @@ onUnmounted(() => {
   backdrop-filter: none;
 }
 
+.chat-shell--local-runner {
+  grid-template-columns: 300px minmax(0, 1fr) 380px;
+}
+
 .chat-conversation-sidebar {
   display: flex;
   flex-direction: column;
@@ -20538,6 +21330,243 @@ onUnmounted(() => {
   background: transparent;
   box-shadow: none;
   backdrop-filter: none;
+}
+
+.local-runner-panel {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.local-runner-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 16px 30px rgba(15, 23, 42, 0.05);
+  backdrop-filter: blur(18px);
+}
+
+.local-runner-card--workspace {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.local-runner-card--terminal {
+  flex: 0 0 auto;
+}
+
+.local-runner-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.local-runner-card__eyebrow {
+  color: #7c8aa0;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.local-runner-card__title {
+  margin-top: 6px;
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+.local-runner-empty {
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px dashed rgba(148, 163, 184, 0.32);
+  color: #64748b;
+  background: rgba(248, 250, 252, 0.7);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.local-approval-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.local-approval-panel__title {
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 700;
+}
+
+.local-approval-panel__desc {
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.local-approval-panel__message,
+.local-terminal-output {
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #0f172a;
+  color: #dbeafe;
+  font-family:
+    "SFMono-Regular", "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.local-approval-panel__message {
+  max-height: 150px;
+  padding: 10px;
+}
+
+.local-terminal-output {
+  max-height: 180px;
+  padding: 11px;
+}
+
+.local-approval-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.local-workspace-root {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.78);
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.local-file-browser {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.local-file-browser__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.local-file-browser__toolbar span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-file-list {
+  min-height: 120px;
+  max-height: 240px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.local-file-item {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #334155;
+  text-align: left;
+  cursor: pointer;
+}
+
+.local-file-item:hover,
+.local-file-item.is-active {
+  background: rgba(219, 234, 254, 0.72);
+}
+
+.local-file-item__icon {
+  flex: 0 0 auto;
+  color: #0f766e;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.local-file-item__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.local-editor {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.local-editor__head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.local-editor__head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-editor__textarea :deep(.el-textarea__inner) {
+  font-family:
+    "SFMono-Regular", "JetBrains Mono", "Cascadia Code", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  border-radius: 14px;
 }
 
 .chat-sidebar-brand-panel {
@@ -20955,6 +21984,10 @@ onUnmounted(() => {
     padding: 14px 0 0;
   }
 
+  .chat-shell--local-runner {
+    grid-template-columns: 1fr;
+  }
+
   .chat-conversation-sidebar {
     order: 2;
     padding: 0;
@@ -20965,6 +21998,16 @@ onUnmounted(() => {
     order: 1;
     min-height: auto;
     padding: 0;
+  }
+
+  .local-runner-panel {
+    order: 3;
+    overflow: visible;
+  }
+
+  .local-file-list,
+  .local-terminal-output {
+    max-height: 260px;
   }
 
   .chat-main {

@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn>=0.30",
     "pyjwt>=2.8",
     "python-multipart>=0.0.9",
+    "python-socks>=2.4",
     "fastmcp>=3.0",
     "lark-oapi>=1.5.5",
     "psycopg[binary]>=3.2",

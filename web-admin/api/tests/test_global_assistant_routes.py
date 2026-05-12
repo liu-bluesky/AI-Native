@@ -1309,6 +1309,8 @@ def test_bot_connectors_route_persists_to_dedicated_store(tmp_path, monkeypatch)
                     "name": "飞书主机器人",
                     "agent_name": "内部协作机器人",
                     "system_prompt": "你是飞书主机器人，只处理项目协作问题。",
+                    "provider_id": "provider-bot",
+                    "model_name": "bot-model",
                     "app_id": "feishu-app-id",
                     "app_secret": "feishu-app-secret",
                     "verification_token": "verify-token",
@@ -1340,6 +1342,8 @@ def test_bot_connectors_route_persists_to_dedicated_store(tmp_path, monkeypatch)
     assert [item["platform"] for item in items] == ["feishu", "feishu"]
     assert items[0]["name"] == "飞书主机器人"
     assert items[0]["system_prompt"] == "你是飞书主机器人，只处理项目协作问题。"
+    assert items[0]["provider_id"] == "provider-bot"
+    assert items[0]["model_name"] == "bot-model"
     assert items[0]["verification_token"] == "verify-token"
     assert items[0]["encrypt_key"] == "encrypt-key"
     assert items[0]["reply_identity"] == "user"

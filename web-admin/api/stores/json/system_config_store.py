@@ -715,6 +715,8 @@ def normalize_bot_platform_connectors(value: object) -> list[dict[str, object]]:
                 "agent_name": str(raw_item.get("agent_name") or "").strip()[:120],
                 "description": str(raw_item.get("description") or "").strip()[:280],
                 "system_prompt": str(raw_item.get("system_prompt") or "").strip()[:4000],
+                "provider_id": str(raw_item.get("provider_id") or "").strip()[:120],
+                "model_name": str(raw_item.get("model_name") or "").strip()[:160],
                 "app_id": str(raw_item.get("app_id") or "").strip()[:160],
                 "app_secret": str(raw_item.get("app_secret") or "").strip()[:200],
                 "verification_token": str(raw_item.get("verification_token") or "").strip()[:200],

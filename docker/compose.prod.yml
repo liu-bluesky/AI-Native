@@ -1,9 +1,9 @@
-name: ai_employee_prod
+name: ${COMPOSE_PROJECT_NAME:-ai_employee_prod}
 
 services:
   postgres:
     image: postgres:17
-    container_name: ai-employee-postgres
+    container_name: ${POSTGRES_CONTAINER_NAME:-ai-employee-postgres}
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:-admin}

@@ -551,6 +551,7 @@ class ProjectChatSessionCreateReq(BaseModel):
     source_type: str = ""
     platform: str = ""
     connector_id: str = ""
+    resolve_identity: str = ""
     external_chat_id: str = ""
     external_chat_name: str = ""
     group_name: str = ""
@@ -563,6 +564,7 @@ class ProjectChatSessionUpdateReq(BaseModel):
     source_type: str = ""
     platform: str = ""
     connector_id: str = ""
+    resolve_identity: str = ""
     external_chat_id: str = ""
     external_chat_name: str = ""
     group_name: str = ""
@@ -652,6 +654,11 @@ class WorkspaceDirectoryPickReq(BaseModel):
 class WorkspaceFilePickReq(BaseModel):
     initial_path: str = ""
     title: str = "选择文件"
+
+
+class ProjectWorkspaceFileWriteReq(BaseModel):
+    path: str = ""
+    content: str = ""
 
 
 class ExternalUrlOpenReq(BaseModel):

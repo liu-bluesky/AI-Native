@@ -50,12 +50,13 @@ _LEGACY_ARCHIVE_COLUMNS = (
     "sender_id",
     "原始消息",
 )
+_INTERNAL_ARCHIVE_FIELD_NAMES = frozenset((*_ARCHIVE_BITABLE_COLUMNS, *_LEGACY_ARCHIVE_COLUMNS))
 _STRUCTURED_FIELD_ALIASES = {
     "标题": "标题",
-    "问题标题": "标题",
-    "需求标题": "标题",
-    "功能名称": "标题",
-    "会议主题": "标题",
+    "问题标题": "问题标题",
+    "需求标题": "需求标题",
+    "功能名称": "功能名称",
+    "会议主题": "会议主题",
     "问题描述": "问题描述",
     "背景": "背景",
     "目标": "目标",
@@ -101,11 +102,88 @@ _DETAIL_KEYS = (
     "待办事项",
     "截止时间",
 )
+_CATEGORY_FIELD_ORDER = {
+    "bug": (
+        "标题",
+        "问题描述",
+        "复现步骤",
+        "期望结果",
+        "实际结果",
+        "影响范围",
+        "优先级",
+        "负责人",
+        "提出人",
+        "来源群",
+        "消息链接",
+        "创建时间",
+    ),
+    "需求": (
+        "标题",
+        "背景",
+        "目标",
+        "详细说明",
+        "验收标准",
+        "优先级",
+        "负责人",
+        "提出人",
+        "来源群",
+        "消息链接",
+        "创建时间",
+    ),
+    "功能": (
+        "功能名称",
+        "使用场景",
+        "功能说明",
+        "输入输出",
+        "验收标准",
+        "优先级",
+        "负责人",
+        "提出人",
+        "来源群",
+        "消息链接",
+        "创建时间",
+    ),
+    "会议": (
+        "会议主题",
+        "时间",
+        "参会人",
+        "结论",
+        "待办事项",
+        "负责人",
+        "截止时间",
+        "来源群",
+        "消息链接",
+        "创建时间",
+    ),
+}
 _CATEGORY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("bug", ("bug", "BUG", "缺陷", "问题", "报错", "异常", "复现", "期望结果", "实际结果")),
     ("需求", ("需求", "诉求", "想要", "希望", "需要支持")),
     ("功能", ("功能", "能力", "模块", "特性", "feature", "Feature")),
     ("会议", ("会议", "开会", "会前", "会后", "参会", "待办事项", "会议纪要")),
+)
+_CLARIFICATION_ALIASES = (
+    "模板",
+    "模版",
+    "怎么填",
+    "如何填写",
+    "如何记录",
+    "怎么记录",
+    "需要什么信息",
+    "还需要什么信息",
+    "缺什么字段",
+    "字段清单",
+    "字段有哪些",
+    "填写哪些字段",
+    "提供模板",
+    "给个模板",
+    "给我模板",
+    "怎么提问",
+    "怎么描述",
+    "怎么提交",
+    "我该怎么填",
+    "要填什么",
+    "需要补充什么",
 )
 
 
@@ -311,6 +389,37 @@ def _clean_title_part(value: Any, fallback: str) -> str:
     return " ".join(text.split()).strip()[:80] or fallback
 
 
+def _normalize_archive_category(value: Any) -> str:
+    text = str(value or "").strip().strip("：:，,。；; ")
+    lowered = text.lower()
+    if lowered in {"bug", "bugs", "缺陷", "问题"}:
+        return "bug"
+    if text in {"需求", "诉求"}:
+        return "需求"
+    if text in {"功能", "特性"} or lowered in {"feature", "features"}:
+        return "功能"
+    if text in {"会议", "开会", "会议/开会"}:
+        return "会议"
+    return ""
+
+
+def _extract_pending_archive_type(message_text: str) -> str:
+    text = str(message_text or "")
+    marker = "【待归档类型】"
+    if marker not in text:
+        return ""
+    tail = text.split(marker, 1)[1]
+    tail = re.split(r"【[^】]+】", tail, maxsplit=1)[0]
+    for raw_line in tail.splitlines():
+        line = re.sub(r"^\s*(?:[-*]\s*)?(?:\d+[.)、]\s*)?", "", raw_line).strip()
+        if not line:
+            continue
+        normalized = _normalize_archive_category(line)
+        if normalized:
+            return normalized
+    return ""
+
+
 def _category_writer_config(action: dict[str, Any], category: str) -> dict[str, Any]:
     params = action.get("params") if isinstance(action.get("params"), dict) else {}
     categories = params.get("categories") if isinstance(params.get("categories"), dict) else {}
@@ -388,15 +497,10 @@ def _normalize_writer_mode(action: dict[str, Any], category: str) -> str:
 def _infer_category(*, message_text: str, task: dict[str, Any], action: dict[str, Any]) -> str:
     params = action.get("params") if isinstance(action.get("params"), dict) else {}
     configured_categories = params.get("categories") if isinstance(params.get("categories"), dict) else {}
-    text = "\n".join(
-        str(item or "")
-        for item in (
-            message_text,
-            task.get("title"),
-            task.get("description"),
-            action.get("label"),
-        )
-    )
+    pending_type = _extract_pending_archive_type(message_text)
+    if pending_type and (not configured_categories or pending_type in configured_categories):
+        return pending_type
+    text = str(message_text or "")
     for category, aliases in _CATEGORY_ALIASES:
         if category in configured_categories and any(alias in text for alias in aliases):
             return category
@@ -408,6 +512,35 @@ def _infer_category(*, message_text: str, task: dict[str, Any], action: dict[str
         if first_category:
             return first_category
     return "未分类"
+
+
+def _looks_like_archive_clarification_request(*, message_text: str, task: dict[str, Any], action: dict[str, Any]) -> bool:
+    text = "\n".join(
+        str(item or "")
+        for item in (
+            message_text,
+            task.get("title"),
+            task.get("description"),
+            action.get("label"),
+        )
+    )
+    if not text.strip():
+        return False
+    lowered = text.lower()
+    if any(alias in text for alias in _CLARIFICATION_ALIASES):
+        return True
+    return any(
+        phrase in lowered
+        for phrase in (
+            "what fields",
+            "which fields",
+            "template",
+            "how should i fill",
+            "how to fill",
+            "what info",
+            "what information",
+        )
+    )
 
 
 def _archive_key(*, connector_id: str, external_chat_id: str, category: str, writer_type: str, writer_mode: str = "bot_openapi") -> str:
@@ -524,16 +657,43 @@ def _archive_openapi_field_spec(column: str) -> dict[str, Any]:
     return {"field_name": column, "type": 1}
 
 
-def _archive_record_fields_for_bitable(fields: dict[str, Any]) -> dict[str, Any]:
+def _archive_extra_bitable_columns(fields: dict[str, Any]) -> tuple[str, ...]:
+    columns: list[str] = []
+    for raw_key, raw_value in fields.items():
+        key = str(raw_key or "").strip()
+        if not key or key in _INTERNAL_ARCHIVE_FIELD_NAMES:
+            continue
+        if key == _ARCHIVE_ATTACHMENT_COLUMN:
+            continue
+        if str(raw_value or "").strip():
+            columns.append(key)
+    return tuple(dict.fromkeys(columns))
+
+
+def _archive_bitable_columns_for_record(fields: dict[str, Any]) -> tuple[str, ...]:
+    return (*_ARCHIVE_BITABLE_COLUMNS, *_archive_extra_bitable_columns(fields))
+
+
+def _archive_record_fields_for_bitable(
+    fields: dict[str, Any],
+    columns: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    selected_columns = columns or _archive_bitable_columns_for_record(fields)
     return {
         column: fields.get(column, "")
-        for column in _ARCHIVE_COLUMNS
+        for column in selected_columns
         if column != _ARCHIVE_ATTACHMENT_COLUMN
     }
 
 
-def _create_bitable_table(*, token: str, app_token: str, category: str) -> dict[str, Any]:
-    fields = [_archive_openapi_field_spec(column) for column in _ARCHIVE_BITABLE_COLUMNS]
+def _create_bitable_table(
+    *,
+    token: str,
+    app_token: str,
+    category: str,
+    columns: tuple[str, ...] = _ARCHIVE_BITABLE_COLUMNS,
+) -> dict[str, Any]:
+    fields = [_archive_openapi_field_spec(column) for column in columns]
     data = _post_feishu_json(
         f"/open-apis/bitable/v1/apps/{app_token}/tables",
         token=token,
@@ -632,14 +792,17 @@ def _extract_structured_archive_fields(message_text: str) -> dict[str, str]:
         if not line.strip():
             continue
         match = re.match(
-            r"^\s*(?:[-*]\s*)?(?:\d+[.)、]\s*)?(?:\*\*)?([^：:\n*]{1,24})(?:\*\*)?\s*(?:[：:]|\s+)?\s*(.*)$",
+            r"^\s*(?:[-*]\s*)?(?:\d+[.)、]\s*)?(?:\*\*)?([^：:\n*]{1,24})(?:\*\*)?\s*([：:]|\s+)?\s*(.*)$",
             line,
         )
         if match:
             label = _clean_markdown_label(match.group(1))
+            delimiter = str(match.group(2) or "").strip()
             key = _STRUCTURED_FIELD_ALIASES.get(label)
+            if not key and delimiter in {"：", ":"}:
+                key = label
             if key:
-                value = str(match.group(2) or "").strip()
+                value = str(match.group(3) or "").strip()
                 parsed[key] = value
                 current_key = key
                 continue
@@ -817,7 +980,15 @@ def _build_archive_fields(
     raw_message = str(message_text or "").strip() or "（空消息）"
     structured = _extract_structured_archive_fields(raw_message)
     message_link = _first_nonempty(structured.get("消息链接"), source_context.get("message_link"), source_context.get("external_message_url"))
-    title = _first_nonempty(structured.get("标题"), _compact_text(raw_message, 80), f"{category}记录")
+    title = _first_nonempty(
+        structured.get("标题"),
+        structured.get("需求标题"),
+        structured.get("问题标题"),
+        structured.get("功能名称"),
+        structured.get("会议主题"),
+        _compact_text(raw_message, 80),
+        f"{category}记录",
+    )
     summary = _first_nonempty(*[structured.get(key) for key in _SUMMARY_KEYS], structured.get("影响范围"), raw_message)
     priority = _first_nonempty(_compact_short_field(structured.get("优先级")), "未标注")
     assignee = _first_nonempty(_compact_short_field(structured.get("负责人")), "未指定")
@@ -848,6 +1019,9 @@ def _build_archive_fields(
         "sender_id": str(source_context.get("sender_id") or "").strip(),
         "原始消息": raw_message,
     }
+    for key, value in structured.items():
+        if key not in fields and str(value or "").strip():
+            fields[key] = str(value or "").strip()
     return fields
 
 
@@ -857,6 +1031,30 @@ def _archive_row(fields: dict[str, Any]) -> list[Any]:
 
 def _build_archive_entry(fields: dict[str, str], source_context: dict[str, Any]) -> str:
     lines = [f"{column}：{fields.get(column, '')}" for column in _ARCHIVE_COLUMNS if str(fields.get(column, "")).strip()]
+    category = str(fields.get("类型") or fields.get("分类") or "").strip()
+    structured_lines: list[str] = []
+    seen_structured_keys: set[str] = set()
+    for key in _CATEGORY_FIELD_ORDER.get(category, ()):
+        value = str(fields.get(key) or "").strip()
+        if not value and key == "创建时间":
+            value = str(fields.get("归档时间") or "").strip()
+        if value:
+            structured_lines.append(f"{key}：{value}")
+            seen_structured_keys.add(key)
+    for key, value in fields.items():
+        normalized_key = str(key or "").strip()
+        if (
+            not normalized_key
+            or normalized_key in seen_structured_keys
+            or normalized_key in _INTERNAL_ARCHIVE_FIELD_NAMES
+        ):
+            continue
+        text = str(value or "").strip()
+        if text:
+            structured_lines.append(f"{normalized_key}：{text}")
+            seen_structured_keys.add(normalized_key)
+    if structured_lines:
+        lines.extend(["", "结构化内容：", *structured_lines])
     source_type = str(source_context.get("source_type") or "").strip()
     thread_key = str(source_context.get("thread_key") or "").strip()
     if source_type:
@@ -910,6 +1108,23 @@ def _run_lark_cli_json(args: list[str], *, timeout: int = 90, cwd: Path | str | 
         output = (completed.stderr or completed.stdout or "").strip()[:800]
         raise RuntimeError(f"lark-cli 执行失败，请先确认已执行 lark-cli auth login：{output}")
     return _extract_cli_json(completed.stdout)
+
+
+def _is_lark_cli_deleted_resource_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    if any(token in message for token in ("need_user_authorization", "permission denied", "forbidden", "unauthorized")):
+        return False
+    return any(
+        token in message
+        for token in (
+            "note has been deleted",
+            "has been deleted",
+            "not_found",
+            "not found",
+            "not exist",
+            "resource deleted",
+        )
+    )
 
 
 def _find_cli_value(payload: Any, keys: tuple[str, ...]) -> str:
@@ -1299,7 +1514,30 @@ def _write_cli_bitable_archive(
     had_existing_table = bool(app_token and table_id)
     attachment_field_name = str(existing.get("attachment_field_name") or _ARCHIVE_ATTACHMENT_COLUMN).strip() or _ARCHIVE_ATTACHMENT_COLUMN
     doc_url = str(existing.get("doc_url") or "").strip()
+    archive_columns = _archive_bitable_columns_for_record(fields)
     created = False
+    rebuild_reason = ""
+    if had_existing_table:
+        try:
+            attachment_field_name = _ensure_cli_bitable_fields(
+                app_token=app_token,
+                table_id=table_id,
+                columns=archive_columns,
+                preferred_attachment_field_name=attachment_field_name,
+            )
+        except RuntimeError as exc:
+            if not _is_lark_cli_deleted_resource_error(exc):
+                raise
+            logger.info(
+                "feishu archive bitable target was deleted; rebuilding archive table",
+                extra={"app_token": app_token, "table_id": table_id, "category": category},
+            )
+            rebuild_reason = str(exc)
+            app_token = ""
+            table_id = ""
+            doc_url = ""
+            attachment_field_name = _ARCHIVE_ATTACHMENT_COLUMN
+            had_existing_table = False
     if not app_token:
         command = ["base", "+base-create", "--as", "user", "--name", title]
         _append_optional_arg(command, "--folder-token", folder_token)
@@ -1318,19 +1556,13 @@ def _write_cli_bitable_archive(
             "--name",
             category[:100] or "归档",
             "--fields",
-            json.dumps([_archive_cli_field_spec(column) for column in _ARCHIVE_BITABLE_COLUMNS], ensure_ascii=False),
+            json.dumps([_archive_cli_field_spec(column) for column in archive_columns], ensure_ascii=False),
         ])
         table_id = _find_cli_table_id(table_payload)
         created = True
     if not table_id:
         raise RuntimeError("缺少 table_id，无法通过 lark-cli 追加多维表格记录")
-    if had_existing_table:
-        attachment_field_name = _ensure_cli_bitable_fields(
-            app_token=app_token,
-            table_id=table_id,
-            preferred_attachment_field_name=attachment_field_name,
-        )
-    record_fields = _archive_record_fields_for_bitable(fields)
+    record_fields = _archive_record_fields_for_bitable(fields, archive_columns)
     record_payload = _run_lark_cli_json([
         "base",
         "+record-upsert",
@@ -1369,6 +1601,8 @@ def _write_cli_bitable_archive(
         "document_id": app_token,
         "doc_id": app_token,
         "doc_url": _with_bitable_table_url(doc_url or _find_cli_value(record_payload, ("doc_url", "url", "share_url", "record_url")), table_id),
+        "recreated_from_deleted": bool(rebuild_reason),
+        "recreate_reason": rebuild_reason[:500],
     }, created
 
 
@@ -1435,16 +1669,17 @@ def _write_bitable_archive(
 ) -> tuple[dict[str, Any], bool]:
     app_token = str(existing.get("app_token") or existing.get("doc_id") or "").strip()
     table_id = str(existing.get("table_id") or "").strip()
+    archive_columns = _archive_bitable_columns_for_record(fields)
     created = False
     if not app_token:
         app = _create_bitable_app(token=token, title=title, folder_token=folder_token)
         app_token = str(app.get("app_token") or "").strip()
-        table = _create_bitable_table(token=token, app_token=app_token, category=category)
+        table = _create_bitable_table(token=token, app_token=app_token, category=category, columns=archive_columns)
         table_id = str(table.get("table_id") or "").strip()
         created = True
     if not table_id:
         raise RuntimeError("缺少 table_id，无法追加多维表格记录")
-    record_fields = _archive_record_fields_for_bitable(fields)
+    record_fields = _archive_record_fields_for_bitable(fields, archive_columns)
     record = _create_bitable_record(token=token, app_token=app_token, table_id=table_id, fields=record_fields)
     return {
         "app_token": app_token,
@@ -1473,6 +1708,56 @@ def archive_feishu_task_message(
     connector = get_bot_connector(connector_id)
     if not connector or str(connector.get("platform") or "").strip().lower() != "feishu":
         raise RuntimeError(f"未找到飞书连接器：{connector_id}")
+
+    if _looks_like_archive_clarification_request(message_text=message_text, task=task, action=action):
+        return {
+            "status": "skipped",
+            "created": False,
+            "archive_key": "",
+            "connector_id": connector_id,
+            "external_chat_id": external_chat_id,
+            "category": "澄清请求",
+            "writer_type": "",
+            "writer_mode": "",
+            "document_title": "",
+            "document_id": "",
+            "doc_id": "",
+            "doc_url": "",
+            "sheet_id": "",
+            "table_id": "",
+            "record_id": "",
+            "attachment_upload_count": 0,
+            "attachment_field_name": "",
+            "message": "澄清请求不自动归档，请先追问缺失字段后再进入归档流程",
+            "client_token": f"archive-{uuid.uuid4().hex[:12]}",
+        }
+
+    if (
+        is_feishu_auto_archive_action(action)
+        and str(context.get("platform") or "").strip().lower() == "feishu"
+        and str(context.get("archive_input") or "").strip() != "assistant_structured_reply"
+    ):
+        return {
+            "status": "skipped",
+            "created": False,
+            "archive_key": "",
+            "connector_id": connector_id,
+            "external_chat_id": external_chat_id,
+            "category": "",
+            "writer_type": "",
+            "writer_mode": "",
+            "document_title": "",
+            "document_id": "",
+            "doc_id": "",
+            "doc_url": "",
+            "sheet_id": "",
+            "table_id": "",
+            "record_id": "",
+            "attachment_upload_count": 0,
+            "attachment_field_name": "",
+            "message": "飞书自动归档需要先由机器人整理出结构化字段，已跳过原始消息写入",
+            "client_token": f"archive-{uuid.uuid4().hex[:12]}",
+        }
 
     category = _infer_category(message_text=message_text, task=task, action=action)
     writer_type = _normalize_writer_type(action, category)
