@@ -5,7 +5,7 @@ export const DESKTOP_WALLPAPER_STORAGE_KEY = "desktop_wallpaper_config";
 export const DESKTOP_WINDOW_SESSION_STORAGE_KEY = "desktop_window_session";
 const DESKTOP_DOCK_APP_IDS_STORAGE_KEY = "desktop_dock_app_ids";
 const DESKTOP_DOCK_ORDER_STORAGE_KEY = "desktop_dock_order";
-const DESKTOP_REQUIRED_DOCK_APP_IDS = ["local-runner", "chat", "tasks", "workbench"];
+const DESKTOP_REQUIRED_DOCK_APP_IDS = ["chat", "tasks", "workbench"];
 
 export const DESKTOP_WALLPAPER_PRESETS = [
   {
@@ -66,7 +66,6 @@ function clampNumber(value, min, max) {
 
 const DESKTOP_APP_ICON_THEMES = {
   chat: ["#22d3ee", "#2563eb"],
-  "local-runner": ["#34d399", "#0f766e"],
   workbench: ["#f59e0b", "#ef4444"],
   tasks: ["#6366f1", "#2563eb"],
   projects: ["#38bdf8", "#0f766e"],
@@ -202,24 +201,6 @@ function createApp(config) {
 }
 
 const DESKTOP_APP_ITEMS = [
-  createApp({
-    id: "local-runner",
-    label: "本地运行",
-    shortLabel: "LR",
-    path: "/ai/chat?surface=local-runner",
-    summary: "使用系统大模型，在本机工作区执行命令、文件和飞书操作。",
-    eyebrow: "Local Runtime",
-    width: 1280,
-    height: 840,
-    dock: true,
-    match: (path) => {
-      const normalized = String(path || "");
-      return (
-        normalized.startsWith("/ai/chat") &&
-        /(?:[?&](?:surface|chat_surface)=local-runner(?:&|$))/.test(normalized)
-      );
-    },
-  }),
   createApp({
     id: "chat",
     label: "AI 对话",
@@ -903,9 +884,6 @@ export function resolveDesktopAppMeta(pathname) {
 export function resolveDesktopLaunchPath(appId) {
   const app = getDesktopAppById(appId);
   const projectId = getStoredProjectContextId();
-  if (app.id === "local-runner" && projectId) {
-    return `/ai/chat?surface=local-runner&project_id=${encodeURIComponent(projectId)}`;
-  }
   if (app.id === "chat" && projectId) {
     return `/ai/chat?project_id=${encodeURIComponent(projectId)}`;
   }

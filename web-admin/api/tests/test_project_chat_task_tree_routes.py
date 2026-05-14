@@ -1995,6 +1995,160 @@ def test_project_requirement_records_route_groups_same_chat_session_without_work
     assert len(payload["task_sessions"]) == 2
 
 
+def test_project_requirement_records_batch_delete_accepts_list_record_id(
+    tmp_path,
+    monkeypatch,
+):
+    from routers import projects as projects_router
+    from stores.json.project_chat_task_store import ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+
+    projects_router._project_requirement_records_local_cache.clear()
+
+    async def _get_fake_redis():
+        raise RuntimeError("redis unavailable in test")
+
+    monkeypatch.setattr(projects_router, "get_redis_client", _get_fake_redis)
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-delete-record", name="项目一"))
+
+    root_goal = "修复项目详情需求记录删除提示无记录"
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-delete-analysis",
+            project_id="proj-delete-record",
+            username="tester",
+            chat_session_id="chat-delete-analysis",
+            source_chat_session_id="chat-delete-root",
+            source_session_id="",
+            title=root_goal,
+            root_goal=root_goal,
+            status="done",
+            lifecycle_status="archived",
+            round_index=1,
+        )
+    )
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-delete-repair",
+            project_id="proj-delete-record",
+            username="tester",
+            chat_session_id="chat-delete-repair",
+            source_chat_session_id="chat-delete-root",
+            source_session_id="",
+            title=root_goal,
+            root_goal=root_goal,
+            status="in_progress",
+            lifecycle_status="active",
+            round_index=1,
+        )
+    )
+
+    list_response = client.get("/api/projects/proj-delete-record/requirement-records")
+    assert list_response.status_code == 200
+    record_id = list_response.json()["items"][0]["id"]
+    assert record_id == "chat:chat-delete-root:goal:修复项目详情需求记录删除提示无记录"
+
+    delete_response = client.post(
+        "/api/projects/proj-delete-record/requirement-records/batch-delete",
+        json={"record_ids": [record_id]},
+    )
+
+    assert delete_response.status_code == 200
+    delete_payload = delete_response.json()
+    assert delete_payload["deleted_count"] == 1
+    assert delete_payload["deleted_record_ids"] == [record_id]
+    assert delete_payload["missing_ids"] == []
+    assert delete_payload["deleted_task_tree_count"] == 2
+    assert store_factory.project_chat_task_store.list_by_project("proj-delete-record") == []
+
+    after_response = client.get("/api/projects/proj-delete-record/requirement-records")
+    assert after_response.status_code == 200
+    assert after_response.json()["items"] == []
+
+
+def test_project_requirement_records_cache_invalidation_decodes_redis_bytes(
+    tmp_path,
+    monkeypatch,
+):
+    from routers import projects as projects_router
+    from stores.json.project_chat_task_store import ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+
+    class _FakeRedis:
+        def __init__(self):
+            self.values = {}
+            self.sets = {}
+
+        async def get(self, key):
+            return self.values.get(key)
+
+        async def set(self, key, value, ex=None):
+            self.values[key] = value
+
+        async def sadd(self, key, value):
+            self.sets.setdefault(key, set()).add(str(value).encode("utf-8"))
+
+        async def expire(self, key, seconds):
+            return True
+
+        async def smembers(self, key):
+            return self.sets.get(key, set())
+
+        async def delete(self, *keys):
+            for key in keys:
+                self.values.pop(key, None)
+                self.sets.pop(key, None)
+
+    projects_router._project_requirement_records_local_cache.clear()
+    fake_redis = _FakeRedis()
+
+    async def _get_fake_redis():
+        return fake_redis
+
+    monkeypatch.setattr(projects_router, "get_redis_client", _get_fake_redis)
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-cache-delete", name="项目一"))
+
+    root_goal = "删除需求记录后缓存必须刷新"
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-cache-delete",
+            project_id="proj-cache-delete",
+            username="tester",
+            chat_session_id="chat-cache-delete",
+            source_chat_session_id="chat-cache-root",
+            title=root_goal,
+            root_goal=root_goal,
+            status="in_progress",
+            lifecycle_status="active",
+        )
+    )
+
+    list_response = client.get("/api/projects/proj-cache-delete/requirement-records")
+    assert list_response.status_code == 200
+    record_id = list_response.json()["items"][0]["id"]
+
+    delete_response = client.post(
+        "/api/projects/proj-cache-delete/requirement-records/batch-delete",
+        json={"record_ids": [record_id]},
+    )
+    assert delete_response.status_code == 200
+    assert fake_redis.values == {}
+
+    after_response = client.get("/api/projects/proj-cache-delete/requirement-records")
+    assert after_response.status_code == 200
+    assert after_response.json()["items"] == []
+
+
 def test_project_requirement_records_route_hides_query_cli_shadow_chain_near_real_cli_chain(
     tmp_path,
     monkeypatch,

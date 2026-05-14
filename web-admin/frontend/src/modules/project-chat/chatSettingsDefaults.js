@@ -40,7 +40,7 @@ export const CHAT_SETTINGS_DEFAULTS = {
     ".xls",
   ],
   high_risk_tool_confirm: true,
-  tool_timeout_sec: 60,
+  tool_timeout_sec: 0,
   tool_retry_count: 0,
   answer_style: "concise",
   prefer_conclusion_first: true,

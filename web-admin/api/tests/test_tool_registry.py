@@ -96,3 +96,28 @@ def test_summarize_effective_tools_infers_sources():
         "project_skill",
         "project_tool",
     ]
+
+
+def test_assistant_capability_router_prefers_project_skill_for_docs_workflow():
+    from services.assistant_capability_router_service import apply_capability_routing
+
+    routed = apply_capability_routing(
+        [
+            {"tool_name": "project_host_run_command", "description": "Run shell command"},
+            {"tool_name": "lark_doc__docs_update", "employee_id": "emp-1", "description": "Update Feishu doc"},
+            {"tool_name": "query_project_rules", "builtin": True, "description": "Query rules"},
+        ],
+        assistant_workflow={
+            "primary_task_type": "docs",
+            "execution_mode": "tool_augmented",
+            "confirmation_policy": "once_before_write",
+            "confirmed_once": True,
+        },
+        chat_surface="global-assistant",
+    )
+
+    assert [item["tool_name"] for item in routed] == [
+        "lark_doc__docs_update",
+        "project_host_run_command",
+        "query_project_rules",
+    ]

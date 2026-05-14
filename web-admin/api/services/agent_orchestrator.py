@@ -28,7 +28,7 @@ _HOST_EXECUTION_TOOL_NAMES = {
     "project_host_run_command",
 }
 _EXECUTION_REQUEST_PATTERNS = (
-    r"\b(?:install|run|execute|send|list|query|check|open|configure|login|deploy|debug)\b",
+    r"\b(?:install|run|execute|send|list|query|check|open|configure|login|deploy|debug|upload|create|save|record)\b",
 )
 _EXECUTION_REQUEST_HINT_PATTERNS = (
     r"帮我",
@@ -42,6 +42,13 @@ _EXECUTION_ACTION_PATTERNS = (
     r"运行",
     r"发送",
     r"发",
+    r"上传",
+    r"写入",
+    r"保存",
+    r"创建",
+    r"记录",
+    r"处理",
+    r"归档",
     r"查询",
     r"查看",
     r"列出",
@@ -62,6 +69,11 @@ _EXECUTION_DEFERRAL_PATTERNS = (
     r"你也可以自己",
     r"如果你要自己(?:先)?执行",
     r"只差最后一步执行",
+    r"(?:下一步|最小下一步|下一步最小操作|下一步操作|下一步执行|最小操作)[：:]?",
+    r"下一步(?:是|需要|最小操作|操作|执行)",
+    r"请稍后回复[“\"]?(?:重新执行|继续|重试)",
+    r"暂时未能完成(?:写入|处理|保存|执行)",
+    r"尚未(?:写入|保存|完成).*(?:下一步|继续|重新执行)",
     r"我就能继续",
     r"回复我[“\"]?(?:继续|已完成|已授权)",
     r"you can run",
@@ -76,6 +88,13 @@ _REAL_BLOCKER_PATTERNS = (
     r"人工确认",
     r"手动确认",
     r"权限限制",
+    r"(?:缺少|没有|无)(?:可用的)?(?:环境|权限|授权|必要输入|必填参数|文件|附件|图片)",
+    r"没有(?:收到|拿到|获取到).{0,30}(?:文件|附件|图片|资源)",
+    r"(?:环境|权限|授权)(?:不可用|不足|失败)",
+    r"(?:找不到|无法访问)(?:文件|附件|图片|资源)",
+    r"(?:文件|附件|图片|资源).{0,20}(?:不可访问|无法访问)",
+    r"(?:工具|执行|操作)?预算(?:已)?(?:达到|用尽|耗尽|不足)",
+    r"达到最大处理轮次",
     r"系统弹窗",
     r"browser (?:auth|authorization|login|confirmation)",
     r"manual (?:authorization|confirmation|approval)",
@@ -1203,7 +1222,7 @@ class AgentOrchestrator:
         tool_only_threshold: int = 3,
         tool_budget_strategy: str = "finalize",
         max_tool_calls_per_round: int = 6,
-        tool_timeout_sec: int = 60,
+        tool_timeout_sec: int = 0,
         tool_retry_count: int = 0,
     ):
         self._llm = llm_service
@@ -1215,7 +1234,7 @@ class AgentOrchestrator:
         strategy = str(tool_budget_strategy or "finalize").strip().lower()
         self._tool_budget_strategy = strategy if strategy in {"stop", "finalize"} else "finalize"
         self._max_tool_calls_per_round = max(1, min(int(max_tool_calls_per_round), 30))
-        self._tool_timeout_sec = max(1, min(int(tool_timeout_sec), 600))
+        self._tool_timeout_sec = max(0, min(int(tool_timeout_sec), 600))
         self._tool_retry_count = max(0, min(int(tool_retry_count), 5))
 
     async def run(
@@ -1240,6 +1259,8 @@ class AgentOrchestrator:
         local_connector_sandbox_mode: str = "workspace-write",
         global_assistant_bridge_handler: Any | None = None,
         prompt_version: str = "",
+        assistant_workflow: dict[str, Any] | None = None,
+        capability_routing: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict, None]:
         start_time = time.time()
         metrics.inc_counter("conversation_started", {"project_id": project_id})
@@ -1281,6 +1302,21 @@ class AgentOrchestrator:
             auto_followup_retries = 0
             seen_auto_followup_commands: set[str] = set()
             lark_workflow_state: dict[str, Any] = {}
+            effective_capability_routing = (
+                dict(capability_routing or {})
+                if isinstance(capability_routing, dict)
+                else {}
+            )
+            if effective_capability_routing:
+                logger.info(
+                    "assistant_capability_routing_active",
+                    project_id=project_id,
+                    chat_session_id=chat_session_id,
+                    primary_task_type=str(effective_capability_routing.get("primary_task_type") or ""),
+                    execution_mode=str(effective_capability_routing.get("execution_mode") or ""),
+                    preferred_sources=list(effective_capability_routing.get("preferred_sources") or []),
+                    preferred_tags=list(effective_capability_routing.get("preferred_tags") or []),
+                )
 
             while loop_count < self._max_loops:
                 if cancel_event.is_set():
@@ -1744,9 +1780,11 @@ class AgentOrchestrator:
                             "content": (
                                 "上一条回复把仍可继续执行的步骤提前下放给了用户。"
                                 "当前用户明确要求你在这台电脑上直接执行，且宿主命令工具仍可用。"
-                                "除非存在真实人工阻塞（例如浏览器授权、验证码、权限确认或系统弹窗），"
-                                "否则继续调用必要工具直到完成用户原始目标。"
-                                "不要再让用户自己执行命令、复制命令、粘贴输出或回复“继续”来替你完成本应可自动执行的步骤。"
+                                "只有返回结果已经满足用户原始需求，或存在真实阻塞"
+                                "（例如缺少环境、权限、授权、必要输入、可访问文件、验证码、系统弹窗或工具预算保护），"
+                                "才可以暂停。否则继续调用必要工具直到完成用户原始目标。"
+                                "不要把“下一步最小操作”当成最终回复；不要再让用户自己执行命令、复制命令、粘贴输出"
+                                "或回复“继续/重新执行”来替你完成本应可自动执行的步骤。"
                             ),
                         }
                     )
@@ -1827,7 +1865,10 @@ class AgentOrchestrator:
             normalized_guard_message = str(guard_message or "").strip()
             finalize_instruction = (
                 "请基于当前已有上下文与工具结果，直接输出最终答案。"
-                "不要再发起任何工具调用；若信息不足，明确指出缺失项并给出最小下一步。"
+                "不要再发起任何工具调用；只有在已有结果已满足用户需求，"
+                "或确实缺少环境、权限、授权、必要输入、可访问文件，或已触发工具预算/轮次保护时才暂停。"
+                "若暂停，必须明确指出真实阻塞证据和需要补充的最小缺失项；"
+                "不要让用户重复回复“继续”或“重新执行”，除非该回复本身会改变权限或输入状态。"
             )
             if normalized_guard_message:
                 finalize_instruction += (

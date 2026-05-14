@@ -815,14 +815,14 @@ def _execute_actions(
                     source_context=source_context,
                 )
             except Exception as exc:
-                logger.exception("failed to write feishu archive document")
+                logger.exception("failed to write feishu archive table")
                 results.append(
                     {
                         "action_id": str(action.get("id") or "").strip(),
                         "action_type": action_type,
                         "status": "failed",
                         "trigger_type": trigger_type,
-                        "message": str(exc).strip()[:200] or "飞书群文档写入失败",
+                        "message": str(exc).strip()[:200] or "飞书群归档表写入失败",
                     }
                 )
             else:
@@ -834,7 +834,7 @@ def _execute_actions(
                         "action_type": action_type,
                         "status": result_status,
                         "trigger_type": trigger_type,
-                        "message": str(archive_result.get("message") or "飞书群文档写入成功").strip()[:200],
+                        "message": str(archive_result.get("message") or "飞书群归档表写入成功").strip()[:200],
                         "archive_key": archive_result.get("archive_key") or "",
                         "category": archive_result.get("category") or "",
                         "document_title": archive_result.get("document_title") or "",
@@ -846,6 +846,8 @@ def _execute_actions(
                         "sheet_id": archive_result.get("sheet_id") or "",
                         "table_id": archive_result.get("table_id") or "",
                         "record_id": archive_result.get("record_id") or "",
+                        "attachment_upload_count": archive_result.get("attachment_upload_count") or 0,
+                        "attachment_error": archive_result.get("attachment_error") or "",
                         "created": bool(archive_result.get("created")),
                     }
                 )

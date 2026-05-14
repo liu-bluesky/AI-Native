@@ -19,3 +19,5 @@ web-admin/api/.venv/
 .augment
 .qoder
 .codebuddy
+tmp
+feishu-archive-upload

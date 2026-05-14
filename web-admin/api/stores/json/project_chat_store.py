@@ -9,6 +9,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 def _now_iso() -> str:
@@ -62,6 +63,7 @@ class ProjectChatMessage:
     attachments: list[str] = field(default_factory=list)
     images: list[str] = field(default_factory=list)
     videos: list[str] = field(default_factory=list)
+    source_context: dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=lambda: f"chat-{uuid.uuid4().hex[:12]}")
     created_at: str = field(default_factory=_now_iso)
 
@@ -146,6 +148,7 @@ class ProjectChatStore:
                     attachments=_normalize_attachments(raw.get("attachments")),
                     images=_normalize_attachments(raw.get("images")),
                     videos=_normalize_attachments(raw.get("videos")),
+                    source_context=dict(raw.get("source_context") or {}) if isinstance(raw.get("source_context"), dict) else {},
                     created_at=str(raw.get("created_at") or _now_iso()),
                 )
             )
@@ -432,6 +435,7 @@ class ProjectChatStore:
             attachments=_normalize_attachments(message.attachments),
             images=_normalize_attachments(message.images),
             videos=_normalize_attachments(message.videos),
+            source_context=dict(message.source_context or {}) if isinstance(message.source_context, dict) else {},
             created_at=str(message.created_at or _now_iso()),
         )
         current = self._read_messages(project_id, username)
@@ -487,6 +491,45 @@ class ProjectChatStore:
             sessions.sort(key=lambda item: str(item.updated_at or ""), reverse=True)
             self._write_sessions(project_id, username, sessions)
         return normalized
+
+    def update_message(
+        self,
+        project_id: str,
+        username: str,
+        message_id: str,
+        *,
+        content: str | None = None,
+        source_context: dict[str, Any] | None = None,
+    ) -> ProjectChatMessage | None:
+        normalized_message_id = str(message_id or "").strip()
+        if not normalized_message_id:
+            return None
+        messages = self._read_messages(project_id, username)
+        target: ProjectChatMessage | None = None
+        for item in messages:
+            if str(item.id or "").strip() != normalized_message_id:
+                continue
+            if content is not None:
+                next_content = str(content or "").strip()
+                if next_content:
+                    item.content = next_content
+            if isinstance(source_context, dict) and source_context:
+                item.source_context = dict(source_context)
+                item.source_type = _normalize_chat_source_type(source_context.get("source_type")) or item.source_type
+                item.platform = _normalize_chat_context_text(source_context.get("platform") or item.platform, 40).lower()
+                item.connector_id = _normalize_chat_context_text(source_context.get("connector_id") or item.connector_id, 120)
+                item.external_chat_id = _normalize_chat_context_text(source_context.get("external_chat_id") or item.external_chat_id, 200)
+                item.external_chat_name = _normalize_chat_context_text(source_context.get("external_chat_name") or item.external_chat_name, 200)
+                item.external_message_id = _normalize_chat_context_text(source_context.get("external_message_id") or item.external_message_id, 200)
+                item.sender_id = _normalize_chat_context_text(source_context.get("sender_id") or item.sender_id, 200)
+                item.sender_name = _normalize_chat_context_text(source_context.get("sender_name") or item.sender_name, 120)
+                item.thread_key = _normalize_chat_context_text(source_context.get("thread_key") or item.thread_key, 240)
+            target = item
+            break
+        if target is None:
+            return None
+        self._rewrite_messages(project_id, username, messages)
+        return target
 
     def clear_messages(self, project_id: str, username: str, chat_session_id: str = "") -> int:
         normalized_session_id = str(chat_session_id or "").strip()

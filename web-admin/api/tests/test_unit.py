@@ -4798,6 +4798,35 @@ async def test_create_tracking_send_extracts_nested_observability_payload():
     ]
 
 
+@pytest.mark.asyncio
+async def test_create_tracking_send_ignores_duplicate_response_start_after_body():
+    from services.dynamic_mcp_audit import create_tracking_send
+
+    sent_messages = []
+
+    async def _send(message):
+        sent_messages.append(message)
+
+    tracking_send = create_tracking_send(
+        _send,
+        is_sse=False,
+        method="POST",
+        api_key="valid-key",
+        developer_name="tester",
+        session_keys={},
+    )
+
+    await tracking_send({"type": "http.response.start", "status": 200, "headers": []})
+    await tracking_send({"type": "http.response.body", "body": b"ok", "more_body": False})
+    await tracking_send({"type": "http.response.start", "status": 500, "headers": []})
+    await tracking_send({"type": "http.response.body", "body": b"late", "more_body": False})
+
+    assert sent_messages == [
+        {"type": "http.response.start", "status": 200, "headers": []},
+        {"type": "http.response.body", "body": b"ok", "more_body": False},
+    ]
+
+
 def test_resolve_attributed_employee_id_only_marks_real_collaboration_execution():
     from services.dynamic_mcp_audit import resolve_attributed_employee_id
 
@@ -13351,6 +13380,96 @@ def test_merge_project_chat_settings_overrides_keeps_persisted_connector_when_qu
     assert merged["connector_sandbox_mode"] == "workspace-write"
     assert merged["local_connector_id"] == "connector-1"
     assert merged["connector_workspace_path"] == "/tmp/workspace"
+
+
+def test_resolve_chat_runtime_settings_applies_bot_connector_defaults(monkeypatch):
+    from routers import projects as projects_router
+    from models.requests import ProjectChatReq
+    from stores.json.project_store import ProjectConfig
+
+    monkeypatch.setattr(
+        projects_router,
+        "get_bot_connector",
+        lambda connector_id: {
+            "id": connector_id,
+            "platform": "feishu",
+            "project_id": "proj-1",
+            "agent_name": "客服机器人",
+            "system_prompt": "你是售前客服机器人",
+            "provider_id": "provider-bot",
+            "model_name": "bot-model",
+        },
+    )
+    monkeypatch.setattr(
+        projects_router.project_store,
+        "_instance",
+        object(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        projects_router,
+        "_resolve_project_chat_connector_employee_id",
+        lambda project_id, connector: "emp-1",
+    )
+
+    project = ProjectConfig(
+        id="proj-1",
+        name="项目一",
+        chat_settings={"system_prompt": "项目默认提示词"},
+    )
+    req = ProjectChatReq(
+        chat_session_id="chat-session-1",
+        message="你好",
+        source_context={
+            "source_type": "manual_ai_chat",
+            "platform": "feishu",
+            "connector_id": "feishu-main",
+        },
+    )
+
+    settings = projects_router._resolve_chat_runtime_settings(req, project)
+
+    assert settings["selected_employee_id"] == "emp-1"
+    assert settings["selected_employee_ids"] == ["emp-1"]
+    assert settings["provider_id"] == "provider-bot"
+    assert settings["model_name"] == "bot-model"
+    assert settings["system_prompt"] == "你是售前客服机器人\n\n项目默认提示词"
+
+
+def test_resolve_chat_runtime_settings_merges_request_prompt_after_bot_connector_defaults(monkeypatch):
+    from routers import projects as projects_router
+    from models.requests import ProjectChatReq
+    from stores.json.project_store import ProjectConfig
+
+    monkeypatch.setattr(
+        projects_router,
+        "get_bot_connector",
+        lambda connector_id: {
+            "id": connector_id,
+            "platform": "feishu",
+            "project_id": "proj-1",
+            "agent_name": "",
+            "system_prompt": "你是运营机器人",
+            "provider_id": "",
+            "model_name": "",
+        },
+    )
+
+    project = ProjectConfig(id="proj-1", name="项目一")
+    req = ProjectChatReq(
+        chat_session_id="chat-session-1",
+        message="继续",
+        system_prompt="回答前先给一句摘要",
+        source_context={
+            "source_type": "manual_ai_chat",
+            "platform": "feishu",
+            "connector_id": "feishu-main",
+        },
+    )
+
+    settings = projects_router._resolve_chat_runtime_settings(req, project)
+
+    assert settings["system_prompt"] == "你是运营机器人\n\n回答前先给一句摘要"
 
 
 def test_project_memory_matches_project_prefers_explicit_project_id_binding():

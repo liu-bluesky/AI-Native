@@ -6,6 +6,24 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from models.requests import ProjectChatReq
+from services.assistant_workflow_state_service import (
+    build_assistant_workflow_state,
+    evolve_assistant_workflow_state,
+    with_assistant_workflow_state,
+)
+from services.assistant_workflow_policy_service import (
+    latest_assistant_workflow_state_from_messages,
+    prepare_assistant_workflow_state,
+)
+from services.assistant_capability_router_service import (
+    apply_capability_routing,
+    build_capability_routing_decision,
+)
+from services.archive_workflow_state_service import (
+    build_pending_archive_workflow_state,
+    reply_contains_structured_pending_archive,
+    with_archive_workflow_state,
+)
 
 
 @dataclass
@@ -22,6 +40,23 @@ class ProjectChatExecutionResult:
     @property
     def is_error(self) -> bool:
         return bool(self.error_message)
+
+
+def _assistant_source_context_with_archive_workflow(
+    source_context: dict[str, Any] | None,
+    content: str,
+    assistant_workflow_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    text = str(content or "").strip()
+    context = with_assistant_workflow_state(source_context, assistant_workflow_state)
+    if not text:
+        return context
+    if reply_contains_structured_pending_archive(text):
+        return with_archive_workflow_state(
+            context,
+            build_pending_archive_workflow_state(reply_content=text),
+        )
+    return context
 
 
 async def run_project_chat_once(
@@ -60,6 +95,13 @@ async def run_project_chat_once(
         chat_session_id,
         req.source_context,
     )
+    previous_messages = projects_router.project_chat_store.list_messages(
+        project_id,
+        username,
+        limit=20,
+        chat_session_id=chat_session_id,
+    )
+    previous_assistant_workflow_state = latest_assistant_workflow_state_from_messages(previous_messages)
     if not effective_user_message and attachment_names:
         effective_user_message = f"我上传了附件：{', '.join(attachment_names)}。请先给我处理建议。"
     elif not effective_user_message and normalized_images:
@@ -152,6 +194,7 @@ async def run_project_chat_once(
             chat_session_id=chat_session_id,
             images=images,
             videos=videos,
+            source_context=_assistant_source_context_with_archive_workflow(source_context, content),
         )
         if publish_realtime:
             await projects_router.publish_project_chat_record_realtime(
@@ -195,6 +238,23 @@ async def run_project_chat_once(
         )
 
     effective_workspace_path = projects_router._resolve_project_workspace_for_chat(project, runtime_settings)
+    assistant_workflow_state = prepare_assistant_workflow_state(
+        user_message=effective_user_message,
+        source_context=source_context,
+        previous_state=previous_assistant_workflow_state,
+        chat_surface=str(req.chat_surface or "main-chat").strip() or "main-chat",
+        auto_use_tools=bool(runtime_settings.get("auto_use_tools")),
+    )
+    tools = apply_capability_routing(
+        tools,
+        assistant_workflow=assistant_workflow_state,
+        chat_surface=str(req.chat_surface or "main-chat").strip() or "main-chat",
+    )
+    capability_routing = build_capability_routing_decision(
+        tools,
+        assistant_workflow=assistant_workflow_state,
+        chat_surface=str(req.chat_surface or "main-chat").strip() or "main-chat",
+    )
     messages = projects_router._build_project_chat_messages(
         project,
         effective_user_message,
@@ -233,6 +293,8 @@ async def run_project_chat_once(
         messages=messages,
         local_connector=None,
         local_connector_sandbox_mode="workspace-write",
+        capability_routing=capability_routing,
+        metadata={"assistant_workflow": assistant_workflow_state},
     )
 
     llm_service_runtime = projects_router._resolve_chat_llm_service_runtime(
@@ -296,6 +358,11 @@ async def run_project_chat_once(
 
         if stream_error:
             content = f"对话失败：{stream_error}"
+            assistant_workflow_state = evolve_assistant_workflow_state(
+                assistant_workflow_state,
+                reply_content=content,
+                is_error=True,
+            )
             assistant_record = projects_router._append_chat_record(
                 project_id=project_id,
                 username=username,
@@ -303,6 +370,11 @@ async def run_project_chat_once(
                 content=content,
                 message_id=assistant_message_id,
                 chat_session_id=chat_session_id,
+                source_context=_assistant_source_context_with_archive_workflow(
+                    source_context,
+                    content,
+                    assistant_workflow_state,
+                ),
             )
             if publish_realtime:
                 await projects_router.publish_project_chat_record_realtime(
@@ -333,6 +405,16 @@ async def run_project_chat_once(
                 else "模型未返回有效内容。"
             )
         )
+        archive_workflow_state = (
+            build_pending_archive_workflow_state(reply_content=persisted_answer)
+            if reply_contains_structured_pending_archive(persisted_answer)
+            else None
+        )
+        assistant_workflow_state = evolve_assistant_workflow_state(
+            assistant_workflow_state,
+            reply_content=persisted_answer,
+            archive_workflow_state=archive_workflow_state,
+        )
         assistant_record = projects_router._append_chat_record(
             project_id=project_id,
             username=username,
@@ -342,6 +424,11 @@ async def run_project_chat_once(
             chat_session_id=chat_session_id,
             images=images,
             videos=videos,
+            source_context=_assistant_source_context_with_archive_workflow(
+                source_context,
+                persisted_answer,
+                assistant_workflow_state,
+            ),
         )
         if publish_realtime:
             await projects_router.publish_project_chat_record_realtime(
@@ -373,6 +460,11 @@ async def run_project_chat_once(
         )
     except Exception as exc:
         content = f"对话失败：{str(exc)}"
+        assistant_workflow_state = evolve_assistant_workflow_state(
+            assistant_workflow_state,
+            reply_content=content,
+            is_error=True,
+        )
         assistant_record = projects_router._append_chat_record(
             project_id=project_id,
             username=username,
@@ -380,6 +472,11 @@ async def run_project_chat_once(
             content=content,
             message_id=assistant_message_id,
             chat_session_id=chat_session_id,
+            source_context=_assistant_source_context_with_archive_workflow(
+                source_context,
+                content,
+                assistant_workflow_state,
+            ),
         )
         if publish_realtime:
             await projects_router.publish_project_chat_record_realtime(

@@ -71,7 +71,7 @@ def build_project_host_command_tools(workspace_path: str) -> list[dict[str, Any]
                     },
                     "timeout_sec": {
                         "type": "integer",
-                        "description": "超时时间秒数，默认 20，范围 1-600。",
+                        "description": "超时时间秒数，默认 20；填 0 表示不限制，范围 0-600。",
                     },
                     "max_output_chars": {
                         "type": "integer",
@@ -141,7 +141,10 @@ def run_project_host_command(
         }
 
     shell_args = _build_shell_args(normalized_command)
-    safe_timeout = max(1, min(int(timeout_sec or 20), 600))
+    try:
+        safe_timeout = max(0, min(int(timeout_sec), 600))
+    except (TypeError, ValueError):
+        safe_timeout = 20
     safe_output_limit = max(200, min(int(max_output_chars or 12000), 40000))
     exec_env, plugin_runtime_metadata = build_cli_plugin_runtime_environment()
     environment_metadata.update(plugin_runtime_metadata)
@@ -159,7 +162,7 @@ def run_project_host_command(
             cwd=str(resolved_cwd),
             capture_output=True,
             text=True,
-            timeout=safe_timeout,
+            timeout=safe_timeout if safe_timeout > 0 else None,
             env=exec_env,
         )
     except FileNotFoundError as exc:

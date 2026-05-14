@@ -56,3 +56,15 @@ def test_build_agent_orchestrator_applies_runtime_settings():
     assert orchestrator._max_tool_calls_per_round == 5
     assert orchestrator._tool_timeout_sec == 33
     assert orchestrator._tool_retry_count == 1
+
+
+def test_resolve_orchestrator_runtime_settings_preserves_zero_timeout():
+    settings = resolve_orchestrator_runtime_settings(
+        {
+            "tool_timeout_sec": 0,
+            "tool_retry_count": 0,
+        }
+    )
+
+    assert settings["tool_timeout_sec"] == 0
+    assert settings["tool_retry_count"] == 0

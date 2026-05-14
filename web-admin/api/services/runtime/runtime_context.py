@@ -14,3 +14,6 @@ def runtime_messages(context: ChatRuntimeContext) -> list[dict[str, Any]]:
 def runtime_tools(context: ChatRuntimeContext) -> list[dict[str, Any]]:
     return [dict(item) for item in context.resolved_tools]
 
+
+def runtime_capability_routing(context: ChatRuntimeContext) -> dict[str, Any]:
+    return dict(context.capability_routing or {})

@@ -426,6 +426,7 @@ class ProjectChatStorePostgres:
                     attachments=_normalize_attachments(payload.get("attachments")),
                     images=_normalize_attachments(payload.get("images")),
                     videos=_normalize_attachments(payload.get("videos")),
+                    source_context=dict(payload.get("source_context") or {}) if isinstance(payload.get("source_context"), dict) else {},
                     created_at=str(payload.get("created_at") or _now_iso()),
                 )
             )
@@ -460,6 +461,7 @@ class ProjectChatStorePostgres:
             attachments=_normalize_attachments(message.attachments),
             images=_normalize_attachments(message.images),
             videos=_normalize_attachments(message.videos),
+            source_context=dict(message.source_context or {}) if isinstance(message.source_context, dict) else {},
             created_at=str(message.created_at or _now_iso()),
         )
         payload = json.dumps(asdict(normalized), ensure_ascii=False)
@@ -523,6 +525,49 @@ class ProjectChatStorePostgres:
                     ),
                 )
         return normalized
+
+    def update_message(
+        self,
+        project_id: str,
+        username: str,
+        message_id: str,
+        *,
+        content: str | None = None,
+        source_context: dict[str, Any] | None = None,
+    ) -> ProjectChatMessage | None:
+        normalized_message_id = str(message_id or "").strip()
+        if not normalized_message_id:
+            return None
+        current = self.list_messages(project_id, username, limit=0)
+        target = next((item for item in current if str(item.id or "").strip() == normalized_message_id), None)
+        if target is None:
+            return None
+        if content is not None:
+            next_content = str(content or "").strip()
+            if next_content:
+                target.content = next_content
+        if isinstance(source_context, dict) and source_context:
+            target.source_context = dict(source_context)
+            target.source_type = _normalize_chat_source_type(source_context.get("source_type")) or target.source_type
+            target.platform = _normalize_chat_context_text(source_context.get("platform") or target.platform, 40).lower()
+            target.connector_id = _normalize_chat_context_text(source_context.get("connector_id") or target.connector_id, 120)
+            target.external_chat_id = _normalize_chat_context_text(source_context.get("external_chat_id") or target.external_chat_id, 200)
+            target.external_chat_name = _normalize_chat_context_text(source_context.get("external_chat_name") or target.external_chat_name, 200)
+            target.external_message_id = _normalize_chat_context_text(source_context.get("external_message_id") or target.external_message_id, 200)
+            target.sender_id = _normalize_chat_context_text(source_context.get("sender_id") or target.sender_id, 200)
+            target.sender_name = _normalize_chat_context_text(source_context.get("sender_name") or target.sender_name, 120)
+            target.thread_key = _normalize_chat_context_text(source_context.get("thread_key") or target.thread_key, 240)
+        payload = json.dumps(asdict(target), ensure_ascii=False)
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE project_chat_messages
+                SET payload = %s::jsonb, created_at = NOW()
+                WHERE id = %s AND project_id = %s AND username = %s
+                """,
+                (payload, normalized_message_id, project_id, username),
+            )
+        return target
 
     def clear_messages(self, project_id: str, username: str, chat_session_id: str = "") -> int:
         normalized_session_id = str(chat_session_id or "").strip()

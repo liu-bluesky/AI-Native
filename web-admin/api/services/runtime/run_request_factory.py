@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from services.runtime.runtime_context import runtime_messages, runtime_tools
+from services.runtime.runtime_context import (
+    runtime_capability_routing,
+    runtime_messages,
+    runtime_tools,
+)
 from services.runtime.runtime_types import ChatRuntimeContext
 
 
@@ -43,4 +47,6 @@ def build_orchestrator_run_kwargs(
     if global_assistant_bridge_handler is not None:
         payload["global_assistant_bridge_handler"] = global_assistant_bridge_handler
     payload["prompt_version"] = str((runtime_context.metadata or {}).get("prompt_version") or "").strip()
+    payload["assistant_workflow"] = dict((runtime_context.metadata or {}).get("assistant_workflow") or {})
+    payload["capability_routing"] = runtime_capability_routing(runtime_context)
     return payload

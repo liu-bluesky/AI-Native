@@ -32,6 +32,7 @@ class ChatRuntimeContext:
     runtime_snapshot: dict[str, Any] | None = None
     local_connector: Any | None = None
     local_connector_sandbox_mode: str = "workspace-write"
+    capability_routing: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property

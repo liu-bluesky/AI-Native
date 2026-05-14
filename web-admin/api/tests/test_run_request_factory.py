@@ -49,6 +49,7 @@ def test_build_orchestrator_run_kwargs_uses_runtime_context_defaults():
     assert payload["local_connector_workspace_path"] == "/tmp/workspace"
     assert payload["host_workspace_path"] == "/tmp/workspace"
     assert payload["local_connector_sandbox_mode"] == "danger-full-access"
+    assert payload["assistant_workflow"] == {}
     assert "role_ids" not in payload
     assert "global_assistant_bridge_handler" not in payload
 
@@ -82,3 +83,70 @@ def test_build_orchestrator_run_kwargs_includes_optional_global_assistant_fields
 
     assert payload["role_ids"] == ["admin"]
     assert payload["global_assistant_bridge_handler"] is bridge_handler
+
+
+def test_build_orchestrator_run_kwargs_includes_assistant_workflow_metadata():
+    runtime_context = build_chat_runtime_context(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        resolved_provider=ResolvedProviderRuntime(
+            provider_mode="project",
+            provider={"id": "provider-1"},
+            providers=[{"id": "provider-1"}],
+            provider_id="provider-1",
+            model_name="glm-test",
+        ),
+        metadata={
+            "assistant_workflow": {
+                "primary_task_type": "coding",
+                "execution_mode": "agent_execution",
+                "confirmation_policy": "on_high_risk_only",
+                "status": "collecting",
+            }
+        },
+    )
+
+    payload = build_orchestrator_run_kwargs(
+        session_id="session-1",
+        user_message="帮我改代码并验证",
+        runtime_context=runtime_context,
+        temperature=0.2,
+        max_tokens=256,
+        cancel_event=object(),
+    )
+
+    assert payload["assistant_workflow"]["primary_task_type"] == "coding"
+    assert payload["assistant_workflow"]["execution_mode"] == "agent_execution"
+
+
+def test_build_orchestrator_run_kwargs_includes_capability_routing_metadata():
+    runtime_context = build_chat_runtime_context(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        resolved_provider=ResolvedProviderRuntime(
+            provider_mode="project",
+            provider={"id": "provider-1"},
+            providers=[{"id": "provider-1"}],
+            provider_id="provider-1",
+            model_name="glm-test",
+        ),
+        capability_routing={
+            "primary_task_type": "docs",
+            "preferred_sources": ["project_skill", "local_host"],
+            "preferred_tags": ["docs", "write"],
+        },
+    )
+
+    payload = build_orchestrator_run_kwargs(
+        session_id="session-1",
+        user_message="帮我更新飞书文档",
+        runtime_context=runtime_context,
+        temperature=0.2,
+        max_tokens=256,
+        cancel_event=object(),
+    )
+
+    assert payload["capability_routing"]["primary_task_type"] == "docs"
+    assert payload["capability_routing"]["preferred_sources"] == ["project_skill", "local_host"]

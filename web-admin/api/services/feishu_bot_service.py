@@ -10,11 +10,13 @@ import mimetypes
 import os
 import re
 import subprocess
+import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from email.message import Message
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 import requests
 
@@ -35,8 +37,28 @@ if TYPE_CHECKING:
 
 from core.config import get_api_data_dir
 from models.requests import ProjectChatReq
+from services.assistant_workflow_state_service import (
+    assistant_workflow_from_context,
+    evolve_assistant_workflow_state,
+    with_assistant_workflow_state,
+)
+from services.archive_workflow_state_service import (
+    archive_message_reply_content as _archive_message_reply_content,
+    archive_workflow_state_from_context as _archive_workflow_state_from_context,
+    archive_workflow_status as _archive_workflow_status,
+    build_archive_workflow_state as _build_archive_workflow_state,
+    message_has_closed_archive_state as _message_has_closed_archive_state,
+    message_has_pending_archive_state as _message_has_pending_archive_state,
+    reply_claims_archive_success as _shared_reply_claims_archive_success,
+    reply_contains_structured_pending_archive as _shared_reply_contains_structured_pending_archive,
+    with_archive_workflow_state as _with_archive_workflow_state,
+)
 from services.bot_connector_service import list_bot_connectors
-from services.feishu_archive_writer_service import append_feishu_archive_attachments, is_feishu_auto_archive_action
+from services.feishu_archive_writer_service import (
+    append_direct_bitable_record_attachments,
+    archive_feishu_task_message,
+    is_feishu_auto_archive_action,
+)
 from services.project_chat_execution_service import run_project_chat_once
 from services.global_assistant_task_service import (
     execute_global_assistant_task,
@@ -52,6 +74,9 @@ _FEISHU_REPLY_CHAR_LIMIT = 4000
 _FEISHU_OPEN_API_BASE_URL = "https://open.feishu.cn"
 _FEISHU_RESOURCE_DIR = "feishu-message-resources"
 _FEISHU_RESOURCE_PUBLIC_PREFIX = "/api/bot-events/feishu"
+_LOG_RECORD_RESERVED_KEYS = frozenset(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+_FEISHU_BOT_INFO_CACHE_TTL_SECONDS = 300
+_FEISHU_BOT_INFO_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
 
 
 def is_feishu_sdk_available() -> bool:
@@ -143,6 +168,31 @@ def _build_feishu_resource_url(
     return f"{base_url}{path}" if base_url else path
 
 
+def _parse_feishu_resource_url(value: str) -> dict[str, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return {}
+    path = urlparse(raw).path if "://" in raw else raw
+    marker = f"{_FEISHU_RESOURCE_PUBLIC_PREFIX}/"
+    if marker not in path:
+        return {}
+    tail = path.split(marker, 1)[1].strip("/")
+    parts = [unquote(item) for item in tail.split("/") if item]
+    if len(parts) < 4 or parts[1] != "resources":
+        return {}
+    filename = Path(parts[3]).name
+    file_key = Path(filename).stem.strip()
+    if not parts[0] or not parts[2] or not file_key:
+        return {}
+    return {
+        "connector_id": parts[0],
+        "message_id": parts[2],
+        "file_key": file_key,
+        "filename": filename,
+        "type": "image",
+    }
+
+
 def get_feishu_message_resource_file(connector_id: str, message_id: str, filename: str) -> tuple[Path, str]:
     safe_connector_id = _safe_resource_token(connector_id)
     safe_message_id = _safe_resource_token(message_id)
@@ -155,6 +205,20 @@ def get_feishu_message_resource_file(connector_id: str, message_id: str, filenam
         raise FileNotFoundError("resource not found")
     mime_type, _ = mimetypes.guess_type(path.name)
     return path, (mime_type or "application/octet-stream")
+
+
+def _sanitize_log_extra(extra: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(extra, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for raw_key, value in extra.items():
+        key = str(raw_key or "").strip() or "extra"
+        if key in _LOG_RECORD_RESERVED_KEYS:
+            key = f"log_{key}"
+        while key in sanitized or key in _LOG_RECORD_RESERVED_KEYS:
+            key = f"log_{key}"
+        sanitized[key] = value
+    return sanitized
 
 
 def _parse_feishu_message_content(message: Any) -> dict[str, Any]:
@@ -191,26 +255,65 @@ def _extract_feishu_post_text(payload: dict[str, Any]) -> str:
     return " ".join(" ".join(parts).split())
 
 
+def _append_feishu_message_resource(
+    resources: list[dict[str, str]],
+    *,
+    file_key: Any,
+    resource_type: str,
+    label: str,
+) -> None:
+    normalized_file_key = str(file_key or "").strip()
+    if not normalized_file_key:
+        return
+    resources.append(
+        {
+            "file_key": normalized_file_key,
+            "type": str(resource_type or "file").strip().lower() or "file",
+            "label": str(label or "附件").strip() or "附件",
+        }
+    )
+
+
+def _infer_feishu_resource_type_from_node(node: dict[str, Any], key_name: str) -> tuple[str, str]:
+    tag = str(node.get("tag") or node.get("msg_type") or node.get("message_type") or node.get("type") or "").strip().lower()
+    if key_name in {"image_key", "imageKey"} or tag in {"img", "image", "media"}:
+        return "image", "图片"
+    if tag == "audio":
+        return "file", "音频"
+    if tag in {"video", "media"}:
+        return "file", "视频"
+    return "file", "附件"
+
+
+def _collect_feishu_message_resources_from_payload(value: Any, resources: list[dict[str, str]]) -> None:
+    if isinstance(value, dict):
+        for key_name in ("image_key", "imageKey", "file_key", "fileKey"):
+            if key_name not in value:
+                continue
+            resource_type, label = _infer_feishu_resource_type_from_node(value, key_name)
+            _append_feishu_message_resource(
+                resources,
+                file_key=value.get(key_name),
+                resource_type=resource_type,
+                label=label,
+            )
+        for item in value.values():
+            _collect_feishu_message_resources_from_payload(item, resources)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_feishu_message_resources_from_payload(item, resources)
+
+
 def _extract_feishu_message_resources(message: Any) -> list[dict[str, str]]:
     message_type = str(getattr(message, "message_type", "") or "").strip().lower()
     payload = _parse_feishu_message_content(message)
     resources: list[dict[str, str]] = []
-    if message_type == "image":
-        image_key = str(payload.get("image_key") or payload.get("imageKey") or "").strip()
-        if image_key:
-            resources.append({"file_key": image_key, "type": "image", "label": "图片"})
-    if message_type in {"file", "audio", "video"}:
-        file_key = str(payload.get("file_key") or payload.get("fileKey") or "").strip()
-        if file_key:
-            resources.append({"file_key": file_key, "type": "file", "label": "附件"})
-    if message_type == "post":
-        for node in _iter_feishu_post_nodes(payload.get("content")):
-            image_key = str(node.get("image_key") or node.get("imageKey") or "").strip()
-            if image_key:
-                resources.append({"file_key": image_key, "type": "image", "label": "图片"})
-            file_key = str(node.get("file_key") or node.get("fileKey") or "").strip()
-            if file_key:
-                resources.append({"file_key": file_key, "type": "file", "label": "附件"})
+    _collect_feishu_message_resources_from_payload(payload, resources)
+    if message_type in {"audio", "video", "file"}:
+        for item in resources:
+            if str(item.get("type") or "").strip().lower() != "file":
+                continue
+            item["label"] = {"audio": "音频", "video": "视频"}.get(message_type, "附件")
     seen: set[tuple[str, str]] = set()
     unique: list[dict[str, str]] = []
     for item in resources:
@@ -253,14 +356,40 @@ def _download_feishu_message_resource(
         params={"type": str(resource_type or "image").strip() or "image"},
         timeout=30,
     )
-    response.raise_for_status()
     content_type = str(response.headers.get("Content-Type") or "").strip()
+    if response.status_code >= 400:
+        detail = ""
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            code = payload.get("code")
+            msg = str(payload.get("msg") or payload.get("message") or "").strip()
+            if code is not None or msg:
+                detail = f" code={code} msg={msg}".strip()
+        if not detail:
+            detail = str(getattr(response, "text", "") or "").strip()[:300]
+        raise RuntimeError(
+            "飞书资源下载失败："
+            f"HTTP {response.status_code}; message_id={normalized_message_id}; "
+            f"file_key={normalized_file_key}; type={str(resource_type or 'image').strip() or 'image'}"
+            + (f"; {detail}" if detail else "")
+        )
     if content_type.startswith("application/json"):
         try:
             payload = response.json()
         except Exception:
             payload = {}
-        raise RuntimeError(str(payload.get("msg") or "飞书资源下载失败"))
+        code = payload.get("code") if isinstance(payload, dict) else None
+        msg = str(payload.get("msg") or payload.get("message") or "").strip() if isinstance(payload, dict) else ""
+        raise RuntimeError(
+            "飞书资源下载失败："
+            f"message_id={normalized_message_id}; file_key={normalized_file_key}; "
+            f"type={str(resource_type or 'image').strip() or 'image'}"
+            + (f"; code={code}" if code is not None else "")
+            + (f"; msg={msg}" if msg else "")
+        )
 
     original_filename = _filename_from_content_disposition(str(response.headers.get("Content-Disposition") or ""))
     extension = Path(original_filename).suffix or _extension_from_content_type(content_type)
@@ -327,6 +456,47 @@ def _get_feishu_tenant_access_token(connector: dict[str, Any]) -> str:
     if not token:
         raise RuntimeError("飞书没有返回 tenant_access_token")
     return token
+
+
+def _get_feishu_runtime_bot_identity(connector: dict[str, Any]) -> dict[str, str]:
+    connector_id = str(connector.get("id") or "").strip()
+    app_id = str(connector.get("app_id") or "").strip()
+    cache_key = f"{connector_id}:{app_id}"
+    if cache_key:
+        cached = _FEISHU_BOT_INFO_CACHE.get(cache_key)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < _FEISHU_BOT_INFO_CACHE_TTL_SECONDS:
+            return dict(cached[1])
+    try:
+        token = _get_feishu_tenant_access_token(connector)
+        response = requests.get(
+            _feishu_open_api_url("/open-apis/bot/v3/info"),
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        logger.debug(
+            "failed to resolve runtime feishu bot identity",
+            extra={"connector_id": connector_id},
+            exc_info=True,
+        )
+        return {}
+    if int(payload.get("code") or 0) != 0:
+        return {}
+    raw_bot = payload.get("bot")
+    if not isinstance(raw_bot, dict):
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        raw_bot = data.get("bot") if isinstance(data.get("bot"), dict) else data
+    bot = raw_bot if isinstance(raw_bot, dict) else {}
+    identity = {
+        "bot_open_id": str(bot.get("open_id") or "").strip(),
+        "bot_name": str(bot.get("app_name") or bot.get("name") or "").strip(),
+    }
+    if cache_key:
+        _FEISHU_BOT_INFO_CACHE[cache_key] = (time.monotonic(), identity)
+    return dict(identity)
 
 
 def _normalize_feishu_chat_search_item(raw: Any) -> dict[str, str]:
@@ -509,9 +679,17 @@ def build_feishu_event_handler(
         task = loop.create_task(process_feishu_message_event(connector_id, data))
         task.add_done_callback(_log_background_task)
 
+    def _on_ignored_event(data: Any) -> None:
+        event_type = str(getattr(getattr(data, "header", None), "event_type", "") or "").strip()
+        logger.debug(
+            "feishu long-connection event ignored",
+            extra={"connector_id": connector_id, "event_type": event_type},
+        )
+
     return (
         lark.EventDispatcherHandler.builder(encrypt_key, verification_token)
         .register_p2_im_message_receive_v1(_on_message)
+        .register_p2_customized_event("im.message.message_read_v1", _on_ignored_event)
         .build()
     )
 
@@ -898,11 +1076,237 @@ def _parse_feishu_text_message(event: P2ImMessageReceiveV1) -> str:
     if not text and message_type == "post" and isinstance(payload, dict):
         text = _extract_feishu_post_text(payload)
     mentions = getattr(message, "mentions", None) or []
-    for item in mentions:
-        mention_key = str(getattr(item, "key", "") or "").strip()
-        if mention_key:
-            text = text.replace(mention_key, " ")
+    text = _replace_feishu_mention_keys(text, mentions)
+    text = _strip_leading_feishu_mentions(text, mentions)
     return " ".join(text.split())
+
+
+def _replace_feishu_mention_keys(text: str, mentions: list[Any]) -> str:
+    normalized = str(text or "")
+    for item in mentions:
+        mention_key = _value_from_obj_or_dict(item, "key")
+        if mention_key:
+            mention_name = _feishu_mention_display_name(item)
+            replacement = f"@{mention_name}" if mention_name else " "
+            normalized = normalized.replace(mention_key, replacement)
+    return normalized
+
+
+def _strip_leading_feishu_mentions(text: str, mentions: list[Any]) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    for item in mentions or []:
+        for name in _feishu_mention_name_candidates(item):
+            pattern = re.compile(rf"^\s*@{re.escape(name)}[\s\xa0]*", re.IGNORECASE)
+            updated = pattern.sub("", normalized, count=1).strip()
+            if updated != normalized:
+                normalized = updated
+    return normalized
+
+
+def _value_from_obj_or_dict(value: Any, key: str) -> str:
+    if isinstance(value, dict):
+        return str(value.get(key) or "").strip()
+    return str(getattr(value, key, "") or "").strip()
+
+
+def _feishu_mention_display_name(item: Any) -> str:
+    for key in ("name", "user_name", "display_name"):
+        value = _value_from_obj_or_dict(item, key)
+        if value:
+            return value
+    id_obj = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+    for key in ("name", "user_name", "display_name"):
+        value = _value_from_obj_or_dict(id_obj, key)
+        if value:
+            return value
+    return ""
+
+
+def _normalize_feishu_mention_label(value: Any) -> str:
+    return str(value or "").strip().lstrip("@").strip().lower()
+
+
+def _collapse_feishu_mention_label(value: Any) -> str:
+    return "".join(_normalize_feishu_mention_label(value).split())
+
+
+def _feishu_mention_name_candidates(item: Any) -> set[str]:
+    candidates: set[str] = set()
+    for key in ("name", "user_name", "display_name"):
+        value = _normalize_feishu_mention_label(_value_from_obj_or_dict(item, key))
+        if value:
+            candidates.add(value)
+            collapsed = _collapse_feishu_mention_label(value)
+            if collapsed:
+                candidates.add(collapsed)
+    id_obj = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+    for key in ("name", "user_name", "display_name"):
+        value = _normalize_feishu_mention_label(_value_from_obj_or_dict(id_obj, key))
+        if value:
+            candidates.add(value)
+            collapsed = _collapse_feishu_mention_label(value)
+            if collapsed:
+                candidates.add(collapsed)
+    display_name = _normalize_feishu_mention_label(_feishu_mention_display_name(item))
+    if display_name:
+        candidates.add(display_name)
+        collapsed = _collapse_feishu_mention_label(display_name)
+        if collapsed:
+            candidates.add(collapsed)
+    return candidates
+
+
+def _feishu_message_explicitly_mentions_target(message: Any, mention: Any) -> bool:
+    mention_key = _value_from_obj_or_dict(mention, "key")
+    message_type = str(getattr(message, "message_type", "") or "").strip().lower()
+    payload = _parse_feishu_message_content(message)
+    raw_text = str(payload.get("text") or "").strip()
+    if mention_key and mention_key in raw_text:
+        return True
+    mention_names = _feishu_mention_name_candidates(mention)
+    collapsed_text = "".join(str(raw_text or "").strip().lower().split())
+    if mention_names and any(f"@{name}" in collapsed_text for name in mention_names):
+        return True
+    # Non-text messages do not carry a visible "@name" token in payload text.
+    # If Feishu attached a resolved mention entity to the current message event,
+    # treat it as an explicit mention for this message only.
+    if message_type and message_type not in {"text", "post"}:
+        return True
+    if message_type != "post":
+        return False
+    mention_ids = {
+        _value_from_obj_or_dict(mention, "open_id"),
+        _value_from_obj_or_dict(mention, "user_id"),
+        _value_from_obj_or_dict(mention, "union_id"),
+    }
+    id_obj = mention.get("id") if isinstance(mention, dict) else getattr(mention, "id", None)
+    mention_ids.update(
+        {
+            _value_from_obj_or_dict(id_obj, "open_id"),
+            _value_from_obj_or_dict(id_obj, "user_id"),
+            _value_from_obj_or_dict(id_obj, "union_id"),
+        }
+    )
+    mention_ids.discard("")
+    for node in _iter_feishu_post_nodes(payload.get("content")):
+        tag = str(node.get("tag") or "").strip().lower()
+        if tag != "at":
+            continue
+        node_ids = {
+            str(node.get("user_id") or "").strip(),
+            str(node.get("open_id") or "").strip(),
+            str(node.get("union_id") or "").strip(),
+        }
+        node_ids.discard("")
+        if mention_ids and node_ids.intersection(mention_ids):
+            return True
+    return False
+
+
+def _feishu_group_message_mentions_bot(message: Any, connector: dict[str, Any]) -> bool:
+    mentions = getattr(message, "mentions", None) or []
+    if not mentions:
+        return False
+    runtime_identity = _get_feishu_runtime_bot_identity(connector)
+    bot_ids = {
+        str(connector.get(key) or "").strip()
+        for key in ("bot_open_id", "bot_user_id", "bot_union_id")
+        if str(connector.get(key) or "").strip()
+    }
+    runtime_bot_open_id = str(runtime_identity.get("bot_open_id") or "").strip()
+    if runtime_bot_open_id:
+        bot_ids.add(runtime_bot_open_id)
+    bot_names = {
+        _normalize_feishu_mention_label(connector.get(key))
+        for key in ("agent_name", "name", "bot_name")
+        if _normalize_feishu_mention_label(connector.get(key))
+    }
+    runtime_bot_name = _normalize_feishu_mention_label(runtime_identity.get("bot_name"))
+    if runtime_bot_name:
+        bot_names.add(runtime_bot_name)
+    for item in mentions:
+        id_obj = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+        mention_ids = {
+            _value_from_obj_or_dict(item, "open_id"),
+            _value_from_obj_or_dict(item, "user_id"),
+            _value_from_obj_or_dict(item, "union_id"),
+            _value_from_obj_or_dict(id_obj, "open_id"),
+            _value_from_obj_or_dict(id_obj, "user_id"),
+            _value_from_obj_or_dict(id_obj, "union_id"),
+        }
+        mention_ids.discard("")
+        mention_names = _feishu_mention_name_candidates(item)
+        if (
+            (
+                (bot_ids and bot_ids.intersection(mention_ids))
+                or (bot_names and bot_names.intersection(mention_names))
+            )
+            and _feishu_message_explicitly_mentions_target(message, item)
+        ):
+            return True
+    return False
+
+
+def _should_process_feishu_group_text_message(
+    *,
+    connector: dict[str, Any],
+    message: Any,
+    chat_type: str,
+    thread_id: str,
+    text_message: str,
+    resources: list[dict[str, str]],
+) -> bool:
+    if str(chat_type or "").strip().lower() == "p2p":
+        return True
+    if _feishu_group_message_mentions_bot(message, connector):
+        return True
+    return False
+
+
+def _assistant_workflow_is_open(state: dict[str, Any] | None) -> bool:
+    workflow = dict(state or {})
+    status = str(workflow.get("status") or "").strip().lower()
+    if not status:
+        return False
+    return status not in {"done", "failed", "cancelled", "ignored", "closed", "completed"}
+
+
+def _should_continue_feishu_group_workflow_with_resources(
+    *,
+    previous_messages: list[Any],
+    sender_open_id: str,
+    resources: list[dict[str, str]],
+) -> bool:
+    if not resources:
+        return False
+    normalized_sender_id = str(sender_open_id or "").strip()
+    if not normalized_sender_id:
+        return False
+    last_user_message = None
+    last_assistant_message = None
+    for item in reversed(previous_messages):
+        role = str(getattr(item, "role", "") or "").strip().lower()
+        if role == "assistant" and last_assistant_message is None:
+            last_assistant_message = item
+            continue
+        if role == "user":
+            item_context = getattr(item, "source_context", None)
+            if not isinstance(item_context, dict):
+                item_context = {}
+            if str(item_context.get("sender_id") or "").strip() == normalized_sender_id:
+                last_user_message = item
+                break
+    if last_user_message is None or last_assistant_message is None:
+        return False
+    assistant_workflow = assistant_workflow_from_context(getattr(last_assistant_message, "source_context", None))
+    archive_status = _archive_workflow_status(getattr(last_assistant_message, "source_context", None))
+    if archive_status in {"pending_confirmation", "pending_write", "pending_retry", "pending_attachment"}:
+        return True
+    if _assistant_workflow_is_open(assistant_workflow):
+        return True
+    return False
 
 
 def _feishu_history_from_messages(messages: list[Any]) -> list[dict[str, str]]:
@@ -939,6 +1343,239 @@ def _recent_feishu_image_urls(messages: list[Any], source_context: dict[str, Any
     return list(reversed(urls))
 
 
+def _recent_feishu_message_resource_refs(
+    messages: list[Any],
+    source_context: dict[str, Any],
+    *,
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    connector_id = str(source_context.get("connector_id") or "").strip()
+    external_chat_id = str(source_context.get("external_chat_id") or "").strip()
+    thread_key = str(source_context.get("thread_key") or "").strip()
+    refs: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in reversed(messages):
+        if len(refs) >= limit:
+            break
+        if str(getattr(item, "role", "") or "").strip().lower() != "user":
+            continue
+        if connector_id and str(getattr(item, "connector_id", "") or "").strip() != connector_id:
+            continue
+        if external_chat_id and str(getattr(item, "external_chat_id", "") or "").strip() != external_chat_id:
+            continue
+        if thread_key and str(getattr(item, "thread_key", "") or "").strip() != thread_key:
+            continue
+        item_context = getattr(item, "source_context", None)
+        if not isinstance(item_context, dict):
+            item_context = {}
+        message_id = str(
+            item_context.get("external_message_id")
+            or getattr(item, "external_message_id", "")
+            or ""
+        ).strip()
+        for resource in reversed(item_context.get("message_resources") if isinstance(item_context.get("message_resources"), list) else []):
+            if not isinstance(resource, dict):
+                continue
+            file_key = str(resource.get("file_key") or "").strip()
+            resource_type = str(resource.get("type") or "file").strip().lower() or "file"
+            if not message_id or not file_key:
+                continue
+            key = (message_id, file_key, resource_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append(
+                {
+                    "message_id": message_id,
+                    "file_key": file_key,
+                    "type": resource_type,
+                    "label": str(resource.get("label") or "").strip(),
+                }
+            )
+    return list(reversed(refs))
+
+
+def _feishu_resource_type_from_key(file_key: str) -> str:
+    return "image" if str(file_key or "").strip().lower().startswith(("img", "image")) else "file"
+
+
+def _append_feishu_resource_ref_from_text(
+    refs: list[dict[str, str]],
+    seen: set[tuple[str, str]],
+    *,
+    message_id: str,
+    file_key: str,
+) -> None:
+    normalized_message_id = str(message_id or "").strip()
+    normalized_file_key = str(file_key or "").strip()
+    if not normalized_message_id or not normalized_file_key:
+        return
+    key = (normalized_message_id, normalized_file_key)
+    if key in seen:
+        return
+    seen.add(key)
+    resource_type = _feishu_resource_type_from_key(normalized_file_key)
+    refs.append(
+        {
+            "message_id": normalized_message_id,
+            "file_key": normalized_file_key,
+            "type": resource_type,
+            "label": "图片" if resource_type == "image" else "附件",
+        }
+    )
+
+
+def _extract_feishu_resource_refs_from_text(text: str) -> list[dict[str, str]]:
+    value = str(text or "")
+    if not value.strip():
+        return []
+    message_pattern = re.compile(
+        r"(?:消息\s*ID|message[_\s-]*id)\s*[：:]\s*`?(om[_A-Za-z0-9-]+)`?",
+        re.I,
+    )
+    file_key_pattern = re.compile(
+        r"(?:图片\s*(?:key|资源标识)|附件\s*(?:key|资源标识)|file[_\s-]*key|image[_\s-]*key)\s*[：:]\s*`?([A-Za-z0-9][A-Za-z0-9_.-]{6,})`?",
+        re.I,
+    )
+    refs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    current_message_id = ""
+    for raw_line in value.splitlines():
+        line = str(raw_line or "").strip()
+        if not line:
+            current_message_id = ""
+            continue
+        message_matches = list(message_pattern.finditer(line))
+        file_matches = list(file_key_pattern.finditer(line))
+        if message_matches and not file_matches:
+            current_message_id = str(message_matches[-1].group(1) or "").strip()
+            continue
+        if not file_matches:
+            if re.match(r"^【.+】$", line):
+                current_message_id = ""
+            continue
+        for file_match in file_matches:
+            file_key = str(file_match.group(1) or "").strip()
+            same_line_message_id = ""
+            if message_matches:
+                preceding = [item for item in message_matches if item.start() <= file_match.start()]
+                same_line_message_id = str((preceding[-1] if preceding else message_matches[0]).group(1) or "").strip()
+            _append_feishu_resource_ref_from_text(
+                refs,
+                seen,
+                message_id=same_line_message_id or current_message_id,
+                file_key=file_key,
+            )
+        if message_matches:
+            current_message_id = str(message_matches[-1].group(1) or "").strip()
+    return refs
+
+
+def _recent_feishu_message_resource_refs_from_text(
+    messages: list[Any],
+    source_context: dict[str, Any],
+    *,
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    connector_id = str(source_context.get("connector_id") or "").strip()
+    external_chat_id = str(source_context.get("external_chat_id") or "").strip()
+    thread_key = str(source_context.get("thread_key") or "").strip()
+    refs: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in reversed(messages):
+        if len(refs) >= limit:
+            break
+        if connector_id and str(getattr(item, "connector_id", "") or "").strip() not in {"", connector_id}:
+            continue
+        if external_chat_id and str(getattr(item, "external_chat_id", "") or "").strip() not in {"", external_chat_id}:
+            continue
+        if thread_key and str(getattr(item, "thread_key", "") or "").strip() not in {"", thread_key}:
+            continue
+        for ref in reversed(_extract_feishu_resource_refs_from_text(str(getattr(item, "content", "") or ""))):
+            key = (
+                str(ref.get("message_id") or "").strip(),
+                str(ref.get("file_key") or "").strip(),
+                str(ref.get("type") or "").strip(),
+            )
+            if not key[0] or not key[1] or key in seen:
+                continue
+            seen.add(key)
+            refs.append(ref)
+    return list(reversed(refs))
+
+
+async def _redownload_feishu_message_resources(
+    connector: dict[str, Any],
+    *,
+    connector_id: str,
+    resource_refs: list[dict[str, str]],
+    download_errors: list[dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    restored: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for ref in resource_refs:
+        if not isinstance(ref, dict):
+            continue
+        resource_connector_id = str(ref.get("connector_id") or connector_id).strip()
+        if resource_connector_id != connector_id:
+            continue
+        key = (
+            resource_connector_id,
+            str(ref.get("message_id") or "").strip(),
+            str(ref.get("file_key") or "").strip(),
+        )
+        if not all(key) or key in seen:
+            continue
+        seen.add(key)
+        try:
+            downloaded = await asyncio.to_thread(
+                _download_feishu_message_resource,
+                connector,
+                connector_id=resource_connector_id,
+                message_id=key[1],
+                file_key=key[2],
+                resource_type=str(ref.get("type") or "file"),
+            )
+        except Exception as exc:
+            error = {
+                "connector_id": connector_id,
+                "message_id": key[1],
+                "file_key": key[2],
+                "type": str(ref.get("type") or "file"),
+                "message": str(exc),
+            }
+            if download_errors is not None:
+                download_errors.append(error)
+            logger.info(
+                "failed to redownload recent feishu message resource",
+                exc_info=True,
+                extra=_sanitize_log_extra(error),
+            )
+            continue
+        if downloaded:
+            restored.append(downloaded)
+    return restored
+
+
+async def _redownload_recent_feishu_image_resources(
+    connector: dict[str, Any],
+    *,
+    connector_id: str,
+    image_urls: list[str],
+) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for image_url in image_urls:
+        ref = _parse_feishu_resource_url(image_url)
+        if not ref:
+            continue
+        refs.append(ref)
+    return await _redownload_feishu_message_resources(
+        connector,
+        connector_id=connector_id,
+        resource_refs=refs,
+    )
+
+
 def _merge_source_image_urls(source_context: dict[str, Any], image_urls: list[str]) -> dict[str, Any]:
     existing = source_context.get("image_urls")
     if isinstance(existing, list):
@@ -962,6 +1599,57 @@ def _merge_source_image_urls(source_context: dict[str, Any], image_urls: list[st
         seen.add(url)
         deduped.append(url)
     source_context["image_urls"] = deduped
+    return source_context
+
+
+def _merge_source_attachment_files(source_context: dict[str, Any], attachment_files: list[dict[str, str]]) -> dict[str, Any]:
+    existing = source_context.get("attachment_files")
+    existing_items = existing if isinstance(existing, list) else []
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in [*existing_items, *attachment_files]:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip()
+        url = str(item.get("url") or "").strip()
+        key = path or url
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    if merged:
+        source_context["attachment_files"] = merged
+    return source_context
+
+
+def _merge_source_message_resources(source_context: dict[str, Any], resources: list[dict[str, str]]) -> dict[str, Any]:
+    existing = source_context.get("message_resources")
+    existing_items = existing if isinstance(existing, list) else []
+    merged: list[dict[str, str]] = []
+    default_message_id = str(source_context.get("external_message_id") or source_context.get("message_id") or "").strip()
+    seen: set[tuple[str, str, str]] = set()
+    for item in [*existing_items, *resources]:
+        if not isinstance(item, dict):
+            continue
+        file_key = str(item.get("file_key") or "").strip()
+        resource_type = str(item.get("type") or "file").strip().lower() or "file"
+        message_id = str(item.get("message_id") or item.get("external_message_id") or default_message_id).strip()
+        if not file_key:
+            continue
+        key = (message_id, resource_type, file_key)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized = {
+            "file_key": file_key,
+            "type": resource_type,
+            "label": str(item.get("label") or "").strip(),
+        }
+        if message_id:
+            normalized["message_id"] = message_id
+        merged.append(normalized)
+    if merged:
+        source_context["message_resources"] = merged
     return source_context
 
 
@@ -1017,11 +1705,15 @@ def _build_feishu_archive_truth_prompt(connector: dict[str, Any], source_context
     return (
         "飞书归档真实性约束："
         f"当前执行主体是“{bot_name}”，不是泛指每个机器人；归档范围必须绑定到当前飞书群“{group_name}”。"
-        "分类文档/表格应按当前群 + 当前机器人 + 分类维护，不能写到无群归属的全局文档。"
+        "分类归档资源应按当前群 + 当前机器人 + 分类维护，不能写到无群归属的全局资源。"
+        "当用户确认记录或结构化内容已完整时，应进入系统归档链路；不要因为未找到现有资源而停止，"
+        "应根据用户目标、机器人提示词、任务动作配置和历史上下文选择普通文档、电子表格、多维表格或任务系统，目标资源不存在时按已选择类型创建后再写入。"
         "识别归档内容时必须结合当前群上下文和最近多轮对话，不要只看最后一句。"
         "如果消息中提到图片或附件但系统没有提供可访问链接，应在结构化内容中标记图片/附件待补充，不能编造链接。"
-        "除非系统工具已经明确返回创建/追加飞书文档成功，否则禁止回复“已归档”“已保存”“已写入”“保存到”。"
-        "如果只是识别并整理了字段，只能回复“已整理为待归档记录”，并说明尚未写入群文档。"
+        "如果用户用“追加、补充、放到刚才那条、加到这个记录里”等自然语言表达要处理最近图片，"
+        "应结合系统提供的最近图片/附件资源继续处理，不要机械要求用户重发。"
+        "除非系统工具已经明确返回创建或写入目标资源成功，否则禁止回复“已归档”“已保存”“已写入”“保存到”。"
+        "如果只是识别并整理了字段，只能回复“已整理为待归档记录”，并说明尚未写入目标资源。"
     )
 
 
@@ -1071,17 +1763,33 @@ def _build_feishu_agent_workflow_prompt(
         if skill_resource_directory
         else "如果可访问本地 skills/lark-* 目录，先读取相关 SKILL.md。"
     )
+    workspace_path = str(source_context.get("workspace_path") or "").strip()
+    workspace_hint = f"当前项目本地工作区：{workspace_path}。" if workspace_path else ""
     return (
         "飞书机器人通用工作流约束："
-        "长连接收到消息后，不按单个任务写死分支处理；先由大模型结合当前机器人提示词、项目上下文、飞书来源上下文和历史消息理解用户意图，"
-        "再决定是直接回复、追问澄清、生成项目任务/文档、调用项目工具，还是通过 lark-cli 操作飞书资源。"
+        "长连接收到消息后，不按单个任务写死分支处理；先由大模型结合当前机器人提示词、项目上下文、飞书来源上下文、历史消息、"
+        "本地环境和系统提供的工具技能理解用户意图，再决定是直接回复、追问澄清、生成项目任务、写普通文档、写电子表格、写多维表格、"
+        "发送消息、调用项目工具，还是通过 lark-cli 操作飞书资源。"
         f"{conversation_scope}"
+        f"{workspace_hint}"
         f"{skill_hint}"
-        "凡涉及飞书命令、消息、文档、表格、多维表格、日历、任务等操作，应优先参考对应 lark-* 技能说明，"
-        "并通过可用的 project_host_run_command 执行 lark-cli，而不是臆造 API 参数。"
+        "凡涉及飞书命令、消息、文档、表格、多维表格、日历、任务等操作，应先从本地技能目录选择对应 lark-* 技能并读取 SKILL.md；"
+        "如果本地没有合适技能，再通过可用的项目工具或搜索/技能安装能力查找并安装合适技能，然后继续执行。"
+        "执行时优先使用系统提供的工具能力；可用 `project_host_run_command` 时，通过它读取本地环境、列出技能、运行 lark-cli 或安装缺失技能，"
+        "不要臆造 API 参数，也不要把口头教程当成已经执行。"
+        "停止处理的条件只有两类：一是工具返回结果已经满足用户本次需求；二是确实缺少可继续执行的环境、权限、授权、必要输入、"
+        "可访问附件/文件，或已触发工具预算/轮次保护。除此之外，只要下一步清晰且工具可用，就继续调用工具执行。"
+        "不要把“下一步最小操作”“请稍后回复重新执行”“暂时未能完成写入”作为最终回复；这类内容只能作为内部状态，"
+        "如果能继续执行必须继续执行，不能让用户重复回复同一句话来驱动本应自动完成的步骤。"
         "你只生成需要回到飞书的最终回复内容；不要在模型执行过程中自行调用 lark-cli im +messages-reply 或 +messages-send 发送最终回复，"
         f"最终回复由系统统一发送，当前配置发送身份为：{identity_label}；bot 身份走飞书 OpenAPI，user 身份走 lark-cli。"
         "如果要执行写入、发送外部通知、删除、部署或其他高风险操作，必须输出待确认方案或草稿，不得直接越权执行。"
+        "如果用户已经回复确认发送、确认记录、确认归档、确认发送并记录或继续，应把它视为对上一条待确认方案的确认，继续完成发送/写入，不要再次要求用户确认。"
+        "不要把“记录 bug/需求/功能/会议”固定理解为多维表格；应根据用户明确目标、机器人提示词、任务动作配置和历史上下文选择普通文档、电子表格、多维表格或任务系统。"
+        "如果目标资源不存在，应按已选择的资源类型创建对应资源后继续写入；若目标类型仍不明确，应先给出简短澄清或待确认方案。"
+        "系统可能会在 source_context.attachment_files / image_urls / message_resources 中提供当前或最近飞书图片、文件、音频、视频资源；"
+        "如果用户自然语言要求处理最近资源，应优先使用这些资源。attachment_files 是已下载到本地的源文件；"
+        "message_resources 保留 message_id/file_key/type，当缺少本地源文件时，应读取 lark-im 技能并通过飞书 IM 资源下载能力获取源文件后继续处理。"
         f"当前飞书来源：connector_id={source_context.get('connector_id') or '-'}，"
         f"chat_id={source_context.get('external_chat_id') or '-'}，"
         f"chat_name={source_context.get('external_chat_name') or '-'}，"
@@ -1132,15 +1840,507 @@ def _task_archive_write_succeeded(task: dict[str, Any]) -> bool:
 
 
 def _reply_claims_archive_success(content: str) -> bool:
-    return bool(re.search(r"已(?:归档|保存|写入)|保存到|写入完成|记录已保存", str(content or "")))
+    return _shared_reply_claims_archive_success(content)
+
+
+def _reply_has_legacy_closed_archive_state(content: str) -> bool:
+    return _reply_claims_archive_success(content)
+
+
+def _latest_pending_archive_message(messages: list[Any], source_context: dict[str, Any]) -> Any | None:
+    connector_id = str(source_context.get("connector_id") or "").strip()
+    external_chat_id = str(source_context.get("external_chat_id") or "").strip()
+    thread_key = str(source_context.get("thread_key") or "").strip()
+    for item in reversed(messages):
+        if str(getattr(item, "role", "") or "").strip().lower() != "assistant":
+            continue
+        if connector_id and str(getattr(item, "connector_id", "") or "").strip() not in {"", connector_id}:
+            continue
+        if external_chat_id and str(getattr(item, "external_chat_id", "") or "").strip() not in {"", external_chat_id}:
+            continue
+        if thread_key and str(getattr(item, "thread_key", "") or "").strip() not in {"", thread_key}:
+            continue
+        content = _archive_message_reply_content(item)
+        if _message_has_closed_archive_state(item) or _reply_has_legacy_closed_archive_state(content):
+            return None
+        if _message_has_pending_archive_state(item) or _reply_contains_structured_pending_archive(content):
+            return item
+    return None
 
 
 def _reply_contains_structured_pending_archive(content: str) -> bool:
     text = str(content or "")
-    return all(
-        item in text
-        for item in ("【待归档类型】", "【待归档状态】", "【结构化内容】")
-    ) and ("尚未写入" in text or "待归档" in text or "已整理" in text)
+    if _shared_reply_contains_structured_pending_archive(text):
+        return True
+    return _reply_contains_direct_bitable_pending_archive(text) or _reply_contains_direct_bitable_attachment_pending(text)
+
+
+def _reply_contains_direct_bitable_pending_archive(content: str) -> bool:
+    text = str(content or "")
+    if not text.strip():
+        return False
+    has_target = bool(
+        re.search(r"(?:Base\s*Token|Base|base_token|app_token)\s*[：:]\s*`?[A-Za-z0-9_-]{8,}`?", text, re.I)
+        and re.search(r"(?:Table\s*ID|表\s*ID|表ID|数据表|table_id)\s*[：:]\s*`?tbl[A-Za-z0-9_-]+`?", text, re.I)
+    )
+    if not has_target:
+        return False
+    has_pending_state = any(
+        marker in text
+        for marker in (
+            "尚未追加",
+            "尚未写入",
+            "尚未保存",
+            "未完成保存",
+            "未完成写入",
+            "没有收到",
+            "待写入",
+            "待追加",
+            "待保存",
+            "已整理，尚未",
+        )
+    )
+    has_record_payload = any(
+        marker in text
+        for marker in (
+            "【待写入内容】",
+            "【待追加记录】",
+            "【结构化内容】",
+            "待写入内容",
+            "待追加记录",
+            "结构化内容",
+        )
+    )
+    return has_pending_state and has_record_payload
+
+
+def _matched_tasks_have_archive_success(matched_tasks: list[dict[str, Any]]) -> bool:
+    return any(_task_archive_write_succeeded(task) for task in matched_tasks)
+
+
+def _extract_labeled_token(text: str, labels: tuple[str, ...], pattern: str) -> str:
+    label_pattern = "|".join(re.escape(label) for label in labels if label)
+    if not label_pattern:
+        return ""
+    match = re.search(rf"(?:{label_pattern})\s*[：:]\s*`?\s*({pattern})\s*`?", str(text or ""), re.I)
+    return str(match.group(1) or "").strip() if match else ""
+
+
+def _reply_contains_direct_bitable_attachment_pending(content: str) -> bool:
+    text = str(content or "")
+    if not text.strip():
+        return False
+    context = _extract_direct_bitable_attachment_context(text, require_detection=False)
+    if not all(context.get(key) for key in ("base_token", "table_id", "record_id")):
+        return False
+    if not context.get("attachment_files"):
+        return False
+    operation_text = re.search(r"(?:附件|图片|文件).{0,30}(?:上传|写入|追加|补写|更新|替换)", text)
+    next_step_text = "下一步" in text or "最小操作" in text or "继续" in text or "重新执行" in text
+    incomplete_text = any(marker in text for marker in ("还没有成功写入", "未能完成写入", "没有成功写入", "还没有成功", "已部分完成"))
+    return bool(operation_text or (next_step_text and incomplete_text))
+
+
+def _extract_direct_bitable_attachment_context(content: str, *, require_detection: bool = True) -> dict[str, Any]:
+    text = str(content or "")
+    if require_detection and not _reply_contains_direct_bitable_attachment_pending(text):
+        return {}
+    base_token = _extract_labeled_token(
+        text,
+        ("Base Token", "Base", "base_token", "app_token"),
+        r"[A-Za-z0-9_-]{8,}",
+    )
+    table_id = _extract_labeled_token(
+        text,
+        ("Table ID", "表 ID", "表ID", "数据表", "table_id"),
+        r"tbl[A-Za-z0-9_-]+",
+    )
+    record_id = _extract_labeled_token(
+        text,
+        ("Record ID", "记录 ID", "记录ID", "record_id"),
+        r"rec[A-Za-z0-9_-]+",
+    )
+    if not table_id:
+        table_id = _first_regex_group(text, r"\b(tbl[A-Za-z0-9_-]+)\b")
+    if not record_id:
+        record_id = _first_regex_group(text, r"\b(rec[A-Za-z0-9_-]+)\b")
+    field_id = _first_regex_group(text, r"(?:附件|图片|文件)?\s*/\s*(fld[A-Za-z0-9_-]+)")
+    field_name = ""
+    field_match = re.search(r"`\s*([^`\n/：:]{1,40})\s*/\s*(fld[A-Za-z0-9_-]+)\s*`", text)
+    if field_match:
+        field_name = str(field_match.group(1) or "").strip()
+        field_id = str(field_match.group(2) or "").strip()
+    if not field_name:
+        field_name = _extract_labeled_token(
+            text,
+            ("附件字段", "图片字段", "文件字段", "字段"),
+            r"(?:fld[A-Za-z0-9_-]+|[^`\n，,。；;]{1,40})",
+        )
+    attachment_field = field_id or field_name or "附件"
+    document_title = _extract_direct_bitable_attachment_title(text)
+    execution_dir = _extract_direct_bitable_execution_dir(text)
+    attachment_files = _extract_pending_local_attachment_files(text, execution_dir=execution_dir)
+    return {
+        "base_token": base_token,
+        "table_id": table_id,
+        "record_id": record_id,
+        "attachment_field": attachment_field,
+        "attachment_field_name": field_name,
+        "attachment_field_id": field_id,
+        "attachment_files": attachment_files,
+        "document_title": document_title,
+        "execution_dir": execution_dir,
+    }
+
+
+def _first_regex_group(text: str, pattern: str) -> str:
+    match = re.search(pattern, str(text or ""), re.I)
+    return str(match.group(1) or "").strip() if match else ""
+
+
+def _extract_direct_bitable_attachment_title(text: str) -> str:
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        match = re.match(r"^[-*]?\s*(?:保存位置|文档|多维表格|目标文档|目标多维表格|名称)\s*[：:]\s*`?(.+?)`?\s*$", line)
+        if not match:
+            continue
+        value = str(match.group(1) or "").strip().strip("`")
+        if value and not value.startswith(("Base", "Table", "BITABLE")):
+            return value
+    return ""
+
+
+def _extract_direct_bitable_execution_dir(text: str) -> str:
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        match = re.match(r"^[-*]?\s*(?:本轮执行目录|执行目录|工作目录|cwd)\s*[：:]\s*`?(.+?)`?\s*$", line, re.I)
+        if match:
+            return str(match.group(1) or "").strip().strip("`")
+    return ""
+
+
+def _extract_pending_local_attachment_files(text: str, *, execution_dir: str = "") -> list[dict[str, str]]:
+    candidates: list[str] = []
+    for match in re.finditer(r"`([^`\n]+)`", str(text or "")):
+        value = str(match.group(1) or "").strip()
+        if _looks_like_local_attachment_path(value):
+            candidates.append(value)
+    for match in re.finditer(r"(?<![\w:/.-])((?:\.{0,2}/)?[\w\u4e00-\u9fff ./-]+\.[A-Za-z0-9]{2,8})(?![\w/.-])", str(text or "")):
+        value = str(match.group(1) or "").strip()
+        if _looks_like_local_attachment_path(value):
+            candidates.append(value)
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        path = _resolve_pending_local_attachment_path(candidate, execution_dir=execution_dir)
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        normalized.append({"path": path, "filename": Path(path).name})
+    return normalized
+
+
+def _looks_like_local_attachment_path(value: str) -> bool:
+    path = str(value or "").strip()
+    if not path or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", path):
+        return False
+    suffix = Path(path).suffix.lower()
+    return suffix in {
+        ".apng",
+        ".avif",
+        ".bmp",
+        ".csv",
+        ".doc",
+        ".docx",
+        ".gif",
+        ".heic",
+        ".heif",
+        ".jpeg",
+        ".jpg",
+        ".json",
+        ".md",
+        ".pdf",
+        ".png",
+        ".ppt",
+        ".pptx",
+        ".svg",
+        ".txt",
+        ".webp",
+        ".xls",
+        ".xlsx",
+        ".zip",
+    }
+
+
+def _resolve_pending_local_attachment_path(value: str, *, execution_dir: str = "") -> str:
+    raw_path = Path(str(value or "").strip()).expanduser()
+    candidates: list[Path] = []
+    if raw_path.is_absolute():
+        candidates.append(raw_path)
+    else:
+        if execution_dir:
+            candidates.append(Path(execution_dir).expanduser() / raw_path)
+        cwd = Path.cwd()
+        candidates.extend([cwd / raw_path, cwd.parent / raw_path, cwd.parent.parent / raw_path])
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return str(candidate.resolve())
+        except OSError:
+            continue
+    return str(candidates[0]) if candidates else str(raw_path)
+
+
+def _cleanup_completed_pending_attachment_files(attachment_files: list[Any]) -> None:
+    cleanup_roots = [
+        (_feishu_resource_root()).resolve(),
+        (Path.cwd() / "tmp").resolve(),
+        (Path.cwd().parent / "tmp").resolve(),
+        (Path.cwd().parent.parent / "tmp").resolve(),
+    ]
+    touched_dirs: list[Path] = []
+    for item in attachment_files:
+        raw_path = str(item.get("path") if isinstance(item, dict) else item or "").strip()
+        if not raw_path:
+            continue
+        try:
+            path = Path(raw_path).expanduser().resolve()
+            if not path.is_file():
+                continue
+            if not any(root == path.parent or root in path.parents for root in cleanup_roots):
+                continue
+            touched_dirs.append(path.parent)
+            path.unlink()
+        except Exception:
+            logger.warning("failed to cleanup completed pending attachment file: %s", raw_path, exc_info=True)
+    for directory in sorted(set(touched_dirs), key=lambda value: len(value.parts), reverse=True):
+        for root in cleanup_roots:
+            current = directory
+            while root in current.parents and current != root:
+                try:
+                    current.rmdir()
+                except OSError:
+                    break
+                current = current.parent
+
+
+def _extract_direct_bitable_archive_context(content: str) -> dict[str, Any]:
+    text = str(content or "")
+    if not _reply_contains_direct_bitable_pending_archive(text):
+        return {}
+    base_token = _extract_labeled_token(
+        text,
+        ("Base Token", "Base", "base_token", "app_token"),
+        r"[A-Za-z0-9_-]{8,}",
+    )
+    table_id = _extract_labeled_token(
+        text,
+        ("Table ID", "表 ID", "表ID", "table_id"),
+        r"tbl[A-Za-z0-9_-]+",
+    )
+    if not table_id:
+        table_id = _extract_labeled_token(
+            text,
+            ("数据表",),
+            r"tbl[A-Za-z0-9_-]+",
+        )
+    if not base_token or not table_id:
+        return {}
+    title = ""
+    lines = [raw_line.strip() for raw_line in text.splitlines()]
+    for index, line in enumerate(lines):
+        if line in {"【目标文档】", "【目标多维表格】", "【保存位置】"}:
+            for next_line in lines[index + 1 : index + 4]:
+                candidate = next_line.strip().lstrip("-*").strip().strip("`")
+                if candidate and not re.match(r"^(?:Base|Table|数据表|附件字段)\s*[：:]", candidate, re.I):
+                    title = candidate
+                    break
+            if title:
+                break
+    for line in lines:
+        if title:
+            break
+        match = re.match(r"^\s*(?:[-*]\s*)?(?:名称|文档|多维表格|目标文档|目标多维表格)\s*[：:]\s*`?(.+?)`?\s*$", line)
+        if match:
+            candidate = str(match.group(1) or "").strip().strip("`")
+            if candidate and not candidate.startswith(("BITABLE", "Base", "Table")):
+                title = candidate
+                break
+    return {
+        "archive_target_base_token": base_token,
+        "archive_target_table_id": table_id,
+        "archive_target_document_title": title,
+        "archive_writer_mode": "lark_cli_user",
+        "pending_resource_refs": _extract_feishu_resource_refs_from_text(text),
+    }
+
+
+def _build_direct_bitable_archive_task() -> dict[str, Any]:
+    return {
+        "id": "direct-bitable-pending-archive",
+        "title": "继续执行上一条飞书待写入记录",
+        "description": "根据上一条机器人回复中的目标资源、结构化内容和附件资源继续完成归档写入。",
+        "actions": [
+            {
+                "id": "direct-bitable-archive",
+                "type": "project_chat",
+                "params": {
+                    "workflow": "feishu_bot_auto_archive_to_doc_table",
+                    "writer_type": "bitable",
+                    "writer_mode": "lark_cli_user",
+                    "categories": {
+                        "bug": "bitable",
+                        "需求": "bitable",
+                        "功能": "bitable",
+                        "会议": "bitable",
+                    },
+                },
+            }
+        ],
+    }
+
+
+def _direct_bitable_archive_action(task: dict[str, Any]) -> dict[str, Any]:
+    actions = task.get("actions") if isinstance(task.get("actions"), list) else []
+    for action in actions:
+        if isinstance(action, dict) and is_feishu_auto_archive_action(action):
+            return action
+    return {}
+
+
+def _find_recent_structured_pending_archive_reply(messages: list[Any], source_context: dict[str, Any]) -> str:
+    pending_message = _latest_pending_archive_message(messages, source_context)
+    if pending_message is None:
+        return ""
+    content = _archive_message_reply_content(pending_message)
+    return content if _reply_contains_structured_pending_archive(content) else ""
+
+
+def _first_archive_action_result(matched_tasks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for task in matched_tasks:
+        execution = task.get("latest_execution") if isinstance(task.get("latest_execution"), dict) else {}
+        for result in execution.get("action_results") or []:
+            if not isinstance(result, dict):
+                continue
+            if str(result.get("action_type") or "").strip() != "project_chat":
+                continue
+            return result
+    return None
+
+
+def _reply_archive_workflow_state(
+    *,
+    reply_content: str,
+    matched_tasks: list[dict[str, Any]] | None = None,
+    direct_archive_result: dict[str, Any] | None = None,
+    direct_attachment_result: dict[str, Any] | None = None,
+    workflow_id: str = "",
+) -> dict[str, Any]:
+    matched = matched_tasks if isinstance(matched_tasks, list) else []
+    task_result = _first_archive_action_result(matched)
+    direct_archive_status = str((direct_archive_result or {}).get("status") or "").strip().lower()
+    direct_attachment_status = str((direct_attachment_result or {}).get("status") or "").strip().lower()
+    task_status = str((task_result or {}).get("status") or "").strip().lower()
+
+    if direct_attachment_status == "updated":
+        return _build_archive_workflow_state(
+            status="written",
+            workflow_id=workflow_id,
+            reply_content=reply_content,
+            result=direct_attachment_result,
+        )
+    if direct_archive_status in {"saved", "archived", "written"}:
+        return _build_archive_workflow_state(
+            status="written",
+            workflow_id=workflow_id,
+            reply_content=reply_content,
+            result=direct_archive_result,
+        )
+    if task_status in {"saved", "archived", "written"}:
+        return _build_archive_workflow_state(
+            status="written",
+            workflow_id=workflow_id,
+            reply_content=reply_content,
+            result=task_result,
+        )
+    if direct_archive_status in {"pending", "unconfirmed"}:
+        return _build_archive_workflow_state(
+            status="pending_retry",
+            workflow_id=workflow_id,
+            reply_content=reply_content,
+            result=direct_archive_result,
+        )
+    if direct_attachment_result and direct_attachment_status in {"skipped", "pending", "unconfirmed"}:
+        return _build_archive_workflow_state(
+            status="pending_retry",
+            workflow_id=workflow_id,
+            reply_content=reply_content,
+            result=direct_attachment_result,
+        )
+    if task_status == "failed":
+        return _build_archive_workflow_state(
+            status="failed",
+            workflow_id=workflow_id,
+            reply_content=reply_content,
+            result=task_result,
+        )
+    if direct_archive_status in {"failed", "error"}:
+        return _build_archive_workflow_state(
+            status="failed",
+            workflow_id=workflow_id,
+            reply_content=reply_content,
+            result=direct_archive_result,
+        )
+    if _reply_contains_direct_bitable_attachment_pending(reply_content):
+        return _build_archive_workflow_state(
+            status="pending_attachment",
+            workflow_id=workflow_id,
+            reply_content=reply_content,
+        )
+    if _reply_contains_direct_bitable_pending_archive(reply_content):
+        return _build_archive_workflow_state(
+            status="pending_retry",
+            workflow_id=workflow_id,
+            reply_content=reply_content,
+        )
+    if _reply_contains_structured_pending_archive(reply_content):
+        return _build_archive_workflow_state(
+            status="pending_confirmation",
+            workflow_id=workflow_id,
+            reply_content=reply_content,
+        )
+    return {}
+
+
+def _looks_like_feishu_archive_confirmation(text: str) -> bool:
+    normalized = re.sub(r"[\s，。！？!?,.;；：:、]+", "", str(text or "").strip().lower())
+    if not normalized or len(normalized) > 12:
+        return False
+    if re.search(r"(不要|取消|停止|别|不保存|不归档|不记录|不写入)", normalized):
+        return False
+    return normalized in {
+        "确认",
+        "同意",
+        "可以",
+        "继续",
+        "你继续",
+        "那你继续",
+        "继续吧",
+        "可以继续",
+        "直接执行",
+        "继续执行",
+        "重试",
+        "重新执行",
+        "再试",
+        "执行",
+        "保存",
+        "归档",
+        "提交",
+        "写入",
+        "确认写入",
+        "确认保存",
+        "确认归档",
+    }
 
 
 def _process_feishu_archive_tasks_after_reply(
@@ -1152,8 +2352,18 @@ def _process_feishu_archive_tasks_after_reply(
     source_context: dict[str, Any],
     already_matched_tasks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    if not _reply_contains_structured_pending_archive(reply_content):
+    text = str(reply_content or "")
+    has_structured_archive_payload = all(
+        item in text
+        for item in ("【待归档类型】", "【待归档状态】", "【结构化内容】")
+    )
+    if not has_structured_archive_payload and not _reply_contains_direct_bitable_pending_archive(text):
         return []
+    archive_context = {
+        **source_context,
+        **_extract_direct_bitable_archive_context(reply_content),
+        "archive_input": "assistant_structured_reply",
+    }
     succeeded_task_ids = {
         str(task.get("id") or "").strip()
         for task in already_matched_tasks
@@ -1184,12 +2394,187 @@ def _process_feishu_archive_tasks_after_reply(
             trigger_type="event",
             message_text=archive_message,
             match_reason="assistant-structured-archive",
-            source_context={**source_context, "archive_input": "assistant_structured_reply"},
+            source_context=archive_context,
             action_filter=_is_auto_archive_project_chat_action,
         )
         if executed:
             processed.append({**task, "latest_execution": executed.get("latest_execution")})
     return processed
+
+
+def _process_direct_bitable_attachment_after_reply(reply_content: str) -> dict[str, Any] | None:
+    context = _extract_direct_bitable_attachment_context(reply_content)
+    if not context:
+        return None
+    result = append_direct_bitable_record_attachments(
+        app_token=str(context.get("base_token") or ""),
+        table_id=str(context.get("table_id") or ""),
+        record_id=str(context.get("record_id") or ""),
+        attachment_files=context.get("attachment_files") if isinstance(context.get("attachment_files"), list) else [],
+        field_name=str(context.get("attachment_field") or ""),
+        document_title=str(context.get("document_title") or ""),
+    )
+    if (
+        isinstance(result, dict)
+        and str(result.get("status") or "").strip().lower() == "updated"
+        and int(result.get("uploaded_count") or 0) > 0
+    ):
+        files = result.get("attachment_files") if isinstance(result.get("attachment_files"), list) else context.get("attachment_files")
+        _cleanup_completed_pending_attachment_files(files if isinstance(files, list) else [])
+    return result
+
+
+async def _process_direct_bitable_archive_after_reply(
+    *,
+    connector: dict[str, Any],
+    connector_id: str,
+    message_text: str,
+    reply_content: str,
+    source_context: dict[str, Any],
+) -> dict[str, Any] | None:
+    direct_context = _extract_direct_bitable_archive_context(reply_content)
+    if not direct_context:
+        return None
+    task = _build_direct_bitable_archive_task()
+    action = _direct_bitable_archive_action(task)
+    if not action:
+        return None
+    archive_context = {
+        **source_context,
+        **direct_context,
+        "archive_input": "assistant_structured_reply",
+    }
+    pending_resource_refs = direct_context.get("pending_resource_refs")
+    downloaded_resources: list[dict[str, str]] = []
+    resource_download_errors: list[dict[str, str]] = []
+    try:
+        if isinstance(pending_resource_refs, list) and pending_resource_refs:
+            _merge_source_message_resources(archive_context, pending_resource_refs)
+            downloaded_resources = await _redownload_feishu_message_resources(
+                connector,
+                connector_id=connector_id,
+                resource_refs=pending_resource_refs,
+                download_errors=resource_download_errors,
+            )
+            if resource_download_errors:
+                archive_context["resource_download_errors"] = resource_download_errors
+            if downloaded_resources:
+                _merge_source_attachment_files(
+                    archive_context,
+                    [item for item in downloaded_resources if item.get("path")],
+                )
+                image_urls = [
+                    str(item.get("url") or "").strip()
+                    for item in downloaded_resources
+                    if str(item.get("url") or "").strip()
+                    and str(item.get("type") or "").strip().lower() == "image"
+                ]
+                if image_urls:
+                    _merge_source_image_urls(archive_context, image_urls)
+        archive_message = "\n\n".join(
+            item
+            for item in (
+                str(message_text or "").strip(),
+                "机器人整理结果：",
+                str(reply_content or "").strip(),
+            )
+            if item
+        )
+        result = archive_feishu_task_message(
+            task=task,
+            action=action,
+            message_text=archive_message,
+            source_context=archive_context,
+        )
+        if isinstance(result, dict) and resource_download_errors:
+            result["resource_download_errors"] = resource_download_errors
+            result.setdefault("attachment_error", resource_download_errors[0].get("message") or "附件资源下载失败")
+    finally:
+        _cleanup_downloaded_feishu_resources(downloaded_resources)
+    if (
+        isinstance(result, dict)
+        and str(result.get("status") or "").strip().lower() in {"saved", "archived", "written"}
+        and int(result.get("attachment_upload_count") or 0) > 0
+    ):
+        attachment_files = archive_context.get("attachment_files")
+        _cleanup_completed_pending_attachment_files(attachment_files if isinstance(attachment_files, list) else [])
+    return result if isinstance(result, dict) else None
+
+
+def _build_direct_bitable_archive_reply(result: dict[str, Any] | None) -> str:
+    payload = result if isinstance(result, dict) else {}
+    if not payload:
+        return ""
+    status = str(payload.get("status") or "").strip().lower()
+    if status in {"saved", "archived", "written"}:
+        title = str(payload.get("document_title") or "").strip()
+        doc_url = str(payload.get("doc_url") or "").strip()
+        doc_id = str(payload.get("doc_id") or payload.get("document_id") or "").strip()
+        target = title or doc_url or doc_id or "目标多维表格"
+        lines = [f"已保存到：{target}"]
+        if doc_url:
+            lines.append(doc_url)
+        elif doc_id:
+            lines.append(f"文档ID：{doc_id}")
+        record_id = str(payload.get("record_id") or "").strip()
+        if record_id:
+            lines.append(f"记录 ID：{record_id}")
+        uploaded_count = int(payload.get("attachment_upload_count") or 0)
+        if uploaded_count > 0:
+            lines.append(f"附件上传数量：{uploaded_count}")
+        attachment_error = str(payload.get("attachment_error") or "").strip()
+        if attachment_error:
+            lines.append("")
+            lines.append(f"但附件暂未写入成功：{attachment_error[:500]}")
+        resource_errors = payload.get("resource_download_errors")
+        if isinstance(resource_errors, list) and resource_errors and not attachment_error:
+            first_error = resource_errors[0] if isinstance(resource_errors[0], dict) else {}
+            error_message = str(
+                first_error.get("message") or first_error.get("error_message") or "飞书消息资源下载失败"
+            ).strip()
+            lines.append("")
+            lines.append(f"但附件暂未写入成功：{error_message[:500]}")
+        return "\n".join(lines)
+    if status in {"pending", "unconfirmed"}:
+        message = str(payload.get("message") or "未确认写入成功").strip()
+        table_id = str(payload.get("table_id") or "").strip()
+        doc_url = str(payload.get("doc_url") or "").strip()
+        lines = [message[:500]]
+        if doc_url:
+            lines.append(doc_url)
+        elif table_id:
+            lines.append(f"数据表：{table_id}")
+        return "\n".join(lines)
+    if status in {"failed", "error"}:
+        message = str(payload.get("message") or "归档写入失败").strip()
+        return _sanitize_feishu_user_reply(f"归档写入失败：{message[:500]}")
+    return ""
+
+
+def _build_direct_bitable_attachment_reply(result: dict[str, Any] | None) -> str:
+    payload = result if isinstance(result, dict) else {}
+    if not payload:
+        return ""
+    status = str(payload.get("status") or "").strip().lower()
+    record_id = str(payload.get("record_id") or "").strip()
+    table_id = str(payload.get("table_id") or "").strip()
+    title = str(payload.get("document_title") or "").strip()
+    field_name = str(payload.get("attachment_field_name") or "").strip()
+    uploaded_count = int(payload.get("uploaded_count") or 0)
+    if status == "updated" and uploaded_count > 0:
+        target = title or "目标多维表格"
+        lines = [f"已把附件写入：{target}"]
+        if record_id:
+            lines.append(f"记录 ID：{record_id}")
+        if table_id:
+            lines.append(f"数据表：{table_id}")
+        if field_name:
+            lines.append(f"附件字段：{field_name}")
+        lines.append(f"上传数量：{uploaded_count}")
+        return "\n".join(lines)
+    message = str(payload.get("message") or "附件补写未完成").strip()
+    detail = f"\n记录 ID：{record_id}" if record_id else ""
+    return f"附件补写未完成：{message[:500]}{detail}"
 
 
 def _build_confirmed_archive_reply(matched_tasks: list[dict[str, Any]]) -> str:
@@ -1209,8 +2594,41 @@ def _build_confirmed_archive_reply(matched_tasks: list[dict[str, Any]]) -> str:
             doc_id = str(result.get("doc_id") or result.get("document_id") or "").strip()
             target = title or doc_url or doc_id or "当前群分类文档"
             suffix = f"\n{doc_url}" if doc_url else (f"\n文档ID：{doc_id}" if doc_id else "")
+            attachment_error = str(result.get("attachment_error") or "").strip()
+            if attachment_error:
+                record_id = str(result.get("record_id") or "").strip()
+                extra = f"\n记录 ID：{record_id}" if record_id else ""
+                return (
+                    f"已保存到：{target}{suffix}{extra}\n\n"
+                    "但附件图片暂未写入成功：飞书返回附件 token 当前不可用。"
+                    "记录已保留，可稍后直接发送图片并说明“追加到这条记录”。"
+                )
             return f"已保存到：{target}{suffix}"
     return ""
+
+
+def _sanitize_feishu_user_reply(content: str) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return text
+
+    fallback = (
+        "当前处理已暂停，但没有拿到可继续执行所需的环境、权限、必要输入或成功工具返回。"
+        "请补充缺失的内容、附件或授权后再继续；不要重复发送同一句“重新执行”。"
+    )
+    internal_patterns = (
+        r"(?im)^.*(?:本轮停止原因|当前状态|当前最小下一步|工具执行预算|操作预算|执行预算|预算上限|token预算|上下文预算|本次操作预算|当前操作预算|tool call|tool budget|context budget).*$",
+        r"(?im)^.*(?:本轮实际执行过的命令|本轮实际检查结果|本地 lark-cli 有更新提示).*$",
+        r"(?im)^.*(?:已达到.*?预算|预算已用尽|预算用尽|操作预算已用尽).*$",
+        r"(?is)^\s*['\"]?\s*\{\s*\"tool_uses\".*?\}\s*['\"]?\s*",
+    )
+    sanitized = text
+    for pattern in internal_patterns:
+        sanitized = re.sub(pattern, "", sanitized)
+    sanitized = re.sub(r"\n{3,}", "\n\n", sanitized).strip()
+    if not sanitized:
+        return fallback
+    return sanitized
 
 
 def _build_failed_archive_reply(matched_tasks: list[dict[str, Any]]) -> str:
@@ -1226,7 +2644,7 @@ def _build_failed_archive_reply(matched_tasks: list[dict[str, Any]]) -> str:
             if str(result.get("status") or "").strip().lower() != "failed":
                 continue
             message = str(result.get("message") or "飞书归档写入失败").strip()
-            return f"归档写入失败：{message[:500]}"
+            return _sanitize_feishu_user_reply(f"归档写入失败：{message[:500]}")
     return ""
 
 
@@ -1237,18 +2655,19 @@ def _downgrade_unconfirmed_archive_reply(content: str, matched_tasks: list[dict[
         return content
     sanitized = str(content or "").strip()
     replacements = (
-        ("已归档，保存到", "待归档，目标文档"),
-        ("已归档，保存至", "待归档，目标文档"),
+        ("已归档，保存到", "待归档，目标归档表"),
+        ("已归档，保存至", "待归档，目标归档表"),
         ("已归档", "待归档"),
         ("记录已保存", "记录待保存"),
         ("已保存", "待保存"),
         ("已写入", "待写入"),
         ("写入完成", "待写入"),
-        ("保存到", "目标文档"),
+        ("保存到", "目标归档表"),
     )
     for old, new in replacements:
         sanitized = sanitized.replace(old, new)
-    notice = "⚠️ 当前只完成信息整理，尚未真实写入飞书群文档；请以群文档实际记录为准。"
+    sanitized = _sanitize_feishu_user_reply(sanitized)
+    notice = "⚠️ 当前只完成信息整理，尚未真实写入飞书群归档表；请以多维表格实际记录为准。"
     return f"{notice}\n\n{sanitized}" if sanitized else notice
 
 
@@ -1271,7 +2690,7 @@ def _resolve_employee_id_from_connector(project_id: str, connector: dict[str, An
 
 
 def _build_feishu_reply_text(content: str) -> str:
-    normalized = str(content or "").strip()
+    normalized = _sanitize_feishu_user_reply(content)
     if not normalized:
         normalized = "模型未返回有效内容。"
     if len(normalized) <= _FEISHU_REPLY_CHAR_LIMIT:
@@ -1406,13 +2825,24 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
     if not chat_id or not message_id:
         return
 
+    text_message = _parse_feishu_text_message(event)
+    resources = _extract_feishu_message_resources(message)
+    mentioned = _should_process_feishu_group_text_message(
+        connector=connector,
+        message=message,
+        chat_type=chat_type,
+        thread_id=thread_id,
+        text_message=text_message,
+        resources=resources,
+    )
+
     binding = _find_feishu_project_chat_session_binding(
         connector_id=connector_id,
         chat_id=chat_id,
         chat_type=chat_type,
         projects_router=projects_router,
     )
-    if binding is None:
+    if binding is None and mentioned:
         binding = _create_feishu_fallback_chat_session(
             connector,
             connector_id=connector_id,
@@ -1422,6 +2852,29 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
             sender_open_id=sender_open_id,
             projects_router=projects_router,
         )
+
+    continue_with_resources = False
+    previous_messages: list[Any] = []
+    if binding is not None:
+        project_id, username, chat_session_id, bound_context = binding
+        previous_messages = projects_router.project_chat_store.list_messages(
+            project_id,
+            username,
+            limit=80,
+            chat_session_id=chat_session_id,
+        )
+        continue_with_resources = _should_continue_feishu_group_workflow_with_resources(
+            previous_messages=previous_messages,
+            sender_open_id=sender_open_id,
+            resources=resources,
+        )
+
+    if not mentioned and not continue_with_resources:
+        logger.debug(
+            "feishu group text message ignored because bot was not mentioned",
+            extra={"connector_id": connector_id, "chat_id": chat_id, "message_id": message_id},
+        )
+        return
     if binding is None:
         logger.warning(
             "feishu message ignored because no project chat session binding was found",
@@ -1449,12 +2902,13 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         project_id=project_id,
         default_source_type=_feishu_chat_source_type(chat_type),
     )
-    previous_messages = projects_router.project_chat_store.list_messages(
-        project_id,
-        username,
-        limit=80,
-        chat_session_id=chat_session_id,
-    )
+    try:
+        project = projects_router.project_store.get(project_id)
+        workspace_path = str(getattr(project, "workspace_path", "") or "").strip() if project is not None else ""
+    except Exception:
+        workspace_path = ""
+    if workspace_path:
+        source_context["workspace_path"] = workspace_path
     if any(str(getattr(item, "id", "") or "").strip() == message_id for item in previous_messages):
         return
     history = _feishu_history_from_messages(previous_messages)
@@ -1467,9 +2921,9 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         source_context=source_context,
     )
 
-    text_message = _parse_feishu_text_message(event)
-    resources = _extract_feishu_message_resources(message)
     downloaded_resources: list[dict[str, str]] = []
+    if resources:
+        _merge_source_message_resources(source_context, resources)
     for resource in resources:
         try:
             downloaded_resource = await asyncio.to_thread(
@@ -1491,24 +2945,90 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
                     "resource_type": str(resource.get("type") or ""),
                 },
             )
-    image_urls = [str(item.get("url") or "").strip() for item in downloaded_resources if str(item.get("url") or "").strip()]
+    image_urls = [
+        str(item.get("url") or "").strip()
+        for item in downloaded_resources
+        if str(item.get("url") or "").strip()
+        and str(item.get("type") or "").strip().lower() == "image"
+    ]
     attachment_files = [item for item in downloaded_resources if item.get("path")]
     if image_urls:
         _merge_source_image_urls(source_context, image_urls)
     if attachment_files:
-        source_context["attachment_files"] = attachment_files
+        _merge_source_attachment_files(source_context, attachment_files)
 
     if not text_message:
         resource = resources[0] if resources else {}
+        text_message = (
+            f"用户发送了{resource.get('label') or '非文本消息'}。"
+            if resources
+            else f"用户发送了飞书非文本消息：{str(getattr(message, 'message_type', '') or 'unknown')}。"
+        )
+
+    recent_image_urls = _recent_feishu_image_urls(previous_messages, source_context)
+    if recent_image_urls:
+        _merge_source_image_urls(source_context, recent_image_urls)
+    recent_resource_refs = _recent_feishu_message_resource_refs(previous_messages, source_context)
+    if not recent_resource_refs:
+        recent_resource_refs = _recent_feishu_message_resource_refs_from_text(previous_messages, source_context)
+    if recent_resource_refs:
+        _merge_source_message_resources(source_context, recent_resource_refs)
+    if not attachment_files and recent_resource_refs:
+        restored_resources = await _redownload_feishu_message_resources(
+            connector,
+            connector_id=connector_id,
+            resource_refs=recent_resource_refs,
+        )
+        if restored_resources:
+            downloaded_resources.extend(restored_resources)
+            restored_image_urls = [
+                str(item.get("url") or "").strip()
+                for item in restored_resources
+                if str(item.get("url") or "").strip()
+                and str(item.get("type") or "").strip().lower() == "image"
+            ]
+            image_urls = [
+                str(item or "").strip()
+                for item in [*image_urls, *restored_image_urls]
+                if str(item or "").strip()
+            ]
+            attachment_files = [*attachment_files, *[item for item in restored_resources if item.get("path")]]
+            if restored_image_urls:
+                _merge_source_image_urls(source_context, restored_image_urls)
+            if attachment_files:
+                _merge_source_attachment_files(source_context, attachment_files)
+    if not attachment_files and recent_image_urls:
+        restored_resources = await _redownload_recent_feishu_image_resources(
+            connector,
+            connector_id=connector_id,
+            image_urls=recent_image_urls,
+        )
+        if restored_resources:
+            downloaded_resources.extend(restored_resources)
+            restored_image_urls = [
+                str(item.get("url") or "").strip()
+                for item in restored_resources
+                if str(item.get("url") or "").strip()
+            ]
+            image_urls = [
+                str(item or "").strip()
+                for item in [*image_urls, *restored_image_urls]
+                if str(item or "").strip()
+            ]
+            attachment_files = [*attachment_files, *[item for item in restored_resources if item.get("path")]]
+            if restored_image_urls:
+                _merge_source_image_urls(source_context, restored_image_urls)
+            if attachment_files:
+                _merge_source_attachment_files(source_context, attachment_files)
+
+    pending_archive_message = _latest_pending_archive_message(previous_messages, source_context)
+    recent_pending_archive_reply = _archive_message_reply_content(pending_archive_message) if pending_archive_message is not None else ""
+    if recent_pending_archive_reply and _looks_like_feishu_archive_confirmation(text_message):
         user_record = projects_router._append_chat_record(
             project_id=project_id,
             username=username,
             role="user",
-            content=(
-                f"（飞书发送了{resource.get('label') or '非文本消息'}：{image_urls[0]}）"
-                if image_urls
-                else f"（飞书发送了非文本消息：{str(getattr(message, 'message_type', '') or 'unknown')}）"
-            ),
+            content=text_message,
             message_id=message_id,
             chat_session_id=chat_session_id,
             images=image_urls,
@@ -1520,42 +3040,75 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
             chat_session_id=chat_session_id,
             message=user_record,
         )
-        merge_result = None
-        if image_urls:
-            try:
-                merge_result = append_feishu_archive_attachments(
-                    source_context=source_context,
-                    attachment_urls=image_urls,
-                    attachment_files=attachment_files,
-                )
-            except Exception:
-                logger.exception(
-                    "failed to append feishu image resource to latest archive",
-                    extra={"connector_id": connector_id, "message_id": message_id},
-                )
-        assistant_text = ""
-        if image_urls and merge_result and str(merge_result.get("status") or "") == "updated":
-            if int(merge_result.get("uploaded_count") or 0) > 0:
-                assistant_text = "已接收图片并上传到最近飞书归档记录的附件字段。"
-            else:
-                assistant_text = "已接收图片并合并到最近的飞书归档记录。"
-        elif image_urls:
-            assistant_text = "已接收图片，已完成临时处理；当前没有可匹配的飞书归档记录。"
-        else:
-            assistant_text = "已接收飞书非文本消息，暂未生成可归档链接。"
+        matched_tasks = _process_feishu_archive_tasks_after_reply(
+            username=username,
+            project_id=project_id,
+            message_text=text_message,
+            reply_content=recent_pending_archive_reply,
+            source_context=source_context,
+            already_matched_tasks=[],
+        )
+        direct_attachment_result = None
+        direct_archive_result = None
+        if not matched_tasks:
+            direct_attachment_result = _process_direct_bitable_attachment_after_reply(recent_pending_archive_reply)
+        if not _matched_tasks_have_archive_success(matched_tasks) and not direct_attachment_result:
+            direct_archive_result = await _process_direct_bitable_archive_after_reply(
+                connector=connector,
+                connector_id=connector_id,
+                message_text=text_message,
+                reply_content=recent_pending_archive_reply,
+                source_context=source_context,
+            )
+        reply_content = (
+            _build_confirmed_archive_reply(matched_tasks)
+            or _build_failed_archive_reply(matched_tasks)
+            or _build_direct_bitable_attachment_reply(direct_attachment_result)
+            or _build_direct_bitable_archive_reply(direct_archive_result)
+            or (
+                "已收到确认，但没有找到可继续执行的待处理写入动作或成功工具返回。"
+                "当前暂停原因是缺少可执行上下文、权限/环境或必要输入；"
+                "请补充目标记录、附件/文件或授权信息后继续，不要重复发送同一句“重新执行”。"
+            )
+        )
+        archive_workflow_state = _reply_archive_workflow_state(
+            reply_content=reply_content,
+            matched_tasks=matched_tasks,
+            direct_archive_result=direct_archive_result,
+            direct_attachment_result=direct_attachment_result,
+        )
+        current_assistant_workflow = assistant_workflow_from_context(
+            getattr(pending_archive_message, "source_context", None)
+        )
+        next_source_context = _with_archive_workflow_state(source_context, archive_workflow_state)
+        next_source_context = with_assistant_workflow_state(
+            next_source_context,
+            evolve_assistant_workflow_state(
+                current_assistant_workflow,
+                reply_content=reply_content,
+                archive_workflow_state=archive_workflow_state,
+            ),
+        )
         assistant_record = projects_router._append_chat_record(
             project_id=project_id,
             username=username,
             role="assistant",
-            content=assistant_text,
+            content=reply_content,
             message_id=f"bot-reply-{uuid.uuid4().hex[:12]}",
             chat_session_id=chat_session_id,
+            source_context=next_source_context,
         )
         await projects_router.publish_project_chat_record_realtime(
             project_id=project_id,
             username=username,
             chat_session_id=chat_session_id,
             message=assistant_record,
+        )
+        await _reply_feishu_text(
+            connector,
+            message_id=message_id,
+            content=reply_content,
+            reply_in_thread=bool(thread_id),
         )
         await projects_router.publish_project_chat_group_status_realtime(
             project_id=project_id,
@@ -1567,10 +3120,6 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         )
         _cleanup_downloaded_feishu_resources(downloaded_resources)
         return
-
-    recent_image_urls = _recent_feishu_image_urls(previous_messages, source_context)
-    if recent_image_urls:
-        _merge_source_image_urls(source_context, recent_image_urls)
 
     auth_payload = {"sub": username, "role": "admin", "roles": ["admin"]}
     skill_resource_directory = _resolve_feishu_skill_resource_directory(project_id, projects_router)
@@ -1602,92 +3151,144 @@ async def process_feishu_message_event(connector_id: str, event: P2ImMessageRece
         images=image_urls,
         skill_resource_directory=skill_resource_directory,
     )
-    result = await run_project_chat_once(
-        project_id=project_id,
-        username=username,
-        req=req,
-        auth_payload=auth_payload,
-        save_memory_snapshot=False,
-        publish_realtime=True,
-    )
-    await projects_router.publish_project_chat_group_status_realtime(
-        project_id=project_id,
-        username=username,
-        chat_session_id=chat_session_id,
-        status="linked",
-        message="当前飞书群已链接工作群",
-        source_context=source_context,
-    )
-    latest_messages = projects_router.project_chat_store.list_messages(
-        project_id,
-        username,
-        limit=80,
-        chat_session_id=chat_session_id,
-    )
-    late_image_urls = _recent_feishu_image_urls(latest_messages, source_context)
-    if late_image_urls:
-        _merge_source_image_urls(source_context, late_image_urls)
-    matched_tasks = process_global_assistant_tasks_for_event(
-        username=username,
-        project_id=project_id,
-        message_text=text_message,
-        source_context=source_context,
-        skip_auto_archive_actions=True,
-    )
-    meeting_reminder_result = create_feishu_meeting_reminder_task(
-        username=username,
-        project_id=project_id,
-        connector=connector,
-        connector_id=connector_id,
-        chat_id=chat_id,
-        message_id=message_id,
-        message_text=text_message,
-        source_context=source_context,
-    )
-    matched_tasks.extend(
-        _process_feishu_archive_tasks_after_reply(
+    try:
+        result = await run_project_chat_once(
+            project_id=project_id,
+            username=username,
+            req=req,
+            auth_payload=auth_payload,
+            save_memory_snapshot=False,
+            publish_realtime=True,
+        )
+        await projects_router.publish_project_chat_group_status_realtime(
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+            status="linked",
+            message="当前飞书群已链接工作群",
+            source_context=source_context,
+        )
+        latest_messages = projects_router.project_chat_store.list_messages(
+            project_id,
+            username,
+            limit=80,
+            chat_session_id=chat_session_id,
+        )
+        late_image_urls = _recent_feishu_image_urls(latest_messages, source_context)
+        if late_image_urls:
+            _merge_source_image_urls(source_context, late_image_urls)
+        matched_tasks = process_global_assistant_tasks_for_event(
             username=username,
             project_id=project_id,
             message_text=text_message,
-            reply_content=result.content,
             source_context=source_context,
-            already_matched_tasks=matched_tasks,
+            skip_auto_archive_actions=True,
         )
-    )
-    speech_text = _build_feishu_task_listener_speech_text(
-        message_text=text_message,
-        matched_tasks=matched_tasks,
-        source_context=source_context,
-    )
-    if speech_text:
-        speech_result = await enqueue_system_speech(
-            speech_text,
-            owner_username=username,
-            role_ids=["admin"],
-            source="feishu-task-listener",
-            require_enabled=True,
+        meeting_reminder_result = create_feishu_meeting_reminder_task(
+            username=username,
+            project_id=project_id,
+            connector=connector,
+            connector_id=connector_id,
+            chat_id=chat_id,
+            message_id=message_id,
+            message_text=text_message,
+            source_context=source_context,
         )
-        if not bool(speech_result.get("queued")):
-            logger.info(
-                "feishu task-listener response was not queued for system speech",
-                extra={
-                    "reason": str(speech_result.get("reason") or "").strip(),
-                    "connector_id": connector_id,
-                    "matched_task_ids": [str(item.get("id") or "") for item in matched_tasks],
-                    "speech_text": speech_text,
-                },
+        matched_tasks.extend(
+            _process_feishu_archive_tasks_after_reply(
+                username=username,
+                project_id=project_id,
+                message_text=text_message,
+                reply_content=result.content,
+                source_context=source_context,
+                already_matched_tasks=matched_tasks,
             )
-    reply_content = (
-        _build_feishu_meeting_reminder_reply(meeting_reminder_result)
-        or
-        _build_confirmed_archive_reply(matched_tasks)
-        or _build_failed_archive_reply(matched_tasks)
-        or _downgrade_unconfirmed_archive_reply(result.content, matched_tasks)
-    )
-    await _reply_feishu_text(
-        connector,
-        message_id=message_id,
-        content=reply_content,
-        reply_in_thread=bool(thread_id),
-    )
-    _cleanup_downloaded_feishu_resources(downloaded_resources)
+        )
+        direct_archive_result = None
+        if not _matched_tasks_have_archive_success(matched_tasks):
+            direct_archive_result = await _process_direct_bitable_archive_after_reply(
+                connector=connector,
+                connector_id=connector_id,
+                message_text=text_message,
+                reply_content=result.content,
+                source_context=source_context,
+            )
+        speech_text = _build_feishu_task_listener_speech_text(
+            message_text=text_message,
+            matched_tasks=matched_tasks,
+            source_context=source_context,
+        )
+        if speech_text:
+            speech_result = await enqueue_system_speech(
+                speech_text,
+                owner_username=username,
+                role_ids=["admin"],
+                source="feishu-task-listener",
+                require_enabled=True,
+            )
+            if not bool(speech_result.get("queued")):
+                logger.info(
+                    "feishu task-listener response was not queued for system speech",
+                    extra={
+                        "reason": str(speech_result.get("reason") or "").strip(),
+                        "connector_id": connector_id,
+                        "matched_task_ids": [str(item.get("id") or "") for item in matched_tasks],
+                        "speech_text": speech_text,
+                    },
+                )
+        reply_content = (
+            _build_feishu_meeting_reminder_reply(meeting_reminder_result)
+            or
+            _build_confirmed_archive_reply(matched_tasks)
+            or _build_failed_archive_reply(matched_tasks)
+            or _build_direct_bitable_archive_reply(direct_archive_result)
+            or _downgrade_unconfirmed_archive_reply(result.content, matched_tasks)
+        )
+        archive_workflow_state = _reply_archive_workflow_state(
+            reply_content=reply_content,
+            matched_tasks=matched_tasks,
+            direct_archive_result=direct_archive_result,
+        )
+        current_assistant_workflow = {}
+        latest_messages_for_state = projects_router.project_chat_store.list_messages(
+            project_id,
+            username,
+            limit=20,
+            chat_session_id=chat_session_id,
+        )
+        for item in reversed(latest_messages_for_state):
+            if str(getattr(item, "id", "") or "").strip() != str(req.assistant_message_id or "").strip():
+                continue
+            current_assistant_workflow = assistant_workflow_from_context(getattr(item, "source_context", None))
+            break
+        next_source_context = _with_archive_workflow_state(source_context, archive_workflow_state)
+        next_source_context = with_assistant_workflow_state(
+            next_source_context,
+            evolve_assistant_workflow_state(
+                current_assistant_workflow,
+                reply_content=reply_content,
+                archive_workflow_state=archive_workflow_state,
+            ),
+        )
+        updated_record = projects_router.project_chat_store.update_message(
+            project_id,
+            username,
+            str(req.assistant_message_id or "").strip(),
+            content=reply_content,
+            source_context=next_source_context,
+        )
+        if updated_record is not None:
+            await projects_router.publish_project_chat_record_realtime(
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                message=updated_record,
+            )
+        await _reply_feishu_text(
+            connector,
+            message_id=message_id,
+            content=reply_content,
+            reply_in_thread=bool(thread_id),
+        )
+    finally:
+        _cleanup_downloaded_feishu_resources(downloaded_resources)

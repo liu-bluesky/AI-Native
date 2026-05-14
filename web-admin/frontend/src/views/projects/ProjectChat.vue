@@ -35,47 +35,30 @@
 
           <div class="chat-sidebar-project-card">
             <div class="chat-sidebar-card__label">项目</div>
-            <el-dropdown
-              :key="selectedProjectId || 'no-project-selected'"
-              class="chat-project-dropdown"
-              trigger="click"
-              placement="bottom-start"
-              @command="handleProjectCommand"
+            <el-select
+              v-model="selectedProjectId"
+              class="chat-project-select"
+              popper-class="chat-project-select-dropdown"
+              filterable
+              fit-input-width
+              placeholder="搜索或选择项目"
+              :disabled="!projects.length"
+              ref="projectSwitcherRef"
+              @change="handleProjectCommand"
             >
-              <button
-                type="button"
-                class="chat-project-switcher"
-                :class="{ 'is-empty': !selectedProjectId }"
-                ref="projectSwitcherRef"
+              <el-option
+                v-for="item in projects"
+                :key="item.id"
+                :label="item.name || item.id"
+                :value="item.id"
               >
-                <span class="chat-project-switcher__name">
-                  {{ currentProjectLabel }}
-                </span>
-              </button>
-              <template #dropdown>
-                <el-dropdown-menu
-                  class="chat-project-switcher-menu"
-                  :style="projectSwitcherMenuStyle"
-                >
-                  <el-dropdown-item v-if="!projects.length" disabled>
-                    <div class="chat-project-option chat-project-option--empty">
-                      <span class="chat-project-option__name">暂无项目</span>
-                    </div>
-                  </el-dropdown-item>
-                  <el-dropdown-item
-                    v-for="item in projects"
-                    :key="item.id"
-                    :command="item.id"
-                  >
-                    <div class="chat-project-option">
-                      <span class="chat-project-option__name">{{
-                        item.name
-                      }}</span>
-                    </div>
-                  </el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+                <div class="chat-project-option">
+                  <span class="chat-project-option__name">{{
+                    item.name || item.id
+                  }}</span>
+                </div>
+              </el-option>
+            </el-select>
           </div>
 
           <div class="chat-conversation-sidebar__actions">
@@ -95,7 +78,7 @@
                 chatLoading || creatingChatSession || !hasSelectedProject
               "
             >
-              群对话
+              机器人对话
             </el-button>
             <el-button
               text
@@ -139,7 +122,7 @@
                           {{ session.title }}
                         </span>
                         <el-button
-                          v-if="isGroupChatSession(session)"
+                          v-if="isBotConversationSession(session)"
                           text
                           size="small"
                           class="chat-session-chip__edit"
@@ -2049,13 +2032,13 @@
       <el-form-item label="对话别名">
         <el-input
           v-model="groupChatDraft.title"
-          placeholder="例如：售前需求群 / 设计评审群"
+          placeholder="例如：售前机器人 / 设计助手 / 客服机器人"
           maxlength="80"
           show-word-limit
           @keyup.enter="submitGroupChatDialog"
         />
         <div class="group-chat-dialog__hint">
-          留空时使用“平台群：群名称”，设置后会显示为最近对话标题。
+          留空时使用“平台机器人对话”，设置后会显示为最近对话标题。
         </div>
       </el-form-item>
       <el-form-item label="绑定机器人">
@@ -2082,21 +2065,21 @@
           {{ groupBotConnectorHint }}
         </div>
       </el-form-item>
-      <el-form-item label="群名称">
+      <el-form-item label="群名称（可选）">
         <el-input
           v-model="groupChatDraft.external_chat_name"
-          placeholder="例如：产品研发群 / 客户项目群"
+          placeholder="仅在你后续需要关联真实群消息时填写，例如：产品研发群 / 客户项目群"
           maxlength="80"
           show-word-limit
           @keyup.enter="submitGroupChatDialog"
         />
         <div class="group-chat-dialog__hint">
-          群稳定 ID 需要通过飞书 API 或真实消息事件补齐；当前状态：{{
-            groupChatEditingResolved ? "已解析" : "待解析 ID"
+          不填写也能直接创建机器人对话。只有需要同步群消息时，才需要后续解析稳定群 ID；当前状态：{{
+            groupChatEditingResolved ? "已解析" : "未绑定群"
           }}。
         </div>
       </el-form-item>
-      <el-form-item label="解析身份">
+      <el-form-item label="解析身份" v-if="groupChatDraft.external_chat_name">
         <el-select
           v-model="groupChatDraft.resolve_identity"
           class="full-width"
@@ -2125,10 +2108,10 @@
         <el-button
           v-if="groupChatEditingSessionId"
           :loading="groupChatResolving"
-          :disabled="groupChatCreating || groupChatEditingResolved"
+          :disabled="groupChatCreating || groupChatEditingResolved || !String(groupChatDraft.external_chat_name || '').trim()"
           @click="resolveGroupChatSourceId"
         >
-          {{ groupChatEditingResolved ? "已解析 ID" : "解析群 ID" }}
+          {{ groupChatEditingResolved ? "已解析 ID" : "绑定群 ID" }}
         </el-button>
         <el-button
           type="primary"
@@ -2136,7 +2119,7 @@
           :disabled="!canSubmitGroupChatDialog"
           @click="submitGroupChatDialog"
         >
-          {{ groupChatEditingSessionId ? "保存修改" : "创建群对话" }}
+          {{ groupChatEditingSessionId ? "保存修改" : "创建机器人对话" }}
         </el-button>
       </div>
     </template>
@@ -2597,9 +2580,9 @@
               <div class="settings-chat-main-card" ref="settingsMainCardRef">
                 <div class="settings-summary-card">
                   <div class="settings-summary-title">影响当前回答</div>
-                  <div class="settings-summary-text">
-                    这些设置会决定系统对话如何拼装上下文、选择模型与员工，并约束工具调用的上限与回退策略。
-                  </div>
+                <div class="settings-summary-text">
+                  这些设置会决定系统如何组织上下文、选择模型与执行员工，以及是否允许 AI 持续调用工具完成整轮任务。
+                </div>
                   <div class="settings-summary-pills">
                     <span class="settings-summary-pill">
                       项目上下文 ·
@@ -2625,6 +2608,15 @@
                       class="settings-form"
                       size="default"
                     >
+                      <section class="settings-parameter-section">
+                        <div class="settings-parameter-section__header">
+                          <div class="settings-parameter-section__title">
+                            执行对象
+                          </div>
+                          <p class="settings-parameter-section__desc">
+                            先决定这一轮交给谁处理，以及是否让系统自动组织多员工协作。
+                          </p>
+                        </div>
                       <el-form-item>
                         <template #label>
                           <span class="label-with-tooltip">执行员工</span>
@@ -2711,7 +2703,17 @@
                           <el-option label="手动模式" value="manual" />
                         </el-select>
                       </el-form-item>
+                      </section>
 
+                      <section class="settings-parameter-section">
+                        <div class="settings-parameter-section__header">
+                          <div class="settings-parameter-section__title">
+                            项目上下文
+                          </div>
+                          <p class="settings-parameter-section__desc">
+                            让系统知道真实工作区、入口规则文件以及这一轮的最高优先级提示词。
+                          </p>
+                        </div>
                       <el-form-item v-if="hasSelectedProject">
                         <template #label>
                           <span class="label-with-tooltip">
@@ -2848,7 +2850,17 @@
                           class="full-width"
                         />
                       </el-form-item>
+                      </section>
 
+                      <section class="settings-parameter-section">
+                        <div class="settings-parameter-section__header">
+                          <div class="settings-parameter-section__title">
+                            对话记忆
+                          </div>
+                          <p class="settings-parameter-section__desc">
+                            控制每次请求回带多少历史消息，避免上下文过短或过长。
+                          </p>
+                        </div>
                       <el-form-item>
                         <template #label>
                           <span class="label-with-tooltip">
@@ -2870,6 +2882,7 @@
                           class="full-width"
                         />
                       </el-form-item>
+                      </section>
                     </el-form>
                   </el-tab-pane>
 
@@ -3065,6 +3078,15 @@
                       class="settings-form"
                       size="default"
                     >
+                      <section class="settings-parameter-section">
+                        <div class="settings-parameter-section__header">
+                          <div class="settings-parameter-section__title">
+                            工具使用策略
+                          </div>
+                          <p class="settings-parameter-section__desc">
+                            决定系统是否可以自行调用工具完成任务，还是只返回自然语言结果。
+                          </p>
+                        </div>
                       <el-form-item>
                         <template #label>
                           <span class="label-with-tooltip">
@@ -3100,7 +3122,17 @@
                         </template>
                         <el-switch v-model="singleRoundAnswerOnly" />
                       </el-form-item>
+                      </section>
 
+                      <section class="settings-parameter-section">
+                        <div class="settings-parameter-section__header">
+                          <div class="settings-parameter-section__title">
+                            MCP 模块范围
+                          </div>
+                          <p class="settings-parameter-section__desc">
+                            这里控制本轮对话可见的项目工具，不会修改模块定义本身。
+                          </p>
+                        </div>
                       <el-form-item label="MCP 模块">
                         <el-tabs
                           v-model="activeMcpSource"
@@ -3239,146 +3271,168 @@
                           </el-tab-pane>
                         </el-tabs>
                       </el-form-item>
+                      </section>
 
-                      <div class="settings-section-title">执行限制</div>
+                      <section class="settings-parameter-section">
+                        <div class="settings-parameter-section__header">
+                          <div class="settings-parameter-section__title">
+                            执行护栏
+                          </div>
+                          <p class="settings-parameter-section__desc">
+                            这些参数只约束 AI 的循环与工具预算。`工具执行超时 = 0`
+                            表示不限制。
+                          </p>
+                        </div>
+                          <div class="settings-constraint-grid">
+                            <el-form-item>
+                              <template #label>
+                                <span class="label-with-tooltip">
+                                  工具执行超时
+                                  <el-tooltip
+                                    content="单个工具允许执行的最长时间（秒）。填 0 表示不限制。"
+                                    placement="top"
+                                  >
+                                    <el-icon class="label-icon"
+                                      ><InfoFilled
+                                    /></el-icon>
+                                  </el-tooltip>
+                                </span>
+                              </template>
+                              <div class="settings-field-stack">
+                                <el-input-number
+                                  v-model="projectChatSettings.tool_timeout_sec"
+                                  :min="0"
+                                  :max="600"
+                                  class="full-width"
+                                />
+                                <div class="settings-inline-helper">
+                                  0 = 不限制。适合长时间 MCP、CLI、终端或批处理任务。
+                                </div>
+                              </div>
+                            </el-form-item>
 
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            工具执行超时
-                            <el-tooltip
-                              content="单个工具允许执行的最长时间（秒），避免某个耗时任务卡死整个对话。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <el-input-number
-                          v-model="projectChatSettings.tool_timeout_sec"
-                          :min="1"
-                          :max="600"
-                          class="full-width"
-                        />
-                      </el-form-item>
+                            <el-form-item>
+                              <template #label>
+                                <span class="label-with-tooltip">
+                                  失败重试次数
+                                  <el-tooltip
+                                    content="工具执行失败时的自动重试次数。"
+                                    placement="top"
+                                  >
+                                    <el-icon class="label-icon"
+                                      ><InfoFilled
+                                    /></el-icon>
+                                  </el-tooltip>
+                                </span>
+                              </template>
+                              <el-input-number
+                                v-model="projectChatSettings.tool_retry_count"
+                                :min="0"
+                                :max="5"
+                                class="full-width"
+                              />
+                            </el-form-item>
 
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            失败重试次数
-                            <el-tooltip
-                              content="工具执行失败时的自动重试次数。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <el-input-number
-                          v-model="projectChatSettings.tool_retry_count"
-                          :min="0"
-                          :max="5"
-                          class="full-width"
-                        />
-                      </el-form-item>
+                            <el-form-item>
+                              <template #label>
+                                <span class="label-with-tooltip">
+                                  最大循环轮次
+                                  <el-tooltip
+                                    content="AI 与工具之间交互迭代的最大次数，防止陷入无限死循环。"
+                                    placement="top"
+                                  >
+                                    <el-icon class="label-icon"
+                                      ><InfoFilled
+                                    /></el-icon>
+                                  </el-tooltip>
+                                </span>
+                              </template>
+                              <el-input-number
+                                v-model="projectChatSettings.max_loop_rounds"
+                                :min="1"
+                                :max="60"
+                                class="full-width"
+                              />
+                            </el-form-item>
 
-                      <div class="settings-section-title">调度上限</div>
+                            <el-form-item>
+                              <template #label>
+                                <span class="label-with-tooltip">
+                                  最大工具轮次
+                                  <el-tooltip
+                                    content="一轮对话中，允许连续调用工具的最高批次数。"
+                                    placement="top"
+                                  >
+                                    <el-icon class="label-icon"
+                                      ><InfoFilled
+                                    /></el-icon>
+                                  </el-tooltip>
+                                </span>
+                              </template>
+                              <el-input-number
+                                v-model="projectChatSettings.max_tool_rounds"
+                                :min="1"
+                                :max="30"
+                                class="full-width"
+                              />
+                            </el-form-item>
 
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            最大循环轮次
-                            <el-tooltip
-                              content="AI 与工具之间交互迭代的最大次数，防止陷入无限死循环。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <el-input-number
-                          v-model="projectChatSettings.max_loop_rounds"
-                          :min="1"
-                          :max="60"
-                          class="full-width"
-                        />
-                      </el-form-item>
+                            <el-form-item>
+                              <template #label>
+                                <span class="label-with-tooltip">
+                                  单批工具调用数
+                                  <el-tooltip
+                                    content="每次向模型请求时，AI 并行发起工具调用的最大数量。"
+                                    placement="top"
+                                  >
+                                    <el-icon class="label-icon"
+                                      ><InfoFilled
+                                    /></el-icon>
+                                  </el-tooltip>
+                                </span>
+                              </template>
+                              <el-input-number
+                                v-model="
+                                  projectChatSettings.max_tool_calls_per_round
+                                "
+                                :min="1"
+                                :max="30"
+                                class="full-width"
+                              />
+                            </el-form-item>
 
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            最大工具轮次
-                            <el-tooltip
-                              content="一轮对话中，允许连续调用工具的最高批次数。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <el-input-number
-                          v-model="projectChatSettings.max_tool_rounds"
-                          :min="1"
-                          :max="30"
-                          class="full-width"
-                        />
-                      </el-form-item>
-
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            单批工具调用数
-                            <el-tooltip
-                              content="每次向模型请求时，AI 并行发起工具调用的最大数量。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <el-input-number
-                          v-model="projectChatSettings.max_tool_calls_per_round"
-                          :min="1"
-                          :max="30"
-                          class="full-width"
-                        />
-                      </el-form-item>
-
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            熔断后策略
-                            <el-tooltip
-                              content="当超过上述最大轮次限制（熔断）后，系统采取的动作：直接中断(Stop)或要求强制总结(Finalize)。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <el-select
-                          v-model="projectChatSettings.tool_budget_strategy"
-                          class="full-width"
-                        >
-                          <el-option
-                            label="强制收敛回答 (Finalize)"
-                            value="finalize"
-                          />
-                          <el-option label="直接停止 (Stop)" value="stop" />
-                        </el-select>
-                      </el-form-item>
+                            <el-form-item>
+                              <template #label>
+                                <span class="label-with-tooltip">
+                                  熔断后策略
+                                  <el-tooltip
+                                    content="当超过上述最大轮次限制（熔断）后，系统采取的动作：直接中断(Stop)或要求强制总结(Finalize)。"
+                                    placement="top"
+                                  >
+                                    <el-icon class="label-icon"
+                                      ><InfoFilled
+                                    /></el-icon>
+                                  </el-tooltip>
+                                </span>
+                              </template>
+                              <el-select
+                                v-model="
+                                  projectChatSettings.tool_budget_strategy
+                                "
+                                class="full-width"
+                              >
+                                <el-option
+                                  label="强制收敛回答 (Finalize)"
+                                  value="finalize"
+                                />
+                                <el-option
+                                  label="直接停止 (Stop)"
+                                  value="stop"
+                                />
+                              </el-select>
+                            </el-form-item>
+                          </div>
+                      </section>
                     </el-form>
                   </el-tab-pane>
                 </el-tabs>
@@ -4046,12 +4100,7 @@ const mcpDialogProjectLabel = computed(() => {
   return String(matched?.name || projectId).trim();
 });
 const chatSurface = computed(() => {
-  const queryValue = String(
-    route.query.surface || route.query.chat_surface || "",
-  )
-    .trim()
-    .toLowerCase();
-  return queryValue === "local-runner" ? "local-runner" : "main-chat";
+  return "main-chat";
 });
 const isLocalRunnerSurface = computed(
   () => chatSurface.value === "local-runner",
@@ -4725,7 +4774,7 @@ const currentChatSessionSourceLabel = computed(() =>
   formatChatSessionSourceLabel(currentChatSession.value),
 );
 const groupChatDialogTitle = computed(() =>
-  groupChatEditingSessionId.value ? "编辑群上下文对话" : "新建群上下文对话",
+  groupChatEditingSessionId.value ? "编辑机器人对话" : "新建机器人对话",
 );
 const groupChatEditingSession = computed(
   () =>
@@ -4748,7 +4797,7 @@ const groupChatDialogStatus = computed(() => {
       .trim()
       .toLowerCase();
     return {
-      title: status === "processing" ? "群通讯中" : "群链接状态",
+      title: status === "processing" ? "机器人通讯中" : "机器人对话状态",
       text: String(live.message || "").trim(),
       type: status === "processing" ? "success" : "info",
     };
@@ -4756,21 +4805,21 @@ const groupChatDialogStatus = computed(() => {
   const source = groupChatEditingSource.value;
   if (source.external_chat_id) {
     return {
-      title: "群链接状态",
-      text: "当前飞书群已链接工作群，群内 @ 机器人后会同步到这个 AI 对话。",
+      title: "机器人对话状态",
+      text: "当前机器人对话已额外绑定外部群上下文，群内 @ 机器人时可同步到这个 AI 对话。",
       type: "success",
     };
   }
   if (source.connector_id || groupChatDraft.value.connector_id) {
     return {
-      title: "群链接状态",
-      text: "当前群对话已选择机器人，等待解析群 ID 或收到真实群消息后建立稳定链接。",
-      type: "warning",
+      title: "机器人对话状态",
+      text: "当前将直接创建机器人对话，不再要求先绑定群。只有需要同步真实群消息时，才需要后续补群上下文。",
+      type: "success",
     };
   }
   return {
-    title: "群链接状态",
-    text: "先选择机器人并填写群名称，保存后可解析群 ID。",
+    title: "机器人对话状态",
+    text: "先选择平台和机器人即可创建机器人对话；群绑定不再是必填前置条件。",
     type: "info",
   };
 });
@@ -4823,7 +4872,7 @@ const groupBotConnectorOptions = computed(() => {
 const groupBotConnectorHint = computed(() => {
   const platformLabel = formatChatPlatformLabel(groupChatDraft.value.platform);
   if (groupBotConnectorOptions.value.length) {
-    return "选择后会写入群对话 source_context.connector_id；保存后可点击“解析群 ID”绑定真实飞书群。";
+    return "选择后会写入当前机器人对话的 source_context.connector_id；创建后即可直接开始对话。";
   }
   return `当前项目没有可用的${platformLabel}机器人，请先到第三方机器人接入页面添加并关联项目。`;
 });
@@ -4846,13 +4895,14 @@ const canSubmitGroupChatDialog = computed(
     Boolean(
       String(
         groupChatDraft.value.title ||
-          groupChatDraft.value.external_chat_name ||
+          groupBotConnectorOptions.value.find(
+            (item) => item.value === String(groupChatDraft.value.connector_id || "").trim(),
+          )?.name ||
           "",
       ).trim(),
     ) &&
     Boolean(String(groupChatDraft.value.platform || "").trim()) &&
     Boolean(String(groupChatDraft.value.connector_id || "").trim()) &&
-    Boolean(String(groupChatDraft.value.external_chat_name || "").trim()) &&
     !groupChatCreating.value,
 );
 const autoSaveStatusText = computed(() => {
@@ -5714,7 +5764,6 @@ const fileTypeOptions = computed(() =>
 let autoSaveTimer = null;
 let lastAutoSavedFingerprint = "";
 let highlightedMessageTimer = null;
-const projectSwitcherMenuWidth = ref(0);
 const CHAT_HISTORY_PAGE_SIZE = 120;
 const chatHistoryLoadedCount = ref(0);
 const chatHistoryLoadingMore = ref(false);
@@ -5746,26 +5795,6 @@ function normalizeStringList(values, max = 200) {
   }
   return items;
 }
-
-function syncProjectSwitcherMenuWidth() {
-  nextTick(() => {
-    const element = projectSwitcherRef.value;
-    const width = Number(element?.offsetWidth || 0);
-    if (width > 0) {
-      projectSwitcherMenuWidth.value = width;
-    }
-  });
-}
-
-const projectSwitcherMenuStyle = computed(() => {
-  const width = Number(projectSwitcherMenuWidth.value || 0);
-  if (!width) return {};
-  return {
-    width: `${width}px`,
-    minWidth: `${width}px`,
-    maxWidth: "calc(100vw - 24px)",
-  };
-});
 
 function chatSessionStorageKey(projectId) {
   const normalized = String(projectId || "").trim();
@@ -6242,6 +6271,14 @@ function normalizeChatSession(item) {
 function isGroupChatSession(session) {
   const source = normalizeChatSourceContext(session || {});
   return Boolean(
+    source.external_chat_name ||
+    source.external_chat_id,
+  );
+}
+
+function isBotConversationSession(session) {
+  const source = normalizeChatSourceContext(session || {});
+  return Boolean(
     source.platform ||
     source.connector_id ||
     source.external_chat_name ||
@@ -6285,9 +6322,13 @@ function formatChatPlatformLabel(platform) {
 
 function formatChatSessionSourceLabel(session) {
   const source = normalizeChatSourceContext(session || {});
+  const sourceType = String(source.source_type || "").trim().toLowerCase();
   const groupName = source.external_chat_name;
   const platformLabel = formatChatPlatformLabel(source.platform);
   if (!groupName && !platformLabel) return "";
+  if (sourceType === "manual_ai_chat" && platformLabel && !groupName) {
+    return `${platformLabel}机器人对话`;
+  }
   const suffix = source.external_chat_id ? "已解析" : "待解析 ID";
   if (groupName && platformLabel)
     return `${platformLabel}群 · ${groupName} · ${suffix}`;
@@ -6855,6 +6896,20 @@ function normalizeProjectChatSettings(raw) {
       40,
     ),
   };
+}
+
+function resolveNumericChatSetting(value, fallback, { min = 0, max = null } = {}) {
+  const parsed = Number(value);
+  const fallbackValue = Number(fallback);
+  const safeFallback = Number.isFinite(fallbackValue) ? fallbackValue : 0;
+  const base = Number.isFinite(parsed) ? parsed : safeFallback;
+  if (Number.isFinite(min) && base < min) {
+    return min;
+  }
+  if (Number.isFinite(max) && base > max) {
+    return max;
+  }
+  return base;
 }
 
 function normalizeChatSelectedEmployeeIds(
@@ -13149,7 +13204,7 @@ function resetGroupChatDraft() {
 
 function openGroupChatDialog(session = null) {
   if (chatLoading.value) {
-    ElMessage.warning("当前回答进行中，暂时不能新建群对话");
+    ElMessage.warning("当前回答进行中，暂时不能新建机器人对话");
     return;
   }
   if (!hasSelectedProject.value) {
@@ -13182,16 +13237,17 @@ async function submitGroupChatDialog() {
   const externalChatName = String(
     groupChatDraft.value.external_chat_name || "",
   ).trim();
-  if (!platform || !connectorId || !externalChatName) {
-    ElMessage.warning("请选择平台、绑定机器人并填写群名称");
+  if (!platform || !connectorId) {
+    ElMessage.warning("请选择平台并绑定机器人");
     return;
   }
   groupChatCreating.value = true;
   try {
     const wasEditing = Boolean(groupChatEditingSessionId.value);
+    const hasLinkedGroup = Boolean(externalChatName);
     const title = String(groupChatDraft.value.title || "").trim();
     const sourceContext = {
-      source_type: "group_message",
+      source_type: hasLinkedGroup ? "group_message" : "manual_ai_chat",
       platform,
       connector_id: connectorId,
       external_chat_name: externalChatName,
@@ -13200,27 +13256,37 @@ async function submitGroupChatDialog() {
           ? "user"
           : "bot",
     };
+    const connectorOption = groupBotConnectorOptions.value.find(
+      (item) => item.value === connectorId,
+    );
+    const defaultTitle = hasLinkedGroup
+      ? `${formatChatPlatformLabel(platform)}群：${externalChatName}`
+      : `${formatChatPlatformLabel(platform)}机器人对话${
+          connectorOption?.name ? ` · ${connectorOption.name}` : ""
+        }`;
     let session = null;
     if (groupChatEditingSessionId.value) {
       session = await updateChatSession(groupChatEditingSessionId.value, {
-        title:
-          title ||
-          `${formatChatPlatformLabel(platform)}群：${externalChatName}`,
+        title: title || defaultTitle,
         sourceContext,
       });
     } else {
       session = await createChatSession({
         switchTo: true,
-        title:
-          title ||
-          `${formatChatPlatformLabel(platform)}群：${externalChatName}`,
+        title: title || defaultTitle,
         sourceContext,
       });
     }
     if (!session) return;
     groupChatDialogVisible.value = false;
     resetGroupChatDraft();
-    ElMessage.success(wasEditing ? "群对话已更新" : "已创建群上下文对话");
+    ElMessage.success(
+      wasEditing
+        ? "机器人对话已更新"
+        : hasLinkedGroup
+          ? "已创建机器人对话，并保留群上下文"
+          : "已创建机器人对话",
+    );
   } finally {
     groupChatCreating.value = false;
   }
@@ -15032,17 +15098,20 @@ async function doSend() {
       images: base64Images,
       auto_use_tools: effectiveAutoUseTools,
       tool_priority: effectiveToolPriority,
-      max_tool_calls_per_round: Number(
-        projectChatSettings.value.max_tool_calls_per_round ||
-          CHAT_SETTINGS_DEFAULTS.max_tool_calls_per_round,
+      max_tool_calls_per_round: resolveNumericChatSetting(
+        projectChatSettings.value.max_tool_calls_per_round,
+        CHAT_SETTINGS_DEFAULTS.max_tool_calls_per_round,
+        { min: 1, max: 30 },
       ),
-      max_loop_rounds: Number(
-        projectChatSettings.value.max_loop_rounds ||
-          CHAT_SETTINGS_DEFAULTS.max_loop_rounds,
+      max_loop_rounds: resolveNumericChatSetting(
+        projectChatSettings.value.max_loop_rounds,
+        CHAT_SETTINGS_DEFAULTS.max_loop_rounds,
+        { min: 1, max: 60 },
       ),
-      max_tool_rounds: Number(
-        projectChatSettings.value.max_tool_rounds ||
-          CHAT_SETTINGS_DEFAULTS.max_tool_rounds,
+      max_tool_rounds: resolveNumericChatSetting(
+        projectChatSettings.value.max_tool_rounds,
+        CHAT_SETTINGS_DEFAULTS.max_tool_rounds,
+        { min: 1, max: 30 },
       ),
       repeated_tool_call_threshold: Number(
         projectChatSettings.value.repeated_tool_call_threshold ||
@@ -15056,17 +15125,20 @@ async function doSend() {
         projectChatSettings.value.tool_budget_strategy ||
           CHAT_SETTINGS_DEFAULTS.tool_budget_strategy,
       ),
-      history_limit: Number(
-        projectChatSettings.value.history_limit ||
-          CHAT_SETTINGS_DEFAULTS.history_limit,
+      history_limit: resolveNumericChatSetting(
+        projectChatSettings.value.history_limit,
+        CHAT_SETTINGS_DEFAULTS.history_limit,
+        { min: 1, max: 50 },
       ),
-      tool_timeout_sec: Number(
-        projectChatSettings.value.tool_timeout_sec ||
-          CHAT_SETTINGS_DEFAULTS.tool_timeout_sec,
+      tool_timeout_sec: resolveNumericChatSetting(
+        projectChatSettings.value.tool_timeout_sec,
+        CHAT_SETTINGS_DEFAULTS.tool_timeout_sec,
+        { min: 0, max: 600 },
       ),
-      tool_retry_count: Number(
-        projectChatSettings.value.tool_retry_count ||
-          CHAT_SETTINGS_DEFAULTS.tool_retry_count,
+      tool_retry_count: resolveNumericChatSetting(
+        projectChatSettings.value.tool_retry_count,
+        CHAT_SETTINGS_DEFAULTS.tool_retry_count,
+        { min: 0, max: 5 },
       ),
       answer_style: String(
         projectChatSettings.value.answer_style ||
@@ -15085,16 +15157,7 @@ async function doSend() {
       200,
     );
     client.send(requestPayload);
-    const PENDING_TIMEOUT_MS = 5 * 60 * 1000;
-    await Promise.race([
-      donePromise,
-      new Promise((_, reject) =>
-        setTimeout(
-          () => reject(new Error("请求超时，请重试")),
-          PENDING_TIMEOUT_MS,
-        ),
-      ),
-    ]);
+    await donePromise;
     if (!String(messages.value[assistantIndex]?.content || "").trim()) {
       messages.value[assistantIndex].content = "模型未返回内容。";
     }
@@ -15519,13 +15582,10 @@ onMounted(async () => {
     void startChatTour(false);
   }
   await applyStatisticsAnalysisDraftFromRoute();
-  syncProjectSwitcherMenuWidth();
-  window.addEventListener("resize", syncProjectSwitcherMenuWidth);
 });
 
 onUnmounted(() => {
   window.removeEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
-  window.removeEventListener("resize", syncProjectSwitcherMenuWidth);
   window.removeEventListener("focus", restoreComposerFocusAfterExternalOpen);
   document.removeEventListener(
     "visibilitychange",
@@ -16689,6 +16749,7 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: var(--settings-chat-sidebar-width) minmax(0, 1fr);
   gap: var(--settings-center-shell-gap);
+  min-height: 0;
 }
 
 .settings-chat-sidebar,
@@ -16839,6 +16900,55 @@ onUnmounted(() => {
   padding: 22px;
   border-radius: var(--settings-surface-radius);
   background: rgba(255, 255, 255, 0.6);
+  max-height: calc(100vh - 176px);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.settings-parameter-section {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.72));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.settings-parameter-section:last-child {
+  margin-bottom: 0;
+}
+
+.settings-parameter-section__header {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-parameter-section__title {
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 1.4;
+  font-weight: 700;
+}
+
+.settings-parameter-section__desc {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.settings-field-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-inline-helper {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .mcp-source-tabs :deep(.el-tabs__header) {
@@ -16908,6 +17018,47 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.settings-constraint-collapse {
+  margin-top: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.88);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.68);
+  overflow: hidden;
+}
+
+.settings-constraint-collapse :deep(.el-collapse-item__header) {
+  height: 46px;
+  padding: 0 16px;
+  border-bottom: 0;
+  background: rgba(248, 250, 252, 0.78);
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-constraint-collapse :deep(.el-collapse-item__wrap) {
+  border-bottom: 0;
+  background: transparent;
+}
+
+.settings-constraint-collapse :deep(.el-collapse-item__content) {
+  padding: 16px;
+}
+
+.settings-constraint-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-constraint-grid .el-form-item {
+  margin-bottom: 0;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: none;
 }
 
 .mcp-module-item {
@@ -20122,9 +20273,11 @@ onUnmounted(() => {
 .chat-messages {
   flex: 1 1 auto;
   min-height: 0;
+  max-height: calc(100vh - 310px);
   padding: 14px 20px 22px;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-gutter: stable;
   scroll-padding-bottom: 28px;
   scroll-behavior: smooth;
   background: transparent;
@@ -20311,9 +20464,13 @@ onUnmounted(() => {
   right: 16px;
   bottom: calc(100% + 10px);
   z-index: 12;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
+  max-height: min(360px, 52vh);
   padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.96);
@@ -20322,11 +20479,15 @@ onUnmounted(() => {
 }
 
 .chat-slash-menu__head {
+  position: sticky;
+  top: -12px;
+  z-index: 1;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  padding: 0 4px;
+  padding: 0 4px 8px;
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .chat-slash-menu__title {
@@ -20342,6 +20503,7 @@ onUnmounted(() => {
 
 .chat-slash-menu__item {
   display: grid;
+  flex: 0 0 auto;
   gap: 6px;
   width: 100%;
   padding: 12px 14px;
@@ -21653,6 +21815,36 @@ onUnmounted(() => {
   width: 100%;
 }
 
+.chat-sidebar-project-card :deep(.chat-project-select) {
+  display: block;
+  width: 100%;
+}
+
+.chat-project-select :deep(.el-select__wrapper) {
+  min-height: 48px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 14px 24px rgba(15, 23, 42, 0.04);
+}
+
+.chat-project-select :deep(.el-select__wrapper.is-focused),
+.chat-project-select :deep(.el-select__wrapper:hover) {
+  border-color: rgba(56, 189, 248, 0.22);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow:
+    0 14px 24px rgba(15, 23, 42, 0.04),
+    0 0 0 3px rgba(103, 232, 249, 0.1);
+}
+
+.chat-project-select :deep(.el-select__placeholder),
+.chat-project-select :deep(.el-select__selected-item) {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .chat-sidebar-card__label {
   margin: 0 0 10px;
   color: var(--page-text-soft, #7c8aa0);
@@ -21708,6 +21900,22 @@ onUnmounted(() => {
 
 :deep(.chat-project-switcher-menu .el-dropdown-menu__item) {
   max-width: 100%;
+}
+
+:deep(.chat-project-select-dropdown) {
+  max-width: calc(100vw - 24px);
+  border-radius: 16px;
+}
+
+:deep(.chat-project-select-dropdown .el-select-dropdown__wrap) {
+  max-height: 280px;
+}
+
+:deep(.chat-project-select-dropdown .el-select-dropdown__item) {
+  height: auto;
+  min-height: 42px;
+  line-height: 1.4;
+  padding: 0 12px;
 }
 
 .chat-project-option {

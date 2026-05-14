@@ -3587,37 +3587,28 @@ async function sendMessage(rawText, options = {}) {
   const requestId = createLocalMessageId();
   try {
     const client = await ensureWsClient();
-    const PENDING_TIMEOUT_MS = 5 * 60 * 1000;
-    await Promise.race([
-      new Promise((resolve, reject) => {
-        pendingRequests.set(requestId, {
-          requestId,
-          resolve,
-          reject,
-          sessionId,
-          assistantMessageId: assistantMessage.id,
-        });
-        syncPendingRequestUiState();
-        client.send({
-          request_id: requestId,
-          message_id: userMessage.id,
-          assistant_message_id: assistantMessage.id,
-          chat_session_id: sessionId,
-          chat_mode: "system",
-          chat_surface: "global-assistant",
-          message: text,
-          history,
-          route_path: normalizedRoutePath.value,
-          route_title: currentRouteLabel.value,
-        });
-      }),
-      new Promise((_, reject) =>
-        setTimeout(
-          () => reject(new Error("请求超时，请重试")),
-          PENDING_TIMEOUT_MS,
-        ),
-      ),
-    ]);
+    await new Promise((resolve, reject) => {
+      pendingRequests.set(requestId, {
+        requestId,
+        resolve,
+        reject,
+        sessionId,
+        assistantMessageId: assistantMessage.id,
+      });
+      syncPendingRequestUiState();
+      client.send({
+        request_id: requestId,
+        message_id: userMessage.id,
+        assistant_message_id: assistantMessage.id,
+        chat_session_id: sessionId,
+        chat_mode: "system",
+        chat_surface: "global-assistant",
+        message: text,
+        history,
+        route_path: normalizedRoutePath.value,
+        route_title: currentRouteLabel.value,
+      });
+    });
   } catch (err) {
     speechStreamingProgress.delete(assistantMessage.id);
     suppressedAutoPlayMessageIds.delete(assistantMessage.id);

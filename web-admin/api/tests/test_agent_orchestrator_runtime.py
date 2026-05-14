@@ -525,6 +525,126 @@ async def test_agent_orchestrator_retries_when_model_prematurely_defers_executio
 
 
 @pytest.mark.asyncio
+async def test_agent_orchestrator_retries_next_minimum_step_deferral(monkeypatch):
+    import asyncio
+    import json
+
+    from services.agent_orchestrator import AgentOrchestrator
+
+    class _FakeLLM:
+        def __init__(self):
+            self._stream_calls = 0
+
+        async def chat_completion_stream(self, **kwargs):
+            self._stream_calls += 1
+            if self._stream_calls == 1:
+                yield {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-create",
+                            "function": {
+                                "name": "project_host_run_command",
+                                "arguments": json.dumps(
+                                    {"command": "demo-cli create-record"},
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                    ]
+                }
+                return
+            if self._stream_calls == 2:
+                yield {
+                    "content": (
+                        "正文记录已创建，但附件还没有写入成功。\n"
+                        "下一步最小操作：执行 `demo-cli upload-attachment --record rec_1`。"
+                    )
+                }
+                return
+            if self._stream_calls == 3:
+                yield {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-upload",
+                            "function": {
+                                "name": "project_host_run_command",
+                                "arguments": json.dumps(
+                                    {"command": "demo-cli upload-attachment --record rec_1"},
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                    ]
+                }
+                return
+            yield {"content": "已创建记录并上传附件。"}
+
+        async def chat_completion(self, **kwargs):
+            return {"content": "fallback"}
+
+    class _FakeToolExecutor:
+        def __init__(self, *args, **kwargs):
+            self.calls = 0
+
+        async def execute_parallel(self, tool_calls, timeout=None):
+            self.calls += 1
+            command = json.loads(tool_calls[0]["function"]["arguments"])["command"]
+            return [
+                {
+                    "ok": True,
+                    "command": command,
+                    "cwd": "/tmp/project",
+                    "workspace_path": "/tmp/project",
+                    "exit_code": 0,
+                    "stdout": '{"ok":true}',
+                    "stderr": "",
+                }
+            ]
+
+    class _FakeConversationManager:
+        async def get_context(self, session_id, max_tokens):
+            return []
+
+        async def append_message(self, session_id, message):
+            return None
+
+    monkeypatch.setattr("services.agent_orchestrator.ToolExecutor", _FakeToolExecutor)
+
+    orchestrator = AgentOrchestrator(_FakeLLM(), _FakeConversationManager())
+    cancel_event = asyncio.Event()
+    events = []
+    async for item in orchestrator.run(
+        session_id="session-next-min-step",
+        user_message="帮我继续创建记录并上传附件",
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="glm-test",
+        temperature=0.1,
+        max_tokens=256,
+        project_id="proj-1",
+        employee_id="",
+        cancel_event=cancel_event,
+        username="tester",
+        chat_session_id="chat-next-min-step",
+    ):
+        events.append(item)
+
+    auto_continue_reasons = [
+        item["reason"]
+        for item in events
+        if item["type"] == "auto_continue"
+    ]
+    tool_results = [item for item in events if item["type"] == "tool_result"]
+    assert "premature_execution_deferral" in auto_continue_reasons
+    assert len(tool_results) == 2
+    assert "demo-cli create-record" in str(tool_results[0].get("command") or "")
+    assert "demo-cli upload-attachment" in str(tool_results[1].get("command") or "")
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.asyncio
 async def test_agent_orchestrator_auto_runs_followup_command_from_tool_hint(monkeypatch):
     import asyncio
     import json

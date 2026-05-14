@@ -8,9 +8,11 @@ import re
 import subprocess
 import threading
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -25,6 +27,7 @@ _ARCHIVE_WORKFLOW = "feishu_bot_auto_archive_to_doc_table"
 _ARCHIVE_ATTACHMENT_TEXT_COLUMN = "图片/附件"
 _ARCHIVE_ATTACHMENT_COLUMN = "图片附件"
 _CLI_FIELD_ID_CACHE: dict[tuple[str, str, str], str] = {}
+_CLI_FIELD_NAME_CACHE: dict[tuple[str, str, str], str] = {}
 _ARCHIVE_COLUMNS = (
     "归档时间",
     "类型",
@@ -51,6 +54,16 @@ _LEGACY_ARCHIVE_COLUMNS = (
     "原始消息",
 )
 _INTERNAL_ARCHIVE_FIELD_NAMES = frozenset((*_ARCHIVE_BITABLE_COLUMNS, *_LEGACY_ARCHIVE_COLUMNS))
+
+
+@dataclass(frozen=True)
+class _CliBitableFieldRef:
+    name: str
+    id: str = ""
+
+    @property
+    def id_or_name(self) -> str:
+        return self.id or self.name
 _STRUCTURED_FIELD_ALIASES = {
     "标题": "标题",
     "问题标题": "问题标题",
@@ -442,9 +455,10 @@ def _normalize_writer_type(action: dict[str, Any], category: str) -> str:
         or params.get("target_type")
         or params.get("storage_type")
         or params.get("archive_type")
-        or "docx"
+        or ("bitable" if category == "需求" else "docx")
     )
-    normalized = str(raw or "docx").strip().lower()
+    default_writer_type = "bitable" if category == "需求" else "docx"
+    normalized = str(raw or default_writer_type).strip().lower()
     aliases = {
         "doc": "docx",
         "document": "docx",
@@ -460,7 +474,7 @@ def _normalize_writer_type(action: dict[str, Any], category: str) -> str:
         "电子表格": "sheet",
         "文档": "docx",
     }
-    return aliases.get(normalized, "docx")
+    return aliases.get(normalized, default_writer_type)
 
 
 def _normalize_writer_mode(action: dict[str, Any], category: str) -> str:
@@ -748,6 +762,15 @@ def _structured_label_pattern() -> str:
     return "|".join(re.escape(label) for label in labels)
 
 
+def _normalize_structured_person_value(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"<at\b[^>]*>.*?</at>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"(?<!\S)@([^\s,，;；:：、]+)", r"\1", text)
+    return _compact_short_field(text)
+
+
 def _normalize_structured_archive_text(text: str) -> str:
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     label_pattern = _structured_label_pattern()
@@ -781,9 +804,10 @@ def _normalize_structured_archive_text(text: str) -> str:
 
 def _extract_structured_archive_fields(message_text: str) -> dict[str, str]:
     text = str(message_text or "")
-    marker = "【结构化内容】"
-    if marker in text:
-        text = text.split(marker, 1)[1]
+    for marker in ("【结构化内容】", "【待写入内容】", "【待追加记录】"):
+        if marker in text:
+            text = text.split(marker, 1)[1]
+            break
     text = _normalize_structured_archive_text(text)
     parsed: dict[str, str] = {}
     current_key = ""
@@ -803,6 +827,8 @@ def _extract_structured_archive_fields(message_text: str) -> dict[str, str]:
                 key = label
             if key:
                 value = str(match.group(3) or "").strip()
+                if key in {"负责人", "提出人", "参会人"}:
+                    value = _normalize_structured_person_value(value)
                 parsed[key] = value
                 current_key = key
                 continue
@@ -907,6 +933,62 @@ def _normalize_attachment_file_items(
     return normalized
 
 
+def append_direct_bitable_record_attachments(
+    *,
+    app_token: str,
+    table_id: str,
+    record_id: str,
+    attachment_files: list[Any] | None,
+    field_name: str = "",
+    document_title: str = "",
+    doc_url: str = "",
+) -> dict[str, Any]:
+    normalized_app_token = str(app_token or "").strip()
+    normalized_table_id = str(table_id or "").strip()
+    normalized_record_id = str(record_id or "").strip()
+    attachments = _normalize_attachment_file_items(attachment_files=attachment_files)
+    if not normalized_app_token or not normalized_table_id or not normalized_record_id:
+        return {
+            "status": "skipped",
+            "message": "缺少 Base、数据表或记录 ID，无法补写附件",
+            "uploaded_count": 0,
+        }
+    if not attachments:
+        return {
+            "status": "skipped",
+            "message": "没有找到可上传的本地附件文件",
+            "uploaded_count": 0,
+            "app_token": normalized_app_token,
+            "base_token": normalized_app_token,
+            "table_id": normalized_table_id,
+            "record_id": normalized_record_id,
+        }
+    attachment_field_name = str(field_name or "").strip() or _ARCHIVE_ATTACHMENT_COLUMN
+    uploaded_count = _upload_cli_bitable_attachments(
+        app_token=normalized_app_token,
+        table_id=normalized_table_id,
+        record_id=normalized_record_id,
+        attachments=attachments,
+        field_name=attachment_field_name,
+        field_id=attachment_field_name if attachment_field_name.startswith("fld") else "",
+    )
+    return {
+        "status": "updated" if uploaded_count else "skipped",
+        "message": "附件已写入" if uploaded_count else "附件上传未返回可写入 token",
+        "app_token": normalized_app_token,
+        "base_token": normalized_app_token,
+        "table_id": normalized_table_id,
+        "record_id": normalized_record_id,
+        "document_title": str(document_title or "").strip(),
+        "doc_id": normalized_app_token,
+        "document_id": normalized_app_token,
+        "doc_url": _with_bitable_table_url(doc_url, normalized_table_id),
+        "attachment_field_name": attachment_field_name,
+        "uploaded_count": uploaded_count,
+        "attachment_files": attachments,
+    }
+
+
 def _upload_cli_bitable_attachments(
     *,
     app_token: str,
@@ -914,24 +996,40 @@ def _upload_cli_bitable_attachments(
     record_id: str,
     attachments: list[dict[str, str]],
     field_name: str = _ARCHIVE_ATTACHMENT_COLUMN,
+    field_id: str = "",
 ) -> int:
-    uploaded = 0
-    field_identifier = _resolve_cli_bitable_field_identifier(
+    return _upload_cli_bitable_attachments_with_shortcut(
         app_token=app_token,
         table_id=table_id,
+        record_id=record_id,
+        attachments=attachments,
         field_name=field_name,
+        field_id=field_id,
     )
+
+
+def _upload_cli_bitable_attachments_with_shortcut(
+    *,
+    app_token: str,
+    table_id: str,
+    record_id: str,
+    attachments: list[dict[str, str]],
+    field_name: str,
+    field_id: str = "",
+) -> int:
+    uploaded_count = 0
     for attachment in attachments:
         path = str(attachment.get("path") or "").strip()
         if not path:
             continue
         file_path = Path(path)
-        relative_file = f"./{file_path.name}"
+        if not file_path.is_file():
+            continue
         command = [
             "base",
             "+record-upload-attachment",
             "--as",
-            "user",
+            "bot",
             "--base-token",
             app_token,
             "--table-id",
@@ -939,15 +1037,31 @@ def _upload_cli_bitable_attachments(
             "--record-id",
             record_id,
             "--field-id",
-            field_identifier,
+            str(field_id or field_name).strip() or field_name,
             "--file",
-            relative_file,
+            f"./{file_path.name}",
         ]
-        filename = str(attachment.get("filename") or "").strip()
-        _append_optional_arg(command, "--name", filename)
-        _run_lark_cli_json(command, timeout=180, cwd=file_path.parent)
-        uploaded += 1
-    return uploaded
+        display_name = Path(str(attachment.get("filename") or "")).name.strip()
+        if display_name:
+            command.extend(["--name", display_name])
+        try:
+            _run_lark_cli_json(command, timeout=180, cwd=file_path.parent)
+        except RuntimeError as exc:
+            logger.warning(
+                "lark-cli base attachment shortcut failed",
+                exc_info=True,
+                extra={"table_id": table_id, "record_id": record_id, "field_name": field_name},
+            )
+            raise
+        uploaded_count += 1
+    return uploaded_count
+
+
+def _is_feishu_attachment_token_unavailable_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return "attachment file_token is unavailable" in text or (
+        "file_token" in text and "unavailable" in text
+    )
 
 
 def _merge_attachment_text(existing: Any, attachments: list[str]) -> str:
@@ -964,6 +1078,131 @@ def _merge_attachment_text(existing: Any, attachments: list[str]) -> str:
         seen.add(item)
         result.append(item)
     return "\n".join(result)
+
+
+def _normalize_attachment_title(value: Any) -> str:
+    return " ".join(str(value or "").strip(" \t\r\n`'\"“”‘’").split())
+
+
+def extract_feishu_attachment_target_title(message_text: str) -> str:
+    text = str(message_text or "").strip()
+    if not text:
+        return ""
+    quote_chars = "`'\"“”‘’"
+    quoted = re.search(rf"标题\s*(?:是|为|叫|=|：|:)?\s*[{quote_chars}]\s*([^{quote_chars}]{{2,200}}?)\s*[{quote_chars}]", text)
+    if quoted:
+        return _normalize_attachment_title(quoted.group(1))
+    labelled = re.search(
+        r"标题\s*(?:是|为|叫|=|：|:)\s*(.{2,200}?)(?:\s*的(?:数据|记录|那条|这一条)|\s*里面|\s*中|$)",
+        text,
+    )
+    if labelled:
+        return _normalize_attachment_title(labelled.group(1))
+    return ""
+
+
+def _flatten_cli_text(value: Any) -> str:
+    if isinstance(value, dict):
+        preferred = value.get("text") or value.get("value") or value.get("name") or value.get("title")
+        if str(preferred or "").strip():
+            return str(preferred).strip()
+        flattened_items = [_flatten_cli_text(item) for item in value.values()]
+        return " ".join(item for item in flattened_items if item)
+    if isinstance(value, list):
+        flattened_items = [_flatten_cli_text(item) for item in value]
+        return " ".join(item for item in flattened_items if item)
+    return str(value or "").strip()
+
+
+def _iter_cli_record_candidates(payload: Any) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        record_id = str(payload.get("record_id") or payload.get("id") or "").strip()
+        if record_id.startswith("rec"):
+            found.append(payload)
+        for value in payload.values():
+            found.extend(_iter_cli_record_candidates(value))
+    elif isinstance(payload, list):
+        for item in payload:
+            found.extend(_iter_cli_record_candidates(item))
+    return found
+
+
+def _cli_record_candidate_title(record: dict[str, Any]) -> str:
+    fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    if "标题" in fields:
+        return _normalize_attachment_title(_flatten_cli_text(fields.get("标题")))
+    field_names = record.get("fields") if isinstance(record.get("fields"), list) else []
+    data_rows = record.get("data") if isinstance(record.get("data"), list) else []
+    if "标题" in field_names and data_rows:
+        title_index = field_names.index("标题")
+        row = data_rows[0] if isinstance(data_rows[0], list) else data_rows
+        if isinstance(row, list) and title_index < len(row):
+            return _normalize_attachment_title(_flatten_cli_text(row[title_index]))
+    return ""
+
+
+def _find_cli_bitable_record_id_by_title(*, app_token: str, table_id: str, title: str) -> str:
+    normalized_title = _normalize_attachment_title(title)
+    if not normalized_title:
+        return ""
+    payload = _run_lark_cli_json([
+        "base",
+        "+record-search",
+        "--as",
+        "user",
+        "--base-token",
+        app_token,
+        "--table-id",
+        table_id,
+        "--json",
+        json.dumps(
+            {
+                "keyword": normalized_title,
+                "search_fields": ["标题"],
+                "select_fields": ["标题"],
+                "limit": 10,
+            },
+            ensure_ascii=False,
+        ),
+    ])
+    candidates = _iter_cli_record_candidates(payload)
+    for item in candidates:
+        if _cli_record_candidate_title(item) == normalized_title:
+            return str(item.get("record_id") or item.get("id") or "").strip()
+    return ""
+
+
+def _extract_explicit_bitable_target_from_text(text: str) -> dict[str, str]:
+    value = str(text or "")
+    if not value.strip():
+        return {}
+    for match in re.finditer(r"https?://[^\s`]+", value):
+        raw_url = str(match.group(0) or "").strip().rstrip(").,;")
+        try:
+            parsed = urlparse(raw_url)
+        except Exception:
+            continue
+        if "feishu.cn" not in parsed.netloc.lower():
+            continue
+        path_match = re.search(r"/base/([A-Za-z0-9_-]+)", parsed.path)
+        if not path_match:
+            continue
+        base_token = str(path_match.group(1) or "").strip()
+        table_id = str((parse_qs(parsed.query).get("table") or [""])[0] or "").strip()
+        view_id = str((parse_qs(parsed.query).get("view") or [""])[0] or "").strip()
+        if not base_token:
+            continue
+        normalized_url = raw_url
+        if table_id:
+            normalized_url = _with_bitable_table_url(raw_url, table_id)
+        return {
+            "base_token": base_token,
+            "table_id": table_id,
+            "doc_url": normalized_url,
+            "view_id": view_id,
+        }
+    return {}
 
 
 def _build_archive_fields(
@@ -991,9 +1230,9 @@ def _build_archive_fields(
     )
     summary = _first_nonempty(*[structured.get(key) for key in _SUMMARY_KEYS], structured.get("影响范围"), raw_message)
     priority = _first_nonempty(_compact_short_field(structured.get("优先级")), "未标注")
-    assignee = _first_nonempty(_compact_short_field(structured.get("负责人")), "未指定")
+    assignee = _first_nonempty(_normalize_structured_person_value(structured.get("负责人")), "未指定")
     reporter = _first_nonempty(
-        _compact_short_field(structured.get("提出人")),
+        _normalize_structured_person_value(structured.get("提出人")),
         source_context.get("sender_name"),
         source_context.get("sender_id"),
         "未记录",
@@ -1176,6 +1415,47 @@ def _find_cli_table_id(payload: dict[str, Any]) -> str:
 
 
 def _find_cli_record_id(payload: dict[str, Any]) -> str:
+    def normalize_record_id(value: Any) -> str:
+        candidate = str(value or "").strip()
+        return candidate if candidate.startswith("rec") else ""
+
+    def find_record_id_list_value(value: Any) -> str:
+        if isinstance(value, list):
+            for item in value:
+                candidate = normalize_record_id(item)
+                if candidate:
+                    return candidate
+                candidate = find_record_id_list_value(item)
+                if candidate:
+                    return candidate
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                key_name = str(key or "").strip().lower()
+                if key_name in {
+                    "record_id",
+                    "recordid",
+                    "record_id_list",
+                    "recordidlist",
+                    "record_ids",
+                    "recordids",
+                    "id",
+                }:
+                    candidate = normalize_record_id(item)
+                    if candidate:
+                        return candidate
+                    candidate = find_record_id_list_value(item)
+                    if candidate:
+                        return candidate
+            for item in value.values():
+                candidate = find_record_id_list_value(item)
+                if candidate:
+                    return candidate
+        return ""
+
+    found_from_lists = find_record_id_list_value(payload)
+    if found_from_lists:
+        return found_from_lists
+
     found = _find_cli_path_value(
         payload,
         (
@@ -1277,6 +1557,8 @@ def _cache_cli_field_refs(app_token: str, table_id: str, field_refs: dict[str, d
         field_id = str(item.get("id") or "").strip()
         if name:
             _CLI_FIELD_ID_CACHE[(app, table, name)] = field_id or name
+        if field_id:
+            _CLI_FIELD_NAME_CACHE[(app, table, field_id)] = name
 
 
 def _find_cli_field_id(payload: dict[str, Any]) -> str:
@@ -1294,15 +1576,10 @@ def _find_cli_field_id(payload: dict[str, Any]) -> str:
 
 
 def _resolve_cli_bitable_field_identifier(*, app_token: str, table_id: str, field_name: str) -> str:
-    name = str(field_name or "").strip()
-    if not name:
-        return _ARCHIVE_ATTACHMENT_COLUMN
-    if name.startswith("fld"):
-        return name
-    cache_key = (str(app_token or "").strip(), str(table_id or "").strip(), name)
-    cached = _CLI_FIELD_ID_CACHE.get(cache_key, "")
-    if cached:
-        return cached
+    return _resolve_cli_bitable_field_ref(app_token=app_token, table_id=table_id, field_name=field_name).id_or_name
+
+
+def _load_cli_bitable_field_refs(app_token: str, table_id: str) -> None:
     payload = _run_lark_cli_json([
         "base",
         "+field-list",
@@ -1314,7 +1591,27 @@ def _resolve_cli_bitable_field_identifier(*, app_token: str, table_id: str, fiel
         table_id,
     ])
     _cache_cli_field_refs(app_token, table_id, _extract_cli_field_refs(payload))
-    return _CLI_FIELD_ID_CACHE.get(cache_key, "") or name
+
+
+def _resolve_cli_bitable_field_ref(*, app_token: str, table_id: str, field_name: str) -> _CliBitableFieldRef:
+    raw_name = str(field_name or "").strip()
+    name = raw_name or _ARCHIVE_ATTACHMENT_COLUMN
+    app = str(app_token or "").strip()
+    table = str(table_id or "").strip()
+    if name.startswith("fld"):
+        field_id = name
+        cached_name = _CLI_FIELD_NAME_CACHE.get((app, table, field_id), "")
+        if not cached_name and app and table:
+            _load_cli_bitable_field_refs(app_token, table_id)
+            cached_name = _CLI_FIELD_NAME_CACHE.get((app, table, field_id), "")
+        return _CliBitableFieldRef(name=cached_name or field_id, id=field_id)
+
+    cache_key = (app, table, name)
+    field_id = _CLI_FIELD_ID_CACHE.get(cache_key, "")
+    if not field_id and app and table:
+        _load_cli_bitable_field_refs(app_token, table_id)
+        field_id = _CLI_FIELD_ID_CACHE.get(cache_key, "")
+    return _CliBitableFieldRef(name=name, id=field_id if field_id != name else "")
 
 
 def _next_attachment_field_name(existing_fields: dict[str, str]) -> str:
@@ -1508,12 +1805,16 @@ def _write_cli_bitable_archive(
     category: str,
     fields: dict[str, Any],
     attachment_files: list[Any] | None = None,
+    target_app_token: str = "",
+    target_table_id: str = "",
+    target_doc_url: str = "",
+    target_document_title: str = "",
 ) -> tuple[dict[str, Any], bool]:
-    app_token = str(existing.get("app_token") or existing.get("base_token") or existing.get("doc_id") or "").strip()
-    table_id = str(existing.get("table_id") or "").strip()
+    app_token = str(target_app_token or existing.get("app_token") or existing.get("base_token") or existing.get("doc_id") or "").strip()
+    table_id = str(target_table_id or existing.get("table_id") or "").strip()
     had_existing_table = bool(app_token and table_id)
     attachment_field_name = str(existing.get("attachment_field_name") or _ARCHIVE_ATTACHMENT_COLUMN).strip() or _ARCHIVE_ATTACHMENT_COLUMN
-    doc_url = str(existing.get("doc_url") or "").strip()
+    doc_url = str(target_doc_url or existing.get("doc_url") or "").strip()
     archive_columns = _archive_bitable_columns_for_record(fields)
     created = False
     rebuild_reason = ""
@@ -1576,16 +1877,40 @@ def _write_cli_bitable_archive(
         json.dumps(record_fields, ensure_ascii=False),
     ])
     record_id = _find_cli_record_id(record_payload)
+    if not record_id:
+        title_value = str(fields.get("标题") or "").strip()
+        if title_value:
+            record_id = _find_cli_bitable_record_id_by_title(
+                app_token=app_token,
+                table_id=table_id,
+                title=title_value,
+            )
     attachments = _normalize_attachment_file_items(attachment_files=attachment_files)
     uploaded_count = 0
+    attachment_error = ""
     if record_id and attachments:
-        uploaded_count = _upload_cli_bitable_attachments(
+        attachment_field_ref = _resolve_cli_bitable_field_ref(
             app_token=app_token,
             table_id=table_id,
-            record_id=record_id,
-            attachments=attachments,
             field_name=attachment_field_name,
         )
+        try:
+            uploaded_count = _upload_cli_bitable_attachments(
+                app_token=app_token,
+                table_id=table_id,
+                record_id=record_id,
+                attachments=attachments,
+                field_name=attachment_field_ref.name,
+                field_id=attachment_field_ref.id,
+            )
+        except RuntimeError as exc:
+            if not _is_feishu_attachment_token_unavailable_error(exc):
+                raise
+            attachment_error = str(exc).strip()[:500]
+            logger.warning(
+                "feishu bitable record was saved but attachment upload token was unavailable",
+                extra={"table_id": table_id, "record_id": record_id, "attachment_count": len(attachments)},
+            )
     elif attachments:
         logger.warning(
             "skip feishu bitable attachment upload because record_id was not found",
@@ -1597,10 +1922,12 @@ def _write_cli_bitable_archive(
         "table_id": table_id,
         "record_id": record_id,
         "last_attachment_upload_count": uploaded_count,
+        "last_attachment_error": attachment_error,
         "attachment_field_name": attachment_field_name,
         "document_id": app_token,
         "doc_id": app_token,
         "doc_url": _with_bitable_table_url(doc_url or _find_cli_value(record_payload, ("doc_url", "url", "share_url", "record_url")), table_id),
+        "document_title": str(target_document_title or "").strip(),
         "recreated_from_deleted": bool(rebuild_reason),
         "recreate_reason": rebuild_reason[:500],
     }, created
@@ -1704,7 +2031,7 @@ def archive_feishu_task_message(
     if not connector_id:
         raise RuntimeError("缺少 connector_id，无法定位飞书机器人")
     if not external_chat_id:
-        raise RuntimeError("缺少 external_chat_id，无法绑定当前飞书群文档")
+        raise RuntimeError("缺少 external_chat_id，无法绑定当前飞书群归档表")
     connector = get_bot_connector(connector_id)
     if not connector or str(connector.get("platform") or "").strip().lower() != "feishu":
         raise RuntimeError(f"未找到飞书连接器：{connector_id}")
@@ -1770,6 +2097,39 @@ def archive_feishu_task_message(
         bot_name=bot_name,
         writer_type=writer_type,
     )
+    explicit_message_target = _extract_explicit_bitable_target_from_text(message_text)
+    explicit_target_title = str(context.get("archive_target_document_title") or "").strip()
+    if explicit_target_title:
+        document_title = explicit_target_title
+    params = action.get("params") if isinstance(action.get("params"), dict) else {}
+    folder_token = str(params.get("folder_token") or params.get("folderToken") or "").strip()
+    target_app_token = str(
+        explicit_message_target.get("base_token")
+        or
+        context.get("archive_target_base_token")
+        or context.get("archive_target_app_token")
+        or context.get("target_base_token")
+        or context.get("target_app_token")
+        or ""
+    ).strip()
+    target_table_id = str(
+        explicit_message_target.get("table_id")
+        or
+        context.get("archive_target_table_id")
+        or context.get("target_table_id")
+        or ""
+    ).strip()
+    target_doc_url = str(
+        explicit_message_target.get("doc_url")
+        or
+        context.get("archive_target_doc_url")
+        or context.get("archive_target_url")
+        or context.get("target_doc_url")
+        or ""
+    ).strip()
+    if target_app_token and target_table_id:
+        writer_type = "bitable"
+        writer_mode = str(context.get("archive_writer_mode") or writer_mode or "lark_cli_user").strip() or "lark_cli_user"
     archive_key = _archive_key(
         connector_id=connector_id,
         external_chat_id=external_chat_id,
@@ -1777,8 +2137,6 @@ def archive_feishu_task_message(
         writer_type=writer_type,
         writer_mode=writer_mode,
     )
-    params = action.get("params") if isinstance(action.get("params"), dict) else {}
-    folder_token = str(params.get("folder_token") or params.get("folderToken") or "").strip()
 
     token = ""
     if writer_mode == "bot_openapi":
@@ -1815,6 +2173,10 @@ def archive_feishu_task_message(
                     category=category,
                     fields=fields,
                     attachment_files=attachment_files,
+                    target_app_token=target_app_token,
+                    target_table_id=target_table_id,
+                    target_doc_url=target_doc_url,
+                    target_document_title=explicit_target_title,
                 )
             else:
                 resource, created = _write_cli_docx_archive(
@@ -1869,18 +2231,39 @@ def archive_feishu_task_message(
             "writer_type": writer_type,
             "writer_mode": writer_mode,
             "document_title": document_title,
+            "last_title": str(fields.get("标题") or "").strip(),
             "created_at": str(existing.get("created_at") or now),
             "updated_at": now,
             "last_external_message_id": str(context.get("external_message_id") or "").strip(),
             "last_attachment_text": str(fields.get("图片/附件") or "").strip(),
             "last_attachment_upload_count": int(resource.get("last_attachment_upload_count") or existing.get("last_attachment_upload_count") or 0),
+            "last_attachment_error": str(resource.get("last_attachment_error") or "").strip(),
             "last_action_id": str(action.get("id") or "").strip(),
         }
         archives[archive_key] = record
         _write_archive_state(state)
 
+    result_record_id = str(record.get("record_id") or "").strip()
+    result_document_id = str(record.get("document_id") or record.get("doc_id") or "").strip()
+    result_table_id = str(record.get("table_id") or "").strip()
+    unconfirmed_reasons: list[str] = []
+    if writer_type == "bitable":
+        if not result_record_id:
+            unconfirmed_reasons.append("未拿到记录 ID")
+        if target_app_token and result_document_id and result_document_id != target_app_token:
+            unconfirmed_reasons.append("返回的 Base 与指定目标不一致")
+        if target_table_id and result_table_id and result_table_id != target_table_id:
+            unconfirmed_reasons.append("返回的数据表与指定目标不一致")
+        if target_table_id and not result_table_id:
+            unconfirmed_reasons.append("未返回数据表 ID")
+    result_status = "saved" if not unconfirmed_reasons else "pending"
+    result_message = (
+        f"已保存到：{document_title}"
+        if not unconfirmed_reasons
+        else f"未确认写入成功：{document_title}（{'；'.join(unconfirmed_reasons)}）"
+    )
     return {
-        "status": "saved",
+        "status": result_status,
         "created": created,
         "archive_key": archive_key,
         "connector_id": connector_id,
@@ -1896,8 +2279,9 @@ def archive_feishu_task_message(
         "table_id": str(record.get("table_id") or ""),
         "record_id": str(record.get("record_id") or ""),
         "attachment_upload_count": int(record.get("last_attachment_upload_count") or 0),
+        "attachment_error": str(record.get("last_attachment_error") or ""),
         "attachment_field_name": str(record.get("attachment_field_name") or ""),
-        "message": f"已保存到：{document_title}",
+        "message": result_message,
         "client_token": f"archive-{uuid.uuid4().hex[:12]}",
     }
 
@@ -1907,10 +2291,13 @@ def append_feishu_archive_attachments(
     source_context: dict[str, Any] | None,
     attachment_urls: list[str] | None = None,
     attachment_files: list[Any] | None = None,
+    target_title: str = "",
+    message_text: str = "",
 ) -> dict[str, Any] | None:
     context = source_context if isinstance(source_context, dict) else {}
     connector_id = str(context.get("connector_id") or "").strip()
     external_chat_id = str(context.get("external_chat_id") or "").strip()
+    normalized_target_title = _normalize_attachment_title(target_title) or extract_feishu_attachment_target_title(message_text)
     attachment_text_items = [str(item or "").strip() for item in (attachment_urls or []) if str(item or "").strip()]
     local_files = _normalize_attachment_file_items(attachment_files=attachment_files, source_context=context)
     if not connector_id or not external_chat_id or (not attachment_text_items and not local_files):
@@ -1930,11 +2317,25 @@ def append_feishu_archive_attachments(
             and str(item.get("table_id") or "").strip()
             and str(item.get("app_token") or item.get("base_token") or item.get("doc_id") or "").strip()
         ]
+        state_title_matched = False
+        if normalized_target_title:
+            title_matches = [
+                (key, item)
+                for key, item in candidates
+                if _normalize_attachment_title(item.get("last_title") or item.get("record_title") or item.get("title")) == normalized_target_title
+            ]
+            if title_matches:
+                candidates = title_matches
+                state_title_matched = True
         candidates.sort(key=lambda pair: str(pair[1].get("updated_at") or pair[1].get("created_at") or ""), reverse=True)
         if not candidates:
             return {
                 "status": "skipped",
-                "message": "未找到可补写图片链接的最近飞书 Base 归档记录",
+                "message": (
+                    f"未找到标题为“{normalized_target_title}”的飞书 Base 归档记录"
+                    if normalized_target_title
+                    else "未找到可补写图片链接的最近飞书 Base 归档记录"
+                ),
             }
 
         archive_key, record = candidates[0]
@@ -1943,6 +2344,26 @@ def append_feishu_archive_attachments(
         record_id = str(record.get("record_id") or "").strip()
         writer_mode = str(record.get("writer_mode") or "").strip()
         attachment_field_name = str(record.get("attachment_field_name") or _ARCHIVE_ATTACHMENT_COLUMN).strip() or _ARCHIVE_ATTACHMENT_COLUMN
+        if normalized_target_title and writer_mode == "lark_cli_user":
+            found_record_id = _find_cli_bitable_record_id_by_title(
+                app_token=app_token,
+                table_id=table_id,
+                title=normalized_target_title,
+            )
+            if found_record_id:
+                record_id = found_record_id
+            elif not state_title_matched:
+                return {
+                    "status": "skipped",
+                    "message": f"未找到标题为“{normalized_target_title}”的飞书 Base 归档记录，未追加图片",
+                    "writer_mode": writer_mode,
+                }
+        elif normalized_target_title and not state_title_matched:
+            return {
+                "status": "skipped",
+                "message": f"当前写入模式无法按标题定位“{normalized_target_title}”，未追加图片",
+                "writer_mode": writer_mode,
+            }
         attachment_text = _merge_attachment_text(
             record.get("last_attachment_text"),
             attachment_text_items or [item.get("url") or item.get("filename") or item.get("path") or "" for item in local_files],
@@ -1957,13 +2378,20 @@ def append_feishu_archive_attachments(
                     table_id=table_id,
                     preferred_attachment_field_name=attachment_field_name,
                 )
+                attachment_field_ref = _resolve_cli_bitable_field_ref(
+                    app_token=app_token,
+                    table_id=table_id,
+                    field_name=attachment_field_name,
+                )
                 uploaded_count = _upload_cli_bitable_attachments(
                     app_token=app_token,
                     table_id=table_id,
                     record_id=record_id,
                     attachments=local_files,
-                    field_name=attachment_field_name,
+                    field_name=attachment_field_ref.name,
+                    field_id=attachment_field_ref.id,
                 )
+                attachment_field_name = attachment_field_ref.name
             else:
                 return {
                     "status": "skipped",
@@ -1999,6 +2427,8 @@ def append_feishu_archive_attachments(
         record["last_attachment_text"] = attachment_text
         record["last_attachment_upload_count"] = int(record.get("last_attachment_upload_count") or 0) + uploaded_count
         record["attachment_field_name"] = attachment_field_name
+        if normalized_target_title:
+            record["last_attachment_target_title"] = normalized_target_title
         record["updated_at"] = now
         record["last_external_message_id"] = str(context.get("external_message_id") or record.get("last_external_message_id") or "").strip()
         archives[str(archive_key)] = record

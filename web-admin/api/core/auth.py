@@ -6,7 +6,7 @@ import time
 import jwt
 import os
 
-SECRET_KEY = os.environ.get("JWT_SECRET", "ai-employee-factory-dev-secret")
+SECRET_KEY = os.environ.get("JWT_SECRET", "ai-employee-factory-dev-secret-v2")
 ALGORITHM = "HS256"
 EXPIRE_SECONDS = 3600 * 8  # 8 小时
 

@@ -38,7 +38,7 @@ class ToolExecutor:
                 base_timeout = int(timeout_sec)
             except (TypeError, ValueError):
                 pass
-        self._timeout = max(1, min(base_timeout, 600))
+        self._timeout = max(0, min(base_timeout, 600))
         try:
             retries = int(max_retries)
         except (TypeError, ValueError):
@@ -59,11 +59,11 @@ class ToolExecutor:
         self._global_assistant_bridge_handler = global_assistant_bridge_handler
 
     async def execute_parallel(self, tool_calls: list[dict], timeout: int | None = None) -> list[dict]:
-        timeout = timeout or self._timeout
+        timeout = self._timeout if timeout is None else timeout
         tasks = [self._execute_with_timeout(tc, timeout) for tc in tool_calls]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _execute_with_timeout(self, tool_call: dict, timeout: int) -> dict:
+    async def _execute_with_timeout(self, tool_call: dict, timeout: int | None) -> dict:
         tool_name = tool_call["function"]["name"]
         args_str = tool_call["function"]["arguments"]
         try:
@@ -78,10 +78,13 @@ class ToolExecutor:
         while True:
             try:
                 effective_timeout = self._resolve_tool_timeout(tool_name, args, timeout)
-                result = await asyncio.wait_for(
-                    self._execute_tool(tool_name, args),
-                    timeout=effective_timeout
-                )
+                if effective_timeout is None or effective_timeout <= 0:
+                    result = await self._execute_tool(tool_name, args)
+                else:
+                    result = await asyncio.wait_for(
+                        self._execute_tool(tool_name, args),
+                        timeout=effective_timeout
+                    )
                 return result
             except asyncio.TimeoutError:
                 if attempt >= self._max_retries:
@@ -193,19 +196,25 @@ class ToolExecutor:
             workspace_path=self._host_workspace_path,
             command=str(args.get("command") or "").strip(),
             cwd=str(args.get("cwd") or "").strip(),
-            timeout_sec=int(args.get("timeout_sec", 20) or 20),
+            timeout_sec=int(args.get("timeout_sec", 20)),
             max_output_chars=int(args.get("max_output_chars", 12000) or 12000),
         )
 
-    def _resolve_tool_timeout(self, tool_name: str, args: dict, default_timeout: int) -> int:
-        safe_timeout = max(1, min(int(default_timeout or self._timeout or 60), 600))
+    def _resolve_tool_timeout(self, tool_name: str, args: dict, default_timeout: int | None) -> int | None:
+        try:
+            resolved_default = int(self._timeout if default_timeout is None else default_timeout)
+        except (TypeError, ValueError):
+            resolved_default = int(self._timeout or 0)
+        safe_timeout = max(0, min(resolved_default, 600))
         normalized_tool_name = str(tool_name or "").strip()
         if normalized_tool_name != "project_host_run_command":
-            return safe_timeout
+            return safe_timeout if safe_timeout > 0 else None
         try:
             requested_timeout = int(args.get("timeout_sec", 0) or 0)
         except (TypeError, ValueError):
             requested_timeout = 0
         if requested_timeout <= 0:
-            return safe_timeout
+            return safe_timeout if safe_timeout > 0 else None
+        if safe_timeout <= 0:
+            return min(requested_timeout + 5, 600)
         return max(safe_timeout, min(requested_timeout + 5, 600))

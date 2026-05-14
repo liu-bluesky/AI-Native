@@ -32,6 +32,7 @@ def build_chat_runtime_context(
     runtime_snapshot: dict[str, Any] | None = None,
     local_connector: Any | None = None,
     local_connector_sandbox_mode: str = "workspace-write",
+    capability_routing: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> ChatRuntimeContext:
     return ChatRuntimeContext(
@@ -62,5 +63,6 @@ def build_chat_runtime_context(
         local_connector=local_connector,
         local_connector_sandbox_mode=str(local_connector_sandbox_mode or "workspace-write").strip()
         or "workspace-write",
+        capability_routing=dict(capability_routing or {}),
         metadata=dict(metadata or {}),
     )

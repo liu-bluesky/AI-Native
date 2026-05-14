@@ -105,7 +105,7 @@ def execute_skill_proxy(
         timeout = int(timeout_sec)
     except (TypeError, ValueError):
         timeout = 30
-    timeout = max(1, min(timeout, 600))
+    timeout = max(0, min(timeout, 600))
     cmd = _build_command(spec, script_path=script_path)
     if cmd is None:
         runtime = str(spec.get("runtime") or spec.get("script_type") or "").strip() or "unknown"
@@ -122,7 +122,7 @@ def execute_skill_proxy(
             cwd=cwd,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=timeout if timeout > 0 else None,
             check=False,
         )
     except FileNotFoundError as exc:

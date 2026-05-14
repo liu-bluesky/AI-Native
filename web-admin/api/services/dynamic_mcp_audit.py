@@ -876,6 +876,8 @@ def create_tracking_send(
 ):
     response_body_buffer = bytearray()
     response_body_captured = False
+    response_started = False
+    response_completed = False
 
     def _parse_rpc_response_payloads(body: bytes) -> list[dict[str, Any]]:
         text = body.decode(errors="ignore")
@@ -943,7 +945,17 @@ def create_tracking_send(
         }
 
     async def tracking_send(message):
-        nonlocal response_body_captured
+        nonlocal response_body_captured, response_started, response_completed
+        message_type = str(message.get("type") or "")
+        if message_type == "http.response.start":
+            if response_started or response_completed:
+                return
+            response_started = True
+        elif message_type == "http.response.body":
+            if response_completed:
+                return
+            if not message.get("more_body", False):
+                response_completed = True
         if is_sse and method == "GET" and message.get("type") == "http.response.body":
             body = message.get("body", b"")
             if b"endpoint" in body and b"session_id=" in body:
