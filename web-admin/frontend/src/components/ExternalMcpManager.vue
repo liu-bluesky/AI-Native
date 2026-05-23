@@ -43,6 +43,7 @@
     v-model="showDialog"
     :title="dialogTitle"
     width="520px"
+    append-to-body
     destroy-on-close
   >
     <el-form label-position="top" size="default">

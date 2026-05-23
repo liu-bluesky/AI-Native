@@ -59,6 +59,18 @@ def _assistant_source_context_with_archive_workflow(
     return context
 
 
+def _extract_stream_error_message(payload: dict[str, Any]) -> str:
+    for key in ("message", "error_message", "detail", "guard_message", "error"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            nested = _extract_stream_error_message(value)
+            if nested:
+                return nested
+    return "未知错误"
+
+
 async def run_project_chat_once(
     *,
     project_id: str,
@@ -94,6 +106,14 @@ async def run_project_chat_once(
         username,
         chat_session_id,
         req.source_context,
+    )
+    request_kind = projects_router._resolve_project_chat_request_kind(
+        req.request_kind,
+        source_context=source_context,
+    )
+    is_interaction_continuation = projects_router._is_project_chat_interaction_continuation(
+        request_kind,
+        source_context=source_context,
     )
     previous_messages = projects_router.project_chat_store.list_messages(
         project_id,
@@ -294,7 +314,12 @@ async def run_project_chat_once(
         local_connector=None,
         local_connector_sandbox_mode="workspace-write",
         capability_routing=capability_routing,
-        metadata={"assistant_workflow": assistant_workflow_state},
+        metadata={
+            "assistant_workflow": assistant_workflow_state,
+            "request_kind": request_kind,
+            "interaction_continuation": is_interaction_continuation,
+            "continuation_token": str(getattr(req, "continuation_token", "") or "").strip(),
+        },
     )
 
     llm_service_runtime = projects_router._resolve_chat_llm_service_runtime(
@@ -354,7 +379,7 @@ async def run_project_chat_once(
                 final_answer = str(outgoing.get("content") or "")
                 last_done_payload = dict(outgoing)
             if event_type == "error":
-                stream_error = str(outgoing.get("message") or "未知错误")
+                stream_error = _extract_stream_error_message(outgoing)
 
         if stream_error:
             content = f"对话失败：{stream_error}"
@@ -415,6 +440,15 @@ async def run_project_chat_once(
             reply_content=persisted_answer,
             archive_workflow_state=archive_workflow_state,
         )
+        assistant_source_context = _assistant_source_context_with_archive_workflow(
+            source_context,
+            persisted_answer,
+            assistant_workflow_state,
+        )
+        assistant_source_context = projects_router._with_project_chat_pending_interaction(
+            assistant_source_context,
+            projects_router._build_project_chat_pending_interaction(last_done_payload or {}),
+        )
         assistant_record = projects_router._append_chat_record(
             project_id=project_id,
             username=username,
@@ -424,11 +458,7 @@ async def run_project_chat_once(
             chat_session_id=chat_session_id,
             images=images,
             videos=videos,
-            source_context=_assistant_source_context_with_archive_workflow(
-                source_context,
-                persisted_answer,
-                assistant_workflow_state,
-            ),
+            source_context=assistant_source_context,
         )
         if publish_realtime:
             await projects_router.publish_project_chat_record_realtime(

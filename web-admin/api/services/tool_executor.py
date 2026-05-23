@@ -1,8 +1,66 @@
 from __future__ import annotations
 import asyncio
 import json
+import re
 from typing import Any
 from core.config import get_settings
+
+
+_LARK_AUTH_LOGIN_COMMAND_PATTERN = re.compile(
+    r"(^|[\s;&|])(lark-cli)\s+auth\s+login(?:[\s;&|]|$)",
+    re.IGNORECASE,
+)
+_LARK_AUTH_LOGIN_ALIAS_PATTERN = re.compile(
+    r"^(?:lark-cli\s+)?(?:auth\s+)?(?:login|登录)(?:\s+([\s\S]*))?$",
+    re.IGNORECASE,
+)
+_LARK_AUTH_DOMAIN_ALIAS_NAMES = (
+    "approval",
+    "attendance",
+    "base",
+    "calendar",
+    "contact",
+    "docs",
+    "drive",
+    "im",
+    "mail",
+    "minutes",
+    "okr",
+    "sheets",
+    "task",
+    "vc",
+    "wiki",
+)
+_LARK_AUTH_DOMAIN_ALIAS_PATTERN = re.compile(
+    rf"^(?:{'|'.join(_LARK_AUTH_DOMAIN_ALIAS_NAMES)})(?:\s*,\s*(?:{'|'.join(_LARK_AUTH_DOMAIN_ALIAS_NAMES)}))*$",
+    re.IGNORECASE,
+)
+_TASK_TREE_TOOL_NAMES = {
+    "get_current_task_tree",
+    "update_task_node_status",
+    "complete_task_node_with_verification",
+}
+
+
+def _normalize_lark_auth_login_command(command: str) -> str:
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        return ""
+    if _LARK_AUTH_LOGIN_COMMAND_PATTERN.search(normalized_command):
+        return normalized_command
+    match = _LARK_AUTH_LOGIN_ALIAS_PATTERN.match(normalized_command)
+    if not match:
+        return ""
+    suffix = str(match.group(1) or "").strip()
+    if not suffix or suffix.lower() in {"recommend", "推荐"}:
+        return "lark-cli auth login --recommend"
+    if suffix.startswith("--"):
+        return f"lark-cli auth login {suffix}"
+    if _LARK_AUTH_DOMAIN_ALIAS_PATTERN.fullmatch(suffix):
+        compact_suffix = re.sub(r"\s+", "", suffix)
+        return f"lark-cli auth login --domain {compact_suffix}"
+    return "lark-cli auth login --recommend"
+
 
 class ToolExecutor:
     def __init__(
@@ -70,6 +128,7 @@ class ToolExecutor:
             args = json.loads(args_str)
         except json.JSONDecodeError:
             return {"error": f"Invalid JSON arguments: {args_str}"}
+        args = self._inject_runtime_context_args(tool_name, args)
 
         if self._allowed_tool_names and str(tool_name or "").strip() not in self._allowed_tool_names:
             return {"error": f"Tool {tool_name} is not allowed in current chat settings"}
@@ -93,6 +152,16 @@ class ToolExecutor:
                 if attempt >= self._max_retries:
                     return {"error": f"Tool {tool_name} failed: {str(e)}"}
             attempt += 1
+
+    def _inject_runtime_context_args(self, tool_name: str, args: Any) -> dict:
+        payload = dict(args or {}) if isinstance(args, dict) else {}
+        normalized_tool_name = str(tool_name or "").strip()
+        if normalized_tool_name in _TASK_TREE_TOOL_NAMES:
+            if self._chat_session_id and not str(payload.get("chat_session_id") or "").strip():
+                payload["chat_session_id"] = self._chat_session_id
+            if self._username and not str(payload.get("username") or "").strip():
+                payload["username"] = self._username
+        return payload
 
     async def _execute_tool(self, tool_name: str, args: dict) -> dict:
         from services.global_assistant_service import (
@@ -188,17 +257,81 @@ class ToolExecutor:
         )
 
     async def _execute_project_host_command(self, args: dict) -> dict:
+        command = str(args.get("command") or "").strip()
+        routed_login_result = await self._maybe_execute_cli_auth_operation_task(
+            command=command,
+            timeout_sec=int(args.get("timeout_sec", 20)),
+        )
+        if routed_login_result is not None:
+            return routed_login_result
+
         from services.project_host_command_service import run_project_host_command
         from starlette.concurrency import run_in_threadpool
 
         return await run_in_threadpool(
             run_project_host_command,
             workspace_path=self._host_workspace_path,
-            command=str(args.get("command") or "").strip(),
+            command=command,
+            owner_username=self._username,
             cwd=str(args.get("cwd") or "").strip(),
             timeout_sec=int(args.get("timeout_sec", 20)),
             max_output_chars=int(args.get("max_output_chars", 12000) or 12000),
         )
+
+    async def _maybe_execute_cli_auth_operation_task(
+        self,
+        *,
+        command: str,
+        timeout_sec: int,
+    ) -> dict | None:
+        normalized_command = _normalize_lark_auth_login_command(command)
+        if not normalized_command:
+            return None
+        from services.operation_wait_task_service import create_cli_plugin_auth_operation_task
+        from starlette.concurrency import run_in_threadpool
+
+        task = await run_in_threadpool(
+            create_cli_plugin_auth_operation_task,
+            "feishu-cli",
+            username=self._username,
+            login_command=normalized_command,
+            metadata={
+                "source": "project_chat",
+                "project_id": self._project_id,
+                "chat_session_id": self._chat_session_id,
+                "employee_id": self._employee_id,
+            },
+            timeout_sec=max(15, min(int(timeout_sec or 120), 600)),
+        )
+        execution = dict(task.get("execution") or {})
+        authorization_url = str(execution.get("authorization_url") or "").strip()
+        status = str(task.get("status") or "").strip().lower()
+        waiting_user_action = status == "waiting_user_action"
+        execution_ok = bool(task.get("execution_ok", task.get("ok")))
+        return {
+            "ok": execution_ok,
+            "execution_ok": execution_ok,
+            "command": normalized_command,
+            "source": "operation_wait_task",
+            "operation_kind": str(task.get("operation_kind") or "auth_login").strip(),
+            "operation_label": str(task.get("operation_label") or "网页登录授权").strip(),
+            "interactive": True,
+            "requires_user_action": waiting_user_action,
+            "waiting_user_action": waiting_user_action,
+            "action_type": "open_url" if waiting_user_action else "none",
+            "authorization_url": authorization_url,
+            "status": status or "queued",
+            "status_label": str(task.get("status_label") or "").strip(),
+            "next_step": str(task.get("status_reason") or execution.get("next_step") or "").strip(),
+            "task_id": str(task.get("task_id") or "").strip(),
+            "operation_task": task,
+            "login_task": task,
+            "stdout": str(task.get("stdout") or execution.get("stdout") or "").strip(),
+            "stderr": str(task.get("stderr") or execution.get("stderr") or "").strip(),
+            "exit_code": task.get("exit_code"),
+            "timed_out": status == "timeout",
+            "workspace_path": self._host_workspace_path,
+        }
 
     def _resolve_tool_timeout(self, tool_name: str, args: dict, default_timeout: int | None) -> int | None:
         try:

@@ -1,0 +1,174 @@
+{
+    "id":  "id_3bnx6bevu1koex",
+    "isGroup":  false,
+    "attr":  {
+                 "x":  0,
+                 "y":  0,
+                 "w":  500,
+                 "h":  300,
+                 "offsetX":  0,
+                 "offsetY":  0,
+                 "zIndex":  -1
+             },
+    "styles":  {
+                   "filterShow":  false,
+                   "hueRotate":  0,
+                   "saturate":  1,
+                   "contrast":  1,
+                   "brightness":  1,
+                   "opacity":  1,
+                   "rotateZ":  0,
+                   "rotateX":  0,
+                   "rotateY":  0,
+                   "skewX":  0,
+                   "skewY":  0,
+                   "blendMode":  "normal",
+                   "animations":  [
+
+                                  ]
+               },
+    "preview":  {
+                    "overFlowHidden":  false
+                },
+    "status":  {
+                   "lock":  false,
+                   "hide":  false
+               },
+    "request":  {
+                    "requestDataType":  0,
+                    "requestHttpType":  "get",
+                    "requestUrl":  "",
+                    "requestInterval":  null,
+                    "requestIntervalUnit":  "second",
+                    "requestContentType":  0,
+                    "requestParamsBodyType":  "none",
+                    "requestSQLContent":  {
+                                              "sql":  "select * from  where"
+                                          },
+                    "requestParams":  {
+                                          "Body":  {
+                                                       "form-data":  {
+
+                                                                     },
+                                                       "x-www-form-urlencoded":  {
+
+                                                                                 },
+                                                       "json":  "",
+                                                       "xml":  ""
+                                                   },
+                                          "Header":  {
+
+                                                     },
+                                          "Params":  {
+
+                                                     }
+                                      }
+                },
+    "filter":  null,
+    "events":  {
+                   "baseEvent":  {
+                                     "click":  null,
+                                     "dblclick":  null,
+                                     "mouseenter":  null,
+                                     "mouseleave":  null
+                                 },
+                   "advancedEvents":  {
+                                          "vnodeMounted":  null,
+                                          "vnodeBeforeMount":  null
+                                      },
+                   "interactEvents":  [
+
+                                      ]
+               },
+    "key":  "JsonChart",
+    "chartConfig":  {
+                        "key":  "JsonChart",
+                        "chartKey":  "VJsonChart",
+                        "conKey":  "VCJsonChart",
+                        "title":  "JSON 通用图表",
+                        "category":  "Mores",
+                        "categoryName":  "更多",
+                        "package":  "Charts",
+                        "chartFrame":  "echarts",
+                        "image":  "json-chart.png"
+                    },
+    "option":  {
+                   "tooltip":  {
+                                   "show":  true,
+                                   "trigger":  "axis"
+                               },
+                   "legend":  {
+                                  "show":  true,
+                                  "type":  "scroll",
+                                  "x":  "center",
+                                  "y":  "top",
+                                  "icon":  "circle",
+                                  "orient":  "horizontal",
+                                  "textStyle":  {
+                                                    "color":  "#B9B8CE",
+                                                    "fontSize":  18
+                                                },
+                                  "itemHeight":  15,
+                                  "itemWidth":  15,
+                                  "pageTextStyle":  {
+                                                        "color":  "#B9B8CE"
+                                                    }
+                              },
+                   "dataset":  {
+                                   "dimensions":  [
+                                                      "product",
+                                                      "value"
+                                                  ],
+                                   "source":  [
+                                                  {
+                                                      "product":  "Mon",
+                                                      "value":  120
+                                                  }
+                                              ]
+                               },
+                   "grid":  {
+                                "show":  false,
+                                "left":  "10%",
+                                "top":  "60",
+                                "right":  "10%",
+                                "bottom":  "60"
+                            },
+                   "xAxis":  {
+                                 "show":  true,
+                                 "type":  "category",
+                                 "axisLabel":  {
+                                                   "show":  true,
+                                                   "fontSize":  12,
+                                                   "color":  "#B9B8CE",
+                                                   "rotate":  0
+                                               }
+                             },
+                   "yAxis":  {
+                                 "show":  true,
+                                 "type":  "value",
+                                 "axisLabel":  {
+                                                   "show":  true,
+                                                   "fontSize":  12,
+                                                   "color":  "#B9B8CE",
+                                                   "rotate":  0
+                                               }
+                             },
+                   "series":  [
+                                  {
+                                      "type":  "bar",
+                                      "barWidth":  null,
+                                      "label":  {
+                                                    "show":  true,
+                                                    "position":  "top",
+                                                    "color":  "#fff",
+                                                    "fontSize":  12
+                                                },
+                                      "itemStyle":  {
+                                                        "color":  null,
+                                                        "borderRadius":  0
+                                                    }
+                                  }
+                              ],
+                   "backgroundColor":  "rgba(0,0,0,0)"
+               }
+}

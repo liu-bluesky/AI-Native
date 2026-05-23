@@ -299,6 +299,21 @@ def _create_local_connector_store() -> Any:
     raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
 
 
+def _create_cli_plugin_profile_store() -> Any:
+    settings = get_settings()
+    if settings.core_store_backend == "json":
+        from stores.json import CliPluginProfileStore
+
+        return CliPluginProfileStore(_data_dir())
+    if settings.core_store_backend == "postgres":
+        try:
+            from stores.postgres.cli_plugin_profile_store import CliPluginProfileStorePostgres
+        except ModuleNotFoundError as exc:
+            raise _missing_driver("CORE_STORE_BACKEND") from exc
+        return CliPluginProfileStorePostgres(settings.database_url)
+    raise RuntimeError(f"Unsupported CORE_STORE_BACKEND: {settings.core_store_backend}")
+
+
 def _create_usage_store() -> Any:
     settings = get_settings()
     if settings.usage_store_backend == "sqlite":
@@ -356,6 +371,7 @@ bot_connector_store = _StoreProxy(_create_bot_connector_store)
 usage_store = _StoreProxy(_create_usage_store)
 external_mcp_store = _StoreProxy(_create_external_mcp_store)
 local_connector_store = _StoreProxy(_create_local_connector_store)
+cli_plugin_profile_store = _StoreProxy(_create_cli_plugin_profile_store)
 work_session_store = _StoreProxy(_create_work_session_store)
 task_tree_evolution_store = _StoreProxy(_create_task_tree_evolution_store)
 
@@ -378,6 +394,7 @@ __all__ = [
     "usage_store",
     "external_mcp_store",
     "local_connector_store",
+    "cli_plugin_profile_store",
     "work_session_store",
     "task_tree_evolution_store",
 ]

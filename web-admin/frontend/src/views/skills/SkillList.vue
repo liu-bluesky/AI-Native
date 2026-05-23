@@ -9,8 +9,20 @@
     </div>
 
     <el-table :data="skills" stripe>
-      <el-table-column prop="name" label="名称" />
-      <el-table-column prop="description" label="描述" show-overflow-tooltip />
+      <el-table-column label="名称" min-width="180">
+        <template #default="{ row }">
+          <div class="cell-text cell-text--strong">
+            {{ row.name || '-' }}
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="描述" min-width="320">
+        <template #default="{ row }">
+          <div class="cell-text cell-text--muted">
+            {{ row.description || '-' }}
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column prop="version" label="版本" width="90" />
       <el-table-column label="创建人" width="120">
         <template #default="{ row }">
@@ -22,7 +34,13 @@
           {{ formatRecordVisibility(row) }}
         </template>
       </el-table-column>
-      <el-table-column prop="mcp_service" label="MCP 服务" width="140" />
+      <el-table-column label="MCP 服务" width="160">
+        <template #default="{ row }">
+          <div class="cell-text cell-text--mono">
+            {{ row.mcp_service || '-' }}
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="标签" width="200">
         <template #default="{ row }">
           <el-tag v-for="t in row.tags" :key="t" size="small" class="tag-item">{{ t }}</el-tag>
@@ -31,7 +49,7 @@
       <el-table-column label="工具数" width="80" align="center">
         <template #default="{ row }">{{ row.tools?.length || 0 }}</template>
       </el-table-column>
-      <el-table-column label="代理声明 / 生效状态" width="260">
+      <el-table-column label="入口来源 / 可执行状态" width="280">
         <template #default="{ row }">
           <div class="proxy-status-cell">
             <div class="proxy-status-tags">
@@ -43,25 +61,25 @@
               </el-tag>
             </div>
             <div class="proxy-status-summary">
-              {{ row.proxy_status?.summary || '未分析' }}
+              {{ proxyStatusSummary(row) }}
             </div>
             <el-popover placement="left" trigger="hover" width="320">
               <template #reference>
                 <el-button text type="primary" size="small">查看详情</el-button>
               </template>
               <div class="proxy-popover">
-                <div class="proxy-popover__title">代理状态</div>
-                <div class="proxy-popover__item">显式声明: {{ row.proxy_status?.declared_count || 0 }}</div>
-                <div class="proxy-popover__item">解析入口: {{ row.proxy_status?.resolved_count || 0 }}</div>
-                <div class="proxy-popover__item">生效入口: {{ row.proxy_status?.effective_count || 0 }}</div>
+                <div class="proxy-popover__title">入口状态</div>
+                <div class="proxy-popover__item">显式声明入口: {{ row.proxy_status?.declared_count || 0 }}</div>
+                <div class="proxy-popover__item">识别到的入口: {{ row.proxy_status?.resolved_count || 0 }}</div>
+                <div class="proxy-popover__item">可执行入口: {{ row.proxy_status?.effective_count || 0 }}</div>
                 <div class="proxy-popover__item">
                   来源:
                   {{
                     row.proxy_status?.declaration_status === 'declared'
                       ? '技能包显式声明'
                       : row.proxy_status?.declaration_status === 'auto_inferred'
-                        ? '上传时自动推断'
-                      : '无'
+                        ? '系统自动识别'
+                      : '未声明'
                   }}
                 </div>
                 <div
@@ -81,7 +99,7 @@
                     <div class="proxy-entry__head">
                       <span>{{ entry.name }}</span>
                       <el-tag size="small" effect="plain">
-                        {{ entry.source === 'declared' ? '显式' : '自动' }}
+                        {{ entry.source === 'declared' ? '显式声明' : '自动识别' }}
                       </el-tag>
                     </div>
                     <div class="proxy-entry__meta">{{ entry.runtime || '-' }} · {{ entry.path || '-' }}</div>
@@ -95,7 +113,7 @@
                     :disabled="!row.proxy_status?.diagnostics?.can_refresh"
                     @click.stop="refreshProxyEntries(row)"
                   >
-                    重扫声明
+                    重扫入口
                   </el-button>
                 </div>
               </div>
@@ -332,9 +350,9 @@ function handleSkillAction(row, actionKey) {
 
 function proxyDeclarationLabel(row) {
   const status = row?.proxy_status?.declaration_status
-  if (status === 'declared') return '已声明'
-  if (status === 'auto_inferred') return '自动推断'
-  return '无声明'
+  if (status === 'declared') return '已显式声明'
+  if (status === 'auto_inferred') return '自动识别'
+  return '未声明入口'
 }
 
 function proxyDeclarationType(row) {
@@ -346,12 +364,19 @@ function proxyDeclarationType(row) {
 
 function proxyEffectiveLabel(row) {
   const count = Number(row?.proxy_status?.effective_count || 0)
-  return count > 0 ? `${count} 个生效` : '未生效'
+  return count > 0 ? `${count} 个可执行` : '无可执行入口'
 }
 
 function proxyEffectiveType(row) {
   const count = Number(row?.proxy_status?.effective_count || 0)
   return count > 0 ? 'success' : 'info'
+}
+
+function proxyStatusSummary(row) {
+  const status = row?.proxy_status?.declaration_status
+  if (status === 'declared') return '技能包里已手工声明入口'
+  if (status === 'auto_inferred') return '系统从脚本目录自动识别入口'
+  return '当前没有发现可执行入口声明'
 }
 
 async function enableMcp(skill) {
@@ -493,8 +518,29 @@ onMounted(fetchSkills)
   gap: 8px;
 }
 
+.cell-text {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+.cell-text--strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.cell-text--muted {
+  color: var(--color-text-regular);
+}
+
+.cell-text--mono {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+}
+
 .tag-item {
   margin-right: 6px;
+  margin-bottom: 6px;
 }
 
 .proxy-status-cell {

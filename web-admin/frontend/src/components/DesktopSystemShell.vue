@@ -466,8 +466,8 @@ const resizeState = {
 function windowStyle(window) {
   const zIndex = Number(window.zIndex || 1);
   const motionActive = Boolean(window?.motionActive);
-  const motionTranslateX = Number(window?.motionTranslateX || 0);
-  const motionTranslateY = Number(window?.motionTranslateY || 0);
+  const motionTranslateX = Math.round(Number(window?.motionTranslateX || 0));
+  const motionTranslateY = Math.round(Number(window?.motionTranslateY || 0));
   const motionScale = Number(window?.motionScale || 1);
   const motionOpacity = Number(window?.motionOpacity ?? 1);
   const motionBlur = Number(window?.motionBlur || 0);
@@ -493,12 +493,16 @@ function windowStyle(window) {
         : "none",
     };
   }
-  const width = Number(window.width || 1040);
-  const height = Number(window.height || 720);
-  const baseX = Number(window.x || 0);
-  const baseY = Number(window.y || 0);
+  const width = Math.round(Number(window.width || 1040));
+  const height = Math.round(Number(window.height || 720));
+  const baseX = Math.round(Number(window.x || 0));
+  const baseY = Math.round(Number(window.y || 0));
   const style = {
     zIndex,
+    top: `var(--desktop-window-y, ${baseY}px)`,
+    left: `var(--desktop-window-x, ${baseX}px)`,
+    width: `var(--desktop-window-width, ${width}px)`,
+    height: `var(--desktop-window-height, ${height}px)`,
     "--desktop-window-width": `${width}px`,
     "--desktop-window-height": `${height}px`,
     "--desktop-window-x": `${baseX}px`,
@@ -507,9 +511,7 @@ function windowStyle(window) {
   if (!motionActive) return style;
   return {
     ...style,
-    width: `${width}px`,
-    height: `${height}px`,
-    transform: `translate(${baseX + motionTranslateX}px, ${baseY + motionTranslateY}px) scale(${motionScale})`,
+    transform: `translate(${motionTranslateX}px, ${motionTranslateY}px) scale(${motionScale})`,
     transformOrigin: "center center",
     opacity: motionOpacity,
     filter: `blur(${motionBlur}px)`,
@@ -555,21 +557,26 @@ function clampWindowBounds(bounds) {
     Math.max(Number(bounds?.y || 0), 0),
     Math.max(0, viewportHeight - height),
   );
-  return { x, y, width, height };
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height),
+  };
 }
 
 function applyWindowPreviewBounds(windowId, bounds) {
   const element = windowElements.get(windowId);
   if (!element || !bounds) return;
-  element.style.setProperty("--desktop-window-x", `${Number(bounds.x || 0)}px`);
-  element.style.setProperty("--desktop-window-y", `${Number(bounds.y || 0)}px`);
+  element.style.setProperty("--desktop-window-x", `${Math.round(Number(bounds.x || 0))}px`);
+  element.style.setProperty("--desktop-window-y", `${Math.round(Number(bounds.y || 0))}px`);
   element.style.setProperty(
     "--desktop-window-width",
-    `${Number(bounds.width || DESKTOP_WINDOW_MIN_WIDTH)}px`,
+    `${Math.round(Number(bounds.width || DESKTOP_WINDOW_MIN_WIDTH))}px`,
   );
   element.style.setProperty(
     "--desktop-window-height",
-    `${Number(bounds.height || DESKTOP_WINDOW_MIN_HEIGHT)}px`,
+    `${Math.round(Number(bounds.height || DESKTOP_WINDOW_MIN_HEIGHT))}px`,
   );
 }
 
@@ -814,6 +821,10 @@ function handleWindowDrag(event) {
     width: dragState.width,
     height: dragState.height,
   });
+  const element = windowElements.get(dragState.windowId);
+  if (element) {
+    element.style.setProperty("z-index", "9999");
+  }
   scheduleWindowDragPreview(nextBounds);
 }
 
@@ -863,19 +874,24 @@ function handleWindowResize(event) {
 function stopWindowDrag(event) {
   if (dragState.pointerId == null) return;
   if (event && Number(event.pointerId) !== dragState.pointerId) return;
+  const windowId = dragState.windowId;
   cancelWindowDragPreview();
   if (dragState.nextBounds) {
-    applyWindowPreviewBounds(dragState.windowId, dragState.nextBounds);
+    applyWindowPreviewBounds(windowId, dragState.nextBounds);
     emit("move-window", {
-      windowId: dragState.windowId,
+      windowId,
       x: dragState.nextBounds.x,
       y: dragState.nextBounds.y,
     });
     void nextTick(() => {
-      clearWindowPreviewBounds(dragState.windowId);
+      clearWindowPreviewBounds(windowId);
     });
   }
   draggingWindowId.value = "";
+  const element = windowElements.get(windowId);
+  if (element) {
+    element.style.removeProperty("z-index");
+  }
   dragState.pointerId = null;
   dragState.windowId = "";
   dragState.width = 0;
@@ -1367,8 +1383,8 @@ onBeforeUnmount(() => {
 
 .desktop-system__window {
   position: absolute;
-  top: 0;
-  left: 0;
+  top: var(--desktop-window-y, 0px);
+  left: var(--desktop-window-x, 0px);
   z-index: 1;
   width: var(--desktop-window-width, 1040px);
   height: var(--desktop-window-height, 720px);
@@ -1384,17 +1400,16 @@ onBeforeUnmount(() => {
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  transform: translate3d(
-    var(--desktop-window-x, 0px),
-    var(--desktop-window-y, 0px),
-    0
-  );
   transition:
+    top 0.18s ease,
+    left 0.18s ease,
     box-shadow 0.18s ease,
     transform 0.18s ease,
     opacity 0.18s ease,
     filter 0.18s ease;
   will-change: transform, opacity, filter;
+  backface-visibility: hidden;
+  -webkit-font-smoothing: antialiased;
 }
 
 .desktop-system__resize-handle {
@@ -1632,6 +1647,7 @@ onBeforeUnmount(() => {
 .desktop-system__window-frame {
   min-height: 0;
   padding: 0 14px 14px;
+  backface-visibility: hidden;
 }
 
 .desktop-system__dock-trigger {
@@ -1976,7 +1992,9 @@ onBeforeUnmount(() => {
     min-width: 0;
     width: calc(100% - 16px) !important;
     height: calc(100% - 16px) !important;
-    transform: translate(8px, 8px) !important;
+    top: 8px !important;
+    left: 8px !important;
+    transform: none !important;
   }
 }
 </style>

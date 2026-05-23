@@ -28,6 +28,7 @@ from services.dynamic_mcp_profiles import (
 from services.dynamic_mcp_skill_proxies import list_project_proxy_tools_runtime
 
 COLLABORATION_TOOL_NAME = "execute_project_collaboration"
+_TASK_TREE_NODE_ID_PATTERN = re.compile(r"^ttn-[A-Za-z0-9_-]+$")
 _TEXT_ARG_CANDIDATES = (
     "task",
     "message",
@@ -702,6 +703,13 @@ def invoke_project_builtin_tool(
             return {"error": "chat_session_id is required"}
         if not target_username:
             return {"error": "username is required"}
+        if node_id and not _TASK_TREE_NODE_ID_PATTERN.fullmatch(node_id):
+            current_payload = get_task_tree_tool_payload(
+                project_id=project_id,
+                username=target_username,
+                chat_session_id=target_chat_session_id,
+            )
+            node_id = str((current_payload.get("current_node") or {}).get("id") or "").strip()
         if not node_id:
             return {"error": "node_id is required"}
         if not status_value:
@@ -737,6 +745,13 @@ def invoke_project_builtin_tool(
             return {"error": "chat_session_id is required"}
         if not target_username:
             return {"error": "username is required"}
+        if node_id and not _TASK_TREE_NODE_ID_PATTERN.fullmatch(node_id):
+            current_payload = get_task_tree_tool_payload(
+                project_id=project_id,
+                username=target_username,
+                chat_session_id=target_chat_session_id,
+            )
+            node_id = str((current_payload.get("current_node") or {}).get("id") or "").strip()
         if not node_id:
             return {"error": "node_id is required"}
         if not verification_result:

@@ -2,6 +2,7 @@
 
 from stores.json.bot_connector_store import BotConnectorStore
 from stores.json.changelog_entry_store import ChangelogEntryStore
+from stores.json.cli_plugin_profile_store import CliPluginProfileStore
 from stores.json.department_store import DepartmentStore
 from stores.json.employee_store import EmployeeStore
 from stores.json.agent_template_store import AgentTemplateStore
@@ -24,6 +25,7 @@ from stores.json.work_session_store import WorkSessionStore
 __all__ = [
     "BotConnectorStore",
     "ChangelogEntryStore",
+    "CliPluginProfileStore",
     "DepartmentStore",
     "EmployeeStore",
     "AgentTemplateStore",

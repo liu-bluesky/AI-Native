@@ -95,6 +95,7 @@ def run_project_host_command(
     *,
     workspace_path: str,
     command: str,
+    owner_username: str = "",
     cwd: str = "",
     timeout_sec: int = 20,
     max_output_chars: int = 12000,
@@ -146,7 +147,9 @@ def run_project_host_command(
     except (TypeError, ValueError):
         safe_timeout = 20
     safe_output_limit = max(200, min(int(max_output_chars or 12000), 40000))
-    exec_env, plugin_runtime_metadata = build_cli_plugin_runtime_environment()
+    exec_env, plugin_runtime_metadata = build_cli_plugin_runtime_environment(
+        owner_username=str(owner_username or "").strip(),
+    )
     environment_metadata.update(plugin_runtime_metadata)
     if plugin_runtime_metadata.get("plugin_runtime_enabled"):
         path_entries = list(plugin_runtime_metadata.get("plugin_runtime_path_entries") or [])
@@ -155,13 +158,18 @@ def run_project_host_command(
                 "已附加已安装插件运行路径："
                 + ", ".join(path_entries)
             )
+    runtime_home = str(plugin_runtime_metadata.get("plugin_runtime_home") or "").strip()
+    if runtime_home:
+        environment_metadata["plugin_runtime_summary"] = (
+            str(environment_metadata.get("plugin_runtime_summary") or "").strip() + f"；用户隔离 HOME={runtime_home}"
+        ).strip("；")
 
     try:
         completed = subprocess.run(
             shell_args,
             cwd=str(resolved_cwd),
             capture_output=True,
-            text=True,
+            text=False,
             timeout=safe_timeout if safe_timeout > 0 else None,
             env=exec_env,
         )
@@ -277,7 +285,10 @@ def _build_shell_args(command: str) -> list[str]:
 
 
 def _truncate_output(value: Any, max_chars: int) -> str:
-    text = str(value or "")
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value or "")
     if len(text) <= max_chars:
         return text
     half = max(40, max_chars // 2)

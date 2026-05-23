@@ -67,90 +67,118 @@
 
       <div class="project-list-table-shell">
         <el-table :data="projects" stripe>
-      <el-table-column prop="id" label="项目 ID" width="150" />
-      <el-table-column prop="name" label="项目名称" min-width="200" show-overflow-tooltip />
-      <el-table-column label="项目类型" width="140" align="center">
-        <template #default="{ row }">
-          <el-tag :type="getProjectTypeTagType(row.type)">
-            {{ getProjectTypeLabel(row.type) }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column
-        v-if="showProjectLocationFields"
-        prop="workspace_path"
-        label="工作区路径"
-        width="220"
-        show-overflow-tooltip
-      >
-        <template #default="{ row }">{{ row.workspace_path || '-' }}</template>
-      </el-table-column>
-      <el-table-column
-        v-if="showProjectLocationFields"
-        prop="ai_entry_file"
-        label="AI 入口文件"
-        width="220"
-        show-overflow-tooltip
-      >
-        <template #default="{ row }">{{ row.ai_entry_file || '-' }}</template>
-      </el-table-column>
-      <el-table-column prop="description" label="描述" show-overflow-tooltip />
-      <el-table-column label="创建人" width="140" show-overflow-tooltip>
-        <template #default="{ row }">{{ row.created_by || '-' }}</template>
-      </el-table-column>
-      <el-table-column label="成员数" width="90" align="center">
-        <template #default="{ row }">{{ row.member_count || 0 }}</template>
-      </el-table-column>
-      <el-table-column label="MCP" width="100" align="center">
-        <template #default="{ row }">
-          <el-switch
-            :model-value="!!row.mcp_enabled"
-            :disabled="!canManageProject(row)"
-            @change="(val) => patchProjectFlags(row, { mcp_enabled: !!val }, val ? '已开启项目 MCP' : '已关闭项目 MCP')"
+          <el-table-column prop="id" label="项目 ID" width="150" />
+          <el-table-column
+            prop="name"
+            label="项目名称"
+            min-width="200"
+            show-overflow-tooltip
           />
-        </template>
-      </el-table-column>
-      <el-table-column label="反馈升级" width="120" align="center">
-        <template #default="{ row }">
-          <el-switch
-            :model-value="!!row.feedback_upgrade_enabled"
-            :disabled="!canManageProject(row)"
-            @change="(val) => patchProjectFlags(row, { feedback_upgrade_enabled: !!val }, val ? '已开启反馈升级' : '已关闭反馈升级')"
-          />
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" min-width="280" fixed="right" class-name="table-action-column">
-        <template #default="{ row }">
-          <el-button
-            v-for="action in getPrimaryProjectActions(row)"
-            :key="`${row.id}-${action.key}`"
-            text
-            :type="action.type"
-            size="small"
-            @click="handleProjectAction(row, action.key)"
-          >
-            {{ action.label }}
-          </el-button>
-          <el-dropdown
-            v-if="getOverflowProjectActions(row).length"
-            trigger="click"
-            @command="(actionKey) => handleProjectAction(row, actionKey)"
-          >
-            <el-button text type="primary" size="small">更多</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item
-                  v-for="action in getOverflowProjectActions(row)"
-                  :key="`${row.id}-${action.key}`"
-                  :command="action.key"
-                >
-                  {{ action.label }}
-                </el-dropdown-item>
-              </el-dropdown-menu>
+          <el-table-column label="项目类型" width="140" align="center">
+            <template #default="{ row }">
+              <el-tag :type="getProjectTypeTagType(row.type)">
+                {{ getProjectTypeLabel(row.type) }}
+              </el-tag>
             </template>
-          </el-dropdown>
-        </template>
-      </el-table-column>
+          </el-table-column>
+          <el-table-column
+            v-if="showProjectLocationFields"
+            prop="workspace_path"
+            label="工作区路径"
+            width="220"
+            show-overflow-tooltip
+          >
+            <template #default="{ row }">{{
+              row.workspace_path || "-"
+            }}</template>
+          </el-table-column>
+          <el-table-column
+            v-if="showProjectLocationFields"
+            prop="ai_entry_file"
+            label="AI 入口文件"
+            width="220"
+            show-overflow-tooltip
+          >
+            <template #default="{ row }">{{
+              row.ai_entry_file || "-"
+            }}</template>
+          </el-table-column>
+          <!-- <el-table-column prop="description" label="描述" show-overflow-tooltip /> -->
+          <el-table-column label="创建人" width="140" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.created_by || "-" }}</template>
+          </el-table-column>
+          <el-table-column label="成员数" width="90" align="center">
+            <template #default="{ row }">{{ row.member_count || 0 }}</template>
+          </el-table-column>
+          <el-table-column label="MCP" width="100" align="center">
+            <template #default="{ row }">
+              <el-switch
+                :model-value="!!row.mcp_enabled"
+                :disabled="!canManageProject(row)"
+                @change="
+                  (val) =>
+                    patchProjectFlags(
+                      row,
+                      { mcp_enabled: !!val },
+                      val ? '已开启项目 MCP' : '已关闭项目 MCP',
+                    )
+                "
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="反馈升级" width="120" align="center">
+            <template #default="{ row }">
+              <el-switch
+                :model-value="!!row.feedback_upgrade_enabled"
+                :disabled="!canManageProject(row)"
+                @change="
+                  (val) =>
+                    patchProjectFlags(
+                      row,
+                      { feedback_upgrade_enabled: !!val },
+                      val ? '已开启反馈升级' : '已关闭反馈升级',
+                    )
+                "
+              />
+            </template>
+          </el-table-column>
+          <el-table-column
+            label="操作"
+            min-width="280"
+            fixed="right"
+            class-name="table-action-column"
+          >
+            <template #default="{ row }">
+              <el-button
+                v-for="action in getPrimaryProjectActions(row)"
+                :key="`${row.id}-${action.key}`"
+                text
+                :type="action.type"
+                size="small"
+                @click="handleProjectAction(row, action.key)"
+              >
+                {{ action.label }}
+              </el-button>
+              <el-dropdown
+                v-if="getOverflowProjectActions(row).length"
+                trigger="click"
+                @command="(actionKey) => handleProjectAction(row, actionKey)"
+              >
+                <el-button text type="primary" size="small">更多</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item
+                      v-for="action in getOverflowProjectActions(row)"
+                      :key="`${row.id}-${action.key}`"
+                      :command="action.key"
+                    >
+                      {{ action.label }}
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </template>
+          </el-table-column>
         </el-table>
       </div>
 
@@ -167,10 +195,18 @@
         />
       </div>
 
-      <el-empty v-if="!projects.length && !loading" :description="emptyDescription" />
+      <el-empty
+        v-if="!projects.length && !loading"
+        :description="emptyDescription"
+      />
     </ProjectAppSection>
 
-    <el-dialog v-if="showProjectCreateEntry" v-model="showCreateDialog" title="新建项目" width="520px">
+    <el-dialog
+      v-if="showProjectCreateEntry"
+      v-model="showCreateDialog"
+      title="新建项目"
+      width="520px"
+    >
       <el-form :model="createForm" label-width="110px">
         <el-form-item label="项目名称" required>
           <el-input v-model="createForm.name" placeholder="例如：web-admin" />
@@ -193,11 +229,15 @@
             >
               <div class="project-type-option">
                 <div class="project-type-option__label">{{ item.label }}</div>
-                <div class="project-type-option__desc">{{ item.description }}</div>
+                <div class="project-type-option__desc">
+                  {{ item.description }}
+                </div>
               </div>
             </el-option>
           </el-select>
-          <div class="project-type-help">{{ getProjectTypeDescription(createForm.type) }}</div>
+          <div class="project-type-help">
+            {{ getProjectTypeDescription(createForm.type) }}
+          </div>
         </el-form-item>
         <el-form-item label="MCP 使用说明">
           <el-input
@@ -208,14 +248,20 @@
           />
         </el-form-item>
         <el-form-item v-if="showProjectLocationFields" label="工作区路径">
-          <el-input v-model="createForm.workspace_path" placeholder="可手动输入或点击选择目录">
+          <el-input
+            v-model="createForm.workspace_path"
+            placeholder="可手动输入或点击选择目录"
+          >
             <template #append>
               <el-button @click="selectWorkspaceDirectory">选择目录</el-button>
             </template>
           </el-input>
         </el-form-item>
         <el-form-item v-if="showProjectLocationFields" label="AI 入口文件">
-          <el-input v-model="createForm.ai_entry_file" placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md">
+          <el-input
+            v-model="createForm.ai_entry_file"
+            placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
+          >
             <template #append>
               <el-button @click="selectCreateAiEntryFile">选择文件</el-button>
             </template>
@@ -230,7 +276,9 @@
       </el-form>
       <template #footer>
         <el-button @click="showCreateDialog = false">取消</el-button>
-        <el-button type="primary" :loading="creating" @click="createProject">创建</el-button>
+        <el-button type="primary" :loading="creating" @click="createProject"
+          >创建</el-button
+        >
       </template>
     </el-dialog>
 
@@ -252,11 +300,15 @@
             >
               <div class="project-type-option">
                 <div class="project-type-option__label">{{ item.label }}</div>
-                <div class="project-type-option__desc">{{ item.description }}</div>
+                <div class="project-type-option__desc">
+                  {{ item.description }}
+                </div>
               </div>
             </el-option>
           </el-select>
-          <div class="project-type-help">{{ getProjectTypeDescription(editForm.type) }}</div>
+          <div class="project-type-help">
+            {{ getProjectTypeDescription(editForm.type) }}
+          </div>
         </el-form-item>
         <el-form-item label="MCP 使用说明">
           <el-input
@@ -267,14 +319,22 @@
           />
         </el-form-item>
         <el-form-item v-if="showProjectLocationFields" label="工作区路径">
-          <el-input v-model="editForm.workspace_path" placeholder="可手动输入或点击选择目录">
+          <el-input
+            v-model="editForm.workspace_path"
+            placeholder="可手动输入或点击选择目录"
+          >
             <template #append>
-              <el-button @click="selectEditWorkspaceDirectory">选择目录</el-button>
+              <el-button @click="selectEditWorkspaceDirectory"
+                >选择目录</el-button
+              >
             </template>
           </el-input>
         </el-form-item>
         <el-form-item v-if="showProjectLocationFields" label="AI 入口文件">
-          <el-input v-model="editForm.ai_entry_file" placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md">
+          <el-input
+            v-model="editForm.ai_entry_file"
+            placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
+          >
             <template #append>
               <el-button @click="selectEditAiEntryFile">选择文件</el-button>
             </template>
@@ -289,7 +349,9 @@
       </el-form>
       <template #footer>
         <el-button @click="showEditDialog = false">取消</el-button>
-        <el-button type="primary" :loading="updating" @click="updateProject">保存</el-button>
+        <el-button type="primary" :loading="updating" @click="updateProject"
+          >保存</el-button
+        >
       </template>
     </el-dialog>
 
@@ -303,337 +365,354 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import ProjectAppHeader from '@/components/project-workspace/ProjectAppHeader.vue'
-import ProjectAppSection from '@/components/project-workspace/ProjectAppSection.vue'
-import UnifiedMcpAccessDialog from '@/components/UnifiedMcpAccessDialog.vue'
-import api from '@/utils/api.js'
-import { openRouteInDesktop } from '@/utils/desktop-app-bridge.js'
-import { hasPermission } from '@/utils/permissions.js'
+import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
+import { ElMessage, ElMessageBox } from "element-plus";
+import ProjectAppHeader from "@/components/project-workspace/ProjectAppHeader.vue";
+import ProjectAppSection from "@/components/project-workspace/ProjectAppSection.vue";
+import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
+import api from "@/utils/api.js";
+import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
+import { hasPermission } from "@/utils/permissions.js";
 import {
   pickWorkspaceDirectory as openWorkspaceDirectoryPicker,
   pickWorkspaceFile as openWorkspaceFilePicker,
   toWorkspaceRelativePath,
-} from '@/utils/workspace-picker.js'
+} from "@/utils/workspace-picker.js";
 
-const PROJECT_CREATED_EVENT = 'project-created'
-const router = useRouter()
-const loading = ref(false)
-const creating = ref(false)
-const updating = ref(false)
-const projects = ref([])
+const PROJECT_CREATED_EVENT = "project-created";
+const router = useRouter();
+const loading = ref(false);
+const creating = ref(false);
+const updating = ref(false);
+const projects = ref([]);
 const filters = ref({
-  name: '',
-  createdBy: '',
-})
-const currentPage = ref(1)
-const pageSize = ref(10)
-const paginationTotal = ref(0)
-const showProjectCreateEntry = computed(() => hasPermission('menu.projects'))
-const showProjectLocationFields = false
+  name: "",
+  createdBy: "",
+});
+const currentPage = ref(1);
+const pageSize = ref(10);
+const paginationTotal = ref(0);
+const showProjectCreateEntry = computed(() => hasPermission("menu.projects"));
+const showProjectLocationFields = false;
 const projectTypeOptions = [
   {
-    value: 'image',
-    label: '图片项目',
-    description: '适合海报、KV、插画、商品图等以图片产出为主的项目。',
+    value: "image",
+    label: "图片项目",
+    description: "适合海报、KV、插画、商品图等以图片产出为主的项目。",
   },
   {
-    value: 'storyboard_video',
-    label: '分镜视频项目',
-    description: '适合镜头脚本、分镜规划、视频生成等以视频产出为主的项目。',
+    value: "storyboard_video",
+    label: "分镜视频项目",
+    description: "适合镜头脚本、分镜规划、视频生成等以视频产出为主的项目。",
   },
   {
-    value: 'mixed',
-    label: '综合项目',
-    description: '适合图文混合或方向未定的项目，默认工作流更中性。',
+    value: "mixed",
+    label: "综合项目",
+    description: "适合图文混合或方向未定的项目，默认工作流更中性。",
   },
-]
+];
 
-const showCreateDialog = ref(false)
-const showEditDialog = ref(false)
+const showCreateDialog = ref(false);
+const showEditDialog = ref(false);
 const createForm = ref({
-  name: '',
-  description: '',
-  type: 'mixed',
-  mcp_instruction: '',
-  workspace_path: '',
-  ai_entry_file: '',
+  name: "",
+  description: "",
+  type: "mixed",
+  mcp_instruction: "",
+  workspace_path: "",
+  ai_entry_file: "",
   mcp_enabled: true,
   feedback_upgrade_enabled: true,
-})
+});
 
 const editForm = ref({
-  id: '',
-  name: '',
-  description: '',
-  type: 'mixed',
-  mcp_instruction: '',
-  workspace_path: '',
-  ai_entry_file: '',
+  id: "",
+  name: "",
+  description: "",
+  type: "mixed",
+  mcp_instruction: "",
+  workspace_path: "",
+  ai_entry_file: "",
   mcp_enabled: true,
   feedback_upgrade_enabled: true,
-})
+});
 
-const showMcpDialog = ref(false)
-const currentProject = ref(null)
+const showMcpDialog = ref(false);
+const currentProject = ref(null);
 const PROJECT_ACTIONS = [
-  { key: 'detail', label: '详情', type: 'primary', requiresManage: false },
-  { key: 'edit', label: '编辑', type: 'warning', requiresManage: true },
-  { key: 'access', label: '接入', type: 'success', requiresManage: true },
-  { key: 'delete', label: '删除', type: 'danger', requiresManage: true },
-]
+  { key: "detail", label: "详情", type: "primary", requiresManage: false },
+  { key: "edit", label: "编辑", type: "warning", requiresManage: true },
+  { key: "access", label: "接入", type: "success", requiresManage: true },
+  { key: "delete", label: "删除", type: "danger", requiresManage: true },
+];
 
 const emptyDescription = computed(() => {
   if (filters.value.name || filters.value.createdBy) {
-    return '暂无匹配项目'
+    return "暂无匹配项目";
   }
-  return '暂无项目'
-})
+  return "暂无项目";
+});
 const projectListDescription = computed(() => {
   if (filters.value.name || filters.value.createdBy) {
-    return '当前已切换到聚焦浏览模式，适合快速筛掉无关项目后进入对应工作区。'
+    return "当前已切换到聚焦浏览模式，适合快速筛掉无关项目后进入对应工作区。";
   }
-  return '这里统一承载项目创建、筛选、状态切换和进入详情的桌面工作流。'
-})
+  return "这里统一承载项目创建、筛选、状态切换和进入详情的桌面工作流。";
+});
 const projectListBadges = computed(() => [
   {
-    key: 'scope',
-    label: filters.value.name || filters.value.createdBy ? '筛选中' : '全部项目',
-    type: filters.value.name || filters.value.createdBy ? 'warning' : 'info',
+    key: "scope",
+    label:
+      filters.value.name || filters.value.createdBy ? "筛选中" : "全部项目",
+    type: filters.value.name || filters.value.createdBy ? "warning" : "info",
   },
   {
-    key: 'create',
-    label: showProjectCreateEntry.value ? '可新建项目' : '只读浏览',
-    type: showProjectCreateEntry.value ? 'success' : 'info',
+    key: "create",
+    label: showProjectCreateEntry.value ? "可新建项目" : "只读浏览",
+    type: showProjectCreateEntry.value ? "success" : "info",
   },
-])
+]);
 const projectListStats = computed(() => [
   {
-    key: 'total',
-    label: '项目总数',
+    key: "total",
+    label: "项目总数",
     value: paginationTotal.value,
-    meta: '当前列表结果',
+    meta: "当前列表结果",
   },
   {
-    key: 'mcp',
-    label: 'MCP 已开',
+    key: "mcp",
+    label: "MCP 已开",
     value: projects.value.filter((item) => item.mcp_enabled).length,
-    meta: '便于直接接入桌面工作流',
+    meta: "便于直接接入桌面工作流",
   },
   {
-    key: 'manageable',
-    label: '可管理',
+    key: "manageable",
+    label: "可管理",
     value: projects.value.filter((item) => canManageProject(item)).length,
-    meta: '当前账号可直接编辑',
+    meta: "当前账号可直接编辑",
   },
-])
+]);
 
 function canManageProject(project) {
-  return !!project?.can_manage
+  return !!project?.can_manage;
 }
 
 function manageBlockedMessage(project) {
-  const creator = String(project?.created_by || '').trim()
+  const creator = String(project?.created_by || "").trim();
   if (creator) {
-    return `仅项目创建者可编辑，当前创建者为 ${creator}`
+    return `仅项目创建者可编辑，当前创建者为 ${creator}`;
   }
-  return '仅项目创建者可编辑'
+  return "仅项目创建者可编辑";
 }
 
 function getProjectActions(project) {
-  return PROJECT_ACTIONS.filter((item) => !item.requiresManage || canManageProject(project))
+  return PROJECT_ACTIONS.filter(
+    (item) => !item.requiresManage || canManageProject(project),
+  );
 }
 
 function getPrimaryProjectActions(project) {
-  return getProjectActions(project).slice(0, 3)
+  return getProjectActions(project).slice(0, 3);
 }
 
 function getOverflowProjectActions(project) {
-  return getProjectActions(project).slice(3)
+  return getProjectActions(project).slice(3);
 }
 
 function buildProjectQueryParams() {
   return {
     page: currentPage.value,
     page_size: pageSize.value,
-    name: String(filters.value.name || '').trim(),
-    created_by: String(filters.value.createdBy || '').trim(),
-  }
+    name: String(filters.value.name || "").trim(),
+    created_by: String(filters.value.createdBy || "").trim(),
+  };
 }
 
 function normalizeProjectList(items) {
   return (items || []).map((item) => ({
     ...item,
     type: normalizeProjectType(item.type),
-  }))
+  }));
 }
 
 function handleSearch() {
-  currentPage.value = 1
-  void fetchProjects()
+  currentPage.value = 1;
+  void fetchProjects();
 }
 
 function resetFilters() {
   filters.value = {
-    name: '',
-    createdBy: '',
-  }
-  currentPage.value = 1
-  void fetchProjects()
+    name: "",
+    createdBy: "",
+  };
+  currentPage.value = 1;
+  void fetchProjects();
 }
 
 function handlePageChange(page) {
-  currentPage.value = page
-  void fetchProjects()
+  currentPage.value = page;
+  void fetchProjects();
 }
 
 function handlePageSizeChange(size) {
-  pageSize.value = size
-  currentPage.value = 1
-  void fetchProjects()
+  pageSize.value = size;
+  currentPage.value = 1;
+  void fetchProjects();
 }
 
 function openCreate() {
   createForm.value = {
-    name: '',
-    description: '',
-    type: 'mixed',
-    mcp_instruction: '',
-    workspace_path: '',
-    ai_entry_file: '',
+    name: "",
+    description: "",
+    type: "mixed",
+    mcp_instruction: "",
+    workspace_path: "",
+    ai_entry_file: "",
     mcp_enabled: true,
     feedback_upgrade_enabled: true,
-  }
-  showCreateDialog.value = true
+  };
+  showCreateDialog.value = true;
 }
 
 async function selectWorkspaceDirectory() {
-  const picked = await pickWorkspaceDirectory(createForm.value.workspace_path)
-  if (picked === null) return
-  createForm.value.workspace_path = picked
+  const picked = await pickWorkspaceDirectory(createForm.value.workspace_path);
+  if (picked === null) return;
+  createForm.value.workspace_path = picked;
 }
 
 async function selectCreateAiEntryFile() {
   const picked = await pickAiEntryFile(
     createForm.value.ai_entry_file,
     createForm.value.workspace_path,
-  )
-  if (picked === null) return
-  createForm.value.ai_entry_file = picked
+  );
+  if (picked === null) return;
+  createForm.value.ai_entry_file = picked;
 }
 
 function openEdit(project) {
   if (!canManageProject(project)) {
-    ElMessage.warning(manageBlockedMessage(project))
-    return
+    ElMessage.warning(manageBlockedMessage(project));
+    return;
   }
   editForm.value = {
     id: project.id,
-    name: project.name || '',
-    description: project.description || '',
+    name: project.name || "",
+    description: project.description || "",
     type: normalizeProjectType(project.type),
-    mcp_instruction: project.mcp_instruction || '',
-    workspace_path: project.workspace_path || '',
-    ai_entry_file: project.ai_entry_file || '',
+    mcp_instruction: project.mcp_instruction || "",
+    workspace_path: project.workspace_path || "",
+    ai_entry_file: project.ai_entry_file || "",
     mcp_enabled: project.mcp_enabled ?? true,
     feedback_upgrade_enabled: project.feedback_upgrade_enabled ?? true,
-  }
-  showEditDialog.value = true
+  };
+  showEditDialog.value = true;
 }
 
 function handleProjectAction(project, actionKey) {
-  switch (String(actionKey || '').trim()) {
-    case 'detail':
+  switch (String(actionKey || "").trim()) {
+    case "detail":
       void openRouteInDesktop(router, `/projects/${project.id}`, {
-        mode: 'new-window',
-        appId: 'projects',
-        title: project.name || '项目详情',
-        eyebrow: 'Project Workspace',
-        summary: '项目详情作为桌面中的独立应用窗口打开，可与列表、对话和素材库并行工作。',
-      })
-      return
-    case 'edit':
-      openEdit(project)
-      return
-    case 'access':
-      showMcpConfig(project)
-      return
-    case 'delete':
-      void removeProject(project)
-      return
+        mode: "new-window",
+        appId: "projects",
+        title: project.name || "项目详情",
+        eyebrow: "Project Workspace",
+        summary:
+          "项目详情作为桌面中的独立应用窗口打开，可与列表、对话和素材库并行工作。",
+      });
+      return;
+    case "edit":
+      openEdit(project);
+      return;
+    case "access":
+      showMcpConfig(project);
+      return;
+    case "delete":
+      void removeProject(project);
+      return;
     default:
-      return
+      return;
   }
 }
 
 function normalizeProjectType(value) {
-  const normalized = String(value || '').trim()
-  return projectTypeOptions.some((item) => item.value === normalized) ? normalized : 'mixed'
+  const normalized = String(value || "").trim();
+  return projectTypeOptions.some((item) => item.value === normalized)
+    ? normalized
+    : "mixed";
 }
 
 function getProjectTypeLabel(value) {
-  const matched = projectTypeOptions.find((item) => item.value === normalizeProjectType(value))
-  return matched?.label || '综合项目'
+  const matched = projectTypeOptions.find(
+    (item) => item.value === normalizeProjectType(value),
+  );
+  return matched?.label || "综合项目";
 }
 
 function getProjectTypeDescription(value) {
-  const matched = projectTypeOptions.find((item) => item.value === normalizeProjectType(value))
-  return matched?.description || '适合图文混合或方向未定的项目，默认工作流更中性。'
+  const matched = projectTypeOptions.find(
+    (item) => item.value === normalizeProjectType(value),
+  );
+  return (
+    matched?.description || "适合图文混合或方向未定的项目，默认工作流更中性。"
+  );
 }
 
 function getProjectTypeTagType(value) {
-  const normalized = normalizeProjectType(value)
-  if (normalized === 'image') return 'success'
-  if (normalized === 'storyboard_video') return 'warning'
-  return 'info'
+  const normalized = normalizeProjectType(value);
+  if (normalized === "image") return "success";
+  if (normalized === "storyboard_video") return "warning";
+  return "info";
 }
 
 async function selectEditWorkspaceDirectory() {
-  const picked = await pickWorkspaceDirectory(editForm.value.workspace_path)
-  if (picked === null) return
-  editForm.value.workspace_path = picked
+  const picked = await pickWorkspaceDirectory(editForm.value.workspace_path);
+  if (picked === null) return;
+  editForm.value.workspace_path = picked;
 }
 
 async function selectEditAiEntryFile() {
   const picked = await pickAiEntryFile(
     editForm.value.ai_entry_file,
     editForm.value.workspace_path,
-  )
-  if (picked === null) return
-  editForm.value.ai_entry_file = picked
+  );
+  if (picked === null) return;
+  editForm.value.ai_entry_file = picked;
 }
 
-async function pickWorkspaceDirectory(currentPath = '') {
+async function pickWorkspaceDirectory(currentPath = "") {
   return await openWorkspaceDirectoryPicker(currentPath, {
-    title: '选择项目工作区目录',
-  })
+    title: "选择项目工作区目录",
+  });
 }
 
-async function pickAiEntryFile(currentPath = '', workspacePath = '') {
+async function pickAiEntryFile(currentPath = "", workspacePath = "") {
   const picked = await openWorkspaceFilePicker(currentPath, {
-    title: '选择 AI 入口文件',
-    placeholder: '.ai/ENTRY.md',
+    title: "选择 AI 入口文件",
+    placeholder: ".ai/ENTRY.md",
     basePath: workspacePath,
-  })
-  if (picked === null) return null
-  return toWorkspaceRelativePath(picked, workspacePath) || String(picked || '').trim()
+  });
+  if (picked === null) return null;
+  return (
+    toWorkspaceRelativePath(picked, workspacePath) ||
+    String(picked || "").trim()
+  );
 }
 
 async function updateProject() {
-  const currentProject = projects.value.find((item) => item.id === editForm.value.id)
+  const currentProject = projects.value.find(
+    (item) => item.id === editForm.value.id,
+  );
   if (!canManageProject(currentProject)) {
-    ElMessage.warning(manageBlockedMessage(currentProject))
-    showEditDialog.value = false
-    return
+    ElMessage.warning(manageBlockedMessage(currentProject));
+    showEditDialog.value = false;
+    return;
   }
-  const name = String(editForm.value.name || '').trim()
+  const name = String(editForm.value.name || "").trim();
   if (!name) {
-    ElMessage.warning('请输入项目名称')
-    return
+    ElMessage.warning("请输入项目名称");
+    return;
   }
-  updating.value = true
+  updating.value = true;
   try {
     await api.put(`/projects/${editForm.value.id}`, {
       name: editForm.value.name,
@@ -644,63 +723,68 @@ async function updateProject() {
       ai_entry_file: editForm.value.ai_entry_file,
       mcp_enabled: editForm.value.mcp_enabled,
       feedback_upgrade_enabled: editForm.value.feedback_upgrade_enabled,
-    })
-    ElMessage.success('项目已更新')
-    showEditDialog.value = false
-    await fetchProjects()
+    });
+    ElMessage.success("项目已更新");
+    showEditDialog.value = false;
+    await fetchProjects();
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || '更新失败')
+    ElMessage.error(err?.detail || err?.message || "更新失败");
   } finally {
-    updating.value = false
+    updating.value = false;
   }
 }
 
 function showMcpConfig(project) {
   if (!canManageProject(project)) {
-    ElMessage.warning(manageBlockedMessage(project))
-    return
+    ElMessage.warning(manageBlockedMessage(project));
+    return;
   }
-  currentProject.value = project
-  showMcpDialog.value = true
+  currentProject.value = project;
+  showMcpDialog.value = true;
 }
 
 async function fetchProjects(options = {}) {
-  const allowPageAdjust = options.allowPageAdjust !== false
-  loading.value = true
+  const allowPageAdjust = options.allowPageAdjust !== false;
+  loading.value = true;
   try {
-    const data = await api.get('/projects', {
+    const data = await api.get("/projects", {
       params: buildProjectQueryParams(),
-    })
-    const nextProjects = normalizeProjectList(data.projects || [])
+    });
+    const nextProjects = normalizeProjectList(data.projects || []);
     const nextTotal = Math.max(
       0,
       Number(data?.pagination?.total ?? data?.total ?? nextProjects.length),
-    )
-    paginationTotal.value = nextTotal
-    if (allowPageAdjust && nextTotal > 0 && !nextProjects.length && currentPage.value > 1) {
-      currentPage.value = Math.max(1, Math.ceil(nextTotal / pageSize.value))
-      await fetchProjects({ allowPageAdjust: false })
-      return
+    );
+    paginationTotal.value = nextTotal;
+    if (
+      allowPageAdjust &&
+      nextTotal > 0 &&
+      !nextProjects.length &&
+      currentPage.value > 1
+    ) {
+      currentPage.value = Math.max(1, Math.ceil(nextTotal / pageSize.value));
+      await fetchProjects({ allowPageAdjust: false });
+      return;
     }
-    projects.value = nextProjects
+    projects.value = nextProjects;
   } catch {
-    projects.value = []
-    paginationTotal.value = 0
-    ElMessage.error('加载项目失败')
+    projects.value = [];
+    paginationTotal.value = 0;
+    ElMessage.error("加载项目失败");
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
 async function createProject() {
-  const name = String(createForm.value.name || '').trim()
+  const name = String(createForm.value.name || "").trim();
   if (!name) {
-    ElMessage.warning('请输入项目名称')
-    return
+    ElMessage.warning("请输入项目名称");
+    return;
   }
-  creating.value = true
+  creating.value = true;
   try {
-    const data = await api.post('/projects', {
+    const data = await api.post("/projects", {
       name,
       description: createForm.value.description,
       type: normalizeProjectType(createForm.value.type),
@@ -709,59 +793,64 @@ async function createProject() {
       ai_entry_file: createForm.value.ai_entry_file,
       mcp_enabled: !!createForm.value.mcp_enabled,
       feedback_upgrade_enabled: !!createForm.value.feedback_upgrade_enabled,
-    })
-    const createdProjectId = String(data?.project?.id || '').trim()
+    });
+    const createdProjectId = String(data?.project?.id || "").trim();
     if (createdProjectId) {
-      localStorage.setItem('project_id', createdProjectId)
-      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      localStorage.setItem("project_id", createdProjectId);
+      if (
+        typeof window !== "undefined" &&
+        typeof window.dispatchEvent === "function"
+      ) {
         window.dispatchEvent(
           new CustomEvent(PROJECT_CREATED_EVENT, {
             detail: { projectId: createdProjectId },
           }),
-        )
+        );
       }
     }
-    ElMessage.success('项目创建成功')
-    showCreateDialog.value = false
-    currentPage.value = 1
-    await fetchProjects()
+    ElMessage.success("项目创建成功");
+    showCreateDialog.value = false;
+    currentPage.value = 1;
+    await fetchProjects();
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || '创建失败')
+    ElMessage.error(err?.detail || err?.message || "创建失败");
   } finally {
-    creating.value = false
+    creating.value = false;
   }
 }
 
 async function patchProjectFlags(row, payload, successMessage) {
   if (!canManageProject(row)) {
-    ElMessage.warning(manageBlockedMessage(row))
-    return
+    ElMessage.warning(manageBlockedMessage(row));
+    return;
   }
   try {
-    await api.patch(`/projects/${row.id}`, payload)
-    ElMessage.success(successMessage)
-    await fetchProjects()
+    await api.patch(`/projects/${row.id}`, payload);
+    ElMessage.success(successMessage);
+    await fetchProjects();
   } catch {
-    ElMessage.error('更新失败')
+    ElMessage.error("更新失败");
   }
 }
 
 async function removeProject(row) {
   if (!canManageProject(row)) {
-    ElMessage.warning(manageBlockedMessage(row))
-    return
+    ElMessage.warning(manageBlockedMessage(row));
+    return;
   }
-  await ElMessageBox.confirm(`确定删除项目「${row.name}」？`, '确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确定删除项目「${row.name}」？`, "确认", {
+    type: "warning",
+  });
   try {
-    await api.delete(`/projects/${row.id}`)
-    ElMessage.success('已删除项目')
-    await fetchProjects()
+    await api.delete(`/projects/${row.id}`);
+    ElMessage.success("已删除项目");
+    await fetchProjects();
   } catch {
-    ElMessage.error('删除失败')
+    ElMessage.error("删除失败");
   }
 }
 
-onMounted(fetchProjects)
+onMounted(fetchProjects);
 </script>
 
 <style scoped>
@@ -770,6 +859,7 @@ onMounted(fetchProjects)
   flex-direction: column;
   gap: 14px;
   padding: 14px 0 32px;
+  overflow: visible;
 }
 
 .project-list-page__section {
@@ -901,5 +991,4 @@ onMounted(fetchProjects)
     justify-content: flex-end;
   }
 }
-
 </style>

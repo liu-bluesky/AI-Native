@@ -32,6 +32,16 @@ def _normalize_attachments(values: list[str] | None) -> list[str]:
     ]
 
 
+def _chat_content_matches_fallback(content: str, fallback_content: str) -> bool:
+    normalized_content = str(content or "").strip()
+    normalized_fallback = str(fallback_content or "").strip()
+    if not normalized_content or not normalized_fallback:
+        return False
+    return normalized_content == normalized_fallback or normalized_content.startswith(
+        f"{normalized_fallback}\n\n"
+    )
+
+
 def _normalize_chat_context_text(value: object, limit: int = 160) -> str:
     return str(value or "").strip()[:limit]
 
@@ -568,15 +578,30 @@ class ProjectChatStore:
             self._write_sessions(project_id, username, sessions)
         return removed
 
-    def truncate_messages(self, project_id: str, username: str, message_id: str, chat_session_id: str = "") -> int:
+    def truncate_messages(
+        self,
+        project_id: str,
+        username: str,
+        message_id: str,
+        chat_session_id: str = "",
+        *,
+        fallback_user_content: str = "",
+        fallback_user_turn_index: int | None = None,
+    ) -> int:
         normalized_message_id = str(message_id or "").strip()
         normalized_session_id = str(chat_session_id or "").strip()
+        normalized_fallback_content = str(fallback_user_content or "").strip()
+        try:
+            normalized_fallback_turn_index = int(fallback_user_turn_index) if fallback_user_turn_index is not None else -1
+        except (TypeError, ValueError):
+            normalized_fallback_turn_index = -1
         if not normalized_message_id:
             return 0
         messages = self._read_messages(project_id, username)
         remaining: list[ProjectChatMessage] = []
         removed = 0
         matched = False
+        scoped_user_index = -1
         for item in messages:
             item_session_id = str(item.chat_session_id or "").strip()
             in_scope = (
@@ -587,7 +612,21 @@ class ProjectChatStore:
             if not in_scope:
                 remaining.append(item)
                 continue
-            if not matched and item.id == normalized_message_id:
+            item_role = str(item.role or "").strip().lower()
+            if item_role == "user":
+                scoped_user_index += 1
+            if not matched and (
+                str(item.id or "").strip() == normalized_message_id
+                or (
+                    normalized_fallback_content
+                    and item_role == "user"
+                    and _chat_content_matches_fallback(item.content, normalized_fallback_content)
+                    and (
+                        normalized_fallback_turn_index < 0
+                        or scoped_user_index == normalized_fallback_turn_index
+                    )
+                )
+            ):
                 matched = True
             if matched:
                 removed += 1

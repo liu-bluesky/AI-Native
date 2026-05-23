@@ -55,7 +55,11 @@
         <el-table-column label="标题" min-width="220">
           <template #default="{ row }">{{ resolveDisplayTitle(row) }}</template>
         </el-table-column>
-        <el-table-column prop="summary" label="摘要" min-width="220" show-overflow-tooltip />
+        <el-table-column label="摘要" min-width="220">
+          <template #default="{ row }">
+            <div class="multiline-cell">{{ row.summary || '-' }}</div>
+          </template>
+        </el-table-column>
         <el-table-column label="发布日期" width="140">
           <template #default="{ row }">{{ row.release_date || '-' }}</template>
         </el-table-column>
@@ -418,6 +422,12 @@ onMounted(refresh)
   display: flex;
   justify-content: flex-end;
   margin-top: 18px;
+}
+
+.multiline-cell {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.5;
 }
 
 .form-grid {

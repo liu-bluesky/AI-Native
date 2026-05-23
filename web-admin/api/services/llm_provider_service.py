@@ -862,6 +862,100 @@ class LlmProviderService:
         return normalized
 
     @staticmethod
+    def _normalize_tool_arguments(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (dict, list)):
+            try:
+                return json.dumps(value, ensure_ascii=False)
+            except Exception:
+                return str(value)
+        return str(value or "")
+
+    @staticmethod
+    def _stream_chunk_to_result(
+        data: Any,
+        *,
+        provider_id: str = "",
+        model_name: str = "",
+        tool_index_by_call_id: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            return {}
+
+        result: dict[str, Any] = {}
+        choices = data.get("choices")
+        choice: dict[str, Any] = {}
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            choice = choices[0]
+        delta = choice.get("delta") or {}
+        if not isinstance(delta, dict):
+            delta = {}
+        finish_reason = choice.get("finish_reason")
+
+        if "content" in delta and delta["content"]:
+            result["content"] = delta["content"]
+
+        tool_calls: list[dict[str, Any]] = []
+        if "tool_calls" in delta and isinstance(delta["tool_calls"], list):
+            tool_calls.extend(delta["tool_calls"])
+
+        def _tool_index(call_id: str) -> int:
+            if tool_index_by_call_id is None:
+                return 0
+            existing = tool_index_by_call_id.get(call_id)
+            if existing is not None:
+                return existing
+            tool_index_by_call_id[call_id] = len(tool_index_by_call_id)
+            return tool_index_by_call_id[call_id]
+
+        # Compatibility: some upstreams emit tool calls in top-level/item fields
+        # instead of OpenAI-style delta.tool_calls.
+        item = data.get("item")
+        if isinstance(item, dict):
+            call_id = str(item.get("call_id") or "").strip()
+            status = str(item.get("status") or "").strip().lower()
+            if call_id and status == "completed":
+                tool_calls.append(
+                    {
+                        "index": _tool_index(call_id),
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": str(item.get("name") or "").strip(),
+                            "arguments": LlmProviderService._normalize_tool_arguments(item.get("arguments")),
+                        },
+                    }
+                )
+
+        top_call_id = str(data.get("call_id") or "").strip()
+        if top_call_id and ("arguments" in data or "name" in data):
+            tool_calls.append(
+                {
+                    "index": _tool_index(top_call_id),
+                    "id": top_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": str(data.get("name") or "").strip(),
+                        "arguments": LlmProviderService._normalize_tool_arguments(data.get("arguments")),
+                    },
+                }
+            )
+
+        if tool_calls:
+            result["tool_calls"] = tool_calls
+        if finish_reason:
+            result["finish_reason"] = finish_reason
+
+        usage_payload = LlmProviderService._normalize_usage_payload(data.get("usage"))
+        if usage_payload:
+            result["usage"] = usage_payload
+            result["provider_id"] = str(provider_id or "").strip()
+            result["model_name"] = str(data.get("model") or model_name or "").strip()
+
+        return result
+
+    @staticmethod
     async def _stream_request(
         url: str,
         headers: dict[str, str],
@@ -876,26 +970,6 @@ class LlmProviderService:
         import logging
         logger = logging.getLogger(__name__)
         tool_index_by_call_id: dict[str, int] = {}
-        next_tool_index = 0
-
-        def _normalize_arguments(value: Any) -> str:
-            if isinstance(value, str):
-                return value
-            if isinstance(value, (dict, list)):
-                try:
-                    return json.dumps(value, ensure_ascii=False)
-                except Exception:
-                    return str(value)
-            return str(value or "")
-
-        def _tool_index(call_id: str) -> int:
-            nonlocal next_tool_index
-            existing = tool_index_by_call_id.get(call_id)
-            if existing is not None:
-                return existing
-            tool_index_by_call_id[call_id] = next_tool_index
-            next_tool_index += 1
-            return tool_index_by_call_id[call_id]
 
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             async with client.stream("POST", url, headers=headers, json=body) as resp:
@@ -923,63 +997,15 @@ class LlmProviderService:
                     if line.startswith("data: "):
                         try:
                             data = json.loads(line[6:])
-                            choice = data.get("choices", [{}])[0]
-                            delta = choice.get("delta", {})
-                            finish_reason = choice.get("finish_reason")
-
-                            # Build result dict
-                            result = {}
-                            if "content" in delta and delta["content"]:
-                                result["content"] = delta["content"]
-                            tool_calls: list[dict[str, Any]] = []
-                            if "tool_calls" in delta and isinstance(delta["tool_calls"], list):
-                                tool_calls.extend(delta["tool_calls"])
-
-                            # Compatibility: some upstreams emit tool calls in top-level/item fields
-                            # instead of OpenAI-style delta.tool_calls.
-                            item = data.get("item")
-                            if isinstance(item, dict):
-                                call_id = str(item.get("call_id") or "").strip()
-                                status = str(item.get("status") or "").strip().lower()
-                                if call_id and status == "completed":
-                                    tool_calls.append(
-                                        {
-                                            "index": _tool_index(call_id),
-                                            "id": call_id,
-                                            "type": "function",
-                                            "function": {
-                                                "name": str(item.get("name") or "").strip(),
-                                                "arguments": _normalize_arguments(item.get("arguments")),
-                                            },
-                                        }
-                                    )
-
-                            top_call_id = str(data.get("call_id") or "").strip()
-                            if top_call_id and ("arguments" in data or "name" in data):
-                                tool_calls.append(
-                                    {
-                                        "index": _tool_index(top_call_id),
-                                        "id": top_call_id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": str(data.get("name") or "").strip(),
-                                            "arguments": _normalize_arguments(data.get("arguments")),
-                                        },
-                                    }
-                                )
-                            if tool_calls:
-                                result["tool_calls"] = tool_calls
-                            if finish_reason:
-                                result["finish_reason"] = finish_reason
-                            usage_payload = LlmProviderService._normalize_usage_payload(data.get("usage"))
-                            if usage_payload:
-                                result["usage"] = usage_payload
-                                result["provider_id"] = str(provider_id or "").strip()
-                                result["model_name"] = str(data.get("model") or model_name or "").strip()
-
+                            result = LlmProviderService._stream_chunk_to_result(
+                                data,
+                                provider_id=provider_id,
+                                model_name=model_name,
+                                tool_index_by_call_id=tool_index_by_call_id,
+                            )
                             if result:
                                 yield result
-                        except (json.JSONDecodeError, IndexError, KeyError) as e:
+                        except json.JSONDecodeError as e:
                             logger.warning(f"Failed to parse SSE line: {line[:100]}, error: {e}")
                             continue
 

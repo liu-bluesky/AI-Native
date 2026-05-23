@@ -237,6 +237,23 @@ docker compose down
 docker compose up -d --build
 ```
 
+如果你要启用“网页在线安装 CLI 插件”的 Docker 方案 B，再额外确认：
+
+- `api` 容器会把 `CLI_PLUGIN_TOOLCHAIN_ROOT` 固定到 `/app/.ai-employee/cli-toolchain`
+- 默认 compose 会把宿主机 `${HOME}/.ai-employee/cli-toolchain` 挂进去
+- `compose.prod.yml` 会把这一路径挂到独立 volume `ai_employee_cli_toolchain_prod`
+
+这一路径专门保存：
+
+- 在线安装的 CLI 本体
+- npm 全局 prefix / bin
+- CLI 安装检测与运行时工具链
+
+不要把它和用户隔离运行目录混为一谈：
+
+- toolchain 根目录：公共 CLI 安装产物，所有用户共享
+- `.ai-employee/cli-runtime/users/...`：用户登录态、配置、缓存，各用户隔离
+
 ## 注意事项
 
 - 存储后端可通过环境变量切换：
@@ -247,7 +264,9 @@ docker compose up -d --build
 - `api` 服务容器内部统一连接 `redis:6379`；默认不暴露宿主机 Redis 端口，因此不会和现有 `ai-redis` 或本机 Redis 抢占 `6379`。
 - 正式导出依赖 `FFmpeg`；`docker/Dockerfile.api` 已内置安装，修改镜像后需执行 `docker compose up -d --build` 让 API 容器生效。
 - `api` 服务默认会把宿主机 `~/.ai-native/web-admin-api` 挂载到容器内 `/root/.ai-native/web-admin-api`。这样素材库上传文件、旁白/BGM、正式导出产物会和本地开发使用同一份数据目录，避免容器里找不到宿主机已有素材文件。
+- `api` 服务在 Docker 方案 B 下还会把 CLI toolchain 根目录挂载到 `/app/.ai-employee/cli-toolchain`，用于持久化在线安装的 CLI。本地 compose 走宿主机目录，生产 compose 走独立 Docker volume。
 - `compose.prod.yml` 默认改用 Docker volume 持久化 `/root/.ai-native/web-admin-api` 和 `/app/mcp-skills/knowledge`；前者保存 API 运行时文件，后者保存技能元数据与技能包目录。
+- `compose.prod.yml` 也会持久化 `/app/.ai-employee/cli-toolchain`；容器重建后，已安装 CLI 不会丢。
 - PostgreSQL migration 是否自动补跑由 `AUTO_RUN_DB_MIGRATIONS` 控制；为 `true` 时会在 API 启动和 Postgres store 建连时自动补跑；需要手动补跑时使用 `python scripts/migrate_db.py`。
 - `web-admin/api` 本地开发默认值已调整为 PostgreSQL：
 - 默认后端：`CORE_STORE_BACKEND=postgres`、`USAGE_STORE_BACKEND=postgres`

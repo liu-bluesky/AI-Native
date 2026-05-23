@@ -47,6 +47,7 @@ services:
       USAGE_STORE_BACKEND: ${USAGE_STORE_BACKEND:-postgres}
       AUTO_RUN_DB_MIGRATIONS: ${AUTO_RUN_DB_MIGRATIONS:-true}
       DATABASE_URL: postgresql://${DB_USER:-admin}:${DB_PASSWORD:-changeme}@postgres:5432/${DB_NAME:-ai_employee}
+      CLI_PLUGIN_TOOLCHAIN_ROOT: /app/.ai-employee/cli-toolchain
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_DB: ${REDIS_DB:-0}
@@ -55,6 +56,7 @@ services:
       API_RELOAD: "false"
     volumes:
       - ${HOME}/.ai-native/web-admin-api:/root/.ai-native/web-admin-api
+      - ${HOME}/.ai-employee/cli-toolchain:/app/.ai-employee/cli-toolchain
     ports:
       - "8000:8000"
 
@@ -62,6 +64,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.frontend
+      args:
+        VITE_SHOW_LOCAL_RUNTIME_SETTINGS: ${VITE_SHOW_LOCAL_RUNTIME_SETTINGS:-false}
     container_name: ai-employee-frontend
     restart: unless-stopped
     ports:

@@ -99,8 +99,10 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="验证" min-width="220" show-overflow-tooltip>
-          <template #default="{ row }">{{ (row.verification || []).join(' / ') || '-' }}</template>
+        <el-table-column label="验证" min-width="220">
+          <template #default="{ row }">
+            <div class="multiline-cell">{{ (row.verification || []).join(' / ') || '-' }}</div>
+          </template>
         </el-table-column>
         <el-table-column label="更新时间" min-width="180">
           <template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template>
@@ -395,6 +397,7 @@ onMounted(() => {
 
 .session-table :deep(.el-table__body .cell) {
   line-height: 1.45;
+  white-space: normal;
 }
 
 .session-table :deep(.el-table__row) {
@@ -466,6 +469,12 @@ onMounted(() => {
 
 .session-detail-drawer :deep(.el-drawer__body) {
   padding: 16px 18px 18px;
+}
+
+.multiline-cell {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.5;
 }
 
 .detail-loading {

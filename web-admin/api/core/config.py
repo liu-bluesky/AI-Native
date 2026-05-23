@@ -12,6 +12,7 @@ DEFAULT_DEV_DATABASE_URL = "postgresql://admin:changeme@127.0.0.1:5432/ai_employ
 _API_ROOT = Path(__file__).resolve().parents[1]
 _ENV_FILE_NAMES = (".env", ".env.local")
 _DEFAULT_API_DATA_DIR = Path.home() / ".ai-native" / "web-admin-api"
+_DEFAULT_CLI_PLUGIN_TOOLCHAIN_ROOT = Path(".ai-employee") / "cli-toolchain"
 _PROJECT_ROOT_MARKERS = (
     "mcp-skills",
     "mcp-rules",
@@ -100,6 +101,14 @@ def _build_api_data_dir_from_env() -> Path:
     return (_API_ROOT / path).resolve()
 
 
+def _build_cli_plugin_toolchain_root_from_env() -> Path:
+    raw = _get_env("CLI_PLUGIN_TOOLCHAIN_ROOT", "").strip()
+    path = Path(raw).expanduser() if raw else _DEFAULT_CLI_PLUGIN_TOOLCHAIN_ROOT
+    if path.is_absolute():
+        return path.resolve()
+    return (get_project_root() / path).resolve()
+
+
 @dataclass(frozen=True)
 class Settings:
     api_host: str
@@ -115,6 +124,7 @@ class Settings:
     feedback_upgrade_enabled_global: bool
     database_url: str
     api_data_dir: Path
+    cli_plugin_toolchain_root: Path
     # Redis
     redis_host: str
     redis_port: int
@@ -134,6 +144,13 @@ class Settings:
 
 def get_api_data_dir(*, create: bool = True) -> Path:
     path = get_settings().api_data_dir
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_cli_plugin_toolchain_root(*, create: bool = True) -> Path:
+    path = get_settings().cli_plugin_toolchain_root
     if create:
         path.mkdir(parents=True, exist_ok=True)
     return path
@@ -163,6 +180,7 @@ def get_settings() -> Settings:
         feedback_upgrade_enabled_global=_env_bool("FEEDBACK_UPGRADE_ENABLED_GLOBAL", True),
         database_url=_build_database_url_from_env(),
         api_data_dir=_build_api_data_dir_from_env(),
+        cli_plugin_toolchain_root=_build_cli_plugin_toolchain_root_from_env(),
         redis_host=_get_env("REDIS_HOST", "localhost"),
         redis_port=int(_get_env("REDIS_PORT", "6379")),
         redis_db=int(_get_env("REDIS_DB", "0")),

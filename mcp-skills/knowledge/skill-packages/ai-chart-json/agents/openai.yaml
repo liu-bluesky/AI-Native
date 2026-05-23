@@ -1,0 +1,3 @@
+display_name: AI Chart JSON
+short_description: Generate import-ready BI Design JsonChart component JSON.
+default_prompt: Generate an import-ready chart JSON for BI Design using the JsonChart component.

@@ -1,0 +1,68 @@
+{
+    "key":  "JsonChart",
+    "chartConfig":  {
+                        "key":  "JsonChart",
+                        "chartKey":  "VJsonChart",
+                        "conKey":  "VCJsonChart",
+                        "title":  "JSON 通用图表",
+                        "category":  "Mores",
+                        "categoryName":  "更多",
+                        "package":  "Charts",
+                        "chartFrame":  "echarts",
+                        "image":  "json-chart.png"
+                    },
+    "option":  {
+                   "tooltip":  {
+                                   "show":  true,
+                                   "trigger":  "axis"
+                               },
+                   "legend":  {
+                                  "show":  true,
+                                  "top":  0,
+                                  "textStyle":  {
+                                                    "color":  "#B9B8CE"
+                                                }
+                              },
+                   "dataset":  {
+                                   "dimensions":  [
+                                                      "product",
+                                                      "value"
+                                                  ],
+                                   "source":  [
+                                                  {
+                                                      "product":  "Mon",
+                                                      "value":  120
+                                                  }
+                                              ]
+                               },
+                   "grid":  {
+                                "left":  "10%",
+                                "top":  60,
+                                "right":  "10%",
+                                "bottom":  60
+                            },
+                   "xAxis":  {
+                                 "type":  "category",
+                                 "axisLabel":  {
+                                                   "color":  "#B9B8CE"
+                                               }
+                             },
+                   "yAxis":  {
+                                 "type":  "value",
+                                 "axisLabel":  {
+                                                   "color":  "#B9B8CE"
+                                               }
+                             },
+                   "series":  [
+                                  {
+                                      "type":  "bar",
+                                      "label":  {
+                                                    "show":  true,
+                                                    "position":  "top",
+                                                    "color":  "#fff"
+                                                }
+                                  }
+                              ],
+                   "backgroundColor":  "rgba(0,0,0,0)"
+               }
+}

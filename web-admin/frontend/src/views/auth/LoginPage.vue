@@ -39,6 +39,10 @@
         />
       </el-form-item>
 
+      <div class="login-form__options">
+        <el-checkbox v-model="form.rememberPassword">记住密码</el-checkbox>
+      </div>
+
       <el-form-item class="login-form__submit">
         <el-button
           type="primary"
@@ -61,11 +65,12 @@
 </template>
 
 <script setup>
-import { reactive, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import AuthDesktopShell from "@/components/auth/AuthDesktopShell.vue";
 import { loginWithPassword, resolveSafeRedirectPath } from "@/utils/auth.js";
+import { getRememberedLoginInfo, persistRememberedLoginInfo } from "@/utils/auth-storage.js";
 
 const route = useRoute();
 const router = useRouter();
@@ -88,17 +93,29 @@ const loginFeatures = [
   },
 ];
 
-const form = reactive({ username: "", password: "" });
+const form = reactive({ username: "", password: "", rememberPassword: false });
 const rules = {
   username: [{ required: true, message: "请输入账号", trigger: "blur" }],
   password: [{ required: true, message: "请输入密码", trigger: "blur" }],
 };
+
+onMounted(() => {
+  const remembered = getRememberedLoginInfo();
+  form.username = remembered.username;
+  form.password = remembered.enabled ? remembered.password : "";
+  form.rememberPassword = remembered.enabled;
+});
 
 async function handleLogin() {
   await formRef.value.validate();
   loading.value = true;
   try {
     await loginWithPassword({
+      username: form.username.trim(),
+      password: form.password,
+    });
+    persistRememberedLoginInfo({
+      enabled: form.rememberPassword,
       username: form.username.trim(),
       password: form.password,
     });
@@ -148,6 +165,13 @@ async function handleLogin() {
 .login-form__submit {
   margin-top: 8px;
   margin-bottom: 0;
+}
+
+.login-form__options {
+  display: flex;
+  align-items: center;
+  margin-top: -2px;
+  margin-bottom: 12px;
 }
 
 .login-submit {

@@ -1144,3 +1144,216 @@ async def test_agent_orchestrator_retries_pending_lark_send_after_successful_aut
     assert "messages-send" in str(tool_results[2].get("command") or "")
     assert events[-1]["type"] == "done"
     assert "message_id=om_456" in str(events[-1]["content"] or "")
+
+
+@pytest.mark.asyncio
+async def test_agent_orchestrator_stops_on_browser_authorization_wait(monkeypatch):
+    import asyncio
+    import json
+
+    from services.agent_orchestrator import AgentOrchestrator
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-auth",
+                        "function": {
+                            "name": "project_host_run_command",
+                            "arguments": json.dumps(
+                                {
+                                    "command": 'lark-cli auth login --scope "im:message.send_as_user"',
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ]
+            }
+
+        async def chat_completion(self, **kwargs):
+            return {"content": "fallback"}
+
+    class _FakeToolExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def execute_parallel(self, tool_calls, timeout=None):
+            command = json.loads(tool_calls[0]["function"]["arguments"])["command"]
+            return [
+                {
+                    "ok": False,
+                    "command": command,
+                    "source": "operation_wait_task",
+                    "operation_kind": "auth_login",
+                    "operation_label": "网页登录授权",
+                    "interactive": True,
+                    "requires_user_action": True,
+                    "waiting_user_action": True,
+                    "action_type": "open_url",
+                    "authorization_url": "https://open.feishu.cn/mock-auth",
+                    "status": "waiting_user_action",
+                    "status_label": "等待授权",
+                    "next_step": "请在浏览器完成授权后回到对话框继续。",
+                    "task_id": "cli-plugin-login-1",
+                    "stdout": "",
+                    "stderr": "",
+                    "exit_code": None,
+                }
+            ]
+
+    class _FakeConversationManager:
+        def __init__(self):
+            self.messages = []
+
+        async def get_context(self, session_id, max_tokens):
+            return []
+
+        async def append_message(self, session_id, message):
+            self.messages.append(message)
+
+    monkeypatch.setattr("services.agent_orchestrator.ToolExecutor", _FakeToolExecutor)
+    monkeypatch.setattr("services.agent_orchestrator.audit_task_tree_round", lambda **kwargs: None)
+
+    conversation = _FakeConversationManager()
+    orchestrator = AgentOrchestrator(_FakeLLM(), conversation)
+    cancel_event = asyncio.Event()
+    events = []
+    async for item in orchestrator.run(
+        session_id="session-auth-wait",
+        user_message="帮我登录飞书用户态",
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="glm-test",
+        temperature=0.1,
+        max_tokens=256,
+        project_id="proj-1",
+        employee_id="",
+        cancel_event=cancel_event,
+        username="tester",
+        chat_session_id="chat-auth-wait",
+    ):
+        events.append(item)
+
+    waiting_event = next(item for item in events if item["type"] == "user_action_required")
+    done_event = next(item for item in events if item["type"] == "done")
+    tool_results = [item for item in events if item["type"] == "tool_result"]
+
+    assert len(tool_results) == 1
+    assert waiting_event["authorization_url"] == "https://open.feishu.cn/mock-auth"
+    assert waiting_event["task_id"] == "cli-plugin-login-1"
+    assert waiting_event["action_type"] == "open_url"
+    assert "resume_command" in waiting_event
+    assert done_event["completed_reason"] == "waiting_user_action"
+    assert "完成授权" in str(done_event["content"] or "")
+
+
+@pytest.mark.asyncio
+async def test_agent_orchestrator_stops_on_queued_login_task(monkeypatch):
+    import asyncio
+    import json
+
+    from services.agent_orchestrator import AgentOrchestrator
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-auth-queued",
+                        "function": {
+                            "name": "project_host_run_command",
+                            "arguments": json.dumps(
+                                {
+                                    "command": "lark-cli auth login --recommend",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ]
+            }
+
+        async def chat_completion(self, **kwargs):
+            return {"content": "fallback"}
+
+    class _FakeToolExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def execute_parallel(self, tool_calls, timeout=None):
+            command = json.loads(tool_calls[0]["function"]["arguments"])["command"]
+            return [
+                {
+                    "ok": False,
+                    "command": command,
+                    "source": "operation_wait_task",
+                    "operation_kind": "auth_login",
+                    "operation_label": "网页登录授权",
+                    "interactive": True,
+                    "requires_user_action": False,
+                    "waiting_user_action": False,
+                    "action_type": "none",
+                    "authorization_url": "",
+                    "status": "queued",
+                    "status_label": "排队中",
+                    "next_step": "任务已创建，等待后台执行",
+                    "task_id": "cli-plugin-login-queued-1",
+                    "stdout": "",
+                    "stderr": "",
+                    "exit_code": None,
+                }
+            ]
+
+    class _FakeConversationManager:
+        def __init__(self):
+            self.messages = []
+
+        async def get_context(self, session_id, max_tokens):
+            return []
+
+        async def append_message(self, session_id, message):
+            self.messages.append(message)
+
+    monkeypatch.setattr("services.agent_orchestrator.ToolExecutor", _FakeToolExecutor)
+    monkeypatch.setattr("services.agent_orchestrator.audit_task_tree_round", lambda **kwargs: None)
+
+    conversation = _FakeConversationManager()
+    orchestrator = AgentOrchestrator(_FakeLLM(), conversation)
+    cancel_event = asyncio.Event()
+    events = []
+    async for item in orchestrator.run(
+        session_id="session-auth-queued",
+        user_message="帮我登录飞书用户态",
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="glm-test",
+        temperature=0.1,
+        max_tokens=256,
+        project_id="proj-1",
+        employee_id="",
+        cancel_event=cancel_event,
+        username="tester",
+        chat_session_id="chat-auth-queued",
+    ):
+        events.append(item)
+
+    done_event = next(item for item in events if item["type"] == "done")
+    workflow_state_event = next(item for item in events if item["type"] == "workflow_state")
+    operation_state_event = next(item for item in events if item["type"] == "operation_task_state")
+    tool_result = next(item for item in events if item["type"] == "tool_result")
+
+    assert tool_result["task_id"] == "cli-plugin-login-queued-1"
+    assert tool_result["task_status"] == "queued"
+    assert workflow_state_event["workflow_kind"] == "auth_login"
+    assert workflow_state_event["status"] == "queued"
+    assert workflow_state_event["summary"] == "外部操作已创建，等待后续结果"
+    assert operation_state_event["status"] == "queued"
+    assert operation_state_event["summary"] == "外部操作已创建，等待后续结果"
+    assert done_event["completed_reason"] == "background_task_pending"
+    assert done_event["content"] == ""
+    assert done_event["guard_message"] == "任务已创建，等待后台执行"
+    assert done_event["task_id"] == "cli-plugin-login-queued-1"

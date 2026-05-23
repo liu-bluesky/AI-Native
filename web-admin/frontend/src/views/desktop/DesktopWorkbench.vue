@@ -1,5 +1,5 @@
 <template>
-  <section class="workbench-app">
+  <section class="workbench-app" :class="{ 'is-embedded': embeddedMode }">
     <div class="workbench-app__ambient" aria-hidden="true" />
 
     <header class="workbench-app__hero">
@@ -8,10 +8,10 @@
         <h1>工作台现在直接看统计。</h1>
         <p>这里不只负责打开应用，也负责快速进入关键观测入口。统计已经从设置区挪回工作台，方便直接判断 MCP 活跃度、会话推进和当前观测盲区。</p>
         <div class="workbench-app__actions">
-          <button type="button" class="workbench-app__primary" @click="openApp('/ai/chat', 'chat')">
+          <button type="button" class="workbench-app__primary" @click="openApp('chat')">
             打开 AI 控制台
           </button>
-          <button type="button" class="workbench-app__secondary" @click="openApp('/statistics', 'settings-statistics')">
+          <button type="button" class="workbench-app__secondary" @click="openApp('settings-statistics')">
             打开统计
           </button>
         </div>
@@ -34,11 +34,12 @@
         v-for="app in apps"
         :key="app.id"
         class="workbench-app__card"
+        :class="{ 'is-active': activeAppId === app.id }"
       >
         <button
           type="button"
           class="workbench-app__card-main"
-          @click="openApp(app.path, app.id)"
+          @click="openApp(app.id)"
         >
           <span class="workbench-app__icon" :style="desktopIconStyle(app)">{{
             app.icon?.label || app.shortLabel
@@ -55,31 +56,32 @@
         </button>
       </article>
     </div>
+
+    <section v-if="activePanel" class="workbench-app__workspace">
+      <div class="workbench-app__workspace-head">
+        <div>
+          <div class="workbench-app__workspace-eyebrow">Workbench Panel</div>
+          <h2>{{ activeApp?.label || "当前面板" }}</h2>
+          <p>{{ activeApp?.summary || "当前工作台内容" }}</p>
+        </div>
+        <button type="button" class="workbench-app__workspace-close" @click="closePanel">
+          返回工作台
+        </button>
+      </div>
+      <div class="workbench-app__workspace-body">
+        <component :is="activePanel" :key="activeAppId" />
+      </div>
+    </section>
   </section>
 </template>
 
 <script setup>
-import { computed } from "vue";
-import { useRouter } from "vue-router";
+import { computed, defineAsyncComponent, h, ref, watch } from "vue";
 import {
   canAccessDesktopApp,
   DESKTOP_LAUNCHER_ITEMS,
-  resolveDesktopLaunchPath,
 } from "@/utils/desktop-shell.js";
-import {
-  openRouteInDesktop,
-  requestDesktopPinApp,
-} from "@/utils/desktop-app-bridge.js";
-
-const router = useRouter();
-const apps = computed(() =>
-  DESKTOP_LAUNCHER_ITEMS.filter(
-    (item) =>
-      item.id !== "workbench"
-      && (item.category !== "settings" || item.id === "settings-home")
-      && canAccessDesktopApp(item),
-  ),
-);
+import { isEmbeddedDesktopApp, requestDesktopPinApp } from "@/utils/desktop-app-bridge.js";
 
 function desktopIconStyle(app) {
   return {
@@ -90,17 +92,11 @@ function desktopIconStyle(app) {
   };
 }
 
-function openApp(path, appId) {
+function openApp(appId) {
   const app = DESKTOP_LAUNCHER_ITEMS.find((item) => item.id === appId);
-  if (app && !canAccessDesktopApp(app)) return;
-  const launchPath = app ? resolveDesktopLaunchPath(app.id) : path;
-  void openRouteInDesktop(router, launchPath, {
-    mode: "focus-or-open",
-    appId: app?.id || appId,
-    title: app?.label || "AI 控制台",
-    summary: app?.summary || "在桌面窗口中运行 AI 控制台。",
-    eyebrow: app?.eyebrow || "AI Console",
-  });
+  if (!app || !canAccessDesktopApp(app)) return;
+  if (!WORKBENCH_PANELS[app.id]) return;
+  activeAppId.value = app.id;
 }
 
 function pinApp(app) {
@@ -108,6 +104,97 @@ function pinApp(app) {
     title: app.label,
   });
 }
+
+function closePanel() {
+  activeAppId.value = "";
+}
+
+function getStoredActivePanelId() {
+  if (typeof window === "undefined") return "";
+  return String(window.localStorage.getItem(WORKBENCH_PANEL_STORAGE_KEY) || "").trim();
+}
+
+function persistActivePanelId(panelId) {
+  if (typeof window === "undefined") return;
+  const normalized = String(panelId || "").trim();
+  if (normalized) {
+    window.localStorage.setItem(WORKBENCH_PANEL_STORAGE_KEY, normalized);
+    return;
+  }
+  window.localStorage.removeItem(WORKBENCH_PANEL_STORAGE_KEY);
+}
+
+function createWorkbenchPanel(loader) {
+  return defineAsyncComponent({
+    loader,
+    delay: 60,
+    timeout: 10000,
+    loadingComponent: AsyncLoading,
+    errorComponent: AsyncError,
+  });
+}
+
+const AsyncLoading = {
+  name: "WorkbenchAsyncLoading",
+  render() {
+    return h(
+      "div",
+      { class: "workbench-app__panel-state workbench-app__panel-state--loading" },
+      [
+        h("strong", "加载中"),
+        h("span", "正在按需加载工作台内容"),
+      ],
+    );
+  },
+};
+
+const AsyncError = {
+  name: "WorkbenchAsyncError",
+  render() {
+    return h(
+      "div",
+      { class: "workbench-app__panel-state workbench-app__panel-state--error" },
+      [
+        h("strong", "加载失败"),
+        h("span", "请重试打开该面板"),
+      ],
+    );
+  },
+};
+
+const WORKBENCH_PANEL_STORAGE_KEY = "desktop_workbench_active_panel";
+const embeddedMode = isEmbeddedDesktopApp();
+const activeAppId = ref(getStoredActivePanelId());
+const WORKBENCH_PANELS = {
+  chat: createWorkbenchPanel(() => import("@/views/projects/ProjectChat.vue")),
+  tasks: createWorkbenchPanel(() => import("@/views/tasks/TaskManager.vue")),
+  projects: createWorkbenchPanel(() => import("@/views/projects/ProjectList.vue")),
+  materials: createWorkbenchPanel(() => import("@/views/projects/ProjectCreationWorkspace.vue")),
+  market: createWorkbenchPanel(() => import("@/views/public/MarketPage.vue")),
+  "settings-home": createWorkbenchPanel(() => import("@/views/desktop/SettingsLauncher.vue")),
+  "settings-statistics": createWorkbenchPanel(() => import("@/views/system/StatisticsDashboard.vue")),
+};
+const WORKBENCH_PANEL_IDS = new Set(Object.keys(WORKBENCH_PANELS));
+const apps = computed(() =>
+  DESKTOP_LAUNCHER_ITEMS.filter(
+    (item) =>
+      item.id !== "workbench"
+      && WORKBENCH_PANEL_IDS.has(item.id)
+      && canAccessDesktopApp(item),
+  ),
+);
+const activePanel = computed(() => WORKBENCH_PANELS[activeAppId.value] || null);
+const activeApp = computed(
+  () => DESKTOP_LAUNCHER_ITEMS.find((item) => item.id === activeAppId.value) || null,
+);
+
+watch(
+  activeAppId,
+  (value) => {
+    persistActivePanelId(value);
+  },
+  { immediate: true },
+);
 </script>
 
 <style scoped>
@@ -115,12 +202,20 @@ function pinApp(app) {
   position: relative;
   min-height: 100vh;
   padding: 34px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background:
     radial-gradient(circle at 12% 0%, rgba(125, 211, 252, 0.18), transparent 26%),
     radial-gradient(circle at 88% 14%, rgba(103, 232, 249, 0.14), transparent 22%),
     linear-gradient(180deg, #f5f4ef 0%, #f8fafc 42%, #edf2f7 100%);
   box-sizing: border-box;
+}
+
+.workbench-app.is-embedded {
+  min-height: 100vh;
+  height: 100vh;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .workbench-app__ambient {
@@ -294,6 +389,11 @@ function pinApp(app) {
     box-shadow 0.18s ease;
 }
 
+.workbench-app__card.is-active {
+  border-color: rgba(15, 23, 42, 0.16);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+}
+
 .workbench-app__card-main {
   width: 100%;
   min-height: 188px;
@@ -365,6 +465,79 @@ function pinApp(app) {
   color: #526071;
   font-size: 13px;
   line-height: 1.6;
+}
+
+.workbench-app__workspace {
+  position: relative;
+  margin-top: 26px;
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 32px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 22px 56px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(22px);
+}
+
+.workbench-app__workspace-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.workbench-app__workspace-eyebrow {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #c2410c;
+}
+
+.workbench-app__workspace-head h2 {
+  margin: 10px 0 0;
+  color: #0f172a;
+  font-size: clamp(28px, 4vw, 40px);
+  line-height: 1.08;
+  letter-spacing: -0.05em;
+}
+
+.workbench-app__workspace-head p {
+  margin-top: 10px;
+  max-width: 64ch;
+}
+
+.workbench-app__workspace-close {
+  height: 42px;
+  padding: 0 16px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #0f172a;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workbench-app__workspace-body {
+  min-height: 64vh;
+  border-radius: 26px;
+  overflow: hidden;
+}
+
+.workbench-app__panel-state {
+  min-height: 320px;
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  padding: 24px;
+  color: #475569;
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.workbench-app__panel-state strong {
+  color: #0f172a;
+  font-size: 18px;
 }
 
 @media (max-width: 960px) {

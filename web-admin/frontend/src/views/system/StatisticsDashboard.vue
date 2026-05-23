@@ -2176,9 +2176,9 @@ watch(scopedProjectId, () => {
 <style scoped>
 .statistics-page {
   position: relative;
-  min-height: 100vh;
+  min-height: 100%;
   padding: 32px;
-  overflow: hidden;
+  overflow: visible;
   box-sizing: border-box;
   background:
     radial-gradient(circle at 18% 0%, rgba(125, 211, 252, 0.16), transparent 26%),

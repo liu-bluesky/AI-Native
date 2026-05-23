@@ -2,7 +2,7 @@ name: ${COMPOSE_PROJECT_NAME:-ai_employee_prod}
 
 services:
   postgres:
-    image: postgres:17
+    image: ${POSTGRES_IMAGE:-postgres:17}
     container_name: ${POSTGRES_CONTAINER_NAME:-ai-employee-postgres}
     restart: unless-stopped
     environment:
@@ -21,7 +21,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     container_name: ai-employee-redis
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]
@@ -45,6 +45,7 @@ services:
       USAGE_STORE_BACKEND: ${USAGE_STORE_BACKEND:-postgres}
       AUTO_RUN_DB_MIGRATIONS: ${AUTO_RUN_DB_MIGRATIONS:-true}
       DATABASE_URL: postgresql://${DB_USER:-admin}:${DB_PASSWORD:-changeme}@postgres:5432/${DB_NAME:-ai_employee}
+      CLI_PLUGIN_TOOLCHAIN_ROOT: /app/.ai-employee/cli-toolchain
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_DB: ${REDIS_DB:-0}
@@ -55,6 +56,7 @@ services:
       - "${HOST_API_PORT:-8000}:8000"
     volumes:
       - api_data:/root/.ai-native/web-admin-api
+      - cli_toolchain:/app/.ai-employee/cli-toolchain
       - mcp_skills_knowledge:/app/mcp-skills/knowledge
 
   frontend:
@@ -72,5 +74,7 @@ volumes:
     name: ai_employee_pgdata_prod
   api_data:
     name: ai_employee_api_data_prod
+  cli_toolchain:
+    name: ai_employee_cli_toolchain_prod
   mcp_skills_knowledge:
     name: ai_employee_mcp_skills_knowledge_prod

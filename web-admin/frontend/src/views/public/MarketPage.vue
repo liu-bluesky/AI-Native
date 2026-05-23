@@ -114,6 +114,32 @@
                   <span>{{ item.requires_restart ? '安装后需重启' : '安装后可直接使用' }}</span>
                 </div>
 
+                <div
+                  v-if="section.key === 'cli_plugins' && resolveCliPluginDiagnostics(item).summary"
+                  class="market-card__profile"
+                >
+                  <div class="market-card__profile-head">
+                    <span class="market-card__profile-label">运行诊断</span>
+                    <span class="market-card__profile-badge is-ready">
+                      {{ resolveCliPluginDiagnostics(item).mode_label }}
+                    </span>
+                  </div>
+                  <div class="market-card__profile-text">
+                    {{ resolveCliPluginDiagnostics(item).summary }}
+                  </div>
+                  <div class="market-card__meta market-card__meta--stacked">
+                    <span v-if="resolveCliPluginDiagnostics(item).toolchain_root">
+                      工具链 {{ resolveCliPluginDiagnostics(item).toolchain_root }}
+                    </span>
+                    <span v-if="resolveCliPluginDiagnostics(item).runtime_root">
+                      隔离目录 {{ resolveCliPluginDiagnostics(item).runtime_root }}
+                    </span>
+                    <span v-if="resolveCliPluginDiagnostics(item).preferred_binary_path">
+                      可执行 {{ resolveCliPluginDiagnostics(item).preferred_binary_path }}
+                    </span>
+                  </div>
+                </div>
+
                 <div class="market-card__meta" v-else-if="section.key === 'skills'">
                   <span>版本 {{ item.version || '1.0.0' }}</span>
                   <span>{{ item.tool_count }} 个工具</span>
@@ -131,19 +157,6 @@
 
                 <div class="market-card__chips" v-if="section.key === 'cli_plugins' && item.tags?.length">
                   <span v-for="tag in item.tags.slice(0, 4)" :key="tag">{{ tag }}</span>
-                </div>
-
-                <div class="market-card__command" v-if="section.key === 'cli_plugins'">
-                  <code>{{ item.install_command }}</code>
-                </div>
-
-                <div class="market-card__actions" v-if="section.key === 'cli_plugins'">
-                  <el-button size="small" @click="sendPluginInstallPromptToChat(item)">
-                    交给 AI 安装
-                  </el-button>
-                  <el-button size="small" @click="copyPluginInstallCommand(item)">
-                    复制命令
-                  </el-button>
                 </div>
 
                 <div class="market-card__chips" v-else-if="section.key === 'skills' && item.tags?.length">
@@ -182,6 +195,7 @@
       description="市场目录统一承载技能、员工和规则，后续其他入口也可直接复用这套登录注册能力。"
       @success="fetchCatalog"
     />
+
   </div>
 </template>
 
@@ -211,8 +225,6 @@ const meta = reactive({
   employee_count: 0,
   rule_count: 0,
 })
-const PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX = 'plugin-install-draft:'
-const PLUGIN_INSTALL_DRAFT_QUERY_KEY = 'plugin_install_draft_key'
 
 const authenticated = computed(() => {
   authStateVersion.value
@@ -306,6 +318,20 @@ function resolveCliPluginStatus(item) {
   }
 }
 
+function resolveCliPluginDiagnostics(item) {
+  const diagnostics = item?.runtime_diagnostics && typeof item.runtime_diagnostics === 'object'
+    ? item.runtime_diagnostics
+    : {}
+  return {
+    mode: String(diagnostics.mode || '').trim(),
+    mode_label: String(diagnostics.mode_label || '').trim() || '运行诊断',
+    summary: String(diagnostics.summary || '').trim(),
+    toolchain_root: String(diagnostics.toolchain_root || '').trim(),
+    runtime_root: String(diagnostics.runtime_root || '').trim(),
+    preferred_binary_path: String(diagnostics.preferred_binary_path || '').trim(),
+  }
+}
+
 async function fetchCatalog() {
   if (!authenticated.value) {
     return
@@ -335,53 +361,6 @@ async function fetchCatalog() {
   } finally {
     loading.value = false
   }
-}
-
-async function copyPluginInstallCommand(item) {
-  const command = String(item?.install_command || '').trim()
-  if (!command) {
-    ElMessage.warning('当前插件没有可复制的安装命令')
-    return
-  }
-  try {
-    await navigator.clipboard.writeText(command)
-    ElMessage.success('安装命令已复制')
-  } catch (err) {
-    ElMessage.error(err?.message || '复制安装命令失败')
-  }
-}
-
-function buildPluginInstallPrompt(item) {
-  const prompt = String(item?.ai_install_prompt || '').trim()
-  if (prompt) return prompt
-  const docsUrl = String(item?.docs_url || '').trim()
-  const name = String(item?.name || 'CLI 插件').trim()
-  return docsUrl ? `帮我安装 ${name}：${docsUrl}` : `帮我安装 ${name}`
-}
-
-function persistPluginInstallDraft(prompt) {
-  const key = `${PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX}${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
-  window.localStorage.setItem(
-    key,
-    JSON.stringify({
-      prompt,
-      source: 'market-cli-plugin',
-    }),
-  )
-  return key
-}
-
-function sendPluginInstallPromptToChat(item) {
-  const prompt = buildPluginInstallPrompt(item)
-  const draftKey = persistPluginInstallDraft(prompt)
-  const projectId = String(window.localStorage.getItem('project_id') || '').trim()
-  router.push({
-    path: '/ai/chat',
-    query: {
-      ...(projectId ? { project_id: projectId } : {}),
-      [PLUGIN_INSTALL_DRAFT_QUERY_KEY]: draftKey,
-    },
-  })
 }
 
 onMounted(async () => {
@@ -792,6 +771,11 @@ onMounted(async () => {
   font-size: 13px;
 }
 
+.market-card__meta--stacked {
+  display: grid;
+  gap: 6px;
+}
+
 .market-card__status {
   display: flex;
   flex-wrap: wrap;
@@ -861,6 +845,57 @@ onMounted(async () => {
   word-break: break-all;
 }
 
+.market-card__profile {
+  padding: 10px 12px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.market-card__profile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.market-card__profile-label {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.market-card__profile-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #64748b;
+  color: #fff;
+  font-size: 11px;
+}
+
+.market-card__profile-badge.is-authenticated,
+.market-card__profile-badge.is-ready {
+  background: #0f766e;
+}
+
+.market-card__profile-badge.is-pending_auth {
+  background: #b45309;
+}
+
+.market-card__profile-badge.is-uninitialized {
+  background: #9a3412;
+}
+
+.market-card__profile-text {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
 .market-card__actions {
   display: flex;
   flex-wrap: wrap;
@@ -890,6 +925,27 @@ onMounted(async () => {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #64748b;
+}
+
+.plugin-install-dialog__callout {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(180, 83, 9, 0.08);
+  color: #9a3412;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.plugin-install-dialog__link-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.plugin-install-dialog__link-row a {
+  color: #0369a1;
+  word-break: break-all;
 }
 
 .plugin-install-dialog__block code,

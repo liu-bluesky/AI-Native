@@ -13,6 +13,7 @@ from psycopg.rows import dict_row
 from stores.json.project_chat_store import (
     ProjectChatMessage,
     ProjectChatSession,
+    _chat_content_matches_fallback,
     _normalize_chat_context_text,
     _normalize_chat_source_type,
     _normalize_attachments,
@@ -613,9 +614,23 @@ class ProjectChatStorePostgres:
             )
             return removed
 
-    def truncate_messages(self, project_id: str, username: str, message_id: str, chat_session_id: str = "") -> int:
+    def truncate_messages(
+        self,
+        project_id: str,
+        username: str,
+        message_id: str,
+        chat_session_id: str = "",
+        *,
+        fallback_user_content: str = "",
+        fallback_user_turn_index: int | None = None,
+    ) -> int:
         normalized_message_id = str(message_id or "").strip()
         normalized_session_id = str(chat_session_id or "").strip()
+        normalized_fallback_content = str(fallback_user_content or "").strip()
+        try:
+            normalized_fallback_turn_index = int(fallback_user_turn_index) if fallback_user_turn_index is not None else -1
+        except (TypeError, ValueError):
+            normalized_fallback_turn_index = -1
         if not normalized_message_id:
             return 0
         records = self.list_messages(
@@ -624,10 +639,26 @@ class ProjectChatStorePostgres:
             limit=0,
             chat_session_id=normalized_session_id,
         )
-        target_index = next(
-            (index for index, item in enumerate(records) if str(item.id or "").strip() == normalized_message_id),
-            -1,
-        )
+        target_index = -1
+        scoped_user_index = -1
+        for index, item in enumerate(records):
+            item_role = str(item.role or "").strip().lower()
+            if item_role == "user":
+                scoped_user_index += 1
+            if str(item.id or "").strip() == normalized_message_id:
+                target_index = index
+                break
+            if (
+                normalized_fallback_content
+                and item_role == "user"
+                and _chat_content_matches_fallback(item.content, normalized_fallback_content)
+                and (
+                    normalized_fallback_turn_index < 0
+                    or scoped_user_index == normalized_fallback_turn_index
+                )
+            ):
+                target_index = index
+                break
         if target_index < 0:
             return 0
         removable_ids = [

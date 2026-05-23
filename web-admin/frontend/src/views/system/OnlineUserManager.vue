@@ -53,8 +53,10 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="当前位置" min-width="240" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.current_path || '-' }}</template>
+        <el-table-column label="当前位置" min-width="240">
+          <template #default="{ row }">
+            <span class="multiline-cell multiline-cell--break-all">{{ row.current_path || '-' }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="IP" min-width="130">
           <template #default="{ row }">{{ row.client_ip || '-' }}</template>
@@ -65,8 +67,10 @@
         <el-table-column label="首次出现" min-width="180">
           <template #default="{ row }">{{ formatDateTime(row.first_seen_at) }}</template>
         </el-table-column>
-        <el-table-column label="客户端" min-width="260" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.user_agent || '-' }}</template>
+        <el-table-column label="客户端" min-width="260">
+          <template #default="{ row }">
+            <span class="multiline-cell">{{ row.user_agent || '-' }}</span>
+          </template>
         </el-table-column>
       </el-table>
 
@@ -247,6 +251,17 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   margin-top: 18px;
+}
+
+.multiline-cell {
+  display: block;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.multiline-cell--break-all {
+  word-break: break-all;
 }
 
 @media (max-width: 900px) {

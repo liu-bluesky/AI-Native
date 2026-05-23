@@ -148,12 +148,23 @@ CORE_STORE_BACKEND=postgres
 USAGE_STORE_BACKEND=postgres
 ```
 
+如果你启用“网页在线安装 CLI 插件”的 Docker 方案 B，当前默认会把 CLI 工具根目录持久化到 API 容器内 `/app/.ai-employee/cli-toolchain`，用于保存：
+
+- 公共 CLI 本体与二进制
+- npm 全局 prefix
+- CLI 安装检测用的运行时工具链信息
+
 启动：
 
 ```bash
 cd docker
 docker compose up -d --build
 ```
+
+这套 compose 默认还会额外挂载一份 CLI toolchain 持久化目录：
+
+- 本地 compose：`${HOME}/.ai-employee/cli-toolchain -> /app/.ai-employee/cli-toolchain`
+- 生产 compose：Docker volume `ai_employee_cli_toolchain_prod -> /app/.ai-employee/cli-toolchain`
 
 访问地址：
 
@@ -171,6 +182,18 @@ npm run dev
 ```
 
 前端开发服务器默认走代理，接口指向后端 `8000`。
+前端本地环境变量放在 `web-admin/frontend/.env`。例如：
+
+```env
+VITE_API_PROXY_TARGET=http://127.0.0.1:8000
+VITE_SHOW_LOCAL_RUNTIME_SETTINGS=true
+```
+
+如果你本地也想隐藏 AI 对话设置里的本机控制项，把它改成：
+
+```env
+VITE_SHOW_LOCAL_RUNTIME_SETTINGS=false
+```
 
 ### 后端开发
 

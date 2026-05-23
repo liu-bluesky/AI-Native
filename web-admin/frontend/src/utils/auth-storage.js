@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { clearPermissionArray, setPermissionArray } from './permissions.js'
 
 export const authStateVersion = ref(0)
+const REMEMBER_LOGIN_INFO_STORAGE_KEY = 'remember_login_info'
 
 function bumpAuthState() {
   authStateVersion.value += 1
@@ -17,12 +18,42 @@ function setStorageValue(key, value) {
   localStorage.removeItem(key)
 }
 
+function normalizeRememberLoginInfo(payload = {}) {
+  return {
+    enabled: payload.enabled === true,
+    username: String(payload.username || '').trim(),
+    password: String(payload.password || ''),
+  }
+}
+
 export function getStoredToken() {
   return String(localStorage.getItem('token') || '').trim()
 }
 
 export function hasStoredToken() {
   return Boolean(getStoredToken())
+}
+
+export function getRememberedLoginInfo() {
+  try {
+    const raw = localStorage.getItem(REMEMBER_LOGIN_INFO_STORAGE_KEY)
+    if (!raw) {
+      return normalizeRememberLoginInfo()
+    }
+    return normalizeRememberLoginInfo(JSON.parse(raw))
+  } catch {
+    localStorage.removeItem(REMEMBER_LOGIN_INFO_STORAGE_KEY)
+    return normalizeRememberLoginInfo()
+  }
+}
+
+export function persistRememberedLoginInfo(payload = {}) {
+  const normalized = normalizeRememberLoginInfo(payload)
+  if (!normalized.enabled || !normalized.username) {
+    localStorage.removeItem(REMEMBER_LOGIN_INFO_STORAGE_KEY)
+    return
+  }
+  localStorage.setItem(REMEMBER_LOGIN_INFO_STORAGE_KEY, JSON.stringify(normalized))
 }
 
 export function persistAuthSession(payload = {}) {

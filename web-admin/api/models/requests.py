@@ -507,6 +507,8 @@ class ProjectChatReq(BaseModel):
     message_id: str = ""
     assistant_message_id: str = ""
     chat_session_id: str = ""
+    request_kind: str = ""
+    continuation_token: str = ""
     route_path: str = ""
     route_title: str = ""
     chat_mode: str = "system"
@@ -575,6 +577,8 @@ class ProjectChatSessionUpdateReq(BaseModel):
 class ProjectChatHistoryTruncateReq(BaseModel):
     chat_session_id: str = ""
     message_id: str = ""
+    fallback_user_content: str = ""
+    fallback_user_turn_index: int | None = None
     system_prompt: str | None = None
 
 
@@ -708,6 +712,27 @@ class LocalConnectorLlmSharingUpdateReq(BaseModel):
 class CliPluginInstallReq(BaseModel):
     plugin_id: str
     timeout_sec: int = 1800
+
+
+class CliPluginProfileInitReq(BaseModel):
+    plugin_id: str
+
+
+class CliPluginProfileLoginReq(BaseModel):
+    plugin_id: str
+    login_command: str = ""
+    metadata: dict[str, Any] = {}
+
+
+class CliPluginProfileLogoutReq(BaseModel):
+    plugin_id: str
+    logout_command: str = ""
+    metadata: dict[str, Any] = {}
+
+
+class CliPluginProfileSharingUpdateReq(BaseModel):
+    share_scope: str = "private"
+    shared_with_usernames: list[str] = []
 
 
 class SystemConfigUpdateReq(BaseModel):

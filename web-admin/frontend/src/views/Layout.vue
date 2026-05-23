@@ -1106,8 +1106,9 @@ watch(
 
 <style scoped>
 .embedded-layout {
-  min-height: 100vh;
-  overflow: auto;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: #f8fafc;
 }
 
@@ -1125,5 +1126,7 @@ watch(
   border: 0;
   display: block;
   background: #f8fafc;
+  backface-visibility: hidden;
+  transform: translateZ(0);
 }
 </style>

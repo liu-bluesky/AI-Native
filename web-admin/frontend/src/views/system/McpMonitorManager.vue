@@ -116,7 +116,7 @@
             <span>{{ row.client_ip || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="请求" min-width="280" show-overflow-tooltip>
+        <el-table-column label="请求" min-width="280">
           <template #default="{ row }">
             <div class="request-cell">
               <div class="request-cell__method">{{ row.method || '-' }}</div>
@@ -124,9 +124,9 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="会话" min-width="220" show-overflow-tooltip>
+        <el-table-column label="会话" min-width="220">
           <template #default="{ row }">
-            <span>{{ row.session_id || '-' }}</span>
+            <span class="multiline-cell multiline-cell--break-all">{{ row.session_id || '-' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="最近活跃" min-width="180">
@@ -445,11 +445,14 @@ onUnmounted(() => {
 .entity-cell__meta {
   color: #64748b;
   line-height: 1.5;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .request-cell {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .request-cell__method {
@@ -462,6 +465,18 @@ onUnmounted(() => {
 
 .request-cell__path {
   color: #334155;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.multiline-cell {
+  display: block;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.multiline-cell--break-all {
   word-break: break-all;
 }
 

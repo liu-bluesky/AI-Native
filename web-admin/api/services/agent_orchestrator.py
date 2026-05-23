@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import contextlib
 import json
 import re
 import shlex
@@ -9,6 +10,7 @@ from services.conversation_manager import ConversationManager
 from services.project_chat_task_tree import audit_task_tree_round
 from services.tool_executor import ToolExecutor
 from core.observability import logger, metrics
+from starlette.concurrency import run_in_threadpool
 
 
 _IMAGE_URL_PATTERN = re.compile(
@@ -290,6 +292,20 @@ def _preview_tool_result(result: Any, *, limit: int = 600) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}..."
+
+
+def _extract_error_message(payload: Any, *, fallback: str = "未知错误") -> str:
+    if isinstance(payload, dict):
+        for key in ("message", "error_message", "detail", "guard_message", "error"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, dict):
+                nested = _extract_error_message(value, fallback="")
+                if nested:
+                    return nested
+    text = str(payload or "").strip()
+    return text or str(fallback or "").strip() or "未知错误"
 
 
 def _truncate_text(value: Any, *, limit: int = 1200) -> str:
@@ -680,6 +696,11 @@ def _result_requires_lark_send_auth(result: Any) -> bool:
 def _is_successful_project_host_result(result: Any) -> bool:
     if not isinstance(result, dict):
         return False
+    if str(result.get("source") or "").strip() in {"operation_wait_task", "cli_plugin_login_task"}:
+        return (
+            str(result.get("status") or "").strip().lower() == "succeeded"
+            and result.get("ok") is True
+        )
     if result.get("timed_out"):
         return False
     if "error" in result:
@@ -772,6 +793,69 @@ def _extract_lark_workflow_followup_command(
     return {}
 
 
+def _is_waiting_for_external_action(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if not bool(result.get("requires_user_action") or result.get("waiting_user_action")):
+        return False
+    authorization_url = str(result.get("authorization_url") or "").strip()
+    status = str(result.get("status") or "").strip().lower()
+    action_type = str(result.get("action_type") or "").strip().lower()
+    return bool(authorization_url) or bool(action_type) or status == "waiting_user_action"
+
+
+def _build_user_action_required_event(
+    result: Any,
+    *,
+    request_id: str,
+    session_id: str,
+    tool_name: str,
+    pending_send_command: str,
+    default_message: str,
+) -> dict[str, Any] | None:
+    if not isinstance(result, dict):
+        return None
+    if not bool(result.get("requires_user_action") or result.get("waiting_user_action")):
+        return None
+    action_type = str(result.get("action_type") or "").strip().lower()
+    authorization_url = str(result.get("authorization_url") or "").strip()
+    if action_type not in {"open_url", "approve", "enter_text", "select"}:
+        action_type = "open_url" if authorization_url else "none"
+    waiting_message = str(result.get("next_step") or default_message).strip() or default_message
+    title = str(result.get("status_label") or result.get("title") or "等待你处理").strip() or "等待你处理"
+    payload: dict[str, Any] = {
+        "type": "user_action_required",
+        "request_id": request_id or session_id,
+        "tool_name": str(tool_name or "").strip(),
+        "command": str(result.get("command") or "").strip(),
+        "message": waiting_message,
+        "status_label": title,
+        "action_type": action_type,
+        "resume_command": pending_send_command,
+    }
+    if authorization_url:
+        payload["authorization_url"] = authorization_url
+    task_id = str(result.get("task_id") or "").strip()
+    if task_id:
+        payload["task_id"] = task_id
+    detail = str(result.get("detail") or "").strip()
+    if detail:
+        payload["detail"] = detail
+    interaction_schema = result.get("interaction_schema")
+    if isinstance(interaction_schema, dict):
+        payload["interaction_schema"] = dict(interaction_schema)
+    return payload
+
+
+def _is_background_operation_task_pending(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("source") or "").strip() not in {"operation_wait_task", "cli_plugin_login_task"}:
+        return False
+    status = str(result.get("status") or "").strip().lower()
+    return status in {"queued", "running", "waiting_user_action"}
+
+
 def _extract_tool_call_arguments(tool_call: dict[str, Any]) -> tuple[Any | None, str]:
     raw_arguments = str((tool_call.get("function") or {}).get("arguments") or "").strip()
     if not raw_arguments:
@@ -844,6 +928,19 @@ def _build_tool_result_event_payload(
         ):
             if key in result:
                 payload[key] = result.get(key)
+        for key in (
+            "task_id",
+            "action_type",
+            "authorization_url",
+            "status_label",
+            "next_step",
+            "requires_user_action",
+            "waiting_user_action",
+        ):
+            if key in result:
+                payload[key] = result.get(key)
+        if "status" in result:
+            payload["task_status"] = result.get("status")
         error_text = _truncate_text(result.get("error"), limit=1000)
         stdout_preview = _truncate_text(result.get("stdout"), limit=2000)
         stderr_preview = _truncate_text(result.get("stderr"), limit=2000)
@@ -1384,6 +1481,19 @@ class AgentOrchestrator:
                             delta = chunk["content"]
                             response_content += delta
                             yield {"type": "delta", "content": delta}
+                        if str(chunk.get("type") or "").strip().lower() == "error":
+                            yield {
+                                "type": "error",
+                                "message": _extract_error_message(chunk),
+                                "error_payload": _sanitize_tool_value(chunk),
+                            }
+                            completed = True
+                            break
+                    if completed:
+                        break
+
+                if completed:
+                    break
 
                 _record_model_usage_event(
                     project_id=project_id,
@@ -1702,6 +1812,151 @@ class AgentOrchestrator:
                                     executed_command=current_command,
                                     result=current_result,
                                 )
+                        user_action_event: dict[str, Any] | None = None
+                        if str(tool_name or "").strip() == "project_host_run_command":
+                            task_id = str(result.get("task_id") or "").strip()
+                            pending_send_command = str(
+                                lark_workflow_state.get("pending_send_command") or ""
+                            ).strip()
+                            if task_id and _is_waiting_for_external_action(result):
+                                with contextlib.suppress(Exception):
+                                    from services.operation_wait_task_service import (
+                                        merge_operation_wait_task_metadata,
+                                    )
+
+                                    await run_in_threadpool(
+                                        merge_operation_wait_task_metadata,
+                                        task_id,
+                                        {
+                                            "resume_command": pending_send_command,
+                                            "source": "project_chat",
+                                            "project_id": project_id,
+                                            "chat_session_id": chat_session_id,
+                                            "employee_id": employee_id,
+                                            "user_message": user_message,
+                                        },
+                                    )
+                            user_action_event = _build_user_action_required_event(
+                                result,
+                                request_id=chat_session_id or session_id,
+                                session_id=session_id,
+                                tool_name=str(tool_name or "").strip(),
+                                pending_send_command=pending_send_command,
+                                default_message="已进入等待用户处理状态，完成后回到对话框继续。",
+                            )
+                        if user_action_event:
+                            waiting_message = str(user_action_event.get("message") or "").strip()
+                            yield user_action_event
+                            done_payload = _build_done_payload(
+                                content=waiting_message,
+                                artifacts=collected_artifacts,
+                                project_id=project_id,
+                                username=username,
+                                chat_session_id=chat_session_id,
+                                successful_tool_names=successful_tool_names,
+                                task_tree_tool_used=task_tree_tool_used,
+                                completed_reason="waiting_user_action",
+                            )
+                            for key in ("authorization_url", "task_id", "action_type"):
+                                value = str(user_action_event.get(key) or "").strip()
+                                if value:
+                                    done_payload[key] = value
+                            yield done_payload
+                            await self._conv.append_message(session_id, {"role": "user", "content": user_message})
+                            await self._conv.append_message(session_id, {"role": "assistant", "content": waiting_message})
+                            duration = time.time() - start_time
+                            metrics.observe_histogram("conversation_duration", duration * 1000)
+                            metrics.inc_counter("conversation_completed", {"project_id": project_id})
+                            logger.info(
+                                "conversation_completed",
+                                project_id=project_id,
+                                duration_ms=int(duration * 1000),
+                                loops=loop_count,
+                                reason="waiting_user_action",
+                            )
+                            completed = True
+                            break
+                        if str(tool_name or "").strip() == "project_host_run_command" and _is_background_operation_task_pending(result):
+                            status = str(result.get("status") or "").strip().lower()
+                            status_label = str(result.get("status_label") or "").strip()
+                            next_step = str(result.get("next_step") or "").strip()
+                            operation_kind = str(result.get("operation_kind") or "external_operation").strip()
+                            operation_label = str(result.get("operation_label") or "外部操作").strip()
+                            if status == "queued":
+                                pending_message = next_step or "外部操作已创建，等待后台执行。"
+                                state_summary = "外部操作已创建，等待后续结果"
+                            else:
+                                pending_message = next_step or "外部操作已启动，正在等待后续结果。"
+                                state_summary = "外部操作已启动，正在等待后续结果"
+                            workflow_state_payload = {
+                                "type": "workflow_state",
+                                "chat_session_id": chat_session_id,
+                                "workflow_kind": operation_kind,
+                                "workflow_id": str(result.get("task_id") or "").strip(),
+                                "workflow_label": operation_label,
+                                "task_id": str(result.get("task_id") or "").strip(),
+                                "status": status,
+                                "status_label": status_label,
+                                "summary": state_summary,
+                                "message": pending_message,
+                                "detail": "\n".join(
+                                    item
+                                    for item in [
+                                        str(result.get("stdout") or "").strip(),
+                                        str(result.get("stderr") or "").strip(),
+                                        pending_message,
+                                    ]
+                                    if item
+                                ).strip(),
+                                "action_type": "open_url" if str(result.get("authorization_url") or "").strip() else "none",
+                                "authorization_url": str(result.get("authorization_url") or "").strip(),
+                                "resume_command": pending_send_command,
+                            }
+                            yield workflow_state_payload
+                            operation_state_payload = {
+                                **workflow_state_payload,
+                                "type": "operation_task_state",
+                            }
+                            yield operation_state_payload
+                            if operation_kind == "auth_login":
+                                yield {
+                                    **workflow_state_payload,
+                                    "type": "login_task_state",
+                                }
+                            done_payload = _build_done_payload(
+                                content="",
+                                artifacts=collected_artifacts,
+                                project_id=project_id,
+                                username=username,
+                                chat_session_id=chat_session_id,
+                                successful_tool_names=successful_tool_names,
+                                task_tree_tool_used=task_tree_tool_used,
+                                completed_reason="background_task_pending",
+                            )
+                            for key in ("authorization_url", "task_id", "action_type", "status", "status_label", "next_step"):
+                                value = result.get(key)
+                                if value not in (None, ""):
+                                    done_payload[key] = value
+                            done_payload["guard_message"] = pending_message
+                            if status_label:
+                                done_payload["title"] = status_label
+                            yield done_payload
+                            await self._conv.append_message(session_id, {"role": "user", "content": user_message})
+                            await self._conv.append_message(session_id, {"role": "assistant", "content": ""})
+                            duration = time.time() - start_time
+                            metrics.observe_histogram("conversation_duration", duration * 1000)
+                            metrics.inc_counter("conversation_completed", {"project_id": project_id})
+                            logger.info(
+                                "conversation_completed",
+                                project_id=project_id,
+                                duration_ms=int(duration * 1000),
+                                loops=loop_count,
+                                reason="background_operation_task_pending",
+                            )
+                            completed = True
+                            break
+                    if completed:
+                        break
                     if response_has_text or round_made_tool_progress:
                         tool_only_loops = 0
                     else:

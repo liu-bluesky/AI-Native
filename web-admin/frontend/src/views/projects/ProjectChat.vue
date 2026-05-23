@@ -186,19 +186,7 @@
                       : chatSurfaceName
                   }}
                 </div>
-                <p class="chat-context-bar__summary">
-                  {{
-                    isLocalRunnerSurface
-                      ? "直接使用系统大模型，在本机工作区推进命令、文件、飞书和项目工具操作。"
-                      : hasSelectedProject
-                      ? "在同一项目里继续推进前端、后端、数据库更新，以及对话、规则与资产。"
-                      : "先建立判断，再展开步骤与执行。"
-                  }}
-                </p>
                 <div class="chat-context-bar__meta">
-                  <span>{{
-                    hasSelectedProject ? currentProjectLabel : "通用对话"
-                  }}</span>
                   <span>{{ chatModeLabel }}</span>
                   <span v-if="currentChatSessionSourceLabel">
                     {{ currentChatSessionSourceLabel }}
@@ -253,75 +241,11 @@
               </div>
             </div>
           </div>
-          <div v-if="ongoingTaskRestoreNotice" class="chat-restore-banner">
-            <div class="chat-restore-banner__copy">
-              <div class="chat-restore-banner__eyebrow">
-                {{
-                  currentChatSessionId ===
-                  ongoingTaskRestoreNotice.chat_session_id
-                    ? "任务已恢复"
-                    : "发现可恢复任务"
-                }}
-              </div>
-              <div class="chat-restore-banner__title">
-                {{ ongoingTaskRestoreNotice.title || "已恢复进行中的任务" }}
-              </div>
-              <div class="chat-restore-banner__meta">
-                <span v-if="ongoingTaskRestoreNotice.current_node_title">
-                  当前节点
-                  {{ ongoingTaskRestoreNotice.current_node_title }}
-                </span>
-                <span v-if="ongoingTaskRestoreNotice.work_session_id">
-                  工作轨迹
-                  {{
-                    formatCompactSessionId(
-                      ongoingTaskRestoreNotice.work_session_id,
-                    )
-                  }}
-                </span>
-                <span v-if="ongoingTaskRestoreNotice.updated_at">
-                  最近更新
-                  {{
-                    formatRelativeDateTime(ongoingTaskRestoreNotice.updated_at)
-                  }}
-                </span>
-              </div>
-            </div>
-            <div class="chat-restore-banner__actions">
-              <el-button
-                v-if="
-                  currentChatSessionId !==
-                  ongoingTaskRestoreNotice.chat_session_id
-                "
-                size="small"
-                type="primary"
-                class="chat-restore-banner__button"
-                @click="resumeOngoingTaskFromNotice"
-              >
-                恢复任务
-              </el-button>
-              <el-button
-                v-else
-                size="small"
-                plain
-                class="chat-restore-banner__button"
-                @click="openTaskTreePanel"
-              >
-                查看任务树
-              </el-button>
-              <button
-                type="button"
-                class="chat-restore-banner__dismiss"
-                @click="clearOngoingTaskRestoreNotice"
-              >
-                收起
-              </button>
-            </div>
-          </div>
           <div class="chat-messages-shell">
             <div
               class="chat-messages"
               ref="messagesContainer"
+              @scroll="handleMessagesScroll"
               @click="handleMessageAreaClick"
             >
               <div class="message-list-inner">
@@ -474,98 +398,8 @@
                             </div>
                           </div>
                         </template>
-                        <template v-else-if="item.displayMode === 'terminal'">
-                          <div
-                            v-if="messageOperations(item).length"
-                            class="message-operations"
-                          >
-                            <article
-                              v-for="operation in messageOperations(item)"
-                              :key="operation.id"
-                              class="message-operation-card"
-                              :class="`is-${operation.phase}`"
-                            >
-                              <div class="message-operation-card__head">
-                                <div class="message-operation-card__title-wrap">
-                                  <span class="message-operation-card__title">
-                                    {{ operation.title }}
-                                  </span>
-                                  <span
-                                    v-if="operation.summary"
-                                    class="message-operation-card__summary"
-                                  >
-                                    {{ operation.summary }}
-                                  </span>
-                                </div>
-                                <span class="message-operation-card__badge">
-                                  {{ operationPhaseLabel(operation) }}
-                                </span>
-                              </div>
-                              <p
-                                v-if="operation.detail"
-                                class="message-operation-card__detail"
-                              >
-                                {{ operation.detail }}
-                              </p>
-                              <p
-                                v-if="operationActionHint(operation)"
-                                class="message-operation-card__action"
-                              >
-                                {{ operationActionHint(operation) }}
-                              </p>
-                              <div
-                                v-if="operationActionButtons(operation).length"
-                                class="message-operation-card__actions"
-                              >
-                                <el-button
-                                  v-for="action in operationActionButtons(
-                                    operation,
-                                  )"
-                                  :key="`${operation.id}-${action.key}`"
-                                  size="small"
-                                  :type="
-                                    action.type === 'danger'
-                                      ? 'danger'
-                                      : 'primary'
-                                  "
-                                  :plain="action.type !== 'danger'"
-                                  @click="
-                                    handleOperationAction(operation, action.key)
-                                  "
-                                >
-                                  {{ action.label }}
-                                </el-button>
-                              </div>
-                            </article>
-                          </div>
-                          <div
-                            v-if="terminalLogLines(item).length"
-                            class="message-process"
-                          >
-                            <button
-                              type="button"
-                              class="message-process-toggle"
-                              @click="
-                                item.processExpanded = !item.processExpanded
-                              "
-                            >
-                              <span>
-                                终端输出
-                                <span class="message-process-count">
-                                  {{ terminalLogLines(item).length }} 条
-                                </span>
-                              </span>
-                              <span class="message-process-meta">
-                                {{ item.processExpanded ? "收起" : "展开" }}
-                              </span>
-                            </button>
-                            <pre
-                              v-show="item.processExpanded"
-                              class="message-text message-text-terminal message-process-pre"
-                              @click="focusTerminalPanelInput"
-                              >{{ formatTerminalLogs(item) }}</pre
-                            >
-                          </div>
+                        <template v-else>
+                          <template v-if="item.displayMode === 'terminal'">
                           <div
                             v-if="terminalInteractionFormForMessage(item, idx)"
                             class="message-terminal-form"
@@ -637,117 +471,342 @@
                               terminalStructuredSubmissionHintForMessage(idx)
                             }}
                           </div>
+                          </template>
                           <div
-                            v-if="messageStatusNotes(item).length"
-                            class="message-status-notes"
+                            v-if="shouldShowMessageProcess(item, idx)"
+                            class="message-process-shell"
                           >
-                            <div
-                              v-for="(note, noteIdx) in messageStatusNotes(
-                                item,
-                              )"
-                              :key="`status-${noteIdx}`"
-                              class="message-status-note"
-                              v-html="formatContent(note)"
-                            ></div>
-                          </div>
-                          <div
-                            class="message-text"
-                            v-html="
-                              formatContent(item.content) ||
-                              (chatLoading && idx === messages.length - 1
-                                ? '思考中...'
-                                : '')
-                            "
-                          ></div>
-                        </template>
-                        <template v-else>
-                          <div
-                            v-if="messageOperations(item).length"
-                            class="message-operations"
-                          >
-                            <article
-                              v-for="operation in messageOperations(item)"
-                              :key="operation.id"
-                              class="message-operation-card"
-                              :class="`is-${operation.phase}`"
+                            <button
+                              type="button"
+                              class="message-process-shell__toggle"
+                              @click="
+                                item.processExpanded = !item.processExpanded
+                              "
                             >
-                              <div class="message-operation-card__head">
-                                <div class="message-operation-card__title-wrap">
-                                  <span class="message-operation-card__title">
-                                    {{ operation.title }}
-                                  </span>
-                                  <span
-                                    v-if="operation.summary"
-                                    class="message-operation-card__summary"
-                                  >
-                                    {{ operation.summary }}
-                                  </span>
-                                </div>
-                                <span class="message-operation-card__badge">
-                                  {{ operationPhaseLabel(operation) }}
+                              <span class="message-process-shell__title-wrap">
+                                <span class="message-process-shell__eyebrow">
+                                  {{ messageProcessEyebrow(item, idx) }}
                                 </span>
-                              </div>
-                              <p
-                                v-if="operation.detail"
-                                class="message-operation-card__detail"
-                              >
-                                {{ operation.detail }}
-                              </p>
-                              <p
-                                v-if="operationActionHint(operation)"
-                                class="message-operation-card__action"
-                              >
-                                {{ operationActionHint(operation) }}
-                              </p>
-                              <div
-                                v-if="operationActionButtons(operation).length"
-                                class="message-operation-card__actions"
-                              >
+                                <span class="message-process-shell__title">
+                                  {{ messageProcessTitle(item, idx) }}
+                                </span>
+                              </span>
+                              <span class="message-process-shell__meta">
                                 <el-button
-                                  v-for="action in operationActionButtons(
-                                    operation,
-                                  )"
-                                  :key="`${operation.id}-${action.key}`"
+                                  v-if="operationPrimaryActionLabel(primaryMessageProcessOperation(item))"
                                   size="small"
-                                  :type="
-                                    action.type === 'danger'
-                                      ? 'danger'
-                                      : 'primary'
-                                  "
-                                  :plain="action.type !== 'danger'"
-                                  @click="
-                                    handleOperationAction(operation, action.key)
+                                  type="primary"
+                                  plain
+                                  class="message-process-shell__primary-action"
+                                  @click.stop="
+                                    handleOperationPrimaryAction(
+                                      primaryMessageProcessOperation(item),
+                                    )
                                   "
                                 >
-                                  {{ action.label }}
+                                  {{
+                                    operationPrimaryActionLabel(
+                                      primaryMessageProcessOperation(item),
+                                    )
+                                  }}
                                 </el-button>
-                              </div>
-                            </article>
-                          </div>
-                          <div
-                            v-if="messageStatusNotes(item).length"
-                            class="message-status-notes"
-                          >
+                                <span
+                                  v-if="messageProcessStateLabel(item, idx)"
+                                  class="message-process-shell__state"
+                                  :class="
+                                    `is-${messageProcessStateTone(item, idx)}`
+                                  "
+                                >
+                                  {{ messageProcessStateLabel(item, idx) }}
+                                </span>
+                                <span
+                                  v-if="messageProcessStepCount(item, idx)"
+                                  class="message-process-shell__count"
+                                >
+                                  {{ messageProcessStepCount(item, idx) }} 项
+                                </span>
+                                <span>{{ item.processExpanded ? "收起" : "展开" }}</span>
+                              </span>
+                            </button>
                             <div
-                              v-for="(note, noteIdx) in messageStatusNotes(
-                                item,
-                              )"
-                              :key="`status-${noteIdx}`"
-                              class="message-status-note"
-                              v-html="formatContent(note)"
-                            ></div>
+                              v-show="item.processExpanded"
+                              class="message-process-shell__body"
+                            >
+                              <div
+                                v-if="messageOperations(item).length"
+                                class="message-operations"
+                              >
+                                <article
+                                  v-for="operation in messageOperations(item)"
+                                  :key="operation.id"
+                                  class="message-operation-card"
+                                  :class="`is-${operation.phase}`"
+                                >
+                                  <div class="message-operation-card__head">
+                                    <div class="message-operation-card__title-wrap">
+                                      <span class="message-operation-card__title">
+                                        {{ operation.title }}
+                                      </span>
+                                      <span
+                                        v-if="operation.summary"
+                                        class="message-operation-card__summary"
+                                      >
+                                        {{ operation.summary }}
+                                      </span>
+                                    </div>
+                                    <span class="message-operation-card__badge">
+                                      {{ operationPhaseLabel(operation) }}
+                                    </span>
+                                  </div>
+                                  <p
+                                    v-if="operation.detail"
+                                    class="message-operation-card__detail"
+                                  >
+                                    {{ operation.detail }}
+                                  </p>
+                                  <p
+                                    v-if="operationActionHint(operation)"
+                                    class="message-operation-card__action"
+                                  >
+                                    {{ operationActionHint(operation) }}
+                                  </p>
+                                  <div
+                                    v-if="messageOperationInteractionFormJson(operation)"
+                                    class="message-operation-card__form"
+                                    :class="{
+                                      'is-submitted':
+                                        operationInteractionSubmittedHint(
+                                          operation,
+                                        ),
+                                    }"
+                                  >
+                                    <div class="message-operation-card__form-head">
+                                      <div>
+                                        <strong>{{
+                                          operationInteractionTitle(operation)
+                                        }}</strong>
+                                        <p>
+                                          {{
+                                            operationInteractionDescription(
+                                              operation,
+                                            )
+                                          }}
+                                        </p>
+                                      </div>
+                                      <el-tag size="small" effect="plain">
+                                        结构化交互
+                                      </el-tag>
+                                    </div>
+                                    <ElementEasyForm
+                                      :form-json="
+                                        messageOperationInteractionFormJson(
+                                          operation,
+                                        )
+                                      "
+                                      class="message-operation-card__easy-form"
+                                    />
+                                    <div class="message-operation-card__form-actions">
+                                      <el-button
+                                        v-if="
+                                          operationInteractionCanFallbackToTerminal(
+                                            operation,
+                                          ) &&
+                                          !operationInteractionSubmittedHint(
+                                            operation,
+                                          )
+                                        "
+                                        text
+                                        @click="
+                                          dismissOperationInteractionForm(
+                                            operation,
+                                          )
+                                        "
+                                      >
+                                        使用终端兜底
+                                      </el-button>
+                                      <el-button
+                                        type="primary"
+                                        :disabled="
+                                          !canSubmitOperationInteraction(
+                                            operation,
+                                          ) ||
+                                          Boolean(
+                                            operationInteractionSubmittedHint(
+                                              operation,
+                                            ),
+                                          )
+                                        "
+                                        @click="
+                                          submitOperationInteraction(operation)
+                                        "
+                                      >
+                                        {{
+                                          operationInteractionSubmittedHint(
+                                            operation,
+                                          )
+                                            ? '已提交，继续执行中'
+                                            : '确认并继续'
+                                        }}
+                                      </el-button>
+                                    </div>
+                                  </div>
+                                  <div
+                                    v-if="operationInteractionSubmittedHint(operation)"
+                                    class="message-operation-card__submitted"
+                                  >
+                                    {{ operationInteractionSubmittedHint(operation) }}
+                                  </div>
+                                  <div
+                                    v-if="operationActionButtons(operation).length"
+                                    class="message-operation-card__actions"
+                                  >
+                                    <el-button
+                                      v-for="action in operationActionButtons(
+                                        operation,
+                                      )"
+                                      :key="`${operation.id}-${action.key}`"
+                                      size="small"
+                                      :type="
+                                        action.type === 'danger'
+                                          ? 'danger'
+                                          : 'primary'
+                                      "
+                                      :plain="action.type !== 'danger'"
+                                      @click="
+                                        handleOperationAction(
+                                          operation,
+                                          action.key,
+                                        )
+                                      "
+                                    >
+                                      {{ action.label }}
+                                    </el-button>
+                                  </div>
+                                </article>
+                              </div>
+                              <div
+                                v-if="messageProcessLogEntries(item).length"
+                                class="message-process-stream"
+                              >
+                                <div
+                                  v-for="entry in messageProcessLogEntries(item)"
+                                  :key="entry.id"
+                                  class="message-process-stream__item"
+                                  :class="`is-${entry.level}`"
+                                >
+                                  <span
+                                    class="message-process-stream__dot"
+                                    aria-hidden="true"
+                                  ></span>
+                                  <span class="message-process-stream__text">
+                                    {{ entry.text }}
+                                  </span>
+                                </div>
+                              </div>
+                              <div
+                                v-if="messageStatusNotes(item).length"
+                                class="message-status-notes"
+                              >
+                                <div
+                                  v-for="(note, noteIdx) in messageStatusNotes(
+                                    item,
+                                  )"
+                                  :key="`status-${noteIdx}`"
+                                  class="message-status-note"
+                                  v-html="formatContent(note)"
+                                ></div>
+                              </div>
+                              <div
+                                v-if="terminalLogLines(item).length"
+                                class="message-process message-process--nested"
+                              >
+                                <div class="message-process-shell__terminal-head">
+                                  <span>终端输出</span>
+                                  <span class="message-process-count">
+                                    {{ terminalLogLines(item).length }} 条
+                                  </span>
+                                </div>
+                                <pre
+                                  class="message-text message-text-terminal message-process-pre"
+                                  @click="focusTerminalPanelInput"
+                                  >{{ formatTerminalLogs(item) }}</pre
+                                >
+                              </div>
+                              <div
+                                v-if="
+                                  shouldShowInlineThinkingState(item, idx)
+                                "
+                                class="message-process-shell__thinking"
+                              >
+                                思考中，正在整理下一步…
+                              </div>
+                            </div>
+                            <div
+                              v-if="
+                                !item.processExpanded &&
+                                messageProcessLogSummary(item).length
+                              "
+                              class="message-process-shell__summary"
+                            >
+                              <div
+                                v-for="entry in messageProcessLogSummary(item)"
+                                :key="`summary-${entry.id}`"
+                                class="message-process-shell__summary-item"
+                                :class="`is-${entry.level}`"
+                              >
+                                <span
+                                  class="message-process-shell__summary-dot"
+                                  aria-hidden="true"
+                                ></span>
+                                <span>{{ entry.text }}</span>
+                              </div>
+                            </div>
+                            <div
+                              v-if="
+                                !item.processExpanded &&
+                                pickAwaitingInteractionOperation(item, {
+                                  allowTerminal: false,
+                                }) &&
+                                operationPrimaryActionLabel(
+                                  pickAwaitingInteractionOperation(item, {
+                                    allowTerminal: false,
+                                  }),
+                                )
+                              "
+                              class="message-process-shell__summary-actions"
+                            >
+                              <el-button
+                                size="small"
+                                type="primary"
+                                plain
+                                @click.stop="
+                                  handleOperationPrimaryAction(
+                                    pickAwaitingInteractionOperation(item, {
+                                      allowTerminal: false,
+                                    }),
+                                  )
+                                "
+                              >
+                                {{
+                                  operationPrimaryActionLabel(
+                                    pickAwaitingInteractionOperation(item, {
+                                      allowTerminal: false,
+                                    }),
+                                  )
+                                }}
+                              </el-button>
+                            </div>
                           </div>
                           <div
+                            v-if="messageBodyHtml(item, idx)"
                             class="message-text"
-                            v-html="
-                              formatContent(item.content) ||
-                              (chatLoading && idx === messages.length - 1
-                                ? '思考中...'
-                                : '')
-                            "
+                            v-html="messageBodyHtml(item, idx)"
                           ></div>
                           <div
-                            v-if="formJsonArtifactsForMessage(item).length"
+                            v-if="
+                              item.displayMode !== 'terminal' &&
+                              formJsonArtifactsForMessage(item).length
+                            "
                             class="message-form-json-artifacts"
                           >
                             <article
@@ -2380,8 +2439,15 @@
     class="settings-center-page"
     v-loading="loading"
   >
-    <div class="settings-center-shell">
-      <aside class="settings-center-sidebar" ref="settingsSidebarRef">
+    <div
+      class="settings-center-shell"
+      :class="{ 'settings-center-shell--single': settingsInternalItems.length <= 1 }"
+    >
+      <aside
+        v-if="settingsInternalItems.length > 1"
+        class="settings-center-sidebar"
+        ref="settingsSidebarRef"
+      >
         <div class="settings-center-sidebar-card">
           <div class="settings-center-brand-panel">
             <div class="settings-center-brand">
@@ -2444,26 +2510,14 @@
         </div>
       </aside>
 
-      <section class="settings-center-stage">
+      <section
+        class="settings-center-stage"
+        :class="{ 'settings-center-stage--single': settingsInternalItems.length <= 1 }"
+      >
         <div class="settings-center-context-bar" ref="settingsContextBarRef">
           <div class="settings-center-context-bar__copy">
             <div class="settings-center-context-bar__title">
               {{ activeSettingsPanelMeta?.label || "设置" }}
-            </div>
-            <div
-              v-if="activeSettingsPanelMeta?.desc"
-              class="settings-center-context-bar__desc"
-            >
-              {{ activeSettingsPanelMeta.desc }}
-            </div>
-            <div class="settings-center-context-bar__meta">
-              <span>项目：{{ currentProjectLabel }}</span>
-              <span>模式：系统对话</span>
-              <span
-                >面板：{{
-                  activeSettingsPanelMeta?.contextLabel || "设置"
-                }}</span
-              >
             </div>
           </div>
           <div class="settings-center-context-bar__actions">
@@ -2475,6 +2529,14 @@
             >
               菜单导览
             </el-button>
+            <el-button
+              plain
+              :loading="settingsSaving"
+              @click="saveProjectChatSettings(false)"
+            >
+              立即同步
+            </el-button>
+            <el-button text @click="closeSettingsCenter">关闭</el-button>
           </div>
         </div>
 
@@ -2482,145 +2544,91 @@
           v-if="activeSettingsPanel === 'chat'"
           class="settings-center-stage__body settings-center-stage__body--chat"
         >
-          <div class="settings-chat-layout">
-            <aside class="settings-chat-sidebar">
-              <div
-                class="settings-chat-sidebar-card settings-chat-sidebar-card--hero"
-              >
-                <div class="settings-chat-sidebar-card__eyebrow">
-                  Conversation Control
-                </div>
-                <div class="settings-chat-sidebar-card__title">
-                  把当前回答路径收束在同一套上下文里。
-                </div>
-                <p class="settings-chat-sidebar-card__text">
-                  这里统一管理执行员工、系统提示词、模型输出风格，以及 MCP
-                  与工具预算。改动会直接影响当前对话的调度判断。
-                </p>
-                <div class="settings-chat-sidebar-card__meta">
-                  <span>{{
-                    hasSelectedProject ? currentProjectLabel : "未选择项目"
-                  }}</span>
-                  <span>{{ chatModeLabel }}</span>
-                  <span>{{ activeChatSessionTitle }}</span>
-                </div>
-                <div class="settings-chat-sidebar-card__actions">
-                  <div class="settings-chat-sidebar-card__status">
-                    {{ autoSaveStatusText }}
-                  </div>
-                  <el-button
-                    plain
-                    size="small"
-                    class="settings-summary-sync-button settings-summary-sync-button--hero"
-                    :loading="settingsSaving"
-                    @click="saveProjectChatSettings(false)"
-                  >
-                    立即同步
-                  </el-button>
-                </div>
-              </div>
-
-              <div class="settings-chat-sidebar-card">
-                <div class="settings-chat-section-label">当前上下文</div>
-                <div class="settings-chat-fact-list">
-                  <div class="settings-chat-fact">
-                    <span class="settings-chat-fact__label">执行员工</span>
-                    <span class="settings-chat-fact__value">{{
-                      selectedEmployeeSummary
-                    }}</span>
-                  </div>
-                  <div class="settings-chat-fact">
-                    <span class="settings-chat-fact__label">默认模型</span>
-                    <span class="settings-chat-fact__value">{{
-                      currentModelSummary
-                    }}</span>
-                  </div>
-                  <div class="settings-chat-fact">
-                    <span class="settings-chat-fact__label">模型类型</span>
-                    <span class="settings-chat-fact__value">{{
-                      currentModelTypeLabel
-                    }}</span>
-                  </div>
-                  <div class="settings-chat-fact">
-                    <span class="settings-chat-fact__label">本机运行</span>
-                    <span class="settings-chat-fact__value">{{
-                      localRunnerSummary
-                    }}</span>
-                  </div>
-                  <div class="settings-chat-fact">
-                    <span class="settings-chat-fact__label">项目工作区</span>
-                    <span class="settings-chat-fact__value">{{
-                      projectWorkspaceResolved || "未配置"
-                    }}</span>
-                  </div>
-                  <div class="settings-chat-fact">
-                    <span class="settings-chat-fact__label">当前面板</span>
-                    <span class="settings-chat-fact__value">对话配置</span>
-                  </div>
-                </div>
-              </div>
-
-              <div
-                class="settings-chat-sidebar-card settings-chat-sidebar-card--note"
-              >
-                <div class="settings-chat-section-label">生效边界</div>
-                <p class="settings-chat-sidebar-card__note">
-                  <template v-if="hasSelectedProject">
-                    当前配置会跟随项目上下文一起参与系统对话调度，不会改动平台其他页面的默认值。
-                  </template>
-                  <template v-else>
-                    还没有选中项目，所以这里只能维护通用对话行为；项目员工和项目级
-                    MCP 会在选择项目后开放。
-                  </template>
-                </p>
-              </div>
-            </aside>
-
-            <div class="settings-chat-main">
+          <div class="settings-chat-layout settings-chat-layout--single">
+            <div class="settings-chat-main settings-chat-main--wide">
               <div class="settings-chat-main-card" ref="settingsMainCardRef">
-                <div class="settings-summary-card">
-                  <div class="settings-summary-title">影响当前回答</div>
-                <div class="settings-summary-text">
-                  这些设置会决定系统如何组织上下文、选择模型与执行员工，以及是否允许 AI 持续调用工具完成整轮任务。
-                </div>
-                  <div class="settings-summary-pills">
-                    <span class="settings-summary-pill">
-                      项目上下文 ·
-                      {{ hasSelectedProject ? currentProjectLabel : "未选择" }}
+                <section class="settings-chat-quick-overview">
+                  <article class="settings-chat-quick-overview__card">
+                    <span class="settings-chat-quick-overview__label">
+                      项目上下文
                     </span>
-                    <span class="settings-summary-pill">
-                      执行员工 · {{ selectedEmployeeSummary }}
+                    <strong class="settings-chat-quick-overview__value">{{
+                      hasSelectedProject ? currentProjectLabel : "未选择项目"
+                    }}</strong>
+                    <span class="settings-chat-quick-overview__meta">
+                      {{
+                        hasSelectedProject
+                          ? "当前改动只影响这个项目下的对话"
+                          : "当前仅维护通用对话行为"
+                      }}
                     </span>
-                    <span class="settings-summary-pill">
-                      默认模型 · {{ currentModelSummary }}
+                  </article>
+                  <article class="settings-chat-quick-overview__card">
+                    <span class="settings-chat-quick-overview__label">
+                      执行对象
                     </span>
-                    <span class="settings-summary-pill">
-                      模型类型 · {{ currentModelTypeLabel }}
+                    <strong class="settings-chat-quick-overview__value">{{
+                      selectedEmployeeSummary
+                    }}</strong>
+                    <span class="settings-chat-quick-overview__meta">
+                      {{
+                        projectChatSettings.employee_coordination_mode ===
+                        "manual"
+                          ? "手动保留当前工具池"
+                          : "允许系统自动协作"
+                      }}
                     </span>
-                  </div>
-                </div>
+                  </article>
+                  <article class="settings-chat-quick-overview__card">
+                    <span class="settings-chat-quick-overview__label">
+                      当前模型
+                    </span>
+                    <strong class="settings-chat-quick-overview__value">{{
+                      currentModelTypeLabel
+                    }}</strong>
+                    <span class="settings-chat-quick-overview__meta">
+                      {{ currentModelSummary }}
+                    </span>
+                  </article>
+                  <article class="settings-chat-quick-overview__card">
+                    <span class="settings-chat-quick-overview__label">
+                      工具与 MCP
+                    </span>
+                    <strong class="settings-chat-quick-overview__value">{{
+                      singleRoundAnswerOnly
+                        ? "本轮仅回答"
+                        : projectChatSettings.auto_use_tools
+                          ? "允许工具调用"
+                          : "关闭工具调用"
+                    }}</strong>
+                    <span class="settings-chat-quick-overview__meta">
+                      {{
+                        projectToolModules.length
+                          ? `项目工具 ${selectedProjectToolNames.length}/${projectToolModules.length}`
+                          : "当前没有项目级工具"
+                      }}
+                    </span>
+                  </article>
+                </section>
 
-                <el-tabs class="settings-tabs">
-                  <el-tab-pane label="基础设置">
-                    <el-form
-                      label-position="left"
-                      label-width="160px"
-                      class="settings-form"
-                      size="default"
-                    >
-                      <section class="settings-parameter-section">
-                        <div class="settings-parameter-section__header">
-                          <div class="settings-parameter-section__title">
-                            执行对象
-                          </div>
-                          <p class="settings-parameter-section__desc">
-                            先决定这一轮交给谁处理，以及是否让系统自动组织多员工协作。
-                          </p>
-                        </div>
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">执行员工</span>
-                        </template>
+                <section
+                  class="settings-parameter-section settings-parameter-section--compact"
+                >
+                  <div class="settings-parameter-section__header">
+                    <div class="settings-parameter-section__title">
+                      快速调整
+                    </div>
+                    <p class="settings-parameter-section__desc">
+                      打开页面后优先处理这里。模型切换仍在主对话输入框左下角完成，这里只负责本轮的上下文、风格和工具边界。
+                    </p>
+                  </div>
+                  <el-form
+                    label-position="top"
+                    class="settings-form settings-form--quick"
+                    size="default"
+                  >
+                    <div class="settings-quick-form-grid">
+                      <el-form-item label="执行员工">
                         <el-select
                           v-model="selectedEmployeeIds"
                           multiple
@@ -2660,38 +2668,12 @@
                               >
                                 技能: {{ item.skill_names.join(", ") }}
                               </div>
-                              <div
-                                v-if="
-                                  item.rule_bindings &&
-                                  item.rule_bindings.length
-                                "
-                                class="settings-employee-option__meta"
-                              >
-                                规则:
-                                {{
-                                  item.rule_bindings
-                                    .map((rule) => rule.title || rule.id)
-                                    .join(" / ")
-                                }}
-                              </div>
                             </div>
                           </el-option>
                         </el-select>
                       </el-form-item>
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            协作模式
-                            <el-tooltip
-                              content="多选员工时，自动协作会把任务拆解、协作边界和工具约束写入系统提示词；是否需要多人协作以及如何分工，仍由 AI 结合手册和规则自主判断。手动模式只保留当前工具池，不额外注入协作约束。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
+
+                      <el-form-item label="协作模式">
                         <el-select
                           v-model="
                             projectChatSettings.employee_coordination_mode
@@ -2703,18 +2685,96 @@
                           <el-option label="手动模式" value="manual" />
                         </el-select>
                       </el-form-item>
-                      </section>
 
+                      <el-form-item label="回答风格">
+                        <el-select
+                          v-model="projectChatSettings.answer_style"
+                          class="full-width"
+                        >
+                          <el-option label="简洁 (Concise)" value="concise" />
+                          <el-option
+                            label="平衡 (Balanced)"
+                            value="balanced"
+                          />
+                          <el-option
+                            label="详细 (Detailed)"
+                            value="detailed"
+                          />
+                        </el-select>
+                      </el-form-item>
+
+                      <el-form-item label="历史消息条数">
+                        <el-input-number
+                          v-model="projectChatSettings.history_limit"
+                          :min="1"
+                          :max="50"
+                          class="full-width"
+                        />
+                      </el-form-item>
+
+                      <el-form-item label="自动使用工具">
+                        <el-switch
+                          v-model="projectChatSettings.auto_use_tools"
+                        />
+                      </el-form-item>
+
+                      <el-form-item label="单轮仅回答">
+                        <el-switch v-model="singleRoundAnswerOnly" />
+                      </el-form-item>
+
+                      <el-form-item
+                        v-if="currentModelParameterMode === 'text'"
+                        label="先结论后步骤"
+                      >
+                        <el-switch
+                          v-model="
+                            projectChatSettings.prefer_conclusion_first
+                          "
+                        />
+                      </el-form-item>
+
+                      <el-form-item
+                        v-if="currentModelParameterMode === 'text'"
+                        label="温度"
+                      >
+                        <el-slider
+                          v-model="temperature"
+                          :min="0"
+                          :max="2"
+                          :step="0.1"
+                          show-input
+                          :show-input-controls="false"
+                        />
+                      </el-form-item>
+                    </div>
+                  </el-form>
+                </section>
+
+                <el-tabs class="settings-tabs">
+                  <el-tab-pane label="上下文与提示">
+                    <el-form
+                      label-position="left"
+                      label-width="160px"
+                      class="settings-form"
+                      size="default"
+                    >
                       <section class="settings-parameter-section">
                         <div class="settings-parameter-section__header">
                           <div class="settings-parameter-section__title">
                             项目上下文
                           </div>
                           <p class="settings-parameter-section__desc">
-                            让系统知道真实工作区、入口规则文件以及这一轮的最高优先级提示词。
+                            <template v-if="showLocalRuntimeSettings">
+                              让系统知道真实工作区、入口规则文件以及这一轮的最高优先级提示词。
+                            </template>
+                            <template v-else>
+                              这里只保留当前对话真正需要的项目级上下文，不展示本机开发控制项。
+                            </template>
                           </p>
                         </div>
-                      <el-form-item v-if="hasSelectedProject">
+                      <el-form-item
+                        v-if="hasSelectedProject && showLocalRuntimeSettings"
+                      >
                         <template #label>
                           <span class="label-with-tooltip">
                             项目工作区
@@ -2764,7 +2824,9 @@
                         </div>
                       </el-form-item>
 
-                      <el-form-item v-if="hasSelectedProject">
+                      <el-form-item
+                        v-if="hasSelectedProject && showLocalRuntimeSettings"
+                      >
                         <template #label>
                           <span class="label-with-tooltip">
                             AI 入口文件
@@ -2847,38 +2909,6 @@
                               ? `补充给 ${externalAgentDisplayLabel} 的启动上下文...`
                               : '你是项目开发助手...'
                           "
-                          class="full-width"
-                        />
-                      </el-form-item>
-                      </section>
-
-                      <section class="settings-parameter-section">
-                        <div class="settings-parameter-section__header">
-                          <div class="settings-parameter-section__title">
-                            对话记忆
-                          </div>
-                          <p class="settings-parameter-section__desc">
-                            控制每次请求回带多少历史消息，避免上下文过短或过长。
-                          </p>
-                        </div>
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            历史消息条数
-                            <el-tooltip
-                              content="每次向模型发送请求时，携带最近几次的对话历史。较小的值可节省 Token，较大的值有助于维持长上下文记忆。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <el-input-number
-                          v-model="projectChatSettings.history_limit"
-                          :min="1"
-                          :max="50"
                           class="full-width"
                         />
                       </el-form-item>
@@ -3071,7 +3101,7 @@
                     </el-form>
                   </el-tab-pane>
 
-                  <el-tab-pane label="工具与约束">
+                  <el-tab-pane label="MCP 与护栏">
                     <el-form
                       label-position="left"
                       label-width="160px"
@@ -3084,44 +3114,63 @@
                             工具使用策略
                           </div>
                           <p class="settings-parameter-section__desc">
-                            决定系统是否可以自行调用工具完成任务，还是只返回自然语言结果。
+                            先决定本轮是否允许工具参与，再决定是否把回答强制收束成纯自然语言。
                           </p>
                         </div>
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            自动使用工具
-                            <el-tooltip
-                              content="是否允许 AI 在必要时自主调用系统内置工具（如查数据库、读写文件）。"
-                              placement="top"
+                        <div class="settings-tools-overview">
+                          <div class="settings-tools-overview__item">
+                            <span class="settings-tools-overview__label"
+                              >当前模式</span
                             >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <el-switch
-                          v-model="projectChatSettings.auto_use_tools"
-                        />
-                      </el-form-item>
-
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            单轮仅回答
-                            <el-tooltip
-                              content="仅对下一次对话生效：强制 AI 直接用自然语言回答，禁止在此轮对话中调用任何工具。"
-                              placement="top"
+                            <strong class="settings-tools-overview__value">{{
+                              singleRoundAnswerOnly
+                                ? "仅回答"
+                                : projectChatSettings.auto_use_tools
+                                  ? "工具增强"
+                                  : "纯文本"
+                            }}</strong>
+                            <span class="settings-tools-overview__meta">
+                              {{
+                                singleRoundAnswerOnly
+                                  ? "只对下一次对话生效"
+                                  : projectChatSettings.auto_use_tools
+                                    ? "允许系统自主调用工具"
+                                    : "系统不会主动调工具"
+                              }}
+                            </span>
+                          </div>
+                          <div class="settings-tools-overview__item">
+                            <span class="settings-tools-overview__label"
+                              >项目工具</span
                             >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <el-switch v-model="singleRoundAnswerOnly" />
-                      </el-form-item>
+                            <strong class="settings-tools-overview__value">{{
+                              projectToolModules.length
+                                ? `${selectedProjectToolNames.length}/${projectToolModules.length}`
+                                : "0"
+                            }}</strong>
+                            <span class="settings-tools-overview__meta">
+                              {{
+                                projectToolModules.length
+                                  ? "当前项目关联工具可按轮次收紧"
+                                  : "当前没有项目级工具可选"
+                              }}
+                            </span>
+                          </div>
+                          <div class="settings-tools-overview__item">
+                            <span class="settings-tools-overview__label"
+                              >熔断后策略</span
+                            >
+                            <strong class="settings-tools-overview__value">{{
+                              projectChatSettings.tool_budget_strategy ===
+                              "stop"
+                                ? "直接停止"
+                                : "强制总结"
+                            }}</strong>
+                            <span class="settings-tools-overview__meta">
+                              超过轮次或预算后的默认收口方式
+                            </span>
+                          </div>
+                        </div>
                       </section>
 
                       <section class="settings-parameter-section">
@@ -3134,142 +3183,162 @@
                           </p>
                         </div>
                       <el-form-item label="MCP 模块">
-                        <el-tabs
-                          v-model="activeMcpSource"
-                          class="mcp-source-tabs"
-                          style="width: 100%"
-                        >
-                          <el-tab-pane
-                            :label="`系统提供 (${systemMcpTotal})`"
-                            name="system"
+                        <div class="mcp-source-switch">
+                          <button
+                            type="button"
+                            class="mcp-source-switch__item"
+                            :class="{
+                              'is-active': activeMcpSource === 'system',
+                            }"
+                            @click="activeMcpSource = 'system'"
                           >
-                            <el-select
-                              v-model="activeSystemScope"
-                              size="small"
-                              class="full-width mcp-scope-select"
-                            >
-                              <el-option
-                                :label="`项目关联的所有 (${systemProjectRelatedModules.length})`"
-                                value="project_related"
-                              />
-                              <el-option
-                                :label="`系统本身提供的所有 (${systemGlobalModules.length})`"
-                                value="system_global"
-                              />
-                            </el-select>
-                            <div class="mcp-section-tip">
-                              系统提供的 MCP
-                              仅展示；此处勾选只控制当前项目对话可用工具，不修改模块定义。
-                            </div>
-                            <div
-                              v-if="
-                                activeSystemScope === 'project_related' &&
-                                projectToolModules.length
-                              "
-                              class="mcp-tool-actions"
-                            >
-                              <span class="mcp-tool-count"
-                                >本轮启用
-                                {{ selectedProjectToolNames.length }}/{{
-                                  projectToolModules.length
-                                }}</span
-                              >
-                              <div class="mcp-tool-buttons">
-                                <el-button
-                                  text
-                                  size="small"
-                                  @click="selectAllProjectTools"
-                                  >全选</el-button
-                                >
-                                <el-button
-                                  text
-                                  size="small"
-                                  @click="clearProjectTools"
-                                  >清空</el-button
-                                >
-                              </div>
-                            </div>
-                            <div class="mcp-module-list">
-                              <el-empty
-                                v-if="!activeSystemModules.length"
-                                description="暂无系统模块"
-                                :image-size="48"
-                              />
-                              <template v-else>
-                                <div
-                                  v-for="item in activeSystemModules.slice(
-                                    0,
-                                    12,
-                                  )"
-                                  :key="item.id || item.tool_name"
-                                  class="mcp-module-item"
-                                >
-                                  <div class="mcp-module-row">
-                                    <div class="mcp-module-head">
-                                      <el-checkbox
-                                        v-if="
-                                          item.scope === 'project_related' &&
-                                          item.tool_name
-                                        "
-                                        :model-value="
-                                          isProjectToolSelected(item.tool_name)
-                                        "
-                                        @change="
-                                          (val) =>
-                                            toggleProjectTool(
-                                              item.tool_name,
-                                              val,
-                                            )
-                                        "
-                                      />
-                                      <span class="mcp-module-name">{{
-                                        item.name || item.id || "-"
-                                      }}</span>
-                                    </div>
-                                    <el-tag
-                                      size="small"
-                                      :type="moduleTagType(item.module_type)"
-                                      >{{
-                                        moduleTypeLabel(item.module_type)
-                                      }}</el-tag
-                                    >
-                                  </div>
-                                  <div
-                                    v-if="item.description"
-                                    class="mcp-module-desc"
-                                  >
-                                    {{ item.description }}
-                                  </div>
-                                  <div
-                                    v-if="moduleMetaText(item)"
-                                    class="mcp-module-meta"
-                                  >
-                                    {{ moduleMetaText(item) }}
-                                  </div>
-                                </div>
-                                <div
-                                  v-if="activeSystemModules.length > 12"
-                                  class="mcp-module-more"
-                                >
-                                  其余
-                                  {{ activeSystemModules.length - 12 }}
-                                  个模块未展示
-                                </div>
-                              </template>
-                            </div>
-                          </el-tab-pane>
-                          <el-tab-pane
+                            系统提供 ({{ systemMcpTotal }})
+                          </button>
+                          <button
                             v-if="hasSelectedProject"
-                            :label="`外部 (${externalMcpTotal})`"
-                            name="external"
+                            type="button"
+                            class="mcp-source-switch__item"
+                            :class="{
+                              'is-active': activeMcpSource === 'external',
+                            }"
+                            @click="activeMcpSource = 'external'"
                           >
-                            <ExternalMcpManager
-                              :project-id="selectedProjectId"
-                              @changed="handleExternalModulesChanged"
-                              @count-change="handleExternalModuleCountChange"
+                            外部 ({{ externalMcpTotal }})
+                          </button>
+                        </div>
+
+                        <div
+                          v-show="activeMcpSource === 'system'"
+                          class="mcp-source-panel"
+                        >
+                          <el-select
+                            v-model="activeSystemScope"
+                            size="small"
+                            class="full-width mcp-scope-select"
+                          >
+                            <el-option
+                              :label="`项目关联的所有 (${systemProjectRelatedModules.length})`"
+                              value="project_related"
                             />
-                          </el-tab-pane>
-                        </el-tabs>
+                            <el-option
+                              :label="`系统本身提供的所有 (${systemGlobalModules.length})`"
+                              value="system_global"
+                            />
+                          </el-select>
+                          <div class="mcp-section-tip">
+                            系统提供的 MCP
+                            仅展示；此处勾选只控制当前项目对话可用工具，不修改模块定义。
+                          </div>
+                          <div
+                            v-if="
+                              activeSystemScope === 'project_related' &&
+                              projectToolModules.length
+                            "
+                            class="mcp-tool-actions"
+                          >
+                            <span class="mcp-tool-count"
+                              >本轮启用
+                              {{ selectedProjectToolNames.length }}/{{
+                                projectToolModules.length
+                              }}</span
+                            >
+                            <div class="mcp-tool-buttons">
+                              <el-button
+                                text
+                                size="small"
+                                @click="selectAllProjectTools"
+                                >全选</el-button
+                              >
+                              <el-button
+                                text
+                                size="small"
+                                @click="clearProjectTools"
+                                >清空</el-button
+                              >
+                            </div>
+                          </div>
+                          <div class="mcp-module-list">
+                            <el-empty
+                              v-if="!activeSystemModules.length"
+                              description="暂无系统模块"
+                              :image-size="48"
+                            />
+                            <template v-else>
+                              <div
+                                v-for="item in activeSystemModules.slice(0, 12)"
+                                :key="item.id || item.tool_name"
+                                class="mcp-module-item"
+                              >
+                                <div class="mcp-module-row">
+                                  <div class="mcp-module-head">
+                                    <el-checkbox
+                                      v-if="
+                                        item.scope === 'project_related' &&
+                                        item.tool_name
+                                      "
+                                      :model-value="
+                                        isProjectToolSelected(item.tool_name)
+                                      "
+                                      @change="
+                                        (val) =>
+                                          toggleProjectTool(item.tool_name, val)
+                                      "
+                                    />
+                                    <span class="mcp-module-name">{{
+                                      item.name || item.id || "-"
+                                    }}</span>
+                                  </div>
+                                  <el-tag
+                                    size="small"
+                                    :type="moduleTagType(item.module_type)"
+                                    >{{
+                                      moduleTypeLabel(item.module_type)
+                                    }}</el-tag
+                                  >
+                                </div>
+                                <div
+                                  v-if="item.description"
+                                  class="mcp-module-desc"
+                                >
+                                  {{ item.description }}
+                                </div>
+                                <div
+                                  v-if="moduleMetaText(item)"
+                                  class="mcp-module-meta"
+                                >
+                                  {{ moduleMetaText(item) }}
+                                </div>
+                              </div>
+                              <div
+                                v-if="activeSystemModules.length > 12"
+                                class="mcp-module-more"
+                              >
+                                其余
+                                {{ activeSystemModules.length - 12 }}
+                                个模块未展示
+                              </div>
+                            </template>
+                          </div>
+                        </div>
+
+                        <div
+                          v-if="hasSelectedProject"
+                          v-show="activeMcpSource === 'external'"
+                          class="mcp-source-panel"
+                        >
+                          <ExternalMcpManager
+                            :project-id="selectedProjectId"
+                            @changed="handleExternalModulesChanged"
+                            @count-change="handleExternalModuleCountChange"
+                          />
+                        </div>
+
+                        <div
+                          v-else
+                          class="mcp-section-tip"
+                        >
+                          先选择项目，才能管理当前项目的外部 MCP 模块。
+                        </div>
                       </el-form-item>
                       </section>
 
@@ -3283,7 +3352,9 @@
                             表示不限制。
                           </p>
                         </div>
-                          <div class="settings-constraint-grid">
+                        <el-collapse class="settings-constraint-collapse">
+                          <el-collapse-item title="高级护栏参数">
+                            <div class="settings-constraint-grid">
                             <el-form-item>
                               <template #label>
                                 <span class="label-with-tooltip">
@@ -3431,7 +3502,9 @@
                                 />
                               </el-select>
                             </el-form-item>
-                          </div>
+                            </div>
+                          </el-collapse-item>
+                        </el-collapse>
                       </section>
                     </el-form>
                   </el-tab-pane>
@@ -3659,6 +3732,16 @@ markdownRenderer.code = ({ text, lang, escaped }) => {
 
 const route = useRoute();
 const router = useRouter();
+const rawLocalRuntimeSettingsFlag = String(
+  import.meta.env.VITE_SHOW_LOCAL_RUNTIME_SETTINGS ?? "",
+).trim();
+const showLocalRuntimeSettingsDefault = import.meta.env.DEV;
+const showLocalRuntimeSettings =
+  rawLocalRuntimeSettingsFlag === ""
+    ? showLocalRuntimeSettingsDefault
+    : ["1", "true", "yes", "on"].includes(
+        rawLocalRuntimeSettingsFlag.toLowerCase(),
+      );
 const EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS = {
   prompts_chat_curated: "系统规则源",
 };
@@ -3983,6 +4066,8 @@ const wsConnected = ref(false);
 const wsClient = ref(null);
 const wsProjectId = ref("");
 const pendingRequests = new Map();
+const activeGenerationRequestId = ref("");
+let lastNoActiveGenerationWarningAt = 0;
 const pendingAgentPrepares = new Map();
 const activeApprovalIds = new Set();
 const activeReviewIds = new Set();
@@ -4003,6 +4088,9 @@ const terminalStructuredInteraction = ref(null);
 const terminalStructuredFormModel = ref({ choices: [], choice: "" });
 const terminalDismissedStructuredInteractionKeys = ref(new Set());
 const terminalStructuredSubmissionHint = ref(null);
+const operationInteractionFormModels = ref({});
+const dismissedOperationInteractionIds = ref(new Set());
+const operationInteractionSubmissionHints = ref({});
 const terminalActiveCommand = ref("");
 const workspaceFileTreeLoading = ref(false);
 const workspaceFileLoading = ref(false);
@@ -4012,7 +4100,6 @@ const workspaceFileItems = ref([]);
 const activeWorkspaceFilePath = ref("");
 const workspaceFileDraft = ref("");
 const workspaceFileOriginal = ref("");
-const terminalAutoOpenedUrls = new Set();
 const LARK_AUTH_DOMAIN_OPTIONS = [
   "approval",
   "attendance",
@@ -4390,6 +4477,7 @@ const localConnectorSummary = computed(() => {
     .join(" · ");
 });
 const localRunnerSummary = computed(() => {
+  if (!showLocalRuntimeSettings) return "当前部署已隐藏本机控制项";
   if (!isLocalRunnerSurface.value) {
     return projectWorkspaceResolved.value ? "项目工作区可用" : "未配置工作区";
   }
@@ -4917,7 +5005,7 @@ const autoSaveStatusText = computed(() => {
 });
 const externalAgentOptions = computed(() =>
   Array.isArray(externalAgentInfo.value.agent_types)
-    ? externalAgentInfo.value.agent_types
+    ? externalAgentInfo.value.agent_types.filter((item) => item?.installed)
     : [],
 );
 const hasAccessibleProjects = computed(
@@ -5254,6 +5342,7 @@ const isTerminalInteractionMode = computed(() => {
 });
 const showPauseGenerationButton = computed(
   () =>
+    Boolean(activeGenerationRequestId.value) &&
     chatLoading.value &&
     !isAwaitingUserInteraction.value &&
     !isTerminalInteractionMode.value,
@@ -5708,7 +5797,6 @@ const editorComposing = ref(false);
 const uploadFiles = ref([]);
 const inputFocused = ref(false);
 const isDragging = ref(false);
-const pendingComposerRefocusAfterExternalOpen = ref(false);
 
 const currentSlashDraftState = computed(() =>
   parseSlashCommandDraft(draftText.value),
@@ -5760,10 +5848,14 @@ const fileTypeOptions = computed(() =>
     40,
   ),
 );
+const CHAT_BOTTOM_STICKY_THRESHOLD = 72;
 
 let autoSaveTimer = null;
 let lastAutoSavedFingerprint = "";
 let highlightedMessageTimer = null;
+let messageListResizeObserver = null;
+let pendingScrollToBottomFrame = null;
+const shouldStickMessagesToBottom = ref(true);
 const CHAT_HISTORY_PAGE_SIZE = 120;
 const chatHistoryLoadedCount = ref(0);
 const chatHistoryLoadingMore = ref(false);
@@ -6104,6 +6196,7 @@ function normalizeRuntimeMessageSnapshot(row) {
       row.taskTreeAudit && typeof row.taskTreeAudit === "object"
         ? row.taskTreeAudit
         : null,
+    processLog: Array.isArray(row.processLog) ? row.processLog.slice() : [],
     statusNotes: Array.isArray(row.statusNotes) ? row.statusNotes.slice() : [],
     operations: Array.isArray(row.operations) ? row.operations.slice() : [],
   };
@@ -7375,23 +7468,6 @@ function focusTerminalPanelInput() {
   void focusChatComposerTextarea();
 }
 
-function extractInteractiveBrowserUrls(value) {
-  const text = String(value || "").trim();
-  if (!text) return [];
-  const urls = Array.from(text.matchAll(/https?:\/\/[^\s)>"]+/gi), (match) =>
-    String(match?.[0] || "")
-      .trim()
-      .replace(/[),.;:!?]+$/g, ""),
-  ).filter(Boolean);
-  if (!urls.length) return [];
-  const hasOpenHint =
-    /打开以下链接|授权链接|重新授权|浏览器.*授权|人工授权|device\/verify|user_code|open the following link|open the link|continue in browser|confirm in browser|verification url|等待配置应用|等待授权|authorize|authorization/i.test(
-      text,
-    );
-  if (!hasOpenHint) return [];
-  return Array.from(new Set(urls));
-}
-
 function pickAwaitingInteractionOperation(row, options = {}) {
   if (!row) return null;
   const operations = [...messageOperations(row)].reverse().filter((item) => {
@@ -7430,32 +7506,6 @@ function findLatestAwaitingInteractionMessage(rows) {
   return null;
 }
 
-async function ensureBrowserAuthOperationFromText(value, row, options = {}) {
-  const text = String(value || "").trim();
-  const urls = extractInteractiveBrowserUrls(text);
-  if (!urls.length) return false;
-  if (options?.autoOpen !== false) {
-    await autoOpenTerminalBrowserUrls(text, row);
-  }
-  if (!row) return true;
-  for (const url of urls) {
-    upsertMessageOperation(row, {
-      operationId: `auth:${url}`,
-      kind: "auth",
-      title: "浏览器授权",
-      summary: "等待你完成授权后回到输入框继续",
-      detail: url,
-      phase: "waiting_user",
-      actionType: "open_url",
-    });
-  }
-  appendAssistantStatusNote(
-    row,
-    "> 🌐 已识别浏览器授权等待状态；完成授权后回到输入框输入“授权完成”即可继续。",
-  );
-  return true;
-}
-
 async function openExternalUrlViaSystem(url) {
   const normalizedUrl = String(url || "").trim();
   if (!normalizedUrl) return false;
@@ -7467,74 +7517,6 @@ async function openExternalUrlViaSystem(url) {
   } catch (err) {
     return false;
   }
-}
-
-async function autoOpenTerminalBrowserUrls(value, row = null) {
-  const urls = extractInteractiveBrowserUrls(value);
-  if (!urls.length) return;
-  for (const url of urls) {
-    if (terminalAutoOpenedUrls.has(url)) continue;
-    terminalAutoOpenedUrls.add(url);
-    let opened = false;
-    try {
-      opened = await openExternalUrlViaSystem(url);
-    } catch (err) {
-      opened = false;
-    }
-    if (!opened) {
-      try {
-        opened = Boolean(window.open(url, "_blank", "noopener,noreferrer"));
-      } catch (err) {
-        opened = false;
-      }
-    }
-    if (opened) {
-      pendingComposerRefocusAfterExternalOpen.value = true;
-      if (row) {
-        upsertMessageOperation(row, {
-          operationId: `auth:${url}`,
-          kind: "auth",
-          title: "浏览器授权",
-          summary: "已自动打开授权链接，完成后回到对话框继续",
-          detail: url,
-          phase: "waiting_user",
-          actionType: "open_url",
-        });
-        appendAssistantStatusNote(
-          row,
-          `> 🌐 已自动打开浏览器链接：\`${url}\`。完成后回到对话框输入“已完成”继续。`,
-        );
-      }
-      continue;
-    }
-    if (row) {
-      upsertMessageOperation(row, {
-        operationId: `auth:${url}`,
-        kind: "auth",
-        title: "浏览器授权",
-        summary: "自动打开失败，请手动继续",
-        detail: url,
-        phase: "waiting_user",
-        actionType: "open_url",
-      });
-      appendAssistantStatusNote(
-        row,
-        `> 🌐 自动打开浏览器失败，请手动打开：\`${url}\`。完成后回到对话框输入“已完成”继续。`,
-      );
-    }
-  }
-}
-
-function restoreComposerFocusAfterExternalOpen() {
-  if (!pendingComposerRefocusAfterExternalOpen.value) return;
-  if (
-    typeof document !== "undefined" &&
-    document.visibilityState === "hidden"
-  ) {
-    return;
-  }
-  pendingComposerRefocusAfterExternalOpen.value = false;
-  void focusChatComposerTextarea();
 }
 
 function appendTerminalPanelLine(text) {
@@ -7837,6 +7819,9 @@ function appendAssistantStatusNote(row, text) {
   }
   notes.push(note);
   row.statusNotes = notes;
+  if (row.processExpanded !== false) {
+    row.processExpanded = true;
+  }
 }
 
 function removeAssistantStatusNotes(row, predicate) {
@@ -7869,6 +7854,235 @@ function messageStatusNotes(row) {
         .map((item) => String(item || "").trim())
         .filter((item) => item && !isInternalStatusNote(item))
     : [];
+}
+
+function normalizeProcessLogLevel(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (["info", "success", "warning", "error"].includes(normalized)) {
+    return normalized;
+  }
+  return "info";
+}
+
+function appendMessageProcessLog(row, source = {}) {
+  if (!row) return null;
+  const text = String(source?.text || source?.content || "").trim();
+  if (!text) return null;
+  const logs = Array.isArray(row.processLog) ? row.processLog.slice() : [];
+  const entry = {
+    id:
+      String(source?.id || "").trim() ||
+      `process-log-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    text,
+    level: normalizeProcessLogLevel(source?.level),
+    createdAt: String(
+      source?.createdAt || source?.created_at || nowText(),
+    ).trim(),
+  };
+  const lastEntry = logs[logs.length - 1];
+  if (
+    lastEntry &&
+    String(lastEntry.text || "").trim() === entry.text &&
+    String(lastEntry.level || "").trim() === entry.level
+  ) {
+    return lastEntry;
+  }
+  logs.push(entry);
+  if (logs.length > 80) {
+    logs.splice(0, logs.length - 80);
+  }
+  row.processLog = logs;
+  if (row.processExpanded !== false) {
+    row.processExpanded = true;
+  }
+  return entry;
+}
+
+function messageProcessLogEntries(row) {
+  return Array.isArray(row?.processLog)
+    ? row.processLog.filter((item) => String(item?.text || "").trim())
+    : [];
+}
+
+function messageProcessLogSummary(row) {
+  const entries = messageProcessLogEntries(row);
+  if (!entries.length) return [];
+  const latestPerLevel = [];
+  const seenLevels = new Set();
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    const level = String(entry?.level || "info").trim();
+    if (seenLevels.has(level)) continue;
+    seenLevels.add(level);
+    latestPerLevel.unshift(entry);
+    if (latestPerLevel.length >= 3) break;
+  }
+  return latestPerLevel;
+}
+
+function rawMessageOperations(row) {
+  return Array.isArray(row?.operations)
+    ? row.operations.filter((item) => item && item.title)
+    : [];
+}
+
+function isCompletedRequestSummaryOperation(operation, row) {
+  const kind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
+  const phase = normalizeOperationPhase(operation?.phase);
+  return (
+    kind === "request" &&
+    phase === "completed" &&
+    messageProcessLogEntries(row).length > 0
+  );
+}
+
+function shouldShowInlineThinkingState(row, idx) {
+  return (
+    chatLoading.value === true &&
+    idx === messages.value.length - 1 &&
+    !String(row?.content || "").trim()
+  );
+}
+
+function messageBodyHtml(row, idx) {
+  const content = formatContent(row?.content);
+  if (content) return content;
+  if (shouldShowInlineThinkingState(row, idx) && !shouldShowMessageProcess(row, idx)) {
+    return "思考中...";
+  }
+  return "";
+}
+
+function messageProcessStepCount(row, idx) {
+  const operationCount = messageOperations(row).length;
+  const processLogCount = messageProcessLogEntries(row).length;
+  const noteCount = messageStatusNotes(row).length;
+  const terminalCount = terminalLogLines(row).length ? 1 : 0;
+  const thinkingCount = shouldShowInlineThinkingState(row, idx) ? 1 : 0;
+  return operationCount + processLogCount + noteCount + terminalCount + thinkingCount;
+}
+
+function shouldShowMessageProcess(row, idx) {
+  return messageProcessStepCount(row, idx) > 0;
+}
+
+function messageProcessLifecyclePhase(row, idx) {
+  const operations = rawMessageOperations(row);
+  const phases = operations.map((item) =>
+    normalizeOperationPhase(item?.phase || item?.status),
+  );
+  if (phases.includes("waiting_user")) return "waiting_user";
+  if (phases.includes("blocked")) return "blocked";
+  if (phases.includes("failed")) return "failed";
+  if (phases.includes("running")) return "running";
+  if (
+    chatLoading.value === true &&
+    idx === messages.value.length - 1 &&
+    String(row?.role || "").trim() === "assistant"
+  ) {
+    return "running";
+  }
+  if (phases.includes("completed")) return "completed";
+  if (messageProcessLogEntries(row).length || terminalLogLines(row).length) {
+    return "completed";
+  }
+  return "pending";
+}
+
+function primaryMessageProcessOperation(row) {
+  const operations = messageOperations(row);
+  return (
+    operations.find(
+      (item) => normalizeOperationPhase(item?.phase) === "waiting_user",
+    ) ||
+    operations.find(
+      (item) => normalizeOperationPhase(item?.phase) === "blocked",
+    ) ||
+    operations.find(
+      (item) => normalizeOperationPhase(item?.phase) === "running",
+    ) ||
+    operations[operations.length - 1] ||
+    null
+  );
+}
+
+function messageProcessEyebrow(row, idx) {
+  if (String(row?.displayMode || "").trim() === "terminal") {
+    return "Terminal Trace";
+  }
+  if (messageProcessLogEntries(row).length) {
+    return "Live Execution";
+  }
+  if (shouldShowInlineThinkingState(row, idx)) {
+    return "Reasoning Trace";
+  }
+  return "Execution Trace";
+}
+
+function messageProcessStateTone(row, idx) {
+  const phase = messageProcessLifecyclePhase(row, idx);
+  if (phase === "waiting_user") return "waiting";
+  if (phase === "blocked" || phase === "failed") return "danger";
+  if (phase === "running" || shouldShowInlineThinkingState(row, idx)) {
+    return "running";
+  }
+  if (phase === "completed") return "success";
+  return "neutral";
+}
+
+function messageProcessStateLabel(row, idx) {
+  const phase = messageProcessLifecyclePhase(row, idx);
+  if (phase === "waiting_user") return "待处理";
+  if (phase === "blocked") return "已阻塞";
+  if (phase === "failed") return "失败";
+  if (phase === "running") return "进行中";
+  if (phase === "completed") return "已完成";
+  if (shouldShowInlineThinkingState(row, idx)) return "思考中";
+  if (messageProcessLogEntries(row).length) return "执行中";
+  if (terminalLogLines(row).length) return "已记录";
+  if (messageStatusNotes(row).length) return "有更新";
+  return "";
+}
+
+function messageProcessTitle(row, idx) {
+  const primaryOperation = primaryMessageProcessOperation(row);
+  const phase = normalizeOperationPhase(primaryOperation?.phase);
+  const title = String(primaryOperation?.title || "").trim();
+  const summary = String(primaryOperation?.summary || "").trim();
+  const detail = String(primaryOperation?.detail || "").trim();
+  if (phase === "waiting_user") {
+    return summary || title || detail || "等待你的处理";
+  }
+  if (phase === "blocked") {
+    return summary || title || detail || "当前步骤已阻塞";
+  }
+  if (phase === "failed") {
+    return summary || title || detail || "执行出现异常";
+  }
+  if (phase === "running") {
+    return summary || title || detail || "正在执行中";
+  }
+  if (phase === "completed") {
+    return summary || title || detail || "已完成本轮执行";
+  }
+  const latestProcessLog = messageProcessLogEntries(row).slice(-1)[0];
+  if (latestProcessLog?.text) {
+    return latestProcessLog.text;
+  }
+  if (shouldShowInlineThinkingState(row, idx)) {
+    return "正在整理下一步";
+  }
+  if (messageStatusNotes(row).length) {
+    return "过程摘要";
+  }
+  if (terminalLogLines(row).length) {
+    return "终端执行记录";
+  }
+  return "执行过程";
 }
 
 function normalizeOperationPhase(value) {
@@ -8010,6 +8224,12 @@ function upsertMessageOperation(row, source = {}) {
     items.push(operation);
   }
   row.operations = items.slice(-24);
+  const phase = normalizeOperationPhase(operation?.phase);
+  if (["waiting_user", "blocked", "failed"].includes(phase)) {
+    row.processExpanded = true;
+  } else if (typeof row.processExpanded !== "boolean") {
+    row.processExpanded = phase === "running";
+  }
   return operation;
 }
 
@@ -8022,17 +8242,22 @@ function isInternalToolOperation(operation) {
 }
 
 function messageOperations(row) {
-  return Array.isArray(row?.operations)
-    ? row.operations.filter(
-        (item) => item && item.title && !isInternalToolOperation(item),
-      )
-    : [];
+  return rawMessageOperations(row).filter(
+    (item) =>
+      !isInternalToolOperation(item) &&
+      !isCompletedRequestSummaryOperation(item, row),
+  );
 }
 
 function isOperationAwaitingInteraction(operation) {
   if (!operation) return false;
   const phase = normalizeOperationPhase(operation?.phase || operation?.status);
   if (phase !== "waiting_user") return false;
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  if (meta.interaction_schema && typeof meta.interaction_schema === "object") {
+    return true;
+  }
   const actionType = normalizeOperationActionType(operation?.actionType);
   const kind = String(operation?.kind || "")
     .trim()
@@ -8054,6 +8279,15 @@ function operationPhaseLabel(operation) {
 }
 
 function operationActionHint(operation) {
+  const schema = operationInteractionSchema(operation);
+  if (schema) {
+    if (operationInteractionSubmittedHint(operation)) {
+      return "已提交结构化交互，正在等待后续执行结果。";
+    }
+    return operationInteractionCanFallbackToTerminal(operation)
+      ? "优先使用当前表单继续；如果协议不完整，也可以切回终端兜底。"
+      : "请完成当前结构化表单后继续。";
+  }
   const actionType = normalizeOperationActionType(operation?.actionType);
   if (actionType === "open_url") {
     return "需要在浏览器完成操作，然后回到对话框继续。";
@@ -8083,6 +8317,10 @@ function operationActionHint(operation) {
 }
 
 function extractOperationUrl(operation) {
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  const metaUrl = String(meta.authorization_url || "").trim();
+  if (metaUrl) return metaUrl;
   const detail = String(operation?.detail || "").trim();
   if (!detail) return "";
   const match = detail.match(/https?:\/\/[^\s)>"]+/i);
@@ -8096,6 +8334,77 @@ function operationPrimaryActionLabel(operation) {
   return buttons.length ? buttons[0].label : "";
 }
 
+function findAssistantRowByOperationTaskId(taskId, chatSessionId = "") {
+  const normalizedTaskId = String(taskId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedTaskId && !normalizedChatSessionId) return null;
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const row = messages.value[index];
+    if (String(row?.role || "").trim() !== "assistant") continue;
+    const operations = messageOperations(row);
+    const matched = operations.find((item) => {
+      const meta =
+        item?.meta && typeof item.meta === "object" ? item.meta : {};
+      const operationTaskId = String(meta.task_id || "").trim();
+      const operationChatSessionId = String(meta.chat_session_id || "").trim();
+      return (
+        (normalizedTaskId && operationTaskId === normalizedTaskId) ||
+        (normalizedChatSessionId &&
+          operationChatSessionId === normalizedChatSessionId &&
+          ["auth", "request", "approval"].includes(
+            String(item?.kind || "").trim().toLowerCase(),
+          ))
+      );
+    });
+    if (matched) {
+      return { row, index, operation: matched };
+    }
+  }
+  return null;
+}
+
+function completePendingExternalOperationRequest(matched, message) {
+  if (!matched?.row || !message) return;
+  const normalizedMessage = String(message || "").trim();
+  if (!normalizedMessage) return;
+  if (!String(matched.row.content || "").trim()) {
+    matched.row.content = normalizedMessage;
+  }
+  const entries = Array.from(pendingRequests.entries());
+  for (const [requestId, pending] of entries) {
+    if (Number(pending?.assistantIndex ?? -1) !== Number(matched.index)) {
+      continue;
+    }
+    const row = messages.value[pending.assistantIndex];
+    if (row !== matched.row) continue;
+    completeTerminalInputOperations(row, normalizedMessage);
+    resolvePendingRequest(requestId, pending, row.content || normalizedMessage);
+    chatLoading.value = pendingRequests.size > 0;
+    break;
+  }
+}
+
+function buildOperationResumeUserPrompt(resumeCommand, workflowKind = "") {
+  const normalizedCommand = String(resumeCommand || "").trim();
+  const normalizedWorkflowKind = String(workflowKind || "").trim();
+  const completionText =
+    normalizedWorkflowKind === "auth_login"
+      ? "授权完成，检测通过。"
+      : "外部操作完成。";
+  if (!normalizedCommand) {
+    return `${completionText}请继续刚才的任务。`;
+  }
+  return [
+    completionText,
+    "请不要再要求我重复完成同一个外部操作。",
+    `直接继续执行之前待恢复的命令：${normalizedCommand}`,
+  ].join("\n");
+}
+
+const findAssistantRowByAuthTaskId = findAssistantRowByOperationTaskId;
+const completePendingAuthLoginRequest = completePendingExternalOperationRequest;
+const buildAuthResumeUserPrompt = buildOperationResumeUserPrompt;
+
 function buildTerminalChoiceChildren(componentName) {
   const interaction = terminalStructuredInteraction.value;
   return (interaction?.options || []).map((item) => ({
@@ -8106,6 +8415,227 @@ function buildTerminalChoiceChildren(componentName) {
     },
     children: item.label,
   }));
+}
+
+function cloneInteractionValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneInteractionValue(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, cloneInteractionValue(item)]),
+    );
+  }
+  return value;
+}
+
+function normalizeInteractionSchema(rawSchema) {
+  if (!rawSchema || typeof rawSchema !== "object") return null;
+  const schema = Array.isArray(rawSchema.schema) ? rawSchema.schema : [];
+  if (!schema.length) return null;
+  const model =
+    rawSchema.model && typeof rawSchema.model === "object"
+      ? cloneInteractionValue(rawSchema.model)
+      : {};
+  return {
+    title: String(rawSchema.title || rawSchema.label || "需要你继续操作").trim(),
+    description: String(
+      rawSchema.description || rawSchema.summary || "请完成下列表单后继续。",
+    ).trim(),
+    submitLabel: String(rawSchema.submit_label || rawSchema.submitLabel || "确认并继续").trim(),
+    fallbackLabel: String(
+      rawSchema.fallback_label || rawSchema.fallbackLabel || "使用终端兜底",
+    ).trim(),
+    responseMode: String(
+      rawSchema.response_mode || rawSchema.responseMode || "",
+    )
+      .trim()
+      .toLowerCase(),
+    responseTemplate: String(
+      rawSchema.response_template || rawSchema.responseTemplate || "",
+    ).trim(),
+    terminalSubmitContent: String(
+      rawSchema.terminal_submit_content || rawSchema.terminalSubmitContent || "",
+    ).trim(),
+    rowAttrs:
+      rawSchema.rowAttrs && typeof rawSchema.rowAttrs === "object"
+        ? { ...rawSchema.rowAttrs }
+        : { gutter: 12 },
+    formAttrs:
+      rawSchema.formAttrs && typeof rawSchema.formAttrs === "object"
+        ? { ...rawSchema.formAttrs }
+        : { "label-position": "top" },
+    schema: cloneInteractionValue(schema),
+    model,
+  };
+}
+
+function operationInteractionSchema(operation) {
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  const rawSchema = meta.interaction_schema;
+  return normalizeInteractionSchema(rawSchema);
+}
+
+function operationInteractionId(operation) {
+  return String(operation?.id || operation?.operationId || "").trim();
+}
+
+function findMessageRowByOperationId(operationId) {
+  const normalizedId = String(operationId || "").trim();
+  if (!normalizedId) return null;
+  return (
+    messages.value.find((item) =>
+      Array.isArray(item?.operations)
+        ? item.operations.some((entry) => entry.id === normalizedId)
+        : false,
+    ) || null
+  );
+}
+
+function operationInteractionModel(operation) {
+  const interactionId = operationInteractionId(operation);
+  if (!interactionId) return {};
+  const current = operationInteractionFormModels.value[interactionId];
+  if (current && typeof current === "object") {
+    return current;
+  }
+  const schema = operationInteractionSchema(operation);
+  const nextModel =
+    schema?.model && typeof schema.model === "object"
+      ? cloneInteractionValue(schema.model)
+      : {};
+  operationInteractionFormModels.value = {
+    ...operationInteractionFormModels.value,
+    [interactionId]: nextModel,
+  };
+  return nextModel;
+}
+
+function syncOperationInteractionModel(operation) {
+  const interactionId = operationInteractionId(operation);
+  const schema = operationInteractionSchema(operation);
+  if (!interactionId || !schema) return null;
+  const current = operationInteractionFormModels.value[interactionId];
+  if (current && typeof current === "object") {
+    return current;
+  }
+  return operationInteractionModel(operation);
+}
+
+function operationInteractionSubmittedHint(operation) {
+  const interactionId = operationInteractionId(operation);
+  if (!interactionId) return "";
+  return String(operationInteractionSubmissionHints.value[interactionId] || "").trim();
+}
+
+function setOperationInteractionSubmittedHint(operation, text) {
+  const interactionId = operationInteractionId(operation);
+  if (!interactionId) return;
+  operationInteractionSubmissionHints.value = {
+    ...operationInteractionSubmissionHints.value,
+    [interactionId]: String(text || "").trim(),
+  };
+}
+
+function dismissOperationInteractionForm(operation) {
+  const interactionId = operationInteractionId(operation);
+  if (!interactionId) return;
+  const next = new Set(dismissedOperationInteractionIds.value);
+  next.add(interactionId);
+  dismissedOperationInteractionIds.value = next;
+}
+
+function operationInteractionCanFallbackToTerminal(operation) {
+  const actionType = normalizeOperationActionType(operation?.actionType);
+  const kind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
+  return actionType === "enter_text" || kind === "terminal";
+}
+
+function operationInteractionTitle(operation) {
+  const schema = operationInteractionSchema(operation);
+  return (
+    String(schema?.title || operation?.title || "需要你继续操作").trim() ||
+    "需要你继续操作"
+  );
+}
+
+function operationInteractionDescription(operation) {
+  const schema = operationInteractionSchema(operation);
+  return (
+    String(schema?.description || operation?.summary || "请完成当前交互后继续。").trim() ||
+    "请完成当前交互后继续。"
+  );
+}
+
+function messageOperationInteractionFormJson(operation) {
+  const interactionId = operationInteractionId(operation);
+  if (!interactionId) return null;
+  if (dismissedOperationInteractionIds.value.has(interactionId)) {
+    return null;
+  }
+  const schema = operationInteractionSchema(operation);
+  if (!schema) return null;
+  if (!isOperationAwaitingInteraction(operation)) return null;
+  return {
+    rowAttrs: schema.rowAttrs,
+    formAttrs: schema.formAttrs,
+    model: syncOperationInteractionModel(operation),
+    schema: schema.schema,
+  };
+}
+
+function isEmptyInteractionValue(value) {
+  if (Array.isArray(value)) return value.length === 0;
+  if (value && typeof value === "object") return Object.keys(value).length === 0;
+  return String(value ?? "").trim() === "";
+}
+
+function canSubmitOperationInteraction(operation) {
+  const schema = operationInteractionSchema(operation);
+  if (!schema) return false;
+  const model = operationInteractionModel(operation);
+  const requiredProps = schema.schema
+    .filter((item) => item && item.required)
+    .map((item) => String(item.prop || "").trim())
+    .filter(Boolean);
+  if (requiredProps.length) {
+    return requiredProps.every((prop) => !isEmptyInteractionValue(model?.[prop]));
+  }
+  return schema.schema.some((item) => {
+    const prop = String(item?.prop || "").trim();
+    return prop ? !isEmptyInteractionValue(model?.[prop]) : false;
+  });
+}
+
+function formatOperationInteractionPayload(operation) {
+  const schema = operationInteractionSchema(operation);
+  const model = operationInteractionModel(operation);
+  if (!schema) return "";
+  if (schema.terminalSubmitContent) {
+    return schema.terminalSubmitContent;
+  }
+  if (schema.responseTemplate) {
+    return schema.responseTemplate.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (_match, token) => {
+      const value = model?.[token];
+      return Array.isArray(value) ? value.join("、") : String(value ?? "");
+    });
+  }
+  const actionTitle = operationInteractionTitle(operation);
+  const lines = [`${actionTitle}：`];
+  schema.schema.forEach((item) => {
+    const prop = String(item?.prop || "").trim();
+    if (!prop) return;
+    const label = String(item?.label || prop).trim();
+    const value = model?.[prop];
+    if (isEmptyInteractionValue(value)) return;
+    lines.push(
+      `${label}：${Array.isArray(value) ? value.join("、") : String(value ?? "").trim()}`,
+    );
+  });
+  return lines.join("\n");
 }
 
 const terminalInteractionFormJson = computed(() => {
@@ -8498,6 +9028,309 @@ async function submitTerminalStructuredInteraction() {
   markTerminalInteractionContentSubmitted(interaction.assistantIndex);
 }
 
+async function continueChatWithInteractionPayload(payloadText) {
+  const text = String(payloadText || "").trim();
+  if (!text) return false;
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) return false;
+  let activeChatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!activeChatSessionId) {
+    const created = await createChatSession({ switchTo: true });
+    activeChatSessionId = String(created?.id || "").trim();
+    if (!activeChatSessionId) {
+      return false;
+    }
+  }
+  const activeSessionSourceContext = normalizeChatSourceContext(
+    currentChatSession.value || {},
+  );
+  const historyRows = toHistoryRows(messages.value, historyLimit.value);
+  const userMessage = {
+    id: createLocalMessageId(),
+    role: "user",
+    content: text,
+    images: [],
+    videos: [],
+    attachments: [],
+    time: nowText(),
+  };
+  const assistantMessage = {
+    id: createLocalMessageId(),
+    role: "assistant",
+    content: "",
+    images: [],
+    videos: [],
+    attachments: [],
+    displayMode: "",
+    effectiveTools: [],
+    effectiveToolTotal: 0,
+    terminalLog: [],
+    processExpanded: false,
+    audit: null,
+    taskTreeAudit: null,
+    statusNotes: [],
+    operations: [],
+    time: nowText(),
+  };
+  messages.value.push(userMessage);
+  messages.value.push(assistantMessage);
+  const assistantIndex = messages.value.length - 1;
+  chatLoading.value = true;
+  scrollToBottom();
+  try {
+    await sendProjectChatRequest({
+      projectId,
+      activeChatSessionId,
+      userMessageId: userMessage.id,
+      assistantMessage,
+      assistantIndex,
+      finalUserPrompt: appendModelGenerationInstruction(text),
+      activeSessionSourceContext,
+      historyRows,
+      effectiveAutoUseTools: Boolean(
+        projectChatSettings.value.auto_use_tools ??
+          CHAT_SETTINGS_DEFAULTS.auto_use_tools,
+      ),
+      effectiveToolPriority: mergeToolPriority(
+        projectChatSettings.value.tool_priority || [],
+        [],
+      ),
+      assistAction: null,
+      assistToolNames: [],
+    });
+    return true;
+  } catch (err) {
+    messages.value[assistantIndex].content =
+      `请求失败：${err?.message || "未知错误"}`;
+    ElMessage.error(err?.message || "交互提交失败");
+    return false;
+  } finally {
+    chatLoading.value = pendingRequests.size > 0;
+    scrollToBottom();
+  }
+}
+
+async function sendInteractionSubmitRequest(operation, payloadText) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId) return false;
+  let activeChatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!activeChatSessionId) {
+    const created = await createChatSession({ switchTo: true });
+    activeChatSessionId = String(created?.id || "").trim();
+    if (!activeChatSessionId) {
+      return false;
+    }
+  }
+  const interactionId = operationInteractionId(operation);
+  const sourceRow = findMessageRowByOperationId(interactionId);
+  const schema = operationInteractionSchema(operation);
+  const model = cloneInteractionValue(operationInteractionModel(operation));
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  const assistantMessage = {
+    id: createLocalMessageId(),
+    role: "assistant",
+    content: "",
+    images: [],
+    videos: [],
+    attachments: [],
+    displayMode: "",
+    effectiveTools: [],
+    effectiveToolTotal: 0,
+    terminalLog: [],
+    processExpanded: false,
+    audit: null,
+    taskTreeAudit: null,
+    statusNotes: [],
+    operations: [],
+    time: nowText(),
+  };
+  messages.value.push(assistantMessage);
+  const assistantIndex = messages.value.length - 1;
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const client = await ensureWsClient(projectId);
+  const donePromise = new Promise((resolve, reject) => {
+    pendingRequests.set(requestId, {
+      resolve,
+      reject,
+      requestId,
+      assistantIndex,
+      userPrompt: payloadText,
+      mcpApprovalCancelled: false,
+      awaitingTerminalApproval: false,
+      handoffTriggered: false,
+      projectHostTerminalHandoffTriggered: false,
+      lastToolName: "",
+    });
+    trackPendingRequest(requestId);
+  });
+  chatLoading.value = true;
+  scrollToBottom();
+  client.send({
+    type: "interaction_submit",
+    request_id: requestId,
+    assistant_message_id: String(assistantMessage?.id || "").trim(),
+    chat_session_id: activeChatSessionId,
+    chat_mode: "system",
+    chat_surface: chatSurface.value,
+    source_context: normalizeChatSourceContext(currentChatSession.value || {}),
+    skill_resource_directory: String(
+      skillResourceDirectoryResolved.value || "",
+    ).trim(),
+    employee_ids: normalizeStringList(selectedEmployeeIds.value || []),
+    employee_id:
+      normalizeStringList(selectedEmployeeIds.value || []).length === 1
+        ? normalizeStringList(selectedEmployeeIds.value || [])[0]
+        : undefined,
+    employee_coordination_mode: String(
+      projectChatSettings.value.employee_coordination_mode ||
+        CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
+    )
+      .trim()
+      .toLowerCase(),
+    history: toHistoryRows(messages.value.slice(0, -1), historyLimit.value),
+    provider_id: selectedProviderId.value || undefined,
+    model_name: selectedModelName.value || undefined,
+    temperature: Number(temperature.value),
+    max_tokens: Number(chatMaxTokens.value || 512),
+    system_prompt: systemPrompt.value || undefined,
+    auto_use_tools: Boolean(
+      projectChatSettings.value.auto_use_tools ??
+        CHAT_SETTINGS_DEFAULTS.auto_use_tools,
+    ),
+    tool_priority: mergeToolPriority(
+      projectChatSettings.value.tool_priority || [],
+      [],
+    ),
+    max_tool_calls_per_round: resolveNumericChatSetting(
+      projectChatSettings.value.max_tool_calls_per_round,
+      CHAT_SETTINGS_DEFAULTS.max_tool_calls_per_round,
+      { min: 1, max: 30 },
+    ),
+    max_loop_rounds: resolveNumericChatSetting(
+      projectChatSettings.value.max_loop_rounds,
+      CHAT_SETTINGS_DEFAULTS.max_loop_rounds,
+      { min: 1, max: 60 },
+    ),
+    max_tool_rounds: resolveNumericChatSetting(
+      projectChatSettings.value.max_tool_rounds,
+      CHAT_SETTINGS_DEFAULTS.max_tool_rounds,
+      { min: 1, max: 30 },
+    ),
+    repeated_tool_call_threshold: Number(
+      projectChatSettings.value.repeated_tool_call_threshold ||
+        CHAT_SETTINGS_DEFAULTS.repeated_tool_call_threshold,
+    ),
+    tool_only_threshold: Number(
+      projectChatSettings.value.tool_only_threshold ||
+        CHAT_SETTINGS_DEFAULTS.tool_only_threshold,
+    ),
+    tool_budget_strategy: String(
+      projectChatSettings.value.tool_budget_strategy ||
+        CHAT_SETTINGS_DEFAULTS.tool_budget_strategy,
+    ),
+    history_limit: resolveNumericChatSetting(
+      projectChatSettings.value.history_limit,
+      CHAT_SETTINGS_DEFAULTS.history_limit,
+      { min: 1, max: 50 },
+    ),
+    tool_timeout_sec: resolveNumericChatSetting(
+      projectChatSettings.value.tool_timeout_sec,
+      CHAT_SETTINGS_DEFAULTS.tool_timeout_sec,
+      { min: 0, max: 600 },
+    ),
+    tool_retry_count: resolveNumericChatSetting(
+      projectChatSettings.value.tool_retry_count,
+      CHAT_SETTINGS_DEFAULTS.tool_retry_count,
+      { min: 0, max: 5 },
+    ),
+    answer_style: String(
+      projectChatSettings.value.answer_style ||
+        CHAT_SETTINGS_DEFAULTS.answer_style,
+    ),
+    prefer_conclusion_first: Boolean(
+      projectChatSettings.value.prefer_conclusion_first ??
+        CHAT_SETTINGS_DEFAULTS.prefer_conclusion_first,
+    ),
+    enabled_project_tool_names: normalizeStringList(
+      selectedProjectToolNames.value || [],
+      200,
+    ),
+    interaction_id: interactionId,
+    interaction_operation_id: String(
+      operation?.operationId || interactionId,
+    ).trim(),
+    interaction_title: operationInteractionTitle(operation),
+    interaction_action_type: normalizeOperationActionType(operation?.actionType),
+    interaction_message: payloadText,
+    interaction_schema: schema ? cloneInteractionValue(schema) : null,
+    interaction_data: model,
+    workflow_kind: String(meta.workflow_kind || "").trim(),
+    workflow_state:
+      meta.workflow_state && typeof meta.workflow_state === "object"
+        ? cloneInteractionValue(meta.workflow_state)
+        : null,
+    resume_command: String(meta.resume_command || "").trim(),
+  });
+  try {
+    await donePromise;
+    return true;
+  } catch (err) {
+    messages.value[assistantIndex].content =
+      `请求失败：${err?.message || "未知错误"}`;
+    ElMessage.error(err?.message || "交互提交失败");
+    return false;
+  } finally {
+    chatLoading.value = pendingRequests.size > 0;
+    if (sourceRow) {
+      sourceRow.processExpanded = true;
+    }
+    scrollToBottom();
+  }
+}
+
+async function submitOperationInteraction(operation) {
+  const schema = operationInteractionSchema(operation);
+  if (!schema) return;
+  if (!canSubmitOperationInteraction(operation)) {
+    ElMessage.warning("请先完成必填项");
+    return;
+  }
+  const payloadText = formatOperationInteractionPayload(operation);
+  if (!payloadText) {
+    ElMessage.warning("当前交互内容为空，无法继续");
+    return;
+  }
+  let submitted = false;
+  if (operationInteractionCanFallbackToTerminal(operation)) {
+    submitted = await sendTerminalMirrorContent(payloadText, {
+      echo: false,
+    });
+  } else {
+    submitted = await sendInteractionSubmitRequest(operation, payloadText);
+  }
+  if (!submitted) return;
+  setOperationInteractionSubmittedHint(
+    operation,
+    operationInteractionCanFallbackToTerminal(operation)
+      ? "已提交结构化交互，终端正在继续执行。"
+      : "已提交结构化表单，正在继续请求模型处理。",
+  );
+  dismissOperationInteractionForm(operation);
+  upsertMessageOperation(
+    findMessageRowByOperationId(operation.id),
+    {
+      ...operation,
+      phase: "running",
+      summary: operationInteractionCanFallbackToTerminal(operation)
+        ? "已提交结构化交互，等待终端后续输出"
+        : "已提交结构化交互，等待模型继续处理",
+      detail: "",
+      actionType: "none",
+    },
+  );
+}
+
 async function handleOperationPrimaryAction(operation) {
   const buttons = operationActionButtons(operation);
   if (!buttons.length) return;
@@ -8716,6 +9549,13 @@ function appendToolStartLogs(row, eventData) {
   if (!row) return;
   const toolName = String(eventData?.tool_name || "工具").trim() || "工具";
   const label = toolProgressLabel(eventData, toolName);
+  const argumentsPreview = formatToolArgumentsPreview(eventData);
+  appendMessageProcessLog(row, {
+    level: "info",
+    text: argumentsPreview
+      ? `调用 ${label}：${argumentsPreview}`
+      : `调用 ${label}`,
+  });
   upsertMessageOperation(row, {
     operationId: `tool:${String(toolName || "tool").trim()}:${Number(eventData?.tool_index || 0) || 0}`,
     kind: "tool",
@@ -8733,6 +9573,17 @@ function appendToolResultLogs(row, eventData) {
   const statusText =
     String(eventData?.status || "completed").trim() || "completed";
   const normalizedStatus = statusText.toLowerCase();
+  const outputPreview = clipText(buildProjectHostCommandOutput(eventData), 240);
+  appendMessageProcessLog(row, {
+    level: normalizedStatus === "error" ? "error" : "success",
+    text: outputPreview
+      ? `${label} ${
+          normalizedStatus === "error" ? "执行未完成" : "已完成"
+        }：${outputPreview}`
+      : `${label} ${
+          normalizedStatus === "error" ? "执行未完成" : "已完成"
+        }`,
+  });
   upsertMessageOperation(row, {
     operationId: `tool:${String(toolName || "tool").trim()}:${Number(eventData?.tool_index || 0) || 0}`,
     kind: "tool",
@@ -8744,12 +9595,16 @@ function appendToolResultLogs(row, eventData) {
 }
 
 function formatGuardSummary(eventData) {
+  const completedReason = String(eventData?.completed_reason || "")
+    .trim()
+    .toLowerCase();
   const reason = String(eventData?.guard_reason || "").trim();
   const message = String(eventData?.guard_message || "").trim();
   const details =
     eventData?.guard_details && typeof eventData.guard_details === "object"
       ? eventData.guard_details
       : {};
+  if (completedReason === "background_task_pending") return "";
   if (message) return message;
   if (reason === "tool_budget_exceeded") {
     return `工具调用达到预算上限（${Number(details.tool_rounds || 0)}/${Number(details.max_tool_rounds || 0)} 轮）`;
@@ -8766,67 +9621,6 @@ function formatGuardSummary(eventData) {
   return "";
 }
 
-function isLarkSkillReferenceOutput(value) {
-  const text = String(value || "").trim();
-  if (!text) return false;
-  return (
-    /==\s*lark-[\w-]+\/SKILL\.md\s*==/i.test(text) ||
-    /name:\s*lark-[\w-]+/i.test(text) ||
-    /cliHelp:\s*"?lark-cli/i.test(text) ||
-    /CRITICAL.*lark-shared\/SKILL\.md/is.test(text)
-  );
-}
-
-function isMissingLarkChatTargetContext(value) {
-  const text = String(value || "").trim();
-  if (!text) return false;
-  return (
-    /缺少(?:目标)?(?:群|群聊|chat_id)|没有(?:给|提供).*(?:群名|群聊|chat_id)|不能盲发|未知群|目标群/i.test(
-      text,
-    ) ||
-    /missing.*(?:chat|chat_id|recipient|target)|chat_id.*required|recipient.*required/i.test(
-      text,
-    )
-  );
-}
-
-function isReferenceOnlyProjectHostOutput(value) {
-  const text = String(value || "").trim();
-  if (!text) return false;
-  return (
-    isLarkSkillReferenceOutput(text) &&
-    !extractInteractiveBrowserUrls(text).length
-  );
-}
-
-function hasInteractiveCommandHint(value) {
-  const text = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (!text) return false;
-  if (
-    isMissingLarkChatTargetContext(text) ||
-    isReferenceOnlyProjectHostOutput(text)
-  ) {
-    return false;
-  }
-  return [
-    /verification url/,
-    /open .*browser/,
-    /authorize/,
-    /authorization/,
-    /auth login/,
-    /sign in/,
-    /waiting for input/,
-    /press enter/,
-    /press any key/,
-    /complete setup/,
-    /run .* in the background/,
-    /continue in browser/,
-    /confirm in browser/,
-  ].some((pattern) => pattern.test(text));
-}
-
 function buildProjectHostCommandOutput(eventData) {
   return [
     eventData?.stdout_preview,
@@ -8837,53 +9631,6 @@ function buildProjectHostCommandOutput(eventData) {
     .map((item) => String(item || "").trim())
     .filter(Boolean)
     .join("\n");
-}
-
-function shouldUseBrowserInteractionForProjectHostCommand(eventData) {
-  if (
-    String(eventData?.tool_name || "").trim() !== "project_host_run_command"
-  ) {
-    return false;
-  }
-  const command = String(eventData?.command || "").trim();
-  if (!command) return false;
-  const combinedOutput = buildProjectHostCommandOutput(eventData);
-  if (isMissingLarkChatTargetContext(combinedOutput)) return false;
-  if (isReferenceOnlyProjectHostOutput(combinedOutput)) return false;
-  if (extractInteractiveBrowserUrls(combinedOutput).length) return true;
-  if (hasInteractiveCommandHint(combinedOutput)) return true;
-  if (!Boolean(eventData?.timed_out)) return false;
-  if (isLarkSkillReferenceOutput(combinedOutput)) return false;
-  return /\b(login|auth|config\s+init|init|oauth|sso)\b/i.test(command);
-}
-
-async function ensureProjectHostBrowserInteraction(row, eventData) {
-  if (!row || !shouldUseBrowserInteractionForProjectHostCommand(eventData)) {
-    return false;
-  }
-  const command = String(eventData?.command || "").trim();
-  const combinedOutput = buildProjectHostCommandOutput(eventData);
-  const hasBrowserAuth = await ensureBrowserAuthOperationFromText(
-    combinedOutput,
-    row,
-    { autoOpen: false },
-  );
-  if (hasBrowserAuth) return true;
-  const detail = clipText(combinedOutput || command, 800);
-  upsertMessageOperation(row, {
-    operationId: `browser-interaction:${command || Date.now()}`,
-    kind: "auth",
-    title: "需要在浏览器继续",
-    summary: "不会接管聊天输入框；完成后输入“已完成”继续",
-    detail,
-    phase: "waiting_user",
-    actionType: "open_url",
-  });
-  appendAssistantStatusNote(
-    row,
-    "> 🌐 当前命令需要浏览器或外部窗口继续；我不会再把聊天框切到项目终端。完成后直接在对话框输入“已完成”继续。",
-  );
-  return true;
 }
 
 function shouldAutoHandoffProjectHostCommand() {
@@ -9090,6 +9837,18 @@ function resolveMessageSource(messageIndex) {
   return null;
 }
 
+function countUserMessagesBefore(messageIndex) {
+  const normalizedIndex = Number(messageIndex);
+  if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return -1;
+  let count = 0;
+  for (let index = 0; index < normalizedIndex; index += 1) {
+    if (String(messages.value[index]?.role || "").trim() === "user") {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 function messageHasReplayUnsupportedAssets(item) {
   return (
     (Array.isArray(item?.attachments) && item.attachments.length > 0) ||
@@ -9130,6 +9889,8 @@ function resolveDeleteTarget(messageIndex) {
       item,
       index: normalizedIndex,
       messageId,
+      fallbackUserContent: String(item?.content || "").trim(),
+      fallbackUserTurnIndex: countUserMessagesBefore(normalizedIndex),
     };
   }
   const source = resolveMessageSource(normalizedIndex);
@@ -9141,6 +9902,8 @@ function resolveDeleteTarget(messageIndex) {
     index: normalizedIndex,
     messageId: sourceMessageId,
     sourceIndex: source.index,
+    fallbackUserContent: String(source?.item?.content || "").trim(),
+    fallbackUserTurnIndex: countUserMessagesBefore(source.index),
   };
 }
 
@@ -9253,6 +10016,8 @@ async function truncateConversationFromSource(source) {
       {
         chat_session_id: chatSessionId,
         message_id: messageId,
+        fallback_user_content: String(source.item?.content || "").trim(),
+        fallback_user_turn_index: countUserMessagesBefore(source.index),
       },
     );
   }
@@ -9294,6 +10059,12 @@ async function deleteMessageAt(messageIndex) {
       {
         chat_session_id: chatSessionId,
         message_id: target.messageId,
+        fallback_user_content: String(target?.fallbackUserContent || "").trim(),
+        fallback_user_turn_index: Number.isInteger(
+          Number(target?.fallbackUserTurnIndex),
+        )
+          ? Number(target.fallbackUserTurnIndex)
+          : undefined,
       },
     );
     applyDeleteTargetLocally(target);
@@ -9837,12 +10608,74 @@ async function handleMessageAreaClick(event) {
   }
 }
 
-function scrollToBottom() {
+function isMessagesViewportNearBottom(container = messagesContainer.value) {
+  if (!container) return true;
+  const scrollHeight = Number(container.scrollHeight || 0);
+  const clientHeight = Number(container.clientHeight || 0);
+  const scrollTop = Number(container.scrollTop || 0);
+  return (
+    scrollHeight - clientHeight - scrollTop <= CHAT_BOTTOM_STICKY_THRESHOLD
+  );
+}
+
+function updateMessagesBottomStickiness(container = messagesContainer.value) {
+  shouldStickMessagesToBottom.value = isMessagesViewportNearBottom(container);
+}
+
+function cancelScheduledScrollToBottom() {
+  if (pendingScrollToBottomFrame !== null) {
+    window.cancelAnimationFrame(pendingScrollToBottomFrame);
+    pendingScrollToBottomFrame = null;
+  }
+}
+
+function scrollToBottom(options = {}) {
+  const force = options.force !== false;
   nextTick(() => {
-    if (messagesContainer.value) {
-      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
-    }
+    const container = messagesContainer.value;
+    if (!container) return;
+    if (!force && !shouldStickMessagesToBottom.value) return;
+    cancelScheduledScrollToBottom();
+    pendingScrollToBottomFrame = window.requestAnimationFrame(() => {
+      pendingScrollToBottomFrame = null;
+      const activeContainer = messagesContainer.value;
+      if (!activeContainer) return;
+      if (
+        !force &&
+        !shouldStickMessagesToBottom.value &&
+        !isMessagesViewportNearBottom(activeContainer)
+      ) {
+        return;
+      }
+      activeContainer.scrollTop = activeContainer.scrollHeight;
+      updateMessagesBottomStickiness(activeContainer);
+    });
   });
+}
+
+function handleMessagesScroll() {
+  updateMessagesBottomStickiness();
+}
+
+function disconnectMessageListResizeObserver() {
+  if (messageListResizeObserver) {
+    messageListResizeObserver.disconnect();
+    messageListResizeObserver = null;
+  }
+}
+
+function bindMessageListResizeObserver() {
+  disconnectMessageListResizeObserver();
+  const container = messagesContainer.value;
+  if (!container || typeof ResizeObserver === "undefined") return;
+  const target =
+    container.querySelector?.(".message-list-inner") || container;
+  updateMessagesBottomStickiness(container);
+  messageListResizeObserver = new ResizeObserver(() => {
+    if (!shouldStickMessagesToBottom.value) return;
+    scrollToBottom({ force: false });
+  });
+  messageListResizeObserver.observe(target);
 }
 
 function clearHighlightedMessage() {
@@ -10052,6 +10885,17 @@ watch(
     }
   },
   { deep: false },
+);
+
+watch(
+  messagesContainer,
+  () => {
+    nextTick(() => {
+      bindMessageListResizeObserver();
+      updateMessagesBottomStickiness();
+    });
+  },
+  { flush: "post" },
 );
 
 function extractImages(message) {
@@ -10314,8 +11158,38 @@ function resolveLarkCliSkillDirectory() {
   return `${workspaceRoot.replace(/\/+$/g, "")}/${LARK_CLI_SKILL_ROOT_RELATIVE}`;
 }
 
+function normalizeLarkCliLoginCommand(commandPrompt) {
+  const normalizedPrompt = String(commandPrompt || "").trim();
+  if (!normalizedPrompt) {
+    return "";
+  }
+  const match = normalizedPrompt.match(
+    /^(?:lark-cli\s+)?(?:auth\s+)?(?:login|登录)(?:\s+([\s\S]*))?$/i,
+  );
+  if (!match) {
+    return "";
+  }
+  const rawSuffix = String(match[1] || "").trim();
+  if (!rawSuffix || /^(?:推荐|recommend)$/i.test(rawSuffix)) {
+    return "lark-cli auth login --recommend";
+  }
+  if (/^--/.test(rawSuffix)) {
+    return `lark-cli auth login ${rawSuffix}`;
+  }
+  if (
+    new RegExp(
+      `^(?:${LARK_AUTH_DOMAIN_OPTIONS.join("|")})(?:\\s*,\\s*(?:${LARK_AUTH_DOMAIN_OPTIONS.join("|")}))*$`,
+      "i",
+    ).test(rawSuffix)
+  ) {
+    return `lark-cli auth login --domain ${rawSuffix.replace(/\s+/g, "")}`;
+  }
+  return "lark-cli auth login --recommend";
+}
+
 function buildLarkCliCommandPrompt(commandPrompt) {
   const normalizedPrompt = String(commandPrompt || "").trim();
+  const normalizedLoginCommand = normalizeLarkCliLoginCommand(normalizedPrompt);
   const skillRoot = resolveLarkCliSkillDirectory();
   const sharedSkillPath = `${skillRoot}/lark-shared/SKILL.md`;
   const contactSkillPath = `${skillRoot}/lark-contact/SKILL.md`;
@@ -10329,7 +11203,9 @@ function buildLarkCliCommandPrompt(commandPrompt) {
     `- 涉及联系人解析时再阅读：${contactSkillPath}`,
     `- 涉及发消息、群聊、消息查询时再阅读：${imSkillPath}`,
     "- 后续飞书相关操作优先走 `lark-cli`，不要改用 Python SDK、伪代码、手写 HTTP 请求或让用户自己执行终端命令。",
-    "- 如果用户给的是自然语言目标，请先把目标翻译成合适的 `lark-cli` 命令，再直接执行并返回实际结果。",
+    normalizedLoginCommand
+      ? `- 本轮目标已经明确解析为登录授权命令：\`${normalizedLoginCommand}\`。直接执行这条命令，不要改写成自然语言，也不要先停在 \`auth status\` 或 \`--help\`。`
+      : "- 如果用户给的是自然语言目标，请先把目标翻译成合适的 `lark-cli` 命令，再直接执行并返回实际结果。",
     "- 不要停在 `--help`、`auth status`、`已确认登录态`、`已确认子命令名` 这种中间状态；除非遇到真实阻塞，否则继续执行到目标完成。",
     "- 如果目标是“给某人发消息”，默认流程应是：确认发送内容与身份 -> 搜索联系人 open_id -> 如结果唯一则直接发送 -> 若缺 scope 则发起授权 -> 授权后自动重试发送。",
     '- 搜索联系人优先使用：`lark-cli contact +search-user --query "<姓名>"`。',
@@ -10339,7 +11215,9 @@ function buildLarkCliCommandPrompt(commandPrompt) {
     "- 返回实际执行结果，至少包含工作目录、退出码、stdout/stderr 关键信息。",
     "- 如果卡在浏览器授权、系统确认或人工输入阻塞点，先执行到阻塞点，再明确说明当前等待什么，不要提前收口。",
     "",
-    `本轮目标：${normalizedPrompt}`,
+    normalizedLoginCommand
+      ? `请直接执行：${normalizedLoginCommand}`
+      : `本轮目标：${normalizedPrompt}`,
   ].join("\n");
 }
 
@@ -12373,6 +13251,7 @@ function mapHistoryMessage(item) {
     processExpanded: false,
     audit: null,
     taskTreeAudit: null,
+    processLog: [],
     statusNotes: [],
     operations: [],
     images: images,
@@ -12819,6 +13698,7 @@ async function fetchChatHistory(
         );
         messagesContainer.value.scrollTop =
           nextScrollHeight - previousScrollHeight + previousScrollTop;
+        updateMessagesBottomStickiness(messagesContainer.value);
       });
     } else {
       scrollToBottom();
@@ -13450,6 +14330,239 @@ async function handleSocketMessage(eventData) {
     return;
   }
   if (
+    [
+      "operation_waiting",
+      "operation_completed",
+      "operation_resume_started",
+      "authorization_waiting",
+      "authorization_completed",
+      "authorization_resume_started",
+      "operation_task_state",
+      "login_task_state",
+      "workflow_state",
+    ].includes(
+      eventType,
+    )
+  ) {
+    const matched = findAssistantRowByOperationTaskId(
+      String(eventData?.task_id || "").trim(),
+      String(eventData?.chat_session_id || "").trim(),
+    );
+    if (matched?.row) {
+      const taskId = String(eventData?.task_id || "").trim();
+      const chatSessionId = String(eventData?.chat_session_id || "").trim();
+      const resumeCommand = String(eventData?.resume_command || "").trim();
+      if (["workflow_state", "login_task_state", "operation_task_state"].includes(eventType)) {
+        const taskStatus = String(eventData?.status || "").trim();
+        const workflowKind = String(eventData?.workflow_kind || "").trim();
+        const authorizationUrl = String(eventData?.authorization_url || "").trim();
+        const normalizedOperationId =
+          eventType === "workflow_state" || eventType === "operation_task_state"
+            ? workflowKind === "auth_login" || authorizationUrl
+              ? `auth:${taskId || String(eventData?.workflow_id || "active").trim()}`
+              : `workflow:${workflowKind || "generic"}:${String(eventData?.workflow_id || taskId || "active").trim()}`
+            : `auth:${taskId || "active"}`;
+        upsertMessageOperation(matched.row, {
+          operationId: normalizedOperationId,
+          kind:
+            workflowKind === "auth_login" || authorizationUrl ? "auth" : "request",
+          title:
+            String(eventData?.status_label || eventData?.workflow_label || "后台工作流").trim() ||
+            "后台工作流",
+          summary:
+            String(eventData?.summary || "").trim() || "工作流已创建，等待后续结果",
+          detail: String(eventData?.detail || eventData?.message || "").trim(),
+          phase:
+            taskStatus === "waiting_user_action"
+              ? "waiting_user"
+              : ["failed", "timeout", "cancelled"].includes(taskStatus)
+                ? "failed"
+                : taskStatus === "succeeded"
+                  ? "completed"
+                  : "running",
+          actionType:
+            String(eventData?.action_type || "").trim() ||
+            (authorizationUrl ? "open_url" : "none"),
+          meta: {
+            task_id: taskId,
+            chat_session_id: chatSessionId,
+            resume_command: resumeCommand,
+            authorization_url: authorizationUrl,
+            task_status: taskStatus,
+            workflow_kind: workflowKind,
+            workflow_id: String(eventData?.workflow_id || "").trim(),
+          },
+        });
+      } else if (eventType === "authorization_waiting" || eventType === "operation_waiting") {
+        const authorizationUrl = String(
+          eventData?.authorization_url || "",
+        ).trim();
+        const workflowKind = String(eventData?.workflow_kind || "").trim();
+        const rawDetail =
+          String(eventData?.detail || "").trim() ||
+          [authorizationUrl, String(eventData?.message || "").trim()]
+            .filter(Boolean)
+            .join("\n");
+        upsertMessageOperation(matched.row, {
+          operationId:
+            workflowKind === "auth_login" || authorizationUrl
+              ? `auth:${taskId || "active"}`
+              : `workflow:${workflowKind || "external_operation"}:${taskId || "active"}`,
+          kind: workflowKind === "auth_login" || authorizationUrl ? "auth" : "request",
+          title:
+            String(eventData?.status_label || eventData?.workflow_label || "等待外部操作").trim() ||
+            "等待外部操作",
+          summary:
+            workflowKind === "auth_login" || authorizationUrl
+              ? "等待你在浏览器完成授权"
+              : "等待你完成外部操作",
+          detail: rawDetail,
+          phase: "waiting_user",
+          actionType: String(eventData?.action_type || "").trim() || (authorizationUrl ? "open_url" : "none"),
+          meta: {
+            task_id: taskId,
+            chat_session_id: chatSessionId,
+            resume_command: resumeCommand,
+            authorization_url: authorizationUrl,
+            workflow_kind: workflowKind,
+          },
+        });
+      } else if (eventType === "authorization_completed" || eventType === "operation_completed") {
+        const workflowKind = String(eventData?.workflow_kind || "").trim();
+        const isAuthOperation = eventType === "authorization_completed" || workflowKind === "auth_login";
+        const completionSummary = resumeCommand
+          ? isAuthOperation
+            ? "授权完成，正在自动继续"
+            : "外部操作完成，正在自动继续"
+          : isAuthOperation
+            ? "授权完成"
+            : "外部操作完成";
+        const completionNote = resumeCommand
+          ? `> ✅ ${isAuthOperation ? "授权完成" : "外部操作完成"}，系统正在自动继续。`
+          : `> ✅ ${isAuthOperation ? "授权完成，检测通过" : "外部操作完成"}。`;
+        const completionMessage = String(
+          eventData?.message ||
+            (resumeCommand
+              ? isAuthOperation
+                ? "授权完成，检测通过，系统正在自动继续上一条待执行命令。"
+                : "外部操作完成，系统正在自动继续上一条待执行命令。"
+              : isAuthOperation
+                ? "授权完成，检测通过。"
+                : "外部操作完成。"),
+        ).trim();
+        upsertMessageOperation(matched.row, {
+          operationId:
+            isAuthOperation
+              ? `auth:${taskId || "active"}`
+              : `workflow:${workflowKind || "external_operation"}:${taskId || "active"}`,
+          kind: isAuthOperation ? "auth" : "request",
+          title: isAuthOperation ? "授权状态" : "外部操作状态",
+          summary: completionSummary,
+          detail: completionMessage,
+          phase: "completed",
+          meta: {
+            task_id: taskId,
+            chat_session_id: chatSessionId,
+            resume_command: resumeCommand,
+          },
+        });
+        appendAssistantStatusNote(matched.row, completionNote);
+        if (!resumeCommand) {
+          completePendingExternalOperationRequest(matched, completionMessage);
+        }
+      } else if (eventType === "authorization_resume_started" || eventType === "operation_resume_started") {
+        const workflowKind = String(eventData?.workflow_kind || "").trim();
+        const isAuthOperation = eventType === "authorization_resume_started" || workflowKind === "auth_login";
+        const existingResumeRunning = messageOperations(matched.row).some(
+          (item) =>
+            String(item?.kind || "").trim().toLowerCase() === "request" &&
+            String(item?.summary || "").includes("授权完成，正在自动继续"),
+        );
+        upsertMessageOperation(matched.row, {
+          operationId:
+            isAuthOperation
+              ? `auth:${taskId || "active"}`
+              : `workflow:${workflowKind || "external_operation"}:${taskId || "active"}`,
+          kind: isAuthOperation ? "auth" : "request",
+          title: isAuthOperation ? "授权状态" : "外部操作状态",
+          summary: isAuthOperation ? "授权完成，已转入自动继续" : "外部操作完成，已转入自动继续",
+          detail: String(
+            eventData?.message || "外部操作完成，系统正在自动继续上一条待执行命令。",
+          ).trim(),
+          phase: "completed",
+          meta: {
+            task_id: taskId,
+            chat_session_id: chatSessionId,
+            resume_command: resumeCommand,
+          },
+        });
+        const projectId = String(selectedProjectId.value || "").trim();
+        const currentSessionId = String(currentChatSessionId.value || "").trim();
+        if (
+          projectId &&
+          chatSessionId &&
+          chatSessionId === currentSessionId &&
+          resumeCommand &&
+          !existingResumeRunning
+        ) {
+          const assistantMessage = {
+            id: createLocalMessageId(),
+            role: "assistant",
+            content: "",
+            images: [],
+            videos: [],
+            attachments: [],
+            displayMode: "",
+            effectiveTools: [],
+            effectiveToolTotal: 0,
+            terminalLog: [],
+            processExpanded: true,
+            audit: null,
+            taskTreeAudit: null,
+            statusNotes: [],
+            operations: [],
+            time: nowText(),
+          };
+          messages.value.push(assistantMessage);
+          const assistantIndex = messages.value.length - 1;
+          chatLoading.value = true;
+          try {
+            await sendProjectChatRequest({
+              projectId,
+              activeChatSessionId: chatSessionId,
+              assistantMessage,
+              assistantIndex,
+              finalUserPrompt: appendModelGenerationInstruction(
+                buildOperationResumeUserPrompt(resumeCommand, workflowKind),
+              ),
+              activeSessionSourceContext: normalizeChatSourceContext(
+                currentChatSession.value || {},
+              ),
+              attachmentNames: [],
+              base64Images: [],
+              historyRows: toHistoryRows(messages.value.slice(0, -1), historyLimit.value),
+              effectiveAutoUseTools: true,
+              effectiveToolPriority: mergeToolPriority(
+                projectChatSettings.value.tool_priority || [],
+                [],
+              ),
+              assistAction: null,
+              assistToolNames: [],
+            });
+          } catch (error) {
+            assistantMessage.content = `自动继续失败：${error?.message || "未知错误"}`;
+          } finally {
+            chatLoading.value = pendingRequests.size > 0;
+          }
+        }
+      }
+      scrollToBottom();
+    }
+    if (!requestId) {
+      return;
+    }
+  }
+  if (
     eventType === "error" &&
     /^(?:mirror-input|mirror-start|mirror-stop)-/.test(requestId)
   ) {
@@ -13537,9 +14650,48 @@ async function handleSocketMessage(eventData) {
         actionType: "enter_text",
       });
     }
-    void autoOpenTerminalBrowserUrls(connectedSummary, mirrorRow);
     focusTerminalPanelInput();
     return;
+  }
+  if (eventType === "workflow_state") {
+    const workflowKind = String(eventData?.workflow_kind || "").trim();
+    if (workflowKind === "terminal_interaction") {
+      const sessionKey = String(
+        eventData?.session_id ||
+          eventData?.thread_id ||
+          eventData?.workflow_id ||
+          eventData?.chat_session_id ||
+          "active",
+      ).trim();
+      const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+      if (mirrorRow) {
+        upsertMessageOperation(mirrorRow, {
+          operationId: `terminal:${sessionKey}`,
+          kind: "terminal",
+          title:
+            String(eventData?.status_label || eventData?.workflow_label || "项目终端").trim() ||
+            "项目终端",
+          summary:
+            String(eventData?.summary || "").trim() || "终端工作流进行中",
+          detail: String(eventData?.detail || eventData?.message || "").trim(),
+          phase:
+            String(eventData?.status || "").trim() === "failed"
+              ? "failed"
+              : String(eventData?.status || "").trim() === "succeeded"
+                ? "completed"
+                : "running",
+          actionType:
+            String(eventData?.action_type || "").trim() || "enter_text",
+          meta: {
+            session_id: sessionKey,
+            workflow_kind: workflowKind,
+            workflow_id: String(eventData?.workflow_id || "").trim(),
+            chat_session_id: String(eventData?.chat_session_id || "").trim(),
+          },
+        });
+        scrollToBottom();
+      }
+    }
   }
   if (eventType === "terminal_mirror_stopped") {
     terminalMirrorConnected.value = false;
@@ -13587,7 +14739,6 @@ async function handleSocketMessage(eventData) {
         activeTerminalMirrorAssistantIndex.value,
       );
     }
-    void autoOpenTerminalBrowserUrls(chunk, mirrorRow);
     return;
   }
   if (eventType === "terminal_approval_required") {
@@ -13672,6 +14823,7 @@ async function handleSocketMessage(eventData) {
   const row = messages.value[pending.assistantIndex];
   if (!row) {
     pendingRequests.delete(requestId);
+    clearTrackedPendingRequest(requestId);
     pending.reject(new Error("消息上下文已失效"));
     return;
   }
@@ -13866,11 +15018,22 @@ async function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "status") {
+    appendMessageProcessLog(row, {
+      level: "info",
+      text: "正在处理任务…",
+    });
     appendAssistantStatusNote(row, "> ⏳ 正在处理任务…");
     scrollToBottom();
     return;
   }
   if (eventType === "stderr") {
+    appendMessageProcessLog(row, {
+      level: "warning",
+      text: clipText(
+        String(eventData?.stderr_preview || eventData?.message || "执行过程中出现提示").trim(),
+        220,
+      ),
+    });
     appendAssistantStatusNote(
       row,
       "> ⚠️ 执行过程中出现提示，正在等待后续处理。",
@@ -13879,6 +15042,13 @@ async function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "command_start") {
+    appendMessageProcessLog(row, {
+      level: "info",
+      text:
+        String(eventData?.command || "").trim()
+          ? `开始执行命令：${String(eventData?.command || "").trim()}`
+          : "开始执行命令",
+    });
     appendAssistantStatusNote(row, "> ⏳ 正在执行必要步骤…");
     scrollToBottom();
     return;
@@ -13889,16 +15059,29 @@ async function handleSocketMessage(eventData) {
         .trim()
         .toLowerCase() || "completed";
     const outputPreview = String(eventData?.output_preview || "").trim();
-    if (outputPreview) {
-      void autoOpenTerminalBrowserUrls(outputPreview, row);
-      if (isMcpApprovalCancelledMessage(outputPreview) && pending) {
-        pending.mcpApprovalCancelled = true;
-      }
+    if (outputPreview && isMcpApprovalCancelledMessage(outputPreview) && pending) {
+      pending.mcpApprovalCancelled = true;
     }
     const exitCode = eventData?.exit_code;
     const succeeded =
       (exitCode === null || exitCode === undefined || Number(exitCode) === 0) &&
       ["success", "completed", "ok"].includes(statusText);
+    appendMessageProcessLog(row, {
+      level: succeeded ? "success" : "warning",
+      text: clipText(
+        [
+          String(eventData?.command || "").trim()
+            ? `命令${succeeded ? "完成" : "未完成"}：${String(
+                eventData?.command || "",
+              ).trim()}`
+            : `命令${succeeded ? "完成" : "未完成"}`,
+          outputPreview,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        260,
+      ),
+    });
     if (!succeeded) {
       appendAssistantStatusNote(
         row,
@@ -13913,7 +15096,6 @@ async function handleSocketMessage(eventData) {
   }
   if (eventType === "delta") {
     row.content = `${row.content || ""}${String(eventData?.content || "")}`;
-    void ensureBrowserAuthOperationFromText(row.content, row);
     scrollToBottom();
     return;
   }
@@ -13939,6 +15121,7 @@ async function handleSocketMessage(eventData) {
     if (pending) {
       pending.lastToolName = toolName;
     }
+    appendToolStartLogs(row, eventData);
     appendAssistantStatusNote(row, "> ⏳ 正在处理任务…");
     scrollToBottom();
     return;
@@ -13948,7 +15131,62 @@ async function handleSocketMessage(eventData) {
     const statusText = String(eventData?.status || "")
       .trim()
       .toLowerCase();
+    const taskStatus = String(
+      eventData?.task_status || eventData?.status || "",
+    )
+      .trim()
+      .toLowerCase();
     const outputPreview = String(eventData?.output_preview || "").trim();
+    const taskId = String(eventData?.task_id || "").trim();
+    const authorizationUrl = String(eventData?.authorization_url || "").trim();
+    const nextStep = String(eventData?.next_step || "").trim();
+    const rawDetail =
+      String(eventData?.detail || "").trim() ||
+      String(eventData?.output_preview || "").trim() ||
+      [authorizationUrl, nextStep].filter(Boolean).join("\n");
+    if (
+      ["operation_wait_task", "cli_plugin_login_task"].includes(
+        String(eventData?.source || "").trim(),
+      ) &&
+      taskId
+    ) {
+      const workflowKind = String(eventData?.operation_kind || eventData?.workflow_kind || "").trim();
+      const isAuthOperation =
+        workflowKind === "auth_login" ||
+        String(eventData?.source || "").trim() === "cli_plugin_login_task" ||
+        Boolean(authorizationUrl);
+      let summary = isAuthOperation ? "授权任务已创建，等待后续结果" : "外部操作已创建，等待后续结果";
+      let phase = "running";
+      if (taskStatus === "queued") {
+        summary = isAuthOperation ? "授权任务已创建，等待返回授权链接" : "外部操作已创建，等待后续结果";
+      } else if (taskStatus === "running") {
+        summary = isAuthOperation ? "授权流程已启动，正在等待后续结果" : "外部操作已启动，正在等待后续结果";
+      } else if (taskStatus === "waiting_user_action") {
+        summary = isAuthOperation ? "等待你在浏览器完成授权" : "等待你完成外部操作";
+        phase = "waiting_user";
+      } else if (taskStatus === "succeeded") {
+        summary = isAuthOperation ? "授权完成，检测通过" : "外部操作完成";
+        phase = "completed";
+      } else if (["failed", "timeout"].includes(taskStatus)) {
+        summary = isAuthOperation ? "授权流程未完成" : "外部操作未完成";
+        phase = "failed";
+      }
+      upsertMessageOperation(row, {
+        operationId: isAuthOperation ? `auth:${taskId}` : `workflow:${workflowKind || "external_operation"}:${taskId}`,
+        kind: isAuthOperation ? "auth" : "request",
+        title:
+          String(eventData?.status_label || eventData?.operation_label || (isAuthOperation ? "网页登录授权" : "外部操作")).trim() ||
+          (isAuthOperation ? "网页登录授权" : "外部操作"),
+        summary,
+        detail: rawDetail,
+        phase,
+        actionType: authorizationUrl ? "open_url" : "none",
+        meta: {
+          task_id: taskId,
+          authorization_url: authorizationUrl,
+        },
+      });
+    }
     const success =
       !statusText || ["success", "completed", "ok"].includes(statusText);
     const approvalPending = isMcpApprovalCancelledMessage(outputPreview);
@@ -13962,11 +15200,7 @@ async function handleSocketMessage(eventData) {
     ) {
       applyTaskTreePayload(eventData.task_tree);
     }
-    const projectHostCommandOutput = buildProjectHostCommandOutput(eventData);
-    void autoOpenTerminalBrowserUrls(projectHostCommandOutput, row);
-    if (await ensureProjectHostBrowserInteraction(row, eventData)) {
-      scrollToBottom();
-    }
+    appendToolResultLogs(row, eventData);
     if (shouldAutoHandoffProjectHostCommand(eventData)) {
       const handedOff = await handoffProjectHostCommandToTerminal(
         row,
@@ -14001,6 +15235,10 @@ async function handleSocketMessage(eventData) {
     const message =
       String(eventData?.message || "系统已自动继续执行后续步骤。").trim() ||
       "系统已自动继续执行后续步骤。";
+    appendMessageProcessLog(row, {
+      level: "info",
+      text: message,
+    });
     appendAssistantStatusNote(row, `> ↻ ${message}`);
     scrollToBottom();
     return;
@@ -14013,6 +15251,10 @@ async function handleSocketMessage(eventData) {
         terminalPanelStatus.value = "idle";
       }
       const guardSummary = formatGuardSummary(eventData);
+      const completedReason = String(eventData?.completed_reason || "")
+        .trim()
+        .toLowerCase();
+      const donePhase = guardSummary ? "blocked" : "completed";
       if (guardSummary) {
         removeAssistantStatusNotes(row, isTransientExecutionStatusNote);
       }
@@ -14020,14 +15262,21 @@ async function handleSocketMessage(eventData) {
         operationId: `request:${requestId}`,
         kind: "request",
         title: "本轮执行",
-        summary: guardSummary || "本轮执行已结束",
+        summary:
+          guardSummary || "本轮执行已结束",
         detail: String(eventData?.content || "").trim(),
-        phase: guardSummary ? "blocked" : "completed",
+        phase: donePhase,
         meta: { request_id: requestId },
       });
       if (guardSummary) {
         appendAssistantStatusNote(row, `> ⚠️ ${guardSummary}`);
       }
+      appendMessageProcessLog(row, {
+        level:
+          guardSummary ? "warning" : "success",
+        text:
+          guardSummary || "后台执行已完成",
+      });
       row.images = mergeImageUrls(
         extractImages(row),
         collectArtifactImageUrls(eventData),
@@ -14048,10 +15297,6 @@ async function handleSocketMessage(eventData) {
           row.content = doneContent;
         }
       }
-      const hasBrowserAuthWait = await ensureBrowserAuthOperationFromText(
-        [doneContent, row.content].filter(Boolean).join("\n"),
-        row,
-      );
       const taskTreePayload = eventData
         ? resolveTaskTreeEventPayload(eventData)
         : null;
@@ -14076,11 +15321,6 @@ async function handleSocketMessage(eventData) {
       );
       if (row.taskTreeAudit) {
         appendAssistantStatusNote(row, `> ⚠️ ${row.taskTreeAudit.message}`);
-      }
-      if (hasBrowserAuthWait) {
-        row.content =
-          String(row.content || doneContent || "").trim() ||
-          "已进入浏览器授权等待状态，完成后可回到输入框继续。";
       }
       if (pending?.mcpApprovalCancelled) {
         const handedOff = await handoffExternalAgentRequestToTerminal(
@@ -14126,6 +15366,10 @@ async function handleSocketMessage(eventData) {
   if (eventType === "error") {
     terminalPanelStatus.value = "error";
     const message = String(eventData?.message || "未知错误");
+    appendMessageProcessLog(row, {
+      level: "error",
+      text: `执行失败：${message}`,
+    });
     upsertMessageOperation(row, {
       operationId: `request:${requestId}`,
       kind: "request",
@@ -14144,12 +15388,14 @@ async function handleSocketMessage(eventData) {
 function resolvePendingRequest(requestId, pending, content = "") {
   if (!pending || !requestId) return;
   pendingRequests.delete(requestId);
+  clearTrackedPendingRequest(requestId);
   pending.resolve(String(content || "").trim());
 }
 
 function rejectPendingRequest(requestId, pending, error) {
   if (!pending || !requestId) return;
   pendingRequests.delete(requestId);
+  clearTrackedPendingRequest(requestId);
   pending.reject(
     error instanceof Error ? error : new Error(String(error || "未知错误")),
   );
@@ -14165,6 +15411,7 @@ function rejectPendingRequests(reason) {
     }
     pending.reject(new Error(message));
     pendingRequests.delete(requestId);
+    clearTrackedPendingRequest(requestId);
   }
 }
 
@@ -14597,12 +15844,171 @@ async function ensureWsClient(projectId) {
   return client;
 }
 
+async function sendProjectChatRequest({
+  projectId,
+  activeChatSessionId,
+  userMessageId = "",
+  assistantMessage,
+  assistantIndex,
+  finalUserPrompt,
+  activeSessionSourceContext,
+  attachmentNames = [],
+  base64Images = [],
+  historyRows = [],
+  effectiveAutoUseTools = true,
+  effectiveToolPriority = [],
+  assistAction = null,
+  assistToolNames = [],
+  onAfterDone = null,
+}) {
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const client = await ensureWsClient(projectId);
+  const donePromise = new Promise((resolve, reject) => {
+    pendingRequests.set(requestId, {
+      resolve,
+      reject,
+      requestId,
+      assistantIndex,
+      userPrompt: finalUserPrompt,
+      mcpApprovalCancelled: false,
+      awaitingTerminalApproval: false,
+      handoffTriggered: false,
+      projectHostTerminalHandoffTriggered: false,
+      lastToolName: "",
+    });
+    trackPendingRequest(requestId);
+  });
+  const employeeIds = normalizeStringList(selectedEmployeeIds.value || []);
+  const requestPayload = {
+    request_id: requestId,
+    message_id: String(userMessageId || "").trim(),
+    assistant_message_id: String(assistantMessage?.id || "").trim(),
+    chat_session_id: activeChatSessionId,
+    chat_mode: "system",
+    chat_surface: chatSurface.value,
+    source_context: activeSessionSourceContext,
+    skill_resource_directory: String(
+      skillResourceDirectoryResolved.value || "",
+    ).trim(),
+    message: finalUserPrompt,
+    employee_ids: employeeIds,
+    employee_id: employeeIds.length === 1 ? employeeIds[0] : undefined,
+    employee_coordination_mode: String(
+      projectChatSettings.value.employee_coordination_mode ||
+        CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
+    )
+      .trim()
+      .toLowerCase(),
+    history: historyRows,
+    provider_id: selectedProviderId.value || undefined,
+    model_name: selectedModelName.value || undefined,
+    temperature: Number(temperature.value),
+    max_tokens: Number(chatMaxTokens.value || 512),
+    system_prompt: systemPrompt.value || undefined,
+    attachment_names: attachmentNames,
+    images: base64Images,
+    auto_use_tools: effectiveAutoUseTools,
+    tool_priority: effectiveToolPriority,
+    max_tool_calls_per_round: resolveNumericChatSetting(
+      projectChatSettings.value.max_tool_calls_per_round,
+      CHAT_SETTINGS_DEFAULTS.max_tool_calls_per_round,
+      { min: 1, max: 30 },
+    ),
+    max_loop_rounds: resolveNumericChatSetting(
+      projectChatSettings.value.max_loop_rounds,
+      CHAT_SETTINGS_DEFAULTS.max_loop_rounds,
+      { min: 1, max: 60 },
+    ),
+    max_tool_rounds: resolveNumericChatSetting(
+      projectChatSettings.value.max_tool_rounds,
+      CHAT_SETTINGS_DEFAULTS.max_tool_rounds,
+      { min: 1, max: 30 },
+    ),
+    repeated_tool_call_threshold: Number(
+      projectChatSettings.value.repeated_tool_call_threshold ||
+        CHAT_SETTINGS_DEFAULTS.repeated_tool_call_threshold,
+    ),
+    tool_only_threshold: Number(
+      projectChatSettings.value.tool_only_threshold ||
+        CHAT_SETTINGS_DEFAULTS.tool_only_threshold,
+    ),
+    tool_budget_strategy: String(
+      projectChatSettings.value.tool_budget_strategy ||
+        CHAT_SETTINGS_DEFAULTS.tool_budget_strategy,
+    ),
+    history_limit: resolveNumericChatSetting(
+      projectChatSettings.value.history_limit,
+      CHAT_SETTINGS_DEFAULTS.history_limit,
+      { min: 1, max: 50 },
+    ),
+    tool_timeout_sec: resolveNumericChatSetting(
+      projectChatSettings.value.tool_timeout_sec,
+      CHAT_SETTINGS_DEFAULTS.tool_timeout_sec,
+      { min: 0, max: 600 },
+    ),
+    tool_retry_count: resolveNumericChatSetting(
+      projectChatSettings.value.tool_retry_count,
+      CHAT_SETTINGS_DEFAULTS.tool_retry_count,
+      { min: 0, max: 5 },
+    ),
+    answer_style: String(
+      projectChatSettings.value.answer_style ||
+        CHAT_SETTINGS_DEFAULTS.answer_style,
+    ),
+    prefer_conclusion_first: Boolean(
+      projectChatSettings.value.prefer_conclusion_first ??
+      CHAT_SETTINGS_DEFAULTS.prefer_conclusion_first,
+    ),
+  };
+  requestPayload.enabled_project_tool_names = normalizeStringList(
+    [
+      ...selectedProjectToolNames.value,
+      ...(assistAction?.id === "employee_create" ? assistToolNames : []),
+    ],
+    200,
+  );
+  client.send(requestPayload);
+  await donePromise;
+  if (
+    !String(messages.value[assistantIndex]?.content || "").trim() &&
+    !messageOperations(messages.value[assistantIndex]).length
+  ) {
+    messages.value[assistantIndex].content = "模型未返回内容。";
+  }
+  if (typeof onAfterDone === "function") {
+    await onAfterDone();
+  }
+  return requestId;
+}
+
 function getActiveRequestId() {
+  const activeRequestId = String(activeGenerationRequestId.value || "").trim();
+  if (activeRequestId && pendingRequests.has(activeRequestId)) {
+    return activeRequestId;
+  }
   const entries = Array.from(pendingRequests.entries());
   if (entries.length > 0) {
     return entries[entries.length - 1][0];
   }
   return null;
+}
+
+function trackPendingRequest(requestId) {
+  const normalizedRequestId = String(requestId || "").trim();
+  if (normalizedRequestId) {
+    activeGenerationRequestId.value = normalizedRequestId;
+  }
+}
+
+function clearTrackedPendingRequest(requestId) {
+  const normalizedRequestId = String(requestId || "").trim();
+  if (
+    normalizedRequestId &&
+    String(activeGenerationRequestId.value || "").trim() !== normalizedRequestId
+  ) {
+    return;
+  }
+  activeGenerationRequestId.value = getActiveRequestId() || "";
 }
 
 function stopGeneration() {
@@ -14616,6 +16022,9 @@ function stopGeneration() {
     );
     return;
   }
+  const now = Date.now();
+  if (now - lastNoActiveGenerationWarningAt < 1200) return;
+  lastNoActiveGenerationWarningAt = now;
   ElMessage.warning("当前没有可暂停的生成任务");
 }
 
@@ -14646,6 +16055,7 @@ async function generateEmployeeDraftWithoutProject() {
     processExpanded: false,
     audit: null,
     taskTreeAudit: null,
+    processLog: [],
     statusNotes: [],
     operations: [],
     time: nowText(),
@@ -14734,6 +16144,7 @@ async function sendGlobalChatWithoutProject() {
     processExpanded: false,
     audit: null,
     taskTreeAudit: null,
+    processLog: [],
     statusNotes: [],
     operations: [],
     time: nowText(),
@@ -15045,133 +16456,43 @@ async function doSend() {
   messages.value.push(assistantMessage);
 
   const assistantIndex = messages.value.length - 1;
-  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
   chatLoading.value = true;
   resetDraft();
   scrollToBottom();
 
   try {
-    const client = await ensureWsClient(selectedProjectId.value);
-    const donePromise = new Promise((resolve, reject) => {
-      pendingRequests.set(requestId, {
-        resolve,
-        reject,
-        requestId,
-        assistantIndex,
-        userPrompt: finalUserPrompt,
-        mcpApprovalCancelled: false,
-        awaitingTerminalApproval: false,
-        handoffTriggered: false,
-        projectHostTerminalHandoffTriggered: false,
-        lastToolName: "",
-      });
+    await sendProjectChatRequest({
+      projectId: selectedProjectId.value,
+      activeChatSessionId,
+      userMessageId: userMessage.id,
+      assistantMessage,
+      assistantIndex,
+      finalUserPrompt,
+      activeSessionSourceContext,
+      attachmentNames,
+      base64Images,
+      historyRows,
+      effectiveAutoUseTools,
+      effectiveToolPriority,
+      assistAction,
+      assistToolNames,
+      onAfterDone:
+        assistAction?.id === "employee_create"
+          ? async () => {
+              await autoCreateEmployeeFromDraftMessage(
+                messages.value[assistantIndex],
+                {
+                  resetAssist: true,
+                },
+              );
+            }
+          : null,
     });
-    const employeeIds = normalizeStringList(selectedEmployeeIds.value || []);
-    const requestPayload = {
-      request_id: requestId,
-      message_id: userMessage.id,
-      assistant_message_id: assistantMessage.id,
-      chat_session_id: activeChatSessionId,
-      chat_mode: "system",
-      chat_surface: chatSurface.value,
-      source_context: activeSessionSourceContext,
-      skill_resource_directory: String(
-        skillResourceDirectoryResolved.value || "",
-      ).trim(),
-      message: finalUserPrompt,
-      employee_ids: employeeIds,
-      employee_id: employeeIds.length === 1 ? employeeIds[0] : undefined,
-      employee_coordination_mode: String(
-        projectChatSettings.value.employee_coordination_mode ||
-          CHAT_SETTINGS_DEFAULTS.employee_coordination_mode,
-      )
-        .trim()
-        .toLowerCase(),
-      history: historyRows,
-      provider_id: selectedProviderId.value || undefined,
-      model_name: selectedModelName.value || undefined,
-      temperature: Number(temperature.value),
-      max_tokens: Number(chatMaxTokens.value || 512),
-      system_prompt: systemPrompt.value || undefined,
-      attachment_names: attachmentNames,
-      images: base64Images,
-      auto_use_tools: effectiveAutoUseTools,
-      tool_priority: effectiveToolPriority,
-      max_tool_calls_per_round: resolveNumericChatSetting(
-        projectChatSettings.value.max_tool_calls_per_round,
-        CHAT_SETTINGS_DEFAULTS.max_tool_calls_per_round,
-        { min: 1, max: 30 },
-      ),
-      max_loop_rounds: resolveNumericChatSetting(
-        projectChatSettings.value.max_loop_rounds,
-        CHAT_SETTINGS_DEFAULTS.max_loop_rounds,
-        { min: 1, max: 60 },
-      ),
-      max_tool_rounds: resolveNumericChatSetting(
-        projectChatSettings.value.max_tool_rounds,
-        CHAT_SETTINGS_DEFAULTS.max_tool_rounds,
-        { min: 1, max: 30 },
-      ),
-      repeated_tool_call_threshold: Number(
-        projectChatSettings.value.repeated_tool_call_threshold ||
-          CHAT_SETTINGS_DEFAULTS.repeated_tool_call_threshold,
-      ),
-      tool_only_threshold: Number(
-        projectChatSettings.value.tool_only_threshold ||
-          CHAT_SETTINGS_DEFAULTS.tool_only_threshold,
-      ),
-      tool_budget_strategy: String(
-        projectChatSettings.value.tool_budget_strategy ||
-          CHAT_SETTINGS_DEFAULTS.tool_budget_strategy,
-      ),
-      history_limit: resolveNumericChatSetting(
-        projectChatSettings.value.history_limit,
-        CHAT_SETTINGS_DEFAULTS.history_limit,
-        { min: 1, max: 50 },
-      ),
-      tool_timeout_sec: resolveNumericChatSetting(
-        projectChatSettings.value.tool_timeout_sec,
-        CHAT_SETTINGS_DEFAULTS.tool_timeout_sec,
-        { min: 0, max: 600 },
-      ),
-      tool_retry_count: resolveNumericChatSetting(
-        projectChatSettings.value.tool_retry_count,
-        CHAT_SETTINGS_DEFAULTS.tool_retry_count,
-        { min: 0, max: 5 },
-      ),
-      answer_style: String(
-        projectChatSettings.value.answer_style ||
-          CHAT_SETTINGS_DEFAULTS.answer_style,
-      ),
-      prefer_conclusion_first: Boolean(
-        projectChatSettings.value.prefer_conclusion_first ??
-        CHAT_SETTINGS_DEFAULTS.prefer_conclusion_first,
-      ),
-    };
-    requestPayload.enabled_project_tool_names = normalizeStringList(
-      [
-        ...selectedProjectToolNames.value,
-        ...(assistAction?.id === "employee_create" ? assistToolNames : []),
-      ],
-      200,
-    );
-    client.send(requestPayload);
-    await donePromise;
-    if (!String(messages.value[assistantIndex]?.content || "").trim()) {
-      messages.value[assistantIndex].content = "模型未返回内容。";
-    }
-    if (assistAction?.id === "employee_create") {
-      await autoCreateEmployeeFromDraftMessage(messages.value[assistantIndex], {
-        resetAssist: true,
-      });
-    }
   } catch (err) {
     messages.value[assistantIndex].content =
       `请求失败：${err?.message || "未知错误"}`;
     ElMessage.error(err?.message || "对话失败");
   } finally {
-    pendingRequests.delete(requestId);
     chatLoading.value = pendingRequests.size > 0;
     singleRoundAnswerOnly.value = false;
     if (selectedProjectId.value) {
@@ -15185,13 +16506,24 @@ watch(
   () =>
     String(projectChatSettings.value.external_agent_type || "codex_cli").trim(),
   () => {
-    const nextType = String(
-      projectChatSettings.value.external_agent_type || "codex_cli",
+    const fallbackType = String(
+      externalAgentOptions.value[0]?.agent_type || "codex_cli",
+    ).trim();
+    const requestedType = String(
+      projectChatSettings.value.external_agent_type || fallbackType,
     ).trim();
     const option =
       (externalAgentOptions.value || []).find(
-        (item) => item.agent_type === nextType,
+        (item) => item.agent_type === requestedType,
       ) || {};
+    const nextType = String(option.agent_type || fallbackType).trim();
+    if (
+      nextType &&
+      nextType !==
+        String(projectChatSettings.value.external_agent_type || "").trim()
+    ) {
+      projectChatSettings.value.external_agent_type = nextType;
+    }
     externalAgentWarmupKey.value = "";
     externalAgentWarmupLoading.value = false;
     externalAgentInfo.value = normalizeExternalAgentInfo({
@@ -15550,11 +16882,6 @@ watch(
 onMounted(async () => {
   loading.value = true;
   window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
-  window.addEventListener("focus", restoreComposerFocusAfterExternalOpen);
-  document.addEventListener(
-    "visibilitychange",
-    restoreComposerFocusAfterExternalOpen,
-  );
   try {
     await Promise.all([
       fetchSystemConfig(),
@@ -15586,11 +16913,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
-  window.removeEventListener("focus", restoreComposerFocusAfterExternalOpen);
-  document.removeEventListener(
-    "visibilitychange",
-    restoreComposerFocusAfterExternalOpen,
-  );
   if (connectorPollTimer !== null) {
     clearInterval(connectorPollTimer);
     connectorPollTimer = null;
@@ -15603,6 +16925,8 @@ onUnmounted(() => {
     window.clearTimeout(chatRuntimeRemotePersistTimer);
     chatRuntimeRemotePersistTimer = null;
   }
+  cancelScheduledScrollToBottom();
+  disconnectMessageListResizeObserver();
   clearHighlightedMessage();
   clearAutoSaveTimer();
   rejectPendingRequests("页面已关闭");
@@ -16414,12 +17738,12 @@ onUnmounted(() => {
 
 .settings-summary-card {
   display: grid;
-  gap: 12px;
+  gap: 18px;
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
   margin: 0 0 18px;
-  padding: 22px;
+  padding: 24px;
   border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 28px;
   background:
@@ -16446,31 +17770,68 @@ onUnmounted(() => {
   text-transform: uppercase;
 }
 
+.settings-summary-copy {
+  display: grid;
+  gap: 8px;
+  max-width: 760px;
+}
+
+.settings-summary-headline {
+  color: #0f172a;
+  font-size: clamp(26px, 3vw, 34px);
+  line-height: 1.08;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-family:
+    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
 .settings-summary-text {
-  max-width: 780px;
   margin-top: 0;
   font-size: 14px;
-  line-height: 1.7;
+  line-height: 1.65;
   color: #475569;
 }
 
-.settings-summary-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.settings-summary-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.settings-summary-pill {
-  max-width: 100%;
-  padding: 7px 12px;
-  border-radius: 999px;
+.settings-summary-overview-card {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 22px;
   border: 1px solid rgba(255, 255, 255, 0.84);
   background: rgba(255, 255, 255, 0.76);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  min-width: 0;
+}
+
+.settings-summary-overview-card__label {
+  color: #7c8aa0;
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-summary-overview-card__value {
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.settings-summary-overview-card__meta {
   color: #64748b;
   font-size: 12px;
-  line-height: 1.4;
-  font-weight: 600;
-  overflow-wrap: anywhere;
+  line-height: 1.6;
+  word-break: break-word;
 }
 
 .model-parameter-note {
@@ -16504,18 +17865,18 @@ onUnmounted(() => {
 }
 
 .settings-form .el-form-item {
-  margin-bottom: 16px;
-  padding: 18px 18px 20px;
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.82),
-    0 14px 30px rgba(15, 23, 42, 0.04);
+  margin-bottom: 0;
+  padding: 16px 0 0;
+  border: 0;
+  border-top: 1px solid rgba(226, 232, 240, 0.82);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .settings-form .el-form-item:first-child {
-  padding-top: 18px;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .settings-mode-group {
@@ -16896,7 +18257,53 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
+.settings-chat-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.settings-chat-overview-item {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  min-width: 0;
+}
+
+.settings-chat-overview-item__label {
+  color: #7c8aa0;
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-chat-overview-item__value {
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.6;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.settings-chat-state-note {
+  margin: 16px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid rgba(226, 232, 240, 0.82);
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .settings-chat-main-card {
+  display: grid;
+  gap: 18px;
   padding: 22px;
   border-radius: var(--settings-surface-radius);
   background: rgba(255, 255, 255, 0.6);
@@ -16907,9 +18314,9 @@ onUnmounted(() => {
 
 .settings-parameter-section {
   display: grid;
-  gap: 14px;
+  gap: 16px;
   margin-bottom: 18px;
-  padding: 18px;
+  padding: 20px 22px;
   border: 1px solid rgba(226, 232, 240, 0.92);
   border-radius: 24px;
   background:
@@ -16951,12 +18358,98 @@ onUnmounted(() => {
   line-height: 1.6;
 }
 
+.settings-tools-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-tools-overview__item {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.settings-tools-overview__label {
+  color: #7c8aa0;
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-tools-overview__value {
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.settings-tools-overview__meta {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
 .mcp-source-tabs :deep(.el-tabs__header) {
   margin: 0 0 8px 0;
 }
 
 .mcp-source-tabs :deep(.el-tabs__nav-wrap::after) {
   height: 1px;
+}
+
+.mcp-source-switch {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 6px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
+}
+
+.mcp-source-switch__item {
+  border: 0;
+  border-radius: 999px;
+  min-height: 36px;
+  padding: 0 16px;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    box-shadow 0.18s ease,
+    color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.mcp-source-switch__item:hover {
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.mcp-source-switch__item.is-active {
+  color: #fff;
+  background: linear-gradient(180deg, #0f172a, #1e293b);
+  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.14);
+}
+
+.mcp-source-panel {
+  width: 100%;
 }
 
 .mcp-scope-select {
@@ -17534,6 +19027,65 @@ onUnmounted(() => {
   gap: 8px;
 }
 
+.message-operation-card__form {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.message-operation-card__form.is-submitted {
+  opacity: 0.9;
+}
+
+.message-operation-card__form-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.message-operation-card__form-head strong {
+  display: block;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #0f172a;
+}
+
+.message-operation-card__form-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.message-operation-card__easy-form :deep(.el-form-item) {
+  margin-bottom: 12px;
+}
+
+.message-operation-card__easy-form :deep(.el-input__wrapper),
+.message-operation-card__easy-form :deep(.el-textarea__inner),
+.message-operation-card__easy-form :deep(.el-select__wrapper) {
+  border-radius: 14px;
+}
+
+.message-operation-card__form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.message-operation-card__submitted {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #0f766e;
+  font-weight: 600;
+}
+
 .message-operation-card.is-running {
   border-color: rgba(59, 130, 246, 0.42);
   background:
@@ -17805,6 +19357,235 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+.message-process-shell {
+  margin-bottom: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 18px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.94),
+      rgba(248, 250, 252, 0.94)
+    );
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+}
+
+.message-process-shell__toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 16px;
+  border: 0;
+  background: transparent;
+  color: #111827;
+  text-align: left;
+  cursor: pointer;
+}
+
+.message-process-shell__title-wrap {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.message-process-shell__eyebrow {
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #7c8aa0;
+}
+
+.message-process-shell__title {
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.message-process-shell__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.message-process-shell__primary-action {
+  margin-right: 2px;
+}
+
+.message-process-shell__count {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.12);
+  color: #0369a1;
+  font-weight: 600;
+}
+
+.message-process-shell__body {
+  padding: 0 16px 16px;
+}
+
+.message-process-shell__summary {
+  display: grid;
+  gap: 8px;
+  padding: 0 16px 16px;
+}
+
+.message-process-shell__summary-actions {
+  display: flex;
+  justify-content: flex-start;
+  padding: 0 16px 16px;
+}
+
+.message-process-shell__summary-item {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.message-process-shell__summary-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: #94a3b8;
+}
+
+.message-process-shell__summary-item.is-info .message-process-shell__summary-dot {
+  background: #0ea5e9;
+}
+
+.message-process-shell__summary-item.is-success .message-process-shell__summary-dot {
+  background: #10b981;
+}
+
+.message-process-shell__summary-item.is-warning .message-process-shell__summary-dot {
+  background: #f59e0b;
+}
+
+.message-process-shell__summary-item.is-error .message-process-shell__summary-dot {
+  background: #ef4444;
+}
+
+.message-process-shell__terminal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #475569;
+  font-weight: 600;
+}
+
+.message-process-shell__thinking {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.94);
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.message-process-stream {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.82);
+  border: 1px solid rgba(226, 232, 240, 0.82);
+}
+
+.message-process-stream__item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.message-process-stream__dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: #94a3b8;
+  box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.12);
+}
+
+.message-process-stream__item.is-info .message-process-stream__dot {
+  background: #0ea5e9;
+  box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.14);
+}
+
+.message-process-stream__item.is-success .message-process-stream__dot {
+  background: #10b981;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.14);
+}
+
+.message-process-stream__item.is-warning .message-process-stream__dot {
+  background: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14);
+}
+
+.message-process-stream__item.is-error .message-process-stream__dot {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.14);
+}
+
+.message-process-stream__text {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.message-process-shell__state {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+  color: #475569;
+  font-weight: 600;
+}
+
+.message-process-shell__state.is-running {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0369a1;
+}
+
+.message-process-shell__state.is-waiting {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+}
+
+.message-process-shell__state.is-success {
+  background: rgba(16, 185, 129, 0.14);
+  color: #047857;
+}
+
+.message-process-shell__state.is-danger {
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+}
+
+.message-process-shell__state.is-neutral {
+  background: rgba(148, 163, 184, 0.12);
+  color: #475569;
+}
+
 .message-process-toggle {
   width: 100%;
   display: flex;
@@ -17840,6 +19621,13 @@ onUnmounted(() => {
   line-height: 1.6;
   max-height: 280px;
   overflow: auto;
+}
+
+.message-process--nested {
+  margin: 12px 0 0;
+  border-color: rgba(226, 232, 240, 0.92);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: none;
 }
 
 .message-actions {
@@ -19673,6 +21461,10 @@ onUnmounted(() => {
   background: transparent;
 }
 
+.settings-center-shell--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .settings-center-sidebar {
   min-width: 0;
   min-height: 0;
@@ -19878,11 +21670,16 @@ onUnmounted(() => {
   box-shadow: none;
 }
 
+.settings-center-stage--single {
+  width: min(100%, 1180px);
+  margin: 0 auto;
+}
+
 .settings-center-context-bar {
   display: flex;
-  flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 16px;
   padding: 6px 2px 0;
   text-align: left;
 }
@@ -19958,6 +21755,138 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   width: 100%;
+}
+
+.settings-chat-layout--single {
+  display: block;
+}
+
+.settings-chat-main--wide {
+  width: 100%;
+}
+
+.settings-chat-hero-card {
+  display: grid;
+  gap: 10px;
+  padding: 22px 24px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 30px;
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(103, 232, 249, 0.12),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at top left,
+      rgba(125, 211, 252, 0.12),
+      transparent 28%
+    ),
+    rgba(255, 255, 255, 0.74);
+  box-shadow: var(--settings-surface-shadow);
+  backdrop-filter: blur(20px);
+}
+
+.settings-chat-hero-card__eyebrow {
+  color: #7c8aa0;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.settings-chat-hero-card__title {
+  color: #0f172a;
+  font-size: clamp(28px, 3vw, 36px);
+  line-height: 1.06;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-family:
+    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.settings-chat-hero-card__text {
+  margin: 0;
+  max-width: 860px;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.settings-chat-hero-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-chat-hero-card__meta span {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.72);
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+.settings-chat-quick-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-chat-quick-overview__card {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 16px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.05);
+  backdrop-filter: blur(18px);
+}
+
+.settings-chat-quick-overview__label {
+  color: #7c8aa0;
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-chat-quick-overview__value {
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.settings-chat-quick-overview__meta {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.settings-parameter-section--compact {
+  gap: 14px;
+}
+
+.settings-form--quick :deep(.el-form-item) {
+  margin-bottom: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.settings-quick-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
 }
 
 .settings-tabs :deep(.el-tabs__header) {
@@ -20065,10 +21994,10 @@ onUnmounted(() => {
 
 .chat-context-bar__surface {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  padding: 18px 20px;
+  gap: 14px;
+  padding: 14px 18px;
   border: 1px solid rgba(255, 255, 255, 0.78);
   border-radius: 26px;
   background:
@@ -20101,9 +22030,9 @@ onUnmounted(() => {
 }
 
 .chat-context-bar__title {
-  margin-top: 10px;
+  margin-top: 6px;
   color: #0f172a;
-  font-size: clamp(26px, 3vw, 36px);
+  font-size: clamp(24px, 2.7vw, 32px);
   font-weight: 600;
   line-height: 1.04;
   letter-spacing: -0.03em;
@@ -20111,24 +22040,16 @@ onUnmounted(() => {
     "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
-.chat-context-bar__summary {
-  max-width: 520px;
-  margin: 8px 0 0;
-  color: #475569;
-  font-size: 14px;
-  line-height: 1.6;
-}
-
 .chat-context-bar__meta {
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-start;
-  gap: 6px 8px;
-  margin-top: 10px;
+  gap: 4px 8px;
+  margin-top: 8px;
   color: var(--page-text-soft, #7c8aa0);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 .chat-context-bar__meta span:not(:last-child)::after {
@@ -20145,7 +22066,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
   width: auto;
   flex-shrink: 0;
-  align-self: center;
+  align-self: flex-end;
 }
 
 .chat-context-bar__action-button {
@@ -22264,6 +24185,10 @@ onUnmounted(() => {
     padding: 14px;
   }
 
+  .settings-center-shell--single {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
   .settings-center-sidebar {
     min-height: auto;
   }
@@ -22286,12 +24211,40 @@ onUnmounted(() => {
     border-radius: 28px;
   }
 
+  .settings-center-stage--single {
+    width: 100%;
+  }
+
+  .settings-center-context-bar {
+    flex-direction: column;
+  }
+
+  .settings-center-context-bar__actions {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
   .settings-center-context-bar__title {
     font-size: 18px;
   }
 
   .settings-chat-main-card {
     padding: 18px;
+  }
+
+  .settings-chat-quick-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-quick-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-summary-overview,
+  .settings-tools-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .message-employee-draft__meta {
@@ -22499,12 +24452,24 @@ onUnmounted(() => {
     border-radius: 24px;
   }
 
+  .settings-chat-hero-card {
+    padding: 18px;
+    border-radius: 24px;
+  }
+
   .settings-chat-sidebar-card__title {
     font-size: 28px;
   }
 
+  .settings-chat-hero-card__title {
+    font-size: 28px;
+  }
+
   .settings-chat-sidebar-card__actions,
-  .settings-summary-pills {
+  .settings-chat-overview-grid,
+  .settings-chat-quick-overview,
+  .settings-summary-overview,
+  .settings-tools-overview {
     width: 100%;
   }
 
@@ -22525,9 +24490,20 @@ onUnmounted(() => {
     padding: 18px;
   }
 
+  .settings-summary-headline {
+    font-size: 28px;
+  }
+
+  .settings-summary-overview,
+  .settings-chat-overview-grid,
+  .settings-chat-quick-overview,
+  .settings-tools-overview,
+  .settings-constraint-grid {
+    grid-template-columns: 1fr;
+  }
+
   .settings-form .el-form-item {
-    padding: 16px;
-    border-radius: 20px;
+    padding-top: 14px;
   }
 
   .settings-tabs :deep(.el-tabs__header) {

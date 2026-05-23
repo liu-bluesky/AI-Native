@@ -41,6 +41,43 @@ async def test_tool_executor_logic():
     executor = ToolExecutor("test-proj", "test-emp")
     assert executor._timeout == 60
 
+
+@pytest.mark.asyncio
+async def test_tool_executor_injects_task_tree_context(monkeypatch):
+    from services.tool_executor import ToolExecutor
+
+    captured: dict[str, object] = {}
+
+    def fake_invoke_project_tool_runtime(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "services.dynamic_mcp_runtime.invoke_project_tool_runtime",
+        fake_invoke_project_tool_runtime,
+    )
+
+    executor = ToolExecutor(
+        "proj-1",
+        "",
+        username="tester",
+        chat_session_id="chat-1",
+    )
+
+    result = await executor._execute_with_timeout(
+        {
+            "function": {
+                "name": "get_current_task_tree",
+                "arguments": json.dumps({"chat_session_id": ""}),
+            }
+        },
+        timeout=None,
+    )
+
+    assert result == {"ok": True}
+    assert captured["args"]["chat_session_id"] == "chat-1"
+    assert captured["args"]["username"] == "tester"
+
 def test_build_local_connector_file_tools_includes_file_tools_only():
     from services.local_connector_service import build_local_connector_file_tools
 
@@ -175,6 +212,136 @@ async def test_tool_executor_routes_project_host_run_command_without_explicit_wo
     assert captured["timeout_sec"] == 45
 
 
+@pytest.mark.asyncio
+async def test_tool_executor_routes_lark_auth_login_to_operation_wait_task(monkeypatch):
+    from services import tool_executor as tool_executor_svc
+    from services.tool_executor import ToolExecutor
+
+    captured: dict[str, object] = {}
+
+    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120):
+        captured["plugin_id"] = plugin_id
+        captured["username"] = username
+        captured["login_command"] = login_command
+        captured["metadata"] = metadata
+        captured["timeout_sec"] = timeout_sec
+        return {
+            "task_id": "cli-plugin-login-1",
+            "operation_kind": "auth_login",
+            "operation_label": "网页登录授权",
+            "status": "waiting_user_action",
+            "status_label": "等待授权",
+            "status_reason": "请在浏览器完成授权后回到对话框继续。",
+            "ok": False,
+            "stdout": "",
+            "stderr": "",
+            "exit_code": None,
+            "execution": {
+                "authorization_url": "https://open.feishu.cn/mock-auth",
+                "next_step": "请在浏览器完成授权后回到对话框继续。",
+            },
+        }
+
+    monkeypatch.setattr(
+        "services.operation_wait_task_service.create_cli_plugin_auth_operation_task",
+        fake_create_operation_task,
+    )
+
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        username="tester",
+        chat_session_id="chat-1",
+        host_workspace_path="/tmp/project-workspace",
+    )
+
+    result = await executor._execute_tool(
+        "project_host_run_command",
+        {
+            "command": 'lark-cli auth login --scope "im:message.send_as_user"',
+            "timeout_sec": 45,
+        },
+    )
+
+    assert result["source"] == "operation_wait_task"
+    assert result["operation_kind"] == "auth_login"
+    assert result["waiting_user_action"] is True
+    assert result["authorization_url"] == "https://open.feishu.cn/mock-auth"
+    assert result["task_id"] == "cli-plugin-login-1"
+    assert captured["plugin_id"] == "feishu-cli"
+    assert captured["username"] == "tester"
+    assert captured["timeout_sec"] == 45
+
+
+@pytest.mark.asyncio
+async def test_tool_executor_routes_lark_auth_login_alias_to_operation_wait_task(monkeypatch):
+    from services.tool_executor import ToolExecutor
+
+    captured: dict[str, object] = {}
+
+    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120):
+        captured["plugin_id"] = plugin_id
+        captured["username"] = username
+        captured["login_command"] = login_command
+        captured["metadata"] = metadata
+        captured["timeout_sec"] = timeout_sec
+        return {
+            "task_id": "cli-plugin-login-2",
+            "operation_kind": "auth_login",
+            "operation_label": "网页登录授权",
+            "status": "queued",
+            "status_label": "排队中",
+            "status_reason": "等待执行",
+            "ok": True,
+            "stdout": "",
+            "stderr": "",
+            "exit_code": None,
+            "execution": {},
+        }
+
+    monkeypatch.setattr(
+        "services.operation_wait_task_service.create_cli_plugin_auth_operation_task",
+        fake_create_operation_task,
+    )
+
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        username="tester",
+        chat_session_id="chat-1",
+        host_workspace_path="/tmp/project-workspace",
+    )
+
+    result = await executor._execute_tool(
+        "project_host_run_command",
+        {"command": "登录", "timeout_sec": 30},
+    )
+
+    assert result["source"] == "operation_wait_task"
+    assert result["command"] == "lark-cli auth login --recommend"
+    assert captured["login_command"] == "lark-cli auth login --recommend"
+    assert captured["timeout_sec"] == 30
+    assert result["ok"] is True
+    assert result["status"] == "queued"
+    assert result["requires_user_action"] is False
+
+
+def test_normalize_lark_auth_login_command_aliases():
+    from services.tool_executor import _normalize_lark_auth_login_command
+
+    assert _normalize_lark_auth_login_command("登录") == "lark-cli auth login --recommend"
+    assert _normalize_lark_auth_login_command("lark-cli 登录") == "lark-cli auth login --recommend"
+    assert _normalize_lark_auth_login_command("auth login 推荐") == "lark-cli auth login --recommend"
+    assert (
+        _normalize_lark_auth_login_command("登录 im, docs")
+        == "lark-cli auth login --domain im,docs"
+    )
+    assert (
+        _normalize_lark_auth_login_command('lark-cli auth login --scope "im:message.send_as_user"')
+        == 'lark-cli auth login --scope "im:message.send_as_user"'
+    )
+
+
 def test_run_project_host_command_falls_back_to_service_repo_root(monkeypatch, tmp_path):
     from services import project_host_command_service as host_command_svc
 
@@ -183,7 +350,8 @@ def test_run_project_host_command_falls_back_to_service_repo_root(monkeypatch, t
     def fake_run(*args, **kwargs):
         captured["args"] = args
         captured["kwargs"] = kwargs
-        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok\n", stderr="")
+        assert kwargs["text"] is False
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout=b"ok\n", stderr=b"")
 
     monkeypatch.setattr(host_command_svc, "get_project_root", lambda: tmp_path)
     monkeypatch.setattr(host_command_svc.subprocess, "run", fake_run)
@@ -232,6 +400,31 @@ def test_run_project_host_command_returns_project_workspace_environment_metadata
     assert captured["kwargs"]["cwd"] == str(tmp_path)
 
 
+def test_run_project_host_command_tolerates_binary_output(monkeypatch, tmp_path):
+    from services import project_host_command_service as host_command_svc
+
+    def fake_run(*args, **kwargs):
+        assert kwargs["text"] is False
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=b"PK\x03\x04\x00\x00\xb5binary-zip",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(host_command_svc.subprocess, "run", fake_run)
+
+    result = host_command_svc.run_project_host_command(
+        workspace_path=str(tmp_path),
+        command="curl http://cloud.jxycrm.com/tools/jxcrm-cli.zip",
+        timeout_sec=5,
+    )
+
+    assert result["ok"] is True
+    assert result["stdout"].startswith("PK")
+    assert "�" in result["stdout"]
+
+
 def test_build_cli_plugin_runtime_environment_uses_saved_receipt_paths(tmp_path, monkeypatch):
     from services import cli_plugin_market_service as plugin_svc
 
@@ -249,6 +442,7 @@ def test_build_cli_plugin_runtime_environment_uses_saved_receipt_paths(tmp_path,
         path.chmod(0o755)
 
     monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(plugin_svc, "get_cli_plugin_toolchain_root", lambda create=True: tmp_path / ".ai-employee" / "cli-toolchain")
     plugin_svc._save_plugin_install_state(
         {
             "feishu-cli": {
@@ -271,11 +465,433 @@ def test_build_cli_plugin_runtime_environment_uses_saved_receipt_paths(tmp_path,
     env, metadata = plugin_svc.build_cli_plugin_runtime_environment(base_env={"PATH": "/usr/bin"})
 
     assert metadata["plugin_runtime_enabled"] is True
+    assert str((tmp_path / ".ai-employee" / "cli-toolchain" / "bin").resolve()) in env["PATH"]
     assert str(node_bin) in env["PATH"]
     assert str(plugin_bin) in env["PATH"]
     assert str(global_bin) in env["PATH"]
+    assert env["NPM_CONFIG_PREFIX"] == str(tmp_path / ".ai-employee" / "cli-toolchain" / "npm-global")
     assert metadata["plugin_runtime_plugins"][0]["plugin_id"] == "feishu-cli"
     assert metadata["plugin_runtime_plugins"][0]["binary_path"] == str(binary_path)
+
+
+def test_build_cli_plugin_runtime_environment_injects_user_runtime_dirs(tmp_path, monkeypatch):
+    from services import cli_plugin_market_service as plugin_svc
+
+    node_bin = tmp_path / "node-bin"
+    plugin_bin = tmp_path / "plugin-bin"
+    for path in (node_bin, plugin_bin):
+        path.mkdir(parents=True, exist_ok=True)
+    for path in (node_bin / "node", node_bin / "npm", node_bin / "npx", plugin_bin / "lark-cli"):
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(plugin_svc, "get_cli_plugin_toolchain_root", lambda create=True: tmp_path / ".ai-employee" / "cli-toolchain")
+    plugin_svc._save_plugin_install_state(
+        {
+            "feishu-cli": {
+                "installed": True,
+                "installed_version": "1.2.3",
+                "latest_version": "1.2.3",
+                "last_installed_at": "2026-04-24T00:00:00+00:00",
+                "detection_source": "binary",
+                "toolchain": {
+                    "node_path": str(node_bin / "node"),
+                    "npm_path": str(node_bin / "npm"),
+                    "npx_path": str(node_bin / "npx"),
+                    "plugin_binary_path": str(plugin_bin / "lark-cli"),
+                },
+            }
+        }
+    )
+
+    env, metadata = plugin_svc.build_cli_plugin_runtime_environment(
+        base_env={"PATH": "/usr/bin"},
+        owner_username="tester",
+    )
+
+    assert env["HOME"].endswith("/users/tester/feishu-cli/home")
+    assert env["XDG_CONFIG_HOME"].endswith("/users/tester/feishu-cli/home/.config")
+    assert metadata["plugin_runtime_owner_username"] == "tester"
+
+
+def test_execute_cli_plugin_profile_command_uses_user_runtime_env(tmp_path, monkeypatch):
+    from services import cli_plugin_profile_service as profile_svc
+    from services import cli_plugin_market_service as plugin_svc
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(profile_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(profile_svc.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        profile_svc,
+        "ensure_cli_plugin_profile",
+        lambda plugin_id, owner_username, actor_username="": None,
+    )
+    monkeypatch.setattr(
+        plugin_svc,
+        "build_cli_plugin_runtime_environment",
+        lambda plugin_id="", owner_username="", base_env=None: (
+            {
+                "PATH": "/opt/plugin/bin:/usr/bin",
+                "HOME": f"/runtime/{owner_username}",
+                "XDG_CONFIG_HOME": f"/runtime/{owner_username}/.config",
+            },
+            {"plugin_runtime_home": f"/runtime/{owner_username}"},
+        ),
+    )
+
+    result = profile_svc.execute_cli_plugin_profile_command(
+        "feishu-cli",
+        "tester",
+        command="lark-cli auth status",
+    )
+
+    assert result["ok"] is True
+    assert captured["kwargs"]["env"]["HOME"] == "/runtime/tester"
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+
+
+def test_execute_cli_plugin_profile_command_extracts_authorization_url_on_timeout(tmp_path, monkeypatch):
+    from services import cli_plugin_profile_service as profile_svc
+    from services import cli_plugin_market_service as plugin_svc
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=args[0],
+            timeout=kwargs.get("timeout", 120),
+            output="Please visit https://open.feishu.cn/mock-auth to continue",
+            stderr="",
+        )
+
+    monkeypatch.setattr(profile_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(profile_svc.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        profile_svc,
+        "ensure_cli_plugin_profile",
+        lambda plugin_id, owner_username, actor_username="": None,
+    )
+    monkeypatch.setattr(
+        plugin_svc,
+        "build_cli_plugin_runtime_environment",
+        lambda plugin_id="", owner_username="", base_env=None: (
+            {
+                "PATH": "/opt/plugin/bin:/usr/bin",
+                "HOME": f"/runtime/{owner_username}",
+                "XDG_CONFIG_HOME": f"/runtime/{owner_username}/.config",
+            },
+            {"plugin_runtime_home": f"/runtime/{owner_username}"},
+        ),
+    )
+
+    result = profile_svc.execute_cli_plugin_profile_command(
+        "feishu-cli",
+        "tester",
+        command="lark-cli auth login --recommend",
+        timeout_sec=30,
+    )
+
+    assert result["ok"] is False
+    assert result["timed_out"] is True
+    assert result["interactive"] is True
+    assert result["requires_user_action"] is True
+    assert result["authorization_url"] == "https://open.feishu.cn/mock-auth"
+    assert result["status"] == "pending_user_action"
+
+
+def test_execute_cli_plugin_profile_command_keeps_interactive_timeout(tmp_path, monkeypatch):
+    from services import cli_plugin_profile_service as profile_svc
+    from services import cli_plugin_market_service as plugin_svc
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(profile_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(profile_svc.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        profile_svc,
+        "ensure_cli_plugin_profile",
+        lambda plugin_id, owner_username, actor_username="": None,
+    )
+    monkeypatch.setattr(
+        plugin_svc,
+        "build_cli_plugin_runtime_environment",
+        lambda plugin_id="", owner_username="", base_env=None: (
+            {"PATH": "/opt/plugin/bin:/usr/bin"},
+            {"plugin_runtime_home": f"/runtime/{owner_username}"},
+        ),
+    )
+
+    profile_svc.execute_cli_plugin_profile_command(
+        "feishu-cli",
+        "tester",
+        command="lark-cli auth login --recommend",
+        timeout_sec=600,
+    )
+
+    assert captured["timeout"] == 600
+
+
+def test_cli_plugin_login_task_waits_for_user_action(tmp_path, monkeypatch):
+    from services import operation_wait_task_service as login_task_svc
+
+    monkeypatch.setattr(login_task_svc, "_poll_auth_operation_until_authenticated", lambda *args, **kwargs: None)
+    monkeypatch.setattr(login_task_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        login_task_svc,
+        "get_cli_plugin",
+        lambda plugin_id, include_status=False: {
+            "id": plugin_id,
+            "name": "飞书 CLI",
+        },
+    )
+    def fake_login_execution(plugin_id, username, command, timeout_sec=120, on_update=None):
+        result = {
+            "ok": False,
+            "interactive": True,
+            "requires_user_action": True,
+            "authorization_url": "https://open.feishu.cn/mock-auth",
+            "status": "pending_user_action",
+            "status_label": "等待网页授权",
+            "next_step": "请在浏览器打开授权链接完成授权；完成后系统会自动检测并继续。",
+            "command": command,
+            "stdout": "Open https://open.feishu.cn/mock-auth to continue login",
+            "stderr": "",
+            "exit_code": None,
+            "timed_out": False,
+        }
+        if on_update is not None:
+            on_update(result)
+        return result
+
+    monkeypatch.setattr(login_task_svc, "execute_cli_plugin_profile_command_streaming", fake_login_execution)
+    monkeypatch.setattr(
+        login_task_svc,
+        "execute_cli_plugin_profile_command",
+        lambda plugin_id, username, command, timeout_sec=120: {
+            "ok": False,
+            "stdout": '{"identity":"bot","note":"No user logged in. Only bot (tenant) identity is available for API calls."}',
+            "stderr": "",
+        },
+    )
+    monkeypatch.setattr(
+        login_task_svc,
+        "update_cli_plugin_profile",
+        lambda plugin_id, owner_username, **kwargs: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            **kwargs,
+        },
+    )
+    monkeypatch.setattr(
+        login_task_svc,
+        "serialize_cli_plugin_profile",
+        lambda plugin_id, owner_username, auth_payload=None: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            "status": "pending_auth",
+            "status_label": "等待授权",
+        },
+    )
+
+    task = login_task_svc.create_login_task(
+        "feishu-cli",
+        username="tester",
+        login_command="lark-cli auth login --recommend",
+    )
+    task_id = str(task["task_id"])
+    thread = login_task_svc._TASK_THREADS[task_id]
+    thread.join(timeout=5)
+
+    latest = login_task_svc.get_login_task(task_id)
+
+    assert latest is not None
+    assert latest["status"] == "waiting_user_action"
+    assert latest["execution"]["authorization_url"] == "https://open.feishu.cn/mock-auth"
+    assert latest["profile"]["status"] == "pending_auth"
+
+
+def test_cli_plugin_login_task_requires_auth_status_verification(tmp_path, monkeypatch):
+    from services import operation_wait_task_service as login_task_svc
+
+    monkeypatch.setattr(login_task_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(login_task_svc, "_poll_login_task_until_authenticated", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        login_task_svc,
+        "get_cli_plugin",
+        lambda plugin_id, include_status=False: {
+            "id": plugin_id,
+            "name": "飞书 CLI",
+        },
+    )
+
+    def fake_execute(plugin_id, username, command, timeout_sec=120, on_update=None):
+        if "auth login" in command:
+            return {
+                "ok": True,
+                "interactive": True,
+                "requires_user_action": False,
+                "authorization_url": "",
+                "status": "succeeded",
+                "status_label": "执行成功",
+                "next_step": "",
+                "command": command,
+                "stdout": "{\"ok\": false, \"status\": \"queued\"}",
+                "stderr": "",
+                "exit_code": 0,
+                "timed_out": False,
+            }
+        return {
+            "ok": True,
+            "interactive": False,
+            "requires_user_action": False,
+            "authorization_url": "",
+            "status": "succeeded",
+            "status_label": "执行成功",
+            "next_step": "",
+            "command": command,
+            "stdout": '{"identity":"bot","note":"No user logged in. Only bot (tenant) identity is available for API calls."}',
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(login_task_svc, "execute_cli_plugin_profile_command_streaming", fake_execute)
+    monkeypatch.setattr(login_task_svc, "execute_cli_plugin_profile_command", fake_execute)
+    monkeypatch.setattr(
+        login_task_svc,
+        "update_cli_plugin_profile",
+        lambda plugin_id, owner_username, **kwargs: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            **kwargs,
+        },
+    )
+    monkeypatch.setattr(
+        login_task_svc,
+        "serialize_cli_plugin_profile",
+        lambda plugin_id, owner_username, auth_payload=None: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            "status": "pending_auth",
+            "status_label": "等待授权",
+        },
+    )
+
+    task = login_task_svc.create_login_task(
+        "feishu-cli",
+        username="tester",
+        login_command="lark-cli auth login --recommend",
+    )
+    task_id = str(task["task_id"])
+    thread = login_task_svc._TASK_THREADS[task_id]
+    thread.join(timeout=5)
+
+    latest = login_task_svc.get_login_task(task_id)
+
+    assert latest is not None
+    assert latest["status"] == "waiting_user_action"
+    assert latest["ok"] is True
+    assert latest["execution_ok"] is True
+    assert latest["execution"]["verification"]["stdout"].startswith('{"identity":"bot"')
+    assert latest["profile"]["status"] == "pending_auth"
+
+
+def test_cli_plugin_login_task_auto_completes_after_auth_poll(tmp_path, monkeypatch):
+    from services import operation_wait_task_service as login_task_svc
+
+    calls = {"count": 0}
+
+    monkeypatch.setattr(login_task_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(login_task_svc, "_AUTH_POLL_INTERVAL_SEC", 0)
+    monkeypatch.setattr(login_task_svc, "_AUTH_POLL_TIMEOUT_SEC", 1)
+    monkeypatch.setattr(login_task_svc.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        login_task_svc,
+        "get_cli_plugin",
+        lambda plugin_id, include_status=False: {
+            "id": plugin_id,
+            "name": "飞书 CLI",
+        },
+    )
+
+    def fake_execute(plugin_id, username, command, timeout_sec=120, on_update=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "ok": False,
+                "interactive": True,
+                "requires_user_action": True,
+                "authorization_url": "https://open.feishu.cn/mock-auth",
+                "status": "pending_user_action",
+                "status_label": "等待网页授权",
+                "next_step": "请在浏览器打开授权链接完成授权；完成后系统会自动检测并继续。",
+                "command": command,
+                "stdout": "Open https://open.feishu.cn/mock-auth to continue login",
+                "stderr": "",
+                "exit_code": None,
+                "timed_out": True,
+            }
+        return {
+            "ok": True,
+            "interactive": False,
+            "requires_user_action": False,
+            "authorization_url": "",
+            "status": "succeeded",
+            "status_label": "执行成功",
+            "next_step": "",
+            "command": command,
+            "stdout": "user auth active",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(login_task_svc, "execute_cli_plugin_profile_command_streaming", fake_execute)
+    monkeypatch.setattr(login_task_svc, "execute_cli_plugin_profile_command", fake_execute)
+    monkeypatch.setattr(
+        login_task_svc,
+        "update_cli_plugin_profile",
+        lambda plugin_id, owner_username, **kwargs: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            **kwargs,
+        },
+    )
+    monkeypatch.setattr(
+        login_task_svc,
+        "serialize_cli_plugin_profile",
+        lambda plugin_id, owner_username, auth_payload=None: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            "status": "authenticated",
+            "status_label": "已登录",
+        },
+    )
+
+    task = login_task_svc.create_login_task(
+        "feishu-cli",
+        username="tester",
+        login_command="lark-cli auth login --recommend",
+    )
+    task_id = str(task["task_id"])
+    thread = login_task_svc._TASK_THREADS[task_id]
+    thread.join(timeout=5)
+
+    latest = login_task_svc.get_login_task(task_id)
+
+    assert latest is not None
+    assert latest["status"] == "succeeded"
+    assert latest["profile"]["status"] == "authenticated"
+    assert latest["execution"]["stdout"] == "user auth active"
 
 
 def test_build_cli_plugin_runtime_environment_backfills_detected_plugin_runtime(tmp_path, monkeypatch):
@@ -295,6 +911,7 @@ def test_build_cli_plugin_runtime_environment_backfills_detected_plugin_runtime(
         path.chmod(0o755)
 
     monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(plugin_svc, "get_cli_plugin_toolchain_root", lambda create=True: tmp_path / ".ai-employee" / "cli-toolchain")
     monkeypatch.setattr(
         plugin_svc,
         "list_cli_plugins",
@@ -355,6 +972,7 @@ def test_detect_installed_version_uses_saved_binary_path_when_path_missing(tmp_p
         path.chmod(0o755)
 
     monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(plugin_svc, "get_cli_plugin_toolchain_root", lambda create=True: tmp_path / ".ai-employee" / "cli-toolchain")
     monkeypatch.setattr(plugin_svc, "which", lambda _name: "")
     plugin_svc._save_plugin_install_state(
         {
@@ -390,6 +1008,81 @@ def test_detect_installed_version_uses_saved_binary_path_when_path_missing(tmp_p
     assert detection_source == "binary"
     assert captured["args"][0][0] == str(binary_path)
     assert str(node_bin) in captured["kwargs"]["env"]["PATH"]
+
+
+def test_install_cli_plugin_uses_persistent_toolchain_env(tmp_path, monkeypatch):
+    from services import cli_plugin_market_service as plugin_svc
+
+    toolchain_root = tmp_path / ".persist" / "cli-toolchain"
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(plugin_svc, "get_cli_plugin_toolchain_root", lambda create=True: toolchain_root)
+    monkeypatch.setattr(
+        plugin_svc,
+        "_collect_runtime_toolchain_snapshot",
+        lambda plugin, receipt=None: {
+            "node_path": "/usr/local/bin/node",
+            "npm_path": "/usr/local/bin/npm",
+            "npx_path": "/usr/local/bin/npx",
+            "plugin_binary_path": "",
+            "runtime_path_entries": ["/usr/local/bin"],
+            "toolchain_root": str(toolchain_root),
+            "toolchain_bin_dir": str(toolchain_root / "bin"),
+        },
+    )
+    monkeypatch.setattr(plugin_svc, "_detect_latest_version", lambda plugin: ("1.0.18", ""))
+    monkeypatch.setattr(plugin_svc, "_detect_installed_version", lambda plugin: ("1.0.18", "npm-global"))
+    monkeypatch.setattr(plugin_svc, "normalize_cli_plugin_host_skill_layout", lambda: {"shared_root": "ok", "actions": []})
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(plugin_svc.subprocess, "run", fake_run)
+
+    result = plugin_svc.install_cli_plugin("feishu-cli", timeout_sec=60)
+
+    assert result["ok"] is True
+    env = captured["kwargs"]["env"]
+    assert env["CLI_PLUGIN_TOOLCHAIN_ROOT"] == str(toolchain_root)
+    assert env["CLI_PLUGIN_TOOLCHAIN_BIN_DIR"] == str(toolchain_root / "bin")
+    assert env["CLI_PLUGIN_NPM_GLOBAL_PREFIX"] == str(toolchain_root / "npm-global")
+    assert env["NPM_CONFIG_PREFIX"] == str(toolchain_root / "npm-global")
+    assert str(toolchain_root / "bin") in env["PATH"]
+
+
+def test_install_cli_plugin_tolerates_binary_output(tmp_path, monkeypatch):
+    from services import cli_plugin_market_service as plugin_svc
+
+    monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(plugin_svc, "get_cli_plugin_toolchain_root", lambda create=True: tmp_path / "toolchain")
+    monkeypatch.setattr(
+        plugin_svc,
+        "_collect_runtime_toolchain_snapshot",
+        lambda plugin, receipt=None: {"runtime_path_entries": []},
+    )
+    monkeypatch.setattr(plugin_svc, "_detect_latest_version", lambda plugin: ("1.0.0", ""))
+    monkeypatch.setattr(plugin_svc, "_detect_installed_version", lambda plugin: ("1.0.0", "binary"))
+    monkeypatch.setattr(plugin_svc, "normalize_cli_plugin_host_skill_layout", lambda: {"shared_root": "ok", "actions": []})
+
+    def fake_run(*args, **kwargs):
+        assert kwargs["text"] is False
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=b"PK\x03\x04\x00\x00\xb5binary-zip",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(plugin_svc.subprocess, "run", fake_run)
+
+    result = plugin_svc.install_cli_plugin("feishu-cli", timeout_sec=60)
+
+    assert result["ok"] is True
+    assert result["stdout"].startswith("PK")
+    assert "�" in result["stdout"]
 
 
 def test_normalize_cli_plugin_host_skill_layout_uses_shared_root(tmp_path, monkeypatch):
@@ -440,12 +1133,18 @@ def test_run_project_host_command_includes_cli_plugin_runtime_paths(monkeypatch,
     monkeypatch.setattr(
         host_command_svc,
         "build_cli_plugin_runtime_environment",
-        lambda: (
-            {"PATH": "/opt/plugin/bin:/usr/bin"},
+        lambda owner_username="": (
+            {
+                "PATH": "/opt/plugin/bin:/usr/bin",
+                "HOME": f"/runtime/{owner_username}",
+                "XDG_CONFIG_HOME": f"/runtime/{owner_username}/.config",
+            },
             {
                 "plugin_runtime_enabled": True,
                 "plugin_runtime_path_entries": ["/opt/plugin/bin"],
                 "plugin_runtime_plugins": [{"plugin_id": "feishu-cli", "binary_path": "/opt/plugin/bin/lark-cli"}],
+                "plugin_runtime_owner_username": owner_username,
+                "plugin_runtime_home": f"/runtime/{owner_username}",
             },
         ),
     )
@@ -454,6 +1153,7 @@ def test_run_project_host_command_includes_cli_plugin_runtime_paths(monkeypatch,
     result = host_command_svc.run_project_host_command(
         workspace_path=str(tmp_path),
         command="pwd",
+        owner_username="tester",
         timeout_sec=5,
     )
 
@@ -461,7 +1161,9 @@ def test_run_project_host_command_includes_cli_plugin_runtime_paths(monkeypatch,
     assert result["plugin_runtime_enabled"] is True
     assert result["plugin_runtime_path_entries"] == ["/opt/plugin/bin"]
     assert "/opt/plugin/bin" in result["plugin_runtime_summary"]
+    assert "HOME=/runtime/tester" in result["plugin_runtime_summary"]
     assert captured["kwargs"]["env"]["PATH"] == "/opt/plugin/bin:/usr/bin"
+    assert captured["kwargs"]["env"]["HOME"] == "/runtime/tester"
 
 
 def test_project_config_defaults_type_to_mixed_for_legacy_payload():
@@ -13203,6 +13905,62 @@ def test_project_chat_store_truncate_messages_updates_session_snapshot(tmp_path)
     assert sessions[0].message_count == 2
 
 
+def test_project_chat_store_truncate_messages_falls_back_to_user_turn(tmp_path):
+    """当前页面仍持有旧本地 message_id 时，可按用户消息轮次兜底截断"""
+    from stores.json.project_chat_store import ProjectChatMessage, ProjectChatStore
+
+    store = ProjectChatStore(tmp_path / "data")
+    session = store.create_session("proj-test", "tester", title="新对话")
+    for message in [
+        ProjectChatMessage(
+            id="server-user-1",
+            project_id="proj-test",
+            username="tester",
+            role="user",
+            content="重复问题",
+            chat_session_id=session.id,
+        ),
+        ProjectChatMessage(
+            id="server-assistant-1",
+            project_id="proj-test",
+            username="tester",
+            role="assistant",
+            content="第一条回答",
+            chat_session_id=session.id,
+        ),
+        ProjectChatMessage(
+            id="server-user-2",
+            project_id="proj-test",
+            username="tester",
+            role="user",
+            content="重复问题\n\n当前模型类型：图片生成。",
+            chat_session_id=session.id,
+        ),
+        ProjectChatMessage(
+            id="server-assistant-2",
+            project_id="proj-test",
+            username="tester",
+            role="assistant",
+            content="第二条回答",
+            chat_session_id=session.id,
+        ),
+    ]:
+        store.append_message(message)
+
+    removed = store.truncate_messages(
+        "proj-test",
+        "tester",
+        "chat-local-not-persisted",
+        session.id,
+        fallback_user_content="重复问题",
+        fallback_user_turn_index=1,
+    )
+
+    assert removed == 2
+    messages = store.list_messages("proj-test", "tester", chat_session_id=session.id)
+    assert [item.id for item in messages] == ["server-user-1", "server-assistant-1"]
+
+
 def test_project_chat_store_persists_videos_field(tmp_path):
     from stores.json.project_chat_store import ProjectChatMessage, ProjectChatStore
 
@@ -14472,10 +15230,12 @@ async def test_maybe_enrich_project_chat_message_with_url_content_fetches_http_l
         "帮我安装飞书 CLI：https://open.feishu.cn/document/no_class/mcp-archive/feishu-cli-installation-guide.md",
         [{"tool_name": "project_host_run_command", "builtin": True}],
         host_workspace_path="/tmp/project-workspace",
+        owner_username="tester",
     )
 
     assert len(captured_calls) == 1
     assert captured_calls[0]["workspace_path"] == "/tmp/project-workspace"
+    assert captured_calls[0]["owner_username"] == "tester"
     assert "curl -L --fail --silent --show-error" in str(captured_calls[0]["command"])
     assert "【系统已自动抓取的外部链接正文】" in enriched
     assert "安装命令：npx @larksuite/cli@latest install" in enriched
@@ -15114,6 +15874,384 @@ def test_build_project_chat_operation_event_for_auto_continue():
     assert event["phase"] == "running"
     assert event["summary"] == "系统已自动继续执行"
     assert event["detail"] == "系统已自动继续执行后续步骤。"
+
+
+def test_build_project_chat_operation_event_for_user_action_required():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "user_action_required",
+            "request_id": "req-auth",
+            "task_id": "task-auth-1",
+            "action_type": "open_url",
+            "authorization_url": "https://open.feishu.cn/mock-auth",
+            "message": "请在浏览器完成授权后回到对话框继续。",
+            "status_label": "等待授权",
+            "interaction_schema": {
+                "title": "继续授权",
+                "schema": [
+                    {"label": "确认", "prop": "confirmed", "componentName": "ElSwitch"}
+                ],
+            },
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "operation_event"
+    assert event["operation_id"] == "user-action:task-auth-1"
+    assert event["phase"] == "waiting_user"
+    assert event["action_type"] == "open_url"
+    assert "https://open.feishu.cn/mock-auth" in event["detail"]
+    assert event["meta"]["interaction_schema"]["title"] == "继续授权"
+    assert event["meta"]["workflow_state"]["task_id"] == "task-auth-1"
+
+
+def test_build_project_chat_operation_event_prefers_raw_detail_for_authorization_waiting():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "authorization_waiting",
+            "task_id": "task-auth-raw",
+            "chat_session_id": "chat-auth",
+            "authorization_url": "https://open.feishu.cn/mock-auth",
+            "message": "请在浏览器完成授权后回到对话框继续。",
+            "detail": "等待授权\nhttps://open.feishu.cn/mock-auth\nuser_code=ABCD-EFGH",
+            "status_label": "等待授权",
+        }
+    )
+
+    assert event is not None
+    assert event["operation_id"] == "auth:task-auth-raw"
+    assert event["detail"] == "等待授权\nhttps://open.feishu.cn/mock-auth\nuser_code=ABCD-EFGH"
+    assert event["meta"]["authorization_url"] == "https://open.feishu.cn/mock-auth"
+
+
+def test_build_project_chat_operation_event_for_authorization_completed():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "authorization_completed",
+            "task_id": "task-auth-2",
+            "chat_session_id": "chat-auth",
+            "message": "授权完成，检测通过，系统正在自动继续上一条待执行命令。",
+            "resume_command": "lark-cli base record list",
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "operation_event"
+    assert event["operation_id"] == "auth:task-auth-2"
+    assert event["phase"] == "completed"
+    assert event["summary"] == "授权完成，正在自动继续"
+
+
+def test_build_project_chat_operation_event_for_authorization_completed_without_resume():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "authorization_completed",
+            "task_id": "task-auth-3",
+            "chat_session_id": "chat-auth",
+            "message": "授权完成，检测通过。",
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "operation_event"
+    assert event["operation_id"] == "auth:task-auth-3"
+    assert event["phase"] == "completed"
+    assert event["summary"] == "授权完成"
+
+
+def test_build_project_chat_operation_event_for_done_background_task_pending():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "done",
+            "request_id": "req-bg",
+            "completed_reason": "background_task_pending",
+            "guard_message": "任务已创建，等待后台执行",
+            "content": "",
+        }
+    )
+
+    assert event is not None
+    assert event["operation_id"] == "request:req-bg"
+    assert event["phase"] == "running"
+    assert event["summary"] == "任务已创建，等待后台执行"
+
+
+def test_build_project_chat_operation_event_for_operation_task_state():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "operation_task_state",
+            "task_id": "task-operation-1",
+            "chat_session_id": "chat-auth",
+            "workflow_kind": "external_review",
+            "workflow_label": "外部审核",
+            "status": "queued",
+            "status_label": "排队中",
+            "summary": "外部操作已创建，等待后续结果",
+            "detail": "任务已创建，等待后台执行",
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "operation_event"
+    assert event["operation_id"] == "workflow:external_review:task-operation-1"
+    assert event["phase"] == "running"
+    assert event["summary"] == "外部操作已创建，等待后续结果"
+
+
+def test_build_project_chat_operation_event_for_workflow_state():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "workflow_state",
+            "workflow_kind": "auth_login",
+            "workflow_id": "task-login-1",
+            "workflow_label": "网页登录授权",
+            "task_id": "task-login-1",
+            "chat_session_id": "chat-auth",
+            "status": "queued",
+            "status_label": "排队中",
+            "summary": "登录任务已创建，等待返回授权链接",
+            "detail": "任务已创建，等待后台执行",
+            "authorization_url": "https://example.com/auth",
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "operation_event"
+    assert event["operation_id"] == "auth:task-login-1"
+    assert event["kind"] == "auth"
+    assert event["phase"] == "running"
+    assert event["summary"] == "登录任务已创建，等待返回授权链接"
+    assert event["action_type"] == "open_url"
+
+
+def test_build_project_chat_operation_event_preserves_interaction_schema():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "workflow_state",
+            "workflow_kind": "generic_form",
+            "workflow_id": "workflow-form-1",
+            "workflow_label": "结构化输入",
+            "chat_session_id": "chat-form",
+            "status": "waiting_user_action",
+            "summary": "等待补充发布参数",
+            "detail": "请填写环境和备注后继续",
+            "action_type": "select",
+            "interaction_schema": {
+                "title": "补充参数",
+                "schema": [
+                    {
+                        "label": "环境",
+                        "prop": "environment",
+                        "componentName": "ElSelect",
+                    }
+                ],
+                "model": {"environment": ""},
+            },
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "operation_event"
+    assert event["phase"] == "waiting_user"
+    assert event["meta"]["interaction_schema"]["title"] == "补充参数"
+    assert event["meta"]["workflow_state"]["workflow_kind"] == "generic_form"
+
+
+def test_build_project_chat_interaction_request_payload():
+    from routers.projects import _build_project_chat_interaction_request_payload
+
+    payload = _build_project_chat_interaction_request_payload(
+        "proj-test",
+        "tester",
+        {
+            "type": "interaction_submit",
+            "chat_session_id": "chat-form",
+            "interaction_id": "workflow:generic_form:workflow-form-1",
+            "interaction_operation_id": "workflow:generic_form:workflow-form-1",
+            "interaction_title": "补充参数",
+            "interaction_action_type": "select",
+            "interaction_schema": {
+                "title": "补充参数",
+                "schema": [
+                    {"label": "环境", "prop": "environment"},
+                    {"label": "备注", "prop": "note"},
+                ],
+            },
+            "interaction_data": {
+                "environment": "staging",
+                "note": "先发测试环境",
+            },
+            "source_context": {"platform": "feishu"},
+            "workflow_state": {"workflow_kind": "generic_form"},
+        }
+    )
+
+    assert payload["chat_session_id"] == "chat-form"
+    assert payload["request_kind"] == "interaction_continuation"
+    assert payload["continuation_token"] == (
+        "project-chat:chat-form:workflow:generic_form:workflow-form-1:"
+        "workflow:generic_form:workflow-form-1"
+    )
+    assert "以下是用户通过结构化交互表单提交的正式结果。" not in payload["message"]
+    assert "环境：staging" in payload["message"]
+    assert "备注：先发测试环境" in payload["message"]
+    assert payload["message"] == "环境：staging\n备注：先发测试环境"
+    assert payload["source_context"]["interaction_submission"]["interaction_id"] == (
+        "workflow:generic_form:workflow-form-1"
+    )
+    assert payload["source_context"]["interaction_submission"]["workflow_kind"] == "generic_form"
+    assert payload["source_context"]["interaction_submission"]["continuation_token"] == payload["continuation_token"]
+    assert payload["source_context"]["interaction_submission"]["interaction_schema"]["title"] == "补充参数"
+
+
+def test_build_project_chat_interaction_request_payload_uses_pending_interaction_from_history(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_chat_store import ProjectChatStore
+
+    monkeypatch.setattr(projects_router, "project_chat_store", ProjectChatStore(tmp_path))
+
+    projects_router._append_chat_record(
+        project_id="proj-test",
+        username="tester",
+        role="assistant",
+        content="请填写环境和备注后继续",
+        chat_session_id="chat-form",
+        source_context={
+            "pending_interaction": {
+                "operation_id": "workflow:generic_form:workflow-form-1",
+                "interaction_id": "workflow:generic_form:workflow-form-1",
+                "title": "补充参数",
+                "action_type": "select",
+                "workflow_kind": "generic_form",
+                "resume_command": "resume --form workflow-form-1",
+                "interaction_schema": {
+                    "title": "补充参数",
+                    "schema": [
+                        {"label": "环境", "prop": "environment"},
+                        {"label": "备注", "prop": "note"},
+                    ],
+                },
+                "workflow_state": {
+                    "workflow_kind": "generic_form",
+                    "workflow_id": "workflow-form-1",
+                    "status": "waiting_user_action",
+                },
+            }
+        },
+    )
+
+    payload = projects_router._build_project_chat_interaction_request_payload(
+        "proj-test",
+        "tester",
+        {
+            "type": "interaction_submit",
+            "chat_session_id": "chat-form",
+            "interaction_operation_id": "workflow:generic_form:workflow-form-1",
+            "interaction_data": {
+                "environment": "staging",
+                "note": "先发测试环境",
+            },
+            "source_context": {"platform": "feishu"},
+        },
+    )
+
+    assert payload["source_context"]["pending_interaction"]["operation_id"] == (
+        "workflow:generic_form:workflow-form-1"
+    )
+    assert payload["source_context"]["interaction_submission"]["resume_command"] == (
+        "resume --form workflow-form-1"
+    )
+    assert payload["source_context"]["interaction_submission"]["workflow_kind"] == "generic_form"
+    assert payload["source_context"]["interaction_submission"]["interaction_schema"]["title"] == "补充参数"
+    assert payload["source_context"]["interaction_submission"]["workflow_state"]["workflow_id"] == (
+        "workflow-form-1"
+    )
+    assert payload["request_kind"] == "interaction_continuation"
+
+
+def test_build_project_chat_source_context_prompt_mentions_interaction_submission():
+    from routers.projects import _build_project_chat_source_context_prompt
+
+    prompt = _build_project_chat_source_context_prompt(
+        {
+            "platform": "feishu",
+            "source_type": "manual_ai_chat",
+            "interaction_submission": {
+                "operation_id": "workflow:generic_form:workflow-form-1",
+                "interaction_id": "workflow:generic_form:workflow-form-1",
+                "title": "补充参数",
+                "action_type": "select",
+                "workflow_kind": "generic_form",
+                "continuation_token": "project-chat:chat-form:workflow:generic_form:workflow-form-1:workflow:generic_form:workflow-form-1",
+            },
+        }
+    )
+
+    assert "当前请求携带结构化交互提交结果。" in prompt
+    assert "submission_operation_id: workflow:generic_form:workflow-form-1" in prompt
+    assert "submission_workflow_kind: generic_form" in prompt
+    assert "continuation_token: project-chat:chat-form:workflow:generic_form:workflow-form-1:workflow:generic_form:workflow-form-1" in prompt
+
+
+def test_resolve_project_chat_request_kind_prefers_interaction_continuation():
+    from routers.projects import (
+        _is_project_chat_interaction_continuation,
+        _resolve_project_chat_request_kind,
+    )
+
+    source_context = {
+        "interaction_submission": {
+            "interaction_id": "workflow:generic_form:workflow-form-1",
+        }
+    }
+
+    assert _resolve_project_chat_request_kind("", source_context=source_context) == "interaction_continuation"
+    assert _is_project_chat_interaction_continuation("", source_context=source_context) is True
+    assert _is_project_chat_interaction_continuation("user_message", source_context={}) is False
+
+
+def test_cli_plugin_login_task_claim_resume_marks_dispatched(tmp_path, monkeypatch):
+    from services import operation_wait_task_service as login_task_svc
+
+    monkeypatch.setattr(login_task_svc, "get_project_root", lambda: tmp_path)
+
+    task = {
+        "task_id": "cli-plugin-login-claim-1",
+        "plugin_id": "feishu-cli",
+        "created_by": "tester",
+        "status": "succeeded",
+        "metadata": {
+            "resume_command": "lark-cli im message send --receive_id_type open_id --receive_id ou_xxx --content 'hi'",
+        },
+        "created_at": "2026-05-20T09:00:00+00:00",
+        "updated_at": "2026-05-20T09:00:00+00:00",
+        "event_version": 0,
+    }
+    login_task_svc._task_root_path().mkdir(parents=True, exist_ok=True)
+    login_task_svc._write_task(task)
+
+    claimed = login_task_svc.claim_login_task_resume("cli-plugin-login-claim-1")
+    assert claimed is not None
+    assert str(claimed["metadata"]["resume_dispatched_at"]).strip()
+
+    duplicate = login_task_svc.claim_login_task_resume("cli-plugin-login-claim-1")
+    assert duplicate is None
 
 
 if __name__ == "__main__":

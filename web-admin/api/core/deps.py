@@ -10,6 +10,7 @@ from stores.factory import (
     agent_template_store,
     bot_connector_store,
     changelog_entry_store,
+    cli_plugin_profile_store,
     department_store,
     employee_store,
     external_mcp_store,

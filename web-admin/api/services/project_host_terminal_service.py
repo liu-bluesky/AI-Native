@@ -168,7 +168,9 @@ async def start_or_attach_project_host_terminal(
     session_id = f"host-term-{uuid.uuid4().hex[:12]}"
     master_fd, slave_fd = pty.openpty()
     _disable_tty_echo(slave_fd)
-    exec_env, plugin_runtime_metadata = build_cli_plugin_runtime_environment()
+    exec_env, plugin_runtime_metadata = build_cli_plugin_runtime_environment(
+        owner_username=str(username or "").strip(),
+    )
     process = await asyncio.create_subprocess_exec(
         *shell_command,
         cwd=str(workspace_root),

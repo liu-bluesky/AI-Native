@@ -1,5 +1,5 @@
 <template>
-  <section class="settings-launcher">
+  <section class="settings-launcher" :class="{ 'is-embedded': embeddedMode }">
     <div class="settings-launcher__ambient" aria-hidden="true" />
 
     <header class="settings-launcher__hero">
@@ -48,11 +48,13 @@ import {
   resolveDesktopLaunchPath,
 } from "@/utils/desktop-shell.js";
 import {
+  isEmbeddedDesktopApp,
   openRouteInDesktop,
   requestDesktopPinApp,
 } from "@/utils/desktop-app-bridge.js";
 
 const router = useRouter();
+const embeddedMode = isEmbeddedDesktopApp();
 const apps = computed(() =>
   DESKTOP_SETTINGS_ITEMS.filter((item) => canAccessDesktopApp(item)),
 );
@@ -96,6 +98,13 @@ function pinApp(app) {
     radial-gradient(circle at 10% 0%, rgba(125, 211, 252, 0.18), transparent 24%),
     radial-gradient(circle at 88% 16%, rgba(103, 232, 249, 0.14), transparent 22%),
     linear-gradient(180deg, #f5f4ef 0%, #f8fafc 42%, #edf2f7 100%);
+}
+
+.settings-launcher.is-embedded {
+  min-height: 100vh;
+  height: 100vh;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .settings-launcher__ambient {

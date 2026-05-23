@@ -15,7 +15,8 @@ from pathlib import Path
 from shutil import which
 from typing import Any
 
-from core.config import get_project_root
+from core.config import get_cli_plugin_toolchain_root, get_project_root
+from services.cli_plugin_profile_service import build_cli_plugin_profile_runtime_env
 
 _STATUS_CACHE_TTL_SEC = 300
 _CLI_PLUGIN_STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -61,6 +62,18 @@ def _utc_now_iso() -> str:
 
 def _plugin_status_store_path() -> Path:
     return get_project_root() / ".ai-employee" / "cli-plugin-market" / "install-state.json"
+
+
+def _cli_plugin_toolchain_root() -> Path:
+    return get_cli_plugin_toolchain_root(create=True)
+
+
+def _cli_plugin_toolchain_bin_dir() -> Path:
+    return _cli_plugin_toolchain_root() / "bin"
+
+
+def _cli_plugin_toolchain_npm_prefix() -> Path:
+    return _cli_plugin_toolchain_root() / "npm-global"
 
 
 def _shared_host_skill_root() -> Path:
@@ -366,7 +379,11 @@ def _join_path_entries(entries: list[str], base_path: str = "") -> str:
 def _collect_receipt_runtime_path_entries(receipt: dict[str, Any] | None) -> list[str]:
     source = receipt if isinstance(receipt, dict) else {}
     toolchain = source.get("toolchain") if isinstance(source.get("toolchain"), dict) else {}
-    entries: list[str] = []
+    entries: list[str] = [str(_cli_plugin_toolchain_bin_dir().resolve())]
+    for item in toolchain.get("runtime_path_entries") or []:
+        candidate = str(item or "").strip()
+        if candidate and Path(candidate).expanduser().exists():
+            entries.append(str(Path(candidate).expanduser().resolve()))
     for key in ("node_path", "npm_path", "npx_path", "plugin_binary_path"):
         resolved = _resolve_executable_path(toolchain.get(key))
         if resolved:
@@ -383,16 +400,48 @@ def _collect_receipt_runtime_path_entries(receipt: dict[str, Any] | None) -> lis
     return _unique_path_entries(entries)
 
 
+def _receipt_has_runtime_data(receipt: dict[str, Any] | None) -> bool:
+    source = receipt if isinstance(receipt, dict) else {}
+    toolchain = source.get("toolchain") if isinstance(source.get("toolchain"), dict) else {}
+    if not toolchain:
+        return False
+    for key in (
+        "runtime_path_entries",
+        "node_path",
+        "npm_path",
+        "npx_path",
+        "plugin_binary_path",
+        "npm_global_bin",
+        "npm_global_prefix",
+    ):
+        value = toolchain.get(key)
+        if isinstance(value, (list, tuple)) and value:
+            return True
+        if str(value or "").strip():
+            return True
+    return False
+
+
 def _build_runtime_env_from_receipt(
     receipt: dict[str, Any] | None,
     *,
     base_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     env = dict(base_env or os.environ)
+    npm_prefix = _cli_plugin_toolchain_npm_prefix()
+    npm_global_bin = npm_prefix / "bin"
+    npm_cache = _cli_plugin_toolchain_root() / ".npm-cache"
     env["PATH"] = _join_path_entries(
         _collect_receipt_runtime_path_entries(receipt),
         str(env.get("PATH") or ""),
     )
+    env["NPM_CONFIG_PREFIX"] = str(npm_prefix)
+    env["npm_config_prefix"] = str(npm_prefix)
+    env["NPM_CONFIG_CACHE"] = str(npm_cache)
+    env["npm_config_cache"] = str(npm_cache)
+    env["CLI_PLUGIN_TOOLCHAIN_ROOT"] = str(_cli_plugin_toolchain_root())
+    if npm_global_bin.is_dir():
+        env["PATH"] = _join_path_entries([str(npm_global_bin.resolve())], str(env.get("PATH") or ""))
     return env
 
 
@@ -422,23 +471,22 @@ def _resolve_runtime_command_path(command_name: str, receipt: dict[str, Any] | N
     normalized_command_name = str(command_name or "").strip()
     if not normalized_command_name:
         return ""
+    toolchain = (
+        receipt.get("toolchain")
+        if isinstance(receipt, dict) and isinstance(receipt.get("toolchain"), dict)
+        else {}
+    )
+    toolchain_bin = _cli_plugin_toolchain_bin_dir()
+    toolchain_npm_prefix = _cli_plugin_toolchain_npm_prefix()
     for candidate in (
+        _resolve_executable_path(toolchain.get(f"{normalized_command_name}_path")),
         _resolve_executable_path(
-            (
-                receipt.get("toolchain")
-                if isinstance(receipt, dict) and isinstance(receipt.get("toolchain"), dict)
-                else {}
-            ).get(f"{normalized_command_name}_path")
-        ),
-        _resolve_executable_path(
-            (
-                receipt.get("toolchain")
-                if isinstance(receipt, dict) and isinstance(receipt.get("toolchain"), dict)
-                else {}
-            ).get("plugin_binary_path")
+            toolchain.get("plugin_binary_path")
             if normalized_command_name == "lark-cli"
             else ""
         ),
+        _resolve_executable_path(str((toolchain_bin / normalized_command_name).resolve())),
+        _resolve_executable_path(str((toolchain_npm_prefix / "bin" / normalized_command_name).resolve())),
         _resolve_executable_path(which(normalized_command_name) or ""),
     ):
         if candidate:
@@ -493,6 +541,8 @@ def _collect_runtime_toolchain_snapshot(
         "plugin_binary_name": binary_name,
         "npm_global_prefix": npm_global_prefix,
         "npm_global_bin": npm_global_bin,
+        "toolchain_root": str(_cli_plugin_toolchain_root()),
+        "toolchain_bin_dir": str(_cli_plugin_toolchain_bin_dir()),
         "runtime_path_entries": path_entries,
         "path_snapshot": str(runtime_env.get("PATH") or ""),
     }
@@ -501,9 +551,10 @@ def _collect_runtime_toolchain_snapshot(
 def build_cli_plugin_runtime_environment(
     *,
     plugin_id: str = "",
+    owner_username: str = "",
     base_env: dict[str, str] | None = None,
 ) -> tuple[dict[str, str], dict[str, Any]]:
-    env = dict(base_env or os.environ)
+    env = _build_runtime_env_from_receipt(None, base_env=base_env)
     installs = _load_plugin_install_state()
     normalized_plugin_id = str(plugin_id or "").strip()
     if normalized_plugin_id:
@@ -523,20 +574,22 @@ def build_cli_plugin_runtime_environment(
         if not isinstance(receipt, dict):
             receipt = {}
         receipt_entries = _collect_receipt_runtime_path_entries(receipt)
+        snapshot_entries: list[str] = []
         toolchain = (
             receipt.get("toolchain")
             if isinstance(receipt.get("toolchain"), dict)
             else {}
         )
-        if not receipt_entries:
+        if not _receipt_has_runtime_data(receipt):
             toolchain_snapshot = _collect_runtime_toolchain_snapshot(
                 plugin,
                 receipt=receipt,
             )
-            receipt_entries = _unique_path_entries(
+            snapshot_entries = _unique_path_entries(
                 list(toolchain_snapshot.get("runtime_path_entries") or []),
             )
-            if receipt_entries:
+            receipt_entries = list(snapshot_entries)
+            if snapshot_entries:
                 installed_version, detection_source = _detect_installed_version(
                     plugin,
                 )
@@ -556,11 +609,13 @@ def build_cli_plugin_runtime_environment(
                         if isinstance(receipt.get("toolchain"), dict)
                         else {}
                     )
-                    receipt_entries = _collect_receipt_runtime_path_entries(
-                        receipt,
+                    receipt_entries = _unique_path_entries(
+                        _collect_receipt_runtime_path_entries(receipt) + snapshot_entries,
                     )
                 else:
                     toolchain = dict(toolchain_snapshot)
+        elif snapshot_entries:
+            receipt_entries = _unique_path_entries(receipt_entries + snapshot_entries)
         if not receipt_entries:
             continue
         path_entries.extend(receipt_entries)
@@ -575,10 +630,28 @@ def build_cli_plugin_runtime_environment(
     unique_entries = _unique_path_entries(path_entries)
     if unique_entries:
         env["PATH"] = _join_path_entries(unique_entries, str(env.get("PATH") or ""))
+    normalized_owner = str(owner_username or "").strip()
+    runtime_owner_plugin_id = normalized_plugin_id
+    if normalized_owner:
+        runtime_owner_plugin_id = runtime_owner_plugin_id or (
+            str(runtime_plugins[0].get("plugin_id") or "").strip()
+            if runtime_plugins
+            else "shared"
+        )
+        owner_runtime_env = build_cli_plugin_profile_runtime_env(
+            runtime_owner_plugin_id,
+            normalized_owner,
+        )
+        env.update(owner_runtime_env)
     metadata = {
         "plugin_runtime_enabled": bool(unique_entries),
         "plugin_runtime_path_entries": unique_entries,
         "plugin_runtime_plugins": runtime_plugins,
+        "plugin_runtime_owner_username": normalized_owner,
+        "plugin_runtime_home": str(env.get("HOME") or ""),
+        "plugin_runtime_xdg_config_home": str(env.get("XDG_CONFIG_HOME") or ""),
+        "plugin_runtime_xdg_data_home": str(env.get("XDG_DATA_HOME") or ""),
+        "plugin_runtime_xdg_cache_home": str(env.get("XDG_CACHE_HOME") or ""),
     }
     return env, metadata
 
@@ -775,7 +848,10 @@ def _build_plugin_environment_summary(plugin_id: str, toolchain_snapshot: dict[s
     node_path = str(snapshot.get("node_path") or "").strip()
     npm_path = str(snapshot.get("npm_path") or "").strip()
     npm_global_bin = str(snapshot.get("npm_global_bin") or "").strip()
+    toolchain_root = str(snapshot.get("toolchain_root") or "").strip()
     details = [f"插件 {plugin_id}"]
+    if toolchain_root:
+        details.append(f"toolchain_root={toolchain_root}")
     if binary_path:
         details.append(f"binary={binary_path}")
     if node_path:
@@ -837,7 +913,7 @@ def install_cli_plugin(plugin_id: str, *, timeout_sec: int = 180) -> dict[str, A
     if not script_path.is_file():
         raise RuntimeError(f"CLI plugin installer script is missing: {script_path}")
     preinstall_snapshot = _collect_runtime_toolchain_snapshot(plugin)
-    install_env = dict(os.environ)
+    install_env = _build_runtime_env_from_receipt(_read_install_receipt(str(plugin["id"])), base_env=os.environ)
     install_env["PATH"] = _join_path_entries(
         list(preinstall_snapshot.get("runtime_path_entries") or []),
         str(install_env.get("PATH") or ""),
@@ -845,15 +921,20 @@ def install_cli_plugin(plugin_id: str, *, timeout_sec: int = 180) -> dict[str, A
     install_env["CLI_PLUGIN_RUNTIME_PATH"] = str(install_env.get("PATH") or "")
     if str(preinstall_snapshot.get("node_path") or "").strip():
         install_env["CLI_PLUGIN_NODE_PATH"] = str(preinstall_snapshot["node_path"])
+    if str(preinstall_snapshot.get("npm_path") or "").strip():
+        install_env["CLI_PLUGIN_NPM_PATH"] = str(preinstall_snapshot["npm_path"])
     if str(preinstall_snapshot.get("npx_path") or "").strip():
         install_env["CLI_PLUGIN_NPX_PATH"] = str(preinstall_snapshot["npx_path"])
+    install_env["CLI_PLUGIN_TOOLCHAIN_ROOT"] = str(_cli_plugin_toolchain_root())
+    install_env["CLI_PLUGIN_TOOLCHAIN_BIN_DIR"] = str(_cli_plugin_toolchain_bin_dir())
+    install_env["CLI_PLUGIN_NPM_GLOBAL_PREFIX"] = str(_cli_plugin_toolchain_npm_prefix())
 
     try:
         completed = subprocess.run(
             ["/bin/bash", str(script_path), str(plugin["id"])],
             cwd=str(get_project_root()),
             capture_output=True,
-            text=True,
+            text=False,
             timeout=safe_timeout,
             env=install_env,
         )
@@ -861,8 +942,8 @@ def install_cli_plugin(plugin_id: str, *, timeout_sec: int = 180) -> dict[str, A
         raise TimeoutError(
             f"CLI plugin install timed out after {safe_timeout} seconds"
         ) from exc
-    stdout = str(completed.stdout or "").strip()
-    stderr = str(completed.stderr or "").strip()
+    stdout = _decode_process_output(completed.stdout).strip()
+    stderr = _decode_process_output(completed.stderr).strip()
     latest_version = ""
     install_status = _resolve_plugin_status(plugin, refresh=True)
     if completed.returncode == 0:
@@ -890,3 +971,9 @@ def install_cli_plugin(plugin_id: str, *, timeout_sec: int = 180) -> dict[str, A
         "environment_summary": str(install_status.get("environment_summary") or "").strip(),
         "preferred_command": str(install_status.get("preferred_command") or "").strip(),
     }
+
+
+def _decode_process_output(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")

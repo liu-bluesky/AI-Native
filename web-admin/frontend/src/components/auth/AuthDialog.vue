@@ -63,6 +63,10 @@
               />
             </el-form-item>
 
+            <div class="auth-dialog__form-options">
+              <el-checkbox v-model="loginForm.rememberPassword">记住密码</el-checkbox>
+            </div>
+
             <el-button
               type="primary"
               :loading="loginLoading"
@@ -139,6 +143,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import { loginWithPassword, registerWithEmail, resolveSafeRedirectPath } from '@/utils/auth.js'
+import { getRememberedLoginInfo, persistRememberedLoginInfo } from '@/utils/auth-storage.js'
 
 const props = defineProps({
   modelValue: {
@@ -185,6 +190,7 @@ const tabOptions = [
 const loginForm = reactive({
   username: '',
   password: '',
+  rememberPassword: false,
 })
 
 const registerForm = reactive({
@@ -231,6 +237,13 @@ function resetTransientState() {
   registerLoading.value = false
 }
 
+function hydrateRememberedLoginInfo() {
+  const remembered = getRememberedLoginInfo()
+  loginForm.username = remembered.username
+  loginForm.password = remembered.enabled ? remembered.password : ''
+  loginForm.rememberPassword = remembered.enabled
+}
+
 function handleClose() {
   emit('update:modelValue', false)
 }
@@ -240,6 +253,11 @@ async function handleLogin() {
   loginLoading.value = true
   try {
     await loginWithPassword({
+      username: loginForm.username.trim(),
+      password: loginForm.password,
+    })
+    persistRememberedLoginInfo({
+      enabled: loginForm.rememberPassword,
       username: loginForm.username.trim(),
       password: loginForm.password,
     })
@@ -284,6 +302,7 @@ watch(
     }
     activeTab.value = props.defaultMode === 'register' ? 'register' : 'login'
     resetTransientState()
+    hydrateRememberedLoginInfo()
   },
 )
 </script>
@@ -387,6 +406,13 @@ watch(
   display: flex;
   flex-direction: column;
   padding: 18px;
+}
+
+.auth-dialog__form-options {
+  display: flex;
+  align-items: center;
+  margin-top: -2px;
+  margin-bottom: 10px;
 }
 
 .auth-dialog__tabs {

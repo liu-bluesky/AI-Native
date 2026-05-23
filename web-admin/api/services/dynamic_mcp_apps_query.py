@@ -169,6 +169,7 @@ _QUERY_TOOL_NAMES = {
     "list_recent_project_requirements",
     "get_requirement_history",
 }
+_TASK_TREE_NODE_ID_PATTERN = re.compile(r"^ttn-[A-Za-z0-9_-]+$")
 
 
 def _new_mcp(service_name: str) -> FastMCP:
@@ -4279,6 +4280,17 @@ def create_query_mcp(
             return {"error": "project_id is required"}
         if not chat_session_id_value:
             return {"error": "chat_session_id is required"}
+        if node_id_value and not _TASK_TREE_NODE_ID_PATTERN.fullmatch(node_id_value):
+            current_payload = get_current_task_tree(
+                project_id=project_id_value,
+                chat_session_id=chat_session_id_value,
+            )
+            current_node = (
+                current_payload.get("current_node")
+                if isinstance(current_payload.get("current_node"), dict)
+                else {}
+            )
+            node_id_value = _normalize_text(current_node.get("id"), 80)
         if not node_id_value:
             return {"error": "node_id is required"}
         if not status_value:
@@ -4333,6 +4345,17 @@ def create_query_mcp(
             return {"error": "project_id is required"}
         if not chat_session_id_value:
             return {"error": "chat_session_id is required"}
+        if node_id_value and not _TASK_TREE_NODE_ID_PATTERN.fullmatch(node_id_value):
+            current_payload = get_current_task_tree(
+                project_id=project_id_value,
+                chat_session_id=chat_session_id_value,
+            )
+            current_node = (
+                current_payload.get("current_node")
+                if isinstance(current_payload.get("current_node"), dict)
+                else {}
+            )
+            node_id_value = _normalize_text(current_node.get("id"), 80)
         if not node_id_value:
             return {"error": "node_id is required"}
         if not verification_result_value:

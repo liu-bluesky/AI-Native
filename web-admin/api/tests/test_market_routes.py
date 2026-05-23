@@ -183,3 +183,314 @@ def test_market_cli_plugin_install_task_detail_enforces_owner(tmp_path, monkeypa
     response = client.get("/api/market/cli-plugins/install-tasks/cli-plugin-install-123")
 
     assert response.status_code == 403
+
+
+def test_market_cli_plugin_catalog_includes_my_profile(tmp_path, monkeypatch):
+    from routers import market as market_router
+
+    client = _build_market_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    monkeypatch.setattr(
+        market_router,
+        "list_cli_plugins",
+        lambda: [{"id": "feishu-cli", "name": "飞书 CLI", "install_command": "npx install"}],
+    )
+    monkeypatch.setattr(
+        market_router,
+        "serialize_cli_plugin_profile",
+        lambda plugin_id, owner_username, auth_payload=None: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            "status": "ready",
+            "status_label": "已初始化",
+            "home_dir": f"/runtime/{owner_username}/{plugin_id}",
+        },
+    )
+
+    response = client.get("/api/market/cli-plugins")
+
+    assert response.status_code == 200
+    payload = response.json()["items"][0]
+    assert payload["id"] == "feishu-cli"
+    assert payload["my_profile"]["owner_username"] == "tester"
+    assert payload["my_profile"]["status"] == "ready"
+    assert payload["runtime_diagnostics"]["mode"] == "shared_toolchain_per_user_runtime"
+    assert payload["runtime_diagnostics"]["runtime_root"] == ""
+
+
+def test_market_cli_plugin_catalog_includes_runtime_diagnostics(tmp_path, monkeypatch):
+    from routers import market as market_router
+
+    client = _build_market_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    monkeypatch.setattr(
+        market_router,
+        "list_cli_plugins",
+        lambda: [
+            {
+                "id": "feishu-cli",
+                "name": "飞书 CLI",
+                "install_command": "npx install",
+                "install_status": {
+                    "status": "installed",
+                    "status_label": "已安装",
+                    "installed": True,
+                    "installed_version": "1.2.3",
+                    "toolchain": {
+                        "toolchain_root": "/srv/app/.ai-employee/cli-toolchain",
+                        "toolchain_bin_dir": "/srv/app/.ai-employee/cli-toolchain/bin",
+                        "plugin_binary_path": "/srv/app/.ai-employee/cli-toolchain/bin/lark-cli",
+                    },
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        market_router,
+        "serialize_cli_plugin_profile",
+        lambda plugin_id, owner_username, auth_payload=None: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            "status": "ready",
+            "status_label": "已初始化",
+            "runtime_root": f"/srv/app/.ai-employee/cli-runtime/users/{owner_username}/{plugin_id}",
+            "home_dir": f"/srv/app/.ai-employee/cli-runtime/users/{owner_username}/{plugin_id}/home",
+            "config_dir": f"/srv/app/.ai-employee/cli-runtime/users/{owner_username}/{plugin_id}/home/.config",
+            "cache_dir": f"/srv/app/.ai-employee/cli-runtime/users/{owner_username}/{plugin_id}/home/.cache",
+        },
+    )
+
+    response = client.get("/api/market/cli-plugins")
+
+    assert response.status_code == 200
+    payload = response.json()["items"][0]
+    assert payload["runtime_diagnostics"]["mode_label"] == "共享安装 + 用户隔离"
+    assert payload["runtime_diagnostics"]["toolchain_root"] == "/srv/app/.ai-employee/cli-toolchain"
+    assert payload["runtime_diagnostics"]["runtime_root"] == "/srv/app/.ai-employee/cli-runtime/users/tester/feishu-cli"
+    assert "共享工具链目录" in payload["runtime_diagnostics"]["summary"]
+
+
+def test_market_cli_plugin_profile_init_route(tmp_path, monkeypatch):
+    from routers import market as market_router
+
+    client = _build_market_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    monkeypatch.setattr(
+        market_router,
+        "ensure_cli_plugin_profile",
+        lambda plugin_id, owner_username, actor_username="": {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            "created_by": actor_username,
+        },
+    )
+    monkeypatch.setattr(
+        market_router,
+        "serialize_cli_plugin_profile",
+        lambda plugin_id, owner_username, auth_payload=None: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            "status": "ready",
+            "status_label": "已初始化",
+        },
+    )
+
+    response = client.post(
+        "/api/market/cli-plugins/feishu-cli/profiles/me/init",
+        json={"plugin_id": "feishu-cli"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "initialized"
+    assert response.json()["profile"]["plugin_id"] == "feishu-cli"
+
+
+def test_market_cli_plugin_profile_login_route(tmp_path, monkeypatch):
+    from routers import market as market_router
+
+    client = _build_market_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    monkeypatch.setattr(
+        market_router,
+        "create_login_task",
+        lambda plugin_id, username, login_command="", metadata=None, timeout_sec=120: {
+            "task_id": "cli-plugin-login-accepted",
+            "plugin_id": plugin_id,
+            "created_by": username,
+            "status": "queued",
+            "status_label": "排队中",
+            "command": login_command,
+        },
+    )
+
+    response = client.post(
+        "/api/market/cli-plugins/feishu-cli/profiles/me/login",
+        json={"plugin_id": "feishu-cli", "login_command": "lark-cli auth login"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    assert response.json()["task"]["task_id"] == "cli-plugin-login-accepted"
+    assert response.json()["task"]["created_by"] == "tester"
+
+
+def test_market_cli_plugin_profile_login_route_returns_pending_user_action(tmp_path, monkeypatch):
+    from routers import market as market_router
+
+    client = _build_market_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    monkeypatch.setattr(
+        market_router,
+        "create_login_task",
+        lambda plugin_id, username, login_command="", metadata=None, timeout_sec=120: {
+            "task_id": "cli-plugin-login-waiting",
+            "plugin_id": plugin_id,
+            "created_by": username,
+            "status": "waiting_user_action",
+            "status_label": "等待授权",
+            "status_reason": "请在浏览器完成授权",
+            "command": login_command,
+        },
+    )
+
+    response = client.post(
+        "/api/market/cli-plugins/feishu-cli/profiles/me/login",
+        json={"plugin_id": "feishu-cli", "login_command": "lark-cli auth login --recommend"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    assert response.json()["task"]["status"] == "waiting_user_action"
+    assert response.json()["task"]["task_id"] == "cli-plugin-login-waiting"
+
+
+def test_market_cli_plugin_profile_test_route(tmp_path, monkeypatch):
+    from routers import market as market_router
+
+    client = _build_market_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    monkeypatch.setattr(
+        market_router,
+        "execute_cli_plugin_profile_command",
+        lambda plugin_id, owner_username, command, timeout_sec=120: {
+            "ok": True,
+            "command": command,
+            "stdout": "user auth active",
+            "stderr": "",
+            "exit_code": 0,
+        },
+    )
+    monkeypatch.setattr(
+        market_router,
+        "update_cli_plugin_profile",
+        lambda plugin_id, owner_username, **kwargs: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            **kwargs,
+        },
+    )
+    monkeypatch.setattr(
+        market_router,
+        "serialize_cli_plugin_profile",
+        lambda plugin_id, owner_username, auth_payload=None: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            "status": "authenticated",
+            "status_label": "可用",
+        },
+    )
+
+    response = client.post("/api/market/cli-plugins/feishu-cli/profiles/me/test")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["execution"]["stdout"] == "user auth active"
+
+
+def test_market_cli_plugin_login_task_create_and_list(tmp_path, monkeypatch):
+    from routers import market as market_router
+
+    client = _build_market_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    task_payload = {
+        "task_id": "cli-plugin-login-123",
+        "plugin_id": "feishu-cli",
+        "status": "running",
+        "status_label": "执行中",
+        "created_by": "tester",
+    }
+    monkeypatch.setattr(
+        market_router,
+        "create_login_task",
+        lambda plugin_id, username, login_command="", metadata=None, timeout_sec=120: {
+            **task_payload,
+            "plugin_id": plugin_id,
+            "created_by": username,
+            "command": login_command or "lark-cli auth login --recommend",
+        },
+    )
+    monkeypatch.setattr(
+        market_router,
+        "list_login_tasks",
+        lambda username, limit=20: [{**task_payload, "created_by": username}],
+    )
+
+    create_response = client.post(
+        "/api/market/cli-plugins/login-tasks",
+        json={"plugin_id": "feishu-cli", "login_command": ""},
+    )
+
+    assert create_response.status_code == 202
+    assert create_response.json()["status"] == "accepted"
+    assert create_response.json()["task"]["task_id"] == "cli-plugin-login-123"
+    assert create_response.json()["task"]["created_by"] == "tester"
+
+    list_response = client.get("/api/market/cli-plugins/login-tasks")
+
+    assert list_response.status_code == 200
+    assert list_response.json()["items"][0]["task_id"] == "cli-plugin-login-123"
+
+
+def test_market_cli_plugin_login_task_detail_enforces_owner(tmp_path, monkeypatch):
+    from routers import market as market_router
+
+    client = _build_market_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "roles": ["admin"]},
+    )
+    monkeypatch.setattr(
+        market_router,
+        "get_login_task",
+        lambda task_id: {
+            "task_id": task_id,
+            "plugin_id": "feishu-cli",
+            "created_by": "other-user",
+            "status": "running",
+        },
+    )
+
+    response = client.get("/api/market/cli-plugins/login-tasks/cli-plugin-login-123")
+
+    assert response.status_code == 403

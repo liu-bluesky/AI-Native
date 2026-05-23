@@ -318,6 +318,7 @@ def test_project_chat_ws_cancel_returns_done_and_unlocks_request(tmp_path, monke
             workspace_path="",
             host_workspace_path="",
             local_connector_sandbox_mode="workspace-write",
+            capability_routing={},
             metadata={},
         ),
     )
@@ -481,6 +482,7 @@ def test_project_chat_ws_llm_502_returns_done_and_allows_next_turn(tmp_path, mon
             workspace_path="",
             host_workspace_path="",
             local_connector_sandbox_mode="workspace-write",
+            capability_routing={},
             metadata={},
         ),
     )
@@ -563,3 +565,20 @@ def test_project_chat_ws_llm_502_returns_done_and_allows_next_turn(tmp_path, mon
         assert second_done is not None
         assert second_done["request_id"] == "req-ok"
         assert second_done["content"] == "第二轮恢复正常。"
+
+
+def test_project_chat_stream_error_message_uses_detail_fields():
+    from routers import projects as projects_router
+
+    assert (
+        projects_router._extract_project_chat_stream_error_message(
+            {"type": "error", "message": "", "detail": "模型返回格式不合法"}
+        )
+        == "模型返回格式不合法"
+    )
+    assert (
+        projects_router._extract_project_chat_stream_error_message(
+            {"type": "error", "error": {"message": "工具参数缺少 node_id"}}
+        )
+        == "工具参数缺少 node_id"
+    )

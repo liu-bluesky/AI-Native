@@ -104,3 +104,14 @@ export function createMarketCliPluginWsClient({ token, onMessage, onOpen, onClos
     onError,
   })
 }
+
+export function createMarketCliPluginLoginTaskWsClient({ token, onMessage, onOpen, onClose, onError }) {
+  return createChatWsClient({
+    path: '/api/market/cli-plugins/login-tasks/ws',
+    token,
+    onMessage,
+    onOpen,
+    onClose,
+    onError,
+  })
+}

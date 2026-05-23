@@ -51,6 +51,33 @@ def test_llm_provider_service_parses_sse_reasoning_stream_as_text():
     assert LlmProviderService._parse_sse_content(raw) == "先检查配置。接口已连通。"
 
 
+def test_llm_provider_service_normalizes_usage_only_stream_chunk():
+    payload = {
+        "id": "resp-usage",
+        "model": "glm-test",
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 8,
+            "total_tokens": 20,
+        },
+    }
+
+    assert LlmProviderService._stream_chunk_to_result(
+        payload,
+        provider_id="provider-1",
+        model_name="fallback-model",
+    ) == {
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 8,
+            "total_tokens": 20,
+        },
+        "provider_id": "provider-1",
+        "model_name": "glm-test",
+    }
+
+
 def test_llm_provider_service_extracts_image_artifacts_from_payload():
     payload = {
         "data": [

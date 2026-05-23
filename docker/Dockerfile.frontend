@@ -1,6 +1,8 @@
 FROM node:20-alpine AS build
 
 WORKDIR /app
+ARG VITE_SHOW_LOCAL_RUNTIME_SETTINGS=false
+ENV VITE_SHOW_LOCAL_RUNTIME_SETTINGS=${VITE_SHOW_LOCAL_RUNTIME_SETTINGS}
 COPY web-admin/frontend/package.json web-admin/frontend/package-lock.json* ./
 RUN npm install
 COPY web-admin/frontend/ .
