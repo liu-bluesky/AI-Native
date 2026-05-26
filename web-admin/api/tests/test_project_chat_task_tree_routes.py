@@ -1896,6 +1896,82 @@ def test_project_requirement_records_route_returns_aggregated_chain_summaries(
     assert item["detailRound"]["primaryWorkSession"]["session_id"] == "ws-1"
 
 
+def test_project_requirement_records_query_does_not_search_work_session_payload(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_chat_task_store import ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+    from stores.json.work_session_store import WorkSessionEvent
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-match",
+            project_id="proj-1",
+            username="tester",
+            chat_session_id="chat-match",
+            source_chat_session_id="chat-match",
+            source_session_id="",
+            title="修复需求记录加载性能",
+            root_goal="修复需求记录加载性能",
+            status="in_progress",
+            lifecycle_status="active",
+            round_index=1,
+        )
+    )
+    store_factory.project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id="tts-other",
+            project_id="proj-1",
+            username="tester",
+            chat_session_id="chat-other",
+            source_chat_session_id="chat-other",
+            source_session_id="",
+            title="优化系统设置页面",
+            root_goal="优化系统设置页面",
+            status="in_progress",
+            lifecycle_status="active",
+            round_index=1,
+        )
+    )
+    store_factory.work_session_store.save(
+        WorkSessionEvent(
+            id=store_factory.work_session_store.new_id(),
+            project_id="proj-1",
+            project_name="项目一",
+            employee_id="emp-1",
+            session_id="ws-match",
+            task_tree_session_id="tts-match",
+            task_tree_chat_session_id="chat-match",
+            goal="修复需求记录加载性能",
+        )
+    )
+
+    captured_queries: list[str] = []
+    original_list_events = store_factory.work_session_store.list_events
+
+    def tracked_list_events(*args, **kwargs):
+        captured_queries.append(str(kwargs.get("query") or ""))
+        return original_list_events(*args, **kwargs)
+
+    monkeypatch.setattr(store_factory.work_session_store, "list_events", tracked_list_events)
+
+    response = client.get("/api/projects/proj-1/requirement-records", params={"query": "加载性能"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert captured_queries
+    assert set(captured_queries) == {""}
+    assert [item["rootGoal"] for item in payload["items"]] == ["修复需求记录加载性能"]
+    assert [item["id"] for item in payload["task_sessions"]] == ["tts-match"]
+
+
 def test_project_requirement_records_route_uses_short_ttl_cache(
     tmp_path,
     monkeypatch,

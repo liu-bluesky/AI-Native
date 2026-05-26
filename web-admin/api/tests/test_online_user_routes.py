@@ -121,3 +121,50 @@ def test_online_user_routes_prune_stale_entries(tmp_path, monkeypatch):
     assert len(items) == 1
     assert items[0]["username"] == "active-user"
     assert "stale-user" not in fake_redis.sets["online-users:members"]
+
+
+def test_online_user_heartbeat_degrades_when_redis_unavailable(tmp_path, monkeypatch):
+    client, fake_redis = _build_online_user_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+
+    async def _raise_connection_error(_key):
+        raise ConnectionError("redis unavailable")
+
+    fake_redis.get = _raise_connection_error
+
+    heartbeat_response = client.post(
+        "/api/system/online-users/heartbeat",
+        json={"current_path": "/ai/chat"},
+        headers={"user-agent": "codex-test"},
+    )
+
+    assert heartbeat_response.status_code == 200
+    payload = heartbeat_response.json()
+    assert payload["status"] == "degraded"
+    assert payload["reason"] == "redis_unavailable"
+    assert payload["item"]["username"] == "admin"
+    assert payload["item"]["current_path"] == "/ai/chat"
+
+
+def test_online_user_list_degrades_when_redis_unavailable(tmp_path, monkeypatch):
+    client, fake_redis = _build_online_user_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+
+    async def _raise_connection_error(_key):
+        raise ConnectionError("redis unavailable")
+
+    fake_redis.smembers = _raise_connection_error
+
+    list_response = client.get("/api/system/online-users")
+
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert payload["status"] == "degraded"
+    assert payload["reason"] == "redis_unavailable"
+    assert payload["items"] == []

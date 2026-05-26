@@ -5,6 +5,7 @@
         v-if="panelOpen"
         class="assistant-shell"
         :class="{ 'assistant-shell--fullscreen': panelFullscreen }"
+        :style="assistantShellStyle"
         data-testid="assistant-shell-panel"
         aria-label="AI 助手弹框"
       >
@@ -132,6 +133,46 @@
             </div>
             <div class="assistant-message__content">
               {{ message.content || "..." }}
+            </div>
+            <div
+              v-if="message.workLogForm"
+              class="assistant-message-work-log"
+              :class="{ 'is-submitted': message.workLogForm.submitted }"
+            >
+              <div class="assistant-message-work-log__head">
+                <strong>{{ message.workLogForm.title }}</strong>
+                <span>{{ message.workLogForm.description }}</span>
+              </div>
+              <ElementEasyForm
+                :ref="(el) => setWorkLogMessageFormRef(message.id, el)"
+                :form-json="message.workLogForm.formJson"
+                class="assistant-message-work-log__easy-form"
+              />
+              <div class="assistant-message-work-log__actions">
+                <el-button
+                  size="small"
+                  text
+                  :disabled="workLogMessageExecutingId === message.id"
+                  @click="openWorkLogDialogFromMessage(message)"
+                >
+                  弹窗编辑
+                </el-button>
+                <el-button
+                  size="small"
+                  type="primary"
+                  :loading="workLogMessageExecutingId === message.id"
+                  :disabled="message.workLogForm.submitted"
+                  @click="executeWorkLogMessageForm(message)"
+                >
+                  {{ message.workLogForm.submitted ? "已执行" : "开始执行" }}
+                </el-button>
+              </div>
+              <div
+                v-if="message.workLogForm.submitted"
+                class="assistant-message-work-log__submitted"
+              >
+                已按所选参数生成工作日志。
+              </div>
             </div>
             <div
               v-if="
@@ -285,6 +326,14 @@
             </div>
           </section>
         </div>
+        <button
+          v-if="!panelFullscreen"
+          type="button"
+          class="assistant-shell__resize-handle"
+          title="拖拽调整弹框大小"
+          aria-label="拖拽调整弹框大小"
+          @pointerdown="handleAssistantPanelResizePointerDown"
+        />
       </section>
     </transition>
 
@@ -605,6 +654,7 @@ const LEGACY_SPEECH_VOICE_STORAGE_KEY = "global-ai-assistant-speech-voice-uri";
 const SPEECH_AUTO_PLAY_STORAGE_SUFFIX = "speech-auto-play";
 const ASSISTANT_GREETING_SEEN_STORAGE_SUFFIX = "greeting-seen";
 const ASSISTANT_FAB_POSITION_STORAGE_SUFFIX = "fab-position";
+const ASSISTANT_PANEL_SIZE_STORAGE_SUFFIX = "panel-size";
 const SPEECH_PREVIEW_MESSAGE_ID = "__speech_preview__";
 const SPEECH_AUDIO_CACHE_LIMIT = 24;
 const SPEECH_VOICE_RETRY_DELAY_MS = 700;
@@ -637,6 +687,14 @@ const ASSISTANT_SLASH_COMMANDS = [
     description: "把后续文字创建为任务，并打开任务模块",
     kind: "create_task",
   },
+  {
+    id: "work_log_form",
+    command: "/工作日志",
+    aliases: ["/worklog", "/log", "/日志"],
+    label: "工作日志表单",
+    description: "在对话里创建工作日志参数表单，选择参数后开始执行",
+    kind: "work_log_form",
+  },
 ];
 
 const route = useRoute();
@@ -651,6 +709,8 @@ const wsClient = ref(null);
 const wsConnected = ref(false);
 const panelOpen = ref(resolveInitialPanelOpen());
 const panelFullscreen = ref(false);
+const assistantPanelSize = ref(loadStoredAssistantPanelSize());
+const assistantPanelResizing = ref(false);
 const settingsDialogOpen = ref(false);
 const workLogDialogOpen = ref(false);
 const typedDraftText = ref("");
@@ -676,8 +736,10 @@ const autoPlayAssistantSpeech = ref(false);
 const speechVoiceLoading = ref(false);
 const workLogLoadingProjects = ref(false);
 const workLogGenerating = ref(false);
+const workLogMessageExecutingId = ref("");
 const workLogOutputText = ref("");
 const workLogProjectOptions = ref([]);
+const workLogMessageFormRefs = new Map();
 const workLogReportTypeOptions = [
   { label: "日报", value: "daily" },
   { label: "周报", value: "weekly" },
@@ -804,11 +866,16 @@ let voiceListeningResumeMode = "standby";
 let pendingGreetingMessageId = "";
 let hasAssistantInteractionGesture = false;
 let assistantFabPointerId = null;
+let assistantPanelResizePointerId = null;
 let assistantFabDragOffsetX = 0;
 let assistantFabDragOffsetY = 0;
 let assistantFabDragStartX = 0;
 let assistantFabDragStartY = 0;
 let assistantFabDidMove = false;
+let assistantPanelResizeStartWidth = 0;
+let assistantPanelResizeStartHeight = 0;
+let assistantPanelResizeStartX = 0;
+let assistantPanelResizeStartY = 0;
 let assistantFabResizeRafId = 0;
 const speechAudioBlobCache = new Map();
 const speechAudioPendingRequests = new Map();
@@ -1123,6 +1190,13 @@ const assistantFabShellStyle = computed(() => {
     top: `${assistantFabPosition.value.y}px`,
     right: "auto",
     bottom: "auto",
+  };
+});
+const assistantShellStyle = computed(() => {
+  if (panelFullscreen.value || !assistantPanelSize.value) return {};
+  return {
+    width: `${assistantPanelSize.value.width}px`,
+    height: `${assistantPanelSize.value.height}px`,
   };
 });
 const fabVoiceLabel = computed(() => {
@@ -1527,6 +1601,46 @@ function loadStoredAssistantFabPosition() {
   }
 }
 
+function clampAssistantPanelSize(size) {
+  const viewportWidth =
+    typeof window !== "undefined" ? window.innerWidth : FALLBACK_OPEN_WIDTH;
+  const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 760;
+  const minWidth = Math.min(440, Math.max(320, viewportWidth - 24));
+  const minHeight = 520;
+  const maxWidth = Math.max(minWidth, viewportWidth - 24);
+  const maxHeight = Math.max(minHeight, Math.min(viewportHeight - 24, 920));
+  return {
+    width: Math.min(Math.max(Number(size?.width) || 560, minWidth), maxWidth),
+    height: Math.min(Math.max(Number(size?.height) || 620, minHeight), maxHeight),
+  };
+}
+
+function loadStoredAssistantPanelSize() {
+  const rawValue = loadAssistantStorageValue(ASSISTANT_PANEL_SIZE_STORAGE_SUFFIX);
+  if (!rawValue) return null;
+  try {
+    const parsed = JSON.parse(rawValue);
+    return clampAssistantPanelSize(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function persistAssistantPanelSize(size) {
+  if (!size) {
+    removeAssistantStorageValue(ASSISTANT_PANEL_SIZE_STORAGE_SUFFIX);
+    return;
+  }
+  const normalized = clampAssistantPanelSize(size);
+  persistAssistantStorageValue(
+    ASSISTANT_PANEL_SIZE_STORAGE_SUFFIX,
+    JSON.stringify({
+      width: Math.round(normalized.width),
+      height: Math.round(normalized.height),
+    }),
+  );
+}
+
 function persistAssistantFabPosition(position) {
   if (!position) {
     removeAssistantStorageValue(ASSISTANT_FAB_POSITION_STORAGE_SUFFIX);
@@ -1687,6 +1801,67 @@ function stopAssistantFabDrag({ persist = false } = {}) {
   assistantFabDidMove = false;
 }
 
+function removeAssistantPanelResizeListeners() {
+  if (typeof window === "undefined") return;
+  window.removeEventListener("pointermove", handleAssistantPanelResizePointerMove);
+  window.removeEventListener("pointerup", handleAssistantPanelResizePointerUp);
+  window.removeEventListener("pointercancel", handleAssistantPanelResizePointerUp);
+}
+
+function stopAssistantPanelResize({ persist = false } = {}) {
+  removeAssistantPanelResizeListeners();
+  if (persist && assistantPanelSize.value) {
+    persistAssistantPanelSize(assistantPanelSize.value);
+  }
+  assistantPanelResizePointerId = null;
+  assistantPanelResizing.value = false;
+}
+
+function handleAssistantPanelResizePointerDown(event) {
+  if (event.button !== 0 || typeof window === "undefined" || panelFullscreen.value)
+    return;
+  const shell = event.currentTarget?.closest?.(".assistant-shell");
+  const rect = shell?.getBoundingClientRect?.();
+  const baseSize = clampAssistantPanelSize({
+    width: rect?.width || assistantPanelSize.value?.width || 560,
+    height: rect?.height || assistantPanelSize.value?.height || 620,
+  });
+  assistantPanelSize.value = baseSize;
+  assistantPanelResizePointerId = event.pointerId;
+  assistantPanelResizeStartWidth = baseSize.width;
+  assistantPanelResizeStartHeight = baseSize.height;
+  assistantPanelResizeStartX = event.clientX;
+  assistantPanelResizeStartY = event.clientY;
+  assistantPanelResizing.value = true;
+  event.preventDefault();
+  if (event.currentTarget?.setPointerCapture) {
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Window listeners below keep resizing usable when capture is unavailable.
+    }
+  }
+  removeAssistantPanelResizeListeners();
+  window.addEventListener("pointermove", handleAssistantPanelResizePointerMove);
+  window.addEventListener("pointerup", handleAssistantPanelResizePointerUp);
+  window.addEventListener("pointercancel", handleAssistantPanelResizePointerUp);
+}
+
+function handleAssistantPanelResizePointerMove(event) {
+  if (event.pointerId !== assistantPanelResizePointerId) return;
+  assistantPanelSize.value = clampAssistantPanelSize({
+    width:
+      assistantPanelResizeStartWidth + event.clientX - assistantPanelResizeStartX,
+    height:
+      assistantPanelResizeStartHeight + event.clientY - assistantPanelResizeStartY,
+  });
+}
+
+function handleAssistantPanelResizePointerUp(event) {
+  if (event.pointerId !== assistantPanelResizePointerId) return;
+  stopAssistantPanelResize({ persist: true });
+}
+
 function handleAssistantFabClick() {
   if (suppressAssistantFabClick.value) {
     suppressAssistantFabClick.value = false;
@@ -1756,6 +1931,10 @@ function handleAssistantFabWindowResize() {
   assistantFabResizeRafId = window.requestAnimationFrame(() => {
     assistantFabResizeRafId = 0;
     syncAssistantFabPosition();
+    if (assistantPanelSize.value) {
+      assistantPanelSize.value = clampAssistantPanelSize(assistantPanelSize.value);
+      persistAssistantPanelSize(assistantPanelSize.value);
+    }
   });
 }
 
@@ -2760,6 +2939,10 @@ function normalizeMessage(item) {
     attachments: normalizeUrlList(item?.attachments),
     status: String(item?.status || "").trim(),
     isStreaming: Boolean(item?.isStreaming),
+    workLogForm:
+      item?.workLogForm && typeof item.workLogForm === "object"
+        ? item.workLogForm
+        : null,
   };
 }
 
@@ -3534,6 +3717,10 @@ async function sendMessage(rawText, options = {}) {
       typedDraftText.value = "";
       return;
     }
+  }
+  if (slashCommand?.entry?.kind === "work_log_form") {
+    await appendWorkLogFormMessage(slashCommand.prompt);
+    return;
   }
   if (await tryHandleTaskCreationCommand(text, options)) {
     typedDraftText.value = "";
@@ -4511,9 +4698,85 @@ async function loadWorkLogProjects(force = false) {
   }
 }
 
+function assignWorkLogFormModel(value) {
+  const normalized = normalizeWorkLogFormValue(value);
+  Object.assign(workLogFormModel, normalized);
+  return normalized;
+}
+
 async function openWorkLogDialog() {
   workLogDialogOpen.value = true;
   await loadWorkLogProjects();
+}
+
+async function openWorkLogDialogFromMessage(message) {
+  assignWorkLogFormModel(message?.workLogForm?.model || workLogFormModel);
+  await openWorkLogDialog();
+}
+
+function createWorkLogMessageFormModel(prompt = "") {
+  const base = normalizeWorkLogFormValue(workLogFormModel);
+  const extraPrompt = String(prompt || "").trim();
+  return {
+    ...base,
+    extra_notes: extraPrompt || base.extra_notes,
+  };
+}
+
+function buildMessageWorkLogFormJson(model) {
+  return {
+    rowAttrs: { gutter: 16 },
+    formAttrs: { "label-position": "top", "status-icon": true },
+    model,
+    schema: buildWorkLogFormSchema(),
+  };
+}
+
+function setWorkLogMessageFormRef(messageId, el) {
+  const normalizedId = String(messageId || "").trim();
+  if (!normalizedId) return;
+  if (!el) {
+    workLogMessageFormRefs.delete(normalizedId);
+    return;
+  }
+  workLogMessageFormRefs.set(normalizedId, el);
+}
+
+async function appendWorkLogFormMessage(prompt = "") {
+  panelOpen.value = true;
+  await loadWorkLogProjects();
+  const model = reactive(createWorkLogMessageFormModel(prompt));
+  const message = normalizeMessage({
+    id: createLocalMessageId(),
+    role: "assistant",
+    content: "已创建工作日志参数表单，请选择项目和输出参数后开始执行。",
+    created_at: new Date().toISOString(),
+    workLogForm: {
+      title: "AI 对话产出表单 · 工作日志",
+      description: "选择项目、时间范围和总结口径后，点击开始执行生成工作日志。",
+      model,
+      formJson: buildMessageWorkLogFormJson(model),
+      submitted: false,
+    },
+  });
+  messages.value.push(message);
+  typedDraftText.value = "";
+  scrollToBottom();
+}
+
+function markWorkLogMessageSubmitted(messageId, outputText) {
+  const index = findMessageIndex(messageId);
+  if (index < 0) return;
+  const row = messages.value[index];
+  messages.value[index] = {
+    ...row,
+    content: "工作日志已生成，结果已渲染到下方对话消息。",
+    workLogForm: {
+      ...row.workLogForm,
+      submitted: true,
+      outputText,
+    },
+  };
 }
 
 function handleWorkLogReportTypeChange(type) {
@@ -4522,8 +4785,13 @@ function handleWorkLogReportTypeChange(type) {
 
 function normalizeWorkLogFormValue(rawValue) {
   const value = rawValue && typeof rawValue === "object" ? rawValue : {};
-  const reportType = ["daily", "weekly", "monthly"].includes(value.report_type)
-    ? value.report_type
+  const normalizedReportType = String(value.report_type || "")
+    .trim()
+    .toLowerCase();
+  const reportType = ["daily", "weekly", "monthly"].includes(
+    normalizedReportType,
+  )
+    ? normalizedReportType
     : "daily";
   const range =
     Array.isArray(value.date_range) && value.date_range.length >= 2
@@ -4541,10 +4809,14 @@ function normalizeWorkLogFormValue(rawValue) {
     report_type: reportType,
     date_range:
       range.length >= 2 ? range : resolveDefaultWorkLogDateRange(reportType),
-    log_template: String(value.log_template || "leadership_work_plan").trim(),
+    log_template:
+      String(value.log_template || "leadership_work_plan").trim() ||
+      "leadership_work_plan",
     include_details: value.include_details === true,
     use_ai_summary: value.use_ai_summary !== false,
-    summary_focus: String(value.summary_focus || "resolved_work_plan").trim(),
+    summary_focus:
+      String(value.summary_focus || "resolved_work_plan").trim() ||
+      "resolved_work_plan",
     extra_notes: String(value.extra_notes || "").trim(),
   };
 }
@@ -4858,62 +5130,90 @@ async function generateWorkLogContent() {
   workLogGenerating.value = true;
   try {
     await workLogFormRef.value.validate();
-    const formValue = normalizeWorkLogFormValue(workLogFormModel);
-    const [startDate, endDate] = formValue.date_range;
-    const selectedProjects = workLogProjectOptions.value.filter((item) =>
-      formValue.project_ids.includes(item.id),
-    );
-    if (!selectedProjects.length) {
-      ElMessage.warning("请至少选择一个项目");
-      return;
-    }
-    const sections = [];
-    for (const project of selectedProjects) {
-      const sessions = await fetchWorkLogSessions(
-        project.id,
-        startDate,
-        endDate,
-      );
-      let requirementRecords = [];
-      try {
-        requirementRecords = await fetchWorkLogRequirementRecords(
-          project.id,
-          startDate,
-          endDate,
-        );
-      } catch (err) {
-        console.warn("load work log requirement records failed", err);
-      }
-      sections.push(
-        buildProjectWorkLogSection(project, sessions, {
-          ...formValue,
-          requirementRecords,
-        }),
-      );
-    }
-    const reportTitle = `${resolveWorkLogTypeLabel(formValue.report_type)}｜${startDate} 至 ${endDate}`;
-    const draftText = buildWorkLogDraftText(formValue, reportTitle, sections);
-    if (formValue.use_ai_summary) {
-      const summary = await summarizeWorkLogWithAi(
-        formValue,
-        reportTitle,
-        draftText,
-      );
-      workLogOutputText.value = summary || draftText;
-      showWorkLogMessage(
-        "success",
-        summary ? "工作日志已由大模型总结" : "已生成结构化工作日志",
-      );
-    } else {
-      workLogOutputText.value = draftText;
-      showWorkLogMessage("success", "工作日志已生成");
-    }
+    const result = await runWorkLogGeneration(workLogFormModel);
+    workLogOutputText.value = result.outputText;
+    showWorkLogMessage("success", result.message);
   } catch (err) {
     if (err !== false) {
       showWorkLogMessage("error", err?.detail || err?.message || "生成工作日志失败");
     }
   } finally {
     workLogGenerating.value = false;
+  }
+}
+
+async function runWorkLogGeneration(rawFormValue) {
+  const formValue = normalizeWorkLogFormValue(rawFormValue);
+  const [startDate, endDate] = formValue.date_range;
+  const selectedProjects = workLogProjectOptions.value.filter((item) =>
+    formValue.project_ids.includes(item.id),
+  );
+  if (!selectedProjects.length) {
+    throw new Error("请至少选择一个项目");
+  }
+  const sections = [];
+  for (const project of selectedProjects) {
+    const sessions = await fetchWorkLogSessions(project.id, startDate, endDate);
+    let requirementRecords = [];
+    try {
+      requirementRecords = await fetchWorkLogRequirementRecords(
+        project.id,
+        startDate,
+        endDate,
+      );
+    } catch (err) {
+      console.warn("load work log requirement records failed", err);
+    }
+    sections.push(
+      buildProjectWorkLogSection(project, sessions, {
+        ...formValue,
+        requirementRecords,
+      }),
+    );
+  }
+  const reportTitle = `${resolveWorkLogTypeLabel(formValue.report_type)}｜${startDate} 至 ${endDate}`;
+  const draftText = buildWorkLogDraftText(formValue, reportTitle, sections);
+  if (formValue.use_ai_summary) {
+    const summary = await summarizeWorkLogWithAi(formValue, reportTitle, draftText);
+    return {
+      outputText: summary || draftText,
+      message: summary ? "工作日志已由大模型总结" : "已生成结构化工作日志",
+    };
+  }
+  return {
+    outputText: draftText,
+    message: "工作日志已生成",
+  };
+}
+
+async function executeWorkLogMessageForm(message) {
+  const messageId = String(message?.id || "").trim();
+  if (!messageId || workLogMessageExecutingId.value) return;
+  const formRef = workLogMessageFormRefs.get(messageId);
+  workLogMessageExecutingId.value = messageId;
+  try {
+    if (formRef?.validate) {
+      await formRef.validate();
+    }
+    await loadWorkLogProjects();
+    const result = await runWorkLogGeneration(message.workLogForm?.model);
+    markWorkLogMessageSubmitted(messageId, result.outputText);
+    messages.value.push(
+      normalizeMessage({
+        id: createLocalMessageId(),
+        role: "assistant",
+        content: result.outputText,
+        created_at: new Date().toISOString(),
+      }),
+    );
+    showWorkLogMessage("success", result.message);
+    scrollToBottom();
+  } catch (err) {
+    if (err !== false) {
+      showWorkLogMessage("error", err?.detail || err?.message || "生成工作日志失败");
+    }
+  } finally {
+    workLogMessageExecutingId.value = "";
   }
 }
 
@@ -5632,6 +5932,7 @@ function toggleVoiceInput() {
 
 function teardownAssistant() {
   stopAssistantFabDrag();
+  stopAssistantPanelResize();
   if (typeof window !== "undefined" && assistantFabResizeRafId) {
     window.cancelAnimationFrame(assistantFabResizeRafId);
     assistantFabResizeRafId = 0;
@@ -5643,6 +5944,8 @@ function teardownAssistant() {
   stopSpeechVoiceRetry();
   speechVoiceLoading.value = false;
   speechVoiceRetryCount = 0;
+  workLogMessageExecutingId.value = "";
+  workLogMessageFormRefs.clear();
   pendingGreetingMessageId = "";
   hasAssistantInteractionGesture = false;
   teardownAudioProcessingGraph();
@@ -5857,6 +6160,7 @@ onBeforeUnmount(() => {
   }
   window.removeEventListener("resize", handleAssistantFabWindowResize);
   stopAssistantFabDrag();
+  stopAssistantPanelResize();
   if (typeof window !== "undefined" && assistantFabResizeRafId) {
     window.cancelAnimationFrame(assistantFabResizeRafId);
     assistantFabResizeRafId = 0;
@@ -5874,6 +6178,7 @@ onBeforeUnmount(() => {
 }
 
 .assistant-shell {
+  position: relative;
   width: min(560px, calc(100vw - 24px));
   min-width: min(440px, calc(100vw - 24px));
   min-height: 620px;
@@ -5901,7 +6206,6 @@ onBeforeUnmount(() => {
     0 8px 24px rgba(15, 23, 42, 0.08);
   backdrop-filter: blur(18px);
   overflow: hidden;
-  resize: both;
 }
 
 .assistant-shell--fullscreen {
@@ -5910,6 +6214,27 @@ onBeforeUnmount(() => {
   height: calc(100vh - 24px);
   max-height: calc(100vh - 24px);
   resize: none;
+}
+
+.assistant-shell__resize-handle {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, transparent 0 46%, rgba(100, 116, 139, 0.5) 47% 53%, transparent 54%),
+    linear-gradient(135deg, transparent 0 64%, rgba(100, 116, 139, 0.34) 65% 71%, transparent 72%);
+  cursor: nwse-resize;
+  opacity: 0.78;
+}
+
+.assistant-shell__resize-handle:hover {
+  opacity: 1;
+  background-color: rgba(255, 255, 255, 0.72);
 }
 
 .assistant-header {
@@ -6126,6 +6451,53 @@ onBeforeUnmount(() => {
 .assistant-message__status {
   font-size: 12px;
   color: #0f766e;
+}
+
+.assistant-message-work-log {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(14, 165, 233, 0.18);
+  background: rgba(248, 250, 252, 0.96);
+}
+
+.assistant-message-work-log.is-submitted {
+  border-color: rgba(15, 118, 110, 0.24);
+  background: rgba(240, 253, 250, 0.78);
+}
+
+.assistant-message-work-log__head {
+  display: grid;
+  gap: 4px;
+}
+
+.assistant-message-work-log__head strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.assistant-message-work-log__head span {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.assistant-message-work-log__easy-form :deep(.el-form-item) {
+  margin-bottom: 12px;
+}
+
+.assistant-message-work-log__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.assistant-message-work-log__submitted {
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .assistant-message__images {

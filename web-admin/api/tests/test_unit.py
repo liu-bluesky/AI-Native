@@ -12403,7 +12403,8 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "get_manual_content" in codex_profile
     assert "build_delivery_report" in codex_profile
     assert "Auto inferred proxy entry from scripts/..." in codex_profile
-    assert "查询型、客服型问题" in codex_profile
+    assert "必须先输出需求理解和计划摘要" in codex_profile
+    assert "任何删除、移除、清空、覆盖或不可逆操作必须单独说明对象" in codex_profile
     assert "优先使用项目绑定员工、规则和技能" in codex_profile
     assert "重新获取与当前任务直接相关的规则正文" in codex_profile
     assert "analyze_task" in generic_profile
@@ -12527,6 +12528,22 @@ def test_query_mcp_resources_and_style_hints_use_system_config(monkeypatch):
     assert risk["risk_level"] == "high"
     assert risk["requires_confirmation"] is True
     assert "high_risk_command" in risk["indicators"]
+    rm_risk = registered_tools["classify_command_risk"](
+        command="rm docs/old.md",
+        tool_name="project_host_run_command",
+        project_id="proj-1",
+    )
+    delete_tool_risk = registered_tools["classify_command_risk"](
+        tool_name="local_connector_delete_file",
+        path="/workspace/demo/docs/old.md",
+        project_id="proj-1",
+    )
+    assert rm_risk["action"] == "destructive"
+    assert rm_risk["requires_confirmation"] is True
+    assert "destructive_command" in rm_risk["indicators"]
+    assert delete_tool_risk["action"] == "destructive"
+    assert delete_tool_risk["requires_confirmation"] is True
+    assert "destructive_action" in delete_tool_risk["indicators"]
 
     assert scope["allowed"] is True
     assert scope["within_workspace"] is True

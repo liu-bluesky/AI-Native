@@ -72,6 +72,10 @@ _CONSTRAINT_PREFIXES = ("不要", "不能", "必须", "优先", "通过", "只",
 _DESTRUCTIVE_COMMAND_PATTERNS = (
     "rm -rf",
     "rm -fr",
+    "rm ",
+    "rmdir ",
+    "unlink ",
+    "git rm",
     "git reset --hard",
     "git clean -fd",
     "git clean -xdf",
@@ -107,7 +111,6 @@ _WRITE_COMMAND_HINTS = (
     "mv ",
     "touch ",
     "mkdir ",
-    "rm ",
     "git add",
     "git commit",
     "npm install",
@@ -1022,6 +1025,8 @@ def _infer_action(tool_name: str = "", command: str = "", path: str = "", action
     normalized_tool = _normalize_text_lower(tool_name)
     normalized_command = _normalize_text_lower(command)
     normalized_path = _normalize_text_lower(path)
+    if any(term in normalized_tool for term in ("delete", "remove", "unlink")):
+        return "destructive"
     if normalized_tool in {"local_connector_write_file"}:
         return "write"
     if normalized_tool in {"local_connector_read_file"}:
@@ -1109,9 +1114,9 @@ def _query_mcp_clarity_instruction_lines() -> tuple[str, str, str, str]:
     threshold_text = f"当前全局清晰度确认阈值为 {threshold}/5"
     return (
         f"{threshold_text}；处理前先按 1-5 分估计用户需求清晰度。",
-        f"若目标、对象、范围和预期结果足够清晰，且清晰度分数 >= {threshold}，直接处理，不主动要求确认计划。",
+        f"若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {threshold}，可直接回答；凡涉及开发、实现、修改、部署、写入或其他会改变项目状态的需求，必须先输出需求理解和计划摘要，并请求用户确认后再执行。",
         f"若清晰度分数 < {threshold}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行。",
-        "同一轮中用户已确认当前理解和计划后，后续不要重复确认，除非用户目标、范围或约束发生变化；查询型、客服型问题不要默认升级成计划审批流程。",
+        "同一轮中用户已确认当前理解和计划后，后续不要重复确认，除非用户目标、范围或约束发生变化；任何删除、移除、清空、覆盖或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。",
     )
 
 
@@ -1206,9 +1211,9 @@ def _classify_risk_payload(
             risk_level = "high" if risk_level in {"low", "medium"} else risk_level
             reasons.append("目标路径在项目工作区之外")
             indicators.append("outside_workspace")
-    if action_value == "destructive" and risk_level != "critical":
+    if action_value in {"destructive", "delete", "remove", "rm", "unlink"} and risk_level != "critical":
         risk_level = "high"
-        reasons.append("动作类型为 destructive")
+        reasons.append("动作类型为 destructive/delete/remove")
         indicators.append("destructive_action")
     elif action_value in {"write", "execute"} and risk_level == "low":
         risk_level = "medium"

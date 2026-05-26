@@ -179,7 +179,7 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
         "get_current_task_tree and verify the bound tree matches the current request",
         "call search_ids only when IDs are missing, scope is ambiguous, or cross-project lookup is needed",
         "get_manual_content before rule-specific execution",
-        "score request clarity from 1-5; ask for confirmation only when clarity is below 3 or the request is ambiguous",
+        "score request clarity from 1-5; ask for confirmation before any development/write/change task, and always require explicit confirmation before delete/remove/clear/overwrite operations",
         "analyze_task -> resolve_relevant_context -> generate_execution_plan",
         "finish analysis, edits, verification, and local requirement/session recording before syncing task-tree or work-facts back to the server",
         "update_task_node_status on node start and complete_task_node_with_verification on node finish",
@@ -192,6 +192,8 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     assert "start_work_session" in runtime["cli_prompt"]
     assert "当前全局清晰度确认阈值为 3/5" in runtime["cli_prompt"]
     assert "清晰度分数 >= 3" in runtime["cli_prompt"]
+    assert "必须先输出需求理解和计划摘要" in runtime["cli_prompt"]
+    assert "任何删除、移除、清空、覆盖或不可逆操作必须单独说明对象" in runtime["cli_prompt"]
     assert "清晰度分数 < 3" in runtime["cli_prompt"]
     assert "停止复用当前 `chat_session_id`" in runtime["cli_prompt"]
     assert "complete_task_node_with_verification" in runtime["cli_prompt"]
@@ -227,7 +229,7 @@ def test_query_mcp_runtime_uses_system_clarity_threshold(tmp_path, monkeypatch):
     runtime = response.json()["runtime"]
     assert runtime["clarity_confirm_threshold"] == 5
     assert (
-        "score request clarity from 1-5; ask for confirmation only when clarity is below 5 or the request is ambiguous"
+        "score request clarity from 1-5; ask for confirmation before any development/write/change task, and always require explicit confirmation before delete/remove/clear/overwrite operations"
         in runtime["bootstrap_checklist"]
     )
     assert "当前全局清晰度确认阈值为 5/5" in runtime["cli_prompt"]
@@ -379,6 +381,46 @@ def test_query_mcp_runtime_upgrades_legacy_default_bootstrap_template(tmp_path, 
     assert "显式初始化本地 `.ai-employee/`" in runtime["cli_prompt"]
     assert "当前任务先在项目本地推进" in runtime["cli_prompt"]
     assert "不能替代当前 CLI 工作区初始化" in runtime["cli_prompt"]
+
+
+def test_query_mcp_runtime_upgrades_legacy_clarity_confirmation_lines(tmp_path, monkeypatch):
+    client, _, _ = _build_project_mcp_monitor_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin"},
+    )
+
+    partially_current_template = """你已接入统一查询 MCP。
+
+强制接入步骤：
+1. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 `.ai-employee/`。
+2. 当前任务先在项目本地推进：先在工作区完成分析、改动、验证和本地记录，再通过 MCP 回写任务树、工作事实、交付结论或记忆到服务端。
+3. 当前全局清晰度确认阈值为 {{clarity_threshold}}/5；先按 1-5 分估计用户需求清晰度。
+4. 若目标、对象、范围和预期结果足够清晰，且清晰度分数 >= {{clarity_threshold}}，直接处理，不主动要求确认计划。
+5. 若清晰度分数 < {{clarity_threshold}}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认后不要重复确认；查询型、客服型问题不要默认升级成计划审批流程。
+
+当前接入上下文：
+{{project_context_block}}
+{{chat_session_block}}
+"""
+
+    patch_response = client.patch(
+        "/api/system-config",
+        json={"query_mcp_bootstrap_prompt_template": partially_current_template},
+    )
+    assert patch_response.status_code == 200
+
+    response = client.get(
+        "/api/projects/query-mcp/runtime",
+        params={"project_id": "proj-1", "chat_session_id": "chat-session-1"},
+    )
+
+    assert response.status_code == 200
+    cli_prompt = response.json()["runtime"]["cli_prompt"]
+    assert "直接处理，不主动要求确认计划" not in cli_prompt
+    assert "查询型、客服型问题不要默认升级成计划审批流程" not in cli_prompt
+    assert "必须先输出需求理解和计划摘要" in cli_prompt
+    assert "任何删除、移除、清空、覆盖或不可逆操作必须单独说明对象" in cli_prompt
 
 
 def test_query_mcp_prompt_surfaces_use_project_local_skill_wording():

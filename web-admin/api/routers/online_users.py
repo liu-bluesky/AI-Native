@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,6 +15,7 @@ from models.requests import OnlineUserHeartbeatReq
 
 router = APIRouter(prefix="/api/system/online-users", dependencies=[Depends(require_auth)])
 public_router = None
+logger = logging.getLogger(__name__)
 
 _ONLINE_USER_SET_KEY = "online-users:members"
 _ONLINE_USER_KEY_PREFIX = "online-users:user:"
@@ -94,17 +96,36 @@ async def heartbeat_online_user_presence(
     if not username:
         raise HTTPException(401, "Missing user identity")
     role = _normalize_text(auth_payload.get("role", ""), 40).lower() or "user"
-    redis_client = await get_redis_client()
-    existing_raw = await redis_client.get(_presence_key(username))
-    existing: dict = {}
-    if existing_raw:
-        if isinstance(existing_raw, bytes):
-            existing_raw = existing_raw.decode("utf-8")
-        try:
-            existing = json.loads(existing_raw)
-        except (TypeError, ValueError):
-            existing = {}
     now_iso = _now_iso()
+    existing: dict = {}
+    try:
+        redis_client = await get_redis_client()
+        existing_raw = await redis_client.get(_presence_key(username))
+        if existing_raw:
+            if isinstance(existing_raw, bytes):
+                existing_raw = existing_raw.decode("utf-8")
+            try:
+                existing = json.loads(existing_raw)
+            except (TypeError, ValueError):
+                existing = {}
+    except Exception as exc:
+        logger.warning("Online user heartbeat skipped because Redis is unavailable: %s", exc)
+        payload = {
+            "username": username,
+            "role": role,
+            "current_path": _normalize_text(req.current_path, 240),
+            "client_ip": _extract_client_ip(request),
+            "user_agent": _normalize_text(request.headers.get("user-agent", ""), 240),
+            "first_seen_at": now_iso,
+            "last_seen_at": now_iso,
+        }
+        return {
+            "status": "degraded",
+            "reason": "redis_unavailable",
+            "item": payload,
+            "ttl_seconds": _ONLINE_USER_TTL_SECONDS,
+        }
+
     payload = {
         "username": username,
         "role": role,
@@ -130,8 +151,17 @@ async def heartbeat_online_user_presence(
 @router.get("")
 async def list_online_users(auth_payload: dict = Depends(require_auth)):
     _ensure_super_admin(auth_payload)
-    redis_client = await get_redis_client()
-    items = await _list_online_presence_items(redis_client)
+    try:
+        redis_client = await get_redis_client()
+        items = await _list_online_presence_items(redis_client)
+    except Exception as exc:
+        logger.warning("Online user list is empty because Redis is unavailable: %s", exc)
+        return {
+            "items": [],
+            "ttl_seconds": _ONLINE_USER_TTL_SECONDS,
+            "status": "degraded",
+            "reason": "redis_unavailable",
+        }
     return {
         "items": items,
         "ttl_seconds": _ONLINE_USER_TTL_SECONDS,
