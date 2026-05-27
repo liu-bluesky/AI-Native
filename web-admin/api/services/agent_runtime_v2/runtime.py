@@ -1,0 +1,459 @@
+"""Stage 0 isolated AgentTaskRuntime.
+
+This runtime creates a v2 TaskRun envelope and event log, then delegates to the
+legacy orchestrator. It is deliberately thin until later phases move tool
+observations, permissions, trust, and completion policy into this package.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any, AsyncGenerator
+
+from services.agent_runtime_v2.event_log import RuntimeEventLog
+from services.agent_runtime_v2.dynamic_tool_pool import DynamicToolPool
+from services.agent_runtime_v2.llm_step import LLMStep
+from services.agent_runtime_v2.permission_policy import PermissionPolicy
+from services.agent_runtime_v2.plugin_registry import default_plugin_registry_context
+from services.agent_runtime_v2.query_engine import QueryEngine
+from services.agent_runtime_v2.state_store import TaskRunStore
+from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
+from services.agent_runtime_v2.transcript_store import TranscriptStore
+from services.agent_runtime_v2.trust_policy import TrustPolicy
+from services.tool_executor import ToolExecutor
+
+
+class AgentTaskRuntime:
+    def __init__(
+        self,
+        legacy_orchestrator: Any,
+        *,
+        state_store: TaskRunStore | None = None,
+        transcript_store: TranscriptStore | None = None,
+        event_log: RuntimeEventLog | None = None,
+    ):
+        self._legacy_orchestrator = legacy_orchestrator
+        self._state_store = state_store or TaskRunStore()
+        self._transcript_store = transcript_store or TranscriptStore()
+        self._event_log = event_log or RuntimeEventLog()
+
+    @property
+    def state_store(self) -> TaskRunStore:
+        return self._state_store
+
+    @property
+    def transcript_store(self) -> TranscriptStore:
+        return self._transcript_store
+
+    @property
+    def event_log(self) -> RuntimeEventLog:
+        return self._event_log
+
+    def _resolve_mode(self, assistant_workflow: dict[str, Any] | None) -> str:
+        source = assistant_workflow if isinstance(assistant_workflow, dict) else {}
+        raw_mode = str(source.get("agent_runtime_mode") or "").strip().lower()
+        if raw_mode in {"delegate", "legacy", "legacy_orchestrator"}:
+            return "delegate"
+        return raw_mode or "query_engine"
+
+    def _json_safe(self, value: Any) -> Any:
+        try:
+            return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            return None
+
+    def _build_resume_context(
+        self,
+        *,
+        tools: list[dict] | None,
+        provider_id: str,
+        model_name: str,
+        temperature: float,
+        max_tokens: int,
+        role_ids: list[str] | None,
+        local_connector: Any | None,
+        local_connector_workspace_path: str,
+        host_workspace_path: str,
+        local_connector_sandbox_mode: str,
+        prompt_version: str,
+        assistant_workflow: dict[str, Any] | None,
+        capability_routing: dict[str, Any] | None,
+        workspace_trusted: bool = True,
+        include_browser_tools: bool = False,
+        browser_bridge_available: bool = False,
+    ) -> dict[str, Any]:
+        safe_tools = self._json_safe(list(tools or []))
+        if not isinstance(safe_tools, list):
+            safe_tools = []
+        tool_priority = []
+        if isinstance(assistant_workflow, dict):
+            raw_priority = assistant_workflow.get("tool_priority")
+            if isinstance(raw_priority, list):
+                tool_priority = [
+                    str(item or "").strip()
+                    for item in raw_priority
+                    if str(item or "").strip()
+                ]
+        tool_pool = DynamicToolPool.from_runtime_tools(
+            [dict(item) for item in safe_tools if isinstance(item, dict)],
+            tool_priority=tool_priority,
+            context=default_plugin_registry_context(
+                workspace_path=str(host_workspace_path or local_connector_workspace_path or "").strip(),
+                workspace_trusted=workspace_trusted,
+                include_browser_tools=include_browser_tools,
+                browser_bridge_available=browser_bridge_available,
+            ),
+        )
+        return {
+            "provider_id": str(provider_id or "").strip(),
+            "model_name": str(model_name or "").strip(),
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+            "tools": tool_pool.openai_tools(),
+            "tool_pool": tool_pool.summary(),
+            "role_ids": [
+                str(item or "").strip()
+                for item in (role_ids or [])
+                if str(item or "").strip()
+            ],
+            "local_connector_id": str(getattr(local_connector, "id", "") or "").strip(),
+            "local_connector_workspace_path": str(local_connector_workspace_path or "").strip(),
+            "host_workspace_path": str(host_workspace_path or "").strip(),
+            "local_connector_sandbox_mode": (
+                str(local_connector_sandbox_mode or "workspace-write").strip()
+                or "workspace-write"
+            ),
+            "prompt_version": str(prompt_version or "").strip(),
+            "assistant_workflow": dict(assistant_workflow or {}),
+            "capability_routing": dict(capability_routing or {}),
+        }
+
+    async def run(
+        self,
+        session_id: str,
+        user_message: str,
+        tools: list[dict],
+        provider_id: str,
+        model_name: str,
+        temperature: float,
+        max_tokens: int,
+        project_id: str,
+        employee_id: str,
+        cancel_event: asyncio.Event,
+        username: str = "",
+        chat_session_id: str = "",
+        role_ids: list[str] | None = None,
+        messages: list[dict] | None = None,
+        local_connector: Any | None = None,
+        local_connector_workspace_path: str = "",
+        host_workspace_path: str = "",
+        local_connector_sandbox_mode: str = "workspace-write",
+        global_assistant_bridge_handler: Any | None = None,
+        prompt_version: str = "",
+        assistant_workflow: dict[str, Any] | None = None,
+        capability_routing: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        workspace_path = (
+            str(host_workspace_path or "").strip()
+            or str(local_connector_workspace_path or "").strip()
+        )
+        workspace_trusted = True
+        if workspace_path:
+            workspace_trusted = TrustPolicy().ensure_workspace_trusted(workspace_path).trusted
+        task_run = self._state_store.create(
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+            session_id=session_id,
+            user_goal=user_message,
+            metadata={
+                "runtime": "agent_runtime_v2",
+                "phase": "stage_0_delegating",
+                "employee_id": str(employee_id or "").strip(),
+                "provider_id": str(provider_id or "").strip(),
+                "model_name": str(model_name or "").strip(),
+                "tools_count": len(tools or []),
+                "prompt_version": str(prompt_version or "").strip(),
+                "assistant_workflow": dict(assistant_workflow or {}),
+                "capability_routing": dict(capability_routing or {}),
+                "resume_context": self._build_resume_context(
+                    tools=tools,
+                    provider_id=provider_id,
+                    model_name=model_name,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    role_ids=role_ids,
+                    local_connector=local_connector,
+                    local_connector_workspace_path=local_connector_workspace_path,
+                    host_workspace_path=host_workspace_path,
+                    local_connector_sandbox_mode=local_connector_sandbox_mode,
+                    prompt_version=prompt_version,
+                    assistant_workflow=assistant_workflow,
+                    capability_routing=capability_routing,
+                    workspace_trusted=workspace_trusted,
+                    include_browser_tools=global_assistant_bridge_handler is not None,
+                    browser_bridge_available=global_assistant_bridge_handler is not None,
+                ),
+            },
+        )
+        self._transcript_store.append(
+            task_run.run_id,
+            "user_message",
+            {"content": str(user_message or "").strip()},
+        )
+        self._transcript_store.append(
+            task_run.run_id,
+            "initial_messages",
+            {
+                "messages": list(messages or [])
+                if messages
+                else [{"role": "user", "content": str(user_message or "").strip()}],
+            },
+        )
+        self._state_store.append_event(
+            task_run,
+            "legacy_orchestrator_started",
+            {"fallback": "AgentOrchestrator.run"},
+            status="running",
+        )
+        self._event_log.append(
+            task_run.run_id,
+            "run_started",
+            {
+                "project_id": task_run.project_id,
+                "chat_session_id": task_run.chat_session_id,
+                "session_id": task_run.session_id,
+                "phase": "stage_0_delegating",
+            },
+        )
+        yield {
+            "type": "runtime_status",
+            "runtime": "agent_runtime_v2",
+            "run_id": task_run.run_id,
+            "status": task_run.status,
+        }
+        if self._resolve_mode(assistant_workflow) == "query_engine":
+            async for item in self._run_query_engine(
+                task_run=task_run,
+                session_id=session_id,
+                user_message=user_message,
+                tools=tools,
+                provider_id=provider_id,
+                model_name=model_name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                project_id=project_id,
+                employee_id=employee_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                role_ids=role_ids,
+                messages=messages,
+                local_connector=local_connector,
+                local_connector_workspace_path=local_connector_workspace_path,
+                host_workspace_path=host_workspace_path,
+                local_connector_sandbox_mode=local_connector_sandbox_mode,
+                global_assistant_bridge_handler=global_assistant_bridge_handler,
+                assistant_workflow=assistant_workflow,
+            ):
+                yield item
+            return
+        last_done_payload: dict[str, Any] | None = None
+        try:
+            async for item in self._legacy_orchestrator.run(
+                session_id=session_id,
+                user_message=user_message,
+                tools=tools,
+                provider_id=provider_id,
+                model_name=model_name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                project_id=project_id,
+                employee_id=employee_id,
+                cancel_event=cancel_event,
+                username=username,
+                chat_session_id=chat_session_id,
+                role_ids=role_ids,
+                messages=messages,
+                local_connector=local_connector,
+                local_connector_workspace_path=local_connector_workspace_path,
+                host_workspace_path=host_workspace_path,
+                local_connector_sandbox_mode=local_connector_sandbox_mode,
+                global_assistant_bridge_handler=global_assistant_bridge_handler,
+                prompt_version=prompt_version,
+                assistant_workflow=assistant_workflow,
+                capability_routing=capability_routing,
+            ):
+                if isinstance(item, dict):
+                    event_type = str(item.get("type") or "").strip().lower()
+                    if event_type in {"delta", "tool_start", "tool_result", "artifact", "error", "done"}:
+                        self._transcript_store.append(
+                            task_run.run_id,
+                            f"legacy_{event_type}",
+                            dict(item),
+                        )
+                        self._event_log.append(
+                            task_run.run_id,
+                            f"legacy_{event_type}",
+                            dict(item),
+                        )
+                    if event_type in {"error", "done"}:
+                        last_done_payload = dict(item)
+                yield item
+        except Exception as exc:
+            self._state_store.append_event(
+                task_run,
+                "run_failed",
+                {"error": str(exc)},
+                status="failed",
+            )
+            self._event_log.append(
+                task_run.run_id,
+                "run_failed",
+                {"error": str(exc)},
+            )
+            raise
+        else:
+            final_status = "completed"
+            if last_done_payload and str(last_done_payload.get("type") or "").strip().lower() == "error":
+                final_status = "failed"
+            self._state_store.append_event(
+                task_run,
+                "legacy_orchestrator_finished",
+                {"last_payload_type": str((last_done_payload or {}).get("type") or "").strip()},
+                status=final_status,
+            )
+            self._event_log.append(
+                task_run.run_id,
+                "run_finished",
+                {
+                    "status": final_status,
+                    "last_payload_type": str((last_done_payload or {}).get("type") or "").strip(),
+                },
+            )
+
+    async def _run_query_engine(
+        self,
+        *,
+        task_run,
+        session_id: str,
+        user_message: str,
+        tools: list[dict],
+        provider_id: str,
+        model_name: str,
+        temperature: float,
+        max_tokens: int,
+        project_id: str,
+        employee_id: str,
+        username: str,
+        chat_session_id: str,
+        role_ids: list[str] | None,
+        messages: list[dict] | None,
+        local_connector: Any | None,
+        local_connector_workspace_path: str,
+        host_workspace_path: str,
+        local_connector_sandbox_mode: str,
+        global_assistant_bridge_handler: Any | None,
+        assistant_workflow: dict[str, Any] | None,
+    ) -> AsyncGenerator[dict, None]:
+        llm_service = getattr(self._legacy_orchestrator, "_llm", None)
+        if llm_service is None:
+            self._state_store.append_event(
+                task_run,
+                "query_engine_unavailable",
+                {"reason": "legacy llm service is missing"},
+                status="blocked",
+            )
+            yield {
+                "type": "error",
+                "message": "agent_runtime_v2 query engine unavailable: llm service is missing",
+            }
+            return
+        tool_priority = []
+        if isinstance(assistant_workflow, dict):
+            raw_priority = assistant_workflow.get("tool_priority")
+            if isinstance(raw_priority, list):
+                tool_priority = [
+                    str(item or "").strip()
+                    for item in raw_priority
+                    if str(item or "").strip()
+                ]
+        workspace_path = (
+            str(host_workspace_path or "").strip()
+            or str(local_connector_workspace_path or "").strip()
+        )
+        workspace_trusted = True
+        if workspace_path:
+            workspace_trusted = TrustPolicy().ensure_workspace_trusted(workspace_path).trusted
+        tool_pool = DynamicToolPool.from_runtime_tools(
+            tools,
+            tool_priority=tool_priority,
+            context=default_plugin_registry_context(
+                workspace_path=workspace_path,
+                workspace_trusted=workspace_trusted,
+                include_browser_tools=global_assistant_bridge_handler is not None,
+                browser_bridge_available=global_assistant_bridge_handler is not None,
+            ),
+        )
+        tool_executor = ToolExecutor(
+            project_id,
+            employee_id,
+            username=username,
+            chat_session_id=chat_session_id,
+            role_ids=role_ids,
+            allowed_tool_names=tool_pool.names(),
+            local_connector=local_connector,
+            local_connector_workspace_path=local_connector_workspace_path,
+            host_workspace_path=host_workspace_path,
+            local_connector_sandbox_mode=local_connector_sandbox_mode,
+            global_assistant_bridge_handler=global_assistant_bridge_handler,
+        )
+        engine = QueryEngine(
+            llm_step=LLMStep(llm_service),
+            tool_runner=ToolExecutionRunner(
+                tool_executor,
+                event_log=self._event_log,
+                permission_policy=PermissionPolicy(),
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                workspace_trusted=workspace_trusted,
+            ),
+            state_store=self._state_store,
+            transcript_store=self._transcript_store,
+            event_log=self._event_log,
+            max_model_steps=3,
+        )
+        run_messages = list(messages or [])
+        if not run_messages:
+            run_messages = [{"role": "user", "content": user_message}]
+        result = await engine.run(
+            task_run,
+            messages=run_messages,
+            tools=tools,
+            provider_id=provider_id,
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            task_tree_verified=False,
+            goal_covered=False,
+        )
+        yield {
+            "type": "runtime_status",
+            "runtime": "agent_runtime_v2",
+            "run_id": result.task_run.run_id,
+            "status": result.task_run.status,
+            "mode": "query_engine",
+            "tool_pool": tool_pool.summary(),
+            "completion_decision": (
+                result.completion_decision.to_dict()
+                if result.completion_decision is not None
+                else None
+            ),
+        }
+        yield {
+            "type": "done",
+            "content": result.final_content,
+            "agent_runtime": result.to_dict(),
+            "tool_pool": tool_pool.summary(),
+        }

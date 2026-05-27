@@ -63,8 +63,6 @@ def _primary_task_type(task_types: list[str]) -> str:
 
 
 def _requires_tooling(task_types: list[str], *, auto_use_tools: bool) -> bool:
-    if auto_use_tools:
-        return True
     return any(
         item in {"schedule", "reminder", "coding", "automation", "docs", "bugfix"}
         for item in task_types
@@ -84,7 +82,7 @@ def _execution_mode(task_types: list[str], *, auto_use_tools: bool) -> str:
         return "agent_execution"
     if any(item in {"schedule", "reminder", "requirement", "bugfix"} for item in task_types):
         return "collect_then_confirm"
-    if _requires_tooling(task_types, auto_use_tools=auto_use_tools):
+    if any(item in {"docs"} for item in task_types):
         return "tool_augmented"
     return "direct_answer"
 

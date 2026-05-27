@@ -223,6 +223,16 @@
                   素材库
                 </el-button>
                 <el-button
+                  v-if="canTrustAgentRuntimeWorkspace"
+                  size="small"
+                  plain
+                  class="chat-context-bar__action-button"
+                  :loading="workspaceTrustSaving"
+                  @click="trustAgentRuntimeWorkspace"
+                >
+                  信任工作区
+                </el-button>
+                <el-button
                   size="small"
                   plain
                   class="chat-context-bar__action-button"
@@ -657,7 +667,13 @@
                                     {{ operationInteractionSubmittedHint(operation) }}
                                   </div>
                                   <div
-                                    v-if="operationActionButtons(operation).length"
+                                    v-if="
+                                      operationActionButtons(operation).length &&
+                                      !isMessageFooterActionOperation(
+                                        item,
+                                        operation,
+                                      )
+                                    "
                                     class="message-operation-card__actions"
                                   >
                                     <el-button
@@ -802,6 +818,46 @@
                             class="message-text"
                             v-html="messageBodyHtml(item, idx)"
                           ></div>
+                          <div
+                            v-if="messageFooterActionOperation(item)"
+                            class="message-footer-action"
+                          >
+                            <div class="message-footer-action__content">
+                              <strong>{{
+                                messageFooterActionOperation(item).title ||
+                                "需要你确认"
+                              }}</strong>
+                              <span>{{
+                                messageFooterActionOperation(item).summary ||
+                                operationActionHint(
+                                  messageFooterActionOperation(item),
+                                )
+                              }}</span>
+                            </div>
+                            <div class="message-footer-action__buttons">
+                              <el-button
+                                v-for="action in operationActionButtons(
+                                  messageFooterActionOperation(item),
+                                )"
+                                :key="`footer-${messageFooterActionOperation(item).id}-${action.key}`"
+                                size="small"
+                                :type="
+                                  action.type === 'danger'
+                                    ? 'danger'
+                                    : 'primary'
+                                "
+                                :plain="action.type !== 'danger'"
+                                @click="
+                                  handleOperationAction(
+                                    messageFooterActionOperation(item),
+                                    action.key,
+                                  )
+                                "
+                              >
+                                {{ action.label }}
+                              </el-button>
+                            </div>
+                          </div>
                           <div
                             v-if="
                               item.displayMode !== 'terminal' &&
@@ -3901,6 +3957,7 @@ const chatLoading = ref(false);
 const settingsSaving = ref(false);
 const workspacePathSaving = ref(false);
 const workspacePathTesting = ref(false);
+const workspaceTrustSaving = ref(false);
 const projectWorkspaceSaving = ref(false);
 const autoSaveState = ref("idle");
 const autoSaveUpdatedAt = ref("");
@@ -4008,6 +4065,7 @@ const codePreviewSrcdoc = ref("");
 const codePreviewError = ref("");
 
 const selectedProjectId = ref("");
+let selectedProjectConversationLoadingKey = "";
 const selectedEmployeeIds = ref([]);
 const selectedProviderId = ref("");
 const selectedModelName = ref("");
@@ -4216,6 +4274,12 @@ const projectWorkspaceDraftNormalized = computed(() =>
 );
 const workspacePathResolved = computed(() =>
   String(externalAgentInfo.value.workspace_path || "").trim(),
+);
+const agentRuntimeWorkspaceTrustPath = computed(() =>
+  String(projectWorkspaceResolved.value || workspacePathResolved.value || "").trim(),
+);
+const canTrustAgentRuntimeWorkspace = computed(
+  () => hasSelectedProject.value && Boolean(agentRuntimeWorkspaceTrustPath.value),
 );
 const workspacePathDraftNormalized = computed(() =>
   String(workspacePathDraft.value || "").trim(),
@@ -6327,7 +6391,7 @@ function normalizeChatSourceContext(item) {
     item?.source_context && typeof item.source_context === "object"
       ? item.source_context
       : item || {};
-  return {
+  const normalized = {
     source_type: String(source.source_type || "").trim(),
     platform: String(source.platform || "").trim(),
     connector_id: String(source.connector_id || "").trim(),
@@ -6339,6 +6403,19 @@ function normalizeChatSourceContext(item) {
     sender_name: String(source.sender_name || "").trim(),
     thread_key: String(source.thread_key || "").trim(),
   };
+  [
+    "assistant_workflow",
+    "archive_workflow",
+    "pending_interaction",
+    "interaction_submission",
+    "agent_runtime_v2",
+    "agent_runtime_trace",
+  ].forEach((key) => {
+    if (source[key] && typeof source[key] === "object") {
+      normalized[key] = cloneInteractionValue(source[key]);
+    }
+  });
+  return normalized;
 }
 
 function normalizeChatSession(item) {
@@ -7900,6 +7977,25 @@ function appendMessageProcessLog(row, source = {}) {
   return entry;
 }
 
+function normalizePersistedProcessLogEntries(value) {
+  return Array.isArray(value)
+    ? value
+        .map((item, index) => ({
+          id: String(item?.id || `persisted-process-log-${index}`).trim(),
+          text: String(item?.text || item?.content || "").trim(),
+          level: normalizeProcessLogLevel(item?.level),
+          createdAt: String(item?.createdAt || item?.created_at || "").trim(),
+        }))
+        .filter((item) => item.text)
+    : [];
+}
+
+function normalizePersistedOperations(value) {
+  return Array.isArray(value)
+    ? value.map((item) => buildMessageOperation(item)).filter((item) => item.title)
+    : [];
+}
+
 function messageProcessLogEntries(row) {
   return Array.isArray(row?.processLog)
     ? row.processLog.filter((item) => String(item?.text || "").trim())
@@ -8181,6 +8277,13 @@ function buildMessageOperation(source = {}) {
 function findMessageOperationMatchIndex(items, operation) {
   const byId = items.findIndex((item) => item.id === operation.id);
   if (byId >= 0) return byId;
+  const operationId = String(operation?.operationId || "").trim();
+  if (operationId) {
+    const byOperationId = items.findIndex(
+      (item) => String(item?.operationId || "").trim() === operationId,
+    );
+    if (byOperationId >= 0) return byOperationId;
+  }
   const operationKind = String(operation?.kind || "")
     .trim()
     .toLowerCase();
@@ -8204,6 +8307,31 @@ function findMessageOperationMatchIndex(items, operation) {
       String(item?.title || "").trim() ===
         String(operation?.title || "").trim(),
   );
+}
+
+function mergeMessageOperations(existingOperations, nextOperations) {
+  const merged = Array.isArray(existingOperations)
+    ? existingOperations.slice()
+    : [];
+  (Array.isArray(nextOperations) ? nextOperations : []).forEach((operation) => {
+    const matchIndex = findMessageOperationMatchIndex(merged, operation);
+    if (matchIndex >= 0) {
+      merged[matchIndex] = {
+        ...merged[matchIndex],
+        ...operation,
+        id: merged[matchIndex].operationId
+          ? merged[matchIndex].id
+          : operation.id,
+        operationId:
+          merged[matchIndex].operationId || operation.operationId || "",
+        createdAt: merged[matchIndex].createdAt || operation.createdAt,
+        updatedAt: operation.updatedAt || nowText(),
+      };
+    } else {
+      merged.push(operation);
+    }
+  });
+  return merged.slice(-24);
 }
 
 function upsertMessageOperation(row, source = {}) {
@@ -8231,6 +8359,192 @@ function upsertMessageOperation(row, source = {}) {
     row.processExpanded = phase === "running";
   }
   return operation;
+}
+
+function appendAgentRuntimePermissionOperations(row, eventData = {}) {
+  const runtime =
+    eventData?.agent_runtime && typeof eventData.agent_runtime === "object"
+      ? eventData.agent_runtime
+      : {};
+  const runId = String(runtime?.run_id || "").trim();
+  const observations = Array.isArray(runtime?.observations)
+    ? runtime.observations
+    : [];
+  observations.forEach((observation) => {
+    const raw =
+      observation?.raw_result && typeof observation.raw_result === "object"
+        ? observation.raw_result
+        : {};
+    const decision =
+      raw?.permission_decision && typeof raw.permission_decision === "object"
+        ? raw.permission_decision
+        : null;
+    if (!decision) return;
+    const behavior = String(decision.behavior || "").trim().toLowerCase();
+    if (!["ask", "deny"].includes(behavior)) return;
+    const callId = String(
+      observation?.call_id || decision.call_id || "",
+    ).trim();
+    const toolName = String(
+      observation?.tool_name || decision.tool_name || "",
+    ).trim();
+    if (!runId || !callId || !toolName) return;
+    const existingPermission = (Array.isArray(row?.operations) ? row.operations : []).find(
+      (operation) => {
+        const meta =
+          operation?.meta && typeof operation.meta === "object"
+            ? operation.meta
+            : {};
+        return (
+          String(meta.agent_runtime_permission || "").trim() === "true" &&
+          String(meta.run_id || "").trim() === runId &&
+          String(meta.call_id || "").trim() === callId &&
+          normalizeOperationPhase(operation?.phase) !== "waiting_user"
+        );
+      },
+    );
+    if (existingPermission) return;
+    upsertMessageOperation(row, {
+      operationId: `agent-runtime-permission:${runId}:${callId}`,
+      kind: "approval",
+      title: behavior === "deny" ? "工具调用已拒绝" : "工具调用需要授权",
+      summary:
+        behavior === "deny"
+          ? "权限策略拒绝了本次工具调用"
+          : "等待你选择本次工具调用的授权范围",
+      detail: String(observation?.summary || raw?.summary || "").trim(),
+      phase: behavior === "deny" ? "blocked" : "waiting_user",
+      actionType: behavior === "deny" ? "none" : "approve",
+      meta: {
+        agent_runtime_permission: "true",
+        run_id: runId,
+        call_id: callId,
+        tool_name: toolName,
+        tool_args:
+          raw?.tool_args && typeof raw.tool_args === "object"
+            ? raw.tool_args
+            : {},
+        chat_session_id: String(currentChatSessionId.value || "").trim(),
+        assistant_message_id: String(row?.id || "").trim(),
+        permission_decision: decision,
+      },
+    });
+  });
+}
+
+function formatAgentRuntimeEventSummary(eventData = {}) {
+  const eventType = String(eventData?.event_type || "").trim();
+  const event =
+    eventData?.event && typeof eventData.event === "object"
+      ? eventData.event
+      : {};
+  const payload =
+    event?.payload && typeof event.payload === "object" ? event.payload : {};
+  if (eventType === "run_started") return "运行任务已启动";
+  if (eventType === "query_engine_started") return "模型与工具循环已启动";
+  if (eventType === "llm_step_completed") {
+    const stepIndex = String(payload?.step_index || "").trim();
+    const toolCount = Number(payload?.tool_call_count || 0);
+    return `模型步骤${stepIndex ? ` ${stepIndex}` : ""}完成${
+      toolCount ? `，发现 ${toolCount} 个工具调用` : ""
+    }`;
+  }
+  if (eventType === "tool_call_started") {
+    const toolName = String(payload?.tool_name || "").trim();
+    return toolName ? `开始调用工具：${toolName}` : "开始调用工具";
+  }
+  if (eventType === "permission_decision") {
+    const decision =
+      payload?.decision && typeof payload.decision === "object"
+        ? payload.decision
+        : {};
+    const behavior = String(decision?.behavior || "").trim().toLowerCase();
+    if (behavior === "ask") return "工具调用等待授权";
+    if (behavior === "deny") return "工具调用被权限策略拒绝";
+    return "工具调用权限已确认";
+  }
+  if (eventType === "tool_observation_created") {
+    const toolName = String(payload?.tool_name || "").trim();
+    const status = String(payload?.status || "").trim();
+    return [toolName ? `工具返回结果：${toolName}` : "工具返回结果", status]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (eventType === "tool_round_completed") return "工具执行轮次已完成";
+  if (eventType === "completion_decision") {
+    const action = String(payload?.action || "").trim();
+    return action ? `完成策略判断：${action}` : "完成策略已判断";
+  }
+  if (eventType === "query_engine_waiting_operation") {
+    return "外部操作进行中，等待完成后恢复";
+  }
+  if (eventType === "query_engine_blocked") return "运行任务已暂停";
+  if (eventType === "query_engine_completed") return "运行任务已完成";
+  if (eventType === "query_engine_failed") return "运行任务失败";
+  if (eventType === "run_finished") return "运行任务已结束";
+  return eventType || "运行时事件";
+}
+
+function formatAgentRuntimeEventPhase(eventData = {}) {
+  const eventType = String(eventData?.event_type || "").trim();
+  const event =
+    eventData?.event && typeof eventData.event === "object"
+      ? eventData.event
+      : {};
+  const payload =
+    event?.payload && typeof event.payload === "object" ? event.payload : {};
+  if (["query_engine_completed", "run_finished"].includes(eventType)) {
+    return "completed";
+  }
+  if (["query_engine_failed", "run_failed"].includes(eventType)) {
+    return "failed";
+  }
+  if (eventType === "query_engine_blocked") return "blocked";
+  if (eventType === "permission_decision") {
+    const decision =
+      payload?.decision && typeof payload.decision === "object"
+        ? payload.decision
+        : {};
+    const behavior = String(decision?.behavior || "").trim().toLowerCase();
+    if (behavior === "ask") return "waiting_user";
+    if (behavior === "deny") return "blocked";
+  }
+  return "running";
+}
+
+function applyAgentRuntimeEvent(row, eventData = {}) {
+  if (!row) return false;
+  const runId = String(eventData?.run_id || "").trim();
+  const eventType = String(eventData?.event_type || "").trim();
+  if (!runId || !eventType) return false;
+  const summary = formatAgentRuntimeEventSummary(eventData);
+  const phase = formatAgentRuntimeEventPhase(eventData);
+  upsertMessageOperation(row, {
+    operationId: `agent-runtime:${runId}`,
+    kind: "request",
+    title: "Agent Runtime",
+    summary,
+    detail: "",
+    phase,
+    actionType: "none",
+    meta: {
+      agent_runtime_event: "true",
+      run_id: runId,
+      event_type: eventType,
+      chat_session_id: String(eventData?.chat_session_id || "").trim(),
+    },
+  });
+  appendMessageProcessLog(row, {
+    level:
+      phase === "completed"
+        ? "success"
+        : phase === "failed" || phase === "blocked"
+          ? "warning"
+          : "info",
+    text: summary,
+  });
+  row.processExpanded = true;
+  return true;
 }
 
 function isInternalToolOperation(operation) {
@@ -8332,6 +8646,29 @@ function extractOperationUrl(operation) {
 function operationPrimaryActionLabel(operation) {
   const buttons = operationActionButtons(operation);
   return buttons.length ? buttons[0].label : "";
+}
+
+function messageFooterActionOperation(row) {
+  return messageOperations(row).find((operation) => {
+    const meta =
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
+    return (
+      String(meta.agent_runtime_permission || "").trim() === "true" &&
+      normalizeOperationPhase(operation?.phase) === "waiting_user" &&
+      operationActionButtons(operation).length > 0
+    );
+  });
+}
+
+function isMessageFooterActionOperation(row, operation) {
+  const footerOperation = messageFooterActionOperation(row);
+  if (!footerOperation || !operation) return false;
+  return (
+    String(footerOperation.id || "").trim() ===
+    String(operation.id || "").trim()
+  );
 }
 
 function findAssistantRowByOperationTaskId(taskId, chatSessionId = "") {
@@ -8491,6 +8828,175 @@ function findMessageRowByOperationId(operationId) {
         : false,
     ) || null
   );
+}
+
+function agentRuntimeResumeFinalContent(resume) {
+  const continuation =
+    resume?.continuation && typeof resume.continuation === "object"
+      ? resume.continuation
+      : null;
+  return String(continuation?.final_content || "").trim();
+}
+
+function completePendingRequestForAssistantRow(row) {
+  if (!row) return;
+  const entries = Array.from(pendingRequests.entries());
+  for (const [requestId, pending] of entries) {
+    const pendingRow = messages.value[Number(pending?.assistantIndex ?? -1)];
+    if (pendingRow !== row) continue;
+    resolvePendingRequest(requestId, pending, row.content || "");
+  }
+  chatLoading.value = pendingRequests.size > 0;
+}
+
+function completeAgentRuntimeOperationsForRun(row, runId) {
+  const normalizedRunId = String(runId || "").trim();
+  if (!row || !normalizedRunId || !Array.isArray(row.operations)) return;
+  row.operations = row.operations.map((operation) => {
+    const meta =
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
+    if (String(meta.run_id || "").trim() !== normalizedRunId) {
+      return operation;
+    }
+    const phase = normalizeOperationPhase(operation?.phase);
+    if (!["running", "waiting_user"].includes(phase)) {
+      return operation;
+    }
+    return {
+      ...operation,
+      phase: "completed",
+      actionType: "none",
+      updatedAt: nowText(),
+    };
+  });
+}
+
+function findMessageRowByAgentRuntimePermission(runId, callId) {
+  const normalizedRunId = String(runId || "").trim();
+  const normalizedCallId = String(callId || "").trim();
+  if (!normalizedRunId || !normalizedCallId) return null;
+  return (
+    messages.value.find((item) =>
+      Array.isArray(item?.operations)
+        ? item.operations.some((operation) => {
+            const meta =
+              operation?.meta && typeof operation.meta === "object"
+                ? operation.meta
+                : {};
+            return (
+              String(meta.agent_runtime_permission || "").trim() === "true" &&
+              String(meta.run_id || "").trim() === normalizedRunId &&
+              String(meta.call_id || "").trim() === normalizedCallId
+            );
+          })
+        : false,
+    ) || null
+  );
+}
+
+function updateAgentRuntimePermissionOperations(row, runId, callId, patch) {
+  const normalizedRunId = String(runId || "").trim();
+  const normalizedCallId = String(callId || "").trim();
+  if (!row || !normalizedRunId || !normalizedCallId) return false;
+  const items = Array.isArray(row.operations) ? row.operations.slice() : [];
+  let changed = false;
+  row.operations = items.map((operation) => {
+    const meta =
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
+    const matched =
+      String(meta.agent_runtime_permission || "").trim() === "true" &&
+      String(meta.run_id || "").trim() === normalizedRunId &&
+      String(meta.call_id || "").trim() === normalizedCallId;
+    if (!matched) return operation;
+    changed = true;
+    return {
+      ...operation,
+      ...patch,
+      meta: {
+        ...meta,
+        ...(patch?.meta && typeof patch.meta === "object" ? patch.meta : {}),
+      },
+      updatedAt: nowText(),
+    };
+  });
+  return changed;
+}
+
+function applyAgentRuntimeResumeToAssistantMessage(row, resume, options = {}) {
+  const finalContent = agentRuntimeResumeFinalContent(resume);
+  if (!row || !finalContent) return false;
+  row.content = finalContent;
+  removeAssistantStatusNotes(row, isTransientExecutionStatusNote);
+  completeAgentRuntimeOperationsForRun(row, options.runId);
+  row.processExpanded = false;
+  completePendingRequestForAssistantRow(row);
+  return true;
+}
+
+function applyRealtimeChatMessagePayload(eventData) {
+  const messagePayload =
+    eventData?.message && typeof eventData.message === "object"
+      ? eventData.message
+      : null;
+  const chatSessionId = String(
+    eventData?.chat_session_id || messagePayload?.chat_session_id || "",
+  ).trim();
+  if (eventData?.session) {
+    upsertChatSessionFromRealtime(eventData.session);
+  }
+  if (
+    !messagePayload ||
+    !chatSessionId ||
+    chatSessionId !== String(currentChatSessionId.value || "").trim()
+  ) {
+    return null;
+  }
+  const row = mapHistoryMessage(messagePayload);
+  if (!row.id) return null;
+  const existingIndex = messages.value.findIndex(
+    (item) => String(item?.id || "") === row.id,
+  );
+  if (existingIndex >= 0) {
+    const existing = messages.value[existingIndex];
+    const hasNextContent = Boolean(String(row.content || "").trim());
+    const nextOperations = mergeMessageOperations(
+      existing.operations,
+      row.operations,
+    );
+    const nextProcessLog = row.processLog.length
+      ? row.processLog
+      : Array.isArray(existing.processLog)
+        ? existing.processLog
+        : [];
+    messages.value[existingIndex] = {
+      ...existing,
+      ...row,
+      operations: nextOperations,
+      terminalLog: row.terminalLog.length
+        ? row.terminalLog
+        : Array.isArray(existing.terminalLog)
+          ? existing.terminalLog
+          : [],
+      processLog: nextProcessLog,
+      statusNotes: Array.isArray(existing.statusNotes)
+        ? existing.statusNotes
+        : row.statusNotes,
+      processExpanded: hasNextContent
+        ? Boolean(nextProcessLog.length || nextOperations.length)
+        : Boolean(existing.processExpanded || row.processExpanded),
+    };
+    if (hasNextContent) {
+      completePendingRequestForAssistantRow(messages.value[existingIndex]);
+    }
+    return messages.value[existingIndex];
+  }
+  messages.value = [...messages.value, row];
+  chatHistoryLoadedCount.value = messages.value.length;
+  return row;
 }
 
 function operationInteractionModel(operation) {
@@ -9354,6 +9860,14 @@ function operationActionButtons(operation) {
     }
   }
   if (actionType === "approve") {
+    if (String(meta.agent_runtime_permission || "").trim() === "true") {
+      return [
+        { key: "agent_runtime_allow_once", label: "允许一次" },
+        { key: "agent_runtime_allow_session", label: "本会话允许" },
+        { key: "agent_runtime_allow_always", label: "始终允许" },
+        { key: "agent_runtime_deny", label: "拒绝", type: "danger" },
+      ];
+    }
     if (String(meta.approval_mode || "").trim() === "terminal") {
       return [
         { key: "terminal_approve_once", label: "批准一次" },
@@ -9402,6 +9916,17 @@ async function handleOperationAction(operation, actionKey) {
     if (!opened) {
       ElMessage.warning("自动打开失败，请手动复制链接继续");
     }
+    return;
+  }
+  if (
+    [
+      "agent_runtime_allow_once",
+      "agent_runtime_allow_session",
+      "agent_runtime_allow_always",
+      "agent_runtime_deny",
+    ].includes(normalizedActionKey)
+  ) {
+    await submitAgentRuntimePermissionAction(operation, normalizedActionKey);
     return;
   }
   if (
@@ -9476,6 +10001,300 @@ async function handleOperationAction(operation, actionKey) {
       terminal_cancel: "3",
     };
     await sendTerminalApprovalChoice(choiceMap[normalizedActionKey]);
+  }
+}
+
+function agentRuntimePermissionActionValue(actionKey) {
+  const mapping = {
+    agent_runtime_allow_once: "allow_once",
+    agent_runtime_allow_session: "allow_session",
+    agent_runtime_allow_always: "allow_always",
+    agent_runtime_deny: "deny",
+  };
+  return mapping[String(actionKey || "").trim()] || "";
+}
+
+function markAgentRuntimePermissionActionPending(operation, action) {
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  const row =
+    findMessageRowByAgentRuntimePermission(meta.run_id, meta.call_id) ||
+    findMessageRowByOperationId(operation?.id);
+  if (!row) return null;
+  const nextSummary =
+    action === "deny"
+      ? "正在拒绝本次工具调用"
+      : "已提交授权，运行时正在继续执行";
+  updateAgentRuntimePermissionOperations(row, meta.run_id, meta.call_id, {
+    phase: "running",
+    summary: nextSummary,
+    detail: String(operation?.detail || "").trim(),
+    actionType: "none",
+  });
+  return upsertMessageOperation(row, {
+    ...operation,
+    phase: "running",
+    summary: nextSummary,
+    detail: String(operation?.detail || "").trim(),
+    actionType: "none",
+  });
+}
+
+function restoreAgentRuntimePermissionAction(operation) {
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  const row =
+    findMessageRowByAgentRuntimePermission(meta.run_id, meta.call_id) ||
+    findMessageRowByOperationId(operation?.id);
+  if (!row) return;
+  updateAgentRuntimePermissionOperations(row, meta.run_id, meta.call_id, {
+    phase: "waiting_user",
+    summary:
+      String(operation?.summary || "").trim() ||
+      "等待你选择本次工具调用的授权范围",
+    actionType: "approve",
+  });
+  upsertMessageOperation(row, {
+    ...operation,
+    phase: "waiting_user",
+    summary:
+      String(operation?.summary || "").trim() ||
+      "等待你选择本次工具调用的授权范围",
+    actionType: "approve",
+  });
+}
+
+async function submitAgentRuntimePermissionAction(operation, actionKey) {
+  const action = agentRuntimePermissionActionValue(actionKey);
+  const projectId = String(selectedProjectId.value || "").trim();
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  const runId = String(meta.run_id || "").trim();
+  const callId = String(meta.call_id || "").trim();
+  const toolName = String(meta.tool_name || "").trim();
+  if (!projectId || !action || !runId || !callId || !toolName) {
+    ElMessage.warning("缺少权限上下文，无法继续");
+    return;
+  }
+  const originalOperation = { ...operation };
+  const row = findMessageRowByOperationId(operation.id);
+  markAgentRuntimePermissionActionPending(operation, action);
+  try {
+    const response = await api.post(
+      `/projects/${encodeURIComponent(projectId)}/agent-runtime-v2/permission-actions`,
+      {
+        action,
+        run_id: runId,
+        call_id: callId,
+        tool_name: toolName,
+        args: meta.tool_args && typeof meta.tool_args === "object" ? meta.tool_args : {},
+        chat_session_id: String(
+          meta.chat_session_id || currentChatSessionId.value || "",
+        ).trim(),
+        assistant_message_id: String(
+          meta.assistant_message_id ||
+            row?.id ||
+            "",
+        ).trim(),
+      },
+    );
+    const resume =
+      response?.resume && typeof response.resume === "object" ? response.resume : null;
+    const resumed = Boolean(resume?.resumed);
+    const observations = Array.isArray(resume?.observations)
+      ? resume.observations
+      : [];
+    const observationSummary = observations
+      .map((item) => String(item?.summary || item?.status || "").trim())
+      .filter(Boolean)
+      .join("\n");
+    const continuationContent = agentRuntimeResumeFinalContent(resume);
+    const continuation = continuationContent ? resume?.continuation : null;
+    const resumeDetail = continuationContent || observationSummary;
+    const currentRow = findMessageRowByOperationId(operation.id) || row;
+    upsertMessageOperation(currentRow, {
+      ...operation,
+      phase: action === "deny" ? "blocked" : "completed",
+      summary:
+        action === "deny"
+          ? "已拒绝，本次工具调用不会执行"
+          : resumed
+            ? continuation
+              ? "已保存授权并继续运行"
+              : "已保存授权并恢复执行"
+            : "已保存授权，等待运行时继续执行",
+      detail: resumeDetail,
+      actionType: "none",
+    });
+    const assistantMessage =
+      response?.assistant_message && typeof response.assistant_message === "object"
+        ? response.assistant_message
+        : null;
+    if (assistantMessage) {
+      applyRealtimeChatMessagePayload({
+        chat_session_id: String(
+          meta.chat_session_id || currentChatSessionId.value || "",
+        ).trim(),
+        message: assistantMessage,
+      });
+    }
+    applyAgentRuntimeResumeToAssistantMessage(currentRow, resume, { runId });
+    ElMessage.success(
+      action === "deny"
+        ? "已拒绝"
+        : resumed
+          ? continuation
+            ? "已继续运行"
+            : "已恢复执行"
+          : "已保存授权",
+    );
+  } catch (err) {
+    restoreAgentRuntimePermissionAction(originalOperation);
+    ElMessage.error(err?.detail || err?.message || "保存授权失败");
+  }
+}
+
+function applyAgentRuntimePermissionActionResult(eventData = {}) {
+  const runId = String(eventData?.run_id || "").trim();
+  const callId = String(eventData?.call_id || "").trim();
+  if (!runId || !callId) return false;
+  const operationId = `agent-runtime-permission:${runId}:${callId}`;
+  const row =
+    findMessageRowByAgentRuntimePermission(runId, callId) ||
+    findMessageRowByOperationId(operationId);
+  if (!row) return false;
+  const resume =
+    eventData?.resume && typeof eventData.resume === "object"
+      ? eventData.resume
+      : null;
+  const resumed = Boolean(resume?.resumed);
+  const observations = Array.isArray(resume?.observations)
+    ? resume.observations
+    : [];
+  const observationSummary = observations
+    .map((item) => String(item?.summary || item?.status || "").trim())
+    .filter(Boolean)
+    .join("\n");
+  const continuationContent = agentRuntimeResumeFinalContent(resume);
+  const continuation = continuationContent ? resume?.continuation : null;
+  const action = String(eventData?.action || "").trim().toLowerCase();
+  const nextPermissionState = {
+    title: action === "deny" ? "工具调用已拒绝" : "工具调用授权",
+    summary:
+      action === "deny"
+        ? "已拒绝，本次工具调用不会执行"
+        : resumed
+          ? continuation
+            ? "已保存授权并继续运行"
+            : "已保存授权并恢复执行"
+          : "已保存授权，运行时正在继续执行",
+    detail: continuationContent || observationSummary,
+    phase: action === "deny" ? "blocked" : resumed ? "completed" : "running",
+    actionType: "none",
+  };
+  updateAgentRuntimePermissionOperations(row, runId, callId, nextPermissionState);
+  upsertMessageOperation(row, {
+    operationId,
+    kind: "approval",
+    ...nextPermissionState,
+    meta: {
+      agent_runtime_permission: "true",
+      run_id: runId,
+      call_id: callId,
+      tool_name: String(eventData?.tool_name || "").trim(),
+      chat_session_id: String(eventData?.chat_session_id || "").trim(),
+      resume,
+    },
+  });
+  const assistantMessage =
+    eventData?.assistant_message && typeof eventData.assistant_message === "object"
+      ? eventData.assistant_message
+      : null;
+  if (assistantMessage) {
+    applyRealtimeChatMessagePayload({
+      ...eventData,
+      message: assistantMessage,
+    });
+  }
+  if (!applyAgentRuntimeResumeToAssistantMessage(row, resume, { runId })) {
+    row.processExpanded = true;
+  }
+  return true;
+}
+
+function applyAgentRuntimeOperationResumeResult(eventData = {}) {
+  const runId = String(eventData?.run_id || "").trim();
+  const taskId = String(eventData?.task_id || "").trim();
+  const resume =
+    eventData?.resume && typeof eventData.resume === "object"
+      ? eventData.resume
+      : null;
+  if (!runId || !taskId || !resume) return false;
+  const operationId = `workflow:auth_login:${taskId}`;
+  const row = findMessageRowByOperationId(operationId);
+  if (!row) return false;
+  const resumed = Boolean(resume?.resumed);
+  const observations = Array.isArray(resume?.observations)
+    ? resume.observations
+    : [];
+  const observationSummary = observations
+    .map((item) => String(item?.summary || item?.status || "").trim())
+    .filter(Boolean)
+    .join("\n");
+  const continuation =
+    resume?.continuation && typeof resume.continuation === "object"
+      ? resume.continuation
+      : null;
+  const continuationContent = String(continuation?.final_content || "").trim();
+  upsertMessageOperation(row, {
+    operationId,
+    kind: "auth",
+    title: "外部操作恢复",
+    summary: resumed
+      ? continuation
+        ? "外部操作完成，已继续运行"
+        : "外部操作完成，已恢复执行"
+      : "外部操作完成，等待运行时继续执行",
+    detail: continuationContent || observationSummary || String(resume?.reason || "").trim(),
+    phase: resumed ? "completed" : "running",
+    actionType: "none",
+    meta: {
+      agent_runtime_operation_resume: "true",
+      run_id: runId,
+      task_id: taskId,
+      chat_session_id: String(eventData?.chat_session_id || "").trim(),
+      resume,
+    },
+  });
+  row.processExpanded = true;
+  return true;
+}
+
+async function trustAgentRuntimeWorkspace() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const workspacePath = String(agentRuntimeWorkspaceTrustPath.value || "").trim();
+  if (!projectId || !workspacePath) {
+    ElMessage.warning("缺少工作区路径");
+    return;
+  }
+  workspaceTrustSaving.value = true;
+  try {
+    await api.post(
+      `/projects/${encodeURIComponent(projectId)}/agent-runtime-v2/workspace-trust`,
+      {
+        workspace_path: workspacePath,
+        trusted: true,
+        metadata: {
+          chat_session_id: String(currentChatSessionId.value || "").trim(),
+          source: "project-chat",
+        },
+      },
+    );
+    ElMessage.success("已信任当前工作区");
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "信任工作区失败");
+  } finally {
+    workspaceTrustSaving.value = false;
   }
 }
 
@@ -13242,18 +14061,31 @@ function mapHistoryMessage(item) {
   const images = Array.isArray(item?.images) ? item.images : [];
   const videos = Array.isArray(item?.videos) ? item.videos : [];
   const sourceContext = normalizeChatSourceContext(item || {});
+  const runtimeTrace =
+    sourceContext.agent_runtime_trace &&
+    typeof sourceContext.agent_runtime_trace === "object"
+      ? sourceContext.agent_runtime_trace
+      : {};
+  const processLog = normalizePersistedProcessLogEntries(
+    runtimeTrace.process_log,
+  );
+  const operations = normalizePersistedOperations(runtimeTrace.operations);
   return {
     id: String(item?.id || ""),
     role: String(item?.role || "assistant"),
     content: String(item?.content || ""),
     displayMode: String(item?.display_mode || "").trim(),
-    terminalLog: [],
-    processExpanded: false,
+    terminalLog: Array.isArray(runtimeTrace.terminal_log)
+      ? runtimeTrace.terminal_log
+          .map((line) => String(line || "").trim())
+          .filter(Boolean)
+      : [],
+    processExpanded: Boolean(processLog.length || operations.length),
     audit: null,
     taskTreeAudit: null,
-    processLog: [],
+    processLog,
     statusNotes: [],
-    operations: [],
+    operations,
     images: images,
     videos: videos,
     attachments,
@@ -13289,31 +14121,9 @@ function setGroupChatLiveStatus(eventData) {
 }
 
 function appendRealtimeChatMessage(eventData) {
-  const messagePayload =
-    eventData?.message && typeof eventData.message === "object"
-      ? eventData.message
-      : null;
-  const chatSessionId = String(
-    eventData?.chat_session_id || messagePayload?.chat_session_id || "",
-  ).trim();
-  if (eventData?.session) {
-    upsertChatSessionFromRealtime(eventData.session);
+  if (applyRealtimeChatMessagePayload(eventData)) {
+    scrollToBottom();
   }
-  if (
-    !messagePayload ||
-    !chatSessionId ||
-    chatSessionId !== String(currentChatSessionId.value || "").trim()
-  ) {
-    return;
-  }
-  const row = mapHistoryMessage(messagePayload);
-  if (!row.id) return;
-  if (messages.value.some((item) => String(item?.id || "") === row.id)) {
-    return;
-  }
-  messages.value = [...messages.value, row];
-  chatHistoryLoadedCount.value = messages.value.length;
-  scrollToBottom();
 }
 
 async function fetchChatTaskTree(
@@ -14779,7 +15589,7 @@ async function handleSocketMessage(eventData) {
     scrollToBottom();
     return;
   }
-  if (eventType === "chat_message_created") {
+  if (eventType === "chat_message_created" || eventType === "chat_message_updated") {
     appendRealtimeChatMessage(eventData);
     return;
   }
@@ -14788,6 +15598,18 @@ async function handleSocketMessage(eventData) {
       upsertChatSessionFromRealtime(eventData.session);
     }
     setGroupChatLiveStatus(eventData);
+    return;
+  }
+  if (eventType === "agent_runtime_permission_action_result") {
+    if (applyAgentRuntimePermissionActionResult(eventData)) {
+      scrollToBottom();
+    }
+    return;
+  }
+  if (eventType === "agent_runtime_operation_resume_result") {
+    if (applyAgentRuntimeOperationResumeResult(eventData)) {
+      scrollToBottom();
+    }
     return;
   }
   if (eventType === "group_chat_status") {
@@ -14830,6 +15652,12 @@ async function handleSocketMessage(eventData) {
   if (eventType === "operation_event") {
     upsertMessageOperation(row, eventData);
     scrollToBottom();
+    return;
+  }
+  if (eventType === "agent_runtime_event") {
+    if (applyAgentRuntimeEvent(row, eventData)) {
+      scrollToBottom();
+    }
     return;
   }
   if (eventType === "start") {
@@ -15268,6 +16096,7 @@ async function handleSocketMessage(eventData) {
         phase: donePhase,
         meta: { request_id: requestId },
       });
+      appendAgentRuntimePermissionOperations(row, eventData);
       if (guardSummary) {
         appendAssistantStatusNote(row, `> ⚠️ ${guardSummary}`);
       }
@@ -16696,80 +17525,97 @@ function resolveAvailableProjectId(preferredId = "") {
 }
 
 async function loadSelectedProjectConversation(projectId) {
-  agentStatusExpanded.value = false;
-  await fetchProvidersByProject(projectId);
-  if (projectId !== String(selectedProjectId.value || "").trim()) return;
+  const normalizedProjectId = String(projectId || "").trim();
+  if (!normalizedProjectId) return;
   const { chatSessionId: routeChatSessionId } = routeChatTarget();
-  const restoredTask = routeChatSessionId
-    ? null
-    : await restoreOngoingTaskFromServer(projectId, { silent: true });
-  if (projectId !== String(selectedProjectId.value || "").trim()) return;
-  let chatSessionId = await fetchChatSessions(
-    projectId,
-    routeChatSessionId || "",
-    {
-      excludeSessionIds: restoredTask?.chatSessionId
-        ? [restoredTask.chatSessionId]
-        : [],
-    },
-  );
-  if (restoredTask?.chatSessionId) {
-    const restoredChatSessionId = String(
-      restoredTask.chatSessionId || "",
-    ).trim();
-    if (
-      restoredChatSessionId &&
-      !chatSessions.value.some((item) => item.id === restoredChatSessionId)
-    ) {
-      chatSessions.value = [
-        {
-          id: restoredChatSessionId,
-          title:
-            String(
-              restoredTask.taskTree?.title ||
+  const loadingKey = [
+    normalizedProjectId,
+    String(routeChatSessionId || "").trim(),
+  ].join("|");
+  if (selectedProjectConversationLoadingKey === loadingKey) return;
+  selectedProjectConversationLoadingKey = loadingKey;
+  agentStatusExpanded.value = false;
+  try {
+    await fetchProvidersByProject(normalizedProjectId);
+    if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
+      return;
+    const restoredTask = routeChatSessionId
+      ? null
+      : await restoreOngoingTaskFromServer(normalizedProjectId, { silent: true });
+    if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
+      return;
+    let chatSessionId = await fetchChatSessions(
+      normalizedProjectId,
+      routeChatSessionId || "",
+      {
+        excludeSessionIds: restoredTask?.chatSessionId
+          ? [restoredTask.chatSessionId]
+          : [],
+      },
+    );
+    if (restoredTask?.chatSessionId) {
+      const restoredChatSessionId = String(
+        restoredTask.chatSessionId || "",
+      ).trim();
+      if (
+        restoredChatSessionId &&
+        !chatSessions.value.some((item) => item.id === restoredChatSessionId)
+      ) {
+        chatSessions.value = [
+          {
+            id: restoredChatSessionId,
+            title:
+              String(
+                restoredTask.taskTree?.title ||
+                  restoredTask.taskTree?.root_goal ||
+                  "进行中的任务",
+              ).trim() || "进行中的任务",
+            preview: String(
+              restoredTask.taskTree?.current_node?.title ||
                 restoredTask.taskTree?.root_goal ||
-                "进行中的任务",
-            ).trim() || "进行中的任务",
-          preview: String(
-            restoredTask.taskTree?.current_node?.title ||
-              restoredTask.taskTree?.root_goal ||
-              "",
-          ).trim(),
-          message_count: 0,
-          created_at: String(restoredTask.taskTree?.created_at || "").trim(),
-          updated_at: String(restoredTask.taskTree?.updated_at || "").trim(),
-          last_message_at: String(
-            restoredTask.taskTree?.updated_at ||
-              restoredTask.taskTree?.created_at ||
-              "",
-          ).trim(),
-        },
-        ...chatSessions.value.filter(
-          (item) => item.id !== restoredChatSessionId,
-        ),
-      ];
+                "",
+            ).trim(),
+            message_count: 0,
+            created_at: String(restoredTask.taskTree?.created_at || "").trim(),
+            updated_at: String(restoredTask.taskTree?.updated_at || "").trim(),
+            last_message_at: String(
+              restoredTask.taskTree?.updated_at ||
+                restoredTask.taskTree?.created_at ||
+                "",
+            ).trim(),
+          },
+          ...chatSessions.value.filter(
+            (item) => item.id !== restoredChatSessionId,
+          ),
+        ];
+      }
+    }
+    if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
+      return;
+    if (!chatSessionId) {
+      const created = await createChatSession({ switchTo: true });
+      chatSessionId = String(created?.id || "").trim();
+    }
+    if (
+      !chatSessionId ||
+      normalizedProjectId !== String(selectedProjectId.value || "").trim()
+    ) {
+      return;
+    }
+    await fetchChatHistory(normalizedProjectId, chatSessionId);
+    void ensureWsClient(normalizedProjectId).catch(() => {});
+    if (restoredTask?.chatSessionId) {
+      setOngoingTaskRestoreNotice(
+        restoredTask.taskTree,
+        restoredTask.workSession,
+      );
+    }
+    await applyRouteMessageFocus();
+  } finally {
+    if (selectedProjectConversationLoadingKey === loadingKey) {
+      selectedProjectConversationLoadingKey = "";
     }
   }
-  if (projectId !== String(selectedProjectId.value || "").trim()) return;
-  if (!chatSessionId) {
-    const created = await createChatSession({ switchTo: true });
-    chatSessionId = String(created?.id || "").trim();
-  }
-  if (
-    !chatSessionId ||
-    projectId !== String(selectedProjectId.value || "").trim()
-  ) {
-    return;
-  }
-  await fetchChatHistory(projectId, chatSessionId);
-  void ensureWsClient(projectId).catch(() => {});
-  if (restoredTask?.chatSessionId) {
-    setOngoingTaskRestoreNotice(
-      restoredTask.taskTree,
-      restoredTask.workSession,
-    );
-  }
-  await applyRouteMessageFocus();
 }
 
 watch(selectedProjectId, async (value) => {
@@ -16890,8 +17736,13 @@ onMounted(async () => {
       fetchChatParameterOptions(),
       fetchGlobalProviders(),
     ]);
+    const projectIdBeforeRouteSync = String(selectedProjectId.value || "").trim();
     const initialProjectId = syncProjectFromRoute();
-    if (initialProjectId) {
+    if (
+      initialProjectId &&
+      initialProjectId === projectIdBeforeRouteSync &&
+      !selectedProjectConversationLoadingKey
+    ) {
       await loadSelectedProjectConversation(initialProjectId);
     }
     await applyStatisticsAnalysisDraftFromRoute();
@@ -19476,6 +20327,45 @@ onUnmounted(() => {
 
 .message-process-shell__summary-item.is-error .message-process-shell__summary-dot {
   background: #ef4444;
+}
+
+.message-footer-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.message-footer-action__content {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: #1e293b;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.message-footer-action__content strong,
+.message-footer-action__content span {
+  overflow-wrap: anywhere;
+}
+
+.message-footer-action__content span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.message-footer-action__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .message-process-shell__terminal-head {

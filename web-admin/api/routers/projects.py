@@ -74,6 +74,7 @@ from services.global_assistant_task_service import (
     upsert_global_assistant_task,
 )
 from services.assistant_workflow_state_service import (
+    detect_assistant_task_types,
     evolve_assistant_workflow_state,
     with_assistant_workflow_state,
 )
@@ -120,6 +121,15 @@ from services.runtime.prompt_assembler import (
 )
 from services.runtime.orchestrator_factory import build_agent_orchestrator
 from services.runtime.run_request_factory import build_orchestrator_run_kwargs
+from services.agent_runtime_v2.operation_resume import OperationResumeCoordinator
+from services.agent_runtime_v2.permission_actions import PermissionActionService
+from services.agent_runtime_v2.event_log import RuntimeEvent
+from services.agent_runtime_v2.event_stream import EventStream
+from services.agent_runtime_v2.resume_service import (
+    AgentRuntimeResumeRequest,
+    AgentRuntimeResumeService,
+)
+from services.agent_runtime_v2.run_inspector import AgentRuntimeInspector
 from services.runtime.tool_registry import (
     collect_project_runtime_tools as collect_project_runtime_tools_via_registry,
     filter_tools_by_employee_ids as filter_tools_by_employee_ids_via_registry,
@@ -141,6 +151,8 @@ from services.operation_wait_task_service import (
     subscribe_operation_wait_task_events,
 )
 from models.requests import (
+    AgentRuntimeV2PermissionActionReq,
+    AgentRuntimeV2WorkspaceTrustReq,
     ProjectAiEntryFileUpdateReq,
     ProjectExperienceRuleConsolidateReq,
     ProjectExperienceRuleUpdateReq,
@@ -313,6 +325,7 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "prefer_conclusion_first": True,
     "task_tree_enabled": True,
     "task_tree_auto_generate": True,
+    "agent_runtime_enabled": True,
     "image_resolution": "1080x1080",
     "image_aspect_ratio": "1:1",
     "image_generate_four_views": False,
@@ -2450,6 +2463,10 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
         source.get("task_tree_auto_generate"),
         settings["task_tree_auto_generate"],
     )
+    settings["agent_runtime_enabled"] = _coerce_bool(
+        source.get("agent_runtime_enabled"),
+        settings["agent_runtime_enabled"],
+    )
     settings["image_resolution"] = normalize_chat_parameter_value(
         "image_resolution",
         source.get("image_resolution", settings["image_resolution"]),
@@ -2487,6 +2504,156 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
         source.get("video_motion_strength", settings["video_motion_strength"]),
     )
     return settings
+
+
+def _find_agent_runtime_permission_request(
+    snapshot: dict[str, Any],
+    *,
+    call_id: str,
+    tool_name: str,
+) -> dict[str, Any] | None:
+    normalized_call_id = str(call_id or "").strip()
+    normalized_tool_name = str(tool_name or "").strip()
+    if not normalized_call_id or not normalized_tool_name:
+        return None
+    for event in reversed(list(snapshot.get("events") or [])):
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("event_type") or "").strip() != "permission_decision":
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+        tool_call = payload.get("tool_call") if isinstance(payload.get("tool_call"), dict) else {}
+        if str(decision.get("behavior") or "").strip().lower() != "ask":
+            continue
+        if str(decision.get("call_id") or tool_call.get("call_id") or "").strip() != normalized_call_id:
+            continue
+        if str(decision.get("tool_name") or tool_call.get("tool_name") or "").strip() != normalized_tool_name:
+            continue
+        args = {}
+        arguments = str(tool_call.get("arguments") or "").strip()
+        if arguments:
+            try:
+                parsed_args = json.loads(arguments)
+            except json.JSONDecodeError:
+                parsed_args = {}
+            if isinstance(parsed_args, dict):
+                args = parsed_args
+        return {
+            "call_id": normalized_call_id,
+            "tool_name": normalized_tool_name,
+            "args": args,
+        }
+    return None
+
+
+def _agent_runtime_resume_context_from_run(run: dict[str, Any]) -> dict[str, Any]:
+    metadata = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
+    resume_context = (
+        metadata.get("resume_context")
+        if isinstance(metadata.get("resume_context"), dict)
+        else {}
+    )
+    return dict(resume_context or {})
+
+
+def _agent_runtime_resume_tools(
+    resume_context: dict[str, Any],
+    fallback_tool_name: str,
+) -> list[dict[str, Any]]:
+    tools = resume_context.get("tools") if isinstance(resume_context, dict) else []
+    normalized = [dict(item) for item in (tools or []) if isinstance(item, dict)]
+    if normalized:
+        return normalized
+    fallback = str(fallback_tool_name or "").strip()
+    return [{"tool_name": fallback}] if fallback else []
+
+
+def _agent_runtime_tool_names(tools: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for item in tools or []:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool_name") or item.get("name") or "").strip()
+        if tool_name and tool_name not in names:
+            names.append(tool_name)
+    return names
+
+
+def _coerce_agent_runtime_resume_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_agent_runtime_resume_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _agent_runtime_resume_metadata(metadata: dict[str, Any] | None) -> dict[str, str]:
+    source = metadata if isinstance(metadata, dict) else {}
+    runtime_meta = (
+        source.get("agent_runtime_v2")
+        if isinstance(source.get("agent_runtime_v2"), dict)
+        else {}
+    )
+    return {
+        "run_id": str(runtime_meta.get("run_id") or source.get("agent_runtime_run_id") or "").strip(),
+        "call_id": str(runtime_meta.get("call_id") or source.get("agent_runtime_call_id") or "").strip(),
+        "tool_name": str(
+            runtime_meta.get("tool_name")
+            or source.get("agent_runtime_tool_name")
+            or "project_host_run_command"
+        ).strip(),
+    }
+
+
+async def _resolve_agent_runtime_resume_llm_service(
+    *,
+    resume_context: dict[str, Any],
+    auth_payload: dict,
+):
+    provider_id = str(resume_context.get("provider_id") or "").strip()
+    model_name = str(resume_context.get("model_name") or "").strip()
+    if not provider_id or not model_name:
+        return None
+    resolved_runtime = await resolve_provider_runtime(
+        provider_id,
+        auth_payload,
+        resolve_local_connector=lambda connector_id: _resolve_accessible_local_connector_for_llm(
+            connector_id,
+            auth_payload,
+        ),
+    )
+    resolved_runtime = finalize_resolved_provider_runtime(
+        resolved_runtime,
+        model_name,
+        missing_model_message="model_name is required",
+    )
+    from services.llm_provider_service import get_llm_provider_service
+
+    return _resolve_chat_llm_service_runtime(
+        get_llm_provider_service(),
+        resolved_runtime,
+        auth_payload,
+    )
+
+
+def _build_agent_runtime_resume_service(auth_payload: dict) -> AgentRuntimeResumeService:
+    return AgentRuntimeResumeService(
+        resolve_local_connector=lambda connector_id: _resolve_accessible_local_connector(
+            connector_id,
+            auth_payload,
+        ),
+        resolve_llm_service=lambda resume_context: _resolve_agent_runtime_resume_llm_service(
+            resume_context=resume_context,
+            auth_payload=auth_payload,
+        ),
+    )
 
 
 def _public_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
@@ -9982,11 +10149,79 @@ def _build_mcp_modules_reply(project_id: str) -> str:
     return "\n".join(lines)
 
 
-def _should_enable_chat_tools(message: str, attachment_names: list[str], images: list[str]) -> bool:
+def _assistant_workflow_requires_tools(
+    assistant_workflow_state: dict[str, Any] | None,
+) -> bool:
+    state = assistant_workflow_state if isinstance(assistant_workflow_state, dict) else {}
+    if bool(state.get("requires_tooling")):
+        return True
+    execution_mode = str(state.get("execution_mode") or "").strip().lower()
+    if execution_mode in {"agent_execution", "tool_augmented"}:
+        return True
+    if execution_mode == "collect_then_confirm":
+        status = str(state.get("status") or "").strip().lower()
+        return status in {"confirmed_once", "ready"}
+    return False
+
+
+def _should_enable_chat_tools(
+    message: str,
+    attachment_names: list[str],
+    images: list[str],
+    assistant_workflow_state: dict[str, Any] | None = None,
+) -> bool:
     text = str(message or "").strip()
     if not text and not attachment_names and not images:
         return False
-    return True
+    if attachment_names or images:
+        return True
+    if _assistant_workflow_requires_tools(assistant_workflow_state):
+        return True
+    task_types = detect_assistant_task_types(text)
+    if any(
+        item in {"schedule", "reminder", "coding", "automation", "docs", "bugfix"}
+        for item in task_types
+    ):
+        return True
+    tool_intent_keywords = (
+        "查询",
+        "看看",
+        "查一下",
+        "搜索",
+        "检索",
+        "读取",
+        "打开",
+        "创建",
+        "新增",
+        "更新",
+        "修改",
+        "删除",
+        "发送",
+        "导出",
+        "下载",
+        "上传",
+        "执行",
+        "运行",
+        "mcp",
+        "skill",
+        "技能",
+        "cli",
+        "api",
+    )
+    return any(keyword in text.lower() for keyword in tool_intent_keywords)
+
+
+def _runtime_settings_for_assistant_workflow(
+    runtime_settings: dict[str, Any],
+    assistant_workflow_state: dict[str, Any],
+    tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    execution_mode = str((assistant_workflow_state or {}).get("execution_mode") or "").strip()
+    if execution_mode == "direct_answer" and not tools:
+        adjusted = dict(runtime_settings or {})
+        adjusted["agent_runtime_enabled"] = False
+        return adjusted
+    return runtime_settings
 
 
 def _build_project_meta_reply(project: ProjectConfig, selected_employee: dict[str, Any] | None, candidates: list[dict[str, Any]]) -> str:
@@ -12160,6 +12395,37 @@ async def publish_project_chat_record_realtime(
     )
 
 
+async def publish_project_chat_record_update_realtime(
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    message: ProjectChatMessage | dict[str, Any] | None,
+) -> None:
+    if message is None:
+        return
+    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+
+    message_payload = asdict(message) if hasattr(message, "__dataclass_fields__") else dict(message)
+    normalized_session_id = str(
+        chat_session_id or message_payload.get("chat_session_id") or ""
+    ).strip()
+    await publish_project_chat_realtime_event(
+        {
+            "type": "chat_message_updated",
+            "project_id": str(project_id or "").strip(),
+            "username": str(username or "").strip(),
+            "chat_session_id": normalized_session_id,
+            "message": message_payload,
+            "session": _project_chat_realtime_session_payload(
+                project_id,
+                username,
+                normalized_session_id,
+            ),
+        }
+    )
+
+
 async def publish_project_chat_session_realtime(
     *,
     project_id: str,
@@ -12185,6 +12451,349 @@ async def publish_project_chat_session_realtime(
                 normalized_session_id,
             ),
         }
+    )
+
+
+async def publish_agent_runtime_permission_action_realtime(
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    action: str,
+    run_id: str,
+    call_id: str,
+    tool_name: str,
+    resume: dict[str, Any] | None = None,
+    assistant_message: ProjectChatMessage | dict[str, Any] | None = None,
+) -> None:
+    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+
+    assistant_payload = (
+        asdict(assistant_message)
+        if hasattr(assistant_message, "__dataclass_fields__")
+        else dict(assistant_message or {})
+    )
+    await publish_project_chat_realtime_event(
+        {
+            "type": "agent_runtime_permission_action_result",
+            "project_id": str(project_id or "").strip(),
+            "username": str(username or "").strip(),
+            "chat_session_id": str(chat_session_id or "").strip(),
+            "action": str(action or "").strip(),
+            "run_id": str(run_id or "").strip(),
+            "call_id": str(call_id or "").strip(),
+            "tool_name": str(tool_name or "").strip(),
+            "resume": dict(resume or {}),
+            "assistant_message": assistant_payload,
+        }
+    )
+
+
+async def publish_agent_runtime_operation_resume_realtime(
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    run_id: str,
+    task_id: str,
+    resume: dict[str, Any] | None = None,
+) -> None:
+    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+
+    await publish_project_chat_realtime_event(
+        {
+            "type": "agent_runtime_operation_resume_result",
+            "project_id": str(project_id or "").strip(),
+            "username": str(username or "").strip(),
+            "chat_session_id": str(chat_session_id or "").strip(),
+            "run_id": str(run_id or "").strip(),
+            "task_id": str(task_id or "").strip(),
+            "resume": dict(resume or {}),
+        }
+    )
+
+
+def _agent_runtime_resume_final_content(resume_payload: dict[str, Any] | None) -> str:
+    if not isinstance(resume_payload, dict):
+        return ""
+    continuation = resume_payload.get("continuation")
+    if not isinstance(continuation, dict):
+        return ""
+    return str(continuation.get("final_content") or "").strip()
+
+
+def _agent_runtime_trace_event_type(event_payload: dict[str, Any]) -> str:
+    event = event_payload.get("event") if isinstance(event_payload.get("event"), dict) else {}
+    return str(
+        event_payload.get("event_type")
+        or event.get("event_type")
+        or event.get("type")
+        or ""
+    ).strip()
+
+
+def _agent_runtime_trace_event_payload(event_payload: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(event_payload.get("payload"), dict):
+        return dict(event_payload.get("payload") or {})
+    event = event_payload.get("event") if isinstance(event_payload.get("event"), dict) else {}
+    if isinstance(event.get("payload"), dict):
+        return dict(event.get("payload") or {})
+    return {}
+
+
+def _agent_runtime_trace_event_created_at(event_payload: dict[str, Any]) -> str:
+    event = event_payload.get("event") if isinstance(event_payload.get("event"), dict) else {}
+    return str(event_payload.get("created_at") or event.get("created_at") or "").strip()
+
+
+def _agent_runtime_trace_event_summary(event_payload: dict[str, Any]) -> str:
+    event_type = _agent_runtime_trace_event_type(event_payload)
+    payload = _agent_runtime_trace_event_payload(event_payload)
+    if event_type == "run_started":
+        return "运行任务已启动"
+    if event_type == "query_engine_started":
+        return "模型与工具循环已启动"
+    if event_type == "llm_step_completed":
+        step_index = str(payload.get("step_index") or "").strip()
+        tool_count = int(payload.get("tool_call_count") or 0)
+        suffix = f"，发现 {tool_count} 个工具调用" if tool_count else ""
+        return f"模型步骤{f' {step_index}' if step_index else ''}完成{suffix}"
+    if event_type == "tool_call_started":
+        tool_name = str(payload.get("tool_name") or "").strip()
+        return f"开始调用工具：{tool_name}" if tool_name else "开始调用工具"
+    if event_type == "permission_decision":
+        decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+        behavior = str(decision.get("behavior") or "").strip().lower()
+        if behavior == "ask":
+            return "工具调用等待授权"
+        if behavior == "deny":
+            return "工具调用被权限策略拒绝"
+        return "工具调用权限已确认"
+    if event_type == "permission_action_applied":
+        action = str(payload.get("action") or "").strip().lower()
+        if action == "deny":
+            return "工具调用授权已拒绝"
+        if action:
+            return "工具调用授权已保存"
+        return "工具调用授权已处理"
+    if event_type == "tool_observation_created":
+        tool_name = str(payload.get("tool_name") or "").strip()
+        status = str(payload.get("status") or "").strip()
+        return " · ".join(item for item in [f"工具返回结果：{tool_name}" if tool_name else "工具返回结果", status] if item)
+    if event_type == "tool_round_completed":
+        return "工具执行轮次已完成"
+    if event_type == "query_engine_completed":
+        return "运行任务已完成"
+    if event_type == "query_engine_failed":
+        return "运行任务失败"
+    if event_type == "run_finished":
+        return "运行任务已结束"
+    return event_type or "运行时事件"
+
+
+def _agent_runtime_trace_event_phase(event_payload: dict[str, Any]) -> str:
+    event_type = _agent_runtime_trace_event_type(event_payload)
+    payload = _agent_runtime_trace_event_payload(event_payload)
+    if event_type in {"query_engine_completed", "run_finished"}:
+        return "completed"
+    if event_type in {"query_engine_failed", "run_failed"}:
+        return "failed"
+    if event_type == "query_engine_blocked":
+        return "blocked"
+    if event_type == "permission_decision":
+        decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+        behavior = str(decision.get("behavior") or "").strip().lower()
+        if behavior == "ask":
+            return "waiting_user"
+        if behavior == "deny":
+            return "blocked"
+    if event_type == "permission_action_applied":
+        action = str(payload.get("action") or "").strip().lower()
+        return "blocked" if action == "deny" else "running"
+    return "running"
+
+
+def _agent_runtime_trace_from_events(events: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
+    normalized_run_id = str(run_id or "").strip()
+    process_log: list[dict[str, Any]] = []
+    operations: dict[str, dict[str, Any]] = {}
+    final_run_phase = ""
+    for index, event_payload in enumerate(events or []):
+        if not isinstance(event_payload, dict):
+            continue
+        event_type = _agent_runtime_trace_event_type(event_payload)
+        if not event_type:
+            continue
+        summary = _agent_runtime_trace_event_summary(event_payload)
+        phase = _agent_runtime_trace_event_phase(event_payload)
+        if event_type in {"query_engine_completed", "run_finished", "query_engine_failed", "run_failed"}:
+            final_run_phase = phase
+        process_log.append(
+            {
+                "id": f"agent-runtime-event-{index}",
+                "text": summary,
+                "level": "success" if phase == "completed" else "warning" if phase in {"failed", "blocked"} else "info",
+                "createdAt": _agent_runtime_trace_event_created_at(event_payload),
+            }
+        )
+        operations[f"agent-runtime:{normalized_run_id}"] = {
+            "operationId": f"agent-runtime:{normalized_run_id}",
+            "kind": "request",
+            "title": "Agent Runtime",
+            "summary": summary,
+            "detail": "",
+            "phase": phase,
+            "actionType": "none",
+            "meta": {
+                "agent_runtime_event": "true",
+                "run_id": normalized_run_id,
+                "event_type": event_type,
+            },
+        }
+        payload = _agent_runtime_trace_event_payload(event_payload)
+        if event_type == "permission_decision":
+            decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+            behavior = str(decision.get("behavior") or "").strip().lower()
+            call_id = str(decision.get("call_id") or payload.get("call_id") or "").strip()
+            tool_name = str(decision.get("tool_name") or payload.get("tool_name") or "").strip()
+            if normalized_run_id and call_id:
+                operations[f"agent-runtime-permission:{normalized_run_id}:{call_id}"] = {
+                    "operationId": f"agent-runtime-permission:{normalized_run_id}:{call_id}",
+                    "kind": "approval",
+                    "title": "工具调用已拒绝" if behavior == "deny" else "工具调用需要授权",
+                    "summary": "权限策略拒绝了本次工具调用" if behavior == "deny" else "等待你选择本次工具调用的授权范围",
+                    "detail": "",
+                    "phase": "blocked" if behavior == "deny" else "waiting_user",
+                    "actionType": "none" if behavior == "deny" else "approve",
+                    "meta": {
+                        "agent_runtime_permission": "true",
+                        "run_id": normalized_run_id,
+                        "call_id": call_id,
+                        "tool_name": tool_name,
+                        "permission_decision": decision,
+                    },
+                }
+        if event_type == "permission_action_applied":
+            action = str(payload.get("action") or "").strip().lower()
+            rule = payload.get("rule") if isinstance(payload.get("rule"), dict) else {}
+            call_id = str(payload.get("call_id") or "").strip()
+            tool_name = str(rule.get("tool_name") or payload.get("tool_name") or "").strip()
+            if normalized_run_id and call_id:
+                operations[f"agent-runtime-permission:{normalized_run_id}:{call_id}"] = {
+                    "operationId": f"agent-runtime-permission:{normalized_run_id}:{call_id}",
+                    "kind": "approval",
+                    "title": "工具调用已拒绝" if action == "deny" else "工具调用授权",
+                    "summary": "已拒绝，本次工具调用不会执行" if action == "deny" else "已保存授权，运行时正在继续执行",
+                    "detail": "",
+                    "phase": "blocked" if action == "deny" else "running",
+                    "actionType": "none",
+                    "meta": {
+                        "agent_runtime_permission": "true",
+                        "run_id": normalized_run_id,
+                        "call_id": call_id,
+                        "tool_name": tool_name,
+                        "permission_action": action,
+                    },
+                }
+    if final_run_phase in {"completed", "failed"}:
+        for operation in operations.values():
+            meta = operation.get("meta") if isinstance(operation.get("meta"), dict) else {}
+            if str(meta.get("agent_runtime_permission") or "").strip() != "true":
+                continue
+            if str(operation.get("phase") or "").strip() == "blocked":
+                continue
+            if str(operation.get("phase") or "").strip() in {"waiting_user", "running"}:
+                operation["phase"] = final_run_phase
+                operation["actionType"] = "none"
+                if final_run_phase == "completed":
+                    operation["summary"] = str(operation.get("summary") or "").strip() or "工具调用授权已完成"
+    return {
+        "version": 1,
+        "run_id": normalized_run_id,
+        "process_log": process_log[-80:],
+        "operations": list(operations.values())[-24:],
+    }
+
+
+def _agent_runtime_trace_from_resume_payload(resume_payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(resume_payload, dict):
+        return {}
+    run_id = str(resume_payload.get("run_id") or "").strip()
+    continuation = resume_payload.get("continuation")
+    if not isinstance(continuation, dict):
+        return {}
+    events = continuation.get("events") if isinstance(continuation.get("events"), list) else []
+    return _agent_runtime_trace_from_events(events, run_id)
+
+
+def _persist_agent_runtime_resume_chat_message(
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    assistant_message_id: str,
+    content: str,
+    run_id: str,
+    call_id: str,
+    tool_name: str,
+    resume_payload: dict[str, Any] | None,
+    runtime_events: list[dict[str, Any]] | None = None,
+) -> ProjectChatMessage | None:
+    final_content = str(content or "").strip()
+    normalized_message_id = str(assistant_message_id or "").strip()
+    if not final_content or not normalized_message_id:
+        return None
+    source_context = {
+        "source_type": "manual_ai_chat",
+        "agent_runtime_v2": {
+            "run_id": str(run_id or "").strip(),
+            "call_id": str(call_id or "").strip(),
+            "tool_name": str(tool_name or "").strip(),
+            "resume": dict(resume_payload or {}),
+        },
+    }
+    runtime_trace = (
+        _agent_runtime_trace_from_events(list(runtime_events or []), run_id)
+        if runtime_events
+        else _agent_runtime_trace_from_resume_payload(resume_payload)
+    )
+    if runtime_trace:
+        source_context["agent_runtime_trace"] = runtime_trace
+    existing_message = next(
+        (
+            item
+            for item in project_chat_store.list_messages(
+                project_id,
+                username,
+                limit=0,
+                chat_session_id=chat_session_id,
+            )
+            if str(getattr(item, "id", "") or "").strip() == normalized_message_id
+        ),
+        None,
+    )
+    try:
+        updated = project_chat_store.update_message(
+            project_id,
+            username,
+            normalized_message_id,
+            content=final_content,
+            source_context=source_context,
+        )
+    except Exception:
+        updated = None
+    if updated is not None:
+        return updated
+    if existing_message is not None:
+        return None
+    return _append_chat_record(
+        project_id=project_id,
+        username=username,
+        role="assistant",
+        content=final_content,
+        message_id=normalized_message_id,
+        chat_session_id=chat_session_id,
+        source_context=source_context,
     )
 
 
@@ -14590,6 +15199,200 @@ async def delete_project_chat_runtime_snapshot(
     return {"status": "cleared", "removed_count": int(removed)}
 
 
+@router.get("/{project_id}/agent-runtime-v2/runs")
+async def list_project_agent_runtime_v2_runs(
+    project_id: str,
+    chat_session_id: str = "",
+    limit: int = 50,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    summaries = AgentRuntimeInspector().list_run_summaries(
+        project_id=project_id,
+        username=username,
+        chat_session_id=str(chat_session_id or "").strip(),
+        limit=limit,
+    )
+    return {"runs": summaries}
+
+
+@router.get("/{project_id}/agent-runtime-v2/runs/{run_id}")
+async def get_project_agent_runtime_v2_run(
+    project_id: str,
+    run_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    snapshot = AgentRuntimeInspector().get_run_snapshot(run_id)
+    if snapshot is None:
+        raise HTTPException(404, "agent runtime run not found")
+    run = dict(snapshot.get("run") or {})
+    if run.get("project_id") != project_id or run.get("username") != username:
+        raise HTTPException(404, "agent runtime run not found")
+    return snapshot
+
+
+@router.post("/{project_id}/agent-runtime-v2/permission-actions")
+async def apply_project_agent_runtime_v2_permission_action(
+    project_id: str,
+    req: AgentRuntimeV2PermissionActionReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    run_id = str(req.run_id or "").strip()
+    call_id = str(req.call_id or "").strip()
+    tool_name = str(req.tool_name or "").strip()
+    if not run_id:
+        raise HTTPException(400, "run_id is required")
+    if not call_id:
+        raise HTTPException(400, "call_id is required")
+    if not tool_name:
+        raise HTTPException(400, "tool_name is required")
+    assistant_message_id = str(req.assistant_message_id or "").strip()
+    snapshot = AgentRuntimeInspector().get_run_snapshot(run_id)
+    if snapshot is None:
+        raise HTTPException(404, "agent runtime run not found")
+    run = dict(snapshot.get("run") or {})
+    if run.get("project_id") != project_id or run.get("username") != username:
+        raise HTTPException(404, "agent runtime run not found")
+    project = _ensure_project_access(project_id, auth_payload)
+    permission_request = _find_agent_runtime_permission_request(
+        snapshot,
+        call_id=call_id,
+        tool_name=tool_name,
+    )
+    if permission_request is None:
+        raise HTTPException(400, "permission request not found for run")
+    chat_session_id = (
+        str(req.chat_session_id or "").strip()
+        or str(run.get("chat_session_id") or "").strip()
+    )
+    try:
+        rule = PermissionActionService().apply_permission_action(
+            action=req.action,
+            run_id=run_id,
+            call_id=call_id,
+            tool_name=str(permission_request.get("tool_name") or "").strip(),
+            args=dict(permission_request.get("args") or {}),
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    resume_result = None
+    if str(req.action or "").strip().lower().startswith("allow_"):
+        try:
+            resume_result = await _build_agent_runtime_resume_service(
+                auth_payload,
+            ).resume_permission_tool_call(
+                AgentRuntimeResumeRequest(
+                    project_id=project_id,
+                    username=username,
+                    run_id=run_id,
+                    call_id=call_id,
+                    tool_name=str(permission_request.get("tool_name") or "").strip(),
+                    chat_session_id=chat_session_id,
+                    role_ids=get_auth_role_ids(auth_payload),
+                    project_workspace_path=str(getattr(project, "workspace_path", "") or "").strip(),
+                    workspace_trusted=True,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "agent_runtime_v2 resume failed run_id=%s: %s",
+                run_id,
+                exc,
+            )
+            raise
+    resume_payload = resume_result.to_dict() if resume_result is not None else None
+    latest_snapshot = AgentRuntimeInspector().get_run_snapshot(run_id) or snapshot
+    runtime_events = [
+        dict(item)
+        for item in (latest_snapshot.get("events") or [])
+        if isinstance(item, dict)
+    ]
+    assistant_message = _persist_agent_runtime_resume_chat_message(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        assistant_message_id=assistant_message_id,
+        content=_agent_runtime_resume_final_content(resume_payload),
+        run_id=run_id,
+        call_id=call_id,
+        tool_name=str(permission_request.get("tool_name") or "").strip(),
+        resume_payload=resume_payload,
+        runtime_events=runtime_events,
+    )
+    if assistant_message is not None:
+        await publish_project_chat_record_update_realtime(
+            project_id=project_id,
+            username=username,
+            chat_session_id=chat_session_id,
+            message=assistant_message,
+        )
+    await publish_agent_runtime_permission_action_realtime(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        action=str(req.action or "").strip().lower(),
+        run_id=run_id,
+        call_id=call_id,
+        tool_name=str(permission_request.get("tool_name") or "").strip(),
+        resume=resume_payload,
+        assistant_message=assistant_message,
+    )
+    return {
+        "status": "saved",
+        "rule": rule.to_dict(),
+        "resume": resume_payload,
+        "assistant_message": asdict(assistant_message) if assistant_message is not None else None,
+    }
+
+
+@router.get("/{project_id}/agent-runtime-v2/workspace-trust")
+async def get_project_agent_runtime_v2_workspace_trust(
+    project_id: str,
+    workspace_path: str = "",
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    normalized_path = str(workspace_path or "").strip()
+    if not normalized_path:
+        raise HTTPException(400, "workspace_path is required")
+    trust = PermissionActionService().get_workspace_trust(normalized_path)
+    return {"trust": trust.to_dict()}
+
+
+@router.post("/{project_id}/agent-runtime-v2/workspace-trust")
+async def update_project_agent_runtime_v2_workspace_trust(
+    project_id: str,
+    req: AgentRuntimeV2WorkspaceTrustReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    workspace_path = str(req.workspace_path or "").strip()
+    if not workspace_path:
+        raise HTTPException(400, "workspace_path is required")
+    if not bool(req.trusted):
+        raise HTTPException(400, "only trust=true is supported")
+    trust = PermissionActionService().trust_workspace(
+        workspace_path=workspace_path,
+        username=username,
+        metadata=req.metadata if isinstance(req.metadata, dict) else {},
+    )
+    return {"status": "saved", "trust": trust.to_dict()}
+
+
 @router.delete("/{project_id}/chat/history")
 async def clear_project_chat_history(
     project_id: str,
@@ -14845,6 +15648,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
     cancel_events: dict[str, asyncio.Event] = {}
     terminal_streams: dict[str, dict[str, Any]] = {}
     operation_task_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    send_lock = asyncio.Lock()
     loop = asyncio.get_running_loop()
     unsubscribe_operation_task_events = subscribe_operation_wait_task_events(
         username,
@@ -14852,10 +15656,111 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
     )
 
     async def _send_project_chat_event(payload: dict[str, Any]) -> None:
-        await websocket.send_json(payload)
-        operation_event = _build_project_chat_operation_event(payload)
-        if operation_event:
-            await websocket.send_json(operation_event)
+        async with send_lock:
+            await websocket.send_json(payload)
+            operation_event = _build_project_chat_operation_event(payload)
+            if operation_event:
+                await websocket.send_json(operation_event)
+
+    def _agent_runtime_event_summary(event: RuntimeEvent) -> str:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        event_type = str(event.event_type or "").strip()
+        if event_type == "run_started":
+            return "运行任务已启动"
+        if event_type == "query_engine_started":
+            return "模型与工具循环已启动"
+        if event_type == "llm_step_completed":
+            return "模型步骤完成，正在判断后续动作"
+        if event_type == "tool_call_started":
+            tool_name = str(payload.get("tool_name") or "").strip()
+            return f"开始调用工具：{tool_name}" if tool_name else "开始调用工具"
+        if event_type == "permission_decision":
+            decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+            behavior = str(decision.get("behavior") or "").strip().lower()
+            if behavior == "ask":
+                return "工具调用等待授权"
+            if behavior == "deny":
+                return "工具调用被权限策略拒绝"
+            return "工具调用权限已确认"
+        if event_type == "tool_observation_created":
+            tool_name = str(payload.get("tool_name") or "").strip()
+            status = str(payload.get("status") or "").strip()
+            if tool_name and status:
+                return f"工具返回结果：{tool_name} · {status}"
+            return "工具返回结果"
+        if event_type == "tool_round_completed":
+            return "工具执行轮次已完成"
+        if event_type == "completion_decision":
+            action = str(payload.get("action") or "").strip()
+            return f"完成策略判断：{action}" if action else "完成策略已判断"
+        if event_type == "query_engine_waiting_operation":
+            return "外部操作进行中，等待完成后恢复"
+        if event_type == "query_engine_blocked":
+            return "运行任务已暂停，等待处理阻塞项"
+        if event_type == "query_engine_completed":
+            return "运行任务已完成"
+        if event_type == "query_engine_failed":
+            return "运行任务失败"
+        if event_type == "run_finished":
+            return "运行任务已结束"
+        return event_type or "运行时事件"
+
+    def _agent_runtime_event_phase(event: RuntimeEvent) -> str:
+        event_type = str(event.event_type or "").strip()
+        if event_type in {"query_engine_completed", "run_finished"}:
+            return "completed"
+        if event_type in {"query_engine_failed", "run_failed"}:
+            return "failed"
+        if event_type in {"query_engine_blocked"}:
+            return "blocked"
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        if event_type == "permission_decision":
+            decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+            behavior = str(decision.get("behavior") or "").strip().lower()
+            if behavior == "ask":
+                return "waiting_user"
+            if behavior == "deny":
+                return "blocked"
+        return "running"
+
+    def _build_agent_runtime_workflow_state(
+        payload: dict[str, Any],
+        *,
+        request_id: str,
+    ) -> dict[str, Any] | None:
+        event = payload.get("event") if isinstance(payload, dict) else None
+        if not isinstance(event, dict):
+            return None
+        runtime_event = RuntimeEvent.from_dict(event)
+        run_id = str(payload.get("run_id") or runtime_event.run_id or "").strip()
+        if not run_id:
+            return None
+        return {
+            "type": "workflow_state",
+            "request_id": request_id,
+            "chat_session_id": str(payload.get("chat_session_id") or "").strip(),
+            "workflow_kind": "agent_runtime_v2",
+            "workflow_id": run_id,
+            "workflow_label": "Agent Runtime",
+            "run_id": run_id,
+            "event_type": runtime_event.event_type,
+            "status": _agent_runtime_event_phase(runtime_event),
+            "status_label": "Agent Runtime",
+            "summary": _agent_runtime_event_summary(runtime_event),
+            "detail": json.dumps(runtime_event.payload, ensure_ascii=False, default=str),
+            "action_type": "none",
+        }
+
+    async def _send_agent_runtime_event(payload: dict[str, Any], *, request_id: str) -> None:
+        outgoing = dict(payload)
+        outgoing["request_id"] = request_id
+        await _send_project_chat_event(outgoing)
+        workflow_state = _build_agent_runtime_workflow_state(
+            outgoing,
+            request_id=request_id,
+        )
+        if workflow_state:
+            await _send_project_chat_event(workflow_state)
 
     def _matches_project_chat_operation_task(task: dict[str, Any]) -> bool:
         metadata = task.get("metadata") if isinstance(task, dict) else {}
@@ -15029,6 +15934,73 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     "event_version": event_version,
                 }
             )
+        runtime_resume_meta = _agent_runtime_resume_metadata(metadata)
+        runtime_run_id = str(runtime_resume_meta.get("run_id") or "").strip()
+        if runtime_run_id:
+            claimed = await run_in_threadpool(claim_operation_wait_task_resume, task_id)
+            if not claimed:
+                return
+            await _send_project_chat_event(
+                {
+                    "type": "agent_runtime_operation_resume_started",
+                    "chat_session_id": chat_session_id,
+                    "task_id": task_id,
+                    "run_id": runtime_run_id,
+                    "workflow_kind": operation_kind,
+                    "workflow_label": operation_label,
+                    "message": "外部操作完成，系统正在恢复同一个运行任务。",
+                }
+            )
+            try:
+                resume_result = await _build_agent_runtime_resume_service(
+                    auth_payload,
+                ).resume_background_operation(
+                    AgentRuntimeResumeRequest(
+                        project_id=project_id,
+                        username=username,
+                        run_id=runtime_run_id,
+                        call_id=str(runtime_resume_meta.get("call_id") or "").strip(),
+                        tool_name=str(runtime_resume_meta.get("tool_name") or "project_host_run_command").strip(),
+                        chat_session_id=chat_session_id,
+                        employee_id=str(metadata.get("employee_id") or "").strip(),
+                        role_ids=get_auth_role_ids(auth_payload),
+                        project_workspace_path=str(getattr(project, "workspace_path", "") or "").strip(),
+                        workspace_trusted=True,
+                    ),
+                    operation_task=claimed,
+                )
+                resume_payload = resume_result.to_dict()
+            except Exception as exc:
+                logger.warning(
+                    "agent_runtime_v2 background operation resume failed task_id=%s run_id=%s: %s",
+                    task_id,
+                    runtime_run_id,
+                    exc,
+                )
+                resume_payload = {
+                    "run_id": runtime_run_id,
+                    "status": "failed",
+                    "resumed": False,
+                    "reason": str(exc),
+                }
+            await _send_project_chat_event(
+                {
+                    "type": "agent_runtime_operation_resume_result",
+                    "chat_session_id": chat_session_id,
+                    "task_id": task_id,
+                    "run_id": runtime_run_id,
+                    "resume": resume_payload,
+                }
+            )
+            await publish_agent_runtime_operation_resume_realtime(
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                run_id=runtime_run_id,
+                task_id=task_id,
+                resume=resume_payload,
+            )
+            return
         if not resume_command:
             return
         claimed = await run_in_threadpool(claim_operation_wait_task_resume, task_id)
@@ -15687,7 +16659,10 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             selected_local_connector = None
             local_connector_sandbox_mode = ""
             tools_enabled = bool(runtime_settings.get("auto_use_tools")) and _should_enable_chat_tools(
-                effective_user_message, attachment_names, normalized_images
+                effective_user_message,
+                attachment_names,
+                normalized_images,
+                assistant_workflow_state,
             )
             if tools_enabled:
                 tools = _collect_runtime_tools(
@@ -15713,7 +16688,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 runtime_settings,
                 effective_workspace_path,
             )
-            if local_connector_tools:
+            if tools_enabled and local_connector_tools:
                 tools.extend(local_connector_tools)
             tools = apply_capability_routing(
                 tools,
@@ -15811,9 +16786,56 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             orchestrator = build_agent_orchestrator(
                 llm_service,
                 conv_manager,
-                runtime_settings,
+                _runtime_settings_for_assistant_workflow(
+                    runtime_settings,
+                    assistant_workflow_state,
+                    tools,
+                ),
                 orchestrator_cls=AgentOrchestrator,
             )
+            runtime_event_queue: asyncio.Queue[dict[str, Any] | None] | None = None
+            runtime_event_pump_task: asyncio.Task | None = None
+            runtime_event_unsubscribe = None
+            if hasattr(orchestrator, "event_log"):
+                runtime_event_queue = asyncio.Queue()
+                runtime_trace_events: list[dict[str, Any]] = []
+                runtime_trace_run_id = ""
+                event_stream = EventStream(
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                )
+
+                def _enqueue_runtime_event(event: RuntimeEvent) -> None:
+                    nonlocal runtime_trace_run_id
+                    event_run_id = str(event.run_id or "").strip()
+                    if event_run_id and not runtime_trace_run_id:
+                        runtime_trace_run_id = event_run_id
+                    if not runtime_trace_run_id or event_run_id == runtime_trace_run_id:
+                        runtime_trace_events.append(event.to_dict())
+                    loop.call_soon_threadsafe(
+                        runtime_event_queue.put_nowait,
+                        event_stream.event_payload(event),
+                    )
+
+                async def _pump_agent_runtime_events() -> None:
+                    if runtime_event_queue is None:
+                        return
+                    while True:
+                        event_payload = await runtime_event_queue.get()
+                        if event_payload is None:
+                            break
+                        await _send_agent_runtime_event(
+                            event_payload,
+                            request_id=request_id,
+                        )
+
+                runtime_event_unsubscribe = orchestrator.event_log.subscribe(
+                    _enqueue_runtime_event,
+                )
+                runtime_event_pump_task = asyncio.create_task(
+                    _pump_agent_runtime_events()
+                )
 
             async for chunk_data in orchestrator.run(
                 **build_orchestrator_run_kwargs(
@@ -15863,6 +16885,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     stream_error = _extract_project_chat_stream_error_message(outgoing)
                 outgoing["request_id"] = request_id
                 await _send_project_chat_event(outgoing)
+            if runtime_event_queue is not None:
+                await runtime_event_queue.put(None)
+            if runtime_event_pump_task is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await runtime_event_pump_task
+            if runtime_event_unsubscribe is not None:
+                runtime_event_unsubscribe()
 
             if stream_error:
                 failed_answer = f"对话失败：{stream_error}"
@@ -15903,6 +16932,13 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     archive_workflow_state=archive_workflow_state,
                 )
                 assistant_source_context = with_assistant_workflow_state(source_context, assistant_workflow_state)
+                if "runtime_trace_events" in locals() and runtime_trace_events:
+                    runtime_trace = _agent_runtime_trace_from_events(
+                        list(runtime_trace_events),
+                        runtime_trace_run_id,
+                    )
+                    if runtime_trace:
+                        assistant_source_context["agent_runtime_trace"] = runtime_trace
                 if archive_workflow_state:
                     assistant_source_context = with_archive_workflow_state(
                         assistant_source_context,
@@ -15994,6 +17030,15 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             with contextlib.suppress(Exception):
                 await _send_project_chat_event(done_payload)
         finally:
+            with contextlib.suppress(Exception):
+                if "runtime_event_unsubscribe" in locals() and runtime_event_unsubscribe is not None:
+                    runtime_event_unsubscribe()
+                if "runtime_event_queue" in locals() and runtime_event_queue is not None:
+                    await runtime_event_queue.put(None)
+                if "runtime_event_pump_task" in locals() and runtime_event_pump_task is not None:
+                    runtime_event_pump_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await runtime_event_pump_task
             cancel_events.pop(request_id, None)
             active_tasks.pop(request_id, None)
 
@@ -16469,7 +17514,10 @@ async def stream_project_chat(
     selected_local_connector = None
     local_connector_sandbox_mode = ""
     tools_enabled = bool(runtime_settings.get("auto_use_tools")) and _should_enable_chat_tools(
-        effective_user_message, attachment_names, normalized_images
+        effective_user_message,
+        attachment_names,
+        normalized_images,
+        assistant_workflow_state,
     )
     if tools_enabled:
         tools = _collect_runtime_tools(
@@ -16497,7 +17545,7 @@ async def stream_project_chat(
         runtime_settings,
         effective_workspace_path,
     )
-    if local_connector_tools:
+    if tools_enabled and local_connector_tools:
         tools.extend(local_connector_tools)
     effective_tools, effective_tool_total = _summarize_effective_tools(tools)
 
@@ -16577,7 +17625,11 @@ async def stream_project_chat(
             orchestrator = build_agent_orchestrator(
                 llm_service_runtime,
                 conv_manager,
-                runtime_settings,
+                _runtime_settings_for_assistant_workflow(
+                    runtime_settings,
+                    assistant_workflow_state,
+                    tools,
+                ),
                 orchestrator_cls=AgentOrchestrator,
             )
 

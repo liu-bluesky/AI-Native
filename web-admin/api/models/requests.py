@@ -591,6 +591,22 @@ class ProjectChatSettingsUpdateReq(BaseModel):
     settings: dict[str, Any]
 
 
+class AgentRuntimeV2PermissionActionReq(BaseModel):
+    action: Literal["allow_once", "allow_session", "allow_always", "deny"]
+    run_id: str = ""
+    call_id: str = ""
+    tool_name: str = ""
+    args: dict[str, Any] = Field(default_factory=dict)
+    chat_session_id: str = ""
+    assistant_message_id: str = ""
+
+
+class AgentRuntimeV2WorkspaceTrustReq(BaseModel):
+    workspace_path: str = ""
+    trusted: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ProjectChatTaskTreeGenerateReq(BaseModel):
     chat_session_id: str = ""
     message: str = ""

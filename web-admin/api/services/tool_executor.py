@@ -129,6 +129,10 @@ class ToolExecutor:
         except json.JSONDecodeError:
             return {"error": f"Invalid JSON arguments: {args_str}"}
         args = self._inject_runtime_context_args(tool_name, args)
+        call_id = str(tool_call.get("id") or "").strip()
+        if call_id:
+            args.setdefault("_agent_runtime_call_id", call_id)
+        args.setdefault("_agent_runtime_tool_name", str(tool_name or "").strip())
 
         if self._allowed_tool_names and str(tool_name or "").strip() not in self._allowed_tool_names:
             return {"error": f"Tool {tool_name} is not allowed in current chat settings"}
@@ -261,6 +265,11 @@ class ToolExecutor:
         routed_login_result = await self._maybe_execute_cli_auth_operation_task(
             command=command,
             timeout_sec=int(args.get("timeout_sec", 20)),
+            agent_runtime_context={
+                "run_id": str(args.get("_agent_runtime_run_id") or "").strip(),
+                "call_id": str(args.get("_agent_runtime_call_id") or "").strip(),
+                "tool_name": str(args.get("_agent_runtime_tool_name") or "project_host_run_command").strip(),
+            },
         )
         if routed_login_result is not None:
             return routed_login_result
@@ -283,6 +292,7 @@ class ToolExecutor:
         *,
         command: str,
         timeout_sec: int,
+        agent_runtime_context: dict[str, str] | None = None,
     ) -> dict | None:
         normalized_command = _normalize_lark_auth_login_command(command)
         if not normalized_command:
@@ -300,6 +310,7 @@ class ToolExecutor:
                 "project_id": self._project_id,
                 "chat_session_id": self._chat_session_id,
                 "employee_id": self._employee_id,
+                "agent_runtime_v2": dict(agent_runtime_context or {}),
             },
             timeout_sec=max(15, min(int(timeout_sec or 120), 600)),
         )

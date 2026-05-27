@@ -111,23 +111,50 @@
                   <span>{{ item.vendor || '第三方' }}</span>
                   <span>本地 {{ resolveCliPluginStatus(item).installed_version || '-' }}</span>
                   <span>最新 {{ resolveCliPluginStatus(item).latest_version || '-' }}</span>
+                  <span>锁定 {{ resolveCliPluginStatus(item).locked_version || '-' }}</span>
                   <span>{{ item.requires_restart ? '安装后需重启' : '安装后可直接使用' }}</span>
                 </div>
 
                 <div
-                  v-if="section.key === 'cli_plugins' && resolveCliPluginDiagnostics(item).summary"
+                  v-if="section.key === 'cli_plugins' && resolveCliPluginDiagnostics(item).has_content"
                   class="market-card__profile"
                 >
                   <div class="market-card__profile-head">
                     <span class="market-card__profile-label">运行诊断</span>
-                    <span class="market-card__profile-badge is-ready">
-                      {{ resolveCliPluginDiagnostics(item).mode_label }}
+                    <span
+                      class="market-card__profile-badge"
+                      :class="`is-${resolveCliPluginDiagnostics(item).health_status || 'unknown'}`"
+                    >
+                      {{ resolveCliPluginDiagnostics(item).health_status_label || resolveCliPluginDiagnostics(item).mode_label }}
                     </span>
                   </div>
-                  <div class="market-card__profile-text">
+                  <div v-if="resolveCliPluginDiagnostics(item).summary" class="market-card__profile-text">
                     {{ resolveCliPluginDiagnostics(item).summary }}
                   </div>
+                  <div
+                    v-if="resolveCliPluginDiagnostics(item).health_checks.length"
+                    class="market-card__health"
+                  >
+                    <div
+                      v-for="check in resolveCliPluginDiagnostics(item).health_checks"
+                      :key="check.key"
+                      class="market-card__health-row"
+                    >
+                      <span
+                        class="market-card__health-dot"
+                        :class="check.ok ? 'is-ok' : 'is-missing'"
+                        aria-hidden="true"
+                      />
+                      <span class="market-card__health-label">{{ check.label }}</span>
+                      <span class="market-card__health-value">
+                        {{ check.value || check.message || (check.ok ? '已就绪' : '缺失') }}
+                      </span>
+                    </div>
+                  </div>
                   <div class="market-card__meta market-card__meta--stacked">
+                    <span v-if="resolveCliPluginDiagnostics(item).locked_version">
+                      版本锁定 {{ resolveCliPluginDiagnostics(item).locked_version }}
+                    </span>
                     <span v-if="resolveCliPluginDiagnostics(item).toolchain_root">
                       工具链 {{ resolveCliPluginDiagnostics(item).toolchain_root }}
                     </span>
@@ -314,6 +341,8 @@ function resolveCliPluginStatus(item) {
     installed: rawStatus.installed === true,
     installed_version: String(rawStatus.installed_version || '').trim(),
     latest_version: String(rawStatus.latest_version || '').trim(),
+    locked_version: String(rawStatus.locked_version || '').trim(),
+    lock_source: String(rawStatus.lock_source || '').trim(),
     update_available: rawStatus.update_available === true,
   }
 }
@@ -322,13 +351,37 @@ function resolveCliPluginDiagnostics(item) {
   const diagnostics = item?.runtime_diagnostics && typeof item.runtime_diagnostics === 'object'
     ? item.runtime_diagnostics
     : {}
+  const healthChecks = Array.isArray(diagnostics.health_checks)
+    ? diagnostics.health_checks
+        .filter((check) => check && typeof check === 'object')
+        .map((check) => ({
+          key: String(check.key || '').trim(),
+          label: String(check.label || check.key || '').trim(),
+          ok: check.ok === true,
+          value: String(check.value || '').trim(),
+          message: String(check.message || '').trim(),
+        }))
+    : []
   return {
     mode: String(diagnostics.mode || '').trim(),
     mode_label: String(diagnostics.mode_label || '').trim() || '运行诊断',
     summary: String(diagnostics.summary || '').trim(),
+    locked_version: String(diagnostics.locked_version || '').trim(),
+    health_status: String(diagnostics.health_status || '').trim(),
+    health_status_label: String(diagnostics.health_status_label || '').trim(),
+    health_checks: healthChecks,
+    missing_required: Array.isArray(diagnostics.missing_required)
+      ? diagnostics.missing_required.map((item) => String(item || '').trim()).filter(Boolean)
+      : [],
     toolchain_root: String(diagnostics.toolchain_root || '').trim(),
     runtime_root: String(diagnostics.runtime_root || '').trim(),
     preferred_binary_path: String(diagnostics.preferred_binary_path || '').trim(),
+    has_content: Boolean(
+      String(diagnostics.summary || '').trim()
+      || String(diagnostics.locked_version || '').trim()
+      || String(diagnostics.health_status || '').trim()
+      || healthChecks.length
+    ),
   }
 }
 
@@ -876,16 +929,23 @@ onMounted(async () => {
 }
 
 .market-card__profile-badge.is-authenticated,
-.market-card__profile-badge.is-ready {
+.market-card__profile-badge.is-ready,
+.market-card__profile-badge.is-healthy {
   background: #0f766e;
 }
 
-.market-card__profile-badge.is-pending_auth {
+.market-card__profile-badge.is-pending_auth,
+.market-card__profile-badge.is-degraded {
   background: #b45309;
 }
 
-.market-card__profile-badge.is-uninitialized {
+.market-card__profile-badge.is-uninitialized,
+.market-card__profile-badge.is-not_installed {
   background: #9a3412;
+}
+
+.market-card__profile-badge.is-unknown {
+  background: #475569;
 }
 
 .market-card__profile-text {
@@ -894,6 +954,48 @@ onMounted(async () => {
   font-size: 12px;
   line-height: 1.6;
   word-break: break-all;
+}
+
+.market-card__health {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.market-card__health-row {
+  display: grid;
+  grid-template-columns: 8px minmax(72px, auto) minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.market-card__health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.market-card__health-dot.is-ok {
+  background: #0f766e;
+}
+
+.market-card__health-dot.is-missing {
+  background: #b91c1c;
+}
+
+.market-card__health-label {
+  color: #334155;
+  font-weight: 600;
+}
+
+.market-card__health-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .market-card__actions {

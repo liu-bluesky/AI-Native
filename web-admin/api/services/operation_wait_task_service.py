@@ -248,7 +248,14 @@ def claim_operation_wait_task_resume(task_id: str) -> dict[str, Any] | None:
         metadata = dict(task.get("metadata") or {})
         if str(metadata.get("resume_dispatched_at") or "").strip():
             return None
-        if not str(metadata.get("resume_command") or "").strip():
+        agent_runtime_meta = (
+            metadata.get("agent_runtime_v2")
+            if isinstance(metadata.get("agent_runtime_v2"), dict)
+            else {}
+        )
+        has_resume_command = bool(str(metadata.get("resume_command") or "").strip())
+        has_agent_runtime_resume = bool(str(agent_runtime_meta.get("run_id") or "").strip())
+        if not has_resume_command and not has_agent_runtime_resume:
             return None
         metadata["resume_dispatched_at"] = _utc_now_iso()
         task["metadata"] = metadata

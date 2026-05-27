@@ -187,6 +187,98 @@ def test_project_chat_runtime_snapshot_routes_and_history_cleanup(tmp_path, monk
     assert after_clear_response.json()["snapshot"] is None
 
 
+def test_agent_runtime_resume_persists_same_assistant_message_id(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_chat_store import ProjectChatMessage
+    from stores.json.project_store import ProjectConfig
+
+    _client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    session = store_factory.project_chat_store.create_session("proj-1", "tester", "新对话")
+    store_factory.project_chat_store.append_message(
+        ProjectChatMessage(
+            id="assistant-1",
+            project_id="proj-1",
+            username="tester",
+            role="assistant",
+            content="等待授权",
+            chat_session_id=session.id,
+            source_context={"assistant_workflow": {"status": "running"}},
+        )
+    )
+
+    updated = projects_router._persist_agent_runtime_resume_chat_message(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=session.id,
+        assistant_message_id="assistant-1",
+        content="授权后已经继续完成",
+        run_id="run-1",
+        call_id="call-1",
+        tool_name="project_host_run_command",
+        resume_payload={"continuation": {"final_content": "授权后已经继续完成"}},
+        runtime_events=[
+            {
+                "event_type": "permission_decision",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "payload": {
+                    "decision": {
+                        "behavior": "ask",
+                        "call_id": "call-1",
+                        "tool_name": "project_host_run_command",
+                    },
+                    "tool_call": {
+                        "call_id": "call-1",
+                        "tool_name": "project_host_run_command",
+                        "arguments": "{\"command\":\"pwd\"}",
+                    },
+                },
+            },
+            {
+                "event_type": "permission_action_applied",
+                "created_at": "2026-01-01T00:00:01+00:00",
+                "payload": {
+                    "action": "allow_once",
+                    "call_id": "call-1",
+                    "rule": {"tool_name": "project_host_run_command"},
+                },
+            },
+            {
+                "event_type": "query_engine_completed",
+                "created_at": "2026-01-01T00:00:02+00:00",
+                "payload": {},
+            },
+        ],
+    )
+
+    assert updated is not None
+    assert updated.id == "assistant-1"
+    assert updated.content == "授权后已经继续完成"
+    messages = store_factory.project_chat_store.list_messages(
+        "proj-1",
+        "tester",
+        limit=0,
+        chat_session_id=session.id,
+    )
+    assert [item.id for item in messages] == ["assistant-1"]
+    assert messages[0].source_context["assistant_workflow"]["status"] == "running"
+    assert messages[0].source_context["agent_runtime_v2"]["run_id"] == "run-1"
+    trace = messages[0].source_context["agent_runtime_trace"]
+    assert any(item["text"] == "工具调用等待授权" for item in trace["process_log"])
+    assert any(item["text"] == "工具调用授权已保存" for item in trace["process_log"])
+    permission_operation = next(
+        item
+        for item in trace["operations"]
+        if item["operationId"] == "agent-runtime-permission:run-1:call-1"
+    )
+    assert permission_operation["phase"] == "completed"
+    assert permission_operation["actionType"] == "none"
+
+
 def test_project_chat_session_update_and_feishu_manual_binding(tmp_path, monkeypatch):
     from routers import projects as projects_router
     from services.feishu_bot_service import _find_or_bind_feishu_manual_chat_session
@@ -8225,6 +8317,81 @@ def test_prepare_assistant_workflow_state_keeps_confirmed_once_for_follow_up():
     assert next_state["status"] == "confirmed_once"
 
 
+def test_assistant_workflow_keeps_plain_chat_as_direct_answer_with_tools_allowed():
+    from services.assistant_workflow_state_service import build_assistant_workflow_state
+
+    state = build_assistant_workflow_state(user_message="你好", auto_use_tools=True)
+
+    assert state["primary_task_type"] == "general"
+    assert state["execution_mode"] == "direct_answer"
+    assert state["requires_tooling"] is False
+
+
+def test_project_chat_tools_are_not_enabled_for_plain_greeting():
+    from routers import projects as projects_router
+
+    assert projects_router._should_enable_chat_tools("你好", [], []) is False
+
+
+def test_project_chat_tools_remain_enabled_for_explicit_tool_intent():
+    from routers import projects as projects_router
+
+    assert projects_router._should_enable_chat_tools("查询项目里面有几个员工", [], []) is True
+    assert projects_router._should_enable_chat_tools("看看项目里面有几个员工", [], []) is True
+    assert projects_router._should_enable_chat_tools("帮我执行测试", [], []) is True
+
+
+def test_project_chat_tools_follow_previous_tool_workflow_for_short_continue():
+    from routers import projects as projects_router
+    from services.assistant_workflow_policy_service import prepare_assistant_workflow_state
+
+    previous_state = {
+        "primary_task_type": "automation",
+        "task_types": ["automation"],
+        "execution_mode": "agent_execution",
+        "confirmation_policy": "on_high_risk_only",
+        "requires_tooling": True,
+        "status": "ready",
+    }
+    next_state = prepare_assistant_workflow_state(
+        user_message="继续",
+        previous_state=previous_state,
+        auto_use_tools=True,
+    )
+
+    assert next_state["primary_task_type"] == "automation"
+    assert next_state["requires_tooling"] is True
+    assert projects_router._should_enable_chat_tools("继续", [], [], next_state) is True
+
+
+def test_direct_answer_without_tools_disables_agent_runtime_wrapper():
+    from routers import projects as projects_router
+
+    runtime_settings = {"agent_runtime_enabled": True, "auto_use_tools": True}
+    adjusted = projects_router._runtime_settings_for_assistant_workflow(
+        runtime_settings,
+        {"execution_mode": "direct_answer"},
+        [],
+    )
+
+    assert adjusted["agent_runtime_enabled"] is False
+    assert runtime_settings["agent_runtime_enabled"] is True
+
+
+def test_tool_intent_keeps_agent_runtime_wrapper_available():
+    from routers import projects as projects_router
+
+    runtime_settings = {"agent_runtime_enabled": True, "auto_use_tools": True}
+    adjusted = projects_router._runtime_settings_for_assistant_workflow(
+        runtime_settings,
+        {"execution_mode": "direct_answer"},
+        [{"tool_name": "query_project_rules"}],
+    )
+
+    assert adjusted is runtime_settings
+    assert adjusted["agent_runtime_enabled"] is True
+
+
 def test_run_project_chat_once_reuses_previous_confirmed_workflow_for_short_follow_up(tmp_path, monkeypatch):
     from core import config as core_config
     from services.project_chat_execution_service import run_project_chat_once
@@ -8345,6 +8512,7 @@ def test_run_project_chat_once_reuses_previous_confirmed_workflow_for_short_foll
                 "workspace_path": "",
                 "host_workspace_path": "",
                 "local_connector_sandbox_mode": "workspace-write",
+                "capability_routing": {},
                 "metadata": kwargs.get("metadata") or {},
             },
         )(),

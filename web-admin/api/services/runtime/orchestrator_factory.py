@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from services.agent_orchestrator import AgentOrchestrator
+from services.agent_runtime_v2 import AgentTaskRuntime
 
 
 def _resolve_runtime_int(
@@ -14,11 +16,11 @@ def _resolve_runtime_int(
 ) -> int:
     value = source.get(key)
     if value is None:
-      return default
+        return default
     try:
-      return int(value)
+        return int(value)
     except (TypeError, ValueError):
-      return default
+        return default
 
 
 def resolve_orchestrator_runtime_settings(
@@ -41,15 +43,36 @@ def resolve_orchestrator_runtime_settings(
     }
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def should_enable_agent_runtime_v2(runtime_settings: dict[str, Any] | None) -> bool:
+    source = runtime_settings if isinstance(runtime_settings, dict) else {}
+    env_enabled = _coerce_bool(os.environ.get("AGENT_RUNTIME_V2_ENABLED", ""), True)
+    return _coerce_bool(source.get("agent_runtime_enabled"), env_enabled)
+
+
 def build_agent_orchestrator(
     llm_service: Any,
     conversation_manager: Any,
     runtime_settings: dict[str, Any] | None,
     *,
     orchestrator_cls: type[AgentOrchestrator] = AgentOrchestrator,
-) -> AgentOrchestrator:
-    return orchestrator_cls(
+) -> Any:
+    legacy_orchestrator = orchestrator_cls(
         llm_service,
         conversation_manager,
         **resolve_orchestrator_runtime_settings(runtime_settings),
     )
+    if should_enable_agent_runtime_v2(runtime_settings):
+        return AgentTaskRuntime(legacy_orchestrator)
+    return legacy_orchestrator

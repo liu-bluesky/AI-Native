@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 from services.runtime.orchestrator_factory import (
     build_agent_orchestrator,
     resolve_orchestrator_runtime_settings,
+    should_enable_agent_runtime_v2,
 )
 
 
@@ -45,6 +46,7 @@ def test_build_agent_orchestrator_applies_runtime_settings():
             "max_tool_calls_per_round": 5,
             "tool_timeout_sec": 33,
             "tool_retry_count": 1,
+            "agent_runtime_enabled": False,
         },
     )
 
@@ -68,3 +70,33 @@ def test_resolve_orchestrator_runtime_settings_preserves_zero_timeout():
 
     assert settings["tool_timeout_sec"] == 0
     assert settings["tool_retry_count"] == 0
+
+
+def test_should_enable_agent_runtime_v2_defaults_to_true(monkeypatch):
+    monkeypatch.delenv("AGENT_RUNTIME_V2_ENABLED", raising=False)
+
+    assert should_enable_agent_runtime_v2({}) is True
+
+
+def test_should_enable_agent_runtime_v2_supports_explicit_disable(monkeypatch):
+    monkeypatch.delenv("AGENT_RUNTIME_V2_ENABLED", raising=False)
+
+    assert should_enable_agent_runtime_v2({"agent_runtime_enabled": False}) is False
+
+
+def test_should_enable_agent_runtime_v2_supports_chat_setting(monkeypatch):
+    monkeypatch.delenv("AGENT_RUNTIME_V2_ENABLED", raising=False)
+
+    assert should_enable_agent_runtime_v2({"agent_runtime_enabled": True}) is True
+
+
+def test_build_agent_orchestrator_uses_v2_wrapper_when_enabled():
+    orchestrator = build_agent_orchestrator(
+        MagicMock(),
+        MagicMock(),
+        {},
+    )
+
+    from services.agent_runtime_v2 import AgentTaskRuntime
+
+    assert isinstance(orchestrator, AgentTaskRuntime)

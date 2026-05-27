@@ -524,7 +524,10 @@ class ProjectChatStore:
                 if next_content:
                     item.content = next_content
             if isinstance(source_context, dict) and source_context:
-                item.source_context = dict(source_context)
+                item.source_context = {
+                    **(item.source_context if isinstance(item.source_context, dict) else {}),
+                    **dict(source_context),
+                }
                 item.source_type = _normalize_chat_source_type(source_context.get("source_type")) or item.source_type
                 item.platform = _normalize_chat_context_text(source_context.get("platform") or item.platform, 40).lower()
                 item.connector_id = _normalize_chat_context_text(source_context.get("connector_id") or item.connector_id, 120)

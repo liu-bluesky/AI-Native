@@ -327,6 +327,8 @@ def _record_successful_install(
         "installed": True,
         "installed_version": str(installed_version or "").strip(),
         "latest_version": str(latest_version or "").strip(),
+        "locked_version": str(installed_version or latest_version or "").strip(),
+        "lock_source": "install-receipt",
         "last_installed_at": _utc_now_iso(),
         "detection_source": str(detection_source or "").strip() or "install-command",
         "toolchain": (
@@ -336,6 +338,82 @@ def _record_successful_install(
         ),
     }
     _save_plugin_install_state(installs)
+
+
+def _build_plugin_health(
+    *,
+    plugin: dict[str, Any],
+    receipt: dict[str, Any],
+    toolchain_snapshot: dict[str, Any],
+    installed: bool,
+    installed_version: str,
+    latest_version: str,
+    latest_error: str,
+) -> dict[str, Any]:
+    package_name = str(plugin.get("package_name") or "").strip()
+    binary_name = str(plugin.get("binary_name") or "").strip()
+    locked_version = str(receipt.get("locked_version") or "").strip()
+    checks = [
+        {
+            "key": "node",
+            "label": "Node.js",
+            "ok": bool(str(toolchain_snapshot.get("node_path") or "").strip()),
+            "value": str(toolchain_snapshot.get("node_path") or "").strip(),
+            "required": True,
+        },
+        {
+            "key": "npm",
+            "label": "npm",
+            "ok": bool(str(toolchain_snapshot.get("npm_path") or "").strip()),
+            "value": str(toolchain_snapshot.get("npm_path") or "").strip(),
+            "required": True,
+        },
+        {
+            "key": "binary",
+            "label": binary_name or "CLI binary",
+            "ok": bool(str(toolchain_snapshot.get("plugin_binary_path") or "").strip()),
+            "value": str(toolchain_snapshot.get("plugin_binary_path") or "").strip(),
+            "required": bool(installed and binary_name),
+        },
+        {
+            "key": "version_lock",
+            "label": "版本锁定",
+            "ok": bool(locked_version) or not installed,
+            "value": locked_version,
+            "required": bool(installed),
+        },
+        {
+            "key": "latest_version",
+            "label": "最新版本检测",
+            "ok": bool(latest_version) or not package_name,
+            "value": latest_version,
+            "message": str(latest_error or "").strip(),
+            "required": bool(package_name),
+        },
+    ]
+    missing_required = [
+        item["key"]
+        for item in checks
+        if item.get("required") and not item.get("ok")
+    ]
+    if not installed:
+        status = "not_installed"
+        label = "未安装"
+    elif missing_required:
+        status = "degraded"
+        label = "依赖缺失"
+    else:
+        status = "healthy"
+        label = "健康"
+    return {
+        "status": status,
+        "status_label": label,
+        "checks": checks,
+        "missing_required": missing_required,
+        "locked_version": locked_version,
+        "installed_version": str(installed_version or "").strip(),
+        "latest_version": str(latest_version or "").strip(),
+    }
 
 
 def _read_install_receipt(plugin_id: str) -> dict[str, Any]:
@@ -790,6 +868,9 @@ def _resolve_plugin_status(plugin: dict[str, Any], *, refresh: bool = False) -> 
     latest_version, latest_error = _detect_latest_version(plugin)
     if not latest_version:
         latest_version = _extract_version(receipt.get("latest_version"))
+    locked_version = str(receipt.get("locked_version") or "").strip()
+    if not locked_version and effective_installed_version:
+        locked_version = effective_installed_version
     update_available = False
     status = "not_installed"
     status_label = "未安装"
@@ -824,6 +905,8 @@ def _resolve_plugin_status(plugin: dict[str, Any], *, refresh: bool = False) -> 
         "installed": installed,
         "installed_version": comparable_installed_version,
         "latest_version": latest_version,
+        "locked_version": locked_version,
+        "lock_source": str(receipt.get("lock_source") or "").strip(),
         "update_available": update_available,
         "latest_check_error": latest_error,
         "last_installed_at": str(receipt.get("last_installed_at") or "").strip(),
@@ -838,6 +921,15 @@ def _resolve_plugin_status(plugin: dict[str, Any], *, refresh: bool = False) -> 
         ),
         "environment_summary": _build_plugin_environment_summary(plugin_id, toolchain_snapshot),
     }
+    payload["health"] = _build_plugin_health(
+        plugin=plugin,
+        receipt={**receipt, "locked_version": locked_version},
+        toolchain_snapshot=toolchain_snapshot,
+        installed=installed,
+        installed_version=comparable_installed_version,
+        latest_version=latest_version,
+        latest_error=latest_error,
+    )
     _CLI_PLUGIN_STATUS_CACHE[plugin_id] = (time.time(), dict(payload))
     return payload
 

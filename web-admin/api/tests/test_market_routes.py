@@ -242,10 +242,33 @@ def test_market_cli_plugin_catalog_includes_runtime_diagnostics(tmp_path, monkey
                     "status_label": "已安装",
                     "installed": True,
                     "installed_version": "1.2.3",
+                    "locked_version": "1.2.3",
+                    "lock_source": "install-receipt",
                     "toolchain": {
                         "toolchain_root": "/srv/app/.ai-employee/cli-toolchain",
                         "toolchain_bin_dir": "/srv/app/.ai-employee/cli-toolchain/bin",
                         "plugin_binary_path": "/srv/app/.ai-employee/cli-toolchain/bin/lark-cli",
+                    },
+                    "health": {
+                        "status": "healthy",
+                        "status_label": "健康",
+                        "checks": [
+                            {
+                                "key": "node",
+                                "label": "Node.js",
+                                "ok": True,
+                                "value": "/usr/local/bin/node",
+                                "required": True,
+                            },
+                            {
+                                "key": "version_lock",
+                                "label": "版本锁定",
+                                "ok": True,
+                                "value": "1.2.3",
+                                "required": True,
+                            },
+                        ],
+                        "missing_required": [],
                     },
                 },
             }
@@ -273,7 +296,12 @@ def test_market_cli_plugin_catalog_includes_runtime_diagnostics(tmp_path, monkey
     assert payload["runtime_diagnostics"]["mode_label"] == "共享安装 + 用户隔离"
     assert payload["runtime_diagnostics"]["toolchain_root"] == "/srv/app/.ai-employee/cli-toolchain"
     assert payload["runtime_diagnostics"]["runtime_root"] == "/srv/app/.ai-employee/cli-runtime/users/tester/feishu-cli"
+    assert payload["runtime_diagnostics"]["locked_version"] == "1.2.3"
+    assert payload["runtime_diagnostics"]["lock_source"] == "install-receipt"
+    assert payload["runtime_diagnostics"]["health_status"] == "healthy"
+    assert payload["runtime_diagnostics"]["health_checks"][1]["key"] == "version_lock"
     assert "共享工具链目录" in payload["runtime_diagnostics"]["summary"]
+    assert "锁定版本 1.2.3" in payload["runtime_diagnostics"]["summary"]
 
 
 def test_market_cli_plugin_profile_init_route(tmp_path, monkeypatch):

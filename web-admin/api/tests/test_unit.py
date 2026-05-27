@@ -271,6 +271,8 @@ async def test_tool_executor_routes_lark_auth_login_to_operation_wait_task(monke
     assert captured["plugin_id"] == "feishu-cli"
     assert captured["username"] == "tester"
     assert captured["timeout_sec"] == 45
+    assert captured["metadata"]["agent_runtime_v2"]["call_id"] == ""
+    assert captured["metadata"]["agent_runtime_v2"]["tool_name"] == "project_host_run_command"
 
 
 @pytest.mark.asyncio
@@ -954,7 +956,72 @@ def test_build_cli_plugin_runtime_environment_backfills_detected_plugin_runtime(
     receipt = plugin_svc._read_install_receipt("feishu-cli")
     assert receipt["installed"] is True
     assert receipt["installed_version"] == "1.0.18"
+    assert receipt["locked_version"] == "1.0.18"
+    assert receipt["lock_source"] == "install-receipt"
     assert receipt["toolchain"]["plugin_binary_path"] == str(lark_bin / "lark-cli")
+
+
+def test_resolve_cli_plugin_status_includes_version_lock_and_health(tmp_path, monkeypatch):
+    from services import cli_plugin_market_service as plugin_svc
+
+    plugin_svc._CLI_PLUGIN_STATUS_CACHE.clear()
+    monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        plugin_svc,
+        "get_cli_plugin_toolchain_root",
+        lambda create=True: tmp_path / ".ai-employee" / "cli-toolchain",
+    )
+    plugin_svc._save_plugin_install_state(
+        {
+            "feishu-cli": {
+                "installed": True,
+                "installed_version": "1.2.3",
+                "latest_version": "1.2.4",
+                "locked_version": "1.2.3",
+                "lock_source": "install-receipt",
+                "detection_source": "binary",
+                "toolchain": {},
+            }
+        }
+    )
+    monkeypatch.setattr(
+        plugin_svc,
+        "_collect_runtime_toolchain_snapshot",
+        lambda plugin, receipt=None: {
+            "node_path": "/usr/local/bin/node",
+            "npm_path": "/usr/local/bin/npm",
+            "npx_path": "/usr/local/bin/npx",
+            "plugin_binary_path": "/opt/bin/lark-cli",
+            "runtime_path_entries": ["/usr/local/bin", "/opt/bin"],
+        },
+    )
+    monkeypatch.setattr(
+        plugin_svc,
+        "_detect_installed_version",
+        lambda plugin: ("1.2.3", "binary"),
+    )
+    monkeypatch.setattr(
+        plugin_svc,
+        "_detect_latest_version",
+        lambda plugin: ("1.2.4", ""),
+    )
+
+    status = plugin_svc._resolve_plugin_status(
+        {
+            "id": "feishu-cli",
+            "binary_name": "lark-cli",
+            "package_name": "@larksuite/cli",
+        },
+        refresh=True,
+    )
+
+    assert status["status"] == "update_available"
+    assert status["locked_version"] == "1.2.3"
+    assert status["lock_source"] == "install-receipt"
+    assert status["health"]["status"] == "healthy"
+    assert status["health"]["locked_version"] == "1.2.3"
+    check_keys = {item["key"] for item in status["health"]["checks"]}
+    assert {"node", "npm", "binary", "version_lock", "latest_version"} <= check_keys
 
 
 def test_detect_installed_version_uses_saved_binary_path_when_path_missing(tmp_path, monkeypatch):
@@ -1051,6 +1118,9 @@ def test_install_cli_plugin_uses_persistent_toolchain_env(tmp_path, monkeypatch)
     assert env["CLI_PLUGIN_NPM_GLOBAL_PREFIX"] == str(toolchain_root / "npm-global")
     assert env["NPM_CONFIG_PREFIX"] == str(toolchain_root / "npm-global")
     assert str(toolchain_root / "bin") in env["PATH"]
+    receipt = plugin_svc._read_install_receipt("feishu-cli")
+    assert receipt["locked_version"] == "1.0.18"
+    assert receipt["lock_source"] == "install-receipt"
 
 
 def test_install_cli_plugin_tolerates_binary_output(tmp_path, monkeypatch):
@@ -16269,6 +16339,35 @@ def test_cli_plugin_login_task_claim_resume_marks_dispatched(tmp_path, monkeypat
 
     duplicate = login_task_svc.claim_login_task_resume("cli-plugin-login-claim-1")
     assert duplicate is None
+
+
+def test_cli_plugin_login_task_claim_resume_allows_agent_runtime_metadata(tmp_path, monkeypatch):
+    from services import operation_wait_task_service as login_task_svc
+
+    monkeypatch.setattr(login_task_svc, "get_project_root", lambda: tmp_path)
+
+    task = {
+        "task_id": "cli-plugin-login-claim-runtime",
+        "plugin_id": "feishu-cli",
+        "created_by": "tester",
+        "status": "succeeded",
+        "metadata": {
+            "agent_runtime_v2": {
+                "run_id": "run-1",
+                "call_id": "call-1",
+                "tool_name": "project_host_run_command",
+            },
+        },
+        "created_at": "2026-05-20T09:00:00+00:00",
+        "updated_at": "2026-05-20T09:00:00+00:00",
+        "event_version": 0,
+    }
+    login_task_svc._task_root_path().mkdir(parents=True, exist_ok=True)
+    login_task_svc._write_task(task)
+
+    claimed = login_task_svc.claim_login_task_resume("cli-plugin-login-claim-runtime")
+    assert claimed is not None
+    assert str(claimed["metadata"]["resume_dispatched_at"]).strip()
 
 
 if __name__ == "__main__":

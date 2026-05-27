@@ -97,6 +97,11 @@ def _build_cli_plugin_runtime_diagnostics(item: dict[str, Any]) -> dict[str, Any
         if isinstance(install_status.get("toolchain"), dict)
         else {}
     )
+    health = (
+        install_status.get("health")
+        if isinstance(install_status.get("health"), dict)
+        else {}
+    )
     toolchain_root = str(toolchain.get("toolchain_root") or "").strip()
     toolchain_bin_dir = str(toolchain.get("toolchain_bin_dir") or "").strip()
     preferred_binary_path = str(
@@ -109,17 +114,36 @@ def _build_cli_plugin_runtime_diagnostics(item: dict[str, Any]) -> dict[str, Any
     config_dir = str(my_profile.get("config_dir") or "").strip()
     cache_dir = str(my_profile.get("cache_dir") or "").strip()
     installed = install_status.get("installed") is True
+    locked_version = str(install_status.get("locked_version") or "").strip()
+    health_status = str(health.get("status") or "").strip()
+    health_status_label = str(health.get("status_label") or "").strip()
+    health_checks = health.get("checks") if isinstance(health.get("checks"), list) else []
+    missing_required = (
+        health.get("missing_required")
+        if isinstance(health.get("missing_required"), list)
+        else []
+    )
 
     summary_parts: list[str] = []
     if toolchain_root:
         summary_parts.append(f"共享工具链目录 {toolchain_root}")
     if runtime_root:
         summary_parts.append(f"当前用户隔离目录 {runtime_root}")
+    if locked_version:
+        summary_parts.append(f"锁定版本 {locked_version}")
+    if health_status_label:
+        summary_parts.append(f"健康状态 {health_status_label}")
 
     return {
         "mode": "shared_toolchain_per_user_runtime",
         "mode_label": "共享安装 + 用户隔离",
         "installed": installed,
+        "locked_version": locked_version,
+        "lock_source": str(install_status.get("lock_source") or "").strip(),
+        "health_status": health_status,
+        "health_status_label": health_status_label,
+        "health_checks": health_checks,
+        "missing_required": missing_required,
         "toolchain_root": toolchain_root,
         "toolchain_bin_dir": toolchain_bin_dir,
         "preferred_binary_path": preferred_binary_path,
