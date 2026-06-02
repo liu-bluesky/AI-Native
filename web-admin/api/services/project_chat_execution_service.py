@@ -236,11 +236,30 @@ async def run_project_chat_once(
     max_tokens = projects_router._resolve_chat_max_tokens(runtime_settings.get("max_tokens"))
     temperature = float(runtime_settings.get("temperature") if runtime_settings.get("temperature") is not None else 0.1)
     temperature = max(0.0, min(temperature, 2.0))
+    assistant_workflow_state = prepare_assistant_workflow_state(
+        user_message=effective_user_message,
+        source_context=source_context,
+        previous_state=previous_assistant_workflow_state,
+        chat_surface=str(req.chat_surface or "main-chat").strip() or "main-chat",
+        auto_use_tools=bool(runtime_settings.get("auto_use_tools")) and (
+            bool(enabled_tool_names)
+            or projects_router._should_enable_chat_tools(
+                effective_user_message,
+                attachment_names,
+                normalized_images,
+                None,
+            )
+        ),
+    )
     tools: list[dict[str, Any]] = []
-    tools_enabled = bool(runtime_settings.get("auto_use_tools")) and projects_router._should_enable_chat_tools(
-        effective_user_message,
-        attachment_names,
-        normalized_images,
+    tools_enabled = bool(runtime_settings.get("auto_use_tools")) and (
+        bool(enabled_tool_names)
+        or projects_router._should_enable_chat_tools(
+            effective_user_message,
+            attachment_names,
+            normalized_images,
+            assistant_workflow_state,
+        )
     )
     if tools_enabled:
         tools = projects_router._collect_runtime_tools(
@@ -258,13 +277,6 @@ async def run_project_chat_once(
         )
 
     effective_workspace_path = projects_router._resolve_project_workspace_for_chat(project, runtime_settings)
-    assistant_workflow_state = prepare_assistant_workflow_state(
-        user_message=effective_user_message,
-        source_context=source_context,
-        previous_state=previous_assistant_workflow_state,
-        chat_surface=str(req.chat_surface or "main-chat").strip() or "main-chat",
-        auto_use_tools=bool(runtime_settings.get("auto_use_tools")),
-    )
     tools = apply_capability_routing(
         tools,
         assistant_workflow=assistant_workflow_state,

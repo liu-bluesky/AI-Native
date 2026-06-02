@@ -2,16 +2,17 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shlex
 from typing import Any
 from core.config import get_settings
 
 
-_LARK_AUTH_LOGIN_COMMAND_PATTERN = re.compile(
-    r"(^|[\s;&|])(lark-cli)\s+auth\s+login(?:[\s;&|]|$)",
-    re.IGNORECASE,
-)
 _LARK_AUTH_LOGIN_ALIAS_PATTERN = re.compile(
     r"^(?:lark-cli\s+)?(?:auth\s+)?(?:login|登录)(?:\s+([\s\S]*))?$",
+    re.IGNORECASE,
+)
+_LARK_AUTH_STATUS_ALIAS_PATTERN = re.compile(
+    r"^(?:lark-cli\s+)?(?:(?:auth\s+)?status|login\s+status)$",
     re.IGNORECASE,
 )
 _LARK_AUTH_DOMAIN_ALIAS_NAMES = (
@@ -42,11 +43,29 @@ _TASK_TREE_TOOL_NAMES = {
 }
 
 
+def _parse_shell_like_command(command: str) -> list[str]:
+    try:
+        return shlex.split(str(command or "").strip())
+    except ValueError:
+        return str(command or "").strip().split()
+
+
 def _normalize_lark_auth_login_command(command: str) -> str:
     normalized_command = str(command or "").strip()
     if not normalized_command:
         return ""
-    if _LARK_AUTH_LOGIN_COMMAND_PATTERN.search(normalized_command):
+    if _normalize_lark_auth_status_command(normalized_command):
+        return ""
+    args = _parse_shell_like_command(normalized_command)
+    if any(str(arg or "").strip().lower() in {"-h", "--help", "help"} for arg in args):
+        return ""
+    if _command_matches_pattern(
+        normalized_command,
+        r"^(?:\S+/)?lark-cli\s+auth\s+login(?:\s|$)",
+    ):
+        lowered_args = [str(arg or "").strip().lower() for arg in args]
+        if len(lowered_args) == 3 and lowered_args[-3:] == ["lark-cli", "auth", "login"]:
+            return "lark-cli auth login --recommend"
         return normalized_command
     match = _LARK_AUTH_LOGIN_ALIAS_PATTERN.match(normalized_command)
     if not match:
@@ -60,6 +79,119 @@ def _normalize_lark_auth_login_command(command: str) -> str:
         compact_suffix = re.sub(r"\s+", "", suffix)
         return f"lark-cli auth login --domain {compact_suffix}"
     return "lark-cli auth login --recommend"
+
+
+def _normalize_lark_auth_status_command(command: str) -> str:
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        return ""
+    if _LARK_AUTH_STATUS_ALIAS_PATTERN.fullmatch(normalized_command):
+        return "lark-cli auth status"
+    args = _parse_shell_like_command(normalized_command)
+    if not args:
+        return ""
+    binary = str(args[0] or "").split("/")[-1]
+    lowered = [str(item or "").strip().lower() for item in args]
+    if binary != "lark-cli":
+        return ""
+    if len(lowered) >= 3 and lowered[1:3] == ["auth", "status"]:
+        return normalized_command
+    if len(lowered) >= 3 and lowered[1:3] == ["login", "status"]:
+        return " ".join([args[0], "auth", "status", *args[3:]])
+    return ""
+
+
+def _normalize_lark_status_command_segments(command: str) -> str:
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        return ""
+    pieces = re.split(r"(\s*(?:&&|\|\||;)\s*)", normalized_command)
+    if len(pieces) <= 1:
+        return _normalize_lark_auth_status_command(normalized_command) or normalized_command
+    changed = False
+    next_pieces: list[str] = []
+    for piece in pieces:
+        if re.fullmatch(r"\s*(?:&&|\|\||;)\s*", piece):
+            next_pieces.append(piece)
+            continue
+        stripped = piece.strip()
+        replacement = _normalize_lark_auth_status_command(stripped)
+        if replacement:
+            leading = piece[: len(piece) - len(piece.lstrip())]
+            trailing = piece[len(piece.rstrip()) :]
+            next_pieces.append(f"{leading}{replacement}{trailing}")
+            changed = True
+        else:
+            next_pieces.append(piece)
+    return "".join(next_pieces) if changed else normalized_command
+
+
+def _command_matches_pattern(command: str, pattern: str) -> bool:
+    normalized_command = str(command or "").strip()
+    normalized_pattern = str(pattern or "").strip()
+    if not normalized_command or not normalized_pattern:
+        return False
+    try:
+        return re.search(normalized_pattern, normalized_command, re.IGNORECASE) is not None
+    except re.error:
+        return normalized_pattern.lower() in normalized_command.lower()
+
+
+def _iter_cli_auth_command_candidates(command: str) -> list[str]:
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add_candidate(value: str) -> None:
+        normalized_value = str(value or "").strip()
+        if not normalized_value or normalized_value in seen:
+            return
+        seen.add(normalized_value)
+        candidates.append(normalized_value)
+
+    add_candidate(normalized_command)
+    for line in normalized_command.splitlines():
+        stripped_line = line.strip()
+        if not stripped_line or stripped_line.startswith("#"):
+            continue
+        add_candidate(stripped_line)
+        for segment in re.split(r"\s*(?:&&|\|\||;)\s*", stripped_line):
+            add_candidate(segment)
+    return candidates
+
+
+def _normalize_cli_auth_operation_command(command: str) -> dict[str, str]:
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        return {}
+    command_candidates = _iter_cli_auth_command_candidates(normalized_command)
+
+    from services.cli_plugin_market_service import list_cli_plugins
+
+    for plugin in list_cli_plugins(include_status=False):
+        auth = plugin.get("auth") if isinstance(plugin.get("auth"), dict) else {}
+        patterns = [
+            str(item or "").strip()
+            for item in (auth.get("command_patterns") or [])
+            if str(item or "").strip()
+        ]
+        for candidate in command_candidates:
+            candidate_args = _parse_shell_like_command(candidate)
+            if any(str(arg or "").strip().lower() in {"-h", "--help", "help"} for arg in candidate_args):
+                continue
+            if patterns and any(_command_matches_pattern(candidate, pattern) for pattern in patterns):
+                return {
+                    "plugin_id": str(plugin.get("id") or "").strip(),
+                    "command": candidate,
+                }
+
+    for candidate in command_candidates:
+        lark_alias = _normalize_lark_auth_login_command(candidate)
+        if lark_alias:
+            return {"plugin_id": "feishu-cli", "command": lark_alias}
+    return {}
 
 
 class ToolExecutor:
@@ -183,6 +315,8 @@ class ToolExecutor:
             )
         if str(tool_name or "").strip() == "project_host_run_command":
             return await self._execute_project_host_command(args)
+        if str(tool_name or "").strip().startswith("project_host_terminal_"):
+            return await self._execute_project_host_terminal_tool(tool_name, args)
         if str(tool_name or "").strip().startswith("local_connector_"):
             return await self._execute_local_connector_tool(tool_name, args)
         from services.dynamic_mcp_runtime import invoke_project_tool_runtime
@@ -261,7 +395,9 @@ class ToolExecutor:
         )
 
     async def _execute_project_host_command(self, args: dict) -> dict:
-        command = str(args.get("command") or "").strip()
+        command = _normalize_lark_status_command_segments(
+            str(args.get("command") or "").strip()
+        )
         routed_login_result = await self._maybe_execute_cli_auth_operation_task(
             command=command,
             timeout_sec=int(args.get("timeout_sec", 20)),
@@ -287,6 +423,85 @@ class ToolExecutor:
             max_output_chars=int(args.get("max_output_chars", 12000) or 12000),
         )
 
+    async def _execute_project_host_terminal_tool(self, tool_name: str, args: dict) -> dict:
+        normalized_tool_name = str(tool_name or "").strip()
+        try:
+            if normalized_tool_name == "project_host_terminal_start":
+                from services.project_host_terminal_service import start_or_attach_project_host_terminal
+
+                result = await start_or_attach_project_host_terminal(
+                    project_id=self._project_id,
+                    username=self._username,
+                    chat_session_id=self._chat_session_id,
+                    workspace_path=self._host_workspace_path,
+                    initial_command=str(args.get("initial_command") or "").strip(),
+                )
+                return {
+                    "ok": True,
+                    "source": "project_host_terminal",
+                    "interactive": True,
+                    "action_type": "enter_text",
+                    **dict(result),
+                }
+            if normalized_tool_name == "project_host_terminal_input":
+                from services.project_host_terminal_service import (
+                    get_project_host_terminal_session,
+                    write_project_host_terminal_input,
+                )
+
+                session = get_project_host_terminal_session(
+                    project_id=self._project_id,
+                    username=self._username,
+                    chat_session_id=self._chat_session_id,
+                )
+                if session is None:
+                    return {"ok": False, "error": "terminal session is not running"}
+                result = await write_project_host_terminal_input(
+                    session.session_id,
+                    str(args.get("content") or ""),
+                )
+                return {
+                    "source": "project_host_terminal",
+                    "session_id": session.session_id,
+                    "workspace_path": session.workspace_path,
+                    **dict(result),
+                }
+            if normalized_tool_name == "project_host_terminal_read":
+                from services.project_host_terminal_service import read_project_host_terminal_output
+
+                return {
+                    "source": "project_host_terminal",
+                    **read_project_host_terminal_output(
+                        project_id=self._project_id,
+                        username=self._username,
+                        chat_session_id=self._chat_session_id,
+                        max_chars=int(args.get("max_chars", 12000) or 12000),
+                    ),
+                }
+            if normalized_tool_name == "project_host_terminal_stop":
+                from services.project_host_terminal_service import (
+                    get_project_host_terminal_session,
+                    stop_project_host_terminal,
+                )
+
+                session = get_project_host_terminal_session(
+                    project_id=self._project_id,
+                    username=self._username,
+                    chat_session_id=self._chat_session_id,
+                )
+                if session is None:
+                    return {"ok": False, "error": "terminal session is not running"}
+                result = await stop_project_host_terminal(session.session_id)
+                return {
+                    "source": "project_host_terminal",
+                    "session_id": session.session_id,
+                    "workspace_path": session.workspace_path,
+                    **dict(result),
+                }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "source": "project_host_terminal"}
+        return {"ok": False, "error": f"Unsupported project host terminal tool: {normalized_tool_name}"}
+
     async def _maybe_execute_cli_auth_operation_task(
         self,
         *,
@@ -294,15 +509,17 @@ class ToolExecutor:
         timeout_sec: int,
         agent_runtime_context: dict[str, str] | None = None,
     ) -> dict | None:
-        normalized_command = _normalize_lark_auth_login_command(command)
-        if not normalized_command:
+        operation = _normalize_cli_auth_operation_command(command)
+        normalized_command = str(operation.get("command") or "").strip()
+        plugin_id = str(operation.get("plugin_id") or "").strip()
+        if not normalized_command or not plugin_id:
             return None
         from services.operation_wait_task_service import create_cli_plugin_auth_operation_task
         from starlette.concurrency import run_in_threadpool
 
         task = await run_in_threadpool(
             create_cli_plugin_auth_operation_task,
-            "feishu-cli",
+            plugin_id,
             username=self._username,
             login_command=normalized_command,
             metadata={
@@ -316,6 +533,14 @@ class ToolExecutor:
         )
         execution = dict(task.get("execution") or {})
         authorization_url = str(execution.get("authorization_url") or "").strip()
+        interaction_schema = (
+            execution.get("interaction_schema")
+            if isinstance(execution.get("interaction_schema"), dict)
+            else None
+        )
+        action_type = str(execution.get("action_type") or "").strip().lower()
+        if not action_type:
+            action_type = "open_url" if authorization_url else "interaction_form" if interaction_schema else "none"
         status = str(task.get("status") or "").strip().lower()
         waiting_user_action = status == "waiting_user_action"
         execution_ok = bool(task.get("execution_ok", task.get("ok")))
@@ -329,8 +554,9 @@ class ToolExecutor:
             "interactive": True,
             "requires_user_action": waiting_user_action,
             "waiting_user_action": waiting_user_action,
-            "action_type": "open_url" if waiting_user_action else "none",
+            "action_type": action_type if waiting_user_action else "none",
             "authorization_url": authorization_url,
+            "interaction_schema": interaction_schema,
             "status": status or "queued",
             "status_label": str(task.get("status_label") or "").strip(),
             "next_step": str(task.get("status_reason") or execution.get("next_step") or "").strip(),

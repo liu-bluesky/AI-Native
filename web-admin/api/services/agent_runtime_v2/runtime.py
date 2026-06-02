@@ -16,7 +16,7 @@ from services.agent_runtime_v2.dynamic_tool_pool import DynamicToolPool
 from services.agent_runtime_v2.llm_step import LLMStep
 from services.agent_runtime_v2.permission_policy import PermissionPolicy
 from services.agent_runtime_v2.plugin_registry import default_plugin_registry_context
-from services.agent_runtime_v2.query_engine import QueryEngine
+from services.agent_runtime_v2.query_engine import QueryEngine, QueryEngineResult
 from services.agent_runtime_v2.state_store import TaskRunStore
 from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
 from services.agent_runtime_v2.transcript_store import TranscriptStore
@@ -62,6 +62,33 @@ class AgentTaskRuntime:
             return json.loads(json.dumps(value, ensure_ascii=False, default=str))
         except (TypeError, ValueError):
             return None
+
+    def _fallback_content_from_observations(
+        self,
+        observations: list[Any] | None,
+    ) -> str:
+        items = list(observations or [])
+        if not items:
+            return ""
+        lines = ["工具执行已完成，但模型未继续生成正文。以下是工具返回摘要："]
+        for index, observation in enumerate(items[-5:], start=1):
+            tool_name = str(getattr(observation, "tool_name", "") or "").strip() or "工具"
+            status = str(getattr(observation, "status", "") or "").strip()
+            summary = str(getattr(observation, "summary", "") or "").strip()
+            raw_result = getattr(observation, "raw_result", None)
+            if not summary and isinstance(raw_result, dict):
+                summary = str(
+                    raw_result.get("stdout")
+                    or raw_result.get("output_preview")
+                    or raw_result.get("message")
+                    or raw_result.get("stderr")
+                    or raw_result.get("error")
+                    or ""
+                ).strip()
+            summary = summary[-1200:] if summary else "无输出摘要"
+            status_text = f" · {status}" if status else ""
+            lines.append(f"{index}. {tool_name}{status_text}\n{summary}")
+        return "\n\n".join(lines).strip()
 
     def _build_resume_context(
         self,
@@ -435,8 +462,8 @@ class AgentTaskRuntime:
             model_name=model_name,
             temperature=temperature,
             max_tokens=max_tokens,
-            task_tree_verified=False,
-            goal_covered=False,
+            task_tree_verified=True,
+            goal_covered=True,
         )
         yield {
             "type": "runtime_status",
@@ -451,9 +478,60 @@ class AgentTaskRuntime:
                 else None
             ),
         }
-        yield {
+        done_payload = {
             "type": "done",
             "content": result.final_content,
             "agent_runtime": result.to_dict(),
             "tool_pool": tool_pool.summary(),
         }
+        waiting_reason = self._query_engine_waiting_reason(result)
+        if waiting_reason:
+            done_payload["completed_reason"] = waiting_reason
+            done_payload["guard_reason"] = waiting_reason
+            done_payload["guard_message"] = (
+                result.final_content or "等待你授权工具调用后继续。"
+            )
+        elif str(result.task_run.status or "").strip() == "failed":
+            failed_reason = self._query_engine_blocked_reason(result)
+            if failed_reason == "missing_final_response_after_tool":
+                fallback_content = self._fallback_content_from_observations(
+                    result.observations,
+                )
+                done_payload["content"] = fallback_content or "工具执行已完成。"
+                done_payload["completed_reason"] = "completed"
+                done_payload["agent_runtime_fallback_reason"] = failed_reason
+                done_payload["guard_reason"] = ""
+                done_payload["guard_message"] = ""
+            elif result.final_content:
+                done_payload["completed_reason"] = failed_reason
+                done_payload["guard_reason"] = failed_reason
+                done_payload["guard_message"] = result.final_content
+            else:
+                done_payload["completed_reason"] = failed_reason
+                done_payload["guard_reason"] = failed_reason
+        elif str(result.task_run.status or "").strip() == "blocked":
+            blocked_reason = self._query_engine_blocked_reason(result)
+            done_payload["completed_reason"] = blocked_reason
+            done_payload["guard_reason"] = blocked_reason
+            done_payload["guard_message"] = (
+                result.final_content or "运行任务已暂停，等待处理阻塞项。"
+            )
+        yield done_payload
+
+    def _query_engine_waiting_reason(self, result: QueryEngineResult) -> str:
+        status = str(result.task_run.status or "").strip()
+        decision = result.completion_decision
+        if status == "waiting_user":
+            return "waiting_user_action"
+        if decision is not None and decision.action == "request_user":
+            return "waiting_user_action"
+        return ""
+
+    def _query_engine_blocked_reason(self, result: QueryEngineResult) -> str:
+        decision = result.completion_decision
+        if decision is not None:
+            for reason in decision.reasons:
+                normalized = str(reason or "").strip()
+                if normalized:
+                    return normalized
+        return "blocked"

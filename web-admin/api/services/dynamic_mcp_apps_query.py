@@ -1114,9 +1114,9 @@ def _query_mcp_clarity_instruction_lines() -> tuple[str, str, str, str]:
     threshold_text = f"当前全局清晰度确认阈值为 {threshold}/5"
     return (
         f"{threshold_text}；处理前先按 1-5 分估计用户需求清晰度。",
-        f"若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {threshold}，可直接回答；凡涉及开发、实现、修改、部署、写入或其他会改变项目状态的需求，必须先输出需求理解和计划摘要，并请求用户确认后再执行。",
+        f"若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {threshold}，可直接回答；凡涉及开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入执行，不要再次请求一般计划确认。",
         f"若清晰度分数 < {threshold}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行。",
-        "同一轮中用户已确认当前理解和计划后，后续不要重复确认，除非用户目标、范围或约束发生变化；任何删除、移除、清空、覆盖或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。",
+        "同一轮中用户已确认当前理解和计划或已明确要求执行后，后续不要重复确认，除非用户目标、范围或约束发生变化；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。",
     )
 
 
@@ -2631,6 +2631,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`，避免产生影子链路。",
             "- 接入约束: 每个 CLI 会话都应自行生成唯一 `chat_session_id`；如能解析项目工作区，优先持久化到项目目录 `.ai-employee/query-mcp/`，否则再退回 CLI 自己的本地存储。同一轮任务内固定复用，只有新开的并行 CLI 或新任务才重新生成。",
             "- 接入约束: `query-mcp` 本地状态必须只写三类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立，避免多进程冲突）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；`current-session.json`、`chat_session_id.txt`、`session_id.txt`、`current-work-session.json` 等 legacy 文件只允许兼容读取，不允许新写。",
+            "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。只有明确处理历史数据迁移或只读恢复时，才允许短期兼容，并必须标注范围、退出条件和后续清理方案。",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall。",
             f"- 交互约束: {clarity_threshold_line}",
             f"- 交互约束: {clarity_direct_line}",
@@ -2661,6 +2662,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: 每个 Codex CLI 会话都应先持久化自己生成的 `chat_session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Codex 自己的本地存储。同一进程整轮任务固定复用，只有新开的并行任务或全新需求才重新生成。",
             "- 接入约束: `query-mcp` 本地状态必须只写三类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立，避免多进程冲突）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；`current-session.json`、`chat_session_id.txt`、`session_id.txt`、`current-query-session.json`、`current-work-session.json`、`session.env` 等 legacy 文件只允许兼容读取，不允许新写。",
             "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`。",
+            "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。只有明确处理历史数据迁移或只读恢复时，才允许短期兼容，并必须标注范围、退出条件和后续清理方案。",
             "- 查询约束: 仅在缺少明确的 `project_id` / `employee_id` / `rule_id`，或需要跨项目检索时，再调用 `search_ids(keyword=\"<用户原始问题>\")`；当前项目和对象已明确时，可直接读取 `get_manual_content(project_id=...)` 或进入 `start_project_workflow(...)`。",
             f"- 交互约束: {clarity_threshold_line}",
             f"- 交互约束: {clarity_direct_line}",
@@ -2690,6 +2692,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 推荐链路: query://usage-guide -> search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> start_work_session。",
             "- 接入约束: `type=sse` 的客户端有些会直接使用 `POST /mcp/query/sse` 作为 JSON-RPC bridge；这时如果 URL 没有 `project_id` / `chat_session_id`，首轮必须调用 `bind_project_context(...)` 或在工具参数里显式传 `project_id`。",
             "- 接入约束: 统一入口 CLI 建议同时持久化自生成的 `chat_session_id` 和服务端返回的 `session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 CLI 自己的本地存储，这样中断后才能稳定续跑。",
+            "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。只有明确处理历史数据迁移或只读恢复时，才允许短期兼容，并必须标注范围、退出条件和后续清理方案。",
             "- 记忆约束: 不要把 recall 当成每轮固定前置步骤；只有新需求、续跑恢复、修复旧问题或明显需要历史经验时才查记忆。",
             f"- 交互约束: {clarity_threshold_line}",
             f"- 交互约束: {clarity_direct_line}",
@@ -2770,6 +2773,7 @@ def build_query_usage_guide_text() -> str:
         "9. 只有所有计划节点完成且验证结果齐全后，当前需求才算结束；执行中不得提前写“最终结论”。\n"
         "10. 查询型问题（谁 / 哪些 / 多少 / 从哪里）保持单检索节点，不要误拆成实现步骤；检索完成后应让任务树归档。\n"
         "11. 如用户在“已完成”后发现问题，必须重新起一轮修复计划，并继续回写轨迹与验证；不得直接覆盖上一轮结论。\n"
+        "12. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。只有明确处理历史数据迁移或只读恢复时，才允许短期兼容，并必须标注范围、退出条件和后续清理方案。\n"
         "\n"
         "## 任务树与绑定约束\n"
         "- 任务树与记忆必须使用同一条聊天会话线索；记录项目记忆、工作事实或会话事件时，应复用当前 chat_session_id / session_id，不得把任务树和记忆拆成两条无关轨迹。\n"

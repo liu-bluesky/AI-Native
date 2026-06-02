@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,44 @@ from services.agent_runtime_v2.task_run import utc_now_iso
 
 ALLOW_BEHAVIORS = {"allow_once", "allow_session", "allow_always"}
 DENY_BEHAVIOR = "deny"
+
+_LARK_CLI_STABLE_SUBCOMMANDS = {
+    ("auth", "status"),
+    ("auth", "login"),
+}
+
+
+def normalize_permission_command(command: str) -> str:
+    normalized = str(command or "").strip()
+    if not normalized:
+        return ""
+    try:
+        parts = shlex.split(normalized)
+    except ValueError:
+        parts = normalized.split()
+    if not parts:
+        return ""
+    binary = Path(str(parts[0])).name
+    if binary == "lark-cli" and len(parts) >= 3:
+        subcommand = (str(parts[1]).strip(), str(parts[2]).strip())
+        if subcommand in _LARK_CLI_STABLE_SUBCOMMANDS:
+            return " ".join(["lark-cli", subcommand[0], subcommand[1], *parts[3:]])
+    return re.sub(r"\s+", " ", normalized)
+
+
+def permission_command_signature(command: str) -> str:
+    normalized = normalize_permission_command(command)
+    if not normalized:
+        return ""
+    try:
+        parts = shlex.split(normalized)
+    except ValueError:
+        parts = normalized.split()
+    if len(parts) >= 3 and Path(str(parts[0])).name == "lark-cli":
+        subcommand = (str(parts[1]).strip(), str(parts[2]).strip())
+        if subcommand in _LARK_CLI_STABLE_SUBCOMMANDS:
+            return " ".join(["lark-cli", subcommand[0], subcommand[1]])
+    return normalized
 
 
 @dataclass
@@ -55,14 +95,18 @@ class PermissionRule:
         matcher_call_id = str(matcher.get("call_id") or "").strip()
         if matcher_call_id and matcher_call_id != str(call_id or "").strip():
             return False
-        exact_command = str(matcher.get("command_exact") or "").strip()
+        exact_command = normalize_permission_command(str(matcher.get("command_exact") or ""))
         if exact_command:
-            command = str((args or {}).get("command") or "").strip()
+            command = normalize_permission_command(str((args or {}).get("command") or ""))
             return command == exact_command
         prefix = str(matcher.get("command_prefix") or "").strip()
         if prefix:
-            command = str((args or {}).get("command") or "").strip()
+            command = normalize_permission_command(str((args or {}).get("command") or ""))
             return command.startswith(prefix)
+        command_signature = str(matcher.get("command_signature") or "").strip()
+        if command_signature:
+            command = str((args or {}).get("command") or "").strip()
+            return permission_command_signature(command) == command_signature
         return True
 
     def to_dict(self) -> dict[str, Any]:

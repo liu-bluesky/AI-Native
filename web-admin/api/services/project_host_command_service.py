@@ -12,6 +12,10 @@ from core.config import get_project_root
 from services.cli_plugin_market_service import build_cli_plugin_runtime_environment
 
 PROJECT_HOST_RUN_COMMAND_TOOL_NAME = "project_host_run_command"
+PROJECT_HOST_TERMINAL_START_TOOL_NAME = "project_host_terminal_start"
+PROJECT_HOST_TERMINAL_INPUT_TOOL_NAME = "project_host_terminal_input"
+PROJECT_HOST_TERMINAL_READ_TOOL_NAME = "project_host_terminal_read"
+PROJECT_HOST_TERMINAL_STOP_TOOL_NAME = "project_host_terminal_stop"
 _PROJECT_WORKSPACE_SOURCE = "project_workspace"
 _SERVICE_REPO_ROOT_FALLBACK_SOURCE = "service_repo_root_fallback"
 _SERVICE_START_SCRIPT_HINT = "web-admin/api/scripts/start_api_with_runner.sh"
@@ -83,12 +87,87 @@ def build_project_host_command_tools(workspace_path: str) -> list[dict[str, Any]
             "builtin": True,
             "module_type": "builtin_tool",
             "workspace_path": normalized_workspace_path,
-        }
+        },
+        {
+            "tool_name": PROJECT_HOST_TERMINAL_START_TOOL_NAME,
+            "description": (
+                "启动或附加当前项目的交互式 PTY 终端。适合处理第三方 CLI 的菜单选择、验证码、"
+                "设备授权、REPL、持续输出或其它需要多轮输入的场景。可传 initial_command 启动后立即执行。"
+            ),
+            "parameters_schema": {
+                "type": "object",
+                "properties": {
+                    "initial_command": {
+                        "type": "string",
+                        "description": "可选。终端启动或附加后立即发送的命令，系统会自动补回车。",
+                    },
+                },
+            },
+            "builtin": True,
+            "module_type": "builtin_tool",
+            "workspace_path": normalized_workspace_path,
+        },
+        {
+            "tool_name": PROJECT_HOST_TERMINAL_INPUT_TOOL_NAME,
+            "description": (
+                "向当前项目已启动的交互式 PTY 终端发送文本。发送普通命令或菜单确认时需要自行包含换行，"
+                "例如 content='1\\n'、content='y\\n' 或 content='\\u001b[B\\n'。"
+            ),
+            "parameters_schema": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "必填。要发送到终端 stdin 的原始文本。",
+                    },
+                },
+                "required": ["content"],
+            },
+            "builtin": True,
+            "module_type": "builtin_tool",
+            "workspace_path": normalized_workspace_path,
+        },
+        {
+            "tool_name": PROJECT_HOST_TERMINAL_READ_TOOL_NAME,
+            "description": "读取当前项目交互式 PTY 终端最近输出，用于判断下一步应输入什么。",
+            "parameters_schema": {
+                "type": "object",
+                "properties": {
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "最多返回最近多少字符，默认 12000，范围 200-40000。",
+                    },
+                },
+            },
+            "builtin": True,
+            "module_type": "builtin_tool",
+            "workspace_path": normalized_workspace_path,
+        },
+        {
+            "tool_name": PROJECT_HOST_TERMINAL_STOP_TOOL_NAME,
+            "description": "停止当前项目交互式 PTY 终端。交互任务结束或需要清理挂起进程时使用。",
+            "parameters_schema": {
+                "type": "object",
+                "properties": {},
+            },
+            "builtin": True,
+            "module_type": "builtin_tool",
+            "workspace_path": normalized_workspace_path,
+        },
     ]
 
 
 def is_project_host_command_tool(tool_name: str) -> bool:
     return str(tool_name or "").strip() == PROJECT_HOST_RUN_COMMAND_TOOL_NAME
+
+
+def is_project_host_terminal_tool(tool_name: str) -> bool:
+    return str(tool_name or "").strip() in {
+        PROJECT_HOST_TERMINAL_START_TOOL_NAME,
+        PROJECT_HOST_TERMINAL_INPUT_TOOL_NAME,
+        PROJECT_HOST_TERMINAL_READ_TOOL_NAME,
+        PROJECT_HOST_TERMINAL_STOP_TOOL_NAME,
+    }
 
 
 def run_project_host_command(

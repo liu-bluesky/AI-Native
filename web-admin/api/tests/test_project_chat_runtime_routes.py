@@ -279,6 +279,100 @@ def test_agent_runtime_resume_persists_same_assistant_message_id(tmp_path, monke
     assert permission_operation["actionType"] == "none"
 
 
+def test_agent_runtime_resume_falls_back_to_auth_status_result(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores.json.project_chat_store import ProjectChatMessage
+    from stores.json.project_store import ProjectConfig
+
+    _client, store_factory = _build_project_chat_runtime_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    session = store_factory.project_chat_store.create_session("proj-1", "tester", "新对话")
+    store_factory.project_chat_store.append_message(
+        ProjectChatMessage(
+            id="assistant-1",
+            project_id="proj-1",
+            username="tester",
+            role="assistant",
+            content="等待授权",
+            chat_session_id=session.id,
+            source_context={"assistant_workflow": {"status": "running"}},
+        )
+    )
+
+    updated = projects_router._persist_agent_runtime_resume_chat_message(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id=session.id,
+        assistant_message_id="assistant-1",
+        content="",
+        run_id="run-1",
+        call_id="call-1",
+        tool_name="project_host_run_command",
+        resume_payload={
+            "records": [
+                {
+                    "tool_call": {
+                        "call_id": "call-1",
+                        "tool_name": "project_host_run_command",
+                        "arguments": json.dumps(
+                            {
+                                "command": (
+                                    "/opt/plugin/bin/lark-cli auth status --format json"
+                                )
+                            }
+                        ),
+                    },
+                    "raw_result": {
+                        "exit_code": 0,
+                        "stdout": json.dumps({"ok": True, "identity": "user"}),
+                        "stderr": "",
+                    },
+                }
+            ],
+            "continuation": {"final_content": ""},
+        },
+        runtime_events=[],
+    )
+
+    assert updated is None
+
+
+def test_agent_runtime_resume_does_not_fallback_to_tool_output_without_final_answer():
+    from routers import projects as projects_router
+
+    content = projects_router._agent_runtime_resume_final_content(
+        {
+            "records": [
+                {
+                    "tool_call": {
+                        "call_id": "call-1",
+                        "tool_name": "project_host_run_command",
+                        "arguments": json.dumps(
+                            {
+                                "command": (
+                                    "/opt/plugin/bin/lark-cli auth status --format json"
+                                )
+                            }
+                        ),
+                    },
+                    "raw_result": {
+                        "exit_code": 0,
+                        "stdout": json.dumps({"ok": True, "identity": "user"}),
+                        "stderr": "",
+                    },
+                }
+            ],
+            "continuation": {"final_content": "本轮执行已结束"},
+        }
+    )
+
+    assert content == ""
+
+
 def test_project_chat_session_update_and_feishu_manual_binding(tmp_path, monkeypatch):
     from routers import projects as projects_router
     from services.feishu_bot_service import _find_or_bind_feishu_manual_chat_session

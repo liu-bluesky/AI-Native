@@ -26,88 +26,6 @@ _TASK_TREE_TOOL_NAMES = {
     "update_task_node_status",
     "complete_task_node_with_verification",
 }
-_HOST_EXECUTION_TOOL_NAMES = {
-    "project_host_run_command",
-}
-_EXECUTION_REQUEST_PATTERNS = (
-    r"\b(?:install|run|execute|send|list|query|check|open|configure|login|deploy|debug|upload|create|save|record)\b",
-)
-_EXECUTION_REQUEST_HINT_PATTERNS = (
-    r"帮我",
-    r"请你",
-    r"直接",
-    r"继续",
-)
-_EXECUTION_ACTION_PATTERNS = (
-    r"安装",
-    r"执行",
-    r"运行",
-    r"发送",
-    r"发",
-    r"上传",
-    r"写入",
-    r"保存",
-    r"创建",
-    r"记录",
-    r"处理",
-    r"归档",
-    r"查询",
-    r"查看",
-    r"列出",
-    r"配置",
-    r"登录",
-    r"授权",
-    r"打开",
-    r"启动",
-    r"停止",
-    r"重启",
-    r"部署",
-    r"排查",
-)
-_EXECUTION_DEFERRAL_PATTERNS = (
-    r"你(?:现在)?(?:直接)?执行(?:下面|这条)?命令",
-    r"把(?:终端)?输出发我",
-    r"也可以自己先执行",
-    r"你也可以自己",
-    r"如果你要自己(?:先)?执行",
-    r"只差最后一步执行",
-    r"(?:下一步|最小下一步|下一步最小操作|下一步操作|下一步执行|最小操作)[：:]?",
-    r"下一步(?:是|需要|最小操作|操作|执行)",
-    r"请稍后回复[“\"]?(?:重新执行|继续|重试)",
-    r"暂时未能完成(?:写入|处理|保存|执行)",
-    r"尚未(?:写入|保存|完成).*(?:下一步|继续|重新执行)",
-    r"我就能继续",
-    r"回复我[“\"]?(?:继续|已完成|已授权)",
-    r"you can run",
-    r"run (?:the|this) command",
-    r"paste (?:the )?output",
-    r"send me the output",
-)
-_REAL_BLOCKER_PATTERNS = (
-    r"浏览器(?:里)?(?:完成|打开|授权|登录|确认)",
-    r"需要你(?:本人|亲自)?(?:完成|确认|授权|登录)",
-    r"验证码",
-    r"人工确认",
-    r"手动确认",
-    r"权限限制",
-    r"(?:缺少|没有|无)(?:可用的)?(?:环境|权限|授权|必要输入|必填参数|文件|附件|图片)",
-    r"没有(?:收到|拿到|获取到).{0,30}(?:文件|附件|图片|资源)",
-    r"(?:环境|权限|授权)(?:不可用|不足|失败)",
-    r"(?:找不到|无法访问)(?:文件|附件|图片|资源)",
-    r"(?:文件|附件|图片|资源).{0,20}(?:不可访问|无法访问)",
-    r"(?:工具|执行|操作)?预算(?:已)?(?:达到|用尽|耗尽|不足)",
-    r"达到最大处理轮次",
-    r"系统弹窗",
-    r"browser (?:auth|authorization|login|confirmation)",
-    r"manual (?:authorization|confirmation|approval)",
-    r"captcha",
-)
-_AUTO_FOLLOWUP_COMMAND_PATTERNS = (
-    r"run `([^`]+)` in the background",
-    r"run `([^`]+)`",
-    r"执行 `([^`]+)`",
-    r"运行 `([^`]+)`",
-)
 _LARK_OPEN_ID_PATTERN = re.compile(r"\bou_[A-Za-z0-9]+\b")
 _LARK_SEND_MESSAGE_INTENT_PATTERNS = (
     re.compile(
@@ -343,60 +261,6 @@ def _sanitize_tool_value(value: Any, *, _depth: int = 0) -> Any:
     return _truncate_text(value, limit=400)
 
 
-def _has_host_execution_tools(tools: list[dict[str, Any]] | None) -> bool:
-    for item in tools or []:
-        tool_name = str((item or {}).get("tool_name") or "").strip()
-        if tool_name in _HOST_EXECUTION_TOOL_NAMES:
-            return True
-    return False
-
-
-def _looks_like_execution_request(user_message: str) -> bool:
-    text = str(user_message or "").strip()
-    if not text:
-        return False
-    if any(re.search(pattern, text, re.IGNORECASE) for pattern in _EXECUTION_REQUEST_PATTERNS):
-        return True
-    has_hint = any(re.search(pattern, text, re.IGNORECASE) for pattern in _EXECUTION_REQUEST_HINT_PATTERNS)
-    has_action = any(re.search(pattern, text, re.IGNORECASE) for pattern in _EXECUTION_ACTION_PATTERNS)
-    return has_hint and has_action
-
-
-def _looks_like_execution_deferral(response_content: str) -> bool:
-    text = str(response_content or "").strip()
-    if not text:
-        return False
-    return any(re.search(pattern, text, re.IGNORECASE) for pattern in _EXECUTION_DEFERRAL_PATTERNS)
-
-
-def _looks_like_real_blocker(response_content: str) -> bool:
-    text = str(response_content or "").strip()
-    if not text:
-        return False
-    return any(re.search(pattern, text, re.IGNORECASE) for pattern in _REAL_BLOCKER_PATTERNS)
-
-
-def _should_retry_premature_execution_deferral(
-    *,
-    user_message: str,
-    response_content: str,
-    tools: list[dict[str, Any]] | None,
-    successful_tool_names: list[str] | None,
-) -> bool:
-    normalized_response = str(response_content or "").strip()
-    if not normalized_response:
-        return False
-    if not _has_host_execution_tools(tools):
-        return False
-    if "project_host_run_command" not in {str(item or "").strip() for item in (successful_tool_names or [])}:
-        return False
-    if not _looks_like_execution_request(user_message):
-        return False
-    if _looks_like_real_blocker(normalized_response):
-        return False
-    return _looks_like_execution_deferral(normalized_response)
-
-
 def _collect_result_text_candidates(result: Any) -> list[str]:
     if isinstance(result, str):
         return [result]
@@ -414,28 +278,6 @@ def _collect_result_text_candidates(result: Any) -> list[str]:
             if isinstance(value, str) and value.strip():
                 candidates.append(value)
     return candidates
-
-
-def _extract_json_string_payloads(text: str) -> list[str]:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return []
-    payloads = [normalized]
-    try:
-        parsed = json.loads(normalized)
-    except Exception:
-        return payloads
-    if isinstance(parsed, dict):
-        for key in ("message", "hint", "error"):
-            value = parsed.get(key)
-            if isinstance(value, str) and value.strip():
-                payloads.append(value)
-            elif isinstance(value, dict):
-                for nested_key in ("message", "hint", "detail"):
-                    nested_value = value.get(nested_key)
-                    if isinstance(nested_value, str) and nested_value.strip():
-                        payloads.append(nested_value)
-    return payloads
 
 
 def _is_safe_auto_followup_host_command(
@@ -570,22 +412,6 @@ def _extract_auto_followup_project_host_command(
     executed_command: str = "",
     seen_commands: set[str] | None = None,
 ) -> str:
-    normalized_seen = {str(item or "").strip() for item in (seen_commands or set()) if str(item or "").strip()}
-    for candidate_text in _collect_result_text_candidates(result):
-        for text in _extract_json_string_payloads(candidate_text):
-            for pattern in _AUTO_FOLLOWUP_COMMAND_PATTERNS:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if not match:
-                    continue
-                command = str(match.group(1) or "").strip()
-                if not command or command in normalized_seen:
-                    continue
-                if not _is_safe_auto_followup_host_command(
-                    command,
-                    executed_command=executed_command,
-                ):
-                    continue
-                return command
     return _extract_lark_auth_recovery_host_command(
         result,
         executed_command=executed_command,
@@ -799,9 +625,11 @@ def _is_waiting_for_external_action(result: Any) -> bool:
     if not bool(result.get("requires_user_action") or result.get("waiting_user_action")):
         return False
     authorization_url = str(result.get("authorization_url") or "").strip()
-    status = str(result.get("status") or "").strip().lower()
     action_type = str(result.get("action_type") or "").strip().lower()
-    return bool(authorization_url) or bool(action_type) or status == "waiting_user_action"
+    if action_type == "open_url" and not authorization_url:
+        action_type = ""
+    interaction_schema = result.get("interaction_schema")
+    return bool(authorization_url) or action_type in {"approve", "enter_text", "select"} or isinstance(interaction_schema, dict)
 
 
 def _build_user_action_required_event(
@@ -821,6 +649,11 @@ def _build_user_action_required_event(
     authorization_url = str(result.get("authorization_url") or "").strip()
     if action_type not in {"open_url", "approve", "enter_text", "select"}:
         action_type = "open_url" if authorization_url else "none"
+    if action_type == "open_url" and not authorization_url:
+        action_type = "none"
+    interaction_schema = result.get("interaction_schema")
+    if action_type == "none" and not authorization_url and not isinstance(interaction_schema, dict):
+        return None
     waiting_message = str(result.get("next_step") or default_message).strip() or default_message
     title = str(result.get("status_label") or result.get("title") or "等待你处理").strip() or "等待你处理"
     payload: dict[str, Any] = {
@@ -841,7 +674,6 @@ def _build_user_action_required_event(
     detail = str(result.get("detail") or "").strip()
     if detail:
         payload["detail"] = detail
-    interaction_schema = result.get("interaction_schema")
     if isinstance(interaction_schema, dict):
         payload["interaction_schema"] = dict(interaction_schema)
     return payload
@@ -1395,7 +1227,6 @@ class AgentOrchestrator:
             collected_artifacts: list[dict[str, Any]] = []
             successful_tool_names: list[str] = []
             task_tree_tool_used = False
-            premature_deferral_retries = 0
             auto_followup_retries = 0
             seen_auto_followup_commands: set[str] = set()
             lark_workflow_state: dict[str, Any] = {}
@@ -1881,13 +1712,13 @@ class AgentOrchestrator:
                             status_label = str(result.get("status_label") or "").strip()
                             next_step = str(result.get("next_step") or "").strip()
                             operation_kind = str(result.get("operation_kind") or "external_operation").strip()
-                            operation_label = str(result.get("operation_label") or "外部操作").strip()
+                            operation_label = str(result.get("operation_label") or "操作").strip()
                             if status == "queued":
-                                pending_message = next_step or "外部操作已创建，等待后台执行。"
-                                state_summary = "外部操作已创建，等待后续结果"
+                                pending_message = next_step or "操作已创建，等待后台执行。"
+                                state_summary = "操作已创建，等待后续结果"
                             else:
-                                pending_message = next_step or "外部操作已启动，正在等待后续结果。"
-                                state_summary = "外部操作已启动，正在等待后续结果"
+                                pending_message = next_step or "操作已启动，正在等待后续结果。"
+                                state_summary = "操作已启动，正在等待后续结果"
                             workflow_state_payload = {
                                 "type": "workflow_state",
                                 "chat_session_id": chat_session_id,
@@ -1912,17 +1743,10 @@ class AgentOrchestrator:
                                 "authorization_url": str(result.get("authorization_url") or "").strip(),
                                 "resume_command": pending_send_command,
                             }
-                            yield workflow_state_payload
-                            operation_state_payload = {
+                            yield {
                                 **workflow_state_payload,
                                 "type": "operation_task_state",
                             }
-                            yield operation_state_payload
-                            if operation_kind == "auth_login":
-                                yield {
-                                    **workflow_state_payload,
-                                    "type": "login_task_state",
-                                }
                             done_payload = _build_done_payload(
                                 content="",
                                 artifacts=collected_artifacts,
@@ -2003,51 +1827,6 @@ class AgentOrchestrator:
                         logger.info("conversation_completed", project_id=project_id, duration_ms=int(duration * 1000), loops=loop_count, reason="tool_only_loops")
                         completed = True
                         break
-                    continue
-
-                if (
-                    premature_deferral_retries < 2
-                    and _should_retry_premature_execution_deferral(
-                        user_message=user_message,
-                        response_content=response_content,
-                        tools=tools,
-                        successful_tool_names=successful_tool_names,
-                    )
-                ):
-                    premature_deferral_retries += 1
-                    yield {
-                        "type": "auto_continue",
-                        "reason": "premature_execution_deferral",
-                        "message": (
-                            "检测到上一条回复把可继续执行的步骤提前下放给了用户，"
-                            "系统已自动继续补跑后续命令。"
-                        ),
-                        "previous_response_preview": _truncate_text(
-                            response_content,
-                            limit=300,
-                        ),
-                        "retry_count": premature_deferral_retries,
-                    }
-                    messages.append({"role": "assistant", "content": response_content})
-                    messages.append(
-                        {
-                            "role": "system",
-                            "content": (
-                                "上一条回复把仍可继续执行的步骤提前下放给了用户。"
-                                "当前用户明确要求你在这台电脑上直接执行，且宿主命令工具仍可用。"
-                                "只有返回结果已经满足用户原始需求，或存在真实阻塞"
-                                "（例如缺少环境、权限、授权、必要输入、可访问文件、验证码、系统弹窗或工具预算保护），"
-                                "才可以暂停。否则继续调用必要工具直到完成用户原始目标。"
-                                "不要把“下一步最小操作”当成最终回复；不要再让用户自己执行命令、复制命令、粘贴输出"
-                                "或回复“继续/重新执行”来替你完成本应可自动执行的步骤。"
-                            ),
-                        }
-                    )
-                    logger.info(
-                        "agent_loop_retry_after_premature_deferral",
-                        project_id=project_id,
-                        retry_count=premature_deferral_retries,
-                    )
                     continue
 
                 yield _build_done_payload(

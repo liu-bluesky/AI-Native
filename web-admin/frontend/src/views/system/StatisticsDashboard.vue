@@ -6,13 +6,13 @@
 
     <section class="statistics-hero">
       <div class="statistics-hero__copy">
-        <div class="statistics-hero__eyebrow">Upgrade Intelligence</div>
-        <h1 class="statistics-hero__title">统计驱动下一次升级</h1>
+        <div class="statistics-hero__eyebrow">Work Review</div>
+        <h1 class="statistics-hero__title">这个月做了什么</h1>
         <p class="statistics-hero__summary">
-          先判断系统现在卡在哪里，再把证据、升级动作和验证口径放到同一条闭环里。
+          按时间窗口复盘各项目实际发生的工作、状态和验证结果，再决定老板要关注哪里。
         </p>
         <div class="upgrade-decision" :class="`is-${upgradeDecision.tone}`">
-          <span>当前判断</span>
+          <span>老板视角</span>
           <strong>{{ upgradeDecision.title }}</strong>
           <p>{{ upgradeDecision.description }}</p>
         </div>
@@ -57,10 +57,10 @@
 
         <div class="upgrade-loop-panel__head">
           <div>
-            <span>循环升级状态</span>
+            <span>项目风险</span>
             <strong>{{ upgradeDecision.status }}</strong>
           </div>
-          <b>{{ data.insights.health_score || 0 }}</b>
+          <b>{{ executiveSummary.risk_project_count || 0 }}</b>
         </div>
 
         <div class="upgrade-loop">
@@ -80,7 +80,7 @@
 
     <section class="upgrade-briefing">
       <article class="upgrade-briefing__primary">
-        <span>Next Upgrade</span>
+        <span>Next Decision</span>
         <strong>{{ upgradeAction.title }}</strong>
         <p>{{ upgradeAction.description }}</p>
         <small>{{ upgradeAction.evidence }}</small>
@@ -99,6 +99,84 @@
         <span class="summary-card__label">{{ card.label }}</span>
         <strong class="summary-card__value">{{ card.value }}</strong>
         <small class="summary-card__hint">{{ card.hint }}</small>
+      </article>
+    </section>
+
+    <section class="executive-grid">
+      <article class="panel-card executive-portfolio-panel">
+        <div class="panel-card__head">
+          <div>
+            <div class="panel-card__eyebrow">Work By Project</div>
+            <h2 class="panel-card__title">本窗口工作内容</h2>
+          </div>
+          <div class="panel-card__tag">按风险和最近工作排序</div>
+        </div>
+        <div v-if="executivePortfolioItems.length" class="executive-project-list">
+          <article
+            v-for="item in executivePortfolioItems"
+            :key="item.project_id || item.project_name"
+            class="executive-project-card"
+            :class="`is-${item.status || 'unknown'}`"
+          >
+            <div class="executive-project-card__main">
+              <div>
+                <strong>{{ item.project_name || item.project_id || "未标记项目" }}</strong>
+                <small>{{ item.project_id || "项目 ID 待补齐" }}</small>
+              </div>
+              <span>{{ item.status_label || "待观察" }}</span>
+            </div>
+            <div class="executive-project-card__metrics">
+              <span>工作会话 {{ item.session_count || 0 }}</span>
+              <span>已闭环 {{ item.completed_sessions || 0 }}</span>
+              <span>进行中 {{ item.in_progress_sessions || 0 }}</span>
+              <span>阻塞 {{ item.blocked_sessions || 0 }}</span>
+              <span>最近 {{ formatDateTime(item.latest_activity_at) }}</span>
+            </div>
+            <div v-if="item.workItems?.length" class="executive-work-list">
+              <article v-for="work in item.workItems" :key="work.session_id" class="executive-work-item">
+                <div>
+                  <strong>{{ work.work_summary || work.stageLabel }}</strong>
+                  <small>{{ work.statusLabel }} · {{ formatDateTime(work.latest_updated_at) }}</small>
+                </div>
+                <p>{{ work.verification_summary || "还没有写入验证说明" }}</p>
+              </article>
+            </div>
+            <small v-else class="executive-project-card__empty">当前窗口内还没有可复盘的工作内容</small>
+          </article>
+        </div>
+        <el-empty v-else description="当前窗口内暂无工作内容数据" />
+      </article>
+
+      <article class="panel-card executive-risk-panel">
+        <div class="panel-card__head">
+          <div>
+            <div class="panel-card__eyebrow">Attention</div>
+            <h2 class="panel-card__title">需要老板关注</h2>
+          </div>
+        </div>
+        <div v-if="executiveRiskItems.length" class="executive-risk-list">
+          <article v-for="item in executiveRiskItems" :key="item.project_id || item.project_name" class="executive-risk-item">
+            <strong>{{ item.project_name || item.project_id || "未标记项目" }}</strong>
+            <small>{{ item.status_label || "有风险" }} · 未闭环 {{ Number(item.in_progress_sessions || 0) + Number(item.blocked_sessions || 0) }} · 阻塞 {{ item.blocked_sessions || 0 }}</small>
+          </article>
+        </div>
+        <el-empty v-else description="暂无高风险项目" />
+      </article>
+
+      <article class="panel-card executive-risk-panel">
+        <div class="panel-card__head">
+          <div>
+            <div class="panel-card__eyebrow">Recent Work</div>
+            <h2 class="panel-card__title">最近工作</h2>
+          </div>
+        </div>
+        <div v-if="executiveRecentSessions.length" class="executive-risk-list">
+          <article v-for="item in executiveRecentSessions" :key="item.session_id" class="executive-risk-item">
+            <strong>{{ item.project_name || item.project_id || "未标记项目" }}</strong>
+            <small>{{ item.statusLabel }} · {{ item.work_summary || item.stageLabel }} · {{ formatDateTime(item.latest_updated_at) }}</small>
+          </article>
+        </div>
+        <el-empty v-else description="暂无最近工作会话" />
       </article>
     </section>
 
@@ -122,7 +200,7 @@
           <span>{{ aiReportAnalysisMode.label || "结论待生成" }}</span>
           <span>健康分 {{ aiReportKeyMetrics.health_score || 0 }}</span>
           <span>活跃项目 {{ aiReportKeyMetrics.active_projects || 0 }}</span>
-          <span>工作完成率 {{ formatPercent(aiReportKeyMetrics.completion_rate) }}</span>
+          <span>工作闭环率 {{ formatPercent(aiReportKeyMetrics.completion_rate) }}</span>
         </div>
       </div>
       <template v-else>
@@ -138,7 +216,7 @@
               <span>活跃项目 {{ aiReportKeyMetrics.active_projects || 0 }}</span>
               <span>活跃智能体 {{ aiReportKeyMetrics.active_agents || 0 }}</span>
               <span>完成会话 {{ aiReportKeyMetrics.completed_sessions || 0 }}</span>
-              <span>工作完成率 {{ formatPercent(aiReportKeyMetrics.completion_rate) }}</span>
+              <span>工作闭环率 {{ formatPercent(aiReportKeyMetrics.completion_rate) }}</span>
               <span>项目集中度 {{ formatPercent(aiReportKeyMetrics.project_concentration_percent) }}</span>
               <span>模型调用 {{ aiReportKeyMetrics.model_calls || 0 }}</span>
               <span>总 token {{ aiReportKeyMetrics.total_tokens || 0 }}</span>
@@ -311,8 +389,8 @@
       <article class="panel-card panel-card--wide">
         <div class="panel-card__head">
           <div>
-            <div class="panel-card__eyebrow">Project Activity</div>
-            <h2 class="panel-card__title">项目活跃度</h2>
+            <div class="panel-card__eyebrow">Technical Activity</div>
+            <h2 class="panel-card__title">项目技术活跃度</h2>
           </div>
         </div>
         <div class="activity-judgement">
@@ -581,6 +659,12 @@ const data = ref({
     flow: [],
   },
   blind_spots: [],
+  executive: {
+    summary: {},
+    project_portfolio: [],
+    risk_projects: [],
+    recent_sessions: [],
+  },
   ai_report: null,
 });
 const projectScopeOptions = ref([]);
@@ -692,6 +776,8 @@ const usageSummary = computed(() => data.value?.usage?.summary || {});
 const liveSummary = computed(() => data.value?.live_activity?.summary || {});
 const workSessionSummary = computed(() => data.value?.work_sessions?.summary || {});
 const toolHealthSummary = computed(() => data.value?.usage?.tool_health || {});
+const executiveData = computed(() => data.value?.executive || {});
+const executiveSummary = computed(() => executiveData.value?.summary || {});
 const workCompletionRate = computed(() => Number(workSessionSummary.value.completion_rate || 0));
 
 function formatPercent(value) {
@@ -716,34 +802,34 @@ const projectConcentrationPercent = computed(() => {
 
 const summaryCards = computed(() => [
   {
-    label: "MCP 交互",
-    value: usageSummary.value.total_events || 0,
-    hint: `近 ${days.value} 天 · 工具 ${usageSummary.value.tool_calls || 0} / 连接 ${usageSummary.value.connections || 0}`,
+    label: "项目总数",
+    value: executiveSummary.value.project_count || usageSummary.value.active_projects || workSessionSummary.value.active_projects || 0,
+    hint: `活跃 ${executiveSummary.value.active_project_count || 0} · 统计窗口 ${days.value} 天`,
   },
   {
-    label: "工具成功率",
-    value: `${Number(usageSummary.value.tool_success_rate || 0).toFixed(0)}%`,
-    hint: `完成 ${usageSummary.value.finalized_tool_calls || 0} · 异常 ${Number(usageSummary.value.failed_tool_calls || 0) + Number(usageSummary.value.timeout_tool_calls || 0)}`,
+    label: "风险项目",
+    value: executiveSummary.value.risk_project_count || 0,
+    hint: `阻塞会话 ${executiveSummary.value.blocked_sessions || workSessionSummary.value.blocked_sessions || 0}`,
   },
   {
-    label: "工作完成率",
-    value: formatPercent(workCompletionRate.value),
-    hint: `完成 ${workSessionSummary.value.completed_sessions || 0} · 进行中 ${workSessionSummary.value.in_progress_sessions || 0}`,
+    label: "工作闭环率",
+    value: formatPercent(executiveSummary.value.completion_rate || workCompletionRate.value),
+    hint: `完成 ${executiveSummary.value.completed_sessions || 0} · 进行中 ${executiveSummary.value.in_progress_sessions || 0}`,
   },
   {
-    label: "项目集中度",
-    value: formatPercent(projectConcentrationPercent.value),
-    hint: `${leadingProject.value?.project_name || leadingProject.value?.project_id || "暂无主项目"} · ${Number(leadingProject.value?.cnt || leadingProject.value?.event_count || 0)} / ${usageSummary.value.total_events || 0}`,
+    label: "最近工作",
+    value: executiveData.value?.recent_sessions?.length || recentSessions.value.length || 0,
+    hint: "当前时间窗口内有轨迹的工作会话",
   },
   {
-    label: "活跃智能体",
+    label: "参与智能体",
     value: usageSummary.value.active_employees || liveSummary.value.active_agents || workSessionSummary.value.active_employees || 0,
-    hint: `项目 ${usageSummary.value.active_projects || workSessionSummary.value.active_projects || liveSummary.value.active_projects || 0} · Query ${usageSummary.value.query_scope_events || 0}`,
+    hint: "当前时间窗口内参与工作的 AI 员工",
   },
   {
-    label: "模型 / ROI",
-    value: `${usageSummary.value.active_models || 0} / ${usageSummary.value.active_prompt_versions || 0}`,
-    hint: `模型调用 ${usageSummary.value.model_calls || 0} · token ${usageSummary.value.total_tokens || 0} · $${Number(usageSummary.value.total_cost_usd || 0).toFixed(4)}`,
+    label: "技术事件",
+    value: usageSummary.value.total_events || 0,
+    hint: `工具 ${usageSummary.value.tool_calls || 0} · 作为辅助观测`,
   },
 ]);
 
@@ -755,44 +841,51 @@ const healthLabel = computed(() => {
 });
 
 const upgradeDecision = computed(() => {
-  const score = Number(data.value?.insights?.health_score || 0);
-  const completionRate = Number(workCompletionRate.value || 0);
-  const activePromptVersions = Number(usageSummary.value.active_prompt_versions || 0);
-  const totalTokens = Number(usageSummary.value.total_tokens || 0);
-  const hasCost = Number(usageSummary.value.total_cost_usd || 0) > 0;
+  const riskProjectCount = Number(executiveSummary.value.risk_project_count || 0);
+  const projectCount = Number(executiveSummary.value.project_count || 0);
+  const completionRate = Number(executiveSummary.value.completion_rate || workCompletionRate.value || 0);
+  const blockedSessions = Number(executiveSummary.value.blocked_sessions || workSessionSummary.value.blocked_sessions || 0);
+  if (riskProjectCount > 0 || blockedSessions > 0) {
+    return {
+      tone: "warning",
+      status: `${riskProjectCount || blockedSessions} 个关注点`,
+      title: "先看有阻塞或未闭环的工作",
+      description: executiveData.value?.recommendation || "老板视角下，阻塞工作和未闭环工作比平台调用量更值得优先处理。",
+    };
+  }
   if (completionRate > 0 && completionRate < 40) {
     return {
       tone: "warning",
       status: "先补闭环",
-      title: "工作闭环偏低，升级先看交付完成率",
-      description: `当前完成率 ${formatPercent(completionRate)}，比继续堆工具调用更需要把进行中的会话收口到可验证结果。`,
+      title: "当前窗口工作闭环偏低",
+      description: `当前闭环率 ${formatPercent(completionRate)}，需要先把进行中的工作收口到可验证结果。`,
     };
   }
-  if (totalTokens > 0 && (!hasCost || activePromptVersions <= 0)) {
-    return {
-      tone: "attention",
-      status: "补齐度量",
-      title: "AI 成本与 Prompt 版本还没形成 ROI 判断",
-      description: "已经能看到模型调用和 token，但缺少成本、Prompt 版本或结果指标，升级效果还不能稳定复盘。",
-    };
-  }
-  if (score >= 80) {
+  if (projectCount > 0) {
     return {
       tone: "good",
-      status: "可以优化",
-      title: "观测主链稳定，可以进入针对性优化",
-      description: "入口、项目、工具和工作会话已经能形成判断链，下一步应围绕最高价值缺口做升级。",
+      status: "工作可复盘",
+      title: executiveData.value?.headline || "当前窗口工作内容已经可见",
+      description: executiveData.value?.recommendation || "继续跟踪工作内容、最近验证和未闭环会话，避免只看活跃度。",
     };
   }
   return {
     tone: "neutral",
-    status: "先稳观测",
-    title: "统计链路还不完整，先补齐关键观测点",
-    description: "当前数据能指出方向，但还不足以支撑稳定的升级判断，需要先补齐盲区和验证口径。",
+    status: "缺少工作数据",
+    title: "当前窗口缺少工作内容数据",
+    description: "需要先补项目归因、阶段步骤和验证写回，老板视角才能复盘这段时间做了什么。",
   };
 });
 
 const upgradeAction = computed(() => {
+  const riskProject = executiveRiskItems.value[0];
+  if (riskProject) {
+    return {
+      title: `先处理 ${riskProject.project_name || riskProject.project_id || "风险项目"}`,
+      description: `当前状态：${riskProject.status_label || "有风险"}，未闭环 ${Number(riskProject.in_progress_sessions || 0) + Number(riskProject.blocked_sessions || 0)} 个，阻塞 ${riskProject.blocked_sessions || 0} 个。`,
+      evidence: `最近工作 ${formatDateTime(riskProject.latest_activity_at)} · 统计窗口 ${days.value} 天`,
+    };
+  }
   const focus = aiReportFocusPoints.value[0];
   if (focus) {
     return {
@@ -818,59 +911,59 @@ const upgradeAction = computed(() => {
     };
   }
   return {
-    title: "把最高频路径沉淀成下一轮升级任务",
-    description: "当前没有强告警时，优先选择最高频入口、最活跃项目或闭环缺口作为下一次升级对象。",
-    evidence: `健康分 ${data.value?.insights?.health_score || 0} · 统计窗口 ${days.value} 天`,
+    title: "把最近工作沉淀成项目复盘",
+    description: "当前没有强风险时，优先看各项目本窗口做过什么、最近验证和仍未闭环的工作会话。",
+    evidence: `项目 ${executiveSummary.value.project_count || 0} · 统计窗口 ${days.value} 天`,
   };
 });
 
 const upgradeLoopSteps = computed(() => [
   {
-    label: "观测",
-    value: data.value?.insights?.health_score || 0,
-    meta: healthLabel.value,
-    tone: Number(data.value?.insights?.health_score || 0) >= 80 ? "good" : "neutral",
+    label: "项目",
+    value: executiveSummary.value.project_count || 0,
+    meta: `活跃 ${executiveSummary.value.active_project_count || 0}`,
+    tone: Number(executiveSummary.value.project_count || 0) > 0 ? "good" : "neutral",
   },
   {
-    label: "判断",
+    label: "风险",
     value: upgradeDecision.value.status,
     meta: upgradeDecision.value.title,
     tone: upgradeDecision.value.tone,
   },
   {
-    label: "升级",
-    value: aiReportFocusPoints.value.length || alertItems.value.length || blindSpotItems.value.length || "待定",
-    meta: "可转任务的关注点",
-    tone: aiReportFocusPoints.value.length || alertItems.value.length ? "attention" : "neutral",
+    label: "工作",
+    value: executiveData.value?.recent_sessions?.length || 0,
+    meta: "最近工作会话",
+    tone: executiveData.value?.recent_sessions?.length ? "good" : "neutral",
   },
   {
-    label: "验证",
-    value: formatPercent(workCompletionRate.value),
-    meta: `闭环缺口 ${workSessionSummary.value.closure_gap_sessions || 0}`,
-    tone: Number(workCompletionRate.value || 0) >= 60 ? "good" : "warning",
+    label: "闭环",
+    value: formatPercent(executiveSummary.value.completion_rate || workCompletionRate.value),
+    meta: `阻塞 ${executiveSummary.value.blocked_sessions || 0}`,
+    tone: Number(executiveSummary.value.completion_rate || workCompletionRate.value || 0) >= 60 ? "good" : "warning",
   },
 ]);
 
 const upgradeSignalCards = computed(() => [
   {
-    label: "主链健康",
-    value: data.value?.insights?.health_score || 0,
-    hint: healthLabel.value,
+    label: "活跃项目",
+    value: executiveSummary.value.active_project_count || 0,
+    hint: `项目总数 ${executiveSummary.value.project_count || 0}`,
   },
   {
-    label: "闭环完成",
-    value: formatPercent(workCompletionRate.value),
-    hint: `完成 ${workSessionSummary.value.completed_sessions || 0} / 进行中 ${workSessionSummary.value.in_progress_sessions || 0}`,
+    label: "工作闭环",
+    value: formatPercent(executiveSummary.value.completion_rate || workCompletionRate.value),
+    hint: `完成 ${executiveSummary.value.completed_sessions || 0} / 进行中 ${executiveSummary.value.in_progress_sessions || 0}`,
   },
   {
-    label: "主项目集中",
-    value: formatPercent(projectConcentrationPercent.value),
-    hint: leadingProject.value?.project_name || leadingProject.value?.project_id || "暂无主项目",
+    label: "风险项目",
+    value: executiveSummary.value.risk_project_count || 0,
+    hint: `阻塞 ${executiveSummary.value.blocked_sessions || 0}`,
   },
   {
-    label: "ROI 可见性",
-    value: `${usageSummary.value.active_models || 0}/${usageSummary.value.active_prompt_versions || 0}`,
-    hint: `模型 / Prompt 版本 · token ${usageSummary.value.total_tokens || 0}`,
+    label: "工作会话",
+    value: executiveSummary.value.total_sessions || 0,
+    hint: "时间窗口内的工作轨迹",
   },
 ]);
 
@@ -1809,6 +1902,66 @@ const recentSessions = computed(() => {
   });
 });
 
+function normalizeExecutiveWorkItem(item) {
+  const rawStatus = String(item?.latest_status || "").toLowerCase();
+  let statusLabel = "进行中";
+  if (rawStatus === "completed") {
+    statusLabel = "已完成";
+  } else if (["blocked", "failed"].includes(rawStatus)) {
+    statusLabel = "待处理";
+  }
+  const stageLabel = [item?.phases?.[0], item?.steps?.[0]].filter(Boolean).join(" · ") || "工作内容待补齐";
+  return {
+    ...item,
+    statusLabel,
+    project_name: resolveProjectDisplayName(item?.project_name, item?.project_id),
+    stageLabel,
+    work_summary: item?.work_summary || stageLabel,
+    verification_summary: item?.verification_summary || item?.verification?.[0] || "还没有写入验证说明",
+  };
+}
+
+const executivePortfolioItems = computed(() => {
+  const items = Array.isArray(executiveData.value?.project_portfolio)
+    ? executiveData.value.project_portfolio
+    : [];
+  if (items.length) {
+    return items.map((item) => ({
+      ...item,
+      workItems: Array.isArray(item?.work_items)
+        ? item.work_items.map(normalizeExecutiveWorkItem)
+        : [],
+    }));
+  }
+  return projectActivityItems.value.map((item) => ({
+    ...item,
+    project_name: item.display_name || item.project_name,
+    status: Number(item.blocked_sessions || 0) > 0 ? "blocked" : "active",
+    status_label: Number(item.blocked_sessions || 0) > 0 ? "有阻塞" : "有活动",
+    closure_rate: Number(item.completion_rate || 0),
+    latest_activity_at: item.latest_updated_at || item.latest_seen_at || "",
+    workItems: recentSessions.value
+      .filter((session) => session.project_id && session.project_id === item.project_id)
+      .map(normalizeExecutiveWorkItem),
+  }));
+});
+
+const executiveRiskItems = computed(() => {
+  const items = Array.isArray(executiveData.value?.risk_projects)
+    ? executiveData.value.risk_projects
+    : [];
+  return items.length
+    ? items
+    : executivePortfolioItems.value.filter((item) => ["blocked", "at_risk"].includes(item.status));
+});
+
+const executiveRecentSessions = computed(() => {
+  const sessions = Array.isArray(executiveData.value?.recent_sessions)
+    ? executiveData.value.recent_sessions
+    : [];
+  return sessions.slice(0, 5).map(normalizeExecutiveWorkItem);
+});
+
 const agentActivityItems = computed(() => {
   const usageAgents = Array.isArray(data.value?.usage?.top_employees) ? data.value.usage.top_employees : [];
   const liveAgents = Array.isArray(data.value?.live_activity?.top_agents) ? data.value.live_activity.top_agents : [];
@@ -2661,6 +2814,165 @@ watch(scopedProjectId, () => {
   letter-spacing: 0;
 }
 
+.executive-grid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.executive-portfolio-panel {
+  display: grid;
+  grid-row: span 2;
+  gap: 16px;
+}
+
+.executive-project-list,
+.executive-risk-list {
+  display: grid;
+  gap: 12px;
+}
+
+.executive-project-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.executive-project-card.is-blocked,
+.executive-project-card.is-at_risk {
+  border-color: rgba(249, 115, 22, 0.22);
+  background: rgba(255, 247, 237, 0.86);
+}
+
+.executive-project-card.is-healthy {
+  border-color: rgba(22, 163, 74, 0.16);
+  background: rgba(236, 253, 245, 0.78);
+}
+
+.executive-project-card__main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+}
+
+.executive-project-card__main div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.executive-project-card__main strong {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 17px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.executive-project-card__main small,
+.executive-project-card__metrics span,
+.executive-risk-item small {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.executive-project-card__main span {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.executive-project-card__metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.executive-work-list {
+  display: grid;
+  gap: 8px;
+}
+
+.executive-work-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.74);
+}
+
+.executive-work-item div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.executive-work-item strong {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.executive-work-item small,
+.executive-work-item p,
+.executive-project-card__empty {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.executive-work-item small {
+  flex: 0 0 auto;
+}
+
+.executive-work-item p {
+  margin: 0;
+}
+
+.executive-risk-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.executive-risk-item {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.86);
+}
+
+.executive-risk-item strong {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .story-grid {
   display: grid;
   grid-template-columns: 1.1fr 0.9fr;
@@ -3428,6 +3740,7 @@ watch(scopedProjectId, () => {
 @media (max-width: 1180px) {
   .statistics-hero,
   .upgrade-briefing,
+  .executive-grid,
   .story-grid,
   .statistics-layout,
   .compact-split,
@@ -3442,6 +3755,10 @@ watch(scopedProjectId, () => {
 
   .panel-card--wide {
     grid-column: auto;
+  }
+
+  .executive-portfolio-panel {
+    grid-row: auto;
   }
 }
 
@@ -3563,6 +3880,7 @@ watch(scopedProjectId, () => {
   }
 
   .activity-judgement,
+  .executive-project-card__main,
   .ai-report-collapsed {
     align-items: flex-start;
     flex-direction: column;

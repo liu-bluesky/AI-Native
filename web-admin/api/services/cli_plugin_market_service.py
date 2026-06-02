@@ -35,6 +35,37 @@ _CLI_PLUGIN_REGISTRY: tuple[dict[str, Any], ...] = (
         "ai_install_prompt": "帮我安装飞书 CLI：https://open.feishu.cn/document/no_class/mcp-archive/feishu-cli-installation-guide.md",
         "requires_restart": False,
         "tags": ["feishu", "agent", "cli", "official"],
+        "auth": {
+            "operation_kind": "auth_login",
+            "operation_label": "网页登录授权",
+            "login_command": "lark-cli auth login --recommend",
+            "logout_command": "lark-cli auth logout",
+            "test_command": "lark-cli auth status",
+            "command_patterns": [
+                r"^(?:\S+/)?lark-cli\s+auth\s+login(?:\s|$)",
+            ],
+            "interactive_command_patterns": [
+                r"^(?:\S+/)?lark-cli\s+auth\s+login(?:\s|$)",
+                r"^(?:\S+/)?lark-cli\s+config\s+init\s+--new(?:\s|$)",
+            ],
+            "user_action_markers": [
+                "authorize",
+                "authorization",
+                "open the following link",
+                "please visit",
+                "verification url",
+                "device code",
+                "浏览器",
+                "授权",
+                "登录",
+            ],
+            "unauthenticated_markers": [
+                "no user logged in",
+                "only bot",
+                '"identity":"bot"',
+                '"identity": "bot"',
+            ],
+        },
     },
 )
 
@@ -970,6 +1001,35 @@ def _serialize_cli_plugin(raw_item: dict[str, Any], *, include_status: bool = Tr
         "requires_restart": bool(raw_item.get("requires_restart", False)),
         "tags": _normalize_plugin_tags(raw_item.get("tags")),
     }
+    auth = raw_item.get("auth")
+    if isinstance(auth, dict):
+        item["auth"] = {
+            "operation_kind": str(auth.get("operation_kind") or "auth_login").strip(),
+            "operation_label": str(auth.get("operation_label") or "网页登录授权").strip(),
+            "login_command": str(auth.get("login_command") or "").strip(),
+            "logout_command": str(auth.get("logout_command") or "").strip(),
+            "test_command": str(auth.get("test_command") or "").strip(),
+            "command_patterns": [
+                str(value or "").strip()
+                for value in (auth.get("command_patterns") or [])
+                if str(value or "").strip()
+            ],
+            "interactive_command_patterns": [
+                str(value or "").strip()
+                for value in (auth.get("interactive_command_patterns") or [])
+                if str(value or "").strip()
+            ],
+            "user_action_markers": [
+                str(value or "").strip()
+                for value in (auth.get("user_action_markers") or [])
+                if str(value or "").strip()
+            ],
+            "unauthenticated_markers": [
+                str(value or "").strip()
+                for value in (auth.get("unauthenticated_markers") or [])
+                if str(value or "").strip()
+            ],
+        }
     if include_status:
         item["install_status"] = _resolve_plugin_status(item)
     return item

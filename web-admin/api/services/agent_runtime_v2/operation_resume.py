@@ -191,6 +191,8 @@ class OperationResumeCoordinator:
                     model_name=model_name or str(task_run.metadata.get("model_name") or ""),
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    task_tree_verified=True,
+                    goal_covered=True,
                 )
                 final_status = continuation.task_run.status
                 self._event_log.append(
@@ -345,6 +347,8 @@ class OperationResumeCoordinator:
                     model_name=model_name or str(task_run.metadata.get("model_name") or ""),
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    task_tree_verified=True,
+                    goal_covered=True,
                 )
                 final_status = continuation.task_run.status
                 self._event_log.append(

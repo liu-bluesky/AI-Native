@@ -64,6 +64,8 @@ class ToolCallCollector:
                     function["arguments"] = str(function.get("arguments") or "") + str(nested.get("arguments") or "")
 
     def list_tool_calls(self, *, limit: int | None = None) -> list[CollectedToolCall]:
+        if limit is not None and int(limit) <= 0:
+            return []
         calls: list[CollectedToolCall] = []
         for index in sorted(self._buffer):
             raw = self._buffer[index]

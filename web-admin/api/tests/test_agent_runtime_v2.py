@@ -260,6 +260,54 @@ def test_agent_runtime_permission_request_lookup_uses_recorded_ask_event():
     assert missing is None
 
 
+def test_agent_runtime_permission_request_lookup_falls_back_to_latest_matching_command():
+    from routers import projects as projects_router
+
+    snapshot = {
+        "events": [
+            {
+                "event_type": "permission_decision",
+                "payload": {
+                    "args": {"command": "/opt/bin/lark-cli auth status --format json"},
+                    "decision": {
+                        "behavior": "ask",
+                        "call_id": "call-old",
+                        "tool_name": "project_host_run_command",
+                    },
+                },
+            },
+            {
+                "event_type": "permission_decision",
+                "payload": {
+                    "tool_call": {
+                        "call_id": "call-new",
+                        "tool_name": "project_host_run_command",
+                        "arguments": '{"command": "lark-cli auth status"}',
+                    },
+                    "decision": {
+                        "behavior": "ask",
+                        "call_id": "call-new",
+                        "tool_name": "project_host_run_command",
+                    },
+                },
+            },
+        ]
+    }
+
+    request = projects_router._find_agent_runtime_permission_request(
+        snapshot,
+        call_id="call-old",
+        tool_name="project_host_run_command",
+        args={"command": "/opt/bin/lark-cli auth status --format json"},
+    )
+
+    assert request == {
+        "call_id": "call-new",
+        "tool_name": "project_host_run_command",
+        "args": {"command": "lark-cli auth status"},
+    }
+
+
 def test_tool_result_normalizer_maps_result_status():
     from services.agent_runtime_v2.tool_result_normalizer import ToolResultNormalizer
 
@@ -402,6 +450,82 @@ async def test_query_engine_creates_observation_and_continues_after_tool(tmp_pat
     assert result.observations[0].status == "succeeded"
     assert "tool_observation_created" in events
     assert "completion_decision" in events
+
+
+@pytest.mark.asyncio
+async def test_query_engine_fails_when_tool_succeeds_but_model_never_answers(tmp_path):
+    from services.agent_runtime_v2.event_log import RuntimeEventLog
+    from services.agent_runtime_v2.llm_step import LLMStep
+    from services.agent_runtime_v2.query_engine import QueryEngine
+    from services.agent_runtime_v2.state_store import TaskRunStore
+    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime_v2.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_completion_stream(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-1",
+                            "function": {
+                                "name": "complete_task_node_with_verification",
+                                "arguments": "{\"node_id\": \"node-1\"}",
+                            },
+                        }
+                    ]
+                }
+            elif False:
+                yield {}
+
+    class _FakeToolExecutor:
+        async def execute_parallel(self, tool_calls, timeout=None):
+            return [{"ok": True, "status": "succeeded"}]
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="检测登录状态",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(_FakeLLM()),
+        tool_runner=ToolExecutionRunner(
+            _FakeToolExecutor(),
+            event_log=event_log,
+        ),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        max_model_steps=2,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "检测登录状态"}],
+        tools=[{"tool_name": "complete_task_node_with_verification"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+        task_tree_verified=True,
+        goal_covered=True,
+    )
+
+    assert result.task_run.status == "failed"
+    assert result.final_content == ""
+    assert result.completion_decision is not None
+    assert result.completion_decision.action == "fail"
+    assert "missing_final_response_after_tool" in result.completion_decision.reasons
+    assert result.observations[0].status == "succeeded"
 
 
 @pytest.mark.asyncio
@@ -563,6 +687,180 @@ async def test_query_engine_waits_when_background_operation_pending(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_llm_step_returns_structured_error_when_stream_raises_dns_error():
+    from services.agent_runtime_v2.llm_step import LLMStep
+
+    class _FailingLLM:
+        async def chat_completion_stream(self, **kwargs):
+            if False:
+                yield {}
+            raise OSError("[Errno 8] nodename nor servname provided, or not known")
+
+    result = await LLMStep(_FailingLLM()).run(
+        provider_id="provider-1",
+        model_name="model-1",
+        messages=[{"role": "user", "content": "检测登录"}],
+        tools=[{"tool_name": "project_host_run_command"}],
+        temperature=0.1,
+        max_tokens=256,
+    )
+
+    assert result.error is not None
+    assert result.error["error_type"] == "OSError"
+    assert "模型服务地址无法解析" in result.error["message"]
+    assert "nodename nor servname" in result.error["raw_error"]
+    assert result.provider_id == "provider-1"
+    assert result.model_name == "model-1"
+
+
+@pytest.mark.asyncio
+async def test_query_engine_returns_llm_error_content_when_stream_raises(tmp_path):
+    from services.agent_runtime_v2.event_log import RuntimeEventLog
+    from services.agent_runtime_v2.llm_step import LLMStep
+    from services.agent_runtime_v2.query_engine import QueryEngine
+    from services.agent_runtime_v2.state_store import TaskRunStore
+    from services.agent_runtime_v2.transcript_store import TranscriptStore
+
+    class _FailingLLM:
+        async def chat_completion_stream(self, **kwargs):
+            if False:
+                yield {}
+            raise OSError("[Errno 8] nodename nor servname provided, or not known")
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="检测登录",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(_FailingLLM()),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        max_model_steps=3,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "检测登录"}],
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+    )
+
+    assert result.task_run.status == "failed"
+    assert result.completion_decision is not None
+    assert result.completion_decision.action == "fail"
+    assert "llm_error" in result.completion_decision.reasons
+    assert "模型服务地址无法解析" in result.final_content
+    assert "query_engine_failed" in [event["type"] for event in result.task_run.events]
+
+
+def test_query_engine_blocks_when_permission_rule_denies(tmp_path):
+    async def _run():
+        from services.agent_runtime_v2.event_log import RuntimeEventLog
+        from services.agent_runtime_v2.llm_step import LLMStep
+        from services.agent_runtime_v2.permission_policy import PermissionPolicy
+        from services.agent_runtime_v2.permission_store import (
+            PermissionRule,
+            PermissionStore,
+        )
+        from services.agent_runtime_v2.query_engine import QueryEngine
+        from services.agent_runtime_v2.state_store import TaskRunStore
+        from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
+        from services.agent_runtime_v2.transcript_store import TranscriptStore
+
+        class _FakeLLM:
+            async def chat_completion_stream(self, **kwargs):
+                yield {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-1",
+                            "function": {
+                                "name": "project_host_run_command",
+                                "arguments": "{\"command\": \"npm test\"}",
+                            },
+                        }
+                    ]
+                }
+
+        class _FakeToolExecutor:
+            def __init__(self):
+                self.calls = 0
+
+            async def execute_parallel(self, tool_calls, timeout=None):
+                self.calls += 1
+                return [{"exit_code": 0, "stdout": "should not run"}]
+
+        permission_store = PermissionStore(tmp_path / "permissions")
+        permission_store.save_rule(
+            PermissionRule(
+                rule_id="rule-deny",
+                behavior="deny",
+                tool_name="project_host_run_command",
+                project_id="proj-1",
+                username="tester",
+                chat_session_id="chat-1",
+                matcher={"command_prefix": "npm test"},
+            )
+        )
+        executor = _FakeToolExecutor()
+        state_store = TaskRunStore(tmp_path / "runs")
+        event_log = RuntimeEventLog(tmp_path / "events")
+        task_run = state_store.create(
+            project_id="proj-1",
+            username="tester",
+            chat_session_id="chat-1",
+            session_id="session-1",
+            user_goal="运行测试",
+        )
+        engine = QueryEngine(
+            llm_step=LLMStep(_FakeLLM()),
+            tool_runner=ToolExecutionRunner(
+                executor,
+                event_log=event_log,
+                permission_policy=PermissionPolicy(permission_store),
+                project_id="proj-1",
+                username="tester",
+                chat_session_id="chat-1",
+                workspace_trusted=True,
+            ),
+            state_store=state_store,
+            event_log=event_log,
+            transcript_store=TranscriptStore(tmp_path / "transcripts"),
+            max_model_steps=3,
+        )
+
+        result = await engine.run(
+            task_run,
+            messages=[{"role": "user", "content": "运行测试"}],
+            tools=[{"tool_name": "project_host_run_command"}],
+            provider_id="provider-1",
+            model_name="model-1",
+            temperature=0.1,
+            max_tokens=256,
+        )
+
+        assert executor.calls == 0
+        assert result.task_run.status == "blocked"
+        assert result.completion_decision is not None
+        assert result.completion_decision.action == "blocked"
+        assert "permission_denied" in result.completion_decision.reasons
+        assert result.observations[0].status == "blocked"
+        assert result.observations[0].raw_result["permission_decision"]["behavior"] == "deny"
+        assert "query_engine_blocked" in [event["type"] for event in result.task_run.events]
+
+    asyncio.run(_run())
+
+
+@pytest.mark.asyncio
 async def test_query_engine_empty_model_response_does_not_complete(tmp_path):
     from services.agent_runtime_v2.event_log import RuntimeEventLog
     from services.agent_runtime_v2.llm_step import LLMStep
@@ -611,6 +909,125 @@ async def test_query_engine_empty_model_response_does_not_complete(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_query_engine_continue_decision_runs_another_model_step(tmp_path):
+    from services.agent_runtime_v2.completion_policy import CompletionDecision
+    from services.agent_runtime_v2.event_log import RuntimeEventLog
+    from services.agent_runtime_v2.llm_step import LLMStep
+    from services.agent_runtime_v2.query_engine import QueryEngine
+    from services.agent_runtime_v2.state_store import TaskRunStore
+    from services.agent_runtime_v2.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_completion_stream(self, **kwargs):
+            self.calls += 1
+            yield {"content": f"第 {self.calls} 轮"}
+
+    class _ContinueThenCompletePolicy:
+        def __init__(self):
+            self.calls = 0
+
+        def evaluate(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return CompletionDecision("continue", ["goal_not_confirmed"])
+            return CompletionDecision("complete", ["completion_gate_satisfied"])
+
+    llm = _FakeLLM()
+    policy = _ContinueThenCompletePolicy()
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="查询状态",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(llm),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        completion_policy=policy,
+        max_model_steps=3,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "查询状态"}],
+        tools=[],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+    )
+
+    assert llm.calls == 2
+    assert policy.calls == 2
+    assert result.task_run.status == "completed"
+    assert result.final_content == "第 2 轮"
+    assert result.completion_decision is not None
+    assert result.completion_decision.action == "complete"
+
+
+@pytest.mark.asyncio
+async def test_query_engine_continue_budget_exceeded_fails_not_running(tmp_path):
+    from services.agent_runtime_v2.event_log import RuntimeEventLog
+    from services.agent_runtime_v2.llm_step import LLMStep
+    from services.agent_runtime_v2.query_engine import QueryEngine
+    from services.agent_runtime_v2.state_store import TaskRunStore
+    from services.agent_runtime_v2.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_completion_stream(self, **kwargs):
+            self.calls += 1
+            yield {"content": f"未收口响应 {self.calls}"}
+
+    llm = _FakeLLM()
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="查询状态",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(llm),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        max_model_steps=2,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "查询状态"}],
+        tools=[],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+        task_tree_verified=False,
+        goal_covered=False,
+    )
+
+    assert llm.calls == 2
+    assert result.task_run.status == "failed"
+    assert result.completion_decision is not None
+    assert result.completion_decision.action == "fail"
+    assert "model_step_budget_exceeded" in result.completion_decision.reasons
+    assert "query_engine_paused" not in [event["type"] for event in result.task_run.events]
+
+
+@pytest.mark.asyncio
 async def test_agent_runtime_v2_query_engine_mode_is_default(tmp_path):
     from services.agent_runtime_v2.event_log import RuntimeEventLog
     from services.agent_runtime_v2.runtime import AgentTaskRuntime
@@ -656,7 +1073,68 @@ async def test_agent_runtime_v2_query_engine_mode_is_default(tmp_path):
     assert chunks[1]["mode"] == "query_engine"
     assert chunks[-1]["type"] == "done"
     assert chunks[-1]["content"] == "可以继续。"
-    assert chunks[-1]["agent_runtime"]["status"] == "running"
+    assert chunks[-1]["agent_runtime"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_v2_done_marks_permission_waiting_user(tmp_path):
+    from services.agent_runtime_v2.event_log import RuntimeEventLog
+    from services.agent_runtime_v2.runtime import AgentTaskRuntime
+    from services.agent_runtime_v2.state_store import TaskRunStore
+    from services.agent_runtime_v2.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-1",
+                        "function": {
+                            "name": "project_host_run_command",
+                            "arguments": "{\"command\": \"sudo echo ok\"}",
+                        },
+                    }
+                ]
+            }
+
+    class _LegacyOrchestrator:
+        def __init__(self):
+            self._llm = _FakeLLM()
+
+        async def run(self, **kwargs):
+            yield {"type": "done", "content": "legacy"}
+
+    runtime = AgentTaskRuntime(
+        _LegacyOrchestrator(),
+        state_store=TaskRunStore(tmp_path / "runs"),
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        event_log=RuntimeEventLog(tmp_path / "events"),
+    )
+
+    chunks = []
+    async for chunk in runtime.run(
+        session_id="session-1",
+        user_message="运行高风险命令",
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+        project_id="proj-1",
+        employee_id="emp-1",
+        cancel_event=asyncio.Event(),
+        username="tester",
+        chat_session_id="chat-1",
+        host_workspace_path="/tmp/untrusted-workspace",
+    ):
+        chunks.append(chunk)
+
+    assert chunks[-1]["type"] == "done"
+    assert chunks[-1]["completed_reason"] == "waiting_user_action"
+    assert chunks[-1]["guard_reason"] == "waiting_user_action"
+    assert chunks[-1]["agent_runtime"]["status"] == "waiting_user"
+    assert chunks[-1]["content"] == "等待你授权工具调用后继续。"
 
 
 def test_completion_policy_requires_verification_for_dev_task():
@@ -693,6 +1171,102 @@ def test_permission_policy_asks_when_workspace_untrusted(tmp_path):
     assert decision.behavior == "ask"
     assert decision.risk_level == "high"
     assert decision.allowed is False
+
+
+def test_permission_action_allow_always_reuses_lark_auth_status_signature(tmp_path):
+    from services.agent_runtime_v2.event_log import RuntimeEventLog
+    from services.agent_runtime_v2.permission_actions import PermissionActionService
+    from services.agent_runtime_v2.permission_policy import PermissionPolicy
+    from services.agent_runtime_v2.permission_store import PermissionStore
+    from services.agent_runtime_v2.trust_policy import TrustPolicy
+
+    store = PermissionStore(tmp_path / "permissions")
+    service = PermissionActionService(
+        permission_store=store,
+        trust_policy=TrustPolicy(tmp_path / "trust"),
+        event_log=RuntimeEventLog(tmp_path / "events"),
+    )
+
+    rule = service.apply_permission_action(
+        action="allow_always",
+        run_id="run-1",
+        call_id="call-1",
+        tool_name="project_host_run_command",
+        args={"command": "/opt/plugin/bin/lark-cli auth status --format json"},
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+    )
+    allowed = PermissionPolicy(store).evaluate(
+        run_id="run-2",
+        call_id="call-2",
+        tool_name="project_host_run_command",
+        args={"command": "lark-cli auth status"},
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-2",
+        workspace_trusted=False,
+    )
+    other_command = PermissionPolicy(store).evaluate(
+        run_id="run-2",
+        call_id="call-3",
+        tool_name="project_host_run_command",
+        args={"command": "lark-cli contact +search-user --query tester"},
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-2",
+        workspace_trusted=True,
+    )
+
+    assert rule.scope == "project"
+    assert rule.chat_session_id == ""
+    assert rule.matcher == {"command_signature": "lark-cli auth status"}
+    assert allowed.behavior == "allow_always"
+    assert allowed.matched_rule is not None
+    assert other_command.behavior == "allow_once"
+
+
+def test_agent_runtime_trace_merges_lark_auth_permission_cards_by_signature():
+    from routers import projects as projects_router
+
+    trace = projects_router._agent_runtime_trace_from_events(
+        [
+            {
+                "event_type": "permission_decision",
+                "payload": {
+                    "args": {"command": "/opt/bin/lark-cli auth status --format json"},
+                    "decision": {
+                        "behavior": "ask",
+                        "call_id": "call-1",
+                        "tool_name": "project_host_run_command",
+                    },
+                },
+            },
+            {
+                "event_type": "permission_decision",
+                "payload": {
+                    "args": {"command": "lark-cli auth status"},
+                    "decision": {
+                        "behavior": "ask",
+                        "call_id": "call-2",
+                        "tool_name": "project_host_run_command",
+                    },
+                },
+            },
+        ],
+        "run-1",
+    )
+
+    permission_operations = [
+        item
+        for item in trace["operations"]
+        if item["meta"].get("agent_runtime_permission") == "true"
+    ]
+    assert len(permission_operations) == 1
+    assert permission_operations[0]["operationId"] == (
+        "agent-runtime-permission:run-1:command:lark-cli auth status"
+    )
+    assert permission_operations[0]["meta"]["call_id"] == "call-2"
 
 
 @pytest.mark.asyncio
@@ -1061,8 +1635,9 @@ async def test_operation_resume_can_continue_query_engine_after_allow_once(tmp_p
     events = [item.event_type for item in event_log.list_events(task_run.run_id)]
     assert result.resumed is True
     assert result.continuation is not None
-    assert result.status == "running"
+    assert result.status == "completed"
     assert result.continuation.final_content == "授权后的命令已执行，继续完成。"
+    assert result.continuation.task_run.status == "completed"
     assert llm.messages[0][-2]["tool_calls"][0]["id"] == "call-1"
     assert llm.messages[0][-1]["role"] == "tool"
     assert "operation_resume_continuation_started" in events

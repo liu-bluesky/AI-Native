@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -80,8 +81,39 @@ class ToolResultNormalizer:
         return "succeeded"
 
     def _summarize(self, payload: dict[str, Any], *, status: str) -> str:
+        structured = self._structured_stdout_summary(payload)
+        if structured:
+            return structured
         for key in ("summary", "message", "error", "stderr", "stdout"):
             value = str(payload.get(key) or "").strip()
             if value:
                 return value[-500:]
         return status
+
+    def _structured_stdout_summary(self, payload: dict[str, Any]) -> str:
+        stdout = str(payload.get("stdout") or "").strip()
+        if not stdout or not stdout.startswith("{"):
+            return ""
+        try:
+            parsed = json.loads(stdout)
+        except (TypeError, ValueError):
+            return ""
+        if not isinstance(parsed, dict):
+            return ""
+        lines: list[str] = []
+
+        def add_field(label: str, *keys: str) -> None:
+            for key in keys:
+                value = parsed.get(key)
+                if value in (None, ""):
+                    continue
+                lines.append(f"{label}: {str(value).strip()}")
+                return
+
+        add_field("status", "status", "login_status")
+        add_field("user", "name", "user_name", "display_name", "email")
+        add_field("identity", "identity", "as", "login_identity")
+        add_field("brand", "brand")
+        add_field("expires_at", "expires_at", "expire_at", "expired_at")
+        add_field("refresh_expires_at", "refresh_expires_at", "refresh_expire_at")
+        return "\n".join(lines[:8]).strip()

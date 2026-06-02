@@ -5,6 +5,7 @@ from __future__ import annotations
 import getpass
 import threading
 import re
+import shlex
 import subprocess
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -34,6 +35,34 @@ def _safe_segment(value: str) -> str:
 
 
 _URL_PATTERN = re.compile(r"https?://[^\s<>\"]+")
+_DEFAULT_INTERACTIVE_COMMAND_MARKERS = (
+    " auth login",
+    " login",
+    " authorize",
+    " oauth",
+    " device",
+    " config init",
+)
+_DEFAULT_USER_ACTION_MARKERS = (
+    "authorize",
+    "authorization",
+    "open the following link",
+    "please visit",
+    "verification url",
+    "device code",
+    "browser",
+    "浏览器",
+    "授权",
+    "登录",
+)
+_DEFAULT_UNAUTHENTICATED_MARKERS = (
+    "no user logged in",
+    "not logged in",
+    "not authenticated",
+    "unauthenticated",
+    "login required",
+    "auth required",
+)
 
 
 def get_cli_plugin_user_runtime_dirs(
@@ -224,23 +253,34 @@ def build_cli_plugin_profile_runtime_env(
 
 def _default_cli_plugin_login_command(plugin_id: str) -> str:
     normalized_plugin_id = _normalize_plugin_id(plugin_id)
-    if normalized_plugin_id == "feishu-cli":
-        return "lark-cli auth login --recommend"
+    auth = _cli_plugin_auth_config(normalized_plugin_id)
+    if auth:
+        return str(auth.get("login_command") or "").strip()
     return ""
 
 
 def _default_cli_plugin_logout_command(plugin_id: str) -> str:
     normalized_plugin_id = _normalize_plugin_id(plugin_id)
-    if normalized_plugin_id == "feishu-cli":
-        return "lark-cli auth logout"
+    auth = _cli_plugin_auth_config(normalized_plugin_id)
+    if auth:
+        return str(auth.get("logout_command") or "").strip()
     return ""
 
 
 def _default_cli_plugin_test_command(plugin_id: str) -> str:
     normalized_plugin_id = _normalize_plugin_id(plugin_id)
-    if normalized_plugin_id == "feishu-cli":
-        return "lark-cli auth status"
+    auth = _cli_plugin_auth_config(normalized_plugin_id)
+    if auth:
+        return str(auth.get("test_command") or "").strip()
     return ""
+
+
+def _cli_plugin_auth_config(plugin_id: str) -> dict[str, Any]:
+    from services.cli_plugin_market_service import get_cli_plugin
+
+    plugin = get_cli_plugin(plugin_id, include_status=False)
+    auth = plugin.get("auth") if isinstance(plugin, dict) else {}
+    return dict(auth or {}) if isinstance(auth, dict) else {}
 
 
 def _extract_first_url(*values: object) -> str:
@@ -251,15 +291,46 @@ def _extract_first_url(*values: object) -> str:
     return ""
 
 
-def _is_interactive_auth_command(command: str) -> bool:
+def _pattern_matches(pattern: str, value: str) -> bool:
+    normalized_pattern = str(pattern or "").strip()
+    if not normalized_pattern:
+        return False
+    try:
+        return re.search(normalized_pattern, value, re.IGNORECASE) is not None
+    except re.error:
+        return normalized_pattern.lower() in value.lower()
+
+
+def _parse_shell_like_command(command: str) -> list[str]:
+    try:
+        return shlex.split(str(command or "").strip())
+    except ValueError:
+        return str(command or "").strip().split()
+
+
+def _is_help_command(command: str) -> bool:
+    return any(
+        str(arg or "").strip().lower() in {"-h", "--help", "help"}
+        for arg in _parse_shell_like_command(command)
+    )
+
+
+def _is_interactive_auth_command(command: str, *, plugin_id: str = "") -> bool:
     normalized_command = str(command or "").strip().lower()
     if not normalized_command:
         return False
-    return "auth login" in normalized_command or "config init --new" in normalized_command
+    if _is_help_command(normalized_command):
+        return False
+    auth = _cli_plugin_auth_config(plugin_id)
+    patterns = list(auth.get("interactive_command_patterns") or []) + list(auth.get("command_patterns") or [])
+    if any(_pattern_matches(str(pattern or ""), normalized_command) for pattern in patterns):
+        return True
+    return any(marker in normalized_command for marker in _DEFAULT_INTERACTIVE_COMMAND_MARKERS)
 
 
 def _build_cli_plugin_execution_result(
     *,
+    plugin_id: str = "",
     command: str,
     stdout: str,
     stderr: str,
@@ -270,19 +341,21 @@ def _build_cli_plugin_execution_result(
     normalized_command = str(command or "").strip()
     normalized_stdout = str(stdout or "")
     normalized_stderr = str(stderr or "")
-    interactive = _is_interactive_auth_command(normalized_command)
+    interactive = _is_interactive_auth_command(normalized_command, plugin_id=plugin_id)
     authorization_url = _extract_first_url(normalized_stdout, normalized_stderr)
     combined_output = f"{normalized_stdout}\n{normalized_stderr}".lower()
+    auth = _cli_plugin_auth_config(plugin_id)
+    markers = [
+        str(value or "").strip().lower()
+        for value in (auth.get("user_action_markers") or [])
+        if str(value or "").strip()
+    ] or list(_DEFAULT_USER_ACTION_MARKERS)
     requires_user_action = bool(
         interactive
         and (
             timed_out
             or bool(authorization_url)
-            or "授权" in combined_output
-            or "authorize" in combined_output
-            or "login" in combined_output
-            or "open the following link" in combined_output
-            or "please visit" in combined_output
+            or any(marker in combined_output for marker in markers)
         )
     )
     ok = exit_code == 0 and not timed_out
@@ -309,6 +382,7 @@ def _build_cli_plugin_execution_result(
         "status_label": status_label,
         "next_step": next_step,
         "command": normalized_command,
+        "plugin_id": _normalize_plugin_id(plugin_id),
         "stdout": normalized_stdout,
         "stderr": normalized_stderr,
         "exit_code": exit_code,
@@ -358,6 +432,7 @@ def execute_cli_plugin_profile_command(
             stderr=str(exc.stderr or ""),
             exit_code=None,
             timed_out=True,
+            plugin_id=normalized_plugin_id,
             runtime_metadata=runtime_metadata,
         )
     return _build_cli_plugin_execution_result(
@@ -366,6 +441,7 @@ def execute_cli_plugin_profile_command(
         stderr=str(completed.stderr or ""),
         exit_code=int(completed.returncode),
         timed_out=False,
+        plugin_id=normalized_plugin_id,
         runtime_metadata=runtime_metadata,
     )
 
@@ -424,6 +500,7 @@ def execute_cli_plugin_profile_command_streaming(
             stderr=stderr,
             exit_code=None,
             timed_out=False,
+            plugin_id=normalized_plugin_id,
             runtime_metadata=runtime_metadata,
         )
         try:
@@ -484,6 +561,7 @@ def execute_cli_plugin_profile_command_streaming(
         stderr=stderr,
         exit_code=exit_code,
         timed_out=timed_out,
+        plugin_id=normalized_plugin_id,
         runtime_metadata=runtime_metadata,
     )
 

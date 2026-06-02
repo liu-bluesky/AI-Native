@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from core.config import get_project_root
 from services.cli_plugin_profile_service import (
+    _cli_plugin_auth_config,
     _default_cli_plugin_login_command,
     _default_cli_plugin_test_command,
     execute_cli_plugin_profile_command_streaming,
@@ -36,6 +37,49 @@ _UNAUTHENTICATED_AUTH_STATUS_PATTERNS = (
     "'identity':'bot'",
     "'identity': 'bot'",
 )
+_LARK_AUTH_DOMAIN_OPTIONS = (
+    "all",
+    "approval",
+    "attendance",
+    "base",
+    "calendar",
+    "contact",
+    "doc",
+    "drive",
+    "im",
+    "mail",
+    "minutes",
+    "okr",
+    "sheets",
+    "slides",
+    "task",
+    "vc",
+    "wiki",
+)
+
+
+def _plugin_auth_config(plugin_id: str) -> dict[str, Any]:
+    return _cli_plugin_auth_config(plugin_id)
+
+
+def _plugin_operation_kind(plugin_id: str) -> str:
+    auth = _plugin_auth_config(plugin_id)
+    return str(auth.get("operation_kind") or "auth_login").strip() or "auth_login"
+
+
+def _plugin_operation_label(plugin_id: str) -> str:
+    auth = _plugin_auth_config(plugin_id)
+    return str(auth.get("operation_label") or "网页登录授权").strip() or "网页登录授权"
+
+
+def _plugin_unauthenticated_markers(plugin_id: str) -> tuple[str, ...]:
+    auth = _plugin_auth_config(plugin_id)
+    configured = tuple(
+        str(item or "").strip().lower()
+        for item in (auth.get("unauthenticated_markers") or [])
+        if str(item or "").strip()
+    )
+    return configured or _UNAUTHENTICATED_AUTH_STATUS_PATTERNS
 
 
 def _utc_now_iso() -> str:
@@ -99,21 +143,112 @@ def _build_task_status_reason(
     if normalized_status == "queued":
         return "任务已创建，等待后台执行"
     if normalized_status == "running":
-        return "正在后台执行外部操作"
+        return "正在执行操作"
     if normalized_status == "waiting_user_action":
-        return "等待你完成外部操作；完成后系统会自动检测并继续。"
+        return "等待你完成当前操作；完成后系统会自动检测并继续。"
     if error_message:
         return error_message
     preview = str((execution or {}).get("stderr") or (execution or {}).get("stdout") or "").strip()
     if preview:
         return preview[-240:]
     if normalized_status == "succeeded":
-        return "外部操作完成，检测通过"
+        return "操作完成，检测通过"
     if normalized_status == "timeout":
-        return "外部操作在限定时间内未完成"
+        return "操作在限定时间内未完成"
     if normalized_status == "failed":
-        return "外部操作执行失败"
+        return "操作执行失败"
     return ""
+
+
+def _strip_ansi_control_sequences(value: str) -> str:
+    import re
+
+    text = str(value or "")
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    text = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", text)
+    return text.replace("\x1b", "")
+
+
+def _execution_text(execution: dict[str, Any] | None) -> str:
+    payload = execution or {}
+    return "\n".join(
+        str(payload.get(key) or "")
+        for key in (
+            "stdout",
+            "stderr",
+            "next_step",
+            "status_label",
+            "status",
+            "detail",
+            "message",
+        )
+    )
+
+
+def _execution_has_lark_auth_domain_prompt(execution: dict[str, Any] | None) -> bool:
+    text = _strip_ansi_control_sequences(_execution_text(execution)).lower()
+    if "业务域" not in text:
+        return False
+    return any(marker in text for marker in ("选择", "请选择", "select", "choose"))
+
+
+def _build_lark_auth_domain_interaction_schema() -> dict[str, Any]:
+    return {
+        "title": "选择 lark-cli 授权业务域",
+        "description": "请选择需要授权的业务域后继续。",
+        "submit_label": "确认并继续",
+        "fallback_label": "稍后处理",
+        "response_mode": "interaction",
+        "schema": [
+            {
+                "label": "业务域",
+                "prop": "domains",
+                "componentName": "ElCheckboxGroup",
+                "required": True,
+                "colAttrs": {"span": 24},
+                "attrs": {"class": "message-terminal-form__checkbox-group"},
+                "rules": [
+                    {
+                        "required": True,
+                        "type": "array",
+                        "min": 1,
+                        "message": "请至少选择一项业务域",
+                        "trigger": "change",
+                    }
+                ],
+                "children": [
+                    {
+                        "componentName": "ElCheckbox",
+                        "attrs": {"label": value, "value": value},
+                    }
+                    for value in _LARK_AUTH_DOMAIN_OPTIONS
+                ],
+            }
+        ],
+        "model": {"domains": []},
+    }
+
+
+def _operation_interaction_schema_for_execution(
+    plugin_id: str,
+    execution: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if str(plugin_id or "").strip().lower() not in {"lark-cli", "feishu-cli"}:
+        return None
+    if _execution_has_lark_auth_domain_prompt(execution):
+        return _build_lark_auth_domain_interaction_schema()
+    return None
+
+
+def _operation_action_type_for_execution(
+    plugin_id: str,
+    execution: dict[str, Any] | None,
+) -> str:
+    if str((execution or {}).get("authorization_url") or "").strip():
+        return "open_url"
+    if _operation_interaction_schema_for_execution(plugin_id, execution):
+        return "interaction_form"
+    return "none"
 
 
 def _emit_task_event(task: dict[str, Any], *, event_type: str = "task_update") -> None:
@@ -268,7 +403,7 @@ def _find_active_task(plugin_id: str, username: str) -> dict[str, Any] | None:
     active_tasks = list_operation_wait_tasks(
         username=username,
         plugin_id=plugin_id,
-        operation_kind="auth_login",
+        operation_kind=_plugin_operation_kind(plugin_id),
         statuses=set(_ACTIVE_STATUSES),
         limit=1,
     )
@@ -277,14 +412,14 @@ def _find_active_task(plugin_id: str, username: str) -> dict[str, Any] | None:
 
 def _execution_has_authorization_prompt(execution: dict[str, Any] | None) -> bool:
     payload = execution or {}
+    plugin_id = str(payload.get("plugin_id") or "").strip()
     if payload.get("requires_user_action"):
         return True
     if str(payload.get("authorization_url") or "").strip():
         return True
-    text = "\n".join(
-        str(payload.get(key) or "")
-        for key in ("stdout", "stderr", "next_step", "status_label", "status")
-    ).lower()
+    if _operation_interaction_schema_for_execution(plugin_id, execution):
+        return True
+    text = _execution_text(payload).lower()
     return any(
         pattern in text
         for pattern in (
@@ -305,7 +440,8 @@ def _is_authenticated_test_execution(execution: dict[str, Any] | None) -> bool:
     if not payload.get("ok"):
         return False
     text = "\n".join(str(payload.get(key) or "") for key in ("stdout", "stderr")).lower()
-    if any(pattern in text for pattern in _UNAUTHENTICATED_AUTH_STATUS_PATTERNS):
+    plugin_id = str(payload.get("plugin_id") or "").strip()
+    if any(pattern in text for pattern in _plugin_unauthenticated_markers(plugin_id)):
         return False
     return True
 
@@ -320,6 +456,32 @@ def _verify_cli_plugin_authenticated(plugin_id: str, username: str) -> dict[str,
         command=test_command,
         timeout_sec=30,
     )
+
+
+def _build_auth_verification_error_execution(
+    plugin_id: str,
+    *,
+    error: Exception,
+) -> dict[str, Any]:
+    test_command = _default_cli_plugin_test_command(plugin_id)
+    raw_error = str(error or "").strip() or error.__class__.__name__
+    return {
+        "ok": False,
+        "timed_out": False,
+        "interactive": False,
+        "requires_user_action": False,
+        "authorization_url": "",
+        "status": "failed",
+        "status_label": "登录检测失败",
+        "next_step": "请检查 CLI 插件配置、网络代理或域名解析后重试。",
+        "command": test_command,
+        "plugin_id": str(plugin_id or "").strip(),
+        "stdout": "",
+        "stderr": raw_error,
+        "exit_code": None,
+        "error": raw_error,
+        "error_type": error.__class__.__name__,
+    }
 
 
 def _mark_operation_task_succeeded(
@@ -376,6 +538,15 @@ def _mark_operation_task_waiting_for_user_action(
         return current
     if not _execution_has_authorization_prompt(execution):
         return current
+    interaction_schema = _operation_interaction_schema_for_execution(plugin_id, execution)
+    action_type = _operation_action_type_for_execution(plugin_id, execution)
+    execution_payload = {
+        **dict(execution or {}),
+        "verification": dict(current.get("execution") or {}).get("verification") or {},
+        "action_type": action_type,
+    }
+    if interaction_schema:
+        execution_payload["interaction_schema"] = interaction_schema
     update_cli_plugin_profile(
         plugin_id,
         username,
@@ -399,7 +570,7 @@ def _mark_operation_task_waiting_for_user_action(
         stdout=str(execution.get("stdout") or "").strip(),
         stderr=str(execution.get("stderr") or "").strip(),
         error_message="",
-        execution={**dict(execution or {}), "verification": dict(current.get("execution") or {}).get("verification") or {}},
+        execution=execution_payload,
         profile=profile,
     )
 
@@ -429,8 +600,8 @@ def create_cli_plugin_auth_operation_task(
     safe_timeout = max(15, min(int(timeout_sec or 120), 600))
     task = {
         "task_id": f"operation-wait-{uuid.uuid4().hex}",
-        "operation_kind": "auth_login",
-        "operation_label": "网页登录授权",
+        "operation_kind": _plugin_operation_kind(normalized_plugin_id),
+        "operation_label": _plugin_operation_label(normalized_plugin_id),
         "plugin_id": normalized_plugin_id,
         "plugin": plugin,
         "created_by": normalized_username,
@@ -502,7 +673,13 @@ def _run_cli_plugin_auth_operation_task(task_id: str) -> None:
             timeout_sec=max(15, min(int(task.get("timeout_sec") or 120), 600)),
             on_update=_handle_execution_update,
         )
-        verification_execution = _verify_cli_plugin_authenticated(plugin_id, username)
+        try:
+            verification_execution = _verify_cli_plugin_authenticated(plugin_id, username)
+        except Exception as exc:
+            verification_execution = _build_auth_verification_error_execution(
+                plugin_id,
+                error=exc,
+            )
         if _is_authenticated_test_execution(verification_execution):
             _mark_operation_task_succeeded(
                 task_id,
@@ -514,11 +691,16 @@ def _run_cli_plugin_auth_operation_task(task_id: str) -> None:
             return
 
         execution_ok = bool(execution.get("ok"))
-        if execution.get("timed_out"):
+        has_authorization_prompt = _execution_has_authorization_prompt(execution)
+        if execution.get("timed_out") and has_authorization_prompt:
+            profile_status = "pending_auth"
+            profile_status_label = "等待授权"
+            task_status = "waiting_user_action"
+        elif execution.get("timed_out"):
             profile_status = "ready"
             profile_status_label = "授权超时"
             task_status = "timeout"
-        elif execution.get("requires_user_action") or execution_ok or _execution_has_authorization_prompt(execution):
+        elif execution.get("requires_user_action") or execution_ok or has_authorization_prompt:
             profile_status = "pending_auth"
             profile_status_label = "等待授权"
             task_status = "waiting_user_action"
@@ -541,6 +723,15 @@ def _run_cli_plugin_auth_operation_task(task_id: str) -> None:
             },
         )
         profile = serialize_cli_plugin_profile(plugin_id, username, auth_payload={"sub": username})
+        interaction_schema = _operation_interaction_schema_for_execution(plugin_id, execution)
+        action_type = _operation_action_type_for_execution(plugin_id, execution)
+        execution_payload = {
+            **dict(execution or {}),
+            "verification": verification_execution or {},
+            "action_type": action_type,
+        }
+        if interaction_schema:
+            execution_payload["interaction_schema"] = interaction_schema
         task = _update_task(
             task_id,
             status=task_status,
@@ -553,7 +744,7 @@ def _run_cli_plugin_auth_operation_task(task_id: str) -> None:
             stdout=str(execution.get("stdout") or "").strip(),
             stderr=str(execution.get("stderr") or "").strip(),
             error_message="" if execution.get("ok") or execution.get("requires_user_action") else str(execution.get("stderr") or execution.get("stdout") or "").strip(),
-            execution={**dict(execution or {}), "verification": verification_execution or {}},
+            execution=execution_payload,
             profile=profile,
         )
         if task_status == "waiting_user_action":
@@ -590,7 +781,38 @@ def _poll_auth_operation_until_authenticated(
             return
         if str(task.get("status") or "").strip().lower() != "waiting_user_action":
             return
-        execution = _verify_cli_plugin_authenticated(plugin_id, username)
+        try:
+            execution = _verify_cli_plugin_authenticated(plugin_id, username)
+        except Exception as exc:
+            execution = _build_auth_verification_error_execution(
+                plugin_id,
+                error=exc,
+            )
+            update_cli_plugin_profile(
+                plugin_id,
+                username,
+                status="ready",
+                status_label="登录检测失败",
+                last_error=str(execution.get("stderr") or execution.get("error") or "").strip(),
+                metadata={**dict(task.get("metadata") or {}), "last_verification_execution": execution},
+            )
+            profile = serialize_cli_plugin_profile(plugin_id, username, auth_payload={"sub": username})
+            _update_task(
+                task_id,
+                status="failed",
+                status_label=_build_task_status_label("failed"),
+                status_reason=_build_task_status_reason(status="failed", execution=execution),
+                finished_at=_utc_now_iso(),
+                ok=False,
+                execution_ok=False,
+                exit_code=execution.get("exit_code"),
+                stdout=str(execution.get("stdout") or "").strip(),
+                stderr=str(execution.get("stderr") or "").strip(),
+                error_message=str(execution.get("stderr") or execution.get("error") or "").strip(),
+                execution=execution,
+                profile=profile,
+            )
+            return
         if not _is_authenticated_test_execution(execution):
             continue
         _mark_operation_task_succeeded(

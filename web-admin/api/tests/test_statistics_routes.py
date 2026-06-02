@@ -1,5 +1,7 @@
 """统计路由测试"""
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 
@@ -23,6 +25,15 @@ def _build_statistics_test_client(tmp_path, monkeypatch, auth_payload):
 
 def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
     from routers import statistics as statistics_router
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    recent_date = now.date().isoformat()
+    previous_date = (now - timedelta(days=1)).date().isoformat()
+    recent_iso = now.isoformat()
+    recent_iso_plus_10m = (now + timedelta(minutes=10)).isoformat()
+    recent_iso_plus_15m = (now + timedelta(minutes=15)).isoformat()
+    recent_iso_plus_16m = (now + timedelta(minutes=16)).isoformat()
+    recent_iso_plus_17m = (now + timedelta(minutes=17)).isoformat()
 
     client = _build_statistics_test_client(
         tmp_path,
@@ -53,8 +64,8 @@ def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
                     "prompt_version_records": 3,
                 },
                 "daily": [
-                    {"date": "2026-04-21", "total_events": 5, "tool_calls": 4, "connections": 1},
-                    {"date": "2026-04-22", "total_events": 7, "tool_calls": 6, "connections": 1},
+                    {"date": previous_date, "total_events": 5, "tool_calls": 4, "connections": 1},
+                    {"date": recent_date, "total_events": 7, "tool_calls": 6, "connections": 1},
                 ],
                 "top_tools": [{"tool_name": "bind_project_context", "cnt": 5}],
                 "top_employees": [
@@ -89,8 +100,8 @@ def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
                     step="梳理",
                     status="in_progress",
                     verification=["已进入分析"],
-                    updated_at="2026-04-22T00:00:00+00:00",
-                    created_at="2026-04-22T00:00:00+00:00",
+                    updated_at=recent_iso,
+                    created_at=recent_iso,
                 ),
                 _FakeEvent(
                     session_id="ws-2",
@@ -101,8 +112,8 @@ def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
                     step="验收",
                     status="completed",
                     verification=["已完成"],
-                    updated_at="2026-04-22T00:10:00+00:00",
-                    created_at="2026-04-22T00:10:00+00:00",
+                    updated_at=recent_iso_plus_10m,
+                    created_at=recent_iso_plus_10m,
                 ),
             ]
 
@@ -137,7 +148,7 @@ def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
                     "project_id": "proj-1",
                     "project_name": "项目 A",
                     "developer_name": "admin",
-                    "last_seen_at": "2026-04-22T00:15:00+00:00",
+                    "last_seen_at": recent_iso_plus_15m,
                 },
                 {
                     "endpoint_type": "query",
@@ -146,7 +157,7 @@ def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
                     "project_id": "proj-1",
                     "project_name": "项目 A",
                     "developer_name": "admin",
-                    "last_seen_at": "2026-04-22T00:16:00+00:00",
+                    "last_seen_at": recent_iso_plus_16m,
                 },
                 {
                     "endpoint_type": "project",
@@ -155,7 +166,7 @@ def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
                     "project_id": "proj-1",
                     "project_name": "项目 A",
                     "developer_name": "admin",
-                    "last_seen_at": "2026-04-22T00:17:00+00:00",
+                    "last_seen_at": recent_iso_plus_17m,
                 },
             ],
             "ttl_seconds": 180,
@@ -217,6 +228,20 @@ def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
     assert payload["usage"]["top_models"][0]["model_name"] == "gpt-4.1"
     assert payload["usage"]["top_prompt_versions"][0]["prompt_version"] == "planner-v2"
     assert payload["usage"]["top_projects"][0]["project_name"] == "项目 A"
+    assert payload["executive"]["version"] == "statistics-executive/v2"
+    assert payload["executive"]["headline"] == "当前窗口的工作内容已可复盘"
+    assert payload["executive"]["summary"]["project_count"] == 1
+    assert payload["executive"]["summary"]["risk_project_count"] == 0
+    assert payload["executive"]["summary"]["completion_rate"] == 50.0
+    assert payload["executive"]["summary"]["closure_rate"] == 50.0
+    assert payload["executive"]["project_portfolio"][0]["project_name"] == "项目 A"
+    assert payload["executive"]["project_portfolio"][0]["status"] == "healthy"
+    assert payload["executive"]["project_portfolio"][0]["closure_rate"] == 50.0
+    assert payload["executive"]["project_portfolio"][0]["work_items"][0]["work_summary"] == "验证 · 验收"
+    assert payload["executive"]["project_portfolio"][0]["work_items"][0]["verification_summary"] == "已完成"
+    assert payload["executive"]["risk_projects"] == []
+    assert payload["executive"]["recent_sessions"][0]["project_name"] == "项目 A"
+    assert payload["executive"]["recent_sessions"][0]["work_summary"] == "验证 · 验收"
     assert payload["runtime_metrics"]["counter_total"] == 1
     assert payload["insights"]["health_score"] > 0
     assert len(payload["insights"]["highlights"]) == 5
@@ -249,6 +274,12 @@ def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
 def test_statistics_overview_uses_work_sessions_for_agent_activity_when_usage_and_live_are_empty(tmp_path, monkeypatch):
     from routers import statistics as statistics_router
 
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    recent_date = now.date().isoformat()
+    recent_iso = now.isoformat()
+    recent_iso_plus_5m = (now + timedelta(minutes=5)).isoformat()
+    recent_iso_plus_16m = (now + timedelta(minutes=16)).isoformat()
+
     client = _build_statistics_test_client(
         tmp_path,
         monkeypatch,
@@ -270,7 +301,7 @@ def test_statistics_overview_uses_work_sessions_for_agent_activity_when_usage_an
                     "query_scope_events": 4,
                     "query_tool_calls": 4,
                 },
-                "daily": [{"date": "2026-04-22", "total_events": 4, "tool_calls": 4, "connections": 0}],
+                "daily": [{"date": recent_date, "total_events": 4, "tool_calls": 4, "connections": 0}],
                 "top_tools": [{"tool_name": "bind_project_context", "cnt": 4}],
                 "top_employees": [],
                 "top_scopes": [{"scope_id": "mcp:query", "cnt": 4, "tool_calls": 4, "attributed_employee_count": 0, "project_count": 1}],
@@ -294,8 +325,8 @@ def test_statistics_overview_uses_work_sessions_for_agent_activity_when_usage_an
                     step="梳理",
                     status="in_progress",
                     verification=["已进入分析"],
-                    updated_at="2026-04-22T00:00:00+00:00",
-                    created_at="2026-04-22T00:00:00+00:00",
+                    updated_at=recent_iso,
+                    created_at=recent_iso,
                 ),
                 _FakeEvent(
                     session_id="ws-1",
@@ -306,8 +337,8 @@ def test_statistics_overview_uses_work_sessions_for_agent_activity_when_usage_an
                     step="修复",
                     status="in_progress",
                     verification=["已进入实现"],
-                    updated_at="2026-04-22T00:05:00+00:00",
-                    created_at="2026-04-22T00:05:00+00:00",
+                    updated_at=recent_iso_plus_5m,
+                    created_at=recent_iso_plus_5m,
                 ),
             ]
 
@@ -333,7 +364,7 @@ def test_statistics_overview_uses_work_sessions_for_agent_activity_when_usage_an
                     "project_id": "proj-1",
                     "project_name": "项目 A",
                     "developer_name": "admin",
-                    "last_seen_at": "2026-04-22T00:16:00+00:00",
+                    "last_seen_at": recent_iso_plus_16m,
                 }
             ],
             "ttl_seconds": 180,
@@ -369,7 +400,7 @@ def test_statistics_overview_uses_work_sessions_for_agent_activity_when_usage_an
             "session_count": 1,
             "event_count": 2,
             "project_count": 1,
-            "latest_updated_at": "2026-04-22T00:05:00+00:00",
+            "latest_updated_at": recent_iso_plus_5m,
         }
     ]
     flow_map = {item["label"]: item["value"] for item in payload["insights"]["flow"]}
@@ -389,6 +420,13 @@ def test_statistics_overview_uses_work_sessions_for_agent_activity_when_usage_an
 
 def test_statistics_overview_accepts_project_scope(tmp_path, monkeypatch):
     from routers import statistics as statistics_router
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    recent_date = now.date().isoformat()
+    recent_iso = now.isoformat()
+    recent_iso_plus_10m = (now + timedelta(minutes=10)).isoformat()
+    recent_iso_plus_16m = (now + timedelta(minutes=16)).isoformat()
+    recent_iso_plus_18m = (now + timedelta(minutes=18)).isoformat()
 
     client = _build_statistics_test_client(
         tmp_path,
@@ -414,7 +452,7 @@ def test_statistics_overview_accepts_project_scope(tmp_path, monkeypatch):
                     "query_scope_events": 3,
                     "query_tool_calls": 2,
                 },
-                "daily": [{"date": "2026-04-22", "total_events": 6, "tool_calls": 4, "connections": 2}],
+                "daily": [{"date": recent_date, "total_events": 6, "tool_calls": 4, "connections": 2}],
                 "top_tools": [{"tool_name": "bind_project_context", "cnt": 4}],
                 "top_employees": [{"employee_id": "emp-1", "employee_name": "智能体 A", "cnt": 4}],
                 "top_scopes": [{"scope_id": "mcp:query", "cnt": 3, "tool_calls": 2, "attributed_employee_count": 1, "project_count": 1}],
@@ -439,8 +477,8 @@ def test_statistics_overview_accepts_project_scope(tmp_path, monkeypatch):
                     step="梳理",
                     status="in_progress",
                     verification=["已进入分析"],
-                    updated_at="2026-04-22T00:00:00+00:00",
-                    created_at="2026-04-22T00:00:00+00:00",
+                    updated_at=recent_iso,
+                    created_at=recent_iso,
                 ),
                 _FakeEvent(
                     session_id="ws-2",
@@ -451,8 +489,8 @@ def test_statistics_overview_accepts_project_scope(tmp_path, monkeypatch):
                     step="验收",
                     status="completed",
                     verification=["已完成"],
-                    updated_at="2026-04-22T00:10:00+00:00",
-                    created_at="2026-04-22T00:10:00+00:00",
+                    updated_at=recent_iso_plus_10m,
+                    created_at=recent_iso_plus_10m,
                 ),
             ]
 
@@ -488,7 +526,7 @@ def test_statistics_overview_accepts_project_scope(tmp_path, monkeypatch):
                     "project_id": "proj-1",
                     "project_name": "项目 A",
                     "developer_name": "admin",
-                    "last_seen_at": "2026-04-22T00:16:00+00:00",
+                    "last_seen_at": recent_iso_plus_16m,
                 },
                 {
                     "endpoint_type": "employee",
@@ -497,7 +535,7 @@ def test_statistics_overview_accepts_project_scope(tmp_path, monkeypatch):
                     "project_id": "proj-2",
                     "project_name": "项目 B",
                     "developer_name": "admin",
-                    "last_seen_at": "2026-04-22T00:18:00+00:00",
+                    "last_seen_at": recent_iso_plus_18m,
                 },
             ],
             "ttl_seconds": 180,
@@ -540,7 +578,7 @@ def test_statistics_overview_accepts_project_scope(tmp_path, monkeypatch):
             "active_entries": 1,
             "developer_count": 1,
             "endpoint_type_count": 1,
-            "latest_seen_at": "2026-04-22T00:16:00+00:00",
+            "latest_seen_at": recent_iso_plus_16m,
         }
     ]
     assert payload["ai_report"]["top_entities"]["project_name"] == "项目 A"

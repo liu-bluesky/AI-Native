@@ -163,6 +163,12 @@
                       >查看最近评审</el-button
                     >
                     <el-button
+                      size="small"
+                      :loading="experienceRuleOptionsLoading"
+                      @click="openExperienceRuleBindingDialog"
+                      >编辑绑定</el-button
+                    >
+                    <el-button
                       v-if="hasLegacyProjectExperienceRules"
                       size="small"
                       :loading="experienceRuleMigrating"
@@ -861,6 +867,57 @@
             type="primary"
             :loading="uiRuleSaving"
             @click="saveUiRuleBindings"
+            >保存</el-button
+          >
+        </template>
+      </el-dialog>
+
+      <el-dialog
+        v-model="showExperienceRuleBindingDialog"
+        title="经验规则绑定"
+        width="680px"
+      >
+        <el-form :model="experienceRuleBindingForm" label-width="100px">
+          <el-form-item label="绑定规则">
+            <el-select
+              v-model="experienceRuleBindingForm.rule_ids"
+              multiple
+              filterable
+              collapse-tags
+              collapse-tags-tooltip
+              :loading="experienceRuleOptionsLoading"
+              placeholder="请选择项目可复用经验规则"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="item in experienceRuleOptions"
+                :key="item.id"
+                :label="
+                  item.domain
+                    ? `${item.displayTitle || item.title} (${item.domain})`
+                    : item.displayTitle || item.title
+                "
+                :value="item.id"
+              >
+                <div class="experience-rule-option">
+                  <span>{{ item.displayTitle || item.title || item.id }}</span>
+                  <small>{{ item.domain || "经验规则" }}</small>
+                </div>
+              </el-option>
+            </el-select>
+            <div class="ui-rule-help">
+              这里只维护当前项目引用的经验规则。保存后，新需求会按任务相关性从这些规则里按需加载。
+            </div>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="showExperienceRuleBindingDialog = false"
+            >取消</el-button
+          >
+          <el-button
+            type="primary"
+            :loading="experienceRuleBindingSaving"
+            @click="saveExperienceRuleBindings"
             >保存</el-button
           >
         </template>
@@ -2203,6 +2260,7 @@ const saving = ref(false);
 const showAddDialog = ref(false);
 const showAddUserDialog = ref(false);
 const showUiRuleDialog = ref(false);
+const showExperienceRuleBindingDialog = ref(false);
 const showEditDialog = ref(false);
 const showManualDialog = ref(false);
 const showExperienceSummaryDialog = ref(false);
@@ -2221,6 +2279,8 @@ const experienceRuleConsolidating = ref(false);
 const experienceRuleEditingLoading = ref(false);
 const experienceRuleDeletingLoading = ref(false);
 const experienceRuleEditSaving = ref(false);
+const experienceRuleOptionsLoading = ref(false);
+const experienceRuleBindingSaving = ref(false);
 const experienceProviderOptions = ref([]);
 const experienceSummaryProviderId = ref("");
 const experienceSummaryModelName = ref("");
@@ -2242,6 +2302,7 @@ const members = ref([]);
 const employeeOptions = ref([]);
 const userOptions = ref([]);
 const ruleOptions = ref([]);
+const experienceRuleOptions = ref([]);
 const projectMemories = ref([]);
 const projectMemoryTotal = ref(0);
 const projectMemoryHasMore = ref(false);
@@ -2335,6 +2396,10 @@ const editForm = ref({
 });
 
 const uiRuleForm = ref({
+  rule_ids: [],
+});
+
+const experienceRuleBindingForm = ref({
   rule_ids: [],
 });
 
@@ -4489,6 +4554,23 @@ function stripExperienceRuleTitlePrefix(value) {
   return title;
 }
 
+function normalizeExperienceRuleOption(item) {
+  const id = String(item?.id || "").trim();
+  const title = String(item?.title || id).trim();
+  return {
+    id,
+    title,
+    displayTitle: String(item?.display_title || item?.displayTitle || "").trim()
+      || stripExperienceRuleTitlePrefix(title)
+      || id,
+    domain: String(item?.domain || "").trim(),
+    preview: String(item?.preview || "").trim(),
+    experienceScope: String(item?.experience_scope || item?.experienceScope || "").trim(),
+    systemSource: String(item?.system_source || item?.systemSource || "").trim(),
+    updatedAt: String(item?.updated_at || item?.updatedAt || "").trim(),
+  };
+}
+
 function ensureUiRuleOptionCoverage() {
   const next = [...(ruleOptions.value || [])];
   const known = new Set(
@@ -4505,6 +4587,20 @@ function ensureUiRuleOptionCoverage() {
     known.add(ruleId);
   }
   ruleOptions.value = next;
+}
+
+function ensureExperienceRuleOptionCoverage() {
+  const next = [...(experienceRuleOptions.value || [])];
+  const known = new Set(
+    next.map((item) => String(item.id || "").trim()).filter(Boolean),
+  );
+  for (const item of boundExperienceRules.value) {
+    const ruleId = String(item.id || "").trim();
+    if (!ruleId || known.has(ruleId)) continue;
+    next.push(normalizeExperienceRuleOption(item));
+    known.add(ruleId);
+  }
+  experienceRuleOptions.value = next;
 }
 
 function resetAddForm() {
@@ -4547,6 +4643,29 @@ async function fetchRules() {
   }
 }
 
+async function fetchExperienceRuleOptions() {
+  const effectiveProjectId = String(projectId.value || "").trim();
+  if (!effectiveProjectId) {
+    experienceRuleOptions.value = [];
+    return;
+  }
+  experienceRuleOptionsLoading.value = true;
+  try {
+    const data = await api.get(
+      `/projects/${effectiveProjectId}/experience-rules/options`,
+    );
+    experienceRuleOptions.value = (data.rules || [])
+      .map((item) => normalizeExperienceRuleOption(item))
+      .filter((item) => item.id);
+  } catch (err) {
+    experienceRuleOptions.value = [];
+    ElMessage.error(err?.detail || err?.message || "加载经验规则候选失败");
+  } finally {
+    ensureExperienceRuleOptionCoverage();
+    experienceRuleOptionsLoading.value = false;
+  }
+}
+
 async function fetchProject(targetProjectId = projectId.value) {
   const effectiveProjectId = String(targetProjectId || "").trim();
   if (!effectiveProjectId) return;
@@ -4561,6 +4680,7 @@ async function fetchProject(targetProjectId = projectId.value) {
     ),
   };
   ensureUiRuleOptionCoverage();
+  ensureExperienceRuleOptionCoverage();
 }
 
 async function fetchExperienceProviders() {
@@ -6320,6 +6440,18 @@ function openUiRuleDialog() {
   showUiRuleDialog.value = true;
 }
 
+async function openExperienceRuleBindingDialog() {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    return;
+  }
+  experienceRuleBindingForm.value = {
+    rule_ids: normalizeStringList(project.value?.experience_rule_ids || []),
+  };
+  await fetchExperienceRuleOptions();
+  showExperienceRuleBindingDialog.value = true;
+}
+
 function getExperienceSummaryTargetRecordIds() {
   const selectedIds = visibleRequirementRecordIds.value.filter((item) =>
     selectedRequirementRecordIdSet.value.has(item),
@@ -6732,6 +6864,29 @@ async function saveUiRuleBindings() {
     ElMessage.error(err?.detail || err?.message || "保存 UI 规则绑定失败");
   } finally {
     uiRuleSaving.value = false;
+  }
+}
+
+async function saveExperienceRuleBindings() {
+  if (!canManageProject.value) {
+    ElMessage.warning(manageBlockedMessage());
+    showExperienceRuleBindingDialog.value = false;
+    return;
+  }
+  experienceRuleBindingSaving.value = true;
+  try {
+    await api.put(`/projects/${projectId.value}`, {
+      experience_rule_ids: normalizeStringList(
+        experienceRuleBindingForm.value.rule_ids || [],
+      ),
+    });
+    await fetchProject();
+    ElMessage.success("经验规则绑定已更新");
+    showExperienceRuleBindingDialog.value = false;
+  } catch (err) {
+    ElMessage.error(err?.detail || err?.message || "保存经验规则绑定失败");
+  } finally {
+    experienceRuleBindingSaving.value = false;
   }
 }
 

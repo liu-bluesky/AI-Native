@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 from core.auth import decode_token
 from core.config import get_api_data_dir, get_project_root, get_settings
 from core.data_scope import can_view_username_data, filter_records_by_data_scope
+from core.ownership import can_view_record
 from core.redis_client import get_redis_client
 from core.deps import employee_store, ensure_any_permission, ensure_permission, external_mcp_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_runtime_store, project_chat_store, project_chat_task_store, project_experience_summary_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_session_store
 from services.feedback_service import get_feedback_service
@@ -123,6 +124,10 @@ from services.runtime.orchestrator_factory import build_agent_orchestrator
 from services.runtime.run_request_factory import build_orchestrator_run_kwargs
 from services.agent_runtime_v2.operation_resume import OperationResumeCoordinator
 from services.agent_runtime_v2.permission_actions import PermissionActionService
+from services.agent_runtime_v2.permission_store import (
+    normalize_permission_command,
+    permission_command_signature,
+)
 from services.agent_runtime_v2.event_log import RuntimeEvent
 from services.agent_runtime_v2.event_stream import EventStream
 from services.agent_runtime_v2.resume_service import (
@@ -293,7 +298,8 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "temperature": 0.1,
     "max_tokens": 512,
     "system_prompt": "",
-    "auto_use_tools": True,
+    "auto_use_tools": False,
+    "auto_use_tools_explicit": False,
     "enabled_project_tool_names": [],
     "tool_priority": [],
     "max_tool_calls_per_round": 6,
@@ -2436,7 +2442,15 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     settings["temperature"] = _coerce_float(source.get("temperature"), settings["temperature"], min_value=0.0, max_value=2.0)
     settings["max_tokens"] = _coerce_int(source.get("max_tokens"), settings["max_tokens"], min_value=128, max_value=8192)
     settings["system_prompt"] = str(source.get("system_prompt", settings["system_prompt"]) or "").strip()[:4000]
-    settings["auto_use_tools"] = _coerce_bool(source.get("auto_use_tools"), settings["auto_use_tools"])
+    settings["auto_use_tools_explicit"] = _coerce_bool(
+        source.get("auto_use_tools_explicit"),
+        settings["auto_use_tools_explicit"],
+    )
+    settings["auto_use_tools"] = (
+        _coerce_bool(source.get("auto_use_tools"), settings["auto_use_tools"])
+        if settings["auto_use_tools_explicit"]
+        else False
+    )
     settings["enabled_project_tool_names"] = _to_unique_string_list(source.get("enabled_project_tool_names"), max_items=200, max_item_len=160)
     settings["tool_priority"] = _to_unique_string_list(source.get("tool_priority"), max_items=200, max_item_len=160)
     settings["max_tool_calls_per_round"] = _coerce_int(source.get("max_tool_calls_per_round"), settings["max_tool_calls_per_round"], min_value=1, max_value=30)
@@ -2511,11 +2525,17 @@ def _find_agent_runtime_permission_request(
     *,
     call_id: str,
     tool_name: str,
+    args: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     normalized_call_id = str(call_id or "").strip()
     normalized_tool_name = str(tool_name or "").strip()
     if not normalized_call_id or not normalized_tool_name:
         return None
+    requested_args = dict(args or {})
+    requested_command = str(requested_args.get("command") or "").strip()
+    requested_signature = permission_command_signature(requested_command)
+    requested_normalized_command = normalize_permission_command(requested_command)
+    fallback_request: dict[str, Any] | None = None
     for event in reversed(list(snapshot.get("events") or [])):
         if not isinstance(event, dict):
             continue
@@ -2526,25 +2546,40 @@ def _find_agent_runtime_permission_request(
         tool_call = payload.get("tool_call") if isinstance(payload.get("tool_call"), dict) else {}
         if str(decision.get("behavior") or "").strip().lower() != "ask":
             continue
-        if str(decision.get("call_id") or tool_call.get("call_id") or "").strip() != normalized_call_id:
+        event_call_id = str(decision.get("call_id") or tool_call.get("call_id") or "").strip()
+        event_tool_name = str(decision.get("tool_name") or tool_call.get("tool_name") or "").strip()
+        if event_tool_name != normalized_tool_name:
             continue
-        if str(decision.get("tool_name") or tool_call.get("tool_name") or "").strip() != normalized_tool_name:
-            continue
-        args = {}
+        args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
         arguments = str(tool_call.get("arguments") or "").strip()
-        if arguments:
+        if not args and arguments:
             try:
                 parsed_args = json.loads(arguments)
             except json.JSONDecodeError:
                 parsed_args = {}
             if isinstance(parsed_args, dict):
                 args = parsed_args
-        return {
-            "call_id": normalized_call_id,
-            "tool_name": normalized_tool_name,
+        event_request = {
+            "call_id": event_call_id,
+            "tool_name": event_tool_name,
             "args": args,
         }
-    return None
+        if event_call_id == normalized_call_id:
+            return event_request
+        event_command = str(args.get("command") or "").strip()
+        event_signature = permission_command_signature(event_command)
+        event_normalized_command = normalize_permission_command(event_command)
+        if requested_signature and event_signature == requested_signature:
+            fallback_request = event_request
+            break
+        if (
+            requested_normalized_command
+            and event_normalized_command
+            and event_normalized_command == requested_normalized_command
+        ):
+            fallback_request = event_request
+            break
+    return fallback_request
 
 
 def _agent_runtime_resume_context_from_run(run: dict[str, Any]) -> dict[str, Any]:
@@ -2941,6 +2976,49 @@ def _resolve_project_experience_rule_bindings(
             payload["content"] = content
         bindings.append(payload)
     return bindings
+
+
+def _serialize_project_experience_rule_option(rule: Rule) -> dict[str, str]:
+    content = str(getattr(rule, "content", "") or "")
+    experience_scope = _infer_experience_rule_scope(rule)
+    return {
+        "id": str(getattr(rule, "id", "") or ""),
+        "title": str(getattr(rule, "title", "") or ""),
+        "display_title": _strip_experience_rule_title_prefix(str(getattr(rule, "title", "") or "")),
+        "domain": str(getattr(rule, "domain", "") or "") or _experience_rule_domain_for_scope(experience_scope),
+        "preview": _extract_experience_rule_preview(content),
+        "experience_scope": experience_scope,
+        "system_source": (
+            "project_experience"
+            if experience_scope == _EXPERIENCE_SCOPE_PROJECT
+            else "development_experience"
+        ),
+        "updated_at": str(getattr(rule, "updated_at", "") or ""),
+    }
+
+
+def _list_project_experience_rule_options(auth_payload: dict) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for rule in rule_store.list_all():
+        if _infer_experience_rule_scope(rule) not in {
+            _EXPERIENCE_SCOPE_PROJECT,
+            _EXPERIENCE_SCOPE_DEVELOPMENT,
+        }:
+            continue
+        if not can_view_record(rule, auth_payload):
+            continue
+        rule_id = str(getattr(rule, "id", "") or "").strip()
+        if not rule_id:
+            continue
+        items.append(_serialize_project_experience_rule_option(rule))
+    items.sort(
+        key=lambda item: (
+            0 if item.get("experience_scope") == _EXPERIENCE_SCOPE_DEVELOPMENT else 1,
+            str(item.get("display_title") or item.get("title") or ""),
+            str(item.get("id") or ""),
+        )
+    )
+    return items
 
 
 def _normalize_project_workflow_skill_ids(values: Any) -> list[str]:
@@ -3451,6 +3529,14 @@ def _project_tool_display_name(tool_name: str) -> str:
     normalized = str(tool_name or "").strip()
     if normalized == PROJECT_HOST_RUN_COMMAND_TOOL_NAME:
         return "当前电脑执行命令"
+    if normalized == "project_host_terminal_start":
+        return "启动交互终端"
+    if normalized == "project_host_terminal_input":
+        return "输入交互终端"
+    if normalized == "project_host_terminal_read":
+        return "读取交互终端"
+    if normalized == "project_host_terminal_stop":
+        return "停止交互终端"
     if normalized == "query_project_rules":
         return "查询项目规则"
     if normalized == "query_project_members":
@@ -3727,10 +3813,6 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
         )
         if connector_employee_ids:
             merged["selected_employee_ids"] = connector_employee_ids
-        merged["system_prompt"] = _merge_project_chat_system_prompts(
-            connector_defaults.get("system_prompt"),
-            merged.get("system_prompt"),
-        )[:4000]
     override = {
         "chat_mode": req.chat_mode,
         "local_connector_id": req.local_connector_id,
@@ -3765,11 +3847,8 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
     for key, value in override.items():
         if key in req.model_fields_set and value is not None:
             merged[key] = value
-    if connector_defaults and "system_prompt" in req.model_fields_set:
-        merged["system_prompt"] = _merge_project_chat_system_prompts(
-            connector_defaults.get("system_prompt"),
-            req.system_prompt,
-        )[:4000]
+            if key == "auto_use_tools":
+                merged["auto_use_tools_explicit"] = True
     return _normalize_project_chat_settings(merged)
 
 
@@ -4085,155 +4164,8 @@ def _build_project_chat_messages(
     task_tree_prompt: str = "",
     assistant_workflow_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    workspace_info = ""
-    effective_workspace_path = str(workspace_path or project.workspace_path or "").strip()
-    if effective_workspace_path:
-        workspace_info = (
-            f"当前项目工作区路径: {effective_workspace_path}\n"
-            "请在此目录下进行代码开发和文件操作。"
-        )
-    ai_entry_info = ""
-    ai_entry_file = str(project.ai_entry_file or "").strip()
-    if ai_entry_file:
-        ai_entry_path = Path(ai_entry_file).expanduser()
-        if effective_workspace_path and not ai_entry_path.is_absolute():
-            resolved_entry_hint = str(Path(effective_workspace_path) / ai_entry_file)
-            ai_entry_info = (
-                f"当前项目 AI 入口文件: {ai_entry_file}"
-                f"\n该入口文件相对于项目工作区，对应路径: {resolved_entry_hint}"
-                "\n在开始分析、编码、调用工具或回答项目前，优先读取这个入口文件，并按其中约定理解项目规则、目录结构、实现约束和执行顺序。"
-                "\n仅当该入口文件不存在、无法访问或信息不足时，再自行补充读取项目内其他相关规则文件。"
-            )
-        else:
-            ai_entry_info = (
-                f"当前项目 AI 入口文件: {ai_entry_file}"
-                "\n在开始分析、编码、调用工具或回答项目前，优先读取这个入口文件，并按其中约定理解项目规则、目录结构、实现约束和执行顺序。"
-                "\n仅当该入口文件不存在、无法访问或信息不足时，再自行补充读取项目内其他相关规则文件。"
-            )
-
-    tool_names = [t.get("tool_name", "") for t in (tools or [])] if tools else []
-    tool_list_text = f"可用工具({len(tool_names)}个): {', '.join(tool_names)}" if tool_names else "当前无可用工具"
-    url_fetch_prompt = _build_url_fetch_prompt(user_message, tools)
-    host_command_execution_prompt = _build_host_command_execution_prompt(
-        user_message,
-        tools,
-    )
-    workflow_skill_bindings = _resolve_project_workflow_skill_bindings(project)
-    workflow_skill_prompt = ""
-    if workflow_skill_bindings:
-        workflow_lines: list[str] = []
-        for item in workflow_skill_bindings:
-            label = "默认" if bool(item.get("is_default")) else "启用"
-            workflow_lines.append(
-                f"- [{label}] {item.get('name') or item.get('id')} "
-                f"({item.get('id')}): {str(item.get('description') or '').strip() or '-'}"
-            )
-        workflow_skill_prompt = (
-            "当前项目已启用系统工作流技能。处理需求时，应优先按这些技能约定执行，"
-            "但不要把技能说明当成已完成的后端校验；仍需真实调用 MCP/工具并写入验证结果。\n"
-            + "\n".join(workflow_lines)
-        )
-
-    base_prompt = (custom_system_prompt or "").strip()
-    if not base_prompt:
-        base_prompt = "你是项目开发助手。"
-        base_prompt += "\n可按需调用工具检索最新项目上下文并完成用户请求。"
-        base_prompt += "\n解决问题时，优先使用当前项目已绑定的员工、规则和技能；先判断项目内现成能力是否足够，再决定是否补充你自己的通用能力。"
-        base_prompt += "\n每次收到项目请求，进入分析、实现或排查前，先读取项目手册，并按需调用 get_project_manual、query_project_rules、list_project_proxy_tools，重新获取与当前问题直接相关的规则正文和技能能力。"
-        base_prompt += "\n若项目绑定员工或技能已经可以闭环，就优先复用项目员工对应的工具或协作链路；只有项目内能力不足、工具缺失或上下文仍不够时，才允许你自行补足实现。"
-        base_prompt += "\n项目规则只使用与当前问题直接相关的部分；不要只看规则标题，也不要把无关项目规则机械套用到所有请求。"
-        base_prompt += "\n当用户询问项目信息、员工信息、规则、MCP 服务时，优先调用 search_project_context 再回答。"
-        base_prompt += "\n当用户询问当前项目有哪些员工、成员、规则、工具或 MCP 能力时，不要先说无法获取；先调用 query_project_members、query_project_rules 或 search_project_context。"
-        base_prompt += "\n当用户明确要完整项目配置、聊天配置、成员原始关系或单员工完整档案时，优先调用 get_project_detail 或 get_project_employee_detail。"
-
-    style_hint, order_hint = resolve_chat_style_hints(
-        answer_style,
-        prefer_conclusion_first=prefer_conclusion_first,
-    )
-    skill_resource_prompt = _build_skill_resource_prompt_block(skill_resource_directory)
-    coordination_mode = str(employee_coordination_mode or "auto").strip().lower()
-    multi_employee_prompt = (
-        _build_multi_employee_collaboration_prompt(selected_employees, tools)
-        if coordination_mode == "auto"
-        else ""
-    )
-    source_context_prompt = _build_project_chat_source_context_prompt(source_context or {})
-    assistant_workflow_prompt = build_assistant_workflow_prompt(assistant_workflow_state)
-    capability_routing_prompt = build_capability_routing_prompt(tools)
-    system_prompt = join_prompt_sections(
-        base_prompt,
-        workspace_info,
-        ai_entry_info,
-        tool_list_text,
-        url_fetch_prompt,
-        host_command_execution_prompt,
-        order_hint,
-        style_hint,
-        skill_resource_prompt,
-        workflow_skill_prompt,
-        multi_employee_prompt,
-        source_context_prompt,
-        assistant_workflow_prompt,
-        capability_routing_prompt,
-        task_tree_prompt,
-    )
-    project_ui_rule_bindings = _resolve_project_ui_rule_bindings(project, include_content=True)
-    if project_ui_rule_bindings:
-        project_ui_rule_titles = [
-            str(item.get("title") or item.get("id") or "").strip()
-            for item in project_ui_rule_bindings
-            if str(item.get("title") or item.get("id") or "").strip()
-        ]
-        project_ui_rule_domains = _collect_rule_domains(project_ui_rule_bindings)
-        project_ui_rule_lines: list[str] = []
-        for item in project_ui_rule_bindings:
-            title = str(item.get("title") or item.get("id") or "").strip() or "未命名规则"
-            rule_id = str(item.get("id") or "").strip()
-            domain = str(item.get("domain") or "").strip() or "-"
-            content = _summarize_prompt_text(item.get("content"), limit=600)
-            if content:
-                project_ui_rule_lines.append(
-                    f"- {title} ({rule_id}) [domain={domain}]: {content}"
-                )
-            else:
-                project_ui_rule_lines.append(
-                    f"- {title} ({rule_id}) [domain={domain}]"
-                )
-        system_prompt = join_prompt_sections(
-            system_prompt,
-            (
-                "当前项目已绑定 UI 规则，这些规则优先级高于员工个人规则；涉及页面、交互、视觉表达时必须先遵循项目 UI 规则。"
-            f"\nproject_ui_rule_titles={', '.join(project_ui_rule_titles) or '-'}。"
-            f"\nproject_ui_rule_domains={', '.join(project_ui_rule_domains) or '-'}。"
-            "\n项目 UI 规则正文：\n"
-            + "\n".join(project_ui_rule_lines)
-        )
-        )
-    if selected_employee:
-        rule_bindings = list(selected_employee.get("rule_bindings") or [])
-        rule_titles = [str(item.get("title") or item.get("id") or "").strip() for item in rule_bindings]
-        rule_titles = [item for item in rule_titles if item]
-        rule_domains = _collect_rule_domains(rule_bindings)
-        workflow = [str(item or "").strip() for item in (selected_employee.get("default_workflow") or []) if str(item or "").strip()]
-        employee_section = (
-            f"当前执行员工：{selected_employee.get('name') or selected_employee.get('id')} "
-            f"({selected_employee.get('id')})，"
-            f"goal={str(selected_employee.get('goal') or '-').strip() or '-'}，"
-            f"skills={', '.join(selected_employee.get('skill_names') or []) or '-'}，"
-            f"rule_titles={', '.join(rule_titles) or '-'}，"
-            f"rule_domains={', '.join(rule_domains) or '-'}。"
-        )
-        if workflow:
-            employee_section += f"\n默认工作流：{' -> '.join(workflow)}。"
-        tool_usage_policy = str(selected_employee.get("tool_usage_policy") or "").strip()
-        if tool_usage_policy:
-            employee_section += f"\n工具使用策略：{tool_usage_policy}"
-        system_prompt = join_prompt_sections(system_prompt, employee_section)
     return assemble_chat_messages(
-        system_messages=[
-            system_prompt,
-            f"当前项目: id={project.id}, name={project.name}, description={project.description or '-'}",
-        ],
+        system_messages=[str(custom_system_prompt or "").strip()],
         history=history,
         user_message=user_message,
         images=images,
@@ -4450,6 +4382,239 @@ def _build_project_chat_start_payload(
     )
 
 
+def _assistant_workflow_plan_payload(
+    assistant_workflow_state: dict[str, Any] | None,
+    *,
+    user_message: str = "",
+    request_id: str = "",
+    tools_enabled: bool = False,
+    effective_tool_total: int = 0,
+) -> dict[str, Any] | None:
+    # Do not synthesize a deterministic conversation plan here. Project chat
+    # should show model/runtime-authored plans and real tool/command events only.
+    return None
+
+
+def _project_chat_plan_step_ids(plan_payload: dict[str, Any] | None) -> dict[str, str]:
+    payload = plan_payload if isinstance(plan_payload, dict) else {}
+    steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+    result = {
+        "plan_id": str(payload.get("plan_id") or "").strip(),
+        "understand_step_id": "",
+        "execute_step_id": "",
+        "verify_step_id": "",
+    }
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_id = str(step.get("step_id") or "").strip()
+        if not step_id:
+            continue
+        stage_key = str(step.get("stage_key") or "").strip().lower()
+        if step_id.endswith("-understand"):
+            result["understand_step_id"] = step_id
+        elif step_id.endswith("-execute"):
+            result["execute_step_id"] = step_id
+        elif step_id.endswith("-verify"):
+            result["verify_step_id"] = step_id
+        elif (
+            stage_key in {"analysis", "understanding", "task_understanding"}
+            and not result["understand_step_id"]
+        ):
+            result["understand_step_id"] = step_id
+        elif (
+            stage_key in {"implementation", "execution", "execute"}
+            and not result["execute_step_id"]
+        ):
+            result["execute_step_id"] = step_id
+        elif stage_key in {"verification", "verify"} and not result["verify_step_id"]:
+            result["verify_step_id"] = step_id
+    ordered_step_ids = [
+        str(step.get("step_id") or "").strip()
+        for step in steps
+        if isinstance(step, dict) and str(step.get("step_id") or "").strip()
+    ]
+    if ordered_step_ids:
+        result["understand_step_id"] = result["understand_step_id"] or ordered_step_ids[0]
+        if not result["execute_step_id"]:
+            non_verify_steps = [
+                str(step.get("step_id") or "").strip()
+                for step in steps
+                if isinstance(step, dict)
+                and str(step.get("step_id") or "").strip()
+                and str(step.get("stage_key") or "").strip().lower() not in {"verification", "verify"}
+            ]
+            if non_verify_steps:
+                result["execute_step_id"] = (
+                    next((item for item in non_verify_steps if item != result["understand_step_id"]), "")
+                    or non_verify_steps[0]
+                )
+            else:
+                result["execute_step_id"] = ordered_step_ids[0]
+        result["verify_step_id"] = result["verify_step_id"] or ordered_step_ids[-1]
+    return result
+
+
+def _attach_project_chat_plan_context(
+    payload: dict[str, Any],
+    plan_context: dict[str, str] | None,
+    *,
+    stage: str = "execute",
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+    context = plan_context if isinstance(plan_context, dict) else {}
+    plan_id = str(context.get("plan_id") or "").strip()
+    if not plan_id:
+        return payload
+    result = dict(payload)
+    result.setdefault("plan_id", plan_id)
+    step_key = "verify_step_id" if stage == "verify" else "execute_step_id"
+    step_id = str(context.get(step_key) or "").strip()
+    if step_id:
+        result.setdefault("step_id", step_id)
+    return result
+
+
+def _project_chat_verification_started_payload(
+    done_payload: dict[str, Any],
+    plan_context: dict[str, str] | None,
+    *,
+    request_id: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": "verification_started",
+        "summary": "正在验证执行结果",
+    }
+    if request_id:
+        payload["request_id"] = request_id
+    return _attach_project_chat_plan_context(
+        {**payload, **{k: v for k, v in done_payload.items() if k in {"plan_id", "step_id"}}},
+        plan_context,
+        stage="verify",
+    )
+
+
+def _project_chat_verification_finished_payload(
+    done_payload: dict[str, Any],
+    plan_context: dict[str, str] | None,
+    *,
+    request_id: str = "",
+) -> dict[str, Any]:
+    completed_reason = str(done_payload.get("completed_reason") or "").strip()
+    guard_reason = str(done_payload.get("guard_reason") or "").strip()
+    guard_message = str(done_payload.get("guard_message") or "").strip()
+    task_tree_audit = (
+        done_payload.get("task_tree_audit")
+        if isinstance(done_payload.get("task_tree_audit"), dict)
+        else {}
+    )
+    audit_message = str(task_tree_audit.get("message") or "").strip()
+    status = "blocked" if guard_message or guard_reason or audit_message else "passed"
+    evidence = []
+    successful_tool_names = done_payload.get("successful_tool_names")
+    if isinstance(successful_tool_names, list):
+        evidence.extend(
+            f"工具调用完成：{str(item or '').strip()}"
+            for item in successful_tool_names
+            if str(item or "").strip()
+        )
+    content = str(done_payload.get("content") or "").strip()
+    if content:
+        evidence.append("模型已生成最终反馈")
+    if audit_message:
+        evidence.append(audit_message)
+    if guard_message:
+        evidence.append(guard_message)
+    payload: dict[str, Any] = {
+        "type": "verification_finished",
+        "status": status,
+        "summary": (
+            "验证通过，准备输出最终反馈"
+            if status == "passed"
+            else "验证未完全通过，需要查看阻塞信息"
+        ),
+        "evidence": evidence[:8],
+        "completed_reason": completed_reason,
+        "guard_reason": guard_reason,
+        "guard_message": guard_message,
+    }
+    if request_id:
+        payload["request_id"] = request_id
+    return _attach_project_chat_plan_context(
+        {**payload, **{k: v for k, v in done_payload.items() if k in {"plan_id", "step_id"}}},
+        plan_context,
+        stage="verify",
+    )
+
+
+def _project_chat_action_risk_level(command: str) -> str:
+    normalized = " ".join(str(command or "").strip().lower().split())
+    if not normalized:
+        return "low"
+    high_risk_tokens = (
+        "rm -rf",
+        "git reset --hard",
+        "git clean -fd",
+        "docker compose down",
+        "docker system prune",
+        "drop database",
+        "truncate table",
+    )
+    if any(token in normalized for token in high_risk_tokens):
+        return "high"
+    medium_risk_tokens = (
+        "rm ",
+        "mv ",
+        "chmod ",
+        "chown ",
+        "git push",
+        "docker stop",
+        "docker rm",
+        "kubectl delete",
+        "npm publish",
+    )
+    if any(token in normalized for token in medium_risk_tokens):
+        return "medium"
+    return "low"
+
+
+def _project_chat_planned_action_payload(
+    payload: dict[str, Any],
+    plan_context: dict[str, str] | None,
+    *,
+    request_id: str = "",
+) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    event_type = str(payload.get("type") or "").strip().lower()
+    if event_type not in {"tool_start", "command_start"}:
+        return None
+    tool_name = str(payload.get("tool_name") or "").strip()
+    command = str(payload.get("command") or "").strip()
+    cwd = str(payload.get("cwd") or payload.get("workspace_path") or "").strip()
+    arguments_preview = str(payload.get("arguments_preview") or "").strip()
+    planned_type = "command_planned" if command or event_type == "command_start" else "tool_planned"
+    planned: dict[str, Any] = {
+        "type": planned_type,
+        "tool_name": tool_name or ("命令" if planned_type == "command_planned" else "工具"),
+        "tool_index": int(payload.get("tool_index") or 0),
+        "tool_count": int(payload.get("tool_count") or 0),
+        "arguments_preview": arguments_preview,
+        "command": command,
+        "cwd": cwd,
+        "risk_level": _project_chat_action_risk_level(command),
+        "summary": "准备执行命令" if planned_type == "command_planned" else "准备调用工具",
+    }
+    if request_id:
+        planned["request_id"] = request_id
+    for key in ("plan_id", "step_id"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            planned[key] = value
+    return _attach_project_chat_plan_context(planned, plan_context, stage="execute")
+
+
 def _build_project_chat_done_payload(
     *,
     content: str,
@@ -4576,6 +4741,8 @@ def _summarize_project_chat_completion(payload: dict[str, Any]) -> tuple[str, st
     normalized_reason = guard_reason.lower()
     if normalized_reason == "background_task_pending":
         return "running", guard_message or "后台任务仍在继续执行"
+    if normalized_reason == "waiting_user_action":
+        return "waiting_user", guard_message or "等待你完成当前操作"
     if guard_message:
         return "blocked", guard_message
     if not normalized_reason or normalized_reason in {"completed", "done"}:
@@ -4604,15 +4771,18 @@ def _build_project_chat_operation_event(
     request_id = str(payload.get("request_id") or "").strip()
     chat_session_id = str(payload.get("chat_session_id") or "").strip()
 
-    def _build_workflow_state_operation(source_payload: dict[str, Any]) -> dict[str, Any]:
-        workflow_kind = str(source_payload.get("workflow_kind") or "").strip().lower()
-        workflow_id = str(
-            source_payload.get("workflow_id")
-            or source_payload.get("task_id")
+    def _canonical_operation_task_id(source_payload: dict[str, Any]) -> str:
+        return str(
+            source_payload.get("task_id")
+            or source_payload.get("workflow_id")
             or request_id
             or chat_session_id
             or "active"
         ).strip()
+
+    def _build_workflow_state_operation(source_payload: dict[str, Any]) -> dict[str, Any]:
+        workflow_kind = str(source_payload.get("workflow_kind") or "").strip().lower()
+        workflow_id = _canonical_operation_task_id(source_payload)
         workflow_label = str(source_payload.get("workflow_label") or "").strip()
         workflow_status = str(source_payload.get("status") or "").strip().lower()
         authorization_url = str(source_payload.get("authorization_url") or "").strip()
@@ -4623,6 +4793,10 @@ def _build_project_chat_operation_event(
             if isinstance(source_payload.get("interaction_schema"), dict)
             else None
         )
+        if action_type == "open_url" and not authorization_url:
+            action_type = "none"
+        if not action_type and interaction_schema:
+            action_type = "interaction_form"
         session_id = str(
             source_payload.get("session_id")
             or source_payload.get("thread_id")
@@ -4630,28 +4804,58 @@ def _build_project_chat_operation_event(
         ).strip()
         detail = str(source_payload.get("detail") or source_payload.get("message") or "").strip()
         summary = str(source_payload.get("summary") or "").strip()
+        prompt_text = "\n".join(
+            str(source_payload.get(key) or "").strip()
+            for key in (
+                "authorization_url",
+                "detail",
+                "message",
+                "summary",
+                "status_reason",
+                "next_step",
+                "output_preview",
+            )
+            if str(source_payload.get(key) or "").strip()
+        ).lower()
+        has_authorization_prompt = bool(
+            authorization_url
+            or "device/verify" in prompt_text
+            or "user_code" in prompt_text
+            or "authorization" in prompt_text
+            or "authorize" in prompt_text
+            or "浏览器" in prompt_text
+            or "授权" in prompt_text
+        )
+        is_auth_workflow = (
+            workflow_kind in {"auth_login", "authorization", "login"}
+            or bool(authorization_url)
+            or has_authorization_prompt
+        )
         phase = "running"
         if workflow_status == "waiting_user_action":
             phase = "waiting_user"
             if not summary:
-                summary = "等待你处理后继续"
+                summary = "等待你完成表单后继续" if interaction_schema else "等待你处理后继续"
         elif workflow_status == "succeeded":
             phase = "completed"
             if not summary:
                 summary = "工作流已完成"
         elif workflow_status in {"failed", "timeout", "cancelled"}:
-            phase = "failed"
-            if not summary:
-                summary = "工作流未完成"
+            if is_auth_workflow and has_authorization_prompt:
+                phase = "waiting_user"
+                summary = "等待你在浏览器完成授权"
+            else:
+                phase = "failed"
+                if not summary:
+                    summary = "工作流未完成"
         elif not summary:
             summary = "工作流正在进行中"
 
-        is_auth_workflow = workflow_kind in {"auth_login", "authorization", "login"} or bool(authorization_url)
         is_terminal_workflow = workflow_kind in {"terminal_interaction", "host_terminal"} or action_type == "enter_text"
         is_approval_workflow = workflow_kind in {"approval", "file_review"} or action_type == "approve"
         return {
             "operation_id": (
-                f"auth:{str(source_payload.get('task_id') or workflow_id).strip()}"
+                f"auth:{workflow_id}"
                 if is_auth_workflow
                 else f"terminal:{session_id or workflow_id}"
                 if is_terminal_workflow
@@ -4684,7 +4888,7 @@ def _build_project_chat_operation_event(
             "summary": summary,
             "detail": detail,
             "phase": phase,
-            "action_type": action_type or ("open_url" if authorization_url else "none"),
+            "action_type": action_type or ("open_url" if authorization_url else "interaction_form" if interaction_schema else "none"),
             "meta": {
                 "task_id": str(source_payload.get("task_id") or "").strip(),
                 "chat_session_id": chat_session_id,
@@ -4756,6 +4960,9 @@ def _build_project_chat_operation_event(
         waiting_message = str(payload.get("message") or "").strip()
         raw_detail = str(payload.get("detail") or "").strip()
         workflow_kind = str(payload.get("workflow_kind") or "").strip().lower()
+        action_type = str(payload.get("action_type") or "").strip().lower()
+        if action_type == "open_url" and not authorization_url:
+            action_type = "none"
         is_auth_operation = event_type == "authorization_waiting" or workflow_kind == "auth_login" or bool(authorization_url)
         operation = {
             "operation_id": (
@@ -4766,18 +4973,23 @@ def _build_project_chat_operation_event(
             "kind": "auth" if is_auth_operation else "request",
             "title": (
                 str(payload.get("status_label") or payload.get("workflow_label") or "").strip()
-                or ("浏览器授权" if is_auth_operation else "等待外部操作")
+                or ("浏览器授权" if is_auth_operation else "等待操作")
             ),
-            "summary": "等待你在浏览器完成授权" if is_auth_operation else "等待你完成外部操作",
+            "summary": (
+                "等待你在浏览器完成授权"
+                if is_auth_operation and authorization_url
+                else "授权流程已启动，等待结构化授权链接返回"
+                if is_auth_operation
+                else "等待你完成操作"
+            ),
             "detail": raw_detail
             or "\n".join(
                 item
                 for item in [authorization_url, waiting_message]
                 if str(item or "").strip()
             ).strip(),
-            "phase": "waiting_user",
-            "action_type": str(payload.get("action_type") or "").strip().lower()
-            or ("open_url" if authorization_url else "none"),
+            "phase": "running" if is_auth_operation and not authorization_url else "waiting_user",
+            "action_type": action_type or ("open_url" if authorization_url else "none"),
             "meta": {
                 "task_id": str(payload.get("task_id") or "").strip(),
                 "chat_session_id": chat_session_id,
@@ -4794,9 +5006,12 @@ def _build_project_chat_operation_event(
     elif event_type == "user_action_required":
         action_type = str(payload.get("action_type") or "").strip().lower() or "none"
         authorization_url = str(payload.get("authorization_url") or "").strip()
+        if action_type == "open_url" and not authorization_url:
+            action_type = "none"
         waiting_message = str(payload.get("message") or "").strip()
         detail = str(payload.get("detail") or "").strip()
         summary = str(payload.get("summary") or "").strip()
+        user_action_task_id = _canonical_operation_task_id(payload)
         if not summary:
             if action_type == "open_url":
                 summary = "等待你打开链接并完成操作"
@@ -4810,9 +5025,11 @@ def _build_project_chat_operation_event(
                 summary = "等待你处理后继续"
         operation = {
             "operation_id": (
-                f"user-action:{str(payload.get('task_id') or request_id or chat_session_id or 'active').strip()}"
+                f"auth:{user_action_task_id}"
+                if action_type == "open_url" or authorization_url
+                else f"user-action:{user_action_task_id}"
             ),
-            "kind": "auth" if action_type == "open_url" else "request",
+            "kind": "auth" if action_type == "open_url" or authorization_url else "request",
             "title": str(payload.get("status_label") or payload.get("title") or "等待你处理").strip() or "等待你处理",
             "summary": summary,
             "detail": "\n".join(
@@ -4847,15 +5064,15 @@ def _build_project_chat_operation_event(
                 else f"workflow:{workflow_kind or 'external_operation'}:{str(payload.get('task_id') or request_id or chat_session_id or 'active').strip()}"
             ),
             "kind": "auth" if is_auth_operation else "request",
-            "title": "授权状态" if is_auth_operation else "外部操作状态",
+            "title": "授权状态" if is_auth_operation else "操作状态",
             "summary": (
                 "授权完成，正在自动继续"
                 if is_auth_operation and resume_command
                 else "授权完成"
                 if is_auth_operation
-                else "外部操作完成，正在自动继续"
+                else "操作完成，正在自动继续"
                 if resume_command
-                else "外部操作完成"
+                else "操作完成"
             ),
             "detail": completion_message,
             "phase": "completed",
@@ -4872,7 +5089,7 @@ def _build_project_chat_operation_event(
             **payload,
             "workflow_kind": str(payload.get("workflow_kind") or payload.get("operation_kind") or "external_operation").strip(),
             "workflow_id": str(payload.get("workflow_id") or payload.get("task_id") or "").strip(),
-            "workflow_label": str(payload.get("workflow_label") or payload.get("operation_label") or "外部操作").strip(),
+            "workflow_label": str(payload.get("workflow_label") or payload.get("operation_label") or "操作").strip(),
         }
         operation = _build_workflow_state_operation(normalized_payload)
     elif event_type == "login_task_state":
@@ -4893,7 +5110,7 @@ def _build_project_chat_operation_event(
             ),
             "kind": "request",
             "title": "本轮执行",
-            "summary": "授权完成，正在自动继续" if is_auth_operation else "外部操作完成，正在自动继续",
+            "summary": "授权完成，正在自动继续" if is_auth_operation else "操作完成，正在自动继续",
             "detail": resume_message,
             "phase": "running",
             "meta": {
@@ -5237,9 +5454,7 @@ def _resolve_default_chat_system_prompt(custom_system_prompt: Any = None) -> str
     custom_prompt = str(custom_system_prompt or "").strip()
     if custom_prompt:
         return custom_prompt
-    cfg = system_config_store.get_global()
-    default_prompt = str(getattr(cfg, "default_chat_system_prompt", "") or "").strip()
-    return default_prompt or None
+    return None
 
 
 def _resolve_chat_max_tokens(request_max_tokens: int | None) -> int:
@@ -8371,12 +8586,13 @@ def _build_query_mcp_cli_prompt(
         "10. 当前任务先在项目本地推进：先在工作区完成分析、改动、验证和本地记录，再通过 MCP 回写任务树、工作事实、交付结论或记忆到服务端。",
         "11. 每个需求必须维护 1 个本地 requirement 对象；项目工作区可解析时，写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。对象内至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history` 等字段，避免只在服务端推进看不到本地状态。",
         f"12. 当前全局清晰度确认阈值为 {normalized_clarity_threshold}/5；先按 1-5 分估计用户需求清晰度。",
-        f"13. 若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {normalized_clarity_threshold}，可直接回答；凡涉及开发、实现、修改、部署、写入或其他会改变项目状态的需求，必须先输出需求理解和计划摘要，并请求用户确认后再执行。",
-        f"14. 若清晰度分数 < {normalized_clarity_threshold}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认后不要重复确认；任何删除、移除、清空、覆盖或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。",
+        f"13. 若只是查询、解释或客服型问题，且目标、对象、范围和预期结果足够清晰、清晰度分数 >= {normalized_clarity_threshold}，可直接回答；凡涉及开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入执行，不要再次请求一般计划确认。",
+        f"14. 若清晰度分数 < {normalized_clarity_threshold}、需求表述模糊、对象或范围不明确，或存在两种及以上合理理解，先输出你的理解、计划摘要和可能误解点，再请求用户确认后再执行；同一轮已确认或用户已明确要求执行后不要重复确认；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象、影响范围和可恢复性，并取得用户明确确认后才能执行。",
         "15. 长任务先调用 `start_work_session` 获取 `session_id`，后续复用同一个 `chat_session_id/session_id`，并用 `save_work_facts`、`append_session_event` 维护轨迹。",
         "16. 如宿主支持任务树，`bind_project_context(...)` 后立刻读取 `get_current_task_tree`，核对 `root_goal/title/current_node` 是否属于当前问题；若明显属于旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。",
         "17. 真正进入执行前，再读取一次 `get_current_task_tree` 确认当前节点；开始节点用 `update_task_node_status`，完成节点必须用 `complete_task_node_with_verification` 补验证结果后再结束。",
         "18. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。",
+        "19. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。只有明确处理历史数据迁移或只读恢复时，才允许短期兼容，并必须标注范围、退出条件和后续清理方案。",
         "",
         "当前接入上下文：",
     ]
@@ -8444,9 +8660,10 @@ async def get_query_mcp_runtime(
                 "get_current_task_tree and verify the bound tree matches the current request",
                 "call search_ids only when IDs are missing, scope is ambiguous, or cross-project lookup is needed",
                 "get_manual_content before rule-specific execution",
-                "score request clarity from 1-5; ask for confirmation before any development/write/change task, and always require explicit confirmation before delete/remove/clear/overwrite operations",
+                "score request clarity from 1-5; treat explicit execute/fix/start/continue/modify wording as confirmation for clear scoped change tasks, and always require separate explicit confirmation before destructive, deployment, external-write, credential, or irreversible operations",
                 "analyze_task -> resolve_relevant_context -> generate_execution_plan",
                 "finish analysis, edits, verification, and local requirement/session recording before syncing task-tree or work-facts back to the server",
+                "fix root causes instead of hiding issues with fallback, compatibility, silent degradation, or duplicate state writes",
                 "update_task_node_status on node start and complete_task_node_with_verification on node finish",
                 "start_work_session and persist session_id for long tasks",
             ],
@@ -12463,6 +12680,7 @@ async def publish_agent_runtime_permission_action_realtime(
     run_id: str,
     call_id: str,
     tool_name: str,
+    command_signature: str = "",
     resume: dict[str, Any] | None = None,
     assistant_message: ProjectChatMessage | dict[str, Any] | None = None,
 ) -> None:
@@ -12473,6 +12691,54 @@ async def publish_agent_runtime_permission_action_realtime(
         if hasattr(assistant_message, "__dataclass_fields__")
         else dict(assistant_message or {})
     )
+    command_signature = str(command_signature or "").strip()
+    resume_payload = dict(resume or {})
+    observations = (
+        resume_payload.get("observations")
+        if isinstance(resume_payload.get("observations"), list)
+        else []
+    )
+    for observation in observations:
+        if not isinstance(observation, dict):
+            continue
+        raw_result = (
+            observation.get("raw_result")
+            if isinstance(observation.get("raw_result"), dict)
+            else {}
+        )
+        tool_args = raw_result.get("tool_args") if isinstance(raw_result.get("tool_args"), dict) else {}
+        if not command_signature:
+            command_signature = permission_command_signature(
+                str(tool_args.get("command") or raw_result.get("command") or "").strip()
+            )
+        if command_signature:
+            break
+    if not command_signature:
+        records = (
+            resume_payload.get("records")
+            if isinstance(resume_payload.get("records"), list)
+            else []
+        )
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            tool_call = (
+                record.get("tool_call")
+                if isinstance(record.get("tool_call"), dict)
+                else {}
+            )
+            args = _agent_runtime_tool_call_args(tool_call)
+            raw_result = (
+                record.get("raw_result")
+                if isinstance(record.get("raw_result"), dict)
+                else {}
+            )
+            if not command_signature:
+                command_signature = permission_command_signature(
+                    str(args.get("command") or raw_result.get("command") or "").strip()
+                )
+            if command_signature:
+                break
     await publish_project_chat_realtime_event(
         {
             "type": "agent_runtime_permission_action_result",
@@ -12483,7 +12749,8 @@ async def publish_agent_runtime_permission_action_realtime(
             "run_id": str(run_id or "").strip(),
             "call_id": str(call_id or "").strip(),
             "tool_name": str(tool_name or "").strip(),
-            "resume": dict(resume or {}),
+            "command_signature": command_signature,
+            "resume": resume_payload,
             "assistant_message": assistant_payload,
         }
     )
@@ -12519,7 +12786,139 @@ def _agent_runtime_resume_final_content(resume_payload: dict[str, Any] | None) -
     continuation = resume_payload.get("continuation")
     if not isinstance(continuation, dict):
         return ""
-    return str(continuation.get("final_content") or "").strip()
+    continuation_content = str(continuation.get("final_content") or "").strip()
+    if continuation_content and not _agent_runtime_resume_is_process_only_content(
+        continuation_content
+    ):
+        return continuation_content
+    return ""
+
+
+def _agent_runtime_resume_is_process_only_content(content: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(content or "").strip())
+    if not normalized:
+        return True
+    return normalized in {
+        "本轮执行已结束",
+        "工具调用权限已确认",
+        "工具调用授权已保存",
+        "运行任务已结束",
+        "运行任务已完成",
+        "后台执行已完成",
+    }
+
+
+def _agent_runtime_resume_is_stable_tool_answer(
+    resume_payload: dict[str, Any] | None,
+    fallback_content: str = "",
+) -> bool:
+    if not isinstance(resume_payload, dict) or not str(fallback_content or "").strip():
+        return False
+    record = _agent_runtime_resume_first_record(resume_payload)
+    if not record:
+        return False
+    raw_result = record.get("raw_result") if isinstance(record.get("raw_result"), dict) else {}
+    tool_call = record.get("tool_call") if isinstance(record.get("tool_call"), dict) else {}
+    args = _agent_runtime_tool_call_args(tool_call)
+    command = str(args.get("command") or raw_result.get("command") or "").strip()
+    return permission_command_signature(command) == "lark-cli auth status"
+
+
+def _agent_runtime_tool_call_args(tool_call: dict[str, Any] | None) -> dict[str, Any]:
+    source = tool_call if isinstance(tool_call, dict) else {}
+    arguments = str(source.get("arguments") or "").strip()
+    if not arguments:
+        return {}
+    try:
+        payload = json.loads(arguments)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _agent_runtime_resume_first_record(resume_payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(resume_payload, dict):
+        return {}
+    records = resume_payload.get("records")
+    if not isinstance(records, list):
+        return {}
+    for item in records:
+        if isinstance(item, dict):
+            return item
+    return {}
+
+
+def _agent_runtime_auth_status_label(raw_result: dict[str, Any]) -> str:
+    exit_code = raw_result.get("exit_code")
+    stdout = str(raw_result.get("stdout") or "").strip()
+    stderr = str(raw_result.get("stderr") or raw_result.get("error") or "").strip()
+    text = "\n".join(item for item in [stdout, stderr] if item).lower()
+    payload: dict[str, Any] = {}
+    if stdout:
+        try:
+            parsed = json.loads(stdout)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            payload = parsed
+    status_value = str(payload.get("status") or payload.get("login_status") or "").strip().lower()
+    if (
+        payload.get("ok") is False
+        or payload.get("authenticated") is False
+        or payload.get("logged_in") is False
+        or status_value in {"unauthenticated", "not_logged_in", "logged_out", "invalid"}
+        or "not logged" in text
+        or "unauthenticated" in text
+        or "login required" in text
+        or "未登录" in text
+    ):
+        return "未登录"
+    if (
+        payload.get("ok") is True
+        or payload.get("authenticated") is True
+        or payload.get("logged_in") is True
+        or status_value in {"authenticated", "logged_in", "valid", "success", "ok"}
+    ):
+        return "已登录"
+    try:
+        if int(exit_code) == 0:
+            return "已登录"
+    except (TypeError, ValueError):
+        pass
+    return "未确认"
+
+
+def _agent_runtime_resume_fallback_content(resume_payload: dict[str, Any] | None) -> str:
+    record = _agent_runtime_resume_first_record(resume_payload)
+    if not record:
+        return ""
+    raw_result = record.get("raw_result") if isinstance(record.get("raw_result"), dict) else {}
+    tool_call = record.get("tool_call") if isinstance(record.get("tool_call"), dict) else {}
+    args = _agent_runtime_tool_call_args(tool_call)
+    command = str(args.get("command") or raw_result.get("command") or "").strip()
+    signature = permission_command_signature(command)
+    stdout = str(raw_result.get("stdout") or "").strip()
+    stderr = str(raw_result.get("stderr") or raw_result.get("error") or "").strip()
+    exit_code = raw_result.get("exit_code")
+    output = stdout or stderr
+    if signature == "lark-cli auth status":
+        status_label = _agent_runtime_auth_status_label(raw_result)
+        lines = [f"登录状态：{status_label}。"]
+        if command:
+            lines.append(f"已执行命令：`{command}`。")
+        if output:
+            lines.append(f"命令输出：{output}")
+        return "\n".join(lines).strip()
+    if not command and not output:
+        return ""
+    lines = []
+    if command:
+        lines.append(f"授权后已执行命令：`{command}`。")
+    if exit_code is not None:
+        lines.append(f"退出码：{exit_code}。")
+    if output:
+        lines.append(f"输出：{output}")
+    return "\n".join(lines).strip()
 
 
 def _agent_runtime_trace_event_type(event_payload: dict[str, Any]) -> str:
@@ -12581,7 +12980,7 @@ def _agent_runtime_trace_event_summary(event_payload: dict[str, Any]) -> str:
         status = str(payload.get("status") or "").strip()
         return " · ".join(item for item in [f"工具返回结果：{tool_name}" if tool_name else "工具返回结果", status] if item)
     if event_type == "tool_round_completed":
-        return "工具执行轮次已完成"
+        return "工具执行轮次已处理，正在判断下一步"
     if event_type == "query_engine_completed":
         return "运行任务已完成"
     if event_type == "query_engine_failed":
@@ -12657,8 +13056,17 @@ def _agent_runtime_trace_from_events(events: list[dict[str, Any]], run_id: str) 
             call_id = str(decision.get("call_id") or payload.get("call_id") or "").strip()
             tool_name = str(decision.get("tool_name") or payload.get("tool_name") or "").strip()
             if normalized_run_id and call_id:
-                operations[f"agent-runtime-permission:{normalized_run_id}:{call_id}"] = {
-                    "operationId": f"agent-runtime-permission:{normalized_run_id}:{call_id}",
+                tool_args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+                command_signature = permission_command_signature(
+                    str(tool_args.get("command") or "").strip()
+                )
+                operation_id = (
+                    f"agent-runtime-permission:{normalized_run_id}:command:{command_signature}"
+                    if command_signature
+                    else f"agent-runtime-permission:{normalized_run_id}:{call_id}"
+                )
+                operations[operation_id] = {
+                    "operationId": operation_id,
                     "kind": "approval",
                     "title": "工具调用已拒绝" if behavior == "deny" else "工具调用需要授权",
                     "summary": "权限策略拒绝了本次工具调用" if behavior == "deny" else "等待你选择本次工具调用的授权范围",
@@ -12670,6 +13078,8 @@ def _agent_runtime_trace_from_events(events: list[dict[str, Any]], run_id: str) 
                         "run_id": normalized_run_id,
                         "call_id": call_id,
                         "tool_name": tool_name,
+                        "tool_args": tool_args,
+                        "command_signature": command_signature,
                         "permission_decision": decision,
                     },
                 }
@@ -12679,8 +13089,19 @@ def _agent_runtime_trace_from_events(events: list[dict[str, Any]], run_id: str) 
             call_id = str(payload.get("call_id") or "").strip()
             tool_name = str(rule.get("tool_name") or payload.get("tool_name") or "").strip()
             if normalized_run_id and call_id:
-                operations[f"agent-runtime-permission:{normalized_run_id}:{call_id}"] = {
-                    "operationId": f"agent-runtime-permission:{normalized_run_id}:{call_id}",
+                matcher = rule.get("matcher") if isinstance(rule.get("matcher"), dict) else {}
+                command_signature = str(matcher.get("command_signature") or "").strip()
+                if not command_signature:
+                    command_signature = permission_command_signature(
+                        str(matcher.get("command_exact") or matcher.get("command_prefix") or "").strip()
+                    )
+                operation_id = (
+                    f"agent-runtime-permission:{normalized_run_id}:command:{command_signature}"
+                    if command_signature
+                    else f"agent-runtime-permission:{normalized_run_id}:{call_id}"
+                )
+                operations[operation_id] = {
+                    "operationId": operation_id,
                     "kind": "approval",
                     "title": "工具调用已拒绝" if action == "deny" else "工具调用授权",
                     "summary": "已拒绝，本次工具调用不会执行" if action == "deny" else "已保存授权，运行时正在继续执行",
@@ -12692,6 +13113,7 @@ def _agent_runtime_trace_from_events(events: list[dict[str, Any]], run_id: str) 
                         "run_id": normalized_run_id,
                         "call_id": call_id,
                         "tool_name": tool_name,
+                        "command_signature": command_signature,
                         "permission_action": action,
                     },
                 }
@@ -14673,6 +15095,19 @@ async def create_project_experience_summary_job(
     }
 
 
+@router.get("/{project_id}/experience-rules/options")
+async def list_project_experience_rule_options(
+    project_id: str,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.projects")
+    _ensure_project_manage_access(project_id, auth_payload)
+    return {
+        "project_id": project_id,
+        "rules": _list_project_experience_rule_options(auth_payload),
+    }
+
+
 @router.post("/{project_id}/experience-rules/migrate-to-development")
 async def migrate_project_experience_rules_to_development(
     project_id: str,
@@ -15266,9 +15701,18 @@ async def apply_project_agent_runtime_v2_permission_action(
         snapshot,
         call_id=call_id,
         tool_name=tool_name,
+        args=dict(req.args or {}),
     )
     if permission_request is None:
         raise HTTPException(400, "permission request not found for run")
+    canonical_call_id = str(permission_request.get("call_id") or "").strip()
+    canonical_tool_name = str(permission_request.get("tool_name") or "").strip()
+    if not canonical_call_id or not canonical_tool_name:
+        raise HTTPException(400, "permission request not found for run")
+    canonical_args = dict(permission_request.get("args") or {})
+    canonical_command_signature = permission_command_signature(
+        str(canonical_args.get("command") or "").strip()
+    )
     chat_session_id = (
         str(req.chat_session_id or "").strip()
         or str(run.get("chat_session_id") or "").strip()
@@ -15277,9 +15721,9 @@ async def apply_project_agent_runtime_v2_permission_action(
         rule = PermissionActionService().apply_permission_action(
             action=req.action,
             run_id=run_id,
-            call_id=call_id,
-            tool_name=str(permission_request.get("tool_name") or "").strip(),
-            args=dict(permission_request.get("args") or {}),
+            call_id=canonical_call_id,
+            tool_name=canonical_tool_name,
+            args=canonical_args,
             project_id=project_id,
             username=username,
             chat_session_id=chat_session_id,
@@ -15296,8 +15740,8 @@ async def apply_project_agent_runtime_v2_permission_action(
                     project_id=project_id,
                     username=username,
                     run_id=run_id,
-                    call_id=call_id,
-                    tool_name=str(permission_request.get("tool_name") or "").strip(),
+                    call_id=canonical_call_id,
+                    tool_name=canonical_tool_name,
                     chat_session_id=chat_session_id,
                     role_ids=get_auth_role_ids(auth_payload),
                     project_workspace_path=str(getattr(project, "workspace_path", "") or "").strip(),
@@ -15325,8 +15769,8 @@ async def apply_project_agent_runtime_v2_permission_action(
         assistant_message_id=assistant_message_id,
         content=_agent_runtime_resume_final_content(resume_payload),
         run_id=run_id,
-        call_id=call_id,
-        tool_name=str(permission_request.get("tool_name") or "").strip(),
+        call_id=canonical_call_id,
+        tool_name=canonical_tool_name,
         resume_payload=resume_payload,
         runtime_events=runtime_events,
     )
@@ -15343,8 +15787,9 @@ async def apply_project_agent_runtime_v2_permission_action(
         chat_session_id=chat_session_id,
         action=str(req.action or "").strip().lower(),
         run_id=run_id,
-        call_id=call_id,
-        tool_name=str(permission_request.get("tool_name") or "").strip(),
+        call_id=canonical_call_id,
+        tool_name=canonical_tool_name,
+        command_signature=canonical_command_signature,
         resume=resume_payload,
         assistant_message=assistant_message,
     )
@@ -15689,12 +16134,12 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 return f"工具返回结果：{tool_name} · {status}"
             return "工具返回结果"
         if event_type == "tool_round_completed":
-            return "工具执行轮次已完成"
+            return "工具执行轮次已处理，正在判断下一步"
         if event_type == "completion_decision":
             action = str(payload.get("action") or "").strip()
             return f"完成策略判断：{action}" if action else "完成策略已判断"
         if event_type == "query_engine_waiting_operation":
-            return "外部操作进行中，等待完成后恢复"
+            return "操作进行中，等待完成后恢复"
         if event_type == "query_engine_blocked":
             return "运行任务已暂停，等待处理阻塞项"
         if event_type == "query_engine_completed":
@@ -15747,7 +16192,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             "status": _agent_runtime_event_phase(runtime_event),
             "status_label": "Agent Runtime",
             "summary": _agent_runtime_event_summary(runtime_event),
-            "detail": json.dumps(runtime_event.payload, ensure_ascii=False, default=str),
+            "detail": "",
             "action_type": "none",
         }
 
@@ -15781,10 +16226,20 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             return
         task_id = str(task.get("task_id") or "").strip()
         operation_kind = str(task.get("operation_kind") or "external_operation").strip()
-        operation_label = str(task.get("operation_label") or "外部操作").strip()
+        operation_label = str(task.get("operation_label") or "操作").strip()
         status = str(task.get("status") or "").strip().lower()
         execution = task.get("execution") if isinstance(task.get("execution"), dict) else {}
         authorization_url = str(execution.get("authorization_url") or "").strip()
+        interaction_schema = (
+            execution.get("interaction_schema")
+            if isinstance(execution.get("interaction_schema"), dict)
+            else None
+        )
+        action_type = str(execution.get("action_type") or "").strip().lower()
+        if action_type == "open_url" and not authorization_url:
+            action_type = "none"
+        if not action_type and interaction_schema:
+            action_type = "interaction_form"
         resume_command = str(metadata.get("resume_command") or "").strip()
         event_version = int(task.get("event_version") or 0)
         raw_detail = "\n".join(
@@ -15803,18 +16258,24 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         elif status == "running":
             state_summary = f"{operation_label}已启动，正在等待后续结果"
         elif status == "waiting_user_action":
-            state_summary = "等待你完成外部操作"
+            state_summary = "等待你完成操作"
         elif status == "succeeded":
-            state_summary = "外部操作完成，检测通过"
+            state_summary = "操作完成，检测通过"
         elif status in {"failed", "timeout"}:
-            state_summary = "外部操作未完成"
+            state_summary = "操作未完成"
         if operation_kind == "auth_login":
             if status == "queued":
                 state_summary = "授权任务已创建，等待返回授权链接"
             elif status == "running":
                 state_summary = "授权流程已启动，正在等待后续结果"
             elif status == "waiting_user_action":
-                state_summary = "等待你在浏览器完成授权"
+                state_summary = (
+                    "等待你选择授权业务域"
+                    if interaction_schema
+                    else "等待你在浏览器完成授权"
+                    if authorization_url
+                    else "等待你完成授权操作"
+                )
             elif status == "succeeded":
                 state_summary = "授权完成，检测通过"
             elif status in {"failed", "timeout"}:
@@ -15832,35 +16293,30 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             "summary": state_summary,
             "message": str(task.get("status_reason") or "").strip(),
             "detail": raw_detail,
-            "action_type": "open_url" if authorization_url else "none",
+            "action_type": action_type or ("open_url" if authorization_url else "interaction_form" if interaction_schema else "none"),
             "authorization_url": authorization_url,
+            "interaction_schema": interaction_schema,
             "resume_command": resume_command,
             "event_version": event_version,
         }
-        await _send_project_chat_event(workflow_state_event)
         await _send_project_chat_event(
             {
                 **workflow_state_event,
                 "type": "operation_task_state",
             }
         )
-        if operation_kind == "auth_login":
-            await _send_project_chat_event(
-                {
-                    **workflow_state_event,
-                    "type": "login_task_state",
-                }
-            )
 
-        if status == "waiting_user_action":
+        if status == "waiting_user_action" and (operation_kind != "auth_login" or authorization_url or interaction_schema):
             await _send_project_chat_event(
                 {
-                    "type": "operation_waiting",
+                    "type": "authorization_waiting" if operation_kind == "auth_login" else "operation_waiting",
                     "chat_session_id": chat_session_id,
                     "task_id": task_id,
                     "workflow_kind": operation_kind,
                     "workflow_label": operation_label,
                     "authorization_url": authorization_url,
+                    "interaction_schema": interaction_schema,
+                    "action_type": action_type or ("open_url" if authorization_url else "interaction_form" if interaction_schema else "none"),
                     "message": str(task.get("status_reason") or "").strip(),
                     "detail": "\n".join(
                         item
@@ -15875,27 +16331,6 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     "event_version": event_version,
                 }
             )
-            if operation_kind == "auth_login":
-                await _send_project_chat_event(
-                    {
-                        "type": "authorization_waiting",
-                        "chat_session_id": chat_session_id,
-                        "task_id": task_id,
-                        "authorization_url": authorization_url,
-                        "message": str(task.get("status_reason") or "").strip(),
-                        "detail": "\n".join(
-                            item
-                            for item in [
-                                str(execution.get("stdout") or "").strip(),
-                                str(execution.get("stderr") or "").strip(),
-                            ]
-                            if item
-                        ).strip(),
-                        "status_label": str(task.get("status_label") or "").strip(),
-                        "resume_command": resume_command,
-                        "event_version": event_version,
-                    }
-                )
             return
 
         if status != "succeeded":
@@ -15909,9 +16344,9 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 "workflow_kind": operation_kind,
                 "workflow_label": operation_label,
                 "message": (
-                    "外部操作完成，系统正在自动继续上一条待执行命令。"
+                    "操作完成，系统正在自动继续上一条待执行命令。"
                     if resume_command
-                    else "外部操作完成。"
+                    else "操作完成。"
                 ),
                 "status_label": str(task.get("status_label") or "").strip(),
                 "resume_command": resume_command,
@@ -15948,7 +16383,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     "run_id": runtime_run_id,
                     "workflow_kind": operation_kind,
                     "workflow_label": operation_label,
-                    "message": "外部操作完成，系统正在恢复同一个运行任务。",
+                    "message": "操作完成，系统正在恢复同一个运行任务。",
                 }
             )
             try:
@@ -16013,7 +16448,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 "task_id": task_id,
                 "workflow_kind": operation_kind,
                 "workflow_label": operation_label,
-                "message": "外部操作完成，系统正在自动继续上一条待执行命令。",
+                "message": "操作完成，系统正在自动继续上一条待执行命令。",
                 "resume_command": resume_command,
                 "resume_request_id": f"operation-resume:{task_id}",
             }
@@ -16172,7 +16607,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
 
                 await write_project_host_terminal_input(
                     session_id,
-                    f"{initial_command}\r",
+                    f"{initial_command}\n",
                 )
 
         queue, history_events = attach_project_host_terminal_listener(session_id)
@@ -16420,6 +16855,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
 
             enabled_tool_names = list(runtime_settings.get("enabled_project_tool_names") or [])
             explicit_tool_filter = bool(enabled_tool_names)
+            explicit_tool_request = bool(runtime_settings.get("auto_use_tools")) and bool(enabled_tool_names)
             task_tree_payload = _resolve_project_chat_task_tree_context(
                 project_id,
                 username,
@@ -16651,18 +17087,29 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 source_context=source_context,
                 previous_state=previous_assistant_workflow_state,
                 chat_surface=chat_surface,
-                auto_use_tools=bool(runtime_settings.get("auto_use_tools")),
+                auto_use_tools=bool(runtime_settings.get("auto_use_tools")) and (
+                    explicit_tool_request
+                    or _should_enable_chat_tools(
+                        effective_user_message,
+                        attachment_names,
+                        normalized_images,
+                        None,
+                    )
+                ),
             )
 
             tools: list[dict] = []
             local_connector_tools: list[dict] = []
             selected_local_connector = None
             local_connector_sandbox_mode = ""
-            tools_enabled = bool(runtime_settings.get("auto_use_tools")) and _should_enable_chat_tools(
-                effective_user_message,
-                attachment_names,
-                normalized_images,
-                assistant_workflow_state,
+            tools_enabled = bool(runtime_settings.get("auto_use_tools")) and (
+                explicit_tool_request
+                or _should_enable_chat_tools(
+                    effective_user_message,
+                    attachment_names,
+                    normalized_images,
+                    assistant_workflow_state,
+                )
             )
             if tools_enabled:
                 tools = _collect_runtime_tools(
@@ -16766,6 +17213,16 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 task_tree_payload=task_tree_payload,
             )
         )
+        execution_plan_payload = _assistant_workflow_plan_payload(
+            assistant_workflow_state,
+            user_message=effective_user_message,
+            request_id=request_id,
+            tools_enabled=bool(tools),
+            effective_tool_total=effective_tool_total,
+        )
+        execution_plan_context = _project_chat_plan_step_ids(execution_plan_payload)
+        if execution_plan_payload:
+            await _send_project_chat_event(execution_plan_payload)
 
         try:
             final_answer = ""
@@ -16849,6 +17306,18 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             ):
                 outgoing = dict(chunk_data)
                 event_type = str(outgoing.get("type") or "").strip().lower()
+                if event_type in {"tool_start", "tool_result", "command_start", "command_result"}:
+                    outgoing = _attach_project_chat_plan_context(
+                        outgoing,
+                        execution_plan_context,
+                        stage="execute",
+                    )
+                elif event_type == "done":
+                    outgoing = _attach_project_chat_plan_context(
+                        outgoing,
+                        execution_plan_context,
+                        stage="verify",
+                    )
                 if event_type == "artifact":
                     artifact_batch = _normalize_chat_media_artifacts(outgoing.get("artifacts"))
                     if artifact_batch:
@@ -16884,6 +17353,29 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 if event_type == "error":
                     stream_error = _extract_project_chat_stream_error_message(outgoing)
                 outgoing["request_id"] = request_id
+                if event_type in {"tool_start", "command_start"}:
+                    planned_action = _project_chat_planned_action_payload(
+                        outgoing,
+                        execution_plan_context,
+                        request_id=request_id,
+                    )
+                    if planned_action:
+                        await _send_project_chat_event(planned_action)
+                if event_type == "done" and execution_plan_context.get("plan_id"):
+                    await _send_project_chat_event(
+                        _project_chat_verification_started_payload(
+                            outgoing,
+                            execution_plan_context,
+                            request_id=request_id,
+                        )
+                    )
+                    await _send_project_chat_event(
+                        _project_chat_verification_finished_payload(
+                            outgoing,
+                            execution_plan_context,
+                            request_id=request_id,
+                        )
+                    )
                 await _send_project_chat_event(outgoing)
             if runtime_event_queue is not None:
                 await runtime_event_queue.put(None)
@@ -17228,6 +17720,7 @@ async def stream_project_chat(
     employee_id_val = selected_employee_ids[0] if len(selected_employee_ids) == 1 else ""
     enabled_tool_names = list(runtime_settings.get("enabled_project_tool_names") or [])
     explicit_tool_filter = bool(enabled_tool_names)
+    explicit_tool_request = bool(runtime_settings.get("auto_use_tools")) and bool(enabled_tool_names)
     try:
         task_tree_payload = _resolve_project_chat_task_tree_context(
             project_id,
@@ -17241,6 +17734,7 @@ async def stream_project_chat(
     task_tree_prompt = str(
         (task_tree_payload or {}).get("model_context_summary") or ""
     ).strip()
+    sse_request_id = f"sse-{uuid.uuid4().hex[:12]}"
     if not is_interaction_continuation and _is_project_meta_query(effective_user_message):
         answer = _build_project_meta_reply(project, selected_employee, candidates)
 
@@ -17506,18 +18000,29 @@ async def stream_project_chat(
         source_context=source_context,
         previous_state=previous_assistant_workflow_state,
         chat_surface=chat_surface,
-        auto_use_tools=bool(runtime_settings.get("auto_use_tools")),
+        auto_use_tools=bool(runtime_settings.get("auto_use_tools")) and (
+            explicit_tool_request
+            or _should_enable_chat_tools(
+                effective_user_message,
+                attachment_names,
+                normalized_images,
+                None,
+            )
+        ),
     )
 
     tools: list[dict] = []
     local_connector_tools: list[dict] = []
     selected_local_connector = None
     local_connector_sandbox_mode = ""
-    tools_enabled = bool(runtime_settings.get("auto_use_tools")) and _should_enable_chat_tools(
-        effective_user_message,
-        attachment_names,
-        normalized_images,
-        assistant_workflow_state,
+    tools_enabled = bool(runtime_settings.get("auto_use_tools")) and (
+        explicit_tool_request
+        or _should_enable_chat_tools(
+            effective_user_message,
+            attachment_names,
+            normalized_images,
+            assistant_workflow_state,
+        )
     )
     if tools_enabled:
         tools = _collect_runtime_tools(
@@ -17601,6 +18106,7 @@ async def stream_project_chat(
             "message",
             _build_project_chat_start_payload(
                 project_id=project_id,
+                request_id=sse_request_id,
                 provider_id=provider_id,
                 model_name=model_name,
                 employee_id=str((selected_employee or {}).get("id") or ""),
@@ -17612,6 +18118,16 @@ async def stream_project_chat(
                 task_tree_payload=task_tree_payload,
             ),
         )
+        execution_plan_payload = _assistant_workflow_plan_payload(
+            assistant_workflow_state,
+            user_message=effective_user_message,
+            request_id=sse_request_id,
+            tools_enabled=bool(tools),
+            effective_tool_total=effective_tool_total,
+        )
+        execution_plan_context = _project_chat_plan_step_ids(execution_plan_payload)
+        if execution_plan_payload:
+            yield _sse_payload("message", execution_plan_payload)
         try:
             llm_service_runtime = _resolve_chat_llm_service_runtime(
                 llm_service,
@@ -17650,6 +18166,18 @@ async def stream_project_chat(
             ):
                 outgoing = dict(chunk_data)
                 event_type = str(outgoing.get("type") or "").strip().lower()
+                if event_type in {"tool_start", "tool_result", "command_start", "command_result"}:
+                    outgoing = _attach_project_chat_plan_context(
+                        outgoing,
+                        execution_plan_context,
+                        stage="execute",
+                    )
+                elif event_type == "done":
+                    outgoing = _attach_project_chat_plan_context(
+                        outgoing,
+                        execution_plan_context,
+                        stage="verify",
+                    )
                 if event_type == "artifact":
                     artifact_batch = _normalize_chat_media_artifacts(outgoing.get("artifacts"))
                     if artifact_batch:
@@ -17684,6 +18212,32 @@ async def stream_project_chat(
                     last_done_payload = dict(outgoing)
                 if event_type == "error":
                     stream_error = _extract_project_chat_stream_error_message(outgoing)
+                outgoing["request_id"] = sse_request_id
+                if event_type in {"tool_start", "command_start"}:
+                    planned_action = _project_chat_planned_action_payload(
+                        outgoing,
+                        execution_plan_context,
+                        request_id=sse_request_id,
+                    )
+                    if planned_action:
+                        yield _sse_payload("message", planned_action)
+                if event_type == "done" and execution_plan_context.get("plan_id"):
+                    yield _sse_payload(
+                        "message",
+                        _project_chat_verification_started_payload(
+                            outgoing,
+                            execution_plan_context,
+                            request_id=sse_request_id,
+                        ),
+                    )
+                    yield _sse_payload(
+                        "message",
+                        _project_chat_verification_finished_payload(
+                            outgoing,
+                            execution_plan_context,
+                            request_id=sse_request_id,
+                        ),
+                    )
                 yield _sse_payload("message", outgoing)
 
             if stream_error:

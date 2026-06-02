@@ -91,6 +91,7 @@ class ToolExecutionRunner:
                 {
                     "tool_call": item.to_dict(),
                     "decision": decision.to_dict(),
+                    "args": dict(args or {}),
                     "args_parse_status": "ok" if args is not None else "invalid_json",
                 },
             )

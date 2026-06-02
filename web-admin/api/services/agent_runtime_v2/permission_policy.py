@@ -64,16 +64,6 @@ class PermissionPolicy:
                 reason="matched deny rule",
                 matched_rule=matched_rule.to_dict(),
             )
-        if self._requires_trust(normalized_tool) and not workspace_trusted:
-            return self._record(
-                run_id=run_id,
-                call_id=call_id,
-                tool_name=normalized_tool,
-                behavior="ask",
-                risk_level="high",
-                reason="workspace is not trusted",
-                matched_rule=None,
-            )
         if matched_rule is not None:
             return self._record(
                 run_id=run_id,
@@ -83,6 +73,16 @@ class PermissionPolicy:
                 risk_level=risk_level,
                 reason="matched permission rule",
                 matched_rule=matched_rule.to_dict(),
+            )
+        if self._requires_trust(normalized_tool) and not workspace_trusted:
+            return self._record(
+                run_id=run_id,
+                call_id=call_id,
+                tool_name=normalized_tool,
+                behavior="ask",
+                risk_level="high",
+                reason="workspace is not trusted",
+                matched_rule=None,
             )
         if risk_level in {"high", "critical"}:
             behavior = "ask"
@@ -153,7 +153,11 @@ class PermissionPolicy:
         return self._store.record_decision(decision)
 
     def _requires_trust(self, tool_name: str) -> bool:
-        return tool_name in {"project_host_run_command"} or tool_name.startswith("local_connector_")
+        return (
+            tool_name in {"project_host_run_command"}
+            or tool_name.startswith("project_host_terminal_")
+            or tool_name.startswith("local_connector_")
+        )
 
     def _risk_level(self, tool_name: str, args: dict[str, Any]) -> str:
         if tool_name == "project_host_run_command":
@@ -161,6 +165,15 @@ class PermissionPolicy:
             if any(term in command for term in _SENSITIVE_COMMAND_TERMS):
                 return "high"
             return "medium"
+        if tool_name == "project_host_terminal_start":
+            command = f" {str(args.get('initial_command') or '').strip().lower()} "
+            if any(term in command for term in _SENSITIVE_COMMAND_TERMS):
+                return "high"
+            return "medium"
+        if tool_name in {"project_host_terminal_input", "project_host_terminal_stop"}:
+            return "medium"
+        if tool_name == "project_host_terminal_read":
+            return "low"
         if tool_name.startswith("local_connector_write"):
             return "medium"
         return "low"

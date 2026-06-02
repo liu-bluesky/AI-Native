@@ -6,7 +6,12 @@ from typing import Any
 from uuid import uuid4
 
 from services.agent_runtime_v2.event_log import RuntimeEventLog
-from services.agent_runtime_v2.permission_store import PermissionRule, PermissionStore
+from services.agent_runtime_v2.permission_store import (
+    PermissionRule,
+    PermissionStore,
+    normalize_permission_command,
+    permission_command_signature,
+)
 from services.agent_runtime_v2.trust_policy import TrustPolicy, WorkspaceTrust
 
 
@@ -113,5 +118,9 @@ class PermissionActionService:
             }
         command = str(args.get("command") or "").strip()
         if command:
-            return {"command_exact": command}
+            signature = permission_command_signature(command)
+            normalized_command = normalize_permission_command(command)
+            if signature and signature != normalized_command:
+                return {"command_signature": signature}
+            return {"command_exact": normalized_command}
         return {}

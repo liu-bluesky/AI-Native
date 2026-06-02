@@ -337,6 +337,7 @@ async def test_agent_orchestrator_auto_runs_lark_send_after_unique_contact_resol
             return None
 
     monkeypatch.setattr("services.agent_orchestrator.ToolExecutor", _FakeToolExecutor)
+    monkeypatch.setattr("services.agent_orchestrator.audit_task_tree_round", lambda **kwargs: None)
 
     orchestrator = AgentOrchestrator(_FakeLLM(), _FakeConversationManager())
     cancel_event = asyncio.Event()
@@ -376,7 +377,7 @@ async def test_agent_orchestrator_auto_runs_lark_send_after_unique_contact_resol
 
 
 @pytest.mark.asyncio
-async def test_agent_orchestrator_retries_when_model_prematurely_defers_execution(monkeypatch):
+async def test_agent_orchestrator_does_not_retry_when_model_defers_in_text(monkeypatch):
     import asyncio
     import json
 
@@ -415,31 +416,6 @@ async def test_agent_orchestrator_retries_when_model_prematurely_defers_executio
                         "已找到联系人 open_id，你现在执行下面命令即可发送。"
                         "把输出发我，我继续帮你确认。"
                     )
-                }
-                return
-            if self._stream_calls == 3:
-                messages = kwargs.get("messages") or []
-                assert any(
-                    "不要再让用户自己执行命令" in str(item.get("content") or "")
-                    for item in messages
-                    if item.get("role") == "system"
-                )
-                yield {
-                    "tool_calls": [
-                        {
-                            "index": 0,
-                            "id": "call-run",
-                            "function": {
-                                "name": "project_host_run_command",
-                                "arguments": json.dumps(
-                                    {
-                                        "command": "demo-cli deploy --target staging",
-                                    },
-                                    ensure_ascii=False,
-                                ),
-                            },
-                        }
-                    ]
                 }
                 return
             yield {"content": "已实际发送 test，message_id=om_123。"}
@@ -489,6 +465,7 @@ async def test_agent_orchestrator_retries_when_model_prematurely_defers_executio
             return None
 
     monkeypatch.setattr("services.agent_orchestrator.ToolExecutor", _FakeToolExecutor)
+    monkeypatch.setattr("services.agent_orchestrator.audit_task_tree_round", lambda **kwargs: None)
 
     orchestrator = AgentOrchestrator(_FakeLLM(), _FakeConversationManager())
     cancel_event = asyncio.Event()
@@ -516,16 +493,16 @@ async def test_agent_orchestrator_retries_when_model_prematurely_defers_executio
     ]
     tool_results = [item for item in events if item["type"] == "tool_result"]
     assert "lark_cli_send_message_workflow" in auto_continue_reasons
-    assert "premature_execution_deferral" in auto_continue_reasons
-    assert len(tool_results) >= 2
+    assert "premature_execution_deferral" not in auto_continue_reasons
+    assert len(tool_results) == 2
     assert "search-user" in str(tool_results[0].get("command") or "")
     assert any("messages-send" in str(item.get("command") or "") for item in tool_results[1:])
     assert events[-1]["type"] == "done"
-    assert "message_id=om_123" in str(events[-1]["content"] or "")
+    assert "你现在执行下面命令" in str(events[-1]["content"] or "")
 
 
 @pytest.mark.asyncio
-async def test_agent_orchestrator_retries_next_minimum_step_deferral(monkeypatch):
+async def test_agent_orchestrator_does_not_retry_next_minimum_step_from_text(monkeypatch):
     import asyncio
     import json
 
@@ -611,6 +588,7 @@ async def test_agent_orchestrator_retries_next_minimum_step_deferral(monkeypatch
             return None
 
     monkeypatch.setattr("services.agent_orchestrator.ToolExecutor", _FakeToolExecutor)
+    monkeypatch.setattr("services.agent_orchestrator.audit_task_tree_round", lambda **kwargs: None)
 
     orchestrator = AgentOrchestrator(_FakeLLM(), _FakeConversationManager())
     cancel_event = asyncio.Event()
@@ -637,15 +615,14 @@ async def test_agent_orchestrator_retries_next_minimum_step_deferral(monkeypatch
         if item["type"] == "auto_continue"
     ]
     tool_results = [item for item in events if item["type"] == "tool_result"]
-    assert "premature_execution_deferral" in auto_continue_reasons
-    assert len(tool_results) == 2
+    assert "premature_execution_deferral" not in auto_continue_reasons
+    assert len(tool_results) == 1
     assert "demo-cli create-record" in str(tool_results[0].get("command") or "")
-    assert "demo-cli upload-attachment" in str(tool_results[1].get("command") or "")
     assert events[-1]["type"] == "done"
 
 
 @pytest.mark.asyncio
-async def test_agent_orchestrator_auto_runs_followup_command_from_tool_hint(monkeypatch):
+async def test_agent_orchestrator_does_not_auto_run_followup_command_from_tool_text_hint(monkeypatch):
     import asyncio
     import json
 
@@ -728,6 +705,7 @@ async def test_agent_orchestrator_auto_runs_followup_command_from_tool_hint(monk
             return None
 
     monkeypatch.setattr("services.agent_orchestrator.ToolExecutor", _FakeToolExecutor)
+    monkeypatch.setattr("services.agent_orchestrator.audit_task_tree_round", lambda **kwargs: None)
 
     orchestrator = AgentOrchestrator(_FakeLLM(), _FakeConversationManager())
     cancel_event = asyncio.Event()
@@ -748,34 +726,17 @@ async def test_agent_orchestrator_auto_runs_followup_command_from_tool_hint(monk
     ):
         events.append(item)
 
-    auto_continue_event = next(
-        item
+    tool_results = [item for item in events if item["type"] == "tool_result"]
+    auto_continue_reasons = [
+        item["reason"]
         for item in events
         if item["type"] == "auto_continue"
-        and item["reason"] == "auto_followup_command"
-    )
-    tool_results = [item for item in events if item["type"] == "tool_result"]
-    assert "系统已自动继续执行" in str(auto_continue_event["message"] or "")
-    assert "demo-cli auth login --scope" in str(
-        auto_continue_event["previous_response_preview"] or ""
-    )
-    assert len(tool_results) == 2
+    ]
+    assert "auto_followup_command" not in auto_continue_reasons
+    assert len(tool_results) == 1
     assert "demo-cli deploy" in str(tool_results[0].get("command") or "")
-    assert "demo-cli auth login --scope" in str(tool_results[1].get("command") or "")
-    second_call_messages = orchestrator._llm.messages_by_call[1]
-    auto_followup_tool_index = next(
-        index
-        for index, item in enumerate(second_call_messages)
-        if item.get("role") == "tool"
-        and item.get("tool_call_id") == "auto-followup-1"
-    )
-    assert second_call_messages[auto_followup_tool_index - 1]["role"] == "assistant"
-    assert (
-        second_call_messages[auto_followup_tool_index - 1]["tool_calls"][0]["id"]
-        == "auto-followup-1"
-    )
     assert events[-1]["type"] == "done"
-    assert "继续完成任务" in str(events[-1]["content"] or "")
+    assert "已自动补跑后续命令" in str(events[-1]["content"] or "")
 
 
 @pytest.mark.asyncio
@@ -840,6 +801,7 @@ async def test_agent_orchestrator_ignores_cross_binary_auto_followup_command(mon
             return None
 
     monkeypatch.setattr("services.agent_orchestrator.ToolExecutor", _FakeToolExecutor)
+    monkeypatch.setattr("services.agent_orchestrator.audit_task_tree_round", lambda **kwargs: None)
 
     orchestrator = AgentOrchestrator(_FakeLLM(), _FakeConversationManager())
     cancel_event = asyncio.Event()
@@ -1135,13 +1097,11 @@ async def test_agent_orchestrator_retries_pending_lark_send_after_successful_aut
     ]
     tool_results = [item for item in events if item["type"] == "tool_result"]
     assert auto_continue_reasons == [
-        "auto_followup_command",
         "lark_cli_resume_after_auth",
     ]
-    assert len(tool_results) == 3
+    assert len(tool_results) == 2
     assert "messages-send" in str(tool_results[0].get("command") or "")
-    assert "auth login --scope" in str(tool_results[1].get("command") or "")
-    assert "messages-send" in str(tool_results[2].get("command") or "")
+    assert "messages-send" in str(tool_results[1].get("command") or "")
     assert events[-1]["type"] == "done"
     assert "message_id=om_456" in str(events[-1]["content"] or "")
 
@@ -1342,17 +1302,15 @@ async def test_agent_orchestrator_stops_on_queued_login_task(monkeypatch):
         events.append(item)
 
     done_event = next(item for item in events if item["type"] == "done")
-    workflow_state_event = next(item for item in events if item["type"] == "workflow_state")
     operation_state_event = next(item for item in events if item["type"] == "operation_task_state")
     tool_result = next(item for item in events if item["type"] == "tool_result")
 
     assert tool_result["task_id"] == "cli-plugin-login-queued-1"
     assert tool_result["task_status"] == "queued"
-    assert workflow_state_event["workflow_kind"] == "auth_login"
-    assert workflow_state_event["status"] == "queued"
-    assert workflow_state_event["summary"] == "外部操作已创建，等待后续结果"
     assert operation_state_event["status"] == "queued"
     assert operation_state_event["summary"] == "外部操作已创建，等待后续结果"
+    assert not [item for item in events if item["type"] == "workflow_state"]
+    assert not [item for item in events if item["type"] == "login_task_state"]
     assert done_event["completed_reason"] == "background_task_pending"
     assert done_event["content"] == ""
     assert done_event["guard_message"] == "任务已创建，等待后台执行"

@@ -17,6 +17,15 @@ from services.agent_runtime_v2.transcript_store import TranscriptStore
 from services.agent_runtime_v2.verification_policy import VerificationEvidence, VerificationPolicy
 
 
+def _preview_text(value: str, max_chars: int = 800) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}\n（内容已截断）"
+
+
 @dataclass
 class QueryEngineResult:
     task_run: TaskRun
@@ -94,7 +103,11 @@ class QueryEngine:
         observations: list[ToolObservation] = []
         latest_decision: CompletionDecision | None = None
         model_steps = 0
-        for step_index in range(1, self._max_model_steps + 1):
+        tool_round_completed = False
+        final_answer_retry_used = False
+        step_index = 0
+        while step_index < self._max_model_steps:
+            step_index += 1
             model_steps = step_index
             llm_result = await self._llm_step.run(
                 provider_id=provider_id,
@@ -111,6 +124,7 @@ class QueryEngine:
                 "llm_step_completed",
                 {
                     "step_index": step_index,
+                    "content_preview": _preview_text(llm_result.content),
                     "content_length": len(llm_result.content),
                     "tool_call_count": len(llm_result.tool_calls),
                     "usage": dict(llm_result.usage),
@@ -126,6 +140,7 @@ class QueryEngine:
                 },
             )
             if llm_result.error:
+                error_message = self._llm_error_message(llm_result.error)
                 latest_decision = CompletionDecision("fail", ["llm_error"])
                 self._record_completion_decision(task_run.run_id, latest_decision)
                 task_run = self._state_store.append_event(
@@ -136,7 +151,7 @@ class QueryEngine:
                 )
                 return QueryEngineResult(
                     task_run=task_run,
-                    final_content=final_content,
+                    final_content=final_content or f"对话失败：{error_message}",
                     completion_decision=latest_decision,
                     observations=observations,
                     model_steps=step_index,
@@ -166,6 +181,7 @@ class QueryEngine:
                     run_id=task_run.run_id,
                     tool_calls=llm_result.tool_calls,
                 )
+                tool_round_completed = True
                 observations.extend([item.observation for item in records])
                 self._append_tool_messages(working_messages, records)
                 self._event_log.append(
@@ -180,6 +196,10 @@ class QueryEngine:
                 if blocked_decision is not None:
                     latest_decision = blocked_decision
                     self._record_completion_decision(task_run.run_id, latest_decision)
+                    final_content = self._blocked_tool_final_content(
+                        latest_decision,
+                        records,
+                    )
                     task_run = self._state_store.append_event(
                         task_run,
                         "query_engine_blocked",
@@ -191,6 +211,10 @@ class QueryEngine:
                 if background_decision is not None:
                     latest_decision = background_decision
                     self._record_completion_decision(task_run.run_id, latest_decision)
+                    final_content = (
+                        final_content
+                        or "操作仍在继续，完成后会自动恢复本轮执行。"
+                    )
                     task_run = self._state_store.append_event(
                         task_run,
                         "query_engine_waiting_operation",
@@ -219,7 +243,14 @@ class QueryEngine:
                     status="completed",
                 )
                 break
-            if latest_decision.action == "retry_model":
+            if latest_decision.action in {"retry_model", "continue"}:
+                if latest_decision.action == "continue":
+                    working_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": llm_result.content,
+                        }
+                    )
                 continue
             status = self._status_for_decision(latest_decision)
             task_run = self._state_store.append_event(
@@ -230,7 +261,89 @@ class QueryEngine:
             )
             break
         else:
-            latest_decision = CompletionDecision("fail", ["model_step_budget_exceeded"])
+            if tool_round_completed and not str(final_content or "").strip() and not final_answer_retry_used:
+                final_answer_retry_used = True
+                step_index += 1
+                model_steps = step_index
+                final_prompt = (
+                    "工具执行已经完成。请基于上面的工具返回结果，直接回答用户原始问题；"
+                    "不要再调用工具，不要只复述原始工具输出。"
+                )
+                final_messages = [
+                    *working_messages,
+                    {"role": "user", "content": final_prompt},
+                ]
+                llm_result = await self._llm_step.run(
+                    provider_id=provider_id,
+                    model_name=model_name,
+                    messages=final_messages,
+                    tools=[],
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    max_tool_calls=0,
+                )
+                final_content = llm_result.content
+                self._event_log.append(
+                    task_run.run_id,
+                    "llm_step_completed",
+                    {
+                        "step_index": step_index,
+                        "content_preview": _preview_text(llm_result.content),
+                        "content_length": len(llm_result.content),
+                        "tool_call_count": len(llm_result.tool_calls),
+                        "usage": dict(llm_result.usage),
+                        "final_answer_retry": True,
+                    },
+                )
+                self._transcript_store.append(
+                    task_run.run_id,
+                    "model_output",
+                    {
+                        "step_index": step_index,
+                        "content": llm_result.content,
+                        "tool_calls": [item.to_dict() for item in llm_result.tool_calls],
+                        "final_answer_retry": True,
+                    },
+                )
+                if llm_result.error:
+                    error_message = self._llm_error_message(llm_result.error)
+                    latest_decision = CompletionDecision("fail", ["llm_error"])
+                    self._record_completion_decision(task_run.run_id, latest_decision)
+                    task_run = self._state_store.append_event(
+                        task_run,
+                        "query_engine_failed",
+                        {"error": llm_result.error},
+                        status="failed",
+                    )
+                    return QueryEngineResult(
+                        task_run=task_run,
+                        final_content=final_content or f"对话失败：{error_message}",
+                        completion_decision=latest_decision,
+                        observations=observations,
+                        model_steps=step_index,
+                    )
+                if str(final_content or "").strip():
+                    latest_decision = CompletionDecision("complete", ["final_answer_after_tool"])
+                    self._record_completion_decision(task_run.run_id, latest_decision)
+                    task_run = self._state_store.append_event(
+                        task_run,
+                        "query_engine_completed",
+                        {"decision": latest_decision.to_dict()},
+                        status="completed",
+                    )
+                    return QueryEngineResult(
+                        task_run=task_run,
+                        final_content=final_content,
+                        completion_decision=latest_decision,
+                        observations=observations,
+                        model_steps=step_index,
+                    )
+            reason = (
+                "missing_final_response_after_tool"
+                if tool_round_completed and not str(final_content or "").strip()
+                else "model_step_budget_exceeded"
+            )
+            latest_decision = CompletionDecision("fail", [reason])
             self._record_completion_decision(task_run.run_id, latest_decision)
             task_run = self._state_store.append_event(
                 task_run,
@@ -284,7 +397,7 @@ class QueryEngine:
             for item in blocked
         ):
             return CompletionDecision("request_user", ["permission_required"])
-            return CompletionDecision("blocked", ["permission_denied"])
+        return CompletionDecision("blocked", ["permission_denied"])
 
     def _background_operation_decision(
         self,
@@ -302,6 +415,25 @@ class QueryEngine:
                 return CompletionDecision("request_user", ["background_operation_pending"])
         return None
 
+    def _blocked_tool_final_content(
+        self,
+        decision: CompletionDecision,
+        records: list[ToolExecutionRecord],
+    ) -> str:
+        if decision.action == "request_user":
+            pending = [
+                item
+                for item in records
+                if item.permission_decision is not None
+                and item.permission_decision.behavior == "ask"
+            ]
+            if len(pending) > 1:
+                return "等待你授权这些工具调用后继续。"
+            return "等待你授权工具调用后继续。"
+        if decision.action == "blocked":
+            return "工具调用被权限策略阻塞。"
+        return ""
+
     def _status_for_decision(self, decision: CompletionDecision) -> str:
         if decision.action == "verify":
             return "verifying"
@@ -313,4 +445,12 @@ class QueryEngine:
             return "failed"
         if decision.action == "blocked":
             return "blocked"
-        return "running"
+        return "blocked"
+
+    def _llm_error_message(self, error: dict[str, Any] | None) -> str:
+        payload = error if isinstance(error, dict) else {}
+        for key in ("message", "error_message", "detail", "raw_error", "error"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return "模型服务请求失败"

@@ -179,9 +179,10 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
         "get_current_task_tree and verify the bound tree matches the current request",
         "call search_ids only when IDs are missing, scope is ambiguous, or cross-project lookup is needed",
         "get_manual_content before rule-specific execution",
-        "score request clarity from 1-5; ask for confirmation before any development/write/change task, and always require explicit confirmation before delete/remove/clear/overwrite operations",
+        "score request clarity from 1-5; treat explicit execute/fix/start/continue/modify wording as confirmation for clear scoped change tasks, and always require separate explicit confirmation before destructive, deployment, external-write, credential, or irreversible operations",
         "analyze_task -> resolve_relevant_context -> generate_execution_plan",
         "finish analysis, edits, verification, and local requirement/session recording before syncing task-tree or work-facts back to the server",
+        "fix root causes instead of hiding issues with fallback, compatibility, silent degradation, or duplicate state writes",
         "update_task_node_status on node start and complete_task_node_with_verification on node finish",
         "start_work_session and persist session_id for long tasks",
     ]
@@ -192,8 +193,9 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     assert "start_work_session" in runtime["cli_prompt"]
     assert "当前全局清晰度确认阈值为 3/5" in runtime["cli_prompt"]
     assert "清晰度分数 >= 3" in runtime["cli_prompt"]
-    assert "必须先输出需求理解和计划摘要" in runtime["cli_prompt"]
-    assert "任何删除、移除、清空、覆盖或不可逆操作必须单独说明对象" in runtime["cli_prompt"]
+    assert "“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认" in runtime["cli_prompt"]
+    assert "不要再次请求一般计划确认" in runtime["cli_prompt"]
+    assert "任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象" in runtime["cli_prompt"]
     assert "清晰度分数 < 3" in runtime["cli_prompt"]
     assert "停止复用当前 `chat_session_id`" in runtime["cli_prompt"]
     assert "complete_task_node_with_verification" in runtime["cli_prompt"]
@@ -203,6 +205,8 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     assert "只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时" in runtime["cli_prompt"]
     assert "不能替代当前 CLI 工作区初始化" in runtime["cli_prompt"]
     assert "仅在缺少明确的 `project_id` / `employee_id` / `rule_id`" in runtime["cli_prompt"]
+    assert "禁止以兜底、兼容、静默降级" in runtime["cli_prompt"]
+    assert "优先定位并修正根因" in runtime["cli_prompt"]
     assert "# Unified Query MCP" not in runtime["cli_prompt"]
 
 
@@ -229,7 +233,7 @@ def test_query_mcp_runtime_uses_system_clarity_threshold(tmp_path, monkeypatch):
     runtime = response.json()["runtime"]
     assert runtime["clarity_confirm_threshold"] == 5
     assert (
-        "score request clarity from 1-5; ask for confirmation before any development/write/change task, and always require explicit confirmation before delete/remove/clear/overwrite operations"
+        "score request clarity from 1-5; treat explicit execute/fix/start/continue/modify wording as confirmation for clear scoped change tasks, and always require separate explicit confirmation before destructive, deployment, external-write, credential, or irreversible operations"
         in runtime["bootstrap_checklist"]
     )
     assert "当前全局清晰度确认阈值为 5/5" in runtime["cli_prompt"]
@@ -419,14 +423,16 @@ def test_query_mcp_runtime_upgrades_legacy_clarity_confirmation_lines(tmp_path, 
     cli_prompt = response.json()["runtime"]["cli_prompt"]
     assert "直接处理，不主动要求确认计划" not in cli_prompt
     assert "查询型、客服型问题不要默认升级成计划审批流程" not in cli_prompt
-    assert "必须先输出需求理解和计划摘要" in cli_prompt
-    assert "任何删除、移除、清空、覆盖或不可逆操作必须单独说明对象" in cli_prompt
+    assert "“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认" in cli_prompt
+    assert "不要再次请求一般计划确认" in cli_prompt
+    assert "任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象" in cli_prompt
 
 
 def test_query_mcp_prompt_surfaces_use_project_local_skill_wording():
     expected_local_marker = ".ai-employee/skills/query-mcp-workflow/"
     expected_source_marker = "mcp-skills/knowledge/skills/query-mcp-workflow.json"
     expected_repo_marker = "只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时"
+    expected_root_cause_marker = "禁止以兜底、兼容、静默降级"
 
     prompt_surface_files = [
         "AGENTS.md",
@@ -441,12 +447,14 @@ def test_query_mcp_prompt_surfaces_use_project_local_skill_wording():
         assert expected_local_marker in content, relative_path
         assert expected_source_marker in content, relative_path
         assert expected_repo_marker in content, relative_path
+        assert expected_root_cause_marker in content, relative_path
 
     skill_package_content = (
         REPO_ROOT / "mcp-skills/knowledge/skill-packages/query-mcp-workflow/SKILL.md"
     ).read_text(encoding="utf-8")
     assert ".ai-employee/skills/query-mcp-workflow/" in skill_package_content
     assert "system source repo" in skill_package_content
+    assert expected_root_cause_marker in skill_package_content
 
 
 def test_query_mcp_sync_rule_file_exists_in_rules_directory():
@@ -460,6 +468,7 @@ def test_query_mcp_sync_rule_file_exists_in_rules_directory():
     assert "远程服务写入只算 sync-back" in rule_content
     assert "`sync_status`、`pending_outbox_count`" in rule_content
     assert "web-admin/api/services/query_mcp_project_state.py" in rule_content
+    assert "优先定位并修正根因" in rule_content
 
 
 def test_project_manual_template_avoids_frontend_route_specific_wording(tmp_path, monkeypatch):

@@ -53,34 +53,51 @@ class LLMStep:
         usage: dict[str, Any] = {}
         resolved_provider_id = str(provider_id or "").strip()
         resolved_model_name = str(model_name or "").strip()
-        async for chunk in self._llm_service.chat_completion_stream(
-            provider_id=provider_id,
-            model_name=model_name,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            tools=self._format_tools(tools or []) if tools else None,
-        ):
-            if not isinstance(chunk, dict):
-                continue
-            if isinstance(chunk.get("usage"), dict):
-                usage = dict(chunk["usage"])
-                resolved_provider_id = str(chunk.get("provider_id") or resolved_provider_id).strip()
-                resolved_model_name = str(chunk.get("model_name") or resolved_model_name).strip()
-            if str(chunk.get("type") or "").strip().lower() == "error":
-                return LLMStepResult(
-                    content="".join(content_parts),
-                    tool_calls=collector.list_tool_calls(limit=max_tool_calls),
-                    usage=usage,
-                    provider_id=resolved_provider_id,
-                    model_name=resolved_model_name,
-                    error=dict(chunk),
-                )
-            if "tool_calls" in chunk:
-                collector.add_chunk(chunk)
-            if "content" in chunk:
-                content_parts.append(str(chunk.get("content") or ""))
+        try:
+            async for chunk in self._llm_service.chat_completion_stream(
+                provider_id=provider_id,
+                model_name=model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                tools=self._format_tools(tools or []) if tools else None,
+            ):
+                if not isinstance(chunk, dict):
+                    continue
+                if isinstance(chunk.get("usage"), dict):
+                    usage = dict(chunk["usage"])
+                    resolved_provider_id = str(chunk.get("provider_id") or resolved_provider_id).strip()
+                    resolved_model_name = str(chunk.get("model_name") or resolved_model_name).strip()
+                if str(chunk.get("type") or "").strip().lower() == "error":
+                    return LLMStepResult(
+                        content="".join(content_parts),
+                        tool_calls=collector.list_tool_calls(limit=max_tool_calls),
+                        usage=usage,
+                        provider_id=resolved_provider_id,
+                        model_name=resolved_model_name,
+                        error=dict(chunk),
+                    )
+                if "tool_calls" in chunk:
+                    collector.add_chunk(chunk)
+                if "content" in chunk:
+                    content_parts.append(str(chunk.get("content") or ""))
+        except Exception as exc:
+            return LLMStepResult(
+                content="".join(content_parts),
+                tool_calls=collector.list_tool_calls(limit=max_tool_calls),
+                usage=usage,
+                provider_id=resolved_provider_id,
+                model_name=resolved_model_name,
+                error={
+                    "type": "error",
+                    "message": _format_llm_stream_exception_message(exc),
+                    "raw_error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                    "provider_id": resolved_provider_id,
+                    "model_name": resolved_model_name,
+                },
+            )
         return LLMStepResult(
             content="".join(content_parts),
             tool_calls=collector.list_tool_calls(limit=max_tool_calls),
@@ -111,3 +128,19 @@ class LLMStep:
                 }
             )
         return formatted
+
+
+def _format_llm_stream_exception_message(exc: Exception) -> str:
+    raw = str(exc or "").strip() or exc.__class__.__name__
+    lowered = raw.lower()
+    if (
+        "nodename nor servname provided" in lowered
+        or "name or service not known" in lowered
+        or "temporary failure in name resolution" in lowered
+        or "failed to resolve" in lowered
+    ):
+        return (
+            "模型服务地址无法解析，请检查当前 LLM provider 的 base_url、域名、"
+            f"DNS 或网络代理配置。原始错误：{raw}"
+        )
+    return f"LLM stream request failed: {raw}"

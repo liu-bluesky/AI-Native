@@ -96,9 +96,15 @@ def test_build_project_host_command_tools_includes_local_shell_tool():
 
     tools = build_project_host_command_tools("/tmp/project-workspace")
 
-    assert len(tools) == 1
+    assert len(tools) == 5
     assert tools[0]["tool_name"] == PROJECT_HOST_RUN_COMMAND_TOOL_NAME
     assert tools[0]["workspace_path"] == "/tmp/project-workspace"
+    assert {item["tool_name"] for item in tools} >= {
+        "project_host_terminal_start",
+        "project_host_terminal_input",
+        "project_host_terminal_read",
+        "project_host_terminal_stop",
+    }
 
 
 def test_build_project_host_command_tools_stays_available_without_workspace_path():
@@ -109,10 +115,56 @@ def test_build_project_host_command_tools_stays_available_without_workspace_path
 
     tools = build_project_host_command_tools("")
 
-    assert len(tools) == 1
+    assert len(tools) == 5
     assert tools[0]["tool_name"] == PROJECT_HOST_RUN_COMMAND_TOOL_NAME
     assert tools[0]["workspace_path"] == ""
     assert "回退到当前 API 服务所在仓库根目录执行" in tools[0]["description"]
+
+
+def test_tool_executor_routes_project_host_terminal_tools(tmp_path):
+    from services.tool_executor import ToolExecutor
+
+    async def run_case():
+        executor = ToolExecutor(
+            "test-proj",
+            "test-emp",
+            username="tester",
+            chat_session_id="chat-terminal",
+            host_workspace_path=str(tmp_path),
+        )
+
+        started = await executor._execute_tool(
+            "project_host_terminal_start",
+            {"initial_command": "printf terminal-ready"},
+        )
+        assert started["ok"] is True
+        assert started["source"] == "project_host_terminal"
+        assert started["session_id"]
+
+        echoed = await executor._execute_tool(
+            "project_host_terminal_input",
+            {"content": "\nprintf after-input\n"},
+        )
+        assert echoed["ok"] is True
+
+        output = ""
+        for _ in range(20):
+            read_result = await executor._execute_tool(
+                "project_host_terminal_read",
+                {"max_chars": 4000},
+            )
+            output = str(read_result.get("output") or "")
+            if "terminal-ready" in output and "after-input" in output:
+                break
+            await asyncio.sleep(0.05)
+
+        assert "terminal-ready" in output
+        assert "after-input" in output
+
+        stopped = await executor._execute_tool("project_host_terminal_stop", {})
+        assert stopped["ok"] is True
+
+    asyncio.run(run_case())
 
 
 @pytest.mark.asyncio
@@ -276,6 +328,52 @@ async def test_tool_executor_routes_lark_auth_login_to_operation_wait_task(monke
 
 
 @pytest.mark.asyncio
+async def test_tool_executor_does_not_route_lark_auth_login_help_to_operation_wait_task(monkeypatch):
+    from services import project_host_command_service as host_command_svc
+    from services.tool_executor import ToolExecutor
+
+    called = False
+
+    def fake_create_operation_task(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("help command must not create an auth operation task")
+
+    def fake_run_project_host_command(**kwargs):
+        return {
+            "ok": True,
+            "command": kwargs.get("command"),
+            "stdout": "Device Flow authorization login.\nUsage:\n  lark-cli auth login [flags]\n",
+            "stderr": "",
+            "exit_code": 0,
+        }
+
+    monkeypatch.setattr(
+        "services.operation_wait_task_service.create_cli_plugin_auth_operation_task",
+        fake_create_operation_task,
+    )
+    monkeypatch.setattr(host_command_svc, "run_project_host_command", fake_run_project_host_command)
+
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        username="tester",
+        chat_session_id="chat-1",
+        host_workspace_path="/tmp/project-workspace",
+    )
+
+    result = await executor._execute_tool(
+        "project_host_run_command",
+        {"command": "lark-cli auth login --help", "timeout_sec": 20},
+    )
+
+    assert called is False
+    assert result["ok"] is True
+    assert result["command"] == "lark-cli auth login --help"
+    assert "Usage:" in result["stdout"]
+
+
+@pytest.mark.asyncio
 async def test_tool_executor_routes_lark_auth_login_alias_to_operation_wait_task(monkeypatch):
     from services.tool_executor import ToolExecutor
 
@@ -328,12 +426,157 @@ async def test_tool_executor_routes_lark_auth_login_alias_to_operation_wait_task
     assert result["requires_user_action"] is False
 
 
+def test_tool_executor_routes_registered_cli_auth_command_to_operation_wait_task(monkeypatch):
+    from services.tool_executor import ToolExecutor
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "services.cli_plugin_market_service.list_cli_plugins",
+        lambda include_status=False: [
+            {
+                "id": "demo-robot-cli",
+                "name": "Demo Robot CLI",
+                "binary_name": "demo-robot",
+                "auth": {
+                    "operation_kind": "auth_login",
+                    "operation_label": "机器人授权",
+                    "login_command": "demo-robot auth login",
+                    "test_command": "demo-robot auth status",
+                    "command_patterns": [r"^(?:\S+/)?demo-robot\s+auth\s+login(?:\s|$)"],
+                },
+            }
+        ],
+    )
+
+    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120):
+        captured["plugin_id"] = plugin_id
+        captured["username"] = username
+        captured["login_command"] = login_command
+        captured["metadata"] = metadata
+        captured["timeout_sec"] = timeout_sec
+        return {
+            "task_id": "operation-wait-demo",
+            "operation_kind": "auth_login",
+            "operation_label": "机器人授权",
+            "status": "waiting_user_action",
+            "status_label": "等待授权",
+            "status_reason": "请完成机器人授权",
+            "ok": False,
+            "execution": {
+                "authorization_url": "https://robot.example.com/oauth",
+                "next_step": "请完成机器人授权",
+            },
+        }
+
+    monkeypatch.setattr(
+        "services.operation_wait_task_service.create_cli_plugin_auth_operation_task",
+        fake_create_operation_task,
+    )
+
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        username="tester",
+        chat_session_id="chat-robot",
+        host_workspace_path="/tmp/project-workspace",
+    )
+
+    result = asyncio.run(
+        executor._execute_tool(
+            "project_host_run_command",
+            {"command": "demo-robot auth login --workspace acme", "timeout_sec": 45},
+        )
+    )
+
+    assert result["source"] == "operation_wait_task"
+    assert result["operation_label"] == "机器人授权"
+    assert result["authorization_url"] == "https://robot.example.com/oauth"
+    assert captured["plugin_id"] == "demo-robot-cli"
+    assert captured["login_command"] == "demo-robot auth login --workspace acme"
+    assert captured["metadata"]["chat_session_id"] == "chat-robot"
+
+
+def test_tool_executor_routes_wrapped_lark_auth_command_to_operation_wait_task(monkeypatch):
+    from services.tool_executor import ToolExecutor
+
+    captured: dict[str, object] = {}
+
+    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120):
+        captured["plugin_id"] = plugin_id
+        captured["username"] = username
+        captured["login_command"] = login_command
+        captured["metadata"] = metadata
+        captured["timeout_sec"] = timeout_sec
+        return {
+            "task_id": "cli-plugin-login-wrapped",
+            "operation_kind": "auth_login",
+            "operation_label": "网页登录授权",
+            "status": "waiting_user_action",
+            "status_label": "等待授权",
+            "status_reason": "请打开授权链接完成登录",
+            "ok": False,
+            "execution": {
+                "authorization_url": "https://open.feishu.cn/mock-auth",
+                "next_step": "请打开授权链接完成登录",
+            },
+        }
+
+    monkeypatch.setattr(
+        "services.operation_wait_task_service.create_cli_plugin_auth_operation_task",
+        fake_create_operation_task,
+    )
+
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        username="tester",
+        chat_session_id="chat-wrapped",
+        host_workspace_path="/tmp/project-workspace",
+    )
+    wrapped_command = (
+        "set -e\n"
+        "printf '=== SKILL ===\\n'\n"
+        "cat .ai-employee/skills/host-marketplace/lark-shared/SKILL.md\n"
+        "printf '\\n=== LOGIN ===\\n'\n"
+        "lark-cli auth login --recommend"
+    )
+
+    result = asyncio.run(
+        executor._execute_tool(
+            "project_host_run_command",
+            {"command": wrapped_command, "timeout_sec": 30},
+        )
+    )
+
+    assert result["source"] == "operation_wait_task"
+    assert result["command"] == "lark-cli auth login --recommend"
+    assert result["authorization_url"] == "https://open.feishu.cn/mock-auth"
+    assert captured["plugin_id"] == "feishu-cli"
+    assert captured["login_command"] == "lark-cli auth login --recommend"
+    assert captured["timeout_sec"] == 30
+
+
 def test_normalize_lark_auth_login_command_aliases():
-    from services.tool_executor import _normalize_lark_auth_login_command
+    from services.tool_executor import (
+        _normalize_lark_auth_login_command,
+        _normalize_lark_status_command_segments,
+    )
 
     assert _normalize_lark_auth_login_command("登录") == "lark-cli auth login --recommend"
     assert _normalize_lark_auth_login_command("lark-cli 登录") == "lark-cli auth login --recommend"
     assert _normalize_lark_auth_login_command("auth login 推荐") == "lark-cli auth login --recommend"
+    assert _normalize_lark_auth_login_command("lark-cli auth login") == "lark-cli auth login --recommend"
+    assert _normalize_lark_auth_login_command("检测登录") == ""
+    assert _normalize_lark_auth_login_command("lark-cli login status") == ""
+    assert _normalize_lark_status_command_segments("检测登录") == "检测登录"
+    assert _normalize_lark_status_command_segments("lark-cli login status") == "lark-cli auth status"
+    assert (
+        _normalize_lark_status_command_segments(
+            "pwd && lark-cli --version && lark-cli login status"
+        )
+        == "pwd && lark-cli --version && lark-cli auth status"
+    )
     assert (
         _normalize_lark_auth_login_command("登录 im, docs")
         == "lark-cli auth login --domain im,docs"
@@ -342,6 +585,104 @@ def test_normalize_lark_auth_login_command_aliases():
         _normalize_lark_auth_login_command('lark-cli auth login --scope "im:message.send_as_user"')
         == 'lark-cli auth login --scope "im:message.send_as_user"'
     )
+    assert _normalize_lark_auth_login_command("lark-cli auth login --help") == ""
+    assert _normalize_lark_auth_login_command("lark-cli auth login -h") == ""
+
+
+def test_tool_executor_runs_lark_login_status_as_status_check(monkeypatch):
+    from services import project_host_command_service as host_command_svc
+    from services.tool_executor import ToolExecutor
+
+    captured: dict[str, object] = {}
+
+    def fake_create_operation_task(*args, **kwargs):
+        raise AssertionError("status check must not create an auth operation task")
+
+    def fake_run_project_host_command(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "command": kwargs.get("command"),
+            "stdout": "logged_in=false\n",
+            "stderr": "",
+            "exit_code": 0,
+        }
+
+    monkeypatch.setattr(
+        "services.operation_wait_task_service.create_cli_plugin_auth_operation_task",
+        fake_create_operation_task,
+    )
+    monkeypatch.setattr(host_command_svc, "run_project_host_command", fake_run_project_host_command)
+
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        username="tester",
+        chat_session_id="chat-status",
+        host_workspace_path="/tmp/project-workspace",
+    )
+
+    result = asyncio.run(
+        executor._execute_tool(
+            "project_host_run_command",
+            {"command": "lark-cli login status", "timeout_sec": 20},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["command"] == "lark-cli auth status"
+    assert captured["command"] == "lark-cli auth status"
+
+
+def test_tool_executor_normalizes_lark_status_in_compound_command(monkeypatch):
+    from services import project_host_command_service as host_command_svc
+    from services.tool_executor import ToolExecutor
+
+    captured: dict[str, object] = {}
+
+    def fake_create_operation_task(*args, **kwargs):
+        raise AssertionError("compound status check must not create an auth operation task")
+
+    def fake_run_project_host_command(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "command": kwargs.get("command"),
+            "stdout": "ok\n",
+            "stderr": "",
+            "exit_code": 0,
+        }
+
+    monkeypatch.setattr(
+        "services.operation_wait_task_service.create_cli_plugin_auth_operation_task",
+        fake_create_operation_task,
+    )
+    monkeypatch.setattr(host_command_svc, "run_project_host_command", fake_run_project_host_command)
+
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        username="tester",
+        chat_session_id="chat-status",
+        host_workspace_path="/tmp/project-workspace",
+    )
+
+    result = asyncio.run(
+        executor._execute_tool(
+            "project_host_run_command",
+            {
+                "command": (
+                    "pwd && (command -v lark-cli || command -v /usr/local/bin/lark-cli || "
+                    "command -v /usr/bin/lark-cli) && lark-cli --version && lark-cli login status"
+                ),
+                "timeout_sec": 20,
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["command"].endswith("&& lark-cli auth status")
+    assert "lark-cli login status" not in captured["command"]
 
 
 def test_run_project_host_command_falls_back_to_service_repo_root(monkeypatch, tmp_path):
@@ -642,6 +983,47 @@ def test_execute_cli_plugin_profile_command_keeps_interactive_timeout(tmp_path, 
     assert captured["timeout"] == 600
 
 
+def test_execute_cli_plugin_profile_command_does_not_mark_help_as_user_action(tmp_path, monkeypatch):
+    from services import cli_plugin_profile_service as profile_svc
+    from services import cli_plugin_market_service as plugin_svc
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="Device Flow authorization login.\nUsage:\n  lark-cli auth login [flags]\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(profile_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(profile_svc.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        profile_svc,
+        "ensure_cli_plugin_profile",
+        lambda plugin_id, owner_username, actor_username="": None,
+    )
+    monkeypatch.setattr(
+        plugin_svc,
+        "build_cli_plugin_runtime_environment",
+        lambda plugin_id="", owner_username="", base_env=None: (
+            {"PATH": "/opt/plugin/bin:/usr/bin"},
+            {"plugin_runtime_home": f"/runtime/{owner_username}"},
+        ),
+    )
+
+    result = profile_svc.execute_cli_plugin_profile_command(
+        "feishu-cli",
+        "tester",
+        command="lark-cli auth login --help",
+        timeout_sec=20,
+    )
+
+    assert result["interactive"] is False
+    assert result["requires_user_action"] is False
+    assert result["authorization_url"] == ""
+    assert result["ok"] is True
+
+
 def test_cli_plugin_login_task_waits_for_user_action(tmp_path, monkeypatch):
     from services import operation_wait_task_service as login_task_svc
 
@@ -894,6 +1276,93 @@ def test_cli_plugin_login_task_auto_completes_after_auth_poll(tmp_path, monkeypa
     assert latest["status"] == "succeeded"
     assert latest["profile"]["status"] == "authenticated"
     assert latest["execution"]["stdout"] == "user auth active"
+
+
+def test_cli_plugin_login_task_marks_failed_when_auth_poll_verification_raises(tmp_path, monkeypatch):
+    from services import operation_wait_task_service as login_task_svc
+
+    calls = {"count": 0}
+    profile_updates: list[dict[str, object]] = []
+
+    monkeypatch.setattr(login_task_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(login_task_svc, "_AUTH_POLL_INTERVAL_SEC", 0)
+    monkeypatch.setattr(login_task_svc, "_AUTH_POLL_TIMEOUT_SEC", 1)
+    monkeypatch.setattr(login_task_svc.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        login_task_svc,
+        "get_cli_plugin",
+        lambda plugin_id, include_status=False: {
+            "id": plugin_id,
+            "name": "飞书 CLI",
+        },
+    )
+
+    def fake_login_execution(plugin_id, username, command, timeout_sec=120, on_update=None):
+        return {
+            "ok": False,
+            "interactive": True,
+            "requires_user_action": True,
+            "authorization_url": "https://open.feishu.cn/mock-auth",
+            "status": "pending_user_action",
+            "status_label": "等待网页授权",
+            "next_step": "请在浏览器打开授权链接完成授权；完成后系统会自动检测并继续。",
+            "command": command,
+            "stdout": "Open https://open.feishu.cn/mock-auth to continue login",
+            "stderr": "",
+            "exit_code": None,
+            "timed_out": False,
+        }
+
+    def fake_verify(plugin_id, username, command, timeout_sec=120):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "ok": False,
+                "stdout": '{"identity":"bot","note":"No user logged in."}',
+                "stderr": "",
+            }
+        raise OSError("[Errno 8] nodename nor servname provided, or not known")
+
+    def fake_update_profile(plugin_id, owner_username, **kwargs):
+        profile_updates.append(dict(kwargs))
+        return {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            **kwargs,
+        }
+
+    monkeypatch.setattr(login_task_svc, "execute_cli_plugin_profile_command_streaming", fake_login_execution)
+    monkeypatch.setattr(login_task_svc, "execute_cli_plugin_profile_command", fake_verify)
+    monkeypatch.setattr(login_task_svc, "update_cli_plugin_profile", fake_update_profile)
+    monkeypatch.setattr(
+        login_task_svc,
+        "serialize_cli_plugin_profile",
+        lambda plugin_id, owner_username, auth_payload=None: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            "status": "ready",
+            "status_label": "登录检测失败",
+        },
+    )
+
+    task = login_task_svc.create_login_task(
+        "feishu-cli",
+        username="tester",
+        login_command="lark-cli auth login --recommend",
+    )
+    task_id = str(task["task_id"])
+    thread = login_task_svc._TASK_THREADS[task_id]
+    thread.join(timeout=5)
+
+    latest = login_task_svc.get_login_task(task_id)
+
+    assert latest is not None
+    assert latest["status"] == "failed"
+    assert latest["status_label"] == "执行失败"
+    assert "nodename nor servname" in latest["error_message"]
+    assert latest["execution"]["command"] == "lark-cli auth status"
+    assert latest["execution"]["error_type"] == "OSError"
+    assert any(update.get("status_label") == "登录检测失败" for update in profile_updates)
 
 
 def test_build_cli_plugin_runtime_environment_backfills_detected_plugin_runtime(tmp_path, monkeypatch):
@@ -4341,6 +4810,64 @@ def test_project_experience_rule_resolve_route_returns_only_relevant_rules(tmp_p
     assert len(payload["items"]) == 1
     assert payload["items"][0]["id"] == login_rule.id
     assert "登录表单流程" in payload["prompt_blocks"][0]
+
+
+def test_project_experience_rule_options_route_lists_managed_experience_rules(tmp_path, monkeypatch):
+    from routers import projects as projects_router
+    from stores import mcp_bridge
+    from stores.json.project_store import ProjectConfig
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    temp_rule_store = mcp_bridge._rules_mod.RuleStore(tmp_path / "experience-rules-options")
+    monkeypatch.setattr(projects_router, "rule_store", temp_rule_store)
+
+    normal_rule = mcp_bridge.Rule(
+        id="rule-normal",
+        domain="security",
+        title="普通规则",
+        content="visible",
+        created_by="tester",
+    )
+    project_rule = mcp_bridge.Rule(
+        id="rule-project-exp",
+        domain="项目经验",
+        title="经验卡片 · 登录表单流程",
+        content="- 统一提交态",
+        created_by="tester",
+    )
+    development_rule = mcp_bridge.Rule(
+        id="rule-dev-exp",
+        domain="开发经验",
+        title="开发经验 · 导出任务重试",
+        content="- 幂等处理",
+        created_by="tester",
+    )
+    temp_rule_store.save(normal_rule)
+    temp_rule_store.save(project_rule)
+    temp_rule_store.save(development_rule)
+    project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            created_by="tester",
+            experience_rule_ids=[project_rule.id],
+        )
+    )
+
+    response = client.get("/api/projects/proj-1/experience-rules/options")
+
+    assert response.status_code == 200
+    payload = response.json()
+    rule_ids = [item["id"] for item in payload["rules"]]
+    assert rule_ids == ["rule-dev-exp", "rule-project-exp"]
+    assert payload["rules"][0]["system_source"] == "development_experience"
+    assert payload["rules"][0]["display_title"] == "导出任务重试"
+    assert payload["rules"][1]["system_source"] == "project_experience"
+    assert "rule-normal" not in rule_ids
 
 
 def test_project_experience_rule_delete_route_unbinds_then_deletes_last_shared_rule(tmp_path, monkeypatch):
@@ -12462,6 +12989,8 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "任务树节点必须直接描述面向用户目标的工作步骤" in usage_guide
     assert "优先使用项目绑定员工、规则和技能" in usage_guide
     assert "重新获取与当前任务直接相关的规则正文" in usage_guide
+    assert "禁止以兜底、兼容、静默降级" in usage_guide
+    assert "优先定位并修正根因" in usage_guide
     assert "/ai/chat" not in usage_guide
     assert "save_work_facts" in claude_profile
     assert "任务树节点必须描述面向用户目标的真实工作步骤" in claude_profile
@@ -12473,8 +13002,11 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "get_manual_content" in codex_profile
     assert "build_delivery_report" in codex_profile
     assert "Auto inferred proxy entry from scripts/..." in codex_profile
-    assert "必须先输出需求理解和计划摘要" in codex_profile
-    assert "任何删除、移除、清空、覆盖或不可逆操作必须单独说明对象" in codex_profile
+    assert "“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认" in codex_profile
+    assert "不要再次请求一般计划确认" in codex_profile
+    assert "任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象" in codex_profile
+    assert "禁止以兜底、兼容、静默降级" in codex_profile
+    assert "优先定位并修正根因" in codex_profile
     assert "优先使用项目绑定员工、规则和技能" in codex_profile
     assert "重新获取与当前任务直接相关的规则正文" in codex_profile
     assert "analyze_task" in generic_profile
@@ -14317,6 +14849,72 @@ def test_resolve_chat_runtime_settings_merges_request_prompt_after_bot_connector
     assert settings["system_prompt"] == "你是运营机器人\n\n回答前先给一句摘要"
 
 
+def test_assistant_workflow_plan_payload_prefers_task_tree_steps():
+    from routers import projects as projects_router
+
+    payload = projects_router._assistant_workflow_plan_payload(
+        {
+            "primary_task_type": "automation",
+            "task_types": ["automation"],
+            "execution_mode": "agent_execution",
+            "requires_tooling": True,
+        },
+        user_message="用 lark-cli 查询今天的飞书日程",
+        task_tree_payload={
+            "nodes": [
+                {
+                    "id": "goal-1",
+                    "node_kind": "goal",
+                    "title": "用 lark-cli 查询今天的飞书日程",
+                    "status": "in_progress",
+                },
+                {
+                    "id": "node-analysis",
+                    "parent_id": "goal-1",
+                    "node_kind": "plan_step",
+                    "stage_key": "analysis",
+                    "title": "检查 lark-cli 可用性和认证状态",
+                    "description": "确认当前电脑能直接调用 lark-cli。",
+                    "status": "pending",
+                },
+                {
+                    "id": "node-execute",
+                    "parent_id": "goal-1",
+                    "node_kind": "plan_step",
+                    "stage_key": "implementation",
+                    "title": "调用 lark-cli 查询今日日程",
+                    "description": "按用户目标执行飞书日程查询。",
+                    "status": "pending",
+                },
+                {
+                    "id": "node-verify",
+                    "parent_id": "goal-1",
+                    "node_kind": "plan_step",
+                    "stage_key": "verification",
+                    "title": "核对日程查询结果并反馈",
+                    "description": "确认工具返回可读且覆盖今天。",
+                    "status": "pending",
+                },
+            ]
+        },
+    )
+
+    assert payload is not None
+    assert payload["planning_mode"] == "task_tree"
+    titles = [step["title"] for step in payload["steps"]]
+    assert titles == [
+        "检查 lark-cli 可用性和认证状态",
+        "调用 lark-cli 查询今日日程",
+        "核对日程查询结果并反馈",
+    ]
+    assert "理解需求与确认执行路径" not in titles
+    assert "编排并执行自动化动作" not in titles
+    step_ids = projects_router._project_chat_plan_step_ids(payload)
+    assert step_ids["understand_step_id"] == "node-analysis"
+    assert step_ids["execute_step_id"] == "node-execute"
+    assert step_ids["verify_step_id"] == "node-verify"
+
+
 def test_project_memory_matches_project_prefers_explicit_project_id_binding():
     from routers import projects as projects_router
     from stores.json.project_store import ProjectConfig
@@ -15986,7 +16584,7 @@ def test_build_project_chat_operation_event_for_user_action_required():
 
     assert event is not None
     assert event["type"] == "operation_event"
-    assert event["operation_id"] == "user-action:task-auth-1"
+    assert event["operation_id"] == "auth:task-auth-1"
     assert event["phase"] == "waiting_user"
     assert event["action_type"] == "open_url"
     assert "https://open.feishu.cn/mock-auth" in event["detail"]
@@ -16123,6 +16721,96 @@ def test_build_project_chat_operation_event_for_workflow_state():
     assert event["phase"] == "running"
     assert event["summary"] == "登录任务已创建，等待返回授权链接"
     assert event["action_type"] == "open_url"
+
+
+def test_build_project_chat_operation_event_does_not_request_auth_without_url():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "authorization_waiting",
+            "task_id": "task-login-no-url",
+            "chat_session_id": "chat-auth",
+            "workflow_kind": "auth_login",
+            "workflow_label": "网页登录授权",
+            "status": "waiting_user_action",
+            "status_label": "等待授权",
+            "summary": "等待授权链接返回",
+            "detail": "授权流程已启动，正在等待后续结果",
+            "action_type": "open_url",
+            "authorization_url": "",
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "operation_event"
+    assert event["operation_id"] == "auth:task-login-no-url"
+    assert event["kind"] == "auth"
+    assert event["phase"] == "running"
+    assert event["action_type"] == "none"
+    assert event["meta"]["authorization_url"] == ""
+
+
+def test_lark_auth_domain_prompt_builds_interaction_schema():
+    from services.operation_wait_task_service import (
+        _operation_action_type_for_execution,
+        _operation_interaction_schema_for_execution,
+    )
+
+    execution = {
+        "plugin_id": "lark-cli",
+        "stdout": "\x1b[?25l\x1b[?2004h┃ 选择要授权的业务域 *",
+        "authorization_url": "",
+    }
+
+    schema = _operation_interaction_schema_for_execution("lark-cli", execution)
+
+    assert _operation_action_type_for_execution("lark-cli", execution) == "interaction_form"
+    assert schema is not None
+    assert schema["title"] == "选择 lark-cli 授权业务域"
+    assert schema["schema"][0]["componentName"] == "ElCheckboxGroup"
+    assert schema["model"] == {"domains": []}
+
+
+def test_build_project_chat_operation_event_for_auth_interaction_form_without_url():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "workflow_state",
+            "workflow_kind": "auth_login",
+            "workflow_id": "task-login-form",
+            "workflow_label": "网页登录授权",
+            "task_id": "task-login-form",
+            "chat_session_id": "chat-auth",
+            "status": "waiting_user_action",
+            "status_label": "等待操作",
+            "summary": "等待你选择授权业务域",
+            "detail": "\x1b[?25l┃ 选择要授权的业务域 *",
+            "action_type": "interaction_form",
+            "authorization_url": "",
+            "interaction_schema": {
+                "title": "选择 lark-cli 授权业务域",
+                "schema": [
+                    {
+                        "label": "业务域",
+                        "prop": "domains",
+                        "componentName": "ElCheckboxGroup",
+                    }
+                ],
+                "model": {"domains": []},
+            },
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "operation_event"
+    assert event["operation_id"] == "auth:task-login-form"
+    assert event["kind"] == "auth"
+    assert event["phase"] == "waiting_user"
+    assert event["action_type"] == "interaction_form"
+    assert event["meta"]["authorization_url"] == ""
+    assert event["meta"]["interaction_schema"]["title"] == "选择 lark-cli 授权业务域"
 
 
 def test_build_project_chat_operation_event_preserves_interaction_schema():

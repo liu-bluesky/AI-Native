@@ -543,11 +543,11 @@
                               class="message-process-shell__body"
                             >
                               <div
-                                v-if="messageOperations(item).length"
+                                v-if="messageProcessOperations(item).length"
                                 class="message-operations"
                               >
                                 <article
-                                  v-for="operation in messageOperations(item)"
+                                  v-for="operation in messageProcessOperations(item)"
                                   :key="operation.id"
                                   class="message-operation-card"
                                   :class="`is-${operation.phase}`"
@@ -568,12 +568,89 @@
                                       {{ operationPhaseLabel(operation) }}
                                     </span>
                                   </div>
+                                  <div
+                                    v-if="operationRiskLabel(operation)"
+                                    class="message-operation-card__risk"
+                                    :class="`is-${operationRiskTone(operation)}`"
+                                  >
+                                    {{ operationRiskLabel(operation) }}
+                                  </div>
+                                  <ol
+                                    v-if="operationPlanSteps(operation).length"
+                                    class="message-operation-card__plan"
+                                  >
+                                    <li
+                                      v-for="(step, stepIndex) in operationPlanSteps(operation)"
+                                      :key="String(step.step_id || stepIndex)"
+                                      class="message-operation-card__plan-step"
+                                      :class="`is-${planStepPhase(step)}`"
+                                    >
+                                      <span class="message-operation-card__plan-check">
+                                        <CircleCheck
+                                          v-if="planStepPhase(step) === 'completed'"
+                                          :size="13"
+                                        />
+                                        <span v-else>{{ stepIndex + 1 }}</span>
+                                      </span>
+                                      <span class="message-operation-card__plan-main">
+                                        <span class="message-operation-card__plan-title">
+                                          {{ step.title || `步骤 ${stepIndex + 1}` }}
+                                        </span>
+                                        <span
+                                          v-if="step.summary"
+                                          class="message-operation-card__plan-summary"
+                                        >
+                                          {{ step.summary }}
+                                        </span>
+                                      </span>
+                                      <span class="message-operation-card__plan-status">
+                                        {{ planStepStatusLabel(step) }}
+                                      </span>
+                                    </li>
+                                  </ol>
                                   <p
-                                    v-if="operation.detail"
+                                    v-else-if="operation.detail"
                                     class="message-operation-card__detail"
                                   >
                                     {{ operation.detail }}
                                   </p>
+                                  <div
+                                    v-if="
+                                      operationCommand(operation) ||
+                                      operationCwd(operation) ||
+                                      operationExitCode(operation)
+                                    "
+                                    class="message-operation-card__command"
+                                  >
+                                    <div
+                                      v-if="operationCwd(operation)"
+                                      class="message-operation-card__command-meta"
+                                    >
+                                      cwd={{ operationCwd(operation) }}
+                                    </div>
+                                    <pre
+                                      v-if="operationCommand(operation)"
+                                      class="message-operation-card__command-pre"
+                                      >{{ operationCommand(operation) }}</pre
+                                    >
+                                    <div
+                                      v-if="operationExitCode(operation)"
+                                      class="message-operation-card__command-meta"
+                                    >
+                                      exit={{ operationExitCode(operation) }}
+                                    </div>
+                                  </div>
+                                  <div
+                                    v-if="operationOutput(operation)"
+                                    class="message-operation-card__output"
+                                  >
+                                    <div class="message-operation-card__output-label">
+                                      输出摘要
+                                    </div>
+                                    <pre class="message-operation-card__output-pre">{{
+                                      operationOutput(operation)
+                                    }}</pre>
+                                  </div>
                                   <p
                                     v-if="operationActionHint(operation)"
                                     class="message-operation-card__action"
@@ -710,107 +787,12 @@
                                   class="message-process-stream__item"
                                   :class="`is-${entry.level}`"
                                 >
-                                  <span
-                                    class="message-process-stream__dot"
-                                    aria-hidden="true"
-                                  ></span>
+                                  <span class="message-process-stream__dot"></span>
                                   <span class="message-process-stream__text">
                                     {{ entry.text }}
                                   </span>
                                 </div>
                               </div>
-                              <div
-                                v-if="messageStatusNotes(item).length"
-                                class="message-status-notes"
-                              >
-                                <div
-                                  v-for="(note, noteIdx) in messageStatusNotes(
-                                    item,
-                                  )"
-                                  :key="`status-${noteIdx}`"
-                                  class="message-status-note"
-                                  v-html="formatContent(note)"
-                                ></div>
-                              </div>
-                              <div
-                                v-if="terminalLogLines(item).length"
-                                class="message-process message-process--nested"
-                              >
-                                <div class="message-process-shell__terminal-head">
-                                  <span>终端输出</span>
-                                  <span class="message-process-count">
-                                    {{ terminalLogLines(item).length }} 条
-                                  </span>
-                                </div>
-                                <pre
-                                  class="message-text message-text-terminal message-process-pre"
-                                  @click="focusTerminalPanelInput"
-                                  >{{ formatTerminalLogs(item) }}</pre
-                                >
-                              </div>
-                              <div
-                                v-if="
-                                  shouldShowInlineThinkingState(item, idx)
-                                "
-                                class="message-process-shell__thinking"
-                              >
-                                思考中，正在整理下一步…
-                              </div>
-                            </div>
-                            <div
-                              v-if="
-                                !item.processExpanded &&
-                                messageProcessLogSummary(item).length
-                              "
-                              class="message-process-shell__summary"
-                            >
-                              <div
-                                v-for="entry in messageProcessLogSummary(item)"
-                                :key="`summary-${entry.id}`"
-                                class="message-process-shell__summary-item"
-                                :class="`is-${entry.level}`"
-                              >
-                                <span
-                                  class="message-process-shell__summary-dot"
-                                  aria-hidden="true"
-                                ></span>
-                                <span>{{ entry.text }}</span>
-                              </div>
-                            </div>
-                            <div
-                              v-if="
-                                !item.processExpanded &&
-                                pickAwaitingInteractionOperation(item, {
-                                  allowTerminal: false,
-                                }) &&
-                                operationPrimaryActionLabel(
-                                  pickAwaitingInteractionOperation(item, {
-                                    allowTerminal: false,
-                                  }),
-                                )
-                              "
-                              class="message-process-shell__summary-actions"
-                            >
-                              <el-button
-                                size="small"
-                                type="primary"
-                                plain
-                                @click.stop="
-                                  handleOperationPrimaryAction(
-                                    pickAwaitingInteractionOperation(item, {
-                                      allowTerminal: false,
-                                    }),
-                                  )
-                                "
-                              >
-                                {{
-                                  operationPrimaryActionLabel(
-                                    pickAwaitingInteractionOperation(item, {
-                                      allowTerminal: false,
-                                    }),
-                                  )
-                                }}
-                              </el-button>
                             </div>
                           </div>
                           <div
@@ -1641,7 +1623,7 @@
                       :multiple="true"
                       :on-change="handleFileChange"
                       :disabled="
-                        chatLoading || isExternalAgentMode || !selectedProjectId
+                        isExternalAgentMode || !selectedProjectId
                       "
                     >
                       <el-tooltip content="添加图片" placement="top">
@@ -1658,7 +1640,7 @@
                       :multiple="true"
                       :on-change="handleFileChange"
                       :disabled="
-                        chatLoading || isExternalAgentMode || !selectedProjectId
+                        isExternalAgentMode || !selectedProjectId
                       "
                     >
                       <el-tooltip content="添加文档" placement="top">
@@ -1817,7 +1799,6 @@
                       </el-button>
                     </el-tooltip>
                     <el-button
-                      v-else
                       class="send-message-button"
                       type="primary"
                       :disabled="!canSend"
@@ -2768,9 +2749,12 @@
                         />
                       </el-form-item>
 
-                      <el-form-item label="自动使用工具">
+                      <el-form-item label="按需启用工具">
                         <el-switch
                           v-model="projectChatSettings.auto_use_tools"
+                          @change="
+                            projectChatSettings.auto_use_tools_explicit = true
+                          "
                         />
                       </el-form-item>
 
@@ -3170,7 +3154,7 @@
                             工具使用策略
                           </div>
                           <p class="settings-parameter-section__desc">
-                            先决定本轮是否允许工具参与，再决定是否把回答强制收束成纯自然语言。
+                            默认保持纯对话。只有本轮明确允许时，系统才会按需选择工具或命令参与。
                           </p>
                         </div>
                         <div class="settings-tools-overview">
@@ -3182,7 +3166,7 @@
                               singleRoundAnswerOnly
                                 ? "仅回答"
                                 : projectChatSettings.auto_use_tools
-                                  ? "工具增强"
+                                  ? "按需工具"
                                   : "纯文本"
                             }}</strong>
                             <span class="settings-tools-overview__meta">
@@ -3190,7 +3174,7 @@
                                 singleRoundAnswerOnly
                                   ? "只对下一次对话生效"
                                   : projectChatSettings.auto_use_tools
-                                    ? "允许系统自主调用工具"
+                                    ? "允许系统在必要时选择工具"
                                     : "系统不会主动调工具"
                               }}
                             </span>
@@ -4124,6 +4108,8 @@ const wsConnected = ref(false);
 const wsClient = ref(null);
 const wsProjectId = ref("");
 const pendingRequests = new Map();
+const queuedFollowupMessages = ref([]);
+let followupQueueDraining = false;
 const activeGenerationRequestId = ref("");
 let lastNoActiveGenerationWarningAt = 0;
 const pendingAgentPrepares = new Map();
@@ -4175,11 +4161,53 @@ const LARK_AUTH_DOMAIN_OPTIONS = [
   "vc",
   "wiki",
 ];
+
+function stripTerminalControlSequences(value) {
+  return String(value || "")
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
+    .replace(/\x1B/g, "");
+}
+
+function hasLarkAuthBusinessDomainPromptText(value) {
+  const text = stripTerminalControlSequences(value).toLowerCase();
+  return Boolean(/业务域/.test(text) && /选择|请选择|select|choose/.test(text));
+}
+
+function hasAuthorizationPromptText(payload = {}, detailText = "") {
+  const text = [
+    detailText,
+    payload?.authorization_url,
+    payload?.detail,
+    payload?.message,
+    payload?.summary,
+    payload?.status_reason,
+    payload?.next_step,
+    payload?.output_preview,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+  if (
+    hasLarkAuthBusinessDomainPromptText(text) &&
+    !String(payload?.authorization_url || "").trim()
+  ) {
+    return false;
+  }
+  return Boolean(
+    String(payload?.authorization_url || "").trim() ||
+      /accounts\.feishu\.cn\/oauth|device\/verify|user_code|等待用户授权|等待你.*授权|浏览器.*授权|授权链接|网页登录授权|authorization|authorize/.test(
+        text,
+      ),
+  );
+}
+
 const TERMINAL_CHOICE_FALLBACK_PROVIDERS = [
   {
     key: "lark-auth-domain",
     match({ text, activeCommand }) {
-      const terminalText = String(text || "").trim();
+      const terminalText = stripTerminalControlSequences(text).trim();
       const command = String(activeCommand || "").trim();
       const hasAuthLoginCommand = /\blark-cli\s+auth\s+login\b/.test(command);
       const hasDomainPrompt =
@@ -5148,8 +5176,10 @@ const emptyStateText = computed(() => {
 const composerPlaceholder = computed(() =>
   isTerminalInteractionMode.value
     ? "项目终端已连接，直接输入命令或交互内容，按 Enter 发送。"
-    : isAwaitingUserInteraction.value
-      ? "已完成浏览器授权或确认后，可直接继续输入，按 Enter 发送。"
+    : isAwaitingCardActionInteraction.value
+      ? "请点击消息卡片中的授权按钮；授权后 AI 会自动继续执行。"
+      : isAwaitingUserInteraction.value
+        ? "当前有交互等待处理，可补充下一条消息，按 Enter 发送。"
       : !hasAccessibleProjects.value
         ? activeComposerAssistMeta.value?.id === "employee_create"
           ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
@@ -5168,8 +5198,11 @@ const composerHintText = computed(() => {
   if (isTerminalInteractionMode.value) {
     return "当前主输入框已切换为项目终端输入，Enter 发送";
   }
+  if (isAwaitingCardActionInteraction.value) {
+    return "等待授权，点击消息卡片按钮后自动继续";
+  }
   if (isAwaitingUserInteraction.value) {
-    return "当前处于等待你继续的交互状态，Enter 发送";
+    return "当前处于交互等待状态，可补充下一条消息";
   }
   if (!hasAccessibleProjects.value) {
     return activeComposerAssistMeta.value?.id === "employee_create"
@@ -5236,6 +5269,29 @@ function completeTerminalInputOperations(row, summary = "终端交互已结束")
       ...operation,
       phase: "completed",
       summary: String(operation?.summary || summary).trim() || summary,
+    };
+  });
+  return changed;
+}
+
+function completeFinishedMessageOperations(row, summary = "本轮执行已结束") {
+  if (!row || !Array.isArray(row.operations) || !row.operations.length) {
+    return false;
+  }
+  const finalSummary = String(summary || "").trim() || "本轮执行已结束";
+  let changed = false;
+  row.operations = row.operations.map((operation) => {
+    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    if (!["running", "waiting_user", "pending"].includes(phase)) {
+      return operation;
+    }
+    changed = true;
+    return {
+      ...operation,
+      phase: "completed",
+      actionType: "none",
+      summary: String(operation?.summary || "").trim() || finalSummary,
+      updatedAt: nowText(),
     };
   });
   return changed;
@@ -5377,6 +5433,14 @@ const activePendingInteraction = computed(() => {
 const isAwaitingUserInteraction = computed(() =>
   Boolean(activePendingInteraction.value?.operation),
 );
+const isAwaitingCardActionInteraction = computed(() => {
+  const operation = activePendingInteraction.value?.operation;
+  if (!operation) return false;
+  if (canSupersedePendingInteraction(activePendingInteraction.value)) {
+    return false;
+  }
+  return operationActionButtons(operation).length > 0;
+});
 const isTerminalInteractionMode = computed(() => {
   if (!String(selectedProjectId.value || "").trim()) return false;
   if (
@@ -5430,6 +5494,54 @@ function canSupersedePendingInteraction(interaction) {
   return (
     ["open_url", "enter_text", "select"].includes(actionType) || kind === "auth"
   );
+}
+
+function isInteractionContinuationAck(text) {
+  const normalized = String(text || "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toLowerCase();
+  return [
+    "好了",
+    "好啦",
+    "已好了",
+    "完成了",
+    "已完成",
+    "授权了",
+    "已授权",
+    "我已授权",
+    "登录好了",
+    "登录完成",
+    "done",
+    "ok",
+  ].includes(normalized);
+}
+
+function shouldSubmitPendingInteractionFromText(interaction, text) {
+  if (!interaction?.operation || !isInteractionContinuationAck(text)) {
+    return false;
+  }
+  const operation = interaction.operation;
+  const actionType = normalizeOperationActionType(operation?.actionType);
+  const kind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
+  return actionType === "open_url" || kind === "auth";
+}
+
+async function submitPendingInteractionAckIfNeeded(text) {
+  const interaction = activePendingInteraction.value;
+  const normalizedText = String(text || "").trim();
+  if (!shouldSubmitPendingInteractionFromText(interaction, normalizedText)) {
+    return false;
+  }
+  resetDraft();
+  await sendInteractionSubmitRequest(
+    interaction.operation,
+    normalizedText || "已完成",
+  );
+  scrollToBottom();
+  return true;
 }
 
 function releasePendingInteractionForFollowup(followupText = "") {
@@ -7026,6 +7138,7 @@ function normalizeProjectChatSettings(raw) {
   )
     .trim()
     .toLowerCase();
+  const autoUseToolsExplicit = Boolean(source.auto_use_tools_explicit);
   return {
     ...CHAT_SETTINGS_DEFAULTS,
     ...source,
@@ -7042,6 +7155,13 @@ function normalizeProjectChatSettings(raw) {
     selected_employee_ids: selectedEmployeeIds,
     employee_coordination_mode:
       coordinationMode === "manual" ? "manual" : "auto",
+    auto_use_tools_explicit: autoUseToolsExplicit,
+    auto_use_tools: autoUseToolsExplicit
+      ? coerceBooleanSetting(
+          source.auto_use_tools,
+          CHAT_SETTINGS_DEFAULTS.auto_use_tools,
+        )
+      : false,
     image_generate_four_views: coerceBooleanSetting(
       source.image_generate_four_views,
       CHAT_SETTINGS_DEFAULTS.image_generate_four_views,
@@ -7080,6 +7200,12 @@ function resolveNumericChatSetting(value, fallback, { min = 0, max = null } = {}
     return max;
   }
   return base;
+}
+
+function projectChatToolsExplicitlyEnabled() {
+  return Boolean(projectChatSettings.value.auto_use_tools_explicit)
+    ? Boolean(projectChatSettings.value.auto_use_tools)
+    : false;
 }
 
 function normalizeChatSelectedEmployeeIds(
@@ -7378,7 +7504,6 @@ const canSend = computed(() => {
       String(hostTerminalSessionId.value || "").trim(),
     );
   }
-  if (chatLoading.value && !isAwaitingUserInteraction.value) return false;
   if (
     !String(selectedProjectId.value || "").trim() &&
     activeComposerAssistMeta.value?.id !== "employee_create" &&
@@ -7405,7 +7530,6 @@ const isProjectOptionalEmployeeCreate = computed(
 
 const isComposerDisabled = computed(() => {
   if (isTerminalInteractionMode.value) return false;
-  if (chatLoading.value && !isAwaitingUserInteraction.value) return true;
   if (isProjectOptionalEmployeeCreate.value) return false;
   if (!ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT) {
     return !selectedProjectId.value;
@@ -8024,6 +8148,26 @@ function rawMessageOperations(row) {
     : [];
 }
 
+function isVisibleProcessOperation(operation) {
+  if (!operation) return false;
+  const kind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
+  if (kind === "plan") return true;
+  const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+  if (
+    ["tool", "terminal", "auth", "approval"].includes(kind) &&
+    phase !== "pending"
+  ) {
+    return true;
+  }
+  return Boolean(
+    operationCommand(operation) ||
+      operationOutput(operation) ||
+      String(operation?.detail || "").trim(),
+  );
+}
+
 function isCompletedRequestSummaryOperation(operation, row) {
   const kind = String(operation?.kind || "")
     .trim()
@@ -8054,20 +8198,20 @@ function messageBodyHtml(row, idx) {
 }
 
 function messageProcessStepCount(row, idx) {
-  const operationCount = messageOperations(row).length;
-  const processLogCount = messageProcessLogEntries(row).length;
-  const noteCount = messageStatusNotes(row).length;
-  const terminalCount = terminalLogLines(row).length ? 1 : 0;
-  const thinkingCount = shouldShowInlineThinkingState(row, idx) ? 1 : 0;
-  return operationCount + processLogCount + noteCount + terminalCount + thinkingCount;
+  const operationCount = messageProcessOperations(row).length;
+  const logCount = messageProcessLogEntries(row).length;
+  return operationCount + logCount;
 }
 
 function shouldShowMessageProcess(row, idx) {
-  return messageProcessStepCount(row, idx) > 0;
+  return (
+    messageProcessOperations(row).length > 0 ||
+    messageProcessLogEntries(row).length > 0
+  );
 }
 
 function messageProcessLifecyclePhase(row, idx) {
-  const operations = rawMessageOperations(row);
+  const operations = messageProcessOperations(row);
   const phases = operations.map((item) =>
     normalizeOperationPhase(item?.phase || item?.status),
   );
@@ -8075,22 +8219,24 @@ function messageProcessLifecyclePhase(row, idx) {
   if (phases.includes("blocked")) return "blocked";
   if (phases.includes("failed")) return "failed";
   if (phases.includes("running")) return "running";
+  if (phases.includes("completed")) return "completed";
+  const logs = messageProcessLogEntries(row);
+  const latestLogLevel = String(logs[logs.length - 1]?.level || "").trim();
+  if (latestLogLevel === "error") return "failed";
+  if (latestLogLevel === "warning") return "blocked";
+  if (latestLogLevel === "success") return "completed";
   if (
     chatLoading.value === true &&
     idx === messages.value.length - 1 &&
-    String(row?.role || "").trim() === "assistant"
+    logs.length
   ) {
     return "running";
-  }
-  if (phases.includes("completed")) return "completed";
-  if (messageProcessLogEntries(row).length || terminalLogLines(row).length) {
-    return "completed";
   }
   return "pending";
 }
 
 function primaryMessageProcessOperation(row) {
-  const operations = messageOperations(row);
+  const operations = messageProcessOperations(row);
   return (
     operations.find(
       (item) => normalizeOperationPhase(item?.phase) === "waiting_user",
@@ -8107,15 +8253,6 @@ function primaryMessageProcessOperation(row) {
 }
 
 function messageProcessEyebrow(row, idx) {
-  if (String(row?.displayMode || "").trim() === "terminal") {
-    return "Terminal Trace";
-  }
-  if (messageProcessLogEntries(row).length) {
-    return "Live Execution";
-  }
-  if (shouldShowInlineThinkingState(row, idx)) {
-    return "Reasoning Trace";
-  }
   return "Execution Trace";
 }
 
@@ -8123,9 +8260,7 @@ function messageProcessStateTone(row, idx) {
   const phase = messageProcessLifecyclePhase(row, idx);
   if (phase === "waiting_user") return "waiting";
   if (phase === "blocked" || phase === "failed") return "danger";
-  if (phase === "running" || shouldShowInlineThinkingState(row, idx)) {
-    return "running";
-  }
+  if (phase === "running") return "running";
   if (phase === "completed") return "success";
   return "neutral";
 }
@@ -8137,10 +8272,6 @@ function messageProcessStateLabel(row, idx) {
   if (phase === "failed") return "失败";
   if (phase === "running") return "进行中";
   if (phase === "completed") return "已完成";
-  if (shouldShowInlineThinkingState(row, idx)) return "思考中";
-  if (messageProcessLogEntries(row).length) return "执行中";
-  if (terminalLogLines(row).length) return "已记录";
-  if (messageStatusNotes(row).length) return "有更新";
   return "";
 }
 
@@ -8150,6 +8281,8 @@ function messageProcessTitle(row, idx) {
   const title = String(primaryOperation?.title || "").trim();
   const summary = String(primaryOperation?.summary || "").trim();
   const detail = String(primaryOperation?.detail || "").trim();
+  const logs = messageProcessLogEntries(row);
+  const latestLogText = String(logs[logs.length - 1]?.text || "").trim();
   if (phase === "waiting_user") {
     return summary || title || detail || "等待你的处理";
   }
@@ -8165,18 +8298,8 @@ function messageProcessTitle(row, idx) {
   if (phase === "completed") {
     return summary || title || detail || "已完成本轮执行";
   }
-  const latestProcessLog = messageProcessLogEntries(row).slice(-1)[0];
-  if (latestProcessLog?.text) {
-    return latestProcessLog.text;
-  }
-  if (shouldShowInlineThinkingState(row, idx)) {
-    return "正在整理下一步";
-  }
-  if (messageStatusNotes(row).length) {
-    return "过程摘要";
-  }
-  if (terminalLogLines(row).length) {
-    return "终端执行记录";
+  if (latestLogText) {
+    return latestLogText;
   }
   return "执行过程";
 }
@@ -8275,6 +8398,57 @@ function buildMessageOperation(source = {}) {
 }
 
 function findMessageOperationMatchIndex(items, operation) {
+  const operationPermissionMeta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  if (String(operationPermissionMeta.agent_runtime_permission || "").trim() === "true") {
+    const runId = String(operationPermissionMeta.run_id || "").trim();
+    const signature = String(operationPermissionMeta.command_signature || "").trim();
+    if (runId && signature) {
+      const byCommandSignature = items.findIndex((item) => {
+        const meta = item?.meta && typeof item.meta === "object" ? item.meta : {};
+        return (
+          String(meta.agent_runtime_permission || "").trim() === "true" &&
+          String(meta.run_id || "").trim() === runId &&
+          String(meta.command_signature || "").trim() === signature
+        );
+      });
+      if (byCommandSignature >= 0) return byCommandSignature;
+    }
+  }
+  const taskId = String(operationPermissionMeta.task_id || "").trim();
+  const chatSessionId = String(operationPermissionMeta.chat_session_id || "").trim();
+  const canonicalTaskKind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
+  const operationWorkflowKind = String(operationPermissionMeta.workflow_kind || "")
+    .trim()
+    .toLowerCase();
+  if (taskId && ["auth", "request", "approval"].includes(canonicalTaskKind)) {
+    const byTaskId = items.findIndex((item) => {
+      const meta = item?.meta && typeof item.meta === "object" ? item.meta : {};
+      const itemTaskId = String(meta.task_id || "").trim();
+      if (!itemTaskId || itemTaskId !== taskId) return false;
+      const itemChatSessionId = String(meta.chat_session_id || "").trim();
+      if (chatSessionId && itemChatSessionId && itemChatSessionId !== chatSessionId) {
+        return false;
+      }
+      const itemKind = String(item?.kind || "")
+        .trim()
+        .toLowerCase();
+      const itemWorkflowKind = String(meta.workflow_kind || "")
+        .trim()
+        .toLowerCase();
+      return (
+        itemKind === canonicalTaskKind ||
+        itemKind === "auth" ||
+        canonicalTaskKind === "auth" ||
+        itemWorkflowKind === operationWorkflowKind ||
+        itemWorkflowKind === "auth_login" ||
+        operationWorkflowKind === "auth_login"
+      );
+    });
+    if (byTaskId >= 0) return byTaskId;
+  }
   const byId = items.findIndex((item) => item.id === operation.id);
   if (byId >= 0) return byId;
   const operationId = String(operation?.operationId || "").trim();
@@ -8309,6 +8483,35 @@ function findMessageOperationMatchIndex(items, operation) {
   );
 }
 
+function agentRuntimeCommandSignatureFromArgs(args = {}) {
+  const command = String(args?.command || "").trim();
+  if (!command) return "";
+  const tokens = command
+    .split(" ")
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  const larkCliIndex = tokens.findIndex((item) => item.split("/").pop() === "lark-cli");
+  if (
+    larkCliIndex >= 0 &&
+    tokens[larkCliIndex + 1] === "auth" &&
+    ["status", "login"].includes(tokens[larkCliIndex + 2])
+  ) {
+    return `lark-cli auth ${tokens[larkCliIndex + 2]}`;
+  }
+  const normalized = tokens.join(" ");
+  return normalized;
+}
+
+function agentRuntimePermissionOperationId(runId, callId, commandSignature = "") {
+  const normalizedRunId = String(runId || "").trim();
+  const normalizedCallId = String(callId || "").trim();
+  const normalizedSignature = String(commandSignature || "").trim();
+  if (normalizedRunId && normalizedSignature) {
+    return `agent-runtime-permission:${normalizedRunId}:command:${normalizedSignature}`;
+  }
+  return `agent-runtime-permission:${normalizedRunId}:${normalizedCallId}`;
+}
+
 function mergeMessageOperations(existingOperations, nextOperations) {
   const merged = Array.isArray(existingOperations)
     ? existingOperations.slice()
@@ -8316,6 +8519,12 @@ function mergeMessageOperations(existingOperations, nextOperations) {
   (Array.isArray(nextOperations) ? nextOperations : []).forEach((operation) => {
     const matchIndex = findMessageOperationMatchIndex(merged, operation);
     if (matchIndex >= 0) {
+      const existingMeta =
+        merged[matchIndex]?.meta && typeof merged[matchIndex].meta === "object"
+          ? merged[matchIndex].meta
+          : {};
+      const operationMeta =
+        operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
       merged[matchIndex] = {
         ...merged[matchIndex],
         ...operation,
@@ -8326,6 +8535,39 @@ function mergeMessageOperations(existingOperations, nextOperations) {
           merged[matchIndex].operationId || operation.operationId || "",
         createdAt: merged[matchIndex].createdAt || operation.createdAt,
         updatedAt: operation.updatedAt || nowText(),
+        meta: {
+          ...existingMeta,
+          ...operationMeta,
+          command:
+            String(operationMeta.command || "").trim() ||
+            String(existingMeta.command || "").trim(),
+          cwd:
+            String(operationMeta.cwd || "").trim() ||
+            String(existingMeta.cwd || "").trim(),
+          arguments_preview:
+            String(operationMeta.arguments_preview || "").trim() ||
+            String(existingMeta.arguments_preview || "").trim(),
+          output_preview:
+            String(operationMeta.output_preview || "").trim() ||
+            String(existingMeta.output_preview || "").trim(),
+          stdout_preview:
+            String(operationMeta.stdout_preview || "").trim() ||
+            String(existingMeta.stdout_preview || "").trim(),
+          stderr_preview:
+            String(operationMeta.stderr_preview || "").trim() ||
+            String(existingMeta.stderr_preview || "").trim(),
+          error:
+            String(operationMeta.error || "").trim() ||
+            String(existingMeta.error || "").trim(),
+          risk_level:
+            String(operationMeta.risk_level || "").trim() ||
+            String(existingMeta.risk_level || "").trim(),
+          authorization_url:
+            String(operationMeta.authorization_url || "").trim() ||
+            String(existingMeta.authorization_url || "").trim(),
+          interaction_schema:
+            operationMeta.interaction_schema || existingMeta.interaction_schema || null,
+        },
       };
     } else {
       merged.push(operation);
@@ -8340,6 +8582,12 @@ function upsertMessageOperation(row, source = {}) {
   const items = Array.isArray(row.operations) ? row.operations.slice() : [];
   const matchIndex = findMessageOperationMatchIndex(items, operation);
   if (matchIndex >= 0) {
+    const existingMeta =
+      items[matchIndex]?.meta && typeof items[matchIndex].meta === "object"
+        ? items[matchIndex].meta
+        : {};
+    const operationMeta =
+      operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
     items[matchIndex] = {
       ...items[matchIndex],
       ...operation,
@@ -8347,6 +8595,39 @@ function upsertMessageOperation(row, source = {}) {
       operationId: items[matchIndex].operationId || operation.operationId,
       createdAt: items[matchIndex].createdAt || operation.createdAt,
       updatedAt: operation.updatedAt || nowText(),
+      meta: {
+        ...existingMeta,
+        ...operationMeta,
+        command:
+          String(operationMeta.command || "").trim() ||
+          String(existingMeta.command || "").trim(),
+        cwd:
+          String(operationMeta.cwd || "").trim() ||
+          String(existingMeta.cwd || "").trim(),
+        arguments_preview:
+          String(operationMeta.arguments_preview || "").trim() ||
+          String(existingMeta.arguments_preview || "").trim(),
+        output_preview:
+          String(operationMeta.output_preview || "").trim() ||
+          String(existingMeta.output_preview || "").trim(),
+        stdout_preview:
+          String(operationMeta.stdout_preview || "").trim() ||
+          String(existingMeta.stdout_preview || "").trim(),
+        stderr_preview:
+          String(operationMeta.stderr_preview || "").trim() ||
+          String(existingMeta.stderr_preview || "").trim(),
+        error:
+          String(operationMeta.error || "").trim() ||
+          String(existingMeta.error || "").trim(),
+        risk_level:
+          String(operationMeta.risk_level || "").trim() ||
+          String(existingMeta.risk_level || "").trim(),
+        authorization_url:
+          String(operationMeta.authorization_url || "").trim() ||
+          String(existingMeta.authorization_url || "").trim(),
+        interaction_schema:
+          operationMeta.interaction_schema || existingMeta.interaction_schema || null,
+      },
     };
   } else {
     items.push(operation);
@@ -8389,24 +8670,12 @@ function appendAgentRuntimePermissionOperations(row, eventData = {}) {
       observation?.tool_name || decision.tool_name || "",
     ).trim();
     if (!runId || !callId || !toolName) return;
-    const existingPermission = (Array.isArray(row?.operations) ? row.operations : []).find(
-      (operation) => {
-        const meta =
-          operation?.meta && typeof operation.meta === "object"
-            ? operation.meta
-            : {};
-        return (
-          String(meta.agent_runtime_permission || "").trim() === "true" &&
-          String(meta.run_id || "").trim() === runId &&
-          String(meta.call_id || "").trim() === callId &&
-          normalizeOperationPhase(operation?.phase) !== "waiting_user"
-        );
-      },
-    );
-    if (existingPermission) return;
-    upsertMessageOperation(row, {
-      operationId: `agent-runtime-permission:${runId}:${callId}`,
-      kind: "approval",
+    const toolArgs =
+      raw?.tool_args && typeof raw.tool_args === "object"
+        ? raw.tool_args
+        : {};
+    const commandSignature = agentRuntimeCommandSignatureFromArgs(toolArgs);
+    const permissionPatch = {
       title: behavior === "deny" ? "工具调用已拒绝" : "工具调用需要授权",
       summary:
         behavior === "deny"
@@ -8420,26 +8689,52 @@ function appendAgentRuntimePermissionOperations(row, eventData = {}) {
         run_id: runId,
         call_id: callId,
         tool_name: toolName,
-        tool_args:
-          raw?.tool_args && typeof raw.tool_args === "object"
-            ? raw.tool_args
-            : {},
+        tool_args: toolArgs,
+        command_signature: commandSignature,
         chat_session_id: String(currentChatSessionId.value || "").trim(),
         assistant_message_id: String(row?.id || "").trim(),
         permission_decision: decision,
       },
+    };
+    if (
+      updateAgentRuntimePermissionOperations(
+        row,
+        runId,
+        callId,
+        permissionPatch,
+      )
+    ) {
+      return;
+    }
+    const existingPermission = (Array.isArray(row?.operations) ? row.operations : []).find(
+      (operation) => {
+        const meta =
+          operation?.meta && typeof operation.meta === "object"
+            ? operation.meta
+            : {};
+        const sameCommand =
+          commandSignature &&
+          String(meta.command_signature || "").trim() === commandSignature;
+        return (
+          String(meta.agent_runtime_permission || "").trim() === "true" &&
+          String(meta.run_id || "").trim() === runId &&
+          (String(meta.call_id || "").trim() === callId || sameCommand) &&
+          normalizeOperationPhase(operation?.phase) !== "waiting_user"
+        );
+      },
+    );
+    if (existingPermission) return;
+    upsertMessageOperation(row, {
+      operationId: agentRuntimePermissionOperationId(runId, callId, commandSignature),
+      kind: "approval",
+      ...permissionPatch,
     });
   });
 }
 
 function formatAgentRuntimeEventSummary(eventData = {}) {
   const eventType = String(eventData?.event_type || "").trim();
-  const event =
-    eventData?.event && typeof eventData.event === "object"
-      ? eventData.event
-      : {};
-  const payload =
-    event?.payload && typeof event.payload === "object" ? event.payload : {};
+  const payload = agentRuntimeEventPayload(eventData);
   if (eventType === "run_started") return "运行任务已启动";
   if (eventType === "query_engine_started") return "模型与工具循环已启动";
   if (eventType === "llm_step_completed") {
@@ -8470,13 +8765,13 @@ function formatAgentRuntimeEventSummary(eventData = {}) {
       .filter(Boolean)
       .join(" · ");
   }
-  if (eventType === "tool_round_completed") return "工具执行轮次已完成";
+  if (eventType === "tool_round_completed") return "工具执行轮次已处理，正在判断下一步";
   if (eventType === "completion_decision") {
     const action = String(payload?.action || "").trim();
     return action ? `完成策略判断：${action}` : "完成策略已判断";
   }
   if (eventType === "query_engine_waiting_operation") {
-    return "外部操作进行中，等待完成后恢复";
+    return "操作仍在进行中，等待完成后恢复";
   }
   if (eventType === "query_engine_blocked") return "运行任务已暂停";
   if (eventType === "query_engine_completed") return "运行任务已完成";
@@ -8487,12 +8782,15 @@ function formatAgentRuntimeEventSummary(eventData = {}) {
 
 function formatAgentRuntimeEventPhase(eventData = {}) {
   const eventType = String(eventData?.event_type || "").trim();
-  const event =
-    eventData?.event && typeof eventData.event === "object"
-      ? eventData.event
-      : {};
-  const payload =
-    event?.payload && typeof event.payload === "object" ? event.payload : {};
+  const payload = agentRuntimeEventPayload(eventData);
+  if (eventType === "completion_decision") {
+    const action = String(payload?.action || "").trim().toLowerCase();
+    if (action === "complete") return "completed";
+    if (action === "fail") return "failed";
+    if (action === "blocked") return "blocked";
+    if (action === "request_user") return "waiting_user";
+    if (action === "wait_background") return "running";
+  }
   if (["query_engine_completed", "run_finished"].includes(eventType)) {
     return "completed";
   }
@@ -8508,8 +8806,391 @@ function formatAgentRuntimeEventPhase(eventData = {}) {
     const behavior = String(decision?.behavior || "").trim().toLowerCase();
     if (behavior === "ask") return "waiting_user";
     if (behavior === "deny") return "blocked";
+    if (["allow_once", "allow_session", "allow_always", "allow"].includes(behavior)) {
+      return "completed";
+    }
   }
   return "running";
+}
+
+function compactAgentRuntimeJson(value, maxChars = 240) {
+  try {
+    return clipText(JSON.stringify(value), maxChars).replace(/\n/g, " ");
+  } catch (_error) {
+    return "";
+  }
+}
+
+function agentRuntimeEventPayload(eventData = {}) {
+  const event =
+    eventData?.event && typeof eventData.event === "object"
+      ? eventData.event
+      : {};
+  if (event?.payload && typeof event.payload === "object") {
+    return event.payload;
+  }
+  if (eventData?.payload && typeof eventData.payload === "object") {
+    return eventData.payload;
+  }
+  return {};
+}
+
+function agentRuntimeToolCallPayload(payload = {}) {
+  const toolCall =
+    payload?.tool_call && typeof payload.tool_call === "object"
+      ? payload.tool_call
+      : payload;
+  return toolCall && typeof toolCall === "object" ? toolCall : {};
+}
+
+function agentRuntimeToolNameFromPayload(payload = {}) {
+  const toolCall = agentRuntimeToolCallPayload(payload);
+  return String(
+    payload?.tool_name ||
+      toolCall?.tool_name ||
+      toolCall?.name ||
+      toolCall?.function?.name ||
+      "",
+  ).trim();
+}
+
+function agentRuntimeToolArgsFromPayload(payload = {}) {
+  const directArgs =
+    payload?.args && typeof payload.args === "object" && !Array.isArray(payload.args)
+      ? payload.args
+      : null;
+  if (directArgs) return directArgs;
+  const toolCall = agentRuntimeToolCallPayload(payload);
+  const rawArguments =
+    String(toolCall?.arguments || toolCall?.function?.arguments || "").trim();
+  if (!rawArguments || rawArguments[0] !== "{") return {};
+  try {
+    const parsed = JSON.parse(rawArguments);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function agentRuntimeObservationPreview(payload = {}) {
+  const rawResult =
+    payload?.raw_result && typeof payload.raw_result === "object"
+      ? payload.raw_result
+      : {};
+  const structuredPreview = structuredCommandResultPreview(rawResult);
+  if (structuredPreview) return structuredPreview;
+  const candidates = [
+    rawResult?.error,
+    rawResult?.stderr,
+    payload?.error,
+    payload?.stderr_preview,
+    payload?.message,
+    rawResult?.message,
+    payload?.summary,
+    payload?.output_preview,
+    payload?.stdout_preview,
+    rawResult?.stdout,
+    payload?.result,
+  ];
+  return clipText(
+    candidates
+      .map((item) =>
+        typeof item === "string"
+          ? item.trim()
+          : item === null || item === undefined
+            ? ""
+            : compactAgentRuntimeJson(item, 180),
+      )
+      .filter(Boolean)
+      .join("\n"),
+    360,
+  );
+}
+
+function parseJsonObjectText(value) {
+  const text = String(value || "").trim();
+  if (!text || text[0] !== "{") return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function structuredCommandResultPreview(rawResult = {}) {
+  if (!rawResult || typeof rawResult !== "object") return "";
+  const stdout = String(rawResult?.stdout || "").trim();
+  const parsed = parseJsonObjectText(stdout);
+  if (!parsed) return "";
+  const lines = [];
+  const addField = (label, ...keys) => {
+    for (const key of keys) {
+      const value = parsed?.[key];
+      if (value === null || value === undefined || value === "") continue;
+      lines.push(`${label}: ${String(value).trim()}`);
+      return;
+    }
+  };
+  addField("status", "status", "login_status");
+  addField("user", "name", "user_name", "display_name", "email");
+  addField("identity", "identity", "as", "login_identity");
+  addField("brand", "brand");
+  addField("expires_at", "expires_at", "expire_at", "expired_at");
+  addField("refresh_expires_at", "refresh_expires_at", "refresh_expire_at");
+  if (lines.length) {
+    return lines.slice(0, 8).join("\n  └ ");
+  }
+  return "";
+}
+
+function formatAgentRuntimeToolCallTranscript(payload = {}) {
+  const toolName = agentRuntimeToolNameFromPayload(payload) || "tool";
+  const args = agentRuntimeToolArgsFromPayload(payload);
+  const command = String(args?.command || "").trim();
+  if (toolName === "project_host_run_command" && command) {
+    const cwd = String(args?.cwd || "").trim();
+    return {
+      level: "info",
+      text: cwd ? `Ran ${command}\n  └ cwd=${cwd}` : `Ran ${command}`,
+    };
+  }
+  const argsPreview = Object.keys(args).length
+    ? compactAgentRuntimeJson(args, 260)
+    : "";
+  return {
+    level: "info",
+    text: argsPreview ? `Called ${toolName}(${argsPreview})` : `Called ${toolName}`,
+  };
+}
+
+function formatAgentRuntimeTranscriptEntry(eventData = {}) {
+  const eventType = String(eventData?.event_type || "").trim();
+  const payload = agentRuntimeEventPayload(eventData);
+  if (eventType === "llm_step_completed") {
+    const contentPreview = String(payload?.content_preview || "").trim();
+    const toolCallCount = Number(payload?.tool_call_count || 0);
+    return contentPreview && toolCallCount > 0
+      ? { level: "info", text: contentPreview }
+      : null;
+  }
+  if (eventType === "tool_call_started") {
+    return formatAgentRuntimeToolCallTranscript(payload);
+  }
+  if (eventType === "permission_decision") {
+    const decision =
+      payload?.decision && typeof payload.decision === "object"
+        ? payload.decision
+        : {};
+    const behavior = String(decision?.behavior || "").trim().toLowerCase();
+    const toolName = agentRuntimeToolNameFromPayload(payload) || "tool";
+    if (behavior === "ask") {
+      return { level: "warning", text: `Waiting for approval: ${toolName}` };
+    }
+    if (behavior === "deny") {
+      const reason = String(decision?.reason || "").trim();
+      return {
+        level: "error",
+        text: reason
+          ? `Blocked ${toolName}\n  └ ${reason}`
+          : `Blocked ${toolName}`,
+      };
+    }
+    return null;
+  }
+  if (eventType === "permission_action_applied") {
+    const action = String(payload?.action || "").trim().toLowerCase();
+    if (!action) return null;
+    return {
+      level: action === "deny" ? "error" : "info",
+      text: action === "deny" ? "Approval denied" : "Approval applied",
+    };
+  }
+  if (eventType === "tool_observation_created") {
+    const toolName = agentRuntimeToolNameFromPayload(payload) || "tool";
+    const status = String(payload?.status || "").trim();
+    const level =
+      ["failed", "error", "blocked"].includes(status.toLowerCase())
+        ? "error"
+        : "success";
+    const preview = agentRuntimeObservationPreview(payload);
+    return {
+      level,
+      text: preview
+        ? `Result ${toolName}${status ? ` · ${status}` : ""}\n  └ ${preview}`
+        : `Result ${toolName}${status ? ` · ${status}` : ""}`,
+    };
+  }
+  if (eventType === "query_engine_waiting_operation") {
+    return {
+      level: "warning",
+      text: "Waiting for the current operation to finish before continuing.",
+    };
+  }
+  if (eventType === "query_engine_blocked") {
+    return { level: "warning", text: "Execution paused before the next step." };
+  }
+  if (eventType === "query_engine_failed" || eventType === "run_failed") {
+    const error = String(payload?.error || payload?.message || "").trim();
+    return {
+      level: "error",
+      text: error ? `Execution failed\n  └ ${error}` : "Execution failed",
+    };
+  }
+  return null;
+}
+
+function completeAgentRuntimeOperations(row, runId, summary = "运行任务已结束") {
+  if (!row || !Array.isArray(row.operations) || !row.operations.length) {
+    return false;
+  }
+  const normalizedRunId = String(runId || "").trim();
+  if (!normalizedRunId) return false;
+  let changed = false;
+  row.operations = row.operations.map((operation) => {
+    const meta =
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
+    if (
+      String(meta.agent_runtime_event || "").trim() !== "true" ||
+      String(meta.run_id || "").trim() !== normalizedRunId
+    ) {
+      return operation;
+    }
+    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    if (["completed", "failed", "blocked"].includes(phase)) {
+      return operation;
+    }
+    changed = true;
+    return {
+      ...operation,
+      summary:
+        String(operation?.summary || "").trim() ||
+        String(summary || "").trim() ||
+        "运行任务已结束",
+      phase: "completed",
+      actionType: "none",
+      updatedAt: nowText(),
+      meta: {
+        ...meta,
+        event_type: String(meta.event_type || "run_finished").trim(),
+      },
+    };
+  });
+  return changed;
+}
+
+function normalizeDoneEventExecutionState(eventData = {}) {
+  const guardSummary = formatGuardSummary(eventData);
+  const completedReason = String(eventData?.completed_reason || "")
+    .trim()
+    .toLowerCase();
+  if (completedReason === "waiting_user_action") {
+    return {
+      phase: "waiting_user",
+      level: "info",
+      summary:
+        String(eventData?.guard_message || eventData?.summary || "").trim() ||
+        "等待你完成当前操作",
+      keepExecutionOpen: false,
+    };
+  }
+  if (completedReason === "background_task_pending") {
+    return {
+      phase: "running",
+      level: "info",
+      summary:
+        String(eventData?.guard_message || eventData?.summary || "").trim() ||
+        "后台任务仍在继续执行",
+      keepExecutionOpen: true,
+    };
+  }
+  return {
+    phase: guardSummary ? "blocked" : "completed",
+    level: guardSummary ? "warning" : "success",
+    summary: guardSummary || "本轮执行已结束",
+    keepExecutionOpen: false,
+  };
+}
+
+function hasOpenAgentRuntimeExecution(row) {
+  if (!row || !Array.isArray(row.operations)) return false;
+  return row.operations.some((operation) => {
+    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    if (!["running", "waiting_user", "pending"].includes(phase)) return false;
+    const meta =
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
+    return (
+      String(meta.agent_runtime_event || "").trim() === "true" ||
+      String(meta.agent_runtime_permission || "").trim() === "true" ||
+      Boolean(String(meta.run_id || "").trim())
+    );
+  });
+}
+
+function completeBackgroundPendingRequestOperation(
+  row,
+  { taskId = "", chatSessionId = "", phase = "completed", summary = "" } = {},
+) {
+  if (!row || !Array.isArray(row.operations) || !row.operations.length) {
+    return false;
+  }
+  const normalizedTaskId = String(taskId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  const nextPhase = normalizeOperationPhase(phase);
+  const nextSummary =
+    String(summary || "").trim() ||
+    (nextPhase === "failed" ? "后台任务未完成" : "后台任务已完成");
+  let changed = false;
+  row.operations = row.operations.map((operation) => {
+    const meta =
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
+    if (
+      String(operation?.kind || "").trim().toLowerCase() !== "request" ||
+      normalizeOperationPhase(operation?.phase || operation?.status) !== "running" ||
+      String(meta.completed_reason || "").trim() !== "background_task_pending"
+    ) {
+      return operation;
+    }
+    const operationTaskId = String(meta.task_id || "").trim();
+    const operationChatSessionId = String(meta.chat_session_id || "").trim();
+    if (
+      normalizedTaskId &&
+      operationTaskId &&
+      operationTaskId !== normalizedTaskId
+    ) {
+      return operation;
+    }
+    if (
+      !normalizedTaskId &&
+      normalizedChatSessionId &&
+      operationChatSessionId &&
+      operationChatSessionId !== normalizedChatSessionId
+    ) {
+      return operation;
+    }
+    changed = true;
+    return {
+      ...operation,
+      summary: nextSummary,
+      phase: nextPhase,
+      updatedAt: nowText(),
+      meta: {
+        ...meta,
+        background_task_closed: "true",
+      },
+    };
+  });
+  return changed;
 }
 
 function applyAgentRuntimeEvent(row, eventData = {}) {
@@ -8519,47 +9200,332 @@ function applyAgentRuntimeEvent(row, eventData = {}) {
   if (!runId || !eventType) return false;
   const summary = formatAgentRuntimeEventSummary(eventData);
   const phase = formatAgentRuntimeEventPhase(eventData);
-  upsertMessageOperation(row, {
-    operationId: `agent-runtime:${runId}`,
-    kind: "request",
-    title: "Agent Runtime",
-    summary,
-    detail: "",
-    phase,
-    actionType: "none",
-    meta: {
-      agent_runtime_event: "true",
-      run_id: runId,
-      event_type: eventType,
-      chat_session_id: String(eventData?.chat_session_id || "").trim(),
-    },
-  });
-  appendMessageProcessLog(row, {
-    level:
-      phase === "completed"
-        ? "success"
-        : phase === "failed" || phase === "blocked"
-          ? "warning"
-          : "info",
-    text: summary,
-  });
-  row.processExpanded = true;
+  if (["query_engine_completed", "run_finished"].includes(eventType)) {
+    completeAgentRuntimeOperations(row, runId, summary);
+    completeAgentRuntimeOperationsForRun(row, runId);
+    completePendingRequestForAssistantRow(row);
+  }
+  const shouldUpdateRuntimeOperation = [
+    "permission_decision",
+    "query_engine_waiting_operation",
+    "query_engine_blocked",
+    "query_engine_completed",
+    "query_engine_failed",
+    "run_failed",
+    "run_finished",
+  ].includes(eventType);
+  if (shouldUpdateRuntimeOperation) {
+    upsertMessageOperation(row, {
+      operationId: `agent-runtime:${runId}`,
+      kind: "request",
+      title: "Agent Runtime",
+      summary,
+      detail: "",
+      phase,
+      actionType: "none",
+      meta: {
+        agent_runtime_event: "true",
+        run_id: runId,
+        event_type: eventType,
+        chat_session_id: String(eventData?.chat_session_id || "").trim(),
+      },
+    });
+  }
+  const transcriptEntry = formatAgentRuntimeTranscriptEntry(eventData);
+  if (transcriptEntry) {
+    appendMessageProcessLog(row, transcriptEntry);
+  }
+  row.processExpanded = false;
   return true;
 }
 
-function isInternalToolOperation(operation) {
-  return (
+function applyPlanCreatedEvent(row, eventData = {}, requestId = "") {
+  if (!row) return;
+  const planId = String(eventData?.plan_id || requestId || "active").trim();
+  const steps = Array.isArray(eventData?.steps) ? eventData.steps : [];
+  const detail = formatPlanStepsDetail(steps);
+  upsertMessageOperation(row, {
+    operationId: `plan:${planId}`,
+    kind: "plan",
+    title: "执行计划",
+    summary: steps.length ? `已生成 ${steps.length} 个步骤` : "已生成执行计划",
+    detail,
+    phase: "running",
+    actionType: "none",
+    meta: {
+      request_id: String(requestId || eventData?.request_id || "").trim(),
+      plan_id: planId,
+      intent: String(eventData?.intent || "").trim(),
+      task_type: String(eventData?.task_type || "").trim(),
+      steps,
+    },
+  });
+  row.processExpanded = true;
+}
+
+function formatPlanStepsDetail(steps) {
+  return (Array.isArray(steps) ? steps : [])
+    .map((step, index) => {
+      const title = String(step?.title || `步骤 ${index + 1}`).trim();
+      const status = String(step?.status || "pending").trim();
+      const summary = String(step?.summary || "").trim();
+      return `${index + 1}. ${title} [${status}]${summary ? `\n   ${summary}` : ""}`;
+    })
+    .join("\n");
+}
+
+function operationPlanSteps(operation) {
+  if (
     String(operation?.kind || "")
       .trim()
-      .toLowerCase() === "tool"
-  );
+      .toLowerCase() !== "plan"
+  ) {
+    return [];
+  }
+  const steps = operationMeta(operation).steps;
+  return Array.isArray(steps) ? steps.filter((step) => step && typeof step === "object") : [];
+}
+
+function planStepPhase(step = {}) {
+  const status = String(step?.status || "").trim().toLowerCase();
+  if (["completed", "done", "skipped"].includes(status)) return "completed";
+  if (["running", "in_progress", "verifying"].includes(status)) return "running";
+  if (["blocked", "failed"].includes(status)) return status;
+  return "pending";
+}
+
+function planStepStatusLabel(step = {}) {
+  const phase = planStepPhase(step);
+  if (phase === "completed") return "已完成";
+  if (phase === "running") return "进行中";
+  if (phase === "blocked") return "已阻塞";
+  if (phase === "failed") return "失败";
+  return "待开始";
+}
+
+function updatePlanOperationStep(row, planId, stepId, patch = {}) {
+  const normalizedPlanId = String(planId || "").trim();
+  const normalizedStepId = String(stepId || "").trim();
+  if (!row || !normalizedPlanId || !normalizedStepId || !Array.isArray(row.operations)) {
+    return false;
+  }
+  let changed = false;
+  row.operations = row.operations.map((operation) => {
+    const meta = operationMeta(operation);
+    if (
+      String(operation?.kind || "").trim().toLowerCase() !== "plan" ||
+      String(meta.plan_id || "").trim() !== normalizedPlanId
+    ) {
+      return operation;
+    }
+    const steps = Array.isArray(meta.steps) ? meta.steps.slice() : [];
+    const targetIndex = steps.findIndex(
+      (step) => String(step?.step_id || "").trim() === normalizedStepId,
+    );
+    const targetStep = targetIndex >= 0 ? steps[targetIndex] : null;
+    const targetStage = String(targetStep?.stage_key || "").trim().toLowerCase();
+    const targetLooksLikeVerify =
+      normalizedStepId.endsWith("-verify") ||
+      ["verification", "verify"].includes(targetStage);
+    const patchPhase = planStepPhase({ status: patch.status });
+    const shouldCompletePrevious =
+      targetIndex > 0 &&
+      targetLooksLikeVerify &&
+      ["running", "completed"].includes(patchPhase);
+    const nextSteps = steps.map((step, index) => {
+      if (shouldCompletePrevious && index < targetIndex) {
+        const previousPhase = planStepPhase(step);
+        if (["pending", "running"].includes(previousPhase)) {
+          changed = true;
+          return {
+            ...step,
+            status: "completed",
+          };
+        }
+      }
+      if (String(step?.step_id || "").trim() !== normalizedStepId) return step;
+      changed = true;
+      return {
+        ...step,
+        ...patch,
+        status: String(patch.status || step?.status || "").trim() || "pending",
+      };
+    });
+    if (!changed) return operation;
+    const hasRunning = nextSteps.some((step) => String(step?.status || "").trim() === "running");
+    const hasFailed = nextSteps.some((step) => ["failed", "blocked"].includes(String(step?.status || "").trim()));
+    const allDone = nextSteps.length > 0 && nextSteps.every((step) => ["completed", "skipped"].includes(String(step?.status || "").trim()));
+    return {
+      ...operation,
+      summary: allDone
+        ? "计划步骤已完成"
+        : hasFailed
+          ? "计划执行遇到阻塞"
+          : hasRunning
+            ? "计划执行中"
+            : operation.summary,
+      detail: formatPlanStepsDetail(nextSteps),
+      phase: allDone ? "completed" : hasFailed ? "blocked" : "running",
+      updatedAt: nowText(),
+      meta: {
+        ...meta,
+        steps: nextSteps,
+      },
+    };
+  });
+  return changed;
+}
+
+function applyVerificationStartedEvent(row, eventData = {}, requestId = "") {
+  if (!row) return;
+  const planId = String(eventData?.plan_id || "").trim();
+  const stepId = String(eventData?.step_id || "").trim();
+  if (planId && stepId) {
+    updatePlanOperationStep(row, planId, stepId, {
+      status: "running",
+      summary: String(eventData?.summary || "正在验证执行结果").trim(),
+    });
+  }
+  upsertMessageOperation(row, {
+    operationId: `verification:${String(planId || requestId || eventData?.request_id || "active").trim()}`,
+    kind: "verification",
+    title: "验证结果",
+    summary: String(eventData?.summary || "正在验证执行结果").trim(),
+    detail: "",
+    phase: "running",
+    actionType: "none",
+    meta: {
+      request_id: String(requestId || eventData?.request_id || "").trim(),
+      plan_id: planId,
+      step_id: stepId,
+    },
+  });
+  row.processExpanded = true;
+}
+
+function applyVerificationFinishedEvent(row, eventData = {}, requestId = "") {
+  if (!row) return;
+  const planId = String(eventData?.plan_id || "").trim();
+  const stepId = String(eventData?.step_id || "").trim();
+  const status = String(eventData?.status || "").trim().toLowerCase();
+  const passed = status === "passed";
+  const evidence = Array.isArray(eventData?.evidence)
+    ? eventData.evidence.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const summary =
+    String(eventData?.summary || "").trim() ||
+    (passed ? "验证通过" : "验证未完全通过");
+  if (planId && stepId) {
+    updatePlanOperationStep(row, planId, stepId, {
+      status: passed ? "completed" : "blocked",
+      summary,
+    });
+  }
+  upsertMessageOperation(row, {
+    operationId: `verification:${String(planId || requestId || eventData?.request_id || "active").trim()}`,
+    kind: "verification",
+    title: "验证结果",
+    summary,
+    detail: evidence.length ? evidence.map((item, index) => `${index + 1}. ${item}`).join("\n") : "",
+    phase: passed ? "completed" : "blocked",
+    actionType: "none",
+    meta: {
+      request_id: String(requestId || eventData?.request_id || "").trim(),
+      plan_id: planId,
+      step_id: stepId,
+      status,
+      evidence,
+      guard_reason: String(eventData?.guard_reason || "").trim(),
+      guard_message: String(eventData?.guard_message || "").trim(),
+    },
+  });
+  row.processExpanded = true;
+}
+
+function projectChatActionOperationId(eventData = {}) {
+  const toolName = String(eventData?.tool_name || "tool").trim() || "tool";
+  const toolIndex = Number(eventData?.tool_index || 0) || 0;
+  const command = eventCommand(eventData);
+  if (command) {
+    return `command:${command.slice(0, 180)}`;
+  }
+  const callId = String(
+    eventData?.call_id ||
+      eventData?.tool_call_id ||
+      eventData?.operation_id ||
+      eventData?.task_id ||
+      "",
+  ).trim();
+  if (callId) {
+    return `tool:${toolName}:${callId}`;
+  }
+  return `tool:${toolName}:${toolIndex}`;
+}
+
+function applyPlannedActionEvent(row, eventData = {}, requestId = "") {
+  if (!row) return;
+  const eventType = String(eventData?.type || "").trim().toLowerCase();
+  const isCommand =
+    eventType === "command_planned" ||
+    Boolean(eventCommand(eventData));
+  const toolName =
+    String(eventData?.tool_name || (isCommand ? "命令" : "工具")).trim() ||
+    (isCommand ? "命令" : "工具");
+  const label = toolProgressLabel(eventData, toolName);
+  const command = eventCommand(eventData);
+  const cwd = String(eventData?.cwd || eventData?.workspace_path || "").trim();
+  const argumentsPreview = formatToolArgumentsPreview(eventData);
+  const planId = String(eventData?.plan_id || "").trim();
+  const stepId = String(eventData?.step_id || "").trim();
+  if (planId && stepId) {
+    updatePlanOperationStep(row, planId, stepId, {
+      status: "pending",
+      summary: isCommand
+        ? `准备执行命令：${command || toolName}`
+        : `准备调用工具：${toolName}`,
+    });
+  }
+  appendMessageProcessLog(row, {
+    level: "info",
+    text: isCommand
+      ? `准备执行命令：${command || toolName}`
+      : argumentsPreview
+        ? `准备调用 ${label}：${argumentsPreview}`
+        : `准备调用 ${label}`,
+  });
+  upsertMessageOperation(row, {
+    operationId: projectChatActionOperationId(eventData),
+    kind: "tool",
+    title: label,
+    summary: isCommand ? "准备执行命令" : "准备调用工具",
+    detail: isCommand ? "" : argumentsPreview,
+    phase: "pending",
+    actionType: "none",
+    meta: {
+      request_id: String(requestId || eventData?.request_id || "").trim(),
+      tool_name: toolName,
+      command,
+      cwd,
+      arguments_preview: argumentsPreview,
+      risk_level: String(eventData?.risk_level || "").trim(),
+      plan_id: planId,
+      step_id: stepId,
+      tool_index: Number(eventData?.tool_index || 0) || 0,
+      tool_count: Number(eventData?.tool_count || 0) || 0,
+    },
+  });
+  row.processExpanded = false;
 }
 
 function messageOperations(row) {
   return rawMessageOperations(row).filter(
-    (item) =>
-      !isInternalToolOperation(item) &&
-      !isCompletedRequestSummaryOperation(item, row),
+    (item) => !isCompletedRequestSummaryOperation(item, row),
+  );
+}
+
+function messageProcessOperations(row) {
+  return messageOperations(row).filter(
+    (item) => isVisibleProcessOperation(item),
   );
 }
 
@@ -8576,10 +9542,16 @@ function isOperationAwaitingInteraction(operation) {
   const kind = String(operation?.kind || "")
     .trim()
     .toLowerCase();
-  if (["open_url", "approve", "enter_text", "select"].includes(actionType)) {
+  if (actionType === "open_url") {
+    return Boolean(extractOperationUrl(operation));
+  }
+  if (["approve", "enter_text", "select"].includes(actionType)) {
     return true;
   }
-  return ["auth", "approval", "terminal"].includes(kind);
+  if (kind === "auth") {
+    return Boolean(extractOperationUrl(operation));
+  }
+  return ["approval", "terminal"].includes(kind);
 }
 
 function operationPhaseLabel(operation) {
@@ -8590,6 +9562,22 @@ function operationPhaseLabel(operation) {
   if (phase === "completed") return "已完成";
   if (phase === "failed") return "失败";
   return "待开始";
+}
+
+function operationRiskTone(operation) {
+  const riskLevel = String(operationMeta(operation).risk_level || "")
+    .trim()
+    .toLowerCase();
+  if (riskLevel === "high") return "high";
+  if (riskLevel === "medium") return "medium";
+  return "";
+}
+
+function operationRiskLabel(operation) {
+  const tone = operationRiskTone(operation);
+  if (tone === "high") return "高风险命令，执行前请重点核对";
+  if (tone === "medium") return "中风险命令，请核对执行范围";
+  return "";
 }
 
 function operationActionHint(operation) {
@@ -8604,6 +9592,7 @@ function operationActionHint(operation) {
   }
   const actionType = normalizeOperationActionType(operation?.actionType);
   if (actionType === "open_url") {
+    if (!extractOperationUrl(operation)) return "";
     return "需要在浏览器完成操作，然后回到对话框继续。";
   }
   if (actionType === "approve") {
@@ -8633,14 +9622,7 @@ function operationActionHint(operation) {
 function extractOperationUrl(operation) {
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
-  const metaUrl = String(meta.authorization_url || "").trim();
-  if (metaUrl) return metaUrl;
-  const detail = String(operation?.detail || "").trim();
-  if (!detail) return "";
-  const match = detail.match(/https?:\/\/[^\s)>"]+/i);
-  return String(match?.[0] || "")
-    .trim()
-    .replace(/[),.;:!?]+$/g, "");
+  return String(meta.authorization_url || "").trim();
 }
 
 function operationPrimaryActionLabel(operation) {
@@ -8649,16 +9631,8 @@ function operationPrimaryActionLabel(operation) {
 }
 
 function messageFooterActionOperation(row) {
-  return messageOperations(row).find((operation) => {
-    const meta =
-      operation?.meta && typeof operation.meta === "object"
-        ? operation.meta
-        : {};
-    return (
-      String(meta.agent_runtime_permission || "").trim() === "true" &&
-      normalizeOperationPhase(operation?.phase) === "waiting_user" &&
-      operationActionButtons(operation).length > 0
-    );
+  return pickAwaitingInteractionOperation(row, {
+    allowTerminal: false,
   });
 }
 
@@ -8721,19 +9695,48 @@ function completePendingExternalOperationRequest(matched, message) {
   }
 }
 
+function completePendingExternalOperationRequestByRow(
+  row,
+  message,
+  { reject = false } = {},
+) {
+  if (!row) return false;
+  const normalizedMessage = String(message || "").trim();
+  let changed = false;
+  const entries = Array.from(pendingRequests.entries());
+  for (const [requestId, pending] of entries) {
+    const pendingRow = messages.value[Number(pending?.assistantIndex ?? -1)];
+    if (pendingRow !== row) continue;
+    changed = true;
+    if (reject) {
+      rejectPendingRequest(
+        requestId,
+        pending,
+        new Error(normalizedMessage || "操作未完成"),
+      );
+    } else {
+      resolvePendingRequest(requestId, pending, row.content || normalizedMessage);
+    }
+  }
+  if (changed) {
+    chatLoading.value = pendingRequests.size > 0;
+  }
+  return changed;
+}
+
 function buildOperationResumeUserPrompt(resumeCommand, workflowKind = "") {
   const normalizedCommand = String(resumeCommand || "").trim();
   const normalizedWorkflowKind = String(workflowKind || "").trim();
   const completionText =
     normalizedWorkflowKind === "auth_login"
       ? "授权完成，检测通过。"
-      : "外部操作完成。";
+      : "操作完成。";
   if (!normalizedCommand) {
     return `${completionText}请继续刚才的任务。`;
   }
   return [
     completionText,
-    "请不要再要求我重复完成同一个外部操作。",
+    "请不要再要求我重复完成同一个操作。",
     `直接继续执行之前待恢复的命令：${normalizedCommand}`,
   ].join("\n");
 }
@@ -8830,12 +9833,194 @@ function findMessageRowByOperationId(operationId) {
   );
 }
 
+function agentRuntimeResumeToolArgs(toolCall) {
+  const rawArguments = String(toolCall?.arguments || "").trim();
+  if (!rawArguments) return {};
+  try {
+    const parsed = JSON.parse(rawArguments);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function agentRuntimeResumeFirstRecord(resume) {
+  const records = Array.isArray(resume?.records) ? resume.records : [];
+  return records.find((item) => item && typeof item === "object") || null;
+}
+
+function agentRuntimeResumeAuthStatusLabel(rawResult = {}) {
+  const stdout = String(rawResult?.stdout || "").trim();
+  const stderr = String(rawResult?.stderr || rawResult?.error || "").trim();
+  const text = [stdout, stderr].filter(Boolean).join("\n").toLowerCase();
+  let payload = {};
+  if (stdout) {
+    try {
+      const parsed = JSON.parse(stdout);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        payload = parsed;
+      }
+    } catch (_error) {
+      payload = {};
+    }
+  }
+  const statusValue = String(
+    payload.status || payload.login_status || "",
+  )
+    .trim()
+    .toLowerCase();
+  if (
+    payload.ok === false ||
+    payload.authenticated === false ||
+    payload.logged_in === false ||
+    ["unauthenticated", "not_logged_in", "logged_out", "invalid"].includes(
+      statusValue,
+    ) ||
+    text.includes("not logged") ||
+    text.includes("unauthenticated") ||
+    text.includes("login required") ||
+    text.includes("未登录")
+  ) {
+    return "未登录";
+  }
+  if (
+    payload.ok === true ||
+    payload.authenticated === true ||
+    payload.logged_in === true ||
+    ["authenticated", "logged_in", "valid", "success", "ok"].includes(
+      statusValue,
+    )
+  ) {
+    return "已登录";
+  }
+  const exitCode = Number(rawResult?.exit_code);
+  if (Number.isFinite(exitCode) && exitCode === 0) {
+    return "已登录";
+  }
+  return "未确认";
+}
+
+function agentRuntimeResumeFallbackContent(resume) {
+  const record = agentRuntimeResumeFirstRecord(resume);
+  if (!record) return "";
+  const rawResult =
+    record.raw_result && typeof record.raw_result === "object"
+      ? record.raw_result
+      : {};
+  const toolCall =
+    record.tool_call && typeof record.tool_call === "object"
+      ? record.tool_call
+      : {};
+  const args = agentRuntimeResumeToolArgs(toolCall);
+  const command = String(args.command || rawResult.command || "").trim();
+  const signature = agentRuntimeCommandSignatureFromArgs({ command });
+  const stdout = String(rawResult.stdout || "").trim();
+  const stderr = String(rawResult.stderr || rawResult.error || "").trim();
+  const output = stdout || stderr;
+  if (signature === "lark-cli auth status") {
+    const lines = [`登录状态：${agentRuntimeResumeAuthStatusLabel(rawResult)}。`];
+    if (command) {
+      lines.push(`已执行命令：\`${command}\`。`);
+    }
+    if (output) {
+      lines.push(`命令输出：${output}`);
+    }
+    return lines.join("\n").trim();
+  }
+  if (!command && !output) return "";
+  const lines = [];
+  if (command) {
+    lines.push(`授权后已执行命令：\`${command}\`。`);
+  }
+  if (rawResult.exit_code !== undefined && rawResult.exit_code !== null) {
+    lines.push(`退出码：${rawResult.exit_code}。`);
+  }
+  if (output) {
+    lines.push(`输出：${output}`);
+  }
+  return lines.join("\n").trim();
+}
+
+function agentRuntimeResumeIsProcessOnlyContent(content) {
+  const normalized = String(content || "").replace(/\s+/g, "");
+  return (
+    !normalized ||
+    [
+      "本轮执行已结束",
+      "工具调用权限已确认",
+      "工具调用授权已保存",
+      "运行任务已结束",
+      "运行任务已完成",
+      "后台执行已完成",
+    ].includes(normalized)
+  );
+}
+
+function agentRuntimeResumeIsStableToolAnswer(resume, fallbackContent) {
+  if (!fallbackContent) return false;
+  const record = agentRuntimeResumeFirstRecord(resume);
+  if (!record) return false;
+  const rawResult =
+    record.raw_result && typeof record.raw_result === "object"
+      ? record.raw_result
+      : {};
+  const toolCall =
+    record.tool_call && typeof record.tool_call === "object"
+      ? record.tool_call
+      : {};
+  const args = agentRuntimeResumeToolArgs(toolCall);
+  const command = String(args.command || rawResult.command || "").trim();
+  return agentRuntimeCommandSignatureFromArgs({ command }) === "lark-cli auth status";
+}
+
 function agentRuntimeResumeFinalContent(resume) {
   const continuation =
     resume?.continuation && typeof resume.continuation === "object"
       ? resume.continuation
       : null;
-  return String(continuation?.final_content || "").trim();
+  const continuationContent = String(continuation?.final_content || "").trim();
+  if (
+    continuationContent &&
+    !agentRuntimeResumeIsProcessOnlyContent(continuationContent)
+  ) {
+    return continuationContent;
+  }
+  return "";
+}
+
+function agentRuntimeResumeStatus(resume) {
+  const status = String(resume?.status || "").trim().toLowerCase();
+  if (status) return status;
+  const continuation =
+    resume?.continuation && typeof resume.continuation === "object"
+      ? resume.continuation
+      : null;
+  return String(continuation?.status || "").trim().toLowerCase();
+}
+
+function agentRuntimeResumeMissingFinalAnswer(resume) {
+  const continuation =
+    resume?.continuation && typeof resume.continuation === "object"
+      ? resume.continuation
+      : null;
+  const decision =
+    continuation?.completion_decision &&
+    typeof continuation.completion_decision === "object"
+      ? continuation.completion_decision
+      : null;
+  const reasons = Array.isArray(decision?.reasons)
+    ? decision.reasons.map((item) => String(item || "").trim())
+    : [];
+  return (
+    agentRuntimeResumeStatus(resume) === "failed" &&
+    reasons.includes("missing_final_response_after_tool")
+  );
+}
+
+function agentRuntimeMissingFinalAnswerMessage() {
+  return "工具执行已经完成，但模型没有继续生成最终回答。本轮未完成，请重新运行或检查模型续写链路。";
 }
 
 function completePendingRequestForAssistantRow(row) {
@@ -8873,10 +10058,11 @@ function completeAgentRuntimeOperationsForRun(row, runId) {
   });
 }
 
-function findMessageRowByAgentRuntimePermission(runId, callId) {
+function findMessageRowByAgentRuntimePermission(runId, callId, commandSignature = "") {
   const normalizedRunId = String(runId || "").trim();
   const normalizedCallId = String(callId || "").trim();
-  if (!normalizedRunId || !normalizedCallId) return null;
+  const normalizedSignature = String(commandSignature || "").trim();
+  if (!normalizedRunId || (!normalizedCallId && !normalizedSignature)) return null;
   return (
     messages.value.find((item) =>
       Array.isArray(item?.operations)
@@ -8888,7 +10074,9 @@ function findMessageRowByAgentRuntimePermission(runId, callId) {
             return (
               String(meta.agent_runtime_permission || "").trim() === "true" &&
               String(meta.run_id || "").trim() === normalizedRunId &&
-              String(meta.call_id || "").trim() === normalizedCallId
+              (String(meta.call_id || "").trim() === normalizedCallId ||
+                (normalizedSignature &&
+                  String(meta.command_signature || "").trim() === normalizedSignature))
             );
           })
         : false,
@@ -8896,10 +10084,55 @@ function findMessageRowByAgentRuntimePermission(runId, callId) {
   );
 }
 
+function findAgentRuntimePermissionOperation(row, runId, callId, commandSignature = "") {
+  const normalizedRunId = String(runId || "").trim();
+  const normalizedCallId = String(callId || "").trim();
+  const normalizedSignature = String(commandSignature || "").trim();
+  if (!row || !Array.isArray(row.operations) || !normalizedRunId) return null;
+  return (
+    row.operations.find((operation) => {
+      const meta =
+        operation?.meta && typeof operation.meta === "object"
+          ? operation.meta
+          : {};
+      return (
+        String(meta.agent_runtime_permission || "").trim() === "true" &&
+        String(meta.run_id || "").trim() === normalizedRunId &&
+        (String(meta.call_id || "").trim() === normalizedCallId ||
+          (normalizedSignature &&
+            String(meta.command_signature || "").trim() === normalizedSignature))
+      );
+    }) || null
+  );
+}
+
+function latestAgentRuntimePermissionOperation(operation) {
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  const row =
+    findMessageRowByAgentRuntimePermission(
+      meta.run_id,
+      meta.call_id,
+      meta.command_signature,
+    ) ||
+    findMessageRowByOperationId(operation?.id);
+  return (
+    findAgentRuntimePermissionOperation(
+      row,
+      meta.run_id,
+      meta.call_id,
+      meta.command_signature,
+    ) || operation
+  );
+}
+
 function updateAgentRuntimePermissionOperations(row, runId, callId, patch) {
   const normalizedRunId = String(runId || "").trim();
   const normalizedCallId = String(callId || "").trim();
-  if (!row || !normalizedRunId || !normalizedCallId) return false;
+  const normalizedSignature = String(
+    patch?.meta?.command_signature || patch?.command_signature || "",
+  ).trim();
+  if (!row || !normalizedRunId || (!normalizedCallId && !normalizedSignature)) return false;
   const items = Array.isArray(row.operations) ? row.operations.slice() : [];
   let changed = false;
   row.operations = items.map((operation) => {
@@ -8910,7 +10143,9 @@ function updateAgentRuntimePermissionOperations(row, runId, callId, patch) {
     const matched =
       String(meta.agent_runtime_permission || "").trim() === "true" &&
       String(meta.run_id || "").trim() === normalizedRunId &&
-      String(meta.call_id || "").trim() === normalizedCallId;
+      (String(meta.call_id || "").trim() === normalizedCallId ||
+        (normalizedSignature &&
+          String(meta.command_signature || "").trim() === normalizedSignature));
     if (!matched) return operation;
     changed = true;
     return {
@@ -9593,10 +10828,7 @@ async function continueChatWithInteractionPayload(payloadText) {
       finalUserPrompt: appendModelGenerationInstruction(text),
       activeSessionSourceContext,
       historyRows,
-      effectiveAutoUseTools: Boolean(
-        projectChatSettings.value.auto_use_tools ??
-          CHAT_SETTINGS_DEFAULTS.auto_use_tools,
-      ),
+      effectiveAutoUseTools: projectChatToolsExplicitlyEnabled(),
       effectiveToolPriority: mergeToolPriority(
         projectChatSettings.value.tool_priority || [],
         [],
@@ -9700,10 +10932,7 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
     temperature: Number(temperature.value),
     max_tokens: Number(chatMaxTokens.value || 512),
     system_prompt: systemPrompt.value || undefined,
-    auto_use_tools: Boolean(
-      projectChatSettings.value.auto_use_tools ??
-        CHAT_SETTINGS_DEFAULTS.auto_use_tools,
-    ),
+    auto_use_tools: projectChatToolsExplicitlyEnabled(),
     tool_priority: mergeToolPriority(
       projectChatSettings.value.tool_priority || [],
       [],
@@ -10018,7 +11247,11 @@ function markAgentRuntimePermissionActionPending(operation, action) {
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   const row =
-    findMessageRowByAgentRuntimePermission(meta.run_id, meta.call_id) ||
+    findMessageRowByAgentRuntimePermission(
+      meta.run_id,
+      meta.call_id,
+      meta.command_signature,
+    ) ||
     findMessageRowByOperationId(operation?.id);
   if (!row) return null;
   const nextSummary =
@@ -10030,6 +11263,7 @@ function markAgentRuntimePermissionActionPending(operation, action) {
     summary: nextSummary,
     detail: String(operation?.detail || "").trim(),
     actionType: "none",
+    meta,
   });
   return upsertMessageOperation(row, {
     ...operation,
@@ -10044,7 +11278,11 @@ function restoreAgentRuntimePermissionAction(operation) {
   const meta =
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   const row =
-    findMessageRowByAgentRuntimePermission(meta.run_id, meta.call_id) ||
+    findMessageRowByAgentRuntimePermission(
+      meta.run_id,
+      meta.call_id,
+      meta.command_signature,
+    ) ||
     findMessageRowByOperationId(operation?.id);
   if (!row) return;
   updateAgentRuntimePermissionOperations(row, meta.run_id, meta.call_id, {
@@ -10053,6 +11291,7 @@ function restoreAgentRuntimePermissionAction(operation) {
       String(operation?.summary || "").trim() ||
       "等待你选择本次工具调用的授权范围",
     actionType: "approve",
+    meta,
   });
   upsertMessageOperation(row, {
     ...operation,
@@ -10067,18 +11306,27 @@ function restoreAgentRuntimePermissionAction(operation) {
 async function submitAgentRuntimePermissionAction(operation, actionKey) {
   const action = agentRuntimePermissionActionValue(actionKey);
   const projectId = String(selectedProjectId.value || "").trim();
+  const currentOperation = latestAgentRuntimePermissionOperation(operation);
   const meta =
-    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
-  const runId = String(meta.run_id || "").trim();
-  const callId = String(meta.call_id || "").trim();
-  const toolName = String(meta.tool_name || "").trim();
+    currentOperation?.meta && typeof currentOperation.meta === "object"
+      ? currentOperation.meta
+      : {};
+  const decision =
+    meta.permission_decision && typeof meta.permission_decision === "object"
+      ? meta.permission_decision
+      : {};
+  const runId = String(meta.run_id || decision.run_id || "").trim();
+  const callId = String(meta.call_id || decision.call_id || "").trim();
+  const toolName = String(meta.tool_name || decision.tool_name || "").trim();
   if (!projectId || !action || !runId || !callId || !toolName) {
     ElMessage.warning("缺少权限上下文，无法继续");
     return;
   }
-  const originalOperation = { ...operation };
-  const row = findMessageRowByOperationId(operation.id);
-  markAgentRuntimePermissionActionPending(operation, action);
+  const originalOperation = { ...currentOperation };
+  const row =
+    findMessageRowByAgentRuntimePermission(runId, callId, meta.command_signature) ||
+    findMessageRowByOperationId(currentOperation.id);
+  markAgentRuntimePermissionActionPending(currentOperation, action);
   try {
     const response = await api.post(
       `/projects/${encodeURIComponent(projectId)}/agent-runtime-v2/permission-actions`,
@@ -10110,10 +11358,16 @@ async function submitAgentRuntimePermissionAction(operation, actionKey) {
       .join("\n");
     const continuationContent = agentRuntimeResumeFinalContent(resume);
     const continuation = continuationContent ? resume?.continuation : null;
-    const resumeDetail = continuationContent || observationSummary;
-    const currentRow = findMessageRowByOperationId(operation.id) || row;
+    const missingFinalAnswer = agentRuntimeResumeMissingFinalAnswer(resume);
+    const resumeDetail =
+      continuationContent ||
+      (missingFinalAnswer ? agentRuntimeMissingFinalAnswerMessage() : observationSummary);
+    const currentRow =
+      findMessageRowByAgentRuntimePermission(runId, callId, meta.command_signature) ||
+      findMessageRowByOperationId(currentOperation.id) ||
+      row;
     upsertMessageOperation(currentRow, {
-      ...operation,
+      ...currentOperation,
       phase: action === "deny" ? "blocked" : "completed",
       summary:
         action === "deny"
@@ -10121,7 +11375,9 @@ async function submitAgentRuntimePermissionAction(operation, actionKey) {
           : resumed
             ? continuation
               ? "已保存授权并继续运行"
-              : "已保存授权并恢复执行"
+              : missingFinalAnswer
+                ? "工具已执行，但模型未返回最终回答"
+                : "已保存授权并恢复执行"
             : "已保存授权，等待运行时继续执行",
       detail: resumeDetail,
       actionType: "none",
@@ -10145,6 +11401,8 @@ async function submitAgentRuntimePermissionAction(operation, actionKey) {
         : resumed
           ? continuation
             ? "已继续运行"
+            : missingFinalAnswer
+              ? "工具已执行，但模型未返回最终回答"
             : "已恢复执行"
           : "已保存授权",
     );
@@ -10159,8 +11417,9 @@ function applyAgentRuntimePermissionActionResult(eventData = {}) {
   const callId = String(eventData?.call_id || "").trim();
   if (!runId || !callId) return false;
   const operationId = `agent-runtime-permission:${runId}:${callId}`;
+  const commandSignature = String(eventData?.command_signature || "").trim();
   const row =
-    findMessageRowByAgentRuntimePermission(runId, callId) ||
+    findMessageRowByAgentRuntimePermission(runId, callId, commandSignature) ||
     findMessageRowByOperationId(operationId);
   if (!row) return false;
   const resume =
@@ -10177,6 +11436,7 @@ function applyAgentRuntimePermissionActionResult(eventData = {}) {
     .join("\n");
   const continuationContent = agentRuntimeResumeFinalContent(resume);
   const continuation = continuationContent ? resume?.continuation : null;
+  const missingFinalAnswer = agentRuntimeResumeMissingFinalAnswer(resume);
   const action = String(eventData?.action || "").trim().toLowerCase();
   const nextPermissionState = {
     title: action === "deny" ? "工具调用已拒绝" : "工具调用授权",
@@ -10186,15 +11446,27 @@ function applyAgentRuntimePermissionActionResult(eventData = {}) {
         : resumed
           ? continuation
             ? "已保存授权并继续运行"
-            : "已保存授权并恢复执行"
+            : missingFinalAnswer
+              ? "工具已执行，但模型未返回最终回答"
+              : "已保存授权并恢复执行"
           : "已保存授权，运行时正在继续执行",
-    detail: continuationContent || observationSummary,
-    phase: action === "deny" ? "blocked" : resumed ? "completed" : "running",
+    detail:
+      continuationContent ||
+      (missingFinalAnswer ? agentRuntimeMissingFinalAnswerMessage() : observationSummary),
+    phase:
+      action === "deny" || missingFinalAnswer
+        ? "blocked"
+        : resumed
+          ? "completed"
+          : "running",
     actionType: "none",
+    meta: {
+      command_signature: commandSignature,
+    },
   };
   updateAgentRuntimePermissionOperations(row, runId, callId, nextPermissionState);
   upsertMessageOperation(row, {
-    operationId,
+    operationId: agentRuntimePermissionOperationId(runId, callId, commandSignature),
     kind: "approval",
     ...nextPermissionState,
     meta: {
@@ -10203,6 +11475,7 @@ function applyAgentRuntimePermissionActionResult(eventData = {}) {
       call_id: callId,
       tool_name: String(eventData?.tool_name || "").trim(),
       chat_session_id: String(eventData?.chat_session_id || "").trim(),
+      command_signature: commandSignature,
       resume,
     },
   });
@@ -10245,18 +11518,24 @@ function applyAgentRuntimeOperationResumeResult(eventData = {}) {
     resume?.continuation && typeof resume.continuation === "object"
       ? resume.continuation
       : null;
-  const continuationContent = String(continuation?.final_content || "").trim();
+  const continuationContent = agentRuntimeResumeFinalContent(resume);
+  const missingFinalAnswer = agentRuntimeResumeMissingFinalAnswer(resume);
   upsertMessageOperation(row, {
     operationId,
     kind: "auth",
-    title: "外部操作恢复",
+    title: "操作恢复",
     summary: resumed
       ? continuation
-        ? "外部操作完成，已继续运行"
-        : "外部操作完成，已恢复执行"
-      : "外部操作完成，等待运行时继续执行",
-    detail: continuationContent || observationSummary || String(resume?.reason || "").trim(),
-    phase: resumed ? "completed" : "running",
+        ? "操作完成，已继续运行"
+        : missingFinalAnswer
+          ? "操作完成，但模型未返回最终回答"
+          : "操作完成，已恢复执行"
+      : "操作完成，等待运行时继续执行",
+    detail:
+      continuationContent ||
+      (missingFinalAnswer ? agentRuntimeMissingFinalAnswerMessage() : observationSummary) ||
+      String(resume?.reason || "").trim(),
+    phase: missingFinalAnswer ? "blocked" : resumed ? "completed" : "running",
     actionType: "none",
     meta: {
       agent_runtime_operation_resume: "true",
@@ -10364,11 +11643,46 @@ function formatToolArgumentsPreview(eventData) {
   return preview.replace(/\s+/g, " ").trim();
 }
 
+function eventArgumentsObject(eventData) {
+  const direct = eventData?.arguments;
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+    return direct;
+  }
+  const raw = String(direct || eventData?.args || "").trim();
+  if (!raw || raw[0] !== "{") return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function eventCommand(eventData) {
+  const direct = String(eventData?.command || "").trim();
+  if (direct) return direct;
+  const args = eventArgumentsObject(eventData);
+  return String(args.command || "").trim();
+}
+
 function appendToolStartLogs(row, eventData) {
   if (!row) return;
   const toolName = String(eventData?.tool_name || "工具").trim() || "工具";
   const label = toolProgressLabel(eventData, toolName);
   const argumentsPreview = formatToolArgumentsPreview(eventData);
+  const command = eventCommand(eventData);
+  const cwd = String(eventData?.cwd || eventData?.workspace_path || "").trim();
+  const planId = String(eventData?.plan_id || "").trim();
+  const stepId = String(eventData?.step_id || "").trim();
+  if (planId && stepId) {
+    updatePlanOperationStep(row, planId, stepId, {
+      status: "running",
+      summary: command ? `正在执行命令：${command}` : `正在调用工具：${toolName}`,
+    });
+  }
+  const operationId = projectChatActionOperationId(eventData);
   appendMessageProcessLog(row, {
     level: "info",
     text: argumentsPreview
@@ -10376,12 +11690,22 @@ function appendToolStartLogs(row, eventData) {
       : `调用 ${label}`,
   });
   upsertMessageOperation(row, {
-    operationId: `tool:${String(toolName || "tool").trim()}:${Number(eventData?.tool_index || 0) || 0}`,
+    operationId,
     kind: "tool",
     title: label,
-    summary: "处理中",
-    detail: "",
+    summary: command ? "正在执行命令" : "正在调用工具",
+    detail: command ? "" : argumentsPreview,
     phase: "running",
+    meta: {
+      tool_name: toolName,
+      command,
+      cwd,
+      arguments_preview: argumentsPreview,
+      plan_id: planId,
+      step_id: stepId,
+      tool_index: Number(eventData?.tool_index || 0) || 0,
+      tool_count: Number(eventData?.tool_count || 0) || 0,
+    },
   });
 }
 
@@ -10393,6 +11717,23 @@ function appendToolResultLogs(row, eventData) {
     String(eventData?.status || "completed").trim() || "completed";
   const normalizedStatus = statusText.toLowerCase();
   const outputPreview = clipText(buildProjectHostCommandOutput(eventData), 240);
+  const command = eventCommand(eventData);
+  const cwd = String(eventData?.cwd || eventData?.workspace_path || "").trim();
+  const exitCode =
+    eventData?.exit_code === null || eventData?.exit_code === undefined
+      ? ""
+      : String(eventData.exit_code).trim();
+  const planId = String(eventData?.plan_id || "").trim();
+  const stepId = String(eventData?.step_id || "").trim();
+  if (planId && stepId) {
+    updatePlanOperationStep(row, planId, stepId, {
+      status: normalizedStatus === "error" ? "failed" : "completed",
+      summary: normalizedStatus === "error"
+        ? "工具或命令执行未完成"
+        : "工具或命令执行完成",
+    });
+  }
+  const operationId = projectChatActionOperationId(eventData);
   appendMessageProcessLog(row, {
     level: normalizedStatus === "error" ? "error" : "success",
     text: outputPreview
@@ -10404,13 +11745,65 @@ function appendToolResultLogs(row, eventData) {
         }`,
   });
   upsertMessageOperation(row, {
-    operationId: `tool:${String(toolName || "tool").trim()}:${Number(eventData?.tool_index || 0) || 0}`,
+    operationId,
     kind: "tool",
     title: label,
-    summary: normalizedStatus === "error" ? "执行未完成" : "已处理",
-    detail: "",
+    summary: normalizedStatus === "error" ? "执行未完成" : "已完成",
+    detail: command ? "" : outputPreview,
     phase: normalizedStatus === "error" ? "failed" : "completed",
+    meta: {
+      tool_name: toolName,
+      command,
+      cwd,
+      exit_code: exitCode,
+      output_preview: outputPreview,
+      stdout_preview: String(eventData?.stdout_preview || "").trim(),
+      stderr_preview: String(eventData?.stderr_preview || "").trim(),
+      error: String(eventData?.error || "").trim(),
+      duration_ms:
+        eventData?.duration_ms === null || eventData?.duration_ms === undefined
+          ? ""
+          : String(eventData.duration_ms).trim(),
+      plan_id: planId,
+      step_id: stepId,
+      tool_index: Number(eventData?.tool_index || 0) || 0,
+      tool_count: Number(eventData?.tool_count || 0) || 0,
+    },
   });
+}
+
+function operationMeta(operation) {
+  return operation?.meta && typeof operation.meta === "object"
+    ? operation.meta
+    : {};
+}
+
+function operationCommand(operation) {
+  return String(operationMeta(operation).command || "").trim();
+}
+
+function operationCwd(operation) {
+  return String(operationMeta(operation).cwd || "").trim();
+}
+
+function operationExitCode(operation) {
+  return String(operationMeta(operation).exit_code || "").trim();
+}
+
+function operationOutput(operation) {
+  const meta = operationMeta(operation);
+  return clipText(
+    [
+      meta.stdout_preview,
+      meta.stderr_preview,
+      meta.output_preview,
+      meta.error,
+    ]
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .join("\n"),
+    900,
+  );
 }
 
 function formatGuardSummary(eventData) {
@@ -10424,6 +11817,7 @@ function formatGuardSummary(eventData) {
       ? eventData.guard_details
       : {};
   if (completedReason === "background_task_pending") return "";
+  if (completedReason === "waiting_user_action") return "";
   if (message) return message;
   if (reason === "tool_budget_exceeded") {
     return `工具调用达到预算上限（${Number(details.tool_rounds || 0)}/${Number(details.max_tool_rounds || 0)} 轮）`;
@@ -10433,6 +11827,9 @@ function formatGuardSummary(eventData) {
   }
   if (reason === "tool_only_loops") {
     return `连续多轮只有工具调用没有正文输出（${Number(details.tool_only_loops || 0)}/${Number(details.tool_only_threshold || 0)} 轮）`;
+  }
+  if (reason === "missing_final_response_after_tool") {
+    return "工具执行已经完成，但模型没有继续生成最终回答。本轮未完成，请重新运行或检查模型续写链路。";
   }
   if (reason === "max_loops") {
     return `达到最大处理轮次（${Number(details.loop_count || 0)}/${Number(details.max_loops || 0)} 轮）`;
@@ -10460,7 +11857,7 @@ async function handoffProjectHostCommandToTerminal(row, pending, eventData) {
   if (!row || !pending || pending.projectHostTerminalHandoffTriggered) {
     return false;
   }
-  const command = String(eventData?.command || "").trim();
+  const command = eventCommand(eventData);
   if (!command) return false;
   pending.projectHostTerminalHandoffTriggered = true;
   terminalActiveCommand.value = command;
@@ -11952,19 +13349,6 @@ function buildProjectStatsCommandPrompt({
     .join("\n");
 }
 
-function buildHostRunCommandPrompt(commandPrompt) {
-  const normalizedCommand = String(commandPrompt || "").trim();
-  return [
-    "你现在必须直接调用 `project_host_run_command`，在当前电脑执行下面这条命令。",
-    "要求：",
-    "- 不要只解释命令，也不要让用户自己执行。",
-    "- 返回实际执行结果，至少说明工作目录、退出码、stdout/stderr 关键信息。",
-    "- 如果命令执行到浏览器授权、系统确认或人工输入阻塞点，先执行到阻塞点，再明确告诉用户当前卡在哪一步。",
-    "",
-    `要执行的命令：${normalizedCommand}`,
-  ].join("\n");
-}
-
 function resolveLarkCliSkillDirectory() {
   const stored = String(skillResourceDirectoryResolved.value || "").trim();
   if (stored) return stored;
@@ -11975,69 +13359,6 @@ function resolveLarkCliSkillDirectory() {
   ).trim();
   if (!workspaceRoot) return LARK_CLI_SKILL_ROOT_RELATIVE;
   return `${workspaceRoot.replace(/\/+$/g, "")}/${LARK_CLI_SKILL_ROOT_RELATIVE}`;
-}
-
-function normalizeLarkCliLoginCommand(commandPrompt) {
-  const normalizedPrompt = String(commandPrompt || "").trim();
-  if (!normalizedPrompt) {
-    return "";
-  }
-  const match = normalizedPrompt.match(
-    /^(?:lark-cli\s+)?(?:auth\s+)?(?:login|登录)(?:\s+([\s\S]*))?$/i,
-  );
-  if (!match) {
-    return "";
-  }
-  const rawSuffix = String(match[1] || "").trim();
-  if (!rawSuffix || /^(?:推荐|recommend)$/i.test(rawSuffix)) {
-    return "lark-cli auth login --recommend";
-  }
-  if (/^--/.test(rawSuffix)) {
-    return `lark-cli auth login ${rawSuffix}`;
-  }
-  if (
-    new RegExp(
-      `^(?:${LARK_AUTH_DOMAIN_OPTIONS.join("|")})(?:\\s*,\\s*(?:${LARK_AUTH_DOMAIN_OPTIONS.join("|")}))*$`,
-      "i",
-    ).test(rawSuffix)
-  ) {
-    return `lark-cli auth login --domain ${rawSuffix.replace(/\s+/g, "")}`;
-  }
-  return "lark-cli auth login --recommend";
-}
-
-function buildLarkCliCommandPrompt(commandPrompt) {
-  const normalizedPrompt = String(commandPrompt || "").trim();
-  const normalizedLoginCommand = normalizeLarkCliLoginCommand(normalizedPrompt);
-  const skillRoot = resolveLarkCliSkillDirectory();
-  const sharedSkillPath = `${skillRoot}/lark-shared/SKILL.md`;
-  const contactSkillPath = `${skillRoot}/lark-contact/SKILL.md`;
-  const imSkillPath = `${skillRoot}/lark-im/SKILL.md`;
-  return [
-    "你现在必须优先使用 `lark-cli` 完成这轮任务，并通过 `project_host_run_command` 在当前电脑上直接执行。",
-    "执行约束：",
-    "- 先检查 `lark-cli` 是否可用；如果不可用，再用最少必要命令定位 PATH / 安装态，不要直接放弃。",
-    `- 本轮优先参考本地飞书技能目录：${skillRoot}`,
-    `- 开始前先阅读：${sharedSkillPath}`,
-    `- 涉及联系人解析时再阅读：${contactSkillPath}`,
-    `- 涉及发消息、群聊、消息查询时再阅读：${imSkillPath}`,
-    "- 后续飞书相关操作优先走 `lark-cli`，不要改用 Python SDK、伪代码、手写 HTTP 请求或让用户自己执行终端命令。",
-    normalizedLoginCommand
-      ? `- 本轮目标已经明确解析为登录授权命令：\`${normalizedLoginCommand}\`。直接执行这条命令，不要改写成自然语言，也不要先停在 \`auth status\` 或 \`--help\`。`
-      : "- 如果用户给的是自然语言目标，请先把目标翻译成合适的 `lark-cli` 命令，再直接执行并返回实际结果。",
-    "- 不要停在 `--help`、`auth status`、`已确认登录态`、`已确认子命令名` 这种中间状态；除非遇到真实阻塞，否则继续执行到目标完成。",
-    "- 如果目标是“给某人发消息”，默认流程应是：确认发送内容与身份 -> 搜索联系人 open_id -> 如结果唯一则直接发送 -> 若缺 scope 则发起授权 -> 授权后自动重试发送。",
-    '- 搜索联系人优先使用：`lark-cli contact +search-user --query "<姓名>"`。',
-    "- 发送文本消息优先使用：`lark-cli im +messages-send --as user --user-id <open_id> --text '<内容>'`。",
-    "- 如果 `messages-send` 返回缺少 scope，优先继续执行工具输出里的授权提示；若 `auth login --scope` 失败，再改用 `lark-cli auth login --domain <domain>` 或 `--recommend`，不要只把 hint 转述给用户。",
-    "- 当输出里已经拿到唯一 open_id 时，把它当成可继续执行的结果，不要停止在“我已找到联系人”这一步。",
-    "- 返回实际执行结果，至少包含工作目录、退出码、stdout/stderr 关键信息。",
-    "- 如果卡在浏览器授权、系统确认或人工输入阻塞点，先执行到阻塞点，再明确说明当前等待什么，不要提前收口。",
-    "",
-    normalizedLoginCommand
-      ? `请直接执行：${normalizedLoginCommand}`
-      : `本轮目标：${normalizedPrompt}`,
-  ].join("\n");
 }
 
 function buildFormJsonCommandPrompt(commandPrompt) {
@@ -13231,6 +14552,75 @@ function resetDraft() {
   uploadFiles.value = [];
 }
 
+function currentActiveAssistantRow() {
+  const requestId = getActiveRequestId();
+  const pending = requestId ? pendingRequests.get(requestId) : null;
+  if (!pending) return null;
+  return messages.value[Number(pending.assistantIndex ?? -1)] || null;
+}
+
+function enqueueFollowupMessage() {
+  const text = String(draftText.value || "").trim();
+  const files = uploadFiles.value.slice();
+  if (!text && !files.length) return false;
+  const queueItem = {
+    id: createLocalMessageId(),
+    text,
+    files,
+    queuedAt: nowText(),
+  };
+  queuedFollowupMessages.value.push(queueItem);
+  const activeRow = currentActiveAssistantRow();
+  if (activeRow) {
+    upsertMessageOperation(activeRow, {
+      operationId: `plan:followup:${queueItem.id}`,
+      kind: "plan",
+      title: "追加需求",
+      summary: "已收到追加内容，当前回合结束后重新规划",
+      detail: [
+        "1. 记录追加内容 [completed]",
+        "2. 重新审查前序处理是否满足最新需求 [pending]",
+        "3. 按最新需求继续执行并更新结果 [pending]",
+      ].join("\n"),
+      phase: "running",
+      actionType: "none",
+      meta: {
+        followup_queue_id: queueItem.id,
+        queued_at: queueItem.queuedAt,
+      },
+    });
+    appendMessageProcessLog(activeRow, {
+      level: "info",
+      text: "已收到追加需求，当前回合结束后会重新规划并审查前序结果。",
+    });
+    activeRow.processExpanded = true;
+  }
+  resetDraft();
+  scrollToBottom();
+  return true;
+}
+
+async function drainQueuedFollowupMessages() {
+  if (followupQueueDraining || pendingRequests.size > 0) return;
+  const next = queuedFollowupMessages.value.shift();
+  if (!next) return;
+  followupQueueDraining = true;
+  try {
+    draftText.value = String(next.text || "").trim();
+    uploadFiles.value = Array.isArray(next.files) ? next.files : [];
+    await doSend({
+      fromFollowupQueue: true,
+      followupQueueId: String(next.id || "").trim(),
+      followupQueuedAt: String(next.queuedAt || "").trim(),
+    });
+  } finally {
+    followupQueueDraining = false;
+    if (queuedFollowupMessages.value.length && pendingRequests.size === 0) {
+      void drainQueuedFollowupMessages();
+    }
+  }
+}
+
 function nowText() {
   return new Date().toLocaleString();
 }
@@ -13308,7 +14698,7 @@ function syncSelectedProjectTools(modules) {
     .filter(Boolean);
   const previous = new Set(selectedProjectToolNames.value);
   const kept = names.filter((name) => previous.has(name));
-  selectedProjectToolNames.value = kept.length ? kept : names;
+  selectedProjectToolNames.value = kept;
 }
 
 function isProjectToolSelected(toolName) {
@@ -13978,6 +15368,9 @@ function buildProjectChatSettingsPayload() {
       chatMaxTokens.value || CHAT_SETTINGS_DEFAULTS.max_tokens,
     ),
     system_prompt: String(systemPrompt.value || ""),
+    auto_use_tools_explicit: Boolean(
+      projectChatSettings.value.auto_use_tools_explicit,
+    ),
     enabled_project_tool_names: [...selectedProjectToolNames.value],
   });
 }
@@ -15166,75 +16559,136 @@ async function handleSocketMessage(eventData) {
         const taskStatus = String(eventData?.status || "").trim();
         const workflowKind = String(eventData?.workflow_kind || "").trim();
         const authorizationUrl = String(eventData?.authorization_url || "").trim();
+        const interactionSchema =
+          eventData?.interaction_schema && typeof eventData.interaction_schema === "object"
+            ? eventData.interaction_schema
+            : null;
+        const rawActionType = String(eventData?.action_type || "").trim();
+        const actionType =
+          rawActionType === "open_url" && !authorizationUrl
+            ? "none"
+            : rawActionType ||
+              (authorizationUrl ? "open_url" : interactionSchema ? "interaction_form" : "none");
+        const isAuthWorkflow = workflowKind === "auth_login" || Boolean(authorizationUrl);
+        const hasActionableAuthLink = Boolean(authorizationUrl);
+        const rawDetail = stripTerminalControlSequences(
+          String(eventData?.detail || eventData?.message || "").trim(),
+        ).trim();
+        const hasAuthPrompt = isAuthWorkflow && hasAuthorizationPromptText(eventData, rawDetail);
+        const isTerminalFailure =
+          ["failed", "timeout", "cancelled"].includes(taskStatus) && !hasAuthPrompt;
         const normalizedOperationId =
           eventType === "workflow_state" || eventType === "operation_task_state"
-            ? workflowKind === "auth_login" || authorizationUrl
+            ? isAuthWorkflow
               ? `auth:${taskId || String(eventData?.workflow_id || "active").trim()}`
               : `workflow:${workflowKind || "generic"}:${String(eventData?.workflow_id || taskId || "active").trim()}`
             : `auth:${taskId || "active"}`;
         upsertMessageOperation(matched.row, {
           operationId: normalizedOperationId,
           kind:
-            workflowKind === "auth_login" || authorizationUrl ? "auth" : "request",
+            isAuthWorkflow ? "auth" : "request",
           title:
             String(eventData?.status_label || eventData?.workflow_label || "后台工作流").trim() ||
             "后台工作流",
           summary:
-            String(eventData?.summary || "").trim() || "工作流已创建，等待后续结果",
-          detail: String(eventData?.detail || eventData?.message || "").trim(),
+            hasAuthPrompt && ["failed", "timeout", "cancelled"].includes(taskStatus)
+              ? "等待你在浏览器完成授权"
+              : interactionSchema && taskStatus === "waiting_user_action"
+                ? "等待你选择授权业务域"
+                : String(eventData?.summary || "").trim() || "工作流已创建，等待后续结果",
+          detail: rawDetail,
           phase:
-            taskStatus === "waiting_user_action"
+            (taskStatus === "waiting_user_action" || hasAuthPrompt) &&
+            (!isAuthWorkflow || hasActionableAuthLink || interactionSchema || hasAuthPrompt)
               ? "waiting_user"
-              : ["failed", "timeout", "cancelled"].includes(taskStatus)
+              : isTerminalFailure
                 ? "failed"
                 : taskStatus === "succeeded"
                   ? "completed"
                   : "running",
-          actionType:
-            String(eventData?.action_type || "").trim() ||
-            (authorizationUrl ? "open_url" : "none"),
+          actionType,
           meta: {
             task_id: taskId,
             chat_session_id: chatSessionId,
             resume_command: resumeCommand,
             authorization_url: authorizationUrl,
+            interaction_schema: interactionSchema,
             task_status: taskStatus,
             workflow_kind: workflowKind,
             workflow_id: String(eventData?.workflow_id || "").trim(),
+            workflow_state:
+              eventData && typeof eventData === "object" ? { ...eventData } : {},
           },
         });
+        if (
+          ["succeeded", "failed", "timeout", "cancelled"].includes(taskStatus) &&
+          !hasAuthPrompt &&
+          !resumeCommand
+        ) {
+          completePendingExternalOperationRequestByRow(
+            matched.row,
+            String(eventData?.summary || eventData?.message || "").trim() ||
+              (taskStatus === "succeeded"
+                ? "操作已完成"
+                : "操作未完成"),
+            { reject: taskStatus !== "succeeded" },
+          );
+        }
       } else if (eventType === "authorization_waiting" || eventType === "operation_waiting") {
         const authorizationUrl = String(
           eventData?.authorization_url || "",
         ).trim();
         const workflowKind = String(eventData?.workflow_kind || "").trim();
-        const rawDetail =
+        const interactionSchema =
+          eventData?.interaction_schema && typeof eventData.interaction_schema === "object"
+            ? eventData.interaction_schema
+            : null;
+        const rawActionType = String(eventData?.action_type || "").trim();
+        const actionType =
+          rawActionType === "open_url" && !authorizationUrl
+            ? "none"
+            : rawActionType ||
+              (authorizationUrl ? "open_url" : interactionSchema ? "interaction_form" : "none");
+        const isAuthWorkflow = workflowKind === "auth_login" || Boolean(authorizationUrl);
+        const hasActionableAuthLink = Boolean(authorizationUrl);
+        const rawDetail = stripTerminalControlSequences(
           String(eventData?.detail || "").trim() ||
-          [authorizationUrl, String(eventData?.message || "").trim()]
-            .filter(Boolean)
-            .join("\n");
+            [authorizationUrl, String(eventData?.message || "").trim()]
+              .filter(Boolean)
+              .join("\n"),
+        ).trim();
         upsertMessageOperation(matched.row, {
           operationId:
-            workflowKind === "auth_login" || authorizationUrl
+            isAuthWorkflow
               ? `auth:${taskId || "active"}`
               : `workflow:${workflowKind || "external_operation"}:${taskId || "active"}`,
-          kind: workflowKind === "auth_login" || authorizationUrl ? "auth" : "request",
+          kind: isAuthWorkflow ? "auth" : "request",
           title:
-            String(eventData?.status_label || eventData?.workflow_label || "等待外部操作").trim() ||
-            "等待外部操作",
+            String(eventData?.status_label || eventData?.workflow_label || "等待操作").trim() ||
+            "等待操作",
           summary:
-            workflowKind === "auth_login" || authorizationUrl
+            isAuthWorkflow && hasActionableAuthLink
               ? "等待你在浏览器完成授权"
-              : "等待你完成外部操作",
+              : interactionSchema
+                ? "等待你选择授权业务域"
+              : isAuthWorkflow
+                ? "授权流程已启动，等待结构化授权链接返回"
+                : "等待你完成操作",
           detail: rawDetail,
-          phase: "waiting_user",
-          actionType: String(eventData?.action_type || "").trim() || (authorizationUrl ? "open_url" : "none"),
+          phase:
+            isAuthWorkflow && !hasActionableAuthLink && !interactionSchema
+              ? "running"
+              : "waiting_user",
+          actionType,
           meta: {
             task_id: taskId,
             chat_session_id: chatSessionId,
             resume_command: resumeCommand,
             authorization_url: authorizationUrl,
+            interaction_schema: interactionSchema,
             workflow_kind: workflowKind,
+            workflow_state:
+              eventData && typeof eventData === "object" ? { ...eventData } : {},
           },
         });
       } else if (eventType === "authorization_completed" || eventType === "operation_completed") {
@@ -15243,22 +16697,22 @@ async function handleSocketMessage(eventData) {
         const completionSummary = resumeCommand
           ? isAuthOperation
             ? "授权完成，正在自动继续"
-            : "外部操作完成，正在自动继续"
+            : "操作完成，正在自动继续"
           : isAuthOperation
             ? "授权完成"
-            : "外部操作完成";
+            : "操作完成";
         const completionNote = resumeCommand
-          ? `> ✅ ${isAuthOperation ? "授权完成" : "外部操作完成"}，系统正在自动继续。`
-          : `> ✅ ${isAuthOperation ? "授权完成，检测通过" : "外部操作完成"}。`;
+          ? `> ✅ ${isAuthOperation ? "授权完成" : "操作完成"}，系统正在自动继续。`
+          : `> ✅ ${isAuthOperation ? "授权完成，检测通过" : "操作完成"}。`;
         const completionMessage = String(
           eventData?.message ||
             (resumeCommand
               ? isAuthOperation
                 ? "授权完成，检测通过，系统正在自动继续上一条待执行命令。"
-                : "外部操作完成，系统正在自动继续上一条待执行命令。"
+                : "操作完成，系统正在自动继续上一条待执行命令。"
               : isAuthOperation
                 ? "授权完成，检测通过。"
-                : "外部操作完成。"),
+                : "操作完成。"),
         ).trim();
         upsertMessageOperation(matched.row, {
           operationId:
@@ -15266,7 +16720,7 @@ async function handleSocketMessage(eventData) {
               ? `auth:${taskId || "active"}`
               : `workflow:${workflowKind || "external_operation"}:${taskId || "active"}`,
           kind: isAuthOperation ? "auth" : "request",
-          title: isAuthOperation ? "授权状态" : "外部操作状态",
+          title: isAuthOperation ? "授权状态" : "操作状态",
           summary: completionSummary,
           detail: completionMessage,
           phase: "completed",
@@ -15277,12 +16731,24 @@ async function handleSocketMessage(eventData) {
           },
         });
         appendAssistantStatusNote(matched.row, completionNote);
+        completeBackgroundPendingRequestOperation(matched.row, {
+          taskId,
+          chatSessionId,
+          summary: completionSummary,
+        });
         if (!resumeCommand) {
           completePendingExternalOperationRequest(matched, completionMessage);
         }
       } else if (eventType === "authorization_resume_started" || eventType === "operation_resume_started") {
         const workflowKind = String(eventData?.workflow_kind || "").trim();
         const isAuthOperation = eventType === "authorization_resume_started" || workflowKind === "auth_login";
+        completeBackgroundPendingRequestOperation(matched.row, {
+          taskId,
+          chatSessionId,
+          summary: isAuthOperation
+            ? "授权完成，已转入自动继续"
+            : "操作完成，已转入自动继续",
+        });
         const existingResumeRunning = messageOperations(matched.row).some(
           (item) =>
             String(item?.kind || "").trim().toLowerCase() === "request" &&
@@ -15294,10 +16760,10 @@ async function handleSocketMessage(eventData) {
               ? `auth:${taskId || "active"}`
               : `workflow:${workflowKind || "external_operation"}:${taskId || "active"}`,
           kind: isAuthOperation ? "auth" : "request",
-          title: isAuthOperation ? "授权状态" : "外部操作状态",
-          summary: isAuthOperation ? "授权完成，已转入自动继续" : "外部操作完成，已转入自动继续",
+          title: isAuthOperation ? "授权状态" : "操作状态",
+          summary: isAuthOperation ? "授权完成，已转入自动继续" : "操作完成，已转入自动继续",
           detail: String(
-            eventData?.message || "外部操作完成，系统正在自动继续上一条待执行命令。",
+            eventData?.message || "操作完成，系统正在自动继续上一条待执行命令。",
           ).trim(),
           phase: "completed",
           meta: {
@@ -15306,6 +16772,25 @@ async function handleSocketMessage(eventData) {
             resume_command: resumeCommand,
           },
         });
+        upsertMessageOperation(matched.row, {
+          operationId: `request:${String(eventData?.resume_request_id || requestId || chatSessionId || "resume").trim()}`,
+          kind: "request",
+          title: "本轮执行",
+          summary: isAuthOperation
+            ? "授权完成，正在自动继续"
+            : "操作完成，正在自动继续",
+          detail: String(
+            eventData?.message || "操作完成，系统正在自动继续上一条待执行命令。",
+          ).trim(),
+          phase: "running",
+          actionType: "none",
+          meta: {
+            task_id: taskId,
+            chat_session_id: chatSessionId,
+            resume_command: resumeCommand,
+          },
+        });
+        matched.row.processExpanded = true;
         const projectId = String(selectedProjectId.value || "").trim();
         const currentSessionId = String(currentChatSessionId.value || "").trim();
         if (
@@ -15660,6 +17145,38 @@ async function handleSocketMessage(eventData) {
     }
     return;
   }
+  if (eventType === "intent_classified") {
+    scrollToBottom();
+    return;
+  }
+  if (eventType === "plan_created") {
+    applyPlanCreatedEvent(row, eventData, requestId);
+    scrollToBottom();
+    return;
+  }
+  if (eventType === "verification_started") {
+    if (!String(eventData?.plan_id || "").trim()) {
+      scrollToBottom();
+      return;
+    }
+    applyVerificationStartedEvent(row, eventData, requestId);
+    scrollToBottom();
+    return;
+  }
+  if (eventType === "verification_finished") {
+    if (!String(eventData?.plan_id || "").trim()) {
+      scrollToBottom();
+      return;
+    }
+    applyVerificationFinishedEvent(row, eventData, requestId);
+    scrollToBottom();
+    return;
+  }
+  if (eventType === "command_planned" || eventType === "tool_planned") {
+    applyPlannedActionEvent(row, eventData, requestId);
+    scrollToBottom();
+    return;
+  }
   if (eventType === "start") {
     terminalPanelStatus.value = "running";
     const taskTreePayload = eventData
@@ -15689,6 +17206,20 @@ async function handleSocketMessage(eventData) {
     row.effectiveToolTotal = Number(
       eventData?.effective_tool_total || row.effectiveTools.length || 0,
     );
+    if (String(eventData?.chat_mode || "").trim() === "external_agent") {
+      upsertMessageOperation(row, {
+        operationId: `thinking:${requestId}`,
+        kind: "thinking",
+        title: "连接 Agent",
+        summary: "正在连接外部 Agent",
+        detail: "",
+        phase: "running",
+        actionType: "none",
+        meta: {
+          request_id: requestId,
+        },
+      });
+    }
     if (String(eventData?.chat_mode || "").trim() === "external_agent") {
       externalAgentInfo.value = normalizeExternalAgentInfo({
         ...externalAgentInfo.value,
@@ -15870,12 +17401,42 @@ async function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "command_start") {
+    row.processExpanded = true;
+    const command = eventCommand(eventData);
+    const cwd = String(eventData?.cwd || eventData?.workspace_path || "").trim();
+    const toolName = String(eventData?.tool_name || "命令").trim() || "命令";
+    const planId = String(eventData?.plan_id || "").trim();
+    const stepId = String(eventData?.step_id || "").trim();
+    if (planId && stepId) {
+      updatePlanOperationStep(row, planId, stepId, {
+        status: "running",
+        summary: command ? `正在执行命令：${command}` : "正在执行命令",
+      });
+    }
     appendMessageProcessLog(row, {
       level: "info",
       text:
-        String(eventData?.command || "").trim()
-          ? `开始执行命令：${String(eventData?.command || "").trim()}`
+        command
+          ? `开始执行命令：${command}`
           : "开始执行命令",
+    });
+    upsertMessageOperation(row, {
+      operationId: projectChatActionOperationId(eventData),
+      kind: "tool",
+      title: toolProgressLabel(eventData, toolName),
+      summary: "正在执行命令",
+      detail: "",
+      phase: "running",
+      actionType: "none",
+      meta: {
+        tool_name: toolName,
+        command,
+        cwd,
+        plan_id: planId,
+        step_id: stepId,
+        tool_index: Number(eventData?.tool_index || 0) || 0,
+        tool_count: Number(eventData?.tool_count || 0) || 0,
+      },
     });
     appendAssistantStatusNote(row, "> ⏳ 正在执行必要步骤…");
     scrollToBottom();
@@ -15887,6 +17448,11 @@ async function handleSocketMessage(eventData) {
         .trim()
         .toLowerCase() || "completed";
     const outputPreview = String(eventData?.output_preview || "").trim();
+    const command = eventCommand(eventData);
+    const cwd = String(eventData?.cwd || eventData?.workspace_path || "").trim();
+    const toolName = String(eventData?.tool_name || "命令").trim() || "命令";
+    const planId = String(eventData?.plan_id || "").trim();
+    const stepId = String(eventData?.step_id || "").trim();
     if (outputPreview && isMcpApprovalCancelledMessage(outputPreview) && pending) {
       pending.mcpApprovalCancelled = true;
     }
@@ -15898,10 +17464,8 @@ async function handleSocketMessage(eventData) {
       level: succeeded ? "success" : "warning",
       text: clipText(
         [
-          String(eventData?.command || "").trim()
-            ? `命令${succeeded ? "完成" : "未完成"}：${String(
-                eventData?.command || "",
-              ).trim()}`
+          command
+            ? `命令${succeeded ? "完成" : "未完成"}：${command}`
             : `命令${succeeded ? "完成" : "未完成"}`,
           outputPreview,
         ]
@@ -15909,6 +17473,38 @@ async function handleSocketMessage(eventData) {
           .join(" · "),
         260,
       ),
+    });
+    if (planId && stepId) {
+      updatePlanOperationStep(row, planId, stepId, {
+        status: succeeded ? "completed" : "failed",
+        summary: succeeded ? "命令执行完成" : "命令执行未完成",
+      });
+    }
+    upsertMessageOperation(row, {
+      operationId: projectChatActionOperationId(eventData),
+      kind: "tool",
+      title: toolProgressLabel(eventData, toolName),
+      summary: succeeded ? "命令执行完成" : "命令执行未完成",
+      detail: "",
+      phase: succeeded ? "completed" : "failed",
+      actionType: "none",
+      meta: {
+        tool_name: toolName,
+        command,
+        cwd,
+        exit_code:
+          exitCode === null || exitCode === undefined
+            ? ""
+            : String(exitCode).trim(),
+        output_preview: outputPreview,
+        stdout_preview: String(eventData?.stdout_preview || "").trim(),
+        stderr_preview: String(eventData?.stderr_preview || "").trim(),
+        error: String(eventData?.error || "").trim(),
+        plan_id: planId,
+        step_id: stepId,
+        tool_index: Number(eventData?.tool_index || 0) || 0,
+        tool_count: Number(eventData?.tool_count || 0) || 0,
+      },
     });
     if (!succeeded) {
       appendAssistantStatusNote(
@@ -15945,6 +17541,7 @@ async function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "tool_start") {
+    row.processExpanded = true;
     const toolName = String(eventData?.tool_name || "工具");
     if (pending) {
       pending.lastToolName = toolName;
@@ -15967,11 +17564,16 @@ async function handleSocketMessage(eventData) {
     const outputPreview = String(eventData?.output_preview || "").trim();
     const taskId = String(eventData?.task_id || "").trim();
     const authorizationUrl = String(eventData?.authorization_url || "").trim();
+    const interactionSchema =
+      eventData?.interaction_schema && typeof eventData.interaction_schema === "object"
+        ? eventData.interaction_schema
+        : null;
     const nextStep = String(eventData?.next_step || "").trim();
-    const rawDetail =
+    const rawDetail = stripTerminalControlSequences(
       String(eventData?.detail || "").trim() ||
-      String(eventData?.output_preview || "").trim() ||
-      [authorizationUrl, nextStep].filter(Boolean).join("\n");
+        String(eventData?.output_preview || "").trim() ||
+        [authorizationUrl, nextStep].filter(Boolean).join("\n"),
+    ).trim();
     if (
       ["operation_wait_task", "cli_plugin_login_task"].includes(
         String(eventData?.source || "").trim(),
@@ -15983,35 +17585,52 @@ async function handleSocketMessage(eventData) {
         workflowKind === "auth_login" ||
         String(eventData?.source || "").trim() === "cli_plugin_login_task" ||
         Boolean(authorizationUrl);
-      let summary = isAuthOperation ? "授权任务已创建，等待后续结果" : "外部操作已创建，等待后续结果";
+      const hasAuthPrompt = isAuthOperation && hasAuthorizationPromptText(eventData, rawDetail);
+      let summary = isAuthOperation ? "授权任务已创建，等待后续结果" : "操作已创建，等待后续结果";
       let phase = "running";
       if (taskStatus === "queued") {
-        summary = isAuthOperation ? "授权任务已创建，等待返回授权链接" : "外部操作已创建，等待后续结果";
+        summary = isAuthOperation ? "授权任务已创建，等待返回授权链接" : "操作已创建，等待后续结果";
       } else if (taskStatus === "running") {
-        summary = isAuthOperation ? "授权流程已启动，正在等待后续结果" : "外部操作已启动，正在等待后续结果";
+        summary = isAuthOperation ? "授权流程已启动，正在等待后续结果" : "操作已启动，正在等待后续结果";
       } else if (taskStatus === "waiting_user_action") {
-        summary = isAuthOperation ? "等待你在浏览器完成授权" : "等待你完成外部操作";
-        phase = "waiting_user";
+        summary =
+          isAuthOperation && authorizationUrl
+            ? "等待你在浏览器完成授权"
+            : interactionSchema
+              ? "等待你选择授权业务域"
+            : isAuthOperation
+              ? "授权流程已启动，等待结构化授权链接返回"
+              : "等待你完成操作";
+        phase =
+          isAuthOperation && !authorizationUrl && !interactionSchema
+            ? "running"
+            : "waiting_user";
       } else if (taskStatus === "succeeded") {
-        summary = isAuthOperation ? "授权完成，检测通过" : "外部操作完成";
+        summary = isAuthOperation ? "授权完成，检测通过" : "操作完成";
         phase = "completed";
       } else if (["failed", "timeout"].includes(taskStatus)) {
-        summary = isAuthOperation ? "授权流程未完成" : "外部操作未完成";
-        phase = "failed";
+        if (hasAuthPrompt) {
+          summary = "等待你在浏览器完成授权";
+          phase = "waiting_user";
+        } else {
+          summary = isAuthOperation ? "授权流程未完成" : "操作未完成";
+          phase = "failed";
+        }
       }
       upsertMessageOperation(row, {
         operationId: isAuthOperation ? `auth:${taskId}` : `workflow:${workflowKind || "external_operation"}:${taskId}`,
         kind: isAuthOperation ? "auth" : "request",
         title:
-          String(eventData?.status_label || eventData?.operation_label || (isAuthOperation ? "网页登录授权" : "外部操作")).trim() ||
-          (isAuthOperation ? "网页登录授权" : "外部操作"),
+          String(eventData?.status_label || eventData?.operation_label || (isAuthOperation ? "网页登录授权" : "操作")).trim() ||
+          (isAuthOperation ? "网页登录授权" : "操作"),
         summary,
         detail: rawDetail,
         phase,
-        actionType: authorizationUrl ? "open_url" : "none",
+        actionType: authorizationUrl ? "open_url" : interactionSchema ? "interaction_form" : "none",
         meta: {
           task_id: taskId,
           authorization_url: authorizationUrl,
+          interaction_schema: interactionSchema,
         },
       });
     }
@@ -16072,39 +17691,62 @@ async function handleSocketMessage(eventData) {
     return;
   }
   if (eventType === "done") {
+    let keepRequestOpenAfterDone = false;
     try {
+      const doneState = normalizeDoneEventExecutionState(eventData);
+      const doneContent = String(eventData?.content || "").trim();
+      const hasFinalAnswer = Boolean(doneContent || String(row.content || "").trim());
+      const planId = String(eventData?.plan_id || "").trim();
+      const stepId = String(eventData?.step_id || "").trim();
+      if (planId && stepId) {
+        updatePlanOperationStep(row, planId, stepId, {
+          status: doneState.phase === "completed" ? "completed" : doneState.phase,
+          summary: doneState.summary,
+        });
+      }
+      keepRequestOpenAfterDone =
+        doneState.keepExecutionOpen ||
+        (!hasFinalAnswer && hasOpenAgentRuntimeExecution(row));
       const preserveTerminalInteraction =
         shouldPreserveTerminalInteractionAfterDone(row, pending);
-      if (!preserveTerminalInteraction) {
+      if (!keepRequestOpenAfterDone && !preserveTerminalInteraction) {
         terminalPanelStatus.value = "idle";
       }
       const guardSummary = formatGuardSummary(eventData);
-      const completedReason = String(eventData?.completed_reason || "")
-        .trim()
-        .toLowerCase();
-      const donePhase = guardSummary ? "blocked" : "completed";
       if (guardSummary) {
         removeAssistantStatusNotes(row, isTransientExecutionStatusNote);
       }
-      upsertMessageOperation(row, {
-        operationId: `request:${requestId}`,
-        kind: "request",
-        title: "本轮执行",
-        summary:
-          guardSummary || "本轮执行已结束",
-        detail: String(eventData?.content || "").trim(),
-        phase: donePhase,
-        meta: { request_id: requestId },
-      });
+      if (!keepRequestOpenAfterDone) {
+        upsertMessageOperation(row, {
+          operationId: `request:${requestId}`,
+          kind: "request",
+          title: "本轮执行",
+          summary: doneState.summary,
+          detail: String(eventData?.content || "").trim(),
+          phase: doneState.phase,
+          meta: {
+            request_id: requestId,
+            completed_reason: String(eventData?.completed_reason || "").trim(),
+            task_id: String(eventData?.task_id || "").trim(),
+            chat_session_id: String(eventData?.chat_session_id || "").trim(),
+            authorization_url: String(eventData?.authorization_url || "").trim(),
+            action_type: String(eventData?.action_type || "").trim(),
+            plan_id: planId,
+            step_id: stepId,
+          },
+        });
+      }
       appendAgentRuntimePermissionOperations(row, eventData);
       if (guardSummary) {
         appendAssistantStatusNote(row, `> ⚠️ ${guardSummary}`);
       }
+      const doneLogSummary =
+        keepRequestOpenAfterDone && !doneState.keepExecutionOpen
+          ? "运行仍在继续，等待最终结果"
+          : doneState.summary;
       appendMessageProcessLog(row, {
-        level:
-          guardSummary ? "warning" : "success",
-        text:
-          guardSummary || "后台执行已完成",
+        level: doneState.level,
+        text: doneLogSummary,
       });
       row.images = mergeImageUrls(
         extractImages(row),
@@ -16114,7 +17756,6 @@ async function handleSocketMessage(eventData) {
         extractVideos(row),
         collectArtifactVideoUrls(eventData),
       );
-      const doneContent = String(eventData?.content || "").trim();
       const currentContent = String(row.content || "").trim();
       if (!currentContent) {
         row.content = doneContent || guardSummary;
@@ -16166,7 +17807,9 @@ async function handleSocketMessage(eventData) {
           return;
         }
       }
-      if (preserveTerminalInteraction) {
+      if (keepRequestOpenAfterDone) {
+        row.processExpanded = true;
+      } else if (preserveTerminalInteraction) {
         terminalPanelStatus.value = "running";
         activeTerminalMirrorAssistantIndex.value = Number(
           pending?.assistantIndex ?? activeTerminalMirrorAssistantIndex.value,
@@ -16176,6 +17819,7 @@ async function handleSocketMessage(eventData) {
         row.processExpanded = true;
       } else {
         completeTerminalInputOperations(row, "本轮执行已结束");
+        completeFinishedMessageOperations(row, doneState.summary);
         if (
           Number(activeTerminalMirrorAssistantIndex.value) ===
           Number(pending?.assistantIndex ?? -1)
@@ -16187,7 +17831,11 @@ async function handleSocketMessage(eventData) {
         terminalStructuredInteraction.value = null;
       }
     } finally {
-      resolvePendingRequest(requestId, pending, row.content || "");
+      if (!keepRequestOpenAfterDone) {
+        resolvePendingRequest(requestId, pending, row.content || "");
+      } else {
+        chatLoading.value = pendingRequests.size > 0;
+      }
       scrollToBottom();
     }
     return;
@@ -16686,6 +18334,7 @@ async function sendProjectChatRequest({
   historyRows = [],
   effectiveAutoUseTools = true,
   effectiveToolPriority = [],
+  enabledProjectToolNames = selectedProjectToolNames.value,
   assistAction = null,
   assistToolNames = [],
   onAfterDone = null,
@@ -16791,7 +18440,7 @@ async function sendProjectChatRequest({
   };
   requestPayload.enabled_project_tool_names = normalizeStringList(
     [
-      ...selectedProjectToolNames.value,
+      ...enabledProjectToolNames,
       ...(assistAction?.id === "employee_create" ? assistToolNames : []),
     ],
     200,
@@ -16803,6 +18452,9 @@ async function sendProjectChatRequest({
     !messageOperations(messages.value[assistantIndex]).length
   ) {
     messages.value[assistantIndex].content = "模型未返回内容。";
+  } else if (!String(messages.value[assistantIndex]?.content || "").trim()) {
+    messages.value[assistantIndex].content =
+      "模型未返回最终回答，请检查本轮执行过程。";
   }
   if (typeof onAfterDone === "function") {
     await onAfterDone();
@@ -17040,7 +18692,7 @@ async function sendGlobalChatWithoutProject() {
   }
 }
 
-async function doSend() {
+async function doSend(options = {}) {
   if (!canSend.value) return;
 
   if (isTerminalInteractionMode.value) {
@@ -17053,8 +18705,30 @@ async function doSend() {
     return;
   }
 
+  const fromFollowupQueue = Boolean(options?.fromFollowupQueue);
+  if (chatLoading.value && !fromFollowupQueue) {
+    if (isAwaitingUserInteraction.value) {
+      const text = String(draftText.value || "").trim();
+      if (await submitPendingInteractionAckIfNeeded(text)) {
+        return;
+      }
+      if (!canSupersedePendingInteraction(activePendingInteraction.value)) {
+        ElMessage.warning("当前等待的是确认类操作，请先使用消息卡片里的按钮继续");
+        return;
+      }
+      releasePendingInteractionForFollowup(text);
+    }
+    if (enqueueFollowupMessage()) {
+      ElMessage.info("已加入追加需求队列，当前回合结束后会重新规划");
+    }
+    return;
+  }
+
   if (isAwaitingUserInteraction.value) {
     const text = String(draftText.value || "").trim();
+    if (await submitPendingInteractionAckIfNeeded(text)) {
+      return;
+    }
     if (!canSupersedePendingInteraction(activePendingInteraction.value)) {
       ElMessage.warning("当前等待的是确认类操作，请先使用消息卡片里的按钮继续");
       return;
@@ -17094,6 +18768,13 @@ async function doSend() {
   const activeSessionSourceContext = normalizeChatSourceContext(
     currentChatSession.value || {},
   );
+  if (fromFollowupQueue) {
+    activeSessionSourceContext.followup_replan = {
+      queued: true,
+      queue_id: String(options?.followupQueueId || "").trim(),
+      queued_at: String(options?.followupQueuedAt || "").trim(),
+    };
+  }
   const historyRows = toHistoryRows(messages.value, historyLimit.value);
   const imageUrls = uploadFiles.value
     .filter((item) => item.kind === "image")
@@ -17162,7 +18843,7 @@ async function doSend() {
       ElMessage.warning("请在 /run 后输入要执行的命令");
       return;
     }
-    userPrompt = buildHostRunCommandPrompt(slashCommand.prompt);
+    userPrompt = `${slashCommand.entry.command} ${slashCommand.prompt}`;
   } else if (slashCommand?.entry?.kind === "lark_cli") {
     if (!slashCommand.prompt) {
       ElMessage.warning(
@@ -17175,7 +18856,7 @@ async function doSend() {
         silent: true,
       });
     }
-    userPrompt = buildLarkCliCommandPrompt(slashCommand.prompt);
+    userPrompt = `${slashCommand.entry.command} ${slashCommand.prompt}`;
   } else if (slashCommand?.entry?.kind === "form_json") {
     if (!slashCommand.prompt) {
       ElMessage.warning("请在 /form-json 后输入字段或表单需求");
@@ -17239,15 +18920,23 @@ async function doSend() {
     projectChatSettings.value.tool_priority || [],
     assistToolNames,
   );
+  const slashCommandRequiresTools = ["host_run", "lark_cli"].includes(
+    String(slashCommand?.entry?.kind || "").trim(),
+  );
   const effectiveAutoUseTools =
-    assistAction && assistToolNames.length
+    slashCommandRequiresTools || (assistAction && assistToolNames.length)
       ? true
       : singleRoundAnswerOnly.value
         ? false
-        : Boolean(
-            projectChatSettings.value.auto_use_tools ??
-            CHAT_SETTINGS_DEFAULTS.auto_use_tools,
-          );
+        : projectChatToolsExplicitlyEnabled();
+  const effectiveSelectedProjectToolNames = effectiveAutoUseTools
+    ? slashCommandRequiresTools
+      ? normalizeStringList([
+          ...selectedProjectToolNames.value,
+          "project_host_run_command",
+        ])
+      : selectedProjectToolNames.value
+    : [];
   const displayUserMessageContent = slashCommand
     ? slashCommand.prompt
       ? `${slashCommand.entry.command} ${slashCommand.prompt}`
@@ -17280,6 +18969,25 @@ async function doSend() {
     operations: [],
     time: nowText(),
   };
+  if (fromFollowupQueue) {
+    assistantMessage.operations.push({
+      operationId: `plan:followup:${String(options?.followupQueueId || assistantMessage.id).trim()}`,
+      kind: "plan",
+      title: "重新规划",
+      summary: "正在基于追加需求重新审查和规划",
+      detail: [
+        "1. 读取追加需求 [completed]",
+        "2. 审查前序处理是否仍满足最新需求 [pending]",
+        "3. 按最新计划继续处理并汇总结果 [pending]",
+      ].join("\n"),
+      phase: "running",
+      actionType: "none",
+      meta: {
+        followup_queue_id: String(options?.followupQueueId || "").trim(),
+      },
+    });
+    assistantMessage.processExpanded = true;
+  }
 
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
@@ -17303,6 +19011,7 @@ async function doSend() {
       historyRows,
       effectiveAutoUseTools,
       effectiveToolPriority,
+      enabledProjectToolNames: effectiveSelectedProjectToolNames,
       assistAction,
       assistToolNames,
       onAfterDone:
@@ -17326,6 +19035,9 @@ async function doSend() {
     singleRoundAnswerOnly.value = false;
     if (selectedProjectId.value) {
       await fetchChatSessions(selectedProjectId.value, activeChatSessionId);
+    }
+    if (!chatLoading.value && queuedFollowupMessages.value.length) {
+      void drainQueuedFollowupMessages();
     }
     scrollToBottom();
   }
@@ -19854,7 +21566,8 @@ onUnmounted(() => {
 }
 
 .message-operation-card__detail,
-.message-operation-card__action {
+.message-operation-card__action,
+.message-operation-card__risk {
   margin: 0;
   font-size: 12px;
   line-height: 1.6;
@@ -19866,9 +21579,163 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
+.message-operation-card__plan {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.message-operation-card__plan-step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  background: rgba(248, 250, 252, 0.86);
+}
+
+.message-operation-card__plan-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.68);
+  background: #ffffff;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 800;
+}
+
+.message-operation-card__plan-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.message-operation-card__plan-title {
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.message-operation-card__plan-summary {
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.message-operation-card__plan-status {
+  align-self: center;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.message-operation-card__plan-step.is-running {
+  border-color: rgba(59, 130, 246, 0.38);
+  background: rgba(239, 246, 255, 0.9);
+}
+
+.message-operation-card__plan-step.is-running .message-operation-card__plan-check {
+  border-color: rgba(59, 130, 246, 0.62);
+  color: #2563eb;
+}
+
+.message-operation-card__plan-step.is-completed {
+  border-color: rgba(34, 197, 94, 0.32);
+  background: rgba(240, 253, 244, 0.86);
+}
+
+.message-operation-card__plan-step.is-completed .message-operation-card__plan-check {
+  border-color: rgba(34, 197, 94, 0.46);
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.message-operation-card__plan-step.is-blocked,
+.message-operation-card__plan-step.is-failed {
+  border-color: rgba(239, 68, 68, 0.34);
+  background: rgba(254, 242, 242, 0.9);
+}
+
+.message-operation-card__plan-step.is-blocked .message-operation-card__plan-check,
+.message-operation-card__plan-step.is-failed .message-operation-card__plan-check {
+  border-color: rgba(239, 68, 68, 0.52);
+  color: #dc2626;
+}
+
+.message-operation-card__command,
+.message-operation-card__output {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.96);
+  color: #e5e7eb;
+}
+
+.message-operation-card__command-meta,
+.message-operation-card__output-label {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.4;
+  font-family:
+    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.message-operation-card__command-pre,
+.message-operation-card__output-pre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #f8fafc;
+  font-size: 12px;
+  line-height: 1.55;
+  font-family:
+    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+
 .message-operation-card__action {
   color: #0f766e;
   font-weight: 600;
+}
+
+.message-operation-card__risk {
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px 9px;
+  border-radius: 8px;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.message-operation-card__risk.is-medium {
+  border: 1px solid rgba(245, 158, 11, 0.34);
+  background: rgba(255, 251, 235, 0.92);
+  color: #92400e;
+}
+
+.message-operation-card__risk.is-high {
+  border: 1px solid rgba(239, 68, 68, 0.34);
+  background: rgba(254, 242, 242, 0.95);
+  color: #b91c1c;
 }
 
 .message-operation-card__actions {
@@ -20440,7 +22307,11 @@ onUnmounted(() => {
 
 .message-process-stream__text {
   min-width: 0;
+  white-space: pre-wrap;
   word-break: break-word;
+  font-family:
+    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12.5px;
 }
 
 .message-process-shell__state {

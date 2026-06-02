@@ -17,6 +17,7 @@ from services.cli_plugin_market_service import build_cli_plugin_runtime_environm
 from services.project_host_command_service import _resolve_workspace_root
 
 _MAX_HISTORY_CHUNKS = 400
+_MAX_READ_CHARS = 40000
 
 
 def _disable_tty_echo(fd: int) -> None:
@@ -91,7 +92,12 @@ async def _pump_terminal_session(session_id: str) -> None:
     try:
         while True:
             try:
-                chunk = await loop.run_in_executor(None, os.read, session.master_fd, 4096)
+                chunk = os.read(session.master_fd, 4096)
+            except BlockingIOError:
+                if session.process.returncode is not None:
+                    break
+                await asyncio.sleep(0.05)
+                continue
             except OSError as exc:
                 if exc.errno in {errno.EIO, errno.EBADF}:
                     break
@@ -154,7 +160,7 @@ async def start_or_attach_project_host_terminal(
         if normalized_initial_command:
             await write_project_host_terminal_input(
                 existing_session.session_id,
-                f"{normalized_initial_command}\r",
+                f"{normalized_initial_command}\n",
             )
         return {
             "session_id": existing_session.session_id,
@@ -167,6 +173,7 @@ async def start_or_attach_project_host_terminal(
     shell_command = _resolve_shell_command()
     session_id = f"host-term-{uuid.uuid4().hex[:12]}"
     master_fd, slave_fd = pty.openpty()
+    os.set_blocking(master_fd, False)
     _disable_tty_echo(slave_fd)
     exec_env, plugin_runtime_metadata = build_cli_plugin_runtime_environment(
         owner_username=str(username or "").strip(),
@@ -192,7 +199,11 @@ async def start_or_attach_project_host_terminal(
     _terminal_owner_index[owner_key] = session_id
     session.pump_task = asyncio.create_task(_pump_terminal_session(session_id))
     if normalized_initial_command:
-        os.write(master_fd, f"{normalized_initial_command}\r".encode("utf-8", errors="ignore"))
+        await asyncio.sleep(0.05)
+        await write_project_host_terminal_input(
+            session_id,
+            f"{normalized_initial_command}\n",
+        )
     return {
         "session_id": session_id,
         "workspace_path": str(workspace_root),
@@ -269,16 +280,47 @@ async def stop_project_host_terminal(session_id: str) -> dict[str, Any]:
     except OSError:
         pass
     if session.pump_task is not None:
+        session.pump_task.cancel()
+    if session.process.returncode is None:
         try:
-            await asyncio.wait_for(session.pump_task, timeout=2)
-        except Exception:
-            if session.process.returncode is None:
-                session.process.kill()
+            session.process.kill()
+        except ProcessLookupError:
+            pass
     session.closed = True
-    if not session.listeners:
-        _cleanup_terminal_session(session_id)
+    _cleanup_terminal_session(session_id)
     return {"ok": True}
 
 
 def list_project_host_terminal_sessions() -> Iterable[ProjectHostTerminalSession]:
     return list(_terminal_sessions.values())
+
+
+def read_project_host_terminal_output(
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    max_chars: int = 12000,
+) -> dict[str, Any]:
+    session = get_project_host_terminal_session(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+    )
+    if session is None:
+        return {"ok": False, "error": "terminal session is not running"}
+    try:
+        safe_limit = max(200, min(int(max_chars or 12000), _MAX_READ_CHARS))
+    except (TypeError, ValueError):
+        safe_limit = 12000
+    output = "".join(session.history_chunks)
+    if len(output) > safe_limit:
+        output = output[-safe_limit:]
+    return {
+        "ok": True,
+        "session_id": session.session_id,
+        "workspace_path": session.workspace_path,
+        "output": output,
+        "closed": bool(session.closed),
+        "exit_code": session.exit_code,
+    }

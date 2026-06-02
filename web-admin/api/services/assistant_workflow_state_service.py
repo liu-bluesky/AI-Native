@@ -63,6 +63,8 @@ def _primary_task_type(task_types: list[str]) -> str:
 
 
 def _requires_tooling(task_types: list[str], *, auto_use_tools: bool) -> bool:
+    if not auto_use_tools:
+        return False
     return any(
         item in {"schedule", "reminder", "coding", "automation", "docs", "bugfix"}
         for item in task_types
@@ -78,6 +80,8 @@ def _confirmation_policy(task_types: list[str]) -> str:
 
 
 def _execution_mode(task_types: list[str], *, auto_use_tools: bool) -> str:
+    if not auto_use_tools:
+        return "direct_answer"
     if any(item in {"coding", "automation"} for item in task_types):
         return "agent_execution"
     if any(item in {"schedule", "reminder", "requirement", "bugfix"} for item in task_types):
