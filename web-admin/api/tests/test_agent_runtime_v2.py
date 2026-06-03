@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -611,7 +612,7 @@ async def test_query_engine_waits_when_permission_required(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_query_engine_waits_when_background_operation_pending(tmp_path):
+async def test_query_engine_continues_when_operation_wait_has_no_user_action(tmp_path):
     from services.agent_runtime_v2.event_log import RuntimeEventLog
     from services.agent_runtime_v2.llm_step import LLMStep
     from services.agent_runtime_v2.query_engine import QueryEngine
@@ -620,19 +621,26 @@ async def test_query_engine_waits_when_background_operation_pending(tmp_path):
     from services.agent_runtime_v2.transcript_store import TranscriptStore
 
     class _FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
         async def chat_completion_stream(self, **kwargs):
-            yield {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call-1",
-                        "function": {
-                            "name": "project_host_run_command",
-                            "arguments": "{\"command\": \"lark-cli auth login\"}",
-                        },
-                    }
-                ]
-            }
+            self.calls += 1
+            if self.calls == 1:
+                yield {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-1",
+                            "function": {
+                                "name": "project_host_run_command",
+                                "arguments": "{\"command\": \"lark-cli auth login\"}",
+                            },
+                        }
+                    ]
+                }
+                return
+            yield {"content": "登录命令缺少授权范围，我会换用带业务域的命令继续。"}
 
     class _FakeToolExecutor:
         async def execute_parallel(self, tool_calls, timeout=None):
@@ -675,15 +683,174 @@ async def test_query_engine_waits_when_background_operation_pending(tmp_path):
         model_name="model-1",
         temperature=0.1,
         max_tokens=256,
+        task_tree_verified=True,
+        goal_covered=True,
     )
 
     events = [item.event_type for item in event_log.list_events(task_run.run_id)]
+    assert result.task_run.status == "completed"
+    assert result.completion_decision is not None
+    assert result.completion_decision.action == "complete"
+    assert "query_engine_waiting_operation" not in [event["type"] for event in result.task_run.events]
+    assert "tool_observation_created" in events
+
+
+@pytest.mark.asyncio
+async def test_query_engine_waits_when_background_operation_has_interaction_schema(tmp_path):
+    from services.agent_runtime_v2.event_log import RuntimeEventLog
+    from services.agent_runtime_v2.llm_step import LLMStep
+    from services.agent_runtime_v2.query_engine import QueryEngine
+    from services.agent_runtime_v2.state_store import TaskRunStore
+    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime_v2.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-1",
+                        "function": {
+                            "name": "project_host_run_command",
+                            "arguments": "{\"command\": \"lark-cli auth login\"}",
+                        },
+                    }
+                ]
+            }
+
+    class _FakeToolExecutor:
+        async def execute_parallel(self, tool_calls, timeout=None):
+            return [
+                {
+                    "ok": False,
+                    "source": "operation_wait_task",
+                    "status": "waiting_user_action",
+                    "task_id": "operation-wait-1",
+                    "command": "lark-cli auth login",
+                    "interaction_schema": {
+                        "title": "选择 lark-cli 授权业务域",
+                        "schema": [{"label": "业务域", "prop": "domains"}],
+                    },
+                }
+            ]
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="登录飞书后继续",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(_FakeLLM()),
+        tool_runner=ToolExecutionRunner(
+            _FakeToolExecutor(),
+            event_log=event_log,
+        ),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        max_model_steps=3,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "登录飞书后继续"}],
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+    )
+
     assert result.task_run.status == "waiting_user"
     assert result.completion_decision is not None
     assert result.completion_decision.action == "request_user"
     assert "background_operation_pending" in result.completion_decision.reasons
     assert "query_engine_waiting_operation" in [event["type"] for event in result.task_run.events]
-    assert "tool_observation_created" in events
+    assert result.final_content == "内部授权任务已创建，等待你在表单中选择授权范围。"
+    assert "执行" not in result.final_content
+
+
+@pytest.mark.asyncio
+async def test_query_engine_waiting_operation_ignores_model_command_tutorial(tmp_path):
+    from services.agent_runtime_v2.event_log import RuntimeEventLog
+    from services.agent_runtime_v2.llm_step import LLMStep
+    from services.agent_runtime_v2.query_engine import QueryEngine
+    from services.agent_runtime_v2.state_store import TaskRunStore
+    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime_v2.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {
+                "content": "请执行 lark-cli auth login 完成登录。",
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-1",
+                        "function": {
+                            "name": "project_host_run_command",
+                            "arguments": "{\"command\": \"lark-cli auth login\"}",
+                        },
+                    }
+                ],
+            }
+
+    class _FakeToolExecutor:
+        async def execute_parallel(self, tool_calls, timeout=None):
+            return [
+                {
+                    "ok": False,
+                    "source": "operation_wait_task",
+                    "operation_kind": "auth_login",
+                    "operation_label": "网页登录授权",
+                    "status": "waiting_user_action",
+                    "task_id": "operation-wait-1",
+                    "command": "lark-cli auth login",
+                    "authorization_url": "https://passport.feishu.cn/suite/passport/oauth/authorize?client_id=cli",
+                    "action_type": "open_url",
+                }
+            ]
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="/lark-cli 登录",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(_FakeLLM()),
+        tool_runner=ToolExecutionRunner(
+            _FakeToolExecutor(),
+            event_log=event_log,
+        ),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        max_model_steps=3,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "/lark-cli 登录"}],
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+    )
+
+    assert result.task_run.status == "waiting_user"
+    assert result.final_content == "内部授权任务已创建，等待你打开授权链接并在浏览器完成授权。"
+    assert "请执行" not in result.final_content
+    assert "lark-cli auth login" not in result.final_content
 
 
 @pytest.mark.asyncio
@@ -1137,6 +1304,91 @@ async def test_agent_runtime_v2_done_marks_permission_waiting_user(tmp_path):
     assert chunks[-1]["content"] == "等待你授权工具调用后继续。"
 
 
+@pytest.mark.asyncio
+async def test_agent_runtime_v2_done_preserves_operation_wait_task_interaction_schema(tmp_path, monkeypatch):
+    from services.agent_runtime_v2.event_log import RuntimeEventLog
+    from services.agent_runtime_v2.runtime import AgentTaskRuntime
+    from services.agent_runtime_v2.state_store import TaskRunStore
+    from services.agent_runtime_v2.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-1",
+                        "function": {
+                            "name": "project_host_run_command",
+                            "arguments": "{\"command\": \"lark-cli auth login\"}",
+                        },
+                    }
+                ]
+            }
+
+    async def _fake_execute_parallel(self, tool_calls, timeout=None):
+        return [
+            {
+                "ok": False,
+                "source": "operation_wait_task",
+                "operation_kind": "auth_login",
+                "operation_label": "网页登录授权",
+                "status": "waiting_user_action",
+                "status_label": "等待操作",
+                "task_id": "operation-wait-1",
+                "command": "lark-cli auth login",
+                "interaction_schema": {
+                    "title": "选择 lark-cli 授权业务域",
+                    "schema": [{"label": "业务域", "prop": "domains"}],
+                },
+                "action_type": "interaction_form",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "services.tool_executor.ToolExecutor.execute_parallel",
+        _fake_execute_parallel,
+    )
+
+    class _LegacyOrchestrator:
+        def __init__(self):
+            self._llm = _FakeLLM()
+
+        async def run(self, **kwargs):
+            yield {"type": "done", "content": "legacy"}
+
+    runtime = AgentTaskRuntime(
+        _LegacyOrchestrator(),
+        state_store=TaskRunStore(tmp_path / "runs"),
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        event_log=RuntimeEventLog(tmp_path / "events"),
+    )
+
+    chunks = []
+    async for chunk in runtime.run(
+        session_id="session-1",
+        user_message="/lark-cli 登录",
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+        project_id="proj-1",
+        employee_id="emp-1",
+        cancel_event=asyncio.Event(),
+        username="tester",
+        chat_session_id="chat-1",
+    ):
+        chunks.append(chunk)
+
+    assert chunks[-1]["type"] == "done"
+    assert chunks[-1]["completed_reason"] == "waiting_user_action"
+    assert chunks[-1]["source"] == "operation_wait_task"
+    assert chunks[-1]["task_id"] == "operation-wait-1"
+    assert chunks[-1]["action_type"] == "interaction_form"
+    assert chunks[-1]["interaction_schema"]["title"] == "选择 lark-cli 授权业务域"
+
+
 def test_completion_policy_requires_verification_for_dev_task():
     from services.agent_runtime_v2.completion_policy import CompletionPolicy
     from services.agent_runtime_v2.verification_policy import VerificationPolicy
@@ -1151,6 +1403,38 @@ def test_completion_policy_requires_verification_for_dev_task():
 
     assert decision.action == "verify"
     assert "verification_required" in decision.reasons
+
+
+def test_project_chat_done_operation_wait_task_builds_auth_operation_event():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "done",
+            "source": "operation_wait_task",
+            "chat_session_id": "chat-1",
+            "completed_reason": "waiting_user_action",
+            "guard_reason": "waiting_user_action",
+            "content": "内部授权任务已创建，等待你在表单中选择授权范围。",
+            "workflow_kind": "auth_login",
+            "workflow_label": "网页登录授权",
+            "task_id": "operation-wait-1",
+            "status": "waiting_user_action",
+            "action_type": "interaction_form",
+            "interaction_schema": {
+                "title": "选择 lark-cli 授权业务域",
+                "schema": [{"label": "业务域", "prop": "domains"}],
+            },
+        }
+    )
+
+    assert event is not None
+    assert event["type"] == "operation_event"
+    assert event["operation_id"] == "auth:operation-wait-1"
+    assert event["kind"] == "auth"
+    assert event["phase"] == "waiting_user"
+    assert event["action_type"] == "interaction_form"
+    assert event["meta"]["interaction_schema"]["title"] == "选择 lark-cli 授权业务域"
 
 
 def test_permission_policy_asks_when_workspace_untrusted(tmp_path):
@@ -1377,7 +1661,11 @@ async def test_tool_runner_executes_when_permission_rule_allows(tmp_path):
     )
 
     assert executor.calls == 1
-    assert executor.tool_calls[0]["function"]["arguments"] == "{\"command\": \"sudo echo ok\"}"
+    executed_args = json.loads(executor.tool_calls[0]["function"]["arguments"])
+    assert executed_args["command"] == "sudo echo ok"
+    assert executed_args["_agent_runtime_run_id"] == "run-1"
+    assert executed_args["_agent_runtime_call_id"] == "call-1"
+    assert executed_args["_agent_runtime_tool_name"] == "project_host_run_command"
     assert records[0].observation.status == "succeeded"
     assert records[0].raw_result["stdout"] == "allowed"
 
@@ -1531,7 +1819,11 @@ async def test_operation_resume_runs_original_permission_tool_call(tmp_path):
     assert result.resumed is True
     assert result.status == "running"
     assert result.records[0].observation.status == "succeeded"
-    assert executor.calls[0]["function"]["arguments"] == "{\"command\": \"npm test\"}"
+    resumed_args = json.loads(executor.calls[0]["function"]["arguments"])
+    assert resumed_args["command"] == "npm test"
+    assert resumed_args["_agent_runtime_run_id"] == task_run.run_id
+    assert resumed_args["_agent_runtime_call_id"] == "call-1"
+    assert resumed_args["_agent_runtime_tool_name"] == "project_host_run_command"
     assert reloaded is not None
     assert reloaded.status == "running"
     assert "operation_resume_started" in events
@@ -1747,6 +2039,80 @@ async def test_operation_resume_can_continue_after_background_task_completion(tm
     assert llm.messages[0][-1]["role"] == "tool"
     assert "background_operation_resume_started" in events
     assert "background_operation_continuation_completed" in events
+
+
+@pytest.mark.asyncio
+async def test_tool_execution_runner_passes_runtime_metadata_to_project_host_command(tmp_path):
+    import json
+
+    from services.agent_runtime_v2.event_log import RuntimeEventLog
+    from services.agent_runtime_v2.permission_policy import PermissionPolicy
+    from services.agent_runtime_v2.permission_store import PermissionStore
+    from services.agent_runtime_v2.tool_call_collector import CollectedToolCall
+    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
+
+    class _FakeToolExecutor:
+        def __init__(self):
+            self.received_tool_calls = []
+
+        async def execute_parallel(self, tool_calls, timeout=None):
+            self.received_tool_calls = list(tool_calls)
+            args = json.loads(tool_calls[0]["function"]["arguments"])
+            return [
+                {
+                    "ok": True,
+                    "command": args.get("command"),
+                    "runtime_run_id": args.get("_agent_runtime_run_id"),
+                    "runtime_call_id": args.get("_agent_runtime_call_id"),
+                    "runtime_tool_name": args.get("_agent_runtime_tool_name"),
+                }
+            ]
+
+    event_log = RuntimeEventLog(tmp_path / "events")
+    executor = _FakeToolExecutor()
+    records = await ToolExecutionRunner(
+        executor,
+        event_log=event_log,
+        permission_policy=PermissionPolicy(PermissionStore(tmp_path / "permissions")),
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        workspace_trusted=True,
+    ).execute(
+        run_id="run-1",
+        tool_calls=[
+            CollectedToolCall(
+                call_id="call-1",
+                tool_name="project_host_run_command",
+                arguments='{"command": "lark-cli auth login", "timeout_sec": 20}',
+                raw={
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "project_host_run_command",
+                        "arguments": '{"command": "lark-cli auth login", "timeout_sec": 20}',
+                    },
+                },
+            )
+        ],
+    )
+
+    executed_args = json.loads(
+        executor.received_tool_calls[0]["function"]["arguments"]
+    )
+    permission_events = [
+        item
+        for item in event_log.list_events("run-1")
+        if item.event_type == "permission_decision"
+    ]
+    assert executed_args["_agent_runtime_run_id"] == "run-1"
+    assert executed_args["_agent_runtime_call_id"] == "call-1"
+    assert executed_args["_agent_runtime_tool_name"] == "project_host_run_command"
+    assert records[0].raw_result["runtime_run_id"] == "run-1"
+    assert permission_events
+    assert json.loads(
+        permission_events[0].payload["tool_call"]["arguments"]
+    )["_agent_runtime_run_id"] == "run-1"
 
 
 def test_permission_action_service_saves_deny_rule(tmp_path):

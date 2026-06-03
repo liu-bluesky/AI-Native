@@ -71,10 +71,13 @@ class ToolExecutionRunner:
                 item.to_dict(),
             )
             args = self._parse_arguments(item.arguments)
+            executable_item = item
             if args is not None and item.tool_name == "project_host_run_command":
+                args = dict(args)
                 args.setdefault("_agent_runtime_run_id", str(run_id or "").strip())
                 args.setdefault("_agent_runtime_call_id", item.call_id)
                 args.setdefault("_agent_runtime_tool_name", item.tool_name)
+                executable_item = self._tool_call_with_arguments(item, args)
             decision = self._permission_policy.evaluate(
                 run_id=run_id,
                 call_id=item.call_id,
@@ -89,7 +92,7 @@ class ToolExecutionRunner:
                 run_id,
                 "permission_decision",
                 {
-                    "tool_call": item.to_dict(),
+                    "tool_call": executable_item.to_dict(),
                     "decision": decision.to_dict(),
                     "args": dict(args or {}),
                     "args_parse_status": "ok" if args is not None else "invalid_json",
@@ -99,7 +102,7 @@ class ToolExecutionRunner:
                 records.append(
                     self._build_blocked_record(
                         run_id=run_id,
-                        tool_call=item,
+                        tool_call=executable_item,
                         decision=decision,
                         args=args or {},
                         args_parse_status="ok" if args is not None else "invalid_json",
@@ -108,7 +111,7 @@ class ToolExecutionRunner:
                 continue
             allowed_record_indexes.append(len(records))
             records.append(None)
-            allowed_tool_calls.append(item)
+            allowed_tool_calls.append(executable_item)
 
         if allowed_tool_calls:
             openai_tool_calls = [item.to_openai_tool_call() for item in allowed_tool_calls]
@@ -124,6 +127,28 @@ class ToolExecutionRunner:
                     raw_result=raw_result,
                 )
         return [item for item in records if item is not None]
+
+    def _tool_call_with_arguments(
+        self,
+        item: CollectedToolCall,
+        args: dict[str, Any],
+    ) -> CollectedToolCall:
+        arguments = json.dumps(args, ensure_ascii=False)
+        raw = dict(item.raw or {})
+        raw_function = raw.get("function") if isinstance(raw.get("function"), dict) else {}
+        raw["id"] = item.call_id
+        raw["type"] = "function"
+        raw["function"] = {
+            **dict(raw_function),
+            "name": item.tool_name,
+            "arguments": arguments,
+        }
+        return CollectedToolCall(
+            call_id=item.call_id,
+            tool_name=item.tool_name,
+            arguments=arguments,
+            raw=raw,
+        )
 
     def _build_executed_record(
         self,

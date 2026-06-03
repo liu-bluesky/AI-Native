@@ -51,7 +51,7 @@ def test_require_project_chat_session_id_rejects_empty():
         projects_router._require_project_chat_session_id("  ")
 
 
-def test_resolve_project_chat_task_tree_context_requires_task_tree(monkeypatch):
+def test_resolve_project_chat_task_tree_context_skips_task_tree_when_disabled(monkeypatch):
     from routers import projects as projects_router
 
     captured_calls = []
@@ -69,22 +69,16 @@ def test_resolve_project_chat_task_tree_context_requires_task_tree(monkeypatch):
     )
     monkeypatch.setattr(projects_router, "serialize_task_tree", lambda session: None)
 
-    with pytest.raises(ValueError, match="task tree must be available before answering"):
-        projects_router._resolve_project_chat_task_tree_context(
-            "proj-1",
-            "tester",
-            " chat-1 ",
-            {"task_tree_enabled": False, "task_tree_auto_generate": False},
-            "当前项目做什么的",
-        )
+    payload = projects_router._resolve_project_chat_task_tree_context(
+        "proj-1",
+        "tester",
+        " chat-1 ",
+        {"task_tree_enabled": False, "task_tree_auto_generate": False},
+        "当前项目做什么的",
+    )
 
-    assert captured_calls == [
-        {
-            "project_id": "proj-1",
-            "username": "tester",
-            "chat_session_id": "chat-1",
-        }
-    ]
+    assert payload is None
+    assert captured_calls == []
 
 
 @pytest.mark.asyncio
@@ -148,7 +142,8 @@ async def test_generate_project_chat_media_done_payload_attaches_task_tree_audit
     assert payload["history_task_tree"]["chat_session_id"] == "chat-1"
 
 
-def test_project_chat_stream_requires_task_tree_before_answering(tmp_path, monkeypatch):
+def test_project_chat_stream_can_answer_without_task_tree_when_disabled(tmp_path, monkeypatch):
+    from routers import projects as projects_router
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_guard_test_client(
@@ -157,6 +152,12 @@ def test_project_chat_stream_requires_task_tree_before_answering(tmp_path, monke
         {"sub": "tester", "role": "admin"},
     )
     store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    monkeypatch.setattr(projects_router, "_is_project_meta_query", lambda message: True)
+    monkeypatch.setattr(
+        projects_router,
+        "_build_project_meta_reply",
+        lambda project, selected_employee, candidates: "项目一是测试项目。",
+    )
 
     response = client.post(
         "/api/projects/proj-1/chat/stream",
@@ -168,8 +169,10 @@ def test_project_chat_stream_requires_task_tree_before_answering(tmp_path, monke
         },
     )
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "task tree must be available before answering"
+    assert response.status_code == 200
+    payloads = _extract_project_chat_sse_messages(response.text)
+    assert any(item.get("type") == "done" for item in payloads)
+    assert all(item.get("task_tree") is None for item in payloads if item.get("type") == "start")
 
 
 def test_project_chat_stream_direct_reply_emits_task_tree_before_done(tmp_path, monkeypatch):

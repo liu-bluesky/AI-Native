@@ -90,6 +90,57 @@ class AgentTaskRuntime:
             lines.append(f"{index}. {tool_name}{status_text}\n{summary}")
         return "\n\n".join(lines).strip()
 
+    def _background_operation_payload_from_observations(
+        self,
+        observations: list[Any] | None,
+    ) -> dict[str, Any]:
+        for observation in reversed(list(observations or [])):
+            raw_result = getattr(observation, "raw_result", None)
+            if not isinstance(raw_result, dict):
+                continue
+            if str(raw_result.get("source") or "").strip() not in {
+                "operation_wait_task",
+                "cli_plugin_login_task",
+            }:
+                continue
+            status = str(raw_result.get("status") or "").strip().lower()
+            if status not in {"queued", "running", "waiting_user_action"}:
+                continue
+            authorization_url = str(raw_result.get("authorization_url") or "").strip()
+            interaction_schema = (
+                raw_result.get("interaction_schema")
+                if isinstance(raw_result.get("interaction_schema"), dict)
+                else None
+            )
+            action_type = str(raw_result.get("action_type") or "").strip().lower()
+            if action_type == "open_url" and not authorization_url:
+                action_type = "none"
+            if not action_type:
+                action_type = (
+                    "open_url"
+                    if authorization_url
+                    else "interaction_form"
+                    if interaction_schema
+                    else "none"
+                )
+            return {
+                "source": str(raw_result.get("source") or "").strip(),
+                "workflow_kind": str(raw_result.get("operation_kind") or "auth_login").strip(),
+                "workflow_label": str(raw_result.get("operation_label") or "网页登录授权").strip(),
+                "workflow_id": str(raw_result.get("task_id") or "").strip(),
+                "task_id": str(raw_result.get("task_id") or "").strip(),
+                "status": status,
+                "status_label": str(raw_result.get("status_label") or "").strip(),
+                "summary": str(raw_result.get("summary") or raw_result.get("next_step") or "").strip(),
+                "message": str(raw_result.get("next_step") or raw_result.get("message") or "").strip(),
+                "action_type": action_type,
+                "authorization_url": authorization_url,
+                "interaction_schema": interaction_schema,
+                "resume_command": str(raw_result.get("resume_command") or "").strip(),
+                "command": str(raw_result.get("command") or "").strip(),
+            }
+        return {}
+
     def _build_resume_context(
         self,
         *,
@@ -486,6 +537,17 @@ class AgentTaskRuntime:
         }
         waiting_reason = self._query_engine_waiting_reason(result)
         if waiting_reason:
+            operation_payload = self._background_operation_payload_from_observations(
+                result.observations,
+            )
+            if operation_payload:
+                done_payload.update(
+                    {
+                        key: value
+                        for key, value in operation_payload.items()
+                        if value not in ("", None)
+                    }
+                )
             done_payload["completed_reason"] = waiting_reason
             done_payload["guard_reason"] = waiting_reason
             done_payload["guard_message"] = (

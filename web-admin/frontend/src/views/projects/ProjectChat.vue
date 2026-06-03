@@ -543,6 +543,62 @@
                               class="message-process-shell__body"
                             >
                               <div
+                                v-if="messageLiveProgressItems(item, idx).length"
+                                class="message-live-progress"
+                              >
+                                <div class="message-live-progress__head">
+                                  <div>
+                                    <div class="message-live-progress__eyebrow">
+                                      本轮运行轨迹
+                                    </div>
+                                    <div class="message-live-progress__title">
+                                      {{ messageProcessTitle(item, idx) }}
+                                    </div>
+                                  </div>
+                                  <span
+                                    class="message-live-progress__badge"
+                                    :class="
+                                      `is-${messageProcessStateTone(item, idx)}`
+                                    "
+                                  >
+                                    {{ messageProcessStateLabel(item, idx) }}
+                                  </span>
+                                </div>
+                                <div class="message-live-progress__list">
+                                  <div
+                                    v-for="progressItem in messageLiveProgressItems(
+                                      item,
+                                      idx,
+                                    )"
+                                    :key="progressItem.id"
+                                    class="message-live-progress__item"
+                                    :class="`is-${progressItem.phase}`"
+                                  >
+                                    <span class="message-live-progress__marker">
+                                      <CircleCheck
+                                        v-if="progressItem.phase === 'completed'"
+                                        :size="13"
+                                      />
+                                      <span v-else></span>
+                                    </span>
+                                    <span class="message-live-progress__main">
+                                      <span class="message-live-progress__item-title">
+                                        {{ progressItem.title }}
+                                      </span>
+                                      <span
+                                        v-if="progressItem.summary"
+                                        class="message-live-progress__item-summary"
+                                      >
+                                        {{ progressItem.summary }}
+                                      </span>
+                                    </span>
+                                    <span class="message-live-progress__phase">
+                                      {{ progressItem.phaseLabel }}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                              <div
                                 v-if="messageProcessOperations(item).length"
                                 class="message-operations"
                               >
@@ -4110,6 +4166,7 @@ const wsProjectId = ref("");
 const pendingRequests = new Map();
 const queuedFollowupMessages = ref([]);
 let followupQueueDraining = false;
+let activeFollowupAssistantMessageId = "";
 const activeGenerationRequestId = ref("");
 let lastNoActiveGenerationWarningAt = 0;
 const pendingAgentPrepares = new Map();
@@ -4175,31 +4232,9 @@ function hasLarkAuthBusinessDomainPromptText(value) {
 }
 
 function hasAuthorizationPromptText(payload = {}, detailText = "") {
-  const text = [
-    detailText,
-    payload?.authorization_url,
-    payload?.detail,
-    payload?.message,
-    payload?.summary,
-    payload?.status_reason,
-    payload?.next_step,
-    payload?.output_preview,
-  ]
-    .map((item) => String(item || "").trim())
-    .filter(Boolean)
-    .join("\n")
-    .toLowerCase();
-  if (
-    hasLarkAuthBusinessDomainPromptText(text) &&
-    !String(payload?.authorization_url || "").trim()
-  ) {
-    return false;
-  }
   return Boolean(
     String(payload?.authorization_url || "").trim() ||
-      /accounts\.feishu\.cn\/oauth|device\/verify|user_code|等待用户授权|等待你.*授权|浏览器.*授权|授权链接|网页登录授权|authorization|authorize/.test(
-        text,
-      ),
+      (payload?.interaction_schema && typeof payload.interaction_schema === "object"),
   );
 }
 
@@ -5282,7 +5317,7 @@ function completeFinishedMessageOperations(row, summary = "本轮执行已结束
   let changed = false;
   row.operations = row.operations.map((operation) => {
     const phase = normalizeOperationPhase(operation?.phase || operation?.status);
-    if (!["running", "waiting_user", "pending"].includes(phase)) {
+    if (!["running", "pending"].includes(phase)) {
       return operation;
     }
     changed = true;
@@ -8120,9 +8155,26 @@ function normalizePersistedOperations(value) {
     : [];
 }
 
+function isCompletedDoneProcessLog(entry) {
+  const text = String(entry?.text || entry?.content || "").trim();
+  if (!text) return false;
+  return /^本轮执行已结束[。.]?$/.test(text);
+}
+
+function shouldHideProcessLogEntry(row, entry) {
+  return (
+    hasNonTerminalUserWaitingOperation(row) &&
+    isCompletedDoneProcessLog(entry)
+  );
+}
+
 function messageProcessLogEntries(row) {
   return Array.isArray(row?.processLog)
-    ? row.processLog.filter((item) => String(item?.text || "").trim())
+    ? row.processLog.filter(
+        (item) =>
+          String(item?.text || "").trim() &&
+          !shouldHideProcessLogEntry(row, item),
+      )
     : [];
 }
 
@@ -8156,14 +8208,30 @@ function isVisibleProcessOperation(operation) {
   if (kind === "plan") return true;
   const phase = normalizeOperationPhase(operation?.phase || operation?.status);
   if (
-    ["tool", "terminal", "auth", "approval"].includes(kind) &&
+    ["tool", "terminal", "auth", "approval", "verification"].includes(kind) &&
     phase !== "pending"
+  ) {
+    return true;
+  }
+  const meta =
+    operation?.meta && typeof operation.meta === "object"
+      ? operation.meta
+      : {};
+  if (
+    kind === "request" &&
+    (
+      phase !== "pending" ||
+      String(meta.agent_runtime_event || "").trim() === "true" ||
+      String(meta.agent_runtime_permission || "").trim() === "true" ||
+      String(meta.run_id || "").trim()
+    )
   ) {
     return true;
   }
   return Boolean(
     operationCommand(operation) ||
       operationOutput(operation) ||
+      String(operation?.summary || "").trim() ||
       String(operation?.detail || "").trim(),
   );
 }
@@ -8176,7 +8244,8 @@ function isCompletedRequestSummaryOperation(operation, row) {
   return (
     kind === "request" &&
     phase === "completed" &&
-    messageProcessLogEntries(row).length > 0
+    (messageProcessLogEntries(row).length > 0 ||
+      hasNonTerminalUserWaitingOperation(row))
   );
 }
 
@@ -8302,6 +8371,111 @@ function messageProcessTitle(row, idx) {
     return latestLogText;
   }
   return "执行过程";
+}
+
+function messageLiveProgressOperationTitle(operation) {
+  const kind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
+  const title = String(operation?.title || "").trim();
+  const meta =
+    operation?.meta && typeof operation.meta === "object"
+      ? operation.meta
+      : {};
+  if (
+    kind === "request" &&
+    (
+      String(meta.agent_runtime_event || "").trim() === "true" ||
+      String(meta.run_id || "").trim()
+    )
+  ) {
+    return title || "Agent Runtime";
+  }
+  if (kind === "tool") return title || "工具调用";
+  if (kind === "auth") return title || "授权操作";
+  if (kind === "terminal") return title || "项目终端";
+  if (kind === "verification") return title || "验证结果";
+  if (kind === "plan") return title || "执行计划";
+  return title || "执行步骤";
+}
+
+function messageLiveProgressOperationSummary(operation) {
+  const summary = String(operation?.summary || "").trim();
+  const detail = String(operation?.detail || "").trim();
+  if (summary) return summary;
+  if (detail) return clipText(detail, 120);
+  const command = operationCommand(operation);
+  if (command) return clipText(command, 120);
+  const output = operationOutput(operation);
+  if (output) return clipText(output, 120);
+  return "";
+}
+
+function messageLiveProgressItems(row, idx) {
+  const items = [];
+  const seen = new Set();
+  for (const operation of messageOperations(row)) {
+    if (!isVisibleProcessOperation(operation)) continue;
+    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    const id = String(operation?.id || "").trim() || `operation-${items.length}`;
+    const title = messageLiveProgressOperationTitle(operation);
+    const summary = messageLiveProgressOperationSummary(operation);
+    const signature = `${title}\n${summary}\n${phase}`;
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    items.push({
+      id: `op:${id}`,
+      phase,
+      title,
+      summary,
+      phaseLabel: operationPhaseLabel(operation),
+    });
+  }
+  const latestLogs = messageProcessLogEntries(row).slice(-4);
+  for (const entry of latestLogs) {
+    const text = String(entry?.text || "").trim();
+    if (!text) continue;
+    const level = normalizeProcessLogLevel(entry?.level);
+    const phase =
+      level === "success"
+        ? "completed"
+        : level === "error"
+          ? "failed"
+          : level === "warning"
+            ? "blocked"
+            : "running";
+    const title = clipText(text, 140);
+    const signature = `${title}\n\n${phase}`;
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    items.push({
+      id: `log:${String(entry?.id || items.length).trim()}`,
+      phase,
+      title,
+      summary: "",
+      phaseLabel:
+        phase === "completed"
+          ? "已完成"
+          : phase === "failed"
+            ? "失败"
+            : phase === "blocked"
+              ? "提示"
+              : "进行中",
+    });
+  }
+  if (
+    !items.length &&
+    shouldShowInlineThinkingState(row, idx)
+  ) {
+    items.push({
+      id: "thinking",
+      phase: "running",
+      title: "模型正在生成回复",
+      summary: "",
+      phaseLabel: "进行中",
+    });
+  }
+  return items.slice(-8);
 }
 
 function normalizeOperationPhase(value) {
@@ -9519,7 +9693,9 @@ function applyPlannedActionEvent(row, eventData = {}, requestId = "") {
 
 function messageOperations(row) {
   return rawMessageOperations(row).filter(
-    (item) => !isCompletedRequestSummaryOperation(item, row),
+    (item) =>
+      !isCompletedRequestSummaryOperation(item, row) &&
+      !shouldHideGenericRequestLifecycleOperation(item, row),
   );
 }
 
@@ -9554,6 +9730,49 @@ function isOperationAwaitingInteraction(operation) {
   return ["approval", "terminal"].includes(kind);
 }
 
+function isNonTerminalUserWaitingOperation(operation) {
+  if (!operation) return false;
+  const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+  if (phase !== "waiting_user") return false;
+  const kind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
+  if (kind === "terminal") return false;
+  return (
+    isOperationAwaitingInteraction(operation) ||
+    ["auth", "approval", "request"].includes(kind)
+  );
+}
+
+function hasNonTerminalUserWaitingOperation(row) {
+  return (Array.isArray(row?.operations) ? row.operations : []).some(
+    (operation) => isNonTerminalUserWaitingOperation(operation),
+  );
+}
+
+function isGenericRequestLifecycleOperation(operation) {
+  const kind = String(operation?.kind || "")
+    .trim()
+    .toLowerCase();
+  if (kind !== "request") return false;
+  const title = String(operation?.title || "").trim();
+  if (title !== "本轮执行") return false;
+  const meta =
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+  return !(
+    String(meta.agent_runtime_event || "").trim() ||
+    String(meta.agent_runtime_permission || "").trim() ||
+    String(meta.run_id || "").trim()
+  );
+}
+
+function shouldHideGenericRequestLifecycleOperation(operation, row) {
+  return (
+    hasNonTerminalUserWaitingOperation(row) &&
+    isGenericRequestLifecycleOperation(operation)
+  );
+}
+
 function operationPhaseLabel(operation) {
   const phase = normalizeOperationPhase(operation?.phase);
   if (phase === "running") return "进行中";
@@ -9584,7 +9803,7 @@ function operationActionHint(operation) {
   const schema = operationInteractionSchema(operation);
   if (schema) {
     if (operationInteractionSubmittedHint(operation)) {
-      return "已提交结构化交互，正在等待后续执行结果。";
+      return "已提交结构化交互，等待后续授权或操作完成。";
     }
     return operationInteractionCanFallbackToTerminal(operation)
       ? "优先使用当前表单继续；如果协议不完整，也可以切回终端兜底。"
@@ -11048,8 +11267,8 @@ async function submitOperationInteraction(operation) {
   setOperationInteractionSubmittedHint(
     operation,
     operationInteractionCanFallbackToTerminal(operation)
-      ? "已提交结构化交互，终端正在继续执行。"
-      : "已提交结构化表单，正在继续请求模型处理。",
+      ? "已提交结构化交互，等待终端后续输出。"
+      : "已提交结构化表单，等待后续授权或操作完成。",
   );
   dismissOperationInteractionForm(operation);
   upsertMessageOperation(
@@ -11059,7 +11278,7 @@ async function submitOperationInteraction(operation) {
       phase: "running",
       summary: operationInteractionCanFallbackToTerminal(operation)
         ? "已提交结构化交互，等待终端后续输出"
-        : "已提交结构化交互，等待模型继续处理",
+        : "已提交结构化交互，等待后续授权或操作完成",
       detail: "",
       actionType: "none",
     },
@@ -14559,39 +14778,70 @@ function currentActiveAssistantRow() {
   return messages.value[Number(pending.assistantIndex ?? -1)] || null;
 }
 
+function followupFileNames(files = []) {
+  return (Array.isArray(files) ? files : [])
+    .map((item) => String(item?.name || item?.raw?.name || "").trim())
+    .filter(Boolean);
+}
+
+function followupQueueItemsForAssistant(assistantMessageId) {
+  const normalizedAssistantMessageId = String(assistantMessageId || "").trim();
+  if (!normalizedAssistantMessageId) return [];
+  return queuedFollowupMessages.value.filter(
+    (item) =>
+      String(item?.assistantMessageId || "").trim() ===
+      normalizedAssistantMessageId,
+  );
+}
+
+function formatFollowupMergeDetail(queueItems = [], activeStatus = "pending") {
+  const count = Array.isArray(queueItems) ? queueItems.length : 0;
+  const hasFiles = (queueItems || []).some(
+    (item) => followupFileNames(item?.files).length > 0,
+  );
+  return [
+    `1. 接收补充内容 [completed]${count ? `\n   已收到 ${count} 条补充` : ""}`,
+    "2. 合并到当前任务上下文 [completed]",
+    `3. 重新理解并更新计划 [${activeStatus}]${hasFiles ? "\n   包含附件补充" : ""}`,
+  ].join("\n");
+}
+
 function enqueueFollowupMessage() {
   const text = String(draftText.value || "").trim();
   const files = uploadFiles.value.slice();
   if (!text && !files.length) return false;
+  const activeRow = currentActiveAssistantRow();
+  const assistantMessageId = String(activeRow?.id || "").trim();
+  if (!activeRow || !assistantMessageId) return false;
   const queueItem = {
     id: createLocalMessageId(),
     text,
     files,
     queuedAt: nowText(),
+    assistantMessageId,
   };
   queuedFollowupMessages.value.push(queueItem);
-  const activeRow = currentActiveAssistantRow();
   if (activeRow) {
+    activeFollowupAssistantMessageId = assistantMessageId;
+    const queueItems = followupQueueItemsForAssistant(assistantMessageId);
     upsertMessageOperation(activeRow, {
-      operationId: `plan:followup:${queueItem.id}`,
+      operationId: `plan:followup:${assistantMessageId || queueItem.id}`,
       kind: "plan",
-      title: "追加需求",
-      summary: "已收到追加内容，当前回合结束后重新规划",
-      detail: [
-        "1. 记录追加内容 [completed]",
-        "2. 重新审查前序处理是否满足最新需求 [pending]",
-        "3. 按最新需求继续执行并更新结果 [pending]",
-      ].join("\n"),
+      title: "补充需求",
+      summary: `已合并到当前任务，等待当前步骤结束后重新理解`,
+      detail: formatFollowupMergeDetail(queueItems, "pending"),
       phase: "running",
       actionType: "none",
       meta: {
         followup_queue_id: queueItem.id,
+        followup_queue_ids: queueItems.map((item) => String(item?.id || "").trim()).filter(Boolean),
+        assistant_message_id: assistantMessageId,
         queued_at: queueItem.queuedAt,
       },
     });
     appendMessageProcessLog(activeRow, {
       level: "info",
-      text: "已收到追加需求，当前回合结束后会重新规划并审查前序结果。",
+      text: "已收到补充需求，将合并到当前任务并重新审查前序结果。",
     });
     activeRow.processExpanded = true;
   }
@@ -14602,22 +14852,187 @@ function enqueueFollowupMessage() {
 
 async function drainQueuedFollowupMessages() {
   if (followupQueueDraining || pendingRequests.size > 0) return;
-  const next = queuedFollowupMessages.value.shift();
-  if (!next) return;
+  const targetAssistantMessageId =
+    String(activeFollowupAssistantMessageId || "").trim() ||
+    String(queuedFollowupMessages.value[0]?.assistantMessageId || "").trim();
+  const queuedForTarget = targetAssistantMessageId
+    ? queuedFollowupMessages.value.filter(
+        (item) =>
+          String(item?.assistantMessageId || "").trim() ===
+          targetAssistantMessageId,
+      )
+    : queuedFollowupMessages.value.slice();
+  if (!queuedForTarget.length) return;
   followupQueueDraining = true;
   try {
-    draftText.value = String(next.text || "").trim();
-    uploadFiles.value = Array.isArray(next.files) ? next.files : [];
-    await doSend({
-      fromFollowupQueue: true,
-      followupQueueId: String(next.id || "").trim(),
-      followupQueuedAt: String(next.queuedAt || "").trim(),
-    });
+    queuedFollowupMessages.value = queuedFollowupMessages.value.filter(
+      (item) => !queuedForTarget.includes(item),
+    );
+    await sendMergedFollowupRequest(queuedForTarget, targetAssistantMessageId);
   } finally {
     followupQueueDraining = false;
+    if (
+      targetAssistantMessageId &&
+      String(activeFollowupAssistantMessageId || "").trim() ===
+        targetAssistantMessageId
+    ) {
+      activeFollowupAssistantMessageId = "";
+    }
     if (queuedFollowupMessages.value.length && pendingRequests.size === 0) {
       void drainQueuedFollowupMessages();
     }
+  }
+}
+
+async function buildFollowupFilePayload(queueItems = []) {
+  const uploadItems = (Array.isArray(queueItems) ? queueItems : [])
+    .flatMap((item) => (Array.isArray(item?.files) ? item.files : []))
+    .filter(Boolean);
+  const files = uploadItems.map((item) => item.raw).filter(Boolean);
+  const imageFiles = files.filter((file) => isImageFile(file));
+  const attachmentNames = files
+    .map((file) => String(file?.name || "").trim())
+    .filter(Boolean);
+  const readAsBase64 = (f) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(f);
+    });
+  const base64Images = await Promise.all(imageFiles.map(readAsBase64));
+  let docsText = "";
+  const docFiles = files.filter((file) => !isImageFile(file));
+  for (const file of docFiles) {
+    const content = await extractTextFromFile(file);
+    if (content) {
+      const clipped = clipText(content, docMaxCharsPerFile.value);
+      docsText += `\n\n【补充附件：${file.name}】\n${clipped}`;
+    }
+    if (docsText.length >= docMaxCharsTotal.value) {
+      docsText = clipText(docsText, docMaxCharsTotal.value);
+      break;
+    }
+  }
+  return {
+    attachmentNames,
+    base64Images,
+    docsText,
+  };
+}
+
+function buildMergedFollowupPrompt(queueItems = [], docsText = "") {
+  const followupBlocks = (Array.isArray(queueItems) ? queueItems : [])
+    .map((item, index) => {
+      const text = String(item?.text || "").trim();
+      const names = followupFileNames(item?.files);
+      return [
+        `补充 ${index + 1}：`,
+        text || "（补充了附件）",
+        names.length ? `附件：${names.join("、")}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .filter(Boolean);
+  return [
+    "用户在当前任务执行期间追加了新要求。请把这些补充合并到当前任务上下文，重新理解目标，审查此前已完成的步骤是否仍满足最新要求，并按最新要求继续处理。",
+    "",
+    "追加内容：",
+    followupBlocks.join("\n\n"),
+    docsText,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function sendMergedFollowupRequest(queueItems = [], assistantMessageId = "") {
+  if (!queueItems.length || !selectedProjectId.value) return;
+  let activeChatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!activeChatSessionId) return;
+  const normalizedAssistantMessageId = String(assistantMessageId || "").trim();
+  const assistantIndex = messages.value.findIndex(
+    (item) => String(item?.id || "").trim() === normalizedAssistantMessageId,
+  );
+  const assistantMessage =
+    assistantIndex >= 0 ? messages.value[assistantIndex] : null;
+  if (!assistantMessage) return;
+
+  const followupIds = queueItems
+    .map((item) => String(item?.id || "").trim())
+    .filter(Boolean);
+  upsertMessageOperation(assistantMessage, {
+    operationId: `plan:followup:${normalizedAssistantMessageId || followupIds.join(":")}`,
+    kind: "plan",
+    title: "补充需求",
+    summary: "正在重新理解并更新计划",
+    detail: formatFollowupMergeDetail(queueItems, "running"),
+    phase: "running",
+    actionType: "none",
+    meta: {
+      assistant_message_id: normalizedAssistantMessageId,
+      followup_queue_ids: followupIds,
+    },
+  });
+  appendMessageProcessLog(assistantMessage, {
+    level: "info",
+    text: "补充需求已合并到当前任务，正在重新理解并更新计划。",
+  });
+  assistantMessage.content = "";
+  assistantMessage.processExpanded = true;
+
+  const filePayload = await buildFollowupFilePayload(queueItems);
+  const activeSessionSourceContext = normalizeChatSourceContext(
+    currentChatSession.value || {},
+  );
+  activeSessionSourceContext.followup_replan = {
+    merged: true,
+    assistant_message_id: normalizedAssistantMessageId,
+    queue_ids: followupIds,
+    queued_at: queueItems
+      .map((item) => String(item?.queuedAt || "").trim())
+      .filter(Boolean),
+  };
+
+  const finalUserPrompt = appendModelGenerationInstruction(
+    buildMergedFollowupPrompt(queueItems, filePayload.docsText),
+  );
+  const effectiveAutoUseTools = singleRoundAnswerOnly.value
+    ? false
+    : projectChatToolsExplicitlyEnabled();
+  const effectiveSelectedProjectToolNames = effectiveAutoUseTools
+    ? selectedProjectToolNames.value
+    : [];
+  chatLoading.value = true;
+  scrollToBottom();
+  try {
+    await sendProjectChatRequest({
+      projectId: selectedProjectId.value,
+      activeChatSessionId,
+      userMessageId: "",
+      assistantMessage,
+      assistantIndex,
+      finalUserPrompt,
+      activeSessionSourceContext,
+      attachmentNames: filePayload.attachmentNames,
+      base64Images: filePayload.base64Images,
+      historyRows: toHistoryRows(messages.value, historyLimit.value),
+      effectiveAutoUseTools,
+      effectiveToolPriority: projectChatSettings.value.tool_priority || [],
+      enabledProjectToolNames: effectiveSelectedProjectToolNames,
+      requestKind: "followup_replan",
+      replaceAssistantContentOnDone: true,
+    });
+  } catch (err) {
+    assistantMessage.content = `请求失败：${err?.message || "未知错误"}`;
+    ElMessage.error(err?.message || "追加需求处理失败");
+  } finally {
+    chatLoading.value = pendingRequests.size > 0;
+    singleRoundAnswerOnly.value = false;
+    if (selectedProjectId.value) {
+      await fetchChatSessions(selectedProjectId.value, activeChatSessionId);
+    }
+    scrollToBottom();
   }
 }
 
@@ -17716,7 +18131,16 @@ async function handleSocketMessage(eventData) {
       if (guardSummary) {
         removeAssistantStatusNotes(row, isTransientExecutionStatusNote);
       }
-      if (!keepRequestOpenAfterDone) {
+      appendAgentRuntimePermissionOperations(row, eventData);
+      const shouldPreserveUserWaitingOperationAfterDone =
+        !keepRequestOpenAfterDone &&
+        !preserveTerminalInteraction &&
+        doneState.phase === "completed" &&
+        hasNonTerminalUserWaitingOperation(row);
+      if (
+        !keepRequestOpenAfterDone &&
+        !shouldPreserveUserWaitingOperationAfterDone
+      ) {
         upsertMessageOperation(row, {
           operationId: `request:${requestId}`,
           kind: "request",
@@ -17736,7 +18160,6 @@ async function handleSocketMessage(eventData) {
           },
         });
       }
-      appendAgentRuntimePermissionOperations(row, eventData);
       if (guardSummary) {
         appendAssistantStatusNote(row, `> ⚠️ ${guardSummary}`);
       }
@@ -17744,10 +18167,12 @@ async function handleSocketMessage(eventData) {
         keepRequestOpenAfterDone && !doneState.keepExecutionOpen
           ? "运行仍在继续，等待最终结果"
           : doneState.summary;
-      appendMessageProcessLog(row, {
-        level: doneState.level,
-        text: doneLogSummary,
-      });
+      if (!shouldPreserveUserWaitingOperationAfterDone) {
+        appendMessageProcessLog(row, {
+          level: doneState.level,
+          text: doneLogSummary,
+        });
+      }
       row.images = mergeImageUrls(
         extractImages(row),
         collectArtifactImageUrls(eventData),
@@ -18338,6 +18763,8 @@ async function sendProjectChatRequest({
   assistAction = null,
   assistToolNames = [],
   onAfterDone = null,
+  requestKind = "user_message",
+  replaceAssistantContentOnDone = false,
 }) {
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const client = await ensureWsClient(projectId);
@@ -18362,6 +18789,7 @@ async function sendProjectChatRequest({
     message_id: String(userMessageId || "").trim(),
     assistant_message_id: String(assistantMessage?.id || "").trim(),
     chat_session_id: activeChatSessionId,
+    request_kind: String(requestKind || "user_message").trim() || "user_message",
     chat_mode: "system",
     chat_surface: chatSurface.value,
     source_context: activeSessionSourceContext,
@@ -18447,6 +18875,25 @@ async function sendProjectChatRequest({
   );
   client.send(requestPayload);
   await donePromise;
+  if (replaceAssistantContentOnDone) {
+    const row = messages.value[assistantIndex];
+    const finalContent = String(row?.content || "").trim();
+    const followupPlanId = String(assistantMessage?.id || "").trim();
+    if (row && followupPlanId) {
+      upsertMessageOperation(row, {
+        operationId: `plan:followup:${followupPlanId}`,
+        kind: "plan",
+        title: "补充需求",
+        summary: finalContent ? "已按补充需求更新结果" : "补充需求处理完成",
+        detail: "",
+        phase: "completed",
+        actionType: "none",
+        meta: {
+          assistant_message_id: followupPlanId,
+        },
+      });
+    }
+  }
   if (
     !String(messages.value[assistantIndex]?.content || "").trim() &&
     !messageOperations(messages.value[assistantIndex]).length
@@ -18705,8 +19152,7 @@ async function doSend(options = {}) {
     return;
   }
 
-  const fromFollowupQueue = Boolean(options?.fromFollowupQueue);
-  if (chatLoading.value && !fromFollowupQueue) {
+  if (chatLoading.value) {
     if (isAwaitingUserInteraction.value) {
       const text = String(draftText.value || "").trim();
       if (await submitPendingInteractionAckIfNeeded(text)) {
@@ -18768,13 +19214,6 @@ async function doSend(options = {}) {
   const activeSessionSourceContext = normalizeChatSourceContext(
     currentChatSession.value || {},
   );
-  if (fromFollowupQueue) {
-    activeSessionSourceContext.followup_replan = {
-      queued: true,
-      queue_id: String(options?.followupQueueId || "").trim(),
-      queued_at: String(options?.followupQueuedAt || "").trim(),
-    };
-  }
   const historyRows = toHistoryRows(messages.value, historyLimit.value);
   const imageUrls = uploadFiles.value
     .filter((item) => item.kind === "image")
@@ -18969,26 +19408,6 @@ async function doSend(options = {}) {
     operations: [],
     time: nowText(),
   };
-  if (fromFollowupQueue) {
-    assistantMessage.operations.push({
-      operationId: `plan:followup:${String(options?.followupQueueId || assistantMessage.id).trim()}`,
-      kind: "plan",
-      title: "重新规划",
-      summary: "正在基于追加需求重新审查和规划",
-      detail: [
-        "1. 读取追加需求 [completed]",
-        "2. 审查前序处理是否仍满足最新需求 [pending]",
-        "3. 按最新计划继续处理并汇总结果 [pending]",
-      ].join("\n"),
-      phase: "running",
-      actionType: "none",
-      meta: {
-        followup_queue_id: String(options?.followupQueueId || "").trim(),
-      },
-    });
-    assistantMessage.processExpanded = true;
-  }
-
   messages.value.push(userMessage);
   messages.value.push(assistantMessage);
 
@@ -22194,6 +22613,184 @@ onUnmounted(() => {
 
 .message-process-shell__summary-item.is-error .message-process-shell__summary-dot {
   background: #ef4444;
+}
+
+.message-live-progress {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(203, 213, 225, 0.76);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.message-live-progress__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.message-live-progress__eyebrow {
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+.message-live-progress__title {
+  margin-top: 3px;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.message-live-progress__badge {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #475569;
+  background: rgba(148, 163, 184, 0.12);
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.message-live-progress__badge.is-running {
+  color: #0369a1;
+  background: rgba(14, 165, 233, 0.12);
+}
+
+.message-live-progress__badge.is-waiting {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.message-live-progress__badge.is-success {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.14);
+}
+
+.message-live-progress__badge.is-danger {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.message-live-progress__list {
+  display: grid;
+  gap: 7px;
+}
+
+.message-live-progress__item {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.message-live-progress__marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.56);
+  background: #ffffff;
+  color: #64748b;
+}
+
+.message-live-progress__marker > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.message-live-progress__main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.message-live-progress__item-title {
+  color: #1e293b;
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 700;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.message-live-progress__item-summary {
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.message-live-progress__phase {
+  align-self: center;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.message-live-progress__item.is-running {
+  background: rgba(239, 246, 255, 0.88);
+}
+
+.message-live-progress__item.is-running .message-live-progress__marker,
+.message-live-progress__item.is-running .message-live-progress__phase {
+  color: #2563eb;
+}
+
+.message-live-progress__item.is-waiting_user {
+  background: rgba(255, 251, 235, 0.9);
+}
+
+.message-live-progress__item.is-waiting_user .message-live-progress__marker,
+.message-live-progress__item.is-waiting_user .message-live-progress__phase {
+  color: #b45309;
+}
+
+.message-live-progress__item.is-completed {
+  background: rgba(240, 253, 244, 0.86);
+}
+
+.message-live-progress__item.is-completed .message-live-progress__marker {
+  border-color: rgba(34, 197, 94, 0.48);
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.message-live-progress__item.is-completed .message-live-progress__phase {
+  color: #047857;
+}
+
+.message-live-progress__item.is-blocked,
+.message-live-progress__item.is-failed {
+  background: rgba(254, 242, 242, 0.88);
+}
+
+.message-live-progress__item.is-blocked .message-live-progress__marker,
+.message-live-progress__item.is-blocked .message-live-progress__phase,
+.message-live-progress__item.is-failed .message-live-progress__marker,
+.message-live-progress__item.is-failed .message-live-progress__phase {
+  color: #dc2626;
 }
 
 .message-footer-action {

@@ -1103,7 +1103,7 @@ def test_cli_plugin_login_task_waits_for_user_action(tmp_path, monkeypatch):
     assert latest["profile"]["status"] == "pending_auth"
 
 
-def test_cli_plugin_login_task_requires_auth_status_verification(tmp_path, monkeypatch):
+def test_cli_plugin_login_task_fails_when_auth_status_verification_has_no_user_action(tmp_path, monkeypatch):
     from services import operation_wait_task_service as login_task_svc
 
     monkeypatch.setattr(login_task_svc, "get_project_root", lambda: tmp_path)
@@ -1182,11 +1182,13 @@ def test_cli_plugin_login_task_requires_auth_status_verification(tmp_path, monke
     latest = login_task_svc.get_login_task(task_id)
 
     assert latest is not None
-    assert latest["status"] == "waiting_user_action"
-    assert latest["ok"] is True
+    assert latest["status"] == "failed"
+    assert latest["ok"] is False
     assert latest["execution_ok"] is True
     assert latest["execution"]["verification"]["stdout"].startswith('{"identity":"bot"')
     assert latest["profile"]["status"] == "pending_auth"
+    assert latest["execution"]["authorization_url"] == ""
+    assert "interaction_schema" not in latest["execution"]
 
 
 def test_cli_plugin_login_task_auto_completes_after_auth_poll(tmp_path, monkeypatch):
@@ -4870,7 +4872,7 @@ def test_project_experience_rule_options_route_lists_managed_experience_rules(tm
     assert "rule-normal" not in rule_ids
 
 
-def test_project_experience_rule_delete_route_unbinds_then_deletes_last_shared_rule(tmp_path, monkeypatch):
+def test_project_experience_rule_delete_route_only_removes_project_binding(tmp_path, monkeypatch):
     from routers import projects as projects_router
     from stores import mcp_bridge
     from stores.json.project_store import ProjectConfig
@@ -4924,7 +4926,9 @@ def test_project_experience_rule_delete_route_unbinds_then_deletes_last_shared_r
     first_response = client.delete(f"/api/projects/proj-1/experience-rules/{shared_rule.id}")
     assert first_response.status_code == 200
     first_payload = first_response.json()
+    assert first_payload["status"] == "removed"
     assert first_payload["rule_deleted"] is False
+    assert first_payload["deleted_rule_ids"] == []
     assert first_payload["remaining_project_binding_count"] == 1
     assert project_store.get("proj-1").experience_rule_ids == []
     assert project_store.get("proj-2").experience_rule_ids == [shared_rule.id]
@@ -4933,11 +4937,12 @@ def test_project_experience_rule_delete_route_unbinds_then_deletes_last_shared_r
     second_response = client.delete(f"/api/projects/proj-2/experience-rules/{shared_rule.id}")
     assert second_response.status_code == 200
     second_payload = second_response.json()
-    assert second_payload["rule_deleted"] is True
-    assert second_payload["deleted_rule_ids"] == [shared_rule.id]
+    assert second_payload["status"] == "removed"
+    assert second_payload["rule_deleted"] is False
+    assert second_payload["deleted_rule_ids"] == []
     assert second_payload["remaining_project_binding_count"] == 0
     assert project_store.get("proj-2").experience_rule_ids == []
-    assert temp_rule_store.get(shared_rule.id) is None
+    assert temp_rule_store.get(shared_rule.id) is not None
 
 
 def test_project_routes_include_created_by_for_create_list_and_detail(tmp_path, monkeypatch):
@@ -7061,7 +7066,7 @@ def test_save_project_chat_memory_snapshot_completed_stores_final_summary(monkey
     assert "[验证结果]" in saved_memory.content
 
 
-def test_save_project_chat_memory_snapshot_completed_still_saves_final_summary_when_requirement_record_disabled(monkeypatch):
+def test_save_project_chat_memory_snapshot_completed_skips_when_requirement_record_disabled(monkeypatch):
     from routers import projects as projects_router
 
     saved_memories = []
@@ -7130,8 +7135,7 @@ def test_save_project_chat_memory_snapshot_completed_still_saves_final_summary_w
         allow_requirement_record=False,
     )
 
-    assert len(saved_memories) == 1
-    assert "workflow:final-summary" in saved_memories[0].purpose_tags
+    assert saved_memories == []
 
 
 def test_save_project_chat_memory_snapshot_incomplete_task_tree_with_completed_verified_answer_still_saves_final_summary(
@@ -7210,11 +7214,7 @@ def test_save_project_chat_memory_snapshot_incomplete_task_tree_with_completed_v
         allow_requirement_record=False,
     )
 
-    assert len(saved_memories) == 1
-    saved_memory = saved_memories[0]
-    assert "workflow:final-summary" in saved_memory.purpose_tags
-    assert "[最终结论] 已完成页面布局优化，npm run build 构建通过，人工验证通过。" in saved_memory.content
-    assert "[解决状态]" in saved_memory.content
+    assert saved_memories == []
 
 
 def test_save_project_chat_memory_snapshot_allows_multiple_requirement_records_in_same_chat_session(monkeypatch):
@@ -16671,6 +16671,25 @@ def test_build_project_chat_operation_event_for_done_background_task_pending():
     assert event["summary"] == "任务已创建，等待后台执行"
 
 
+def test_build_project_chat_operation_event_for_done_waiting_user_action():
+    from routers.projects import _build_project_chat_operation_event
+
+    event = _build_project_chat_operation_event(
+        {
+            "type": "done",
+            "request_id": "req-auth",
+            "completed_reason": "waiting_user_action",
+            "guard_message": "等待你完成当前操作",
+            "content": "",
+        }
+    )
+
+    assert event is not None
+    assert event["operation_id"] == "request:req-auth"
+    assert event["phase"] == "waiting_user"
+    assert event["summary"] == "等待你完成当前操作"
+
+
 def test_build_project_chat_operation_event_for_operation_task_state():
     from routers.projects import _build_project_chat_operation_event
 
@@ -16958,6 +16977,119 @@ def test_build_project_chat_interaction_request_payload_uses_pending_interaction
         "workflow-form-1"
     )
     assert payload["request_kind"] == "interaction_continuation"
+
+
+def test_operation_interaction_submit_for_auth_task_is_handled_without_model_continuation():
+    from routers.projects import (
+        _resolve_project_chat_operation_interaction_task_id,
+        _should_handle_project_chat_operation_interaction_submit,
+    )
+
+    payload = {
+        "type": "interaction_submit",
+        "chat_session_id": "chat-auth",
+        "interaction_operation_id": "auth:operation-wait-123",
+        "interaction_action_type": "interaction_form",
+        "interaction_data": {"domains": ["all"]},
+        "workflow_kind": "auth_login",
+        "workflow_state": {
+            "workflow_kind": "auth_login",
+            "task_id": "operation-wait-123",
+        },
+    }
+
+    assert _should_handle_project_chat_operation_interaction_submit(payload) is True
+    assert _resolve_project_chat_operation_interaction_task_id(payload) == "operation-wait-123"
+
+
+def test_continue_lark_auth_operation_task_with_interaction_domains(tmp_path, monkeypatch):
+    from services import operation_wait_task_service as login_task_svc
+
+    executed_commands: list[str] = []
+    monkeypatch.setattr(login_task_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(login_task_svc, "_poll_auth_operation_until_authenticated", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        login_task_svc,
+        "get_cli_plugin",
+        lambda plugin_id, include_status=False: {
+            "id": plugin_id,
+            "name": "飞书 CLI",
+        },
+    )
+
+    def fake_execute(plugin_id, username, command, timeout_sec=120, on_update=None):
+        executed_commands.append(command)
+        return {
+            "ok": False,
+            "interactive": True,
+            "requires_user_action": True,
+            "authorization_url": "https://open.feishu.cn/mock-auth",
+            "status": "pending_user_action",
+            "status_label": "等待网页授权",
+            "next_step": "请在浏览器打开授权链接完成授权；完成后系统会自动检测并继续。",
+            "command": command,
+            "stdout": "Open https://open.feishu.cn/mock-auth to continue login",
+            "stderr": "",
+            "exit_code": None,
+            "timed_out": False,
+            "plugin_id": plugin_id,
+        }
+
+    monkeypatch.setattr(login_task_svc, "execute_cli_plugin_profile_command_streaming", fake_execute)
+    monkeypatch.setattr(
+        login_task_svc,
+        "execute_cli_plugin_profile_command",
+        lambda plugin_id, username, command, timeout_sec=120: {
+            "ok": False,
+            "stdout": '{"identity":"bot","note":"No user logged in."}',
+            "stderr": "",
+            "plugin_id": plugin_id,
+        },
+    )
+    monkeypatch.setattr(
+        login_task_svc,
+        "update_cli_plugin_profile",
+        lambda plugin_id, owner_username, **kwargs: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            **kwargs,
+        },
+    )
+    monkeypatch.setattr(
+        login_task_svc,
+        "serialize_cli_plugin_profile",
+        lambda plugin_id, owner_username, auth_payload=None: {
+            "plugin_id": plugin_id,
+            "owner_username": owner_username,
+            "status": "pending_auth",
+            "status_label": "等待授权",
+        },
+    )
+
+    task = login_task_svc.create_login_task(
+        "lark-cli",
+        username="tester",
+        login_command="lark-cli auth login --recommend",
+    )
+    task_id = str(task["task_id"])
+    login_task_svc._TASK_THREADS[task_id].join(timeout=5)
+    latest = login_task_svc.get_login_task(task_id)
+    assert latest is not None
+    assert latest["status"] == "waiting_user_action"
+
+    continued = login_task_svc.continue_cli_plugin_auth_operation_task_with_interaction(
+        task_id,
+        username="tester",
+        interaction_data={"domains": ["all"]},
+    )
+    assert continued["command"] == "lark-cli auth login --domain all"
+    login_task_svc._TASK_THREADS[task_id].join(timeout=5)
+
+    latest = login_task_svc.get_login_task(task_id)
+    assert latest is not None
+    assert latest["command"] == "lark-cli auth login --domain all"
+    assert latest["metadata"]["selected_domains"] == ["all"]
+    assert executed_commands[-1] == "lark-cli auth login --domain all"
 
 
 def test_build_project_chat_source_context_prompt_mentions_interaction_submission():

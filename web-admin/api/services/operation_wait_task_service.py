@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+import shlex
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -229,6 +230,36 @@ def _build_lark_auth_domain_interaction_schema() -> dict[str, Any]:
     }
 
 
+def _normalize_lark_auth_domains(raw_domains: Any) -> list[str]:
+    values = raw_domains if isinstance(raw_domains, list) else [raw_domains]
+    allowed = {str(item or "").strip().lower() for item in _LARK_AUTH_DOMAIN_OPTIONS}
+    domains: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        for token in str(raw or "").replace("，", ",").split(","):
+            normalized = token.strip().lower()
+            if not normalized or normalized not in allowed or normalized in seen:
+                continue
+            seen.add(normalized)
+            domains.append(normalized)
+    return domains
+
+
+def _build_lark_auth_login_domain_command(domains: list[str]) -> str:
+    normalized_domains = _normalize_lark_auth_domains(domains)
+    if not normalized_domains:
+        raise ValueError("please specify the scopes to authorize")
+    return " ".join(
+        [
+            "lark-cli",
+            "auth",
+            "login",
+            "--domain",
+            shlex.quote(",".join(normalized_domains)),
+        ]
+    )
+
+
 def _operation_interaction_schema_for_execution(
     plugin_id: str,
     execution: dict[str, Any] | None,
@@ -410,29 +441,20 @@ def _find_active_task(plugin_id: str, username: str) -> dict[str, Any] | None:
     return active_tasks[0] if active_tasks else None
 
 
+def _execution_has_user_action_payload(
+    plugin_id: str,
+    execution: dict[str, Any] | None,
+) -> bool:
+    payload = execution or {}
+    if str(payload.get("authorization_url") or "").strip():
+        return True
+    return bool(_operation_interaction_schema_for_execution(plugin_id, payload))
+
+
 def _execution_has_authorization_prompt(execution: dict[str, Any] | None) -> bool:
     payload = execution or {}
     plugin_id = str(payload.get("plugin_id") or "").strip()
-    if payload.get("requires_user_action"):
-        return True
-    if str(payload.get("authorization_url") or "").strip():
-        return True
-    if _operation_interaction_schema_for_execution(plugin_id, execution):
-        return True
-    text = _execution_text(payload).lower()
-    return any(
-        pattern in text
-        for pattern in (
-            "authorize",
-            "authorization",
-            "auth login",
-            "open the following link",
-            "please visit",
-            "浏览器",
-            "授权",
-            "登录",
-        )
-    )
+    return _execution_has_user_action_payload(plugin_id, payload)
 
 
 def _is_authenticated_test_execution(execution: dict[str, Any] | None) -> bool:
@@ -598,6 +620,8 @@ def create_cli_plugin_auth_operation_task(
     if not command:
         raise ValueError("operation command is required")
     safe_timeout = max(15, min(int(timeout_sec or 120), 600))
+    initial_metadata = dict(metadata or {})
+    initial_metadata["run_generation"] = int(initial_metadata.get("run_generation") or 1)
     task = {
         "task_id": f"operation-wait-{uuid.uuid4().hex}",
         "operation_kind": _plugin_operation_kind(normalized_plugin_id),
@@ -618,7 +642,7 @@ def create_cli_plugin_auth_operation_task(
         "error_message": "",
         "execution": {},
         "profile": {},
-        "metadata": dict(metadata or {}),
+        "metadata": initial_metadata,
         "created_at": _utc_now_iso(),
         "started_at": "",
         "finished_at": "",
@@ -641,6 +665,71 @@ def create_cli_plugin_auth_operation_task(
     return normalized_task
 
 
+def continue_cli_plugin_auth_operation_task_with_interaction(
+    task_id: str,
+    *,
+    username: str,
+    interaction_data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_task_id = str(task_id or "").strip()
+    normalized_username = str(username or "").strip()
+    if not normalized_task_id:
+        raise ValueError("task_id is required")
+    if not normalized_username:
+        raise ValueError("username is required")
+    task = get_operation_wait_task(normalized_task_id)
+    if task is None:
+        raise ValueError(f"Unknown operation wait task: {normalized_task_id}")
+    if str(task.get("created_by") or "").strip() != normalized_username:
+        raise ValueError("operation wait task does not belong to current user")
+    status = str(task.get("status") or "").strip().lower()
+    if status != "waiting_user_action":
+        raise ValueError("operation wait task is not waiting for user interaction")
+    plugin_id = str(task.get("plugin_id") or "").strip().lower()
+    operation_kind = str(task.get("operation_kind") or "").strip().lower()
+    if plugin_id not in {"lark-cli", "feishu-cli"} or operation_kind != "auth_login":
+        raise ValueError("operation interaction is not resumable")
+    data = dict(interaction_data or {})
+    domains = _normalize_lark_auth_domains(data.get("domains"))
+    command = _build_lark_auth_login_domain_command(domains)
+    current_generation = int(dict(task.get("metadata") or {}).get("run_generation") or 1)
+    metadata = {
+        **dict(task.get("metadata") or {}),
+        "run_generation": current_generation + 1,
+        "interaction_submitted_at": _utc_now_iso(),
+        "interaction_data": data,
+        "selected_domains": domains,
+        "previous_command": str(task.get("command") or "").strip(),
+    }
+    updated = _update_task(
+        normalized_task_id,
+        status="queued",
+        status_label=_build_task_status_label("queued"),
+        status_reason="已收到授权业务域，正在继续授权流程",
+        command=command,
+        timeout_sec=max(15, min(int(task.get("timeout_sec") or 120), 600)),
+        ok=False,
+        execution_ok=False,
+        exit_code=None,
+        stdout="",
+        stderr="",
+        error_message="",
+        execution={},
+        metadata=metadata,
+        finished_at="",
+    )
+    thread = threading.Thread(
+        target=_run_cli_plugin_auth_operation_task,
+        args=(normalized_task_id,),
+        name=f"operation-wait-{normalized_task_id}",
+        daemon=True,
+    )
+    with _TASK_LOCK:
+        _TASK_THREADS[normalized_task_id] = thread
+    thread.start()
+    return updated
+
+
 def _run_cli_plugin_auth_operation_task(task_id: str) -> None:
     try:
         task = _update_task(
@@ -652,6 +741,7 @@ def _run_cli_plugin_auth_operation_task(task_id: str) -> None:
         )
         username = str(task.get("created_by") or "").strip()
         plugin_id = str(task.get("plugin_id") or "").strip()
+        run_generation = int(dict(task.get("metadata") or {}).get("run_generation") or 1)
         def _handle_execution_update(update: dict[str, Any]) -> None:
             if not _execution_has_authorization_prompt(update):
                 return
@@ -691,8 +781,8 @@ def _run_cli_plugin_auth_operation_task(task_id: str) -> None:
             return
 
         execution_ok = bool(execution.get("ok"))
-        has_authorization_prompt = _execution_has_authorization_prompt(execution)
-        if execution.get("timed_out") and has_authorization_prompt:
+        has_user_action_payload = _execution_has_authorization_prompt(execution)
+        if execution.get("timed_out") and has_user_action_payload:
             profile_status = "pending_auth"
             profile_status_label = "等待授权"
             task_status = "waiting_user_action"
@@ -700,7 +790,7 @@ def _run_cli_plugin_auth_operation_task(task_id: str) -> None:
             profile_status = "ready"
             profile_status_label = "授权超时"
             task_status = "timeout"
-        elif execution.get("requires_user_action") or execution_ok or has_authorization_prompt:
+        elif has_user_action_payload:
             profile_status = "pending_auth"
             profile_status_label = "等待授权"
             task_status = "waiting_user_action"
@@ -739,16 +829,21 @@ def _run_cli_plugin_auth_operation_task(task_id: str) -> None:
             status_reason=_build_task_status_reason(status=task_status, execution=execution),
             finished_at=_utc_now_iso() if task_status in _TERMINAL_STATUSES else "",
             exit_code=execution.get("exit_code"),
-            ok=execution_ok,
+            ok=execution_ok if task_status == "waiting_user_action" else False,
             execution_ok=execution_ok,
             stdout=str(execution.get("stdout") or "").strip(),
             stderr=str(execution.get("stderr") or "").strip(),
-            error_message="" if execution.get("ok") or execution.get("requires_user_action") else str(execution.get("stderr") or execution.get("stdout") or "").strip(),
+            error_message="" if task_status == "waiting_user_action" else str(execution.get("stderr") or execution.get("stdout") or "").strip(),
             execution=execution_payload,
             profile=profile,
         )
         if task_status == "waiting_user_action":
-            _poll_auth_operation_until_authenticated(task_id, plugin_id=plugin_id, username=username)
+            _poll_auth_operation_until_authenticated(
+                task_id,
+                plugin_id=plugin_id,
+                username=username,
+                run_generation=run_generation,
+            )
     except Exception as exc:
         _update_task(
             task_id,
@@ -761,7 +856,9 @@ def _run_cli_plugin_auth_operation_task(task_id: str) -> None:
         )
     finally:
         with _TASK_LOCK:
-            _TASK_THREADS.pop(str(task_id or "").strip(), None)
+            normalized_task_id = str(task_id or "").strip()
+            if _TASK_THREADS.get(normalized_task_id) is threading.current_thread():
+                _TASK_THREADS.pop(normalized_task_id, None)
 
 
 def _poll_auth_operation_until_authenticated(
@@ -769,6 +866,7 @@ def _poll_auth_operation_until_authenticated(
     *,
     plugin_id: str,
     username: str,
+    run_generation: int | None = None,
 ) -> None:
     test_command = _default_cli_plugin_test_command(plugin_id)
     if not test_command:
@@ -780,6 +878,9 @@ def _poll_auth_operation_until_authenticated(
         if task is None:
             return
         if str(task.get("status") or "").strip().lower() != "waiting_user_action":
+            return
+        current_generation = int(dict(task.get("metadata") or {}).get("run_generation") or 1)
+        if run_generation is not None and current_generation != int(run_generation):
             return
         try:
             execution = _verify_cli_plugin_authenticated(plugin_id, username)

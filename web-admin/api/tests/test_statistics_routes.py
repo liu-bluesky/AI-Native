@@ -203,15 +203,6 @@ def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
     assert payload["usage"]["summary"]["model_calls"] == 3
     assert payload["usage"]["summary"]["total_cost_usd"] == 1.2345
     assert payload["usage"]["summary"]["active_prompt_versions"] == 1
-    assert payload["work_sessions"]["summary"]["total_sessions"] == 2
-    assert payload["work_sessions"]["summary"]["completed_sessions"] == 1
-    assert payload["work_sessions"]["summary"]["completion_rate"] == 50.0
-    assert payload["work_sessions"]["summary"]["closure_gap_sessions"] == 0
-    assert payload["work_sessions"]["summary"]["active_employees"] == 2
-    assert any(item["completion_rate"] == 50.0 for item in payload["work_sessions"]["daily"])
-    assert payload["work_sessions"]["top_projects"][0]["project_name"] == "项目 A"
-    assert payload["work_sessions"]["top_projects"][0]["completion_rate"] == 50.0
-    assert payload["work_sessions"]["top_employees"][0]["employee_name"] == "智能体 B"
     assert payload["live_activity"]["summary"]["active_entries"] == 3
     assert payload["live_activity"]["endpoint_breakdown"] == [
         {"endpoint_type": "employee", "count": 1},
@@ -228,25 +219,11 @@ def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
     assert payload["usage"]["top_models"][0]["model_name"] == "gpt-4.1"
     assert payload["usage"]["top_prompt_versions"][0]["prompt_version"] == "planner-v2"
     assert payload["usage"]["top_projects"][0]["project_name"] == "项目 A"
-    assert payload["executive"]["version"] == "statistics-executive/v2"
-    assert payload["executive"]["headline"] == "当前窗口的工作内容已可复盘"
-    assert payload["executive"]["summary"]["project_count"] == 1
-    assert payload["executive"]["summary"]["risk_project_count"] == 0
-    assert payload["executive"]["summary"]["completion_rate"] == 50.0
-    assert payload["executive"]["summary"]["closure_rate"] == 50.0
-    assert payload["executive"]["project_portfolio"][0]["project_name"] == "项目 A"
-    assert payload["executive"]["project_portfolio"][0]["status"] == "healthy"
-    assert payload["executive"]["project_portfolio"][0]["closure_rate"] == 50.0
-    assert payload["executive"]["project_portfolio"][0]["work_items"][0]["work_summary"] == "验证 · 验收"
-    assert payload["executive"]["project_portfolio"][0]["work_items"][0]["verification_summary"] == "已完成"
-    assert payload["executive"]["risk_projects"] == []
-    assert payload["executive"]["recent_sessions"][0]["project_name"] == "项目 A"
-    assert payload["executive"]["recent_sessions"][0]["work_summary"] == "验证 · 验收"
-    assert payload["runtime_metrics"]["counter_total"] == 1
-    assert payload["insights"]["health_score"] > 0
-    assert len(payload["insights"]["highlights"]) == 5
-    assert payload["insights"]["highlights"][1]["value"] == "统一查询 MCP"
-    assert payload["insights"]["highlights"][3]["value"] == "项目 A"
+    assert "work_sessions" not in payload
+    assert "runtime_metrics" not in payload
+    assert "insights" not in payload
+    assert "blind_spots" not in payload
+    assert "executive" not in payload
     assert payload["ai_report"]["version"] == "statistics-ai-report/v1"
     assert payload["ai_report"]["scope"]["display_name"] == "全局统计"
     assert payload["ai_report"]["top_entities"]["project_name"] == "项目 A"
@@ -266,9 +243,6 @@ def test_statistics_overview_returns_aggregated_payload(tmp_path, monkeypatch):
     assert payload["ai_report"]["structured_payload"]["entity_leaders"]["project_name"] == "项目 A"
     assert "AI 统计报表" in payload["ai_report"]["markdown"]
     assert "项目 A" in payload["ai_report"]["markdown"]
-    flow_map = {item["label"]: item["value"] for item in payload["insights"]["flow"]}
-    assert flow_map["Query 入口"] == "11"
-    assert all(item["key"] != "token-cost" for item in payload["blind_spots"])
 
 
 def test_statistics_overview_uses_work_sessions_for_agent_activity_when_usage_and_live_are_empty(tmp_path, monkeypatch):
@@ -391,24 +365,8 @@ def test_statistics_overview_uses_work_sessions_for_agent_activity_when_usage_an
     assert response.status_code == 200
     payload = response.json()
 
-    assert payload["work_sessions"]["summary"]["active_employees"] == 1
-    assert payload["work_sessions"]["summary"]["completion_rate"] == 0.0
-    assert payload["work_sessions"]["top_employees"] == [
-        {
-            "employee_id": "emp-1",
-            "employee_name": "智能体 A",
-            "session_count": 1,
-            "event_count": 2,
-            "project_count": 1,
-            "latest_updated_at": recent_iso_plus_5m,
-        }
-    ]
-    flow_map = {item["label"]: item["value"] for item in payload["insights"]["flow"]}
-    assert flow_map["活跃智能体"] == "1"
-    assert flow_map["Query 入口"] == "4"
-    highlight_map = {item["label"]: item["value"] for item in payload["insights"]["highlights"]}
-    assert highlight_map["最活跃入口"] == "统一查询 MCP"
-    assert highlight_map["最活跃智能体"] == "智能体 A"
+    assert "work_sessions" not in payload
+    assert "insights" not in payload
     assert payload["ai_report"]["snapshot"]["active_agents"] == 1
     assert payload["ai_report"]["snapshot"]["completion_rate"] == 0.0
     assert payload["ai_report"]["focus_points"]
@@ -569,7 +527,7 @@ def test_statistics_overview_accepts_project_scope(tmp_path, monkeypatch):
     assert payload["project_id"] == "proj-1"
     assert payload["project_name"] == "项目 A"
     assert payload["scope"]["display_name"] == "项目 A"
-    assert payload["work_sessions"]["summary"]["active_projects"] == 1
+    assert "work_sessions" not in payload
     assert payload["live_activity"]["summary"]["active_projects"] == 1
     assert payload["live_activity"]["top_projects"] == [
         {

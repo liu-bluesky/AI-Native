@@ -153,6 +153,7 @@ from services.task_tree_guard.task_tree_evolution import build_task_tree_evoluti
 from services.bot_connector_service import get_bot_connector, list_bot_connectors
 from services.operation_wait_task_service import (
     claim_operation_wait_task_resume,
+    continue_cli_plugin_auth_operation_task_with_interaction,
     subscribe_operation_wait_task_events,
 )
 from models.requests import (
@@ -3000,10 +3001,7 @@ def _serialize_project_experience_rule_option(rule: Rule) -> dict[str, str]:
 def _list_project_experience_rule_options(auth_payload: dict) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
     for rule in rule_store.list_all():
-        if _infer_experience_rule_scope(rule) not in {
-            _EXPERIENCE_SCOPE_PROJECT,
-            _EXPERIENCE_SCOPE_DEVELOPMENT,
-        }:
+        if not _is_managed_experience_rule(rule):
             continue
         if not can_view_record(rule, auth_payload):
             continue
@@ -4184,13 +4182,7 @@ def _resolve_project_chat_task_tree_context(
 ) -> dict[str, Any] | None:
     normalized_chat_session_id = _require_project_chat_session_id(chat_session_id)
     if not bool(runtime_settings.get("task_tree_enabled", True)):
-        payload = serialize_task_tree(
-            get_task_tree_for_chat_session(
-                project_id,
-                username,
-                normalized_chat_session_id,
-            )
-        )
+        return None
     elif bool(runtime_settings.get("task_tree_auto_generate", True)) and str(
         effective_user_message or ""
     ).strip():
@@ -4804,50 +4796,30 @@ def _build_project_chat_operation_event(
         ).strip()
         detail = str(source_payload.get("detail") or source_payload.get("message") or "").strip()
         summary = str(source_payload.get("summary") or "").strip()
-        prompt_text = "\n".join(
-            str(source_payload.get(key) or "").strip()
-            for key in (
-                "authorization_url",
-                "detail",
-                "message",
-                "summary",
-                "status_reason",
-                "next_step",
-                "output_preview",
-            )
-            if str(source_payload.get(key) or "").strip()
-        ).lower()
-        has_authorization_prompt = bool(
-            authorization_url
-            or "device/verify" in prompt_text
-            or "user_code" in prompt_text
-            or "authorization" in prompt_text
-            or "authorize" in prompt_text
-            or "浏览器" in prompt_text
-            or "授权" in prompt_text
-        )
+        has_user_action_payload = bool(authorization_url or interaction_schema)
         is_auth_workflow = (
             workflow_kind in {"auth_login", "authorization", "login"}
             or bool(authorization_url)
-            or has_authorization_prompt
         )
         phase = "running"
         if workflow_status == "waiting_user_action":
-            phase = "waiting_user"
+            phase = "waiting_user" if has_user_action_payload else "running"
             if not summary:
-                summary = "等待你完成表单后继续" if interaction_schema else "等待你处理后继续"
+                summary = (
+                    "等待你完成表单后继续"
+                    if interaction_schema
+                    else "等待你打开链接后继续"
+                    if authorization_url
+                    else "工作流正在进行中"
+                )
         elif workflow_status == "succeeded":
             phase = "completed"
             if not summary:
                 summary = "工作流已完成"
         elif workflow_status in {"failed", "timeout", "cancelled"}:
-            if is_auth_workflow and has_authorization_prompt:
-                phase = "waiting_user"
-                summary = "等待你在浏览器完成授权"
-            else:
-                phase = "failed"
-                if not summary:
-                    summary = "工作流未完成"
+            phase = "failed"
+            if not summary:
+                summary = "工作流未完成"
         elif not summary:
             summary = "工作流正在进行中"
 
@@ -5092,6 +5064,18 @@ def _build_project_chat_operation_event(
             "workflow_label": str(payload.get("workflow_label") or payload.get("operation_label") or "操作").strip(),
         }
         operation = _build_workflow_state_operation(normalized_payload)
+    elif event_type == "done" and str(payload.get("source") or "").strip() in {"operation_wait_task", "cli_plugin_login_task"}:
+        completed_reason = str(payload.get("guard_reason") or payload.get("completed_reason") or "").strip().lower()
+        if completed_reason == "waiting_user_action":
+            normalized_payload = {
+                **payload,
+                "type": "workflow_state",
+                "workflow_kind": str(payload.get("workflow_kind") or payload.get("operation_kind") or "auth_login").strip(),
+                "workflow_id": str(payload.get("workflow_id") or payload.get("task_id") or "").strip(),
+                "workflow_label": str(payload.get("workflow_label") or payload.get("operation_label") or "网页登录授权").strip(),
+                "summary": str(payload.get("summary") or payload.get("guard_message") or payload.get("content") or "").strip(),
+            }
+            operation = _build_workflow_state_operation(normalized_payload)
     elif event_type == "login_task_state":
         normalized_payload = {
             **payload,
@@ -7219,6 +7203,10 @@ def _is_project_chat_interaction_continuation(
     ) == "interaction_continuation"
 
 
+def _is_project_chat_followup_replan(request_kind: Any) -> bool:
+    return str(request_kind or "").strip().lower() == "followup_replan"
+
+
 def _normalize_project_chat_interaction_submit_schema(raw: Any) -> dict[str, Any] | None:
     return dict(raw) if isinstance(raw, dict) else None
 
@@ -7451,6 +7439,75 @@ def _build_project_chat_interaction_request_payload(
         "continuation_token": continuation_token,
         "source_context": source_context,
     }
+
+
+def _resolve_project_chat_operation_interaction_task_id(
+    payload: dict[str, Any],
+) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    workflow_state = payload.get("workflow_state") if isinstance(payload.get("workflow_state"), dict) else {}
+    candidates = [
+        payload.get("task_id"),
+        workflow_state.get("task_id"),
+        payload.get("workflow_id"),
+        workflow_state.get("workflow_id"),
+        payload.get("interaction_operation_id"),
+        payload.get("operation_id"),
+        payload.get("interaction_id"),
+    ]
+    for raw in candidates:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        if value.startswith("auth:"):
+            value = value.split(":", 1)[1].strip()
+        elif value.startswith("workflow:"):
+            parts = value.split(":")
+            value = parts[-1].strip() if parts else ""
+        if value.startswith("operation-wait-"):
+            return value
+    return ""
+
+
+def _should_handle_project_chat_operation_interaction_submit(
+    payload: dict[str, Any],
+) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    operation_id = str(
+        payload.get("interaction_operation_id")
+        or payload.get("operation_id")
+        or payload.get("interaction_id")
+        or ""
+    ).strip()
+    workflow_kind = str(payload.get("workflow_kind") or "").strip().lower()
+    workflow_state = payload.get("workflow_state") if isinstance(payload.get("workflow_state"), dict) else {}
+    workflow_kind = workflow_kind or str(workflow_state.get("workflow_kind") or "").strip().lower()
+    action_type = str(payload.get("interaction_action_type") or workflow_state.get("action_type") or "").strip().lower()
+    return (
+        operation_id.startswith("auth:")
+        or workflow_kind == "auth_login"
+        or action_type == "interaction_form" and bool(_resolve_project_chat_operation_interaction_task_id(payload))
+    )
+
+
+def _handle_project_chat_operation_interaction_submit(
+    *,
+    username: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    task_id = _resolve_project_chat_operation_interaction_task_id(payload)
+    if not task_id:
+        raise ValueError("operation interaction task_id is required")
+    interaction_data = _normalize_project_chat_interaction_submit_data(
+        payload.get("interaction_data")
+    )
+    return continue_cli_plugin_auth_operation_task_with_interaction(
+        task_id,
+        username=username,
+        interaction_data=interaction_data,
+    )
 
 
 def _build_project_chat_source_context_prompt(context: dict[str, str]) -> str:
@@ -7744,6 +7801,8 @@ def _save_project_chat_memory_snapshot(
         return
 
     normalized_chat_session_id = str(chat_session_id or "").strip()
+    if not allow_requirement_record:
+        return
     target_ids, memory_scope = _resolve_project_memory_target_employee_ids(project_id, selected_employee_ids)
     if not target_ids:
         return
@@ -7907,8 +7966,6 @@ def _save_project_chat_memory_snapshot(
         and _project_chat_answer_implies_completed_summary(conclusion, task_tree_payload)
     )
     snapshot_completed = task_tree_completed or inferred_completed_summary
-    if not snapshot_completed and not allow_requirement_record:
-        return
     workflow_tag = "workflow:final-summary" if snapshot_completed else "workflow:requirement-record"
     stage_label = "已完成" if snapshot_completed else _project_chat_stage_label(task_tree_payload)
     plan_outline = _render_task_tree_plan_outline(task_tree_payload)
@@ -14228,6 +14285,18 @@ def _infer_experience_rule_scope(rule: Rule | None) -> str:
     return _EXPERIENCE_SCOPE_DEVELOPMENT
 
 
+def _is_managed_experience_rule(rule: Rule | None) -> bool:
+    if rule is None:
+        return False
+    domain = str(getattr(rule, "domain", "") or "").strip()
+    title = str(getattr(rule, "title", "") or "").strip()
+    return (
+        domain in {_PROJECT_EXPERIENCE_RULE_DOMAIN, _DEVELOPMENT_EXPERIENCE_RULE_DOMAIN}
+        or title.startswith(_PROJECT_EXPERIENCE_RULE_TITLE_PREFIX)
+        or title.startswith(_DEVELOPMENT_EXPERIENCE_RULE_TITLE_PREFIX)
+    )
+
+
 def _render_experience_rule_content(card: dict[str, Any]) -> str:
     sections = [
         ("适用场景", card.get("applicable_when") or []),
@@ -15241,19 +15310,14 @@ async def delete_project_experience_rule(
     )
     project_store.save(updated_project)
 
-    deleted_rule_ids: list[str] = []
-    if not _projects_binding_experience_rule(normalized_rule_id):
-        if rule_store.delete(normalized_rule_id):
-            deleted_rule_ids.append(normalized_rule_id)
-
     remaining_project_ids = _projects_binding_experience_rule(normalized_rule_id)
     return {
-        "status": "deleted",
+        "status": "removed",
         "project_id": updated_project.id,
         "project_name": updated_project.name,
         "removed_rule_id": normalized_rule_id,
-        "deleted_rule_ids": deleted_rule_ids,
-        "rule_deleted": bool(deleted_rule_ids),
+        "deleted_rule_ids": [],
+        "rule_deleted": False,
         "remaining_project_binding_count": len(remaining_project_ids),
         "remaining_project_binding_ids": remaining_project_ids,
         "experience_rule_ids": _normalize_project_experience_rule_ids(
@@ -16819,6 +16883,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             request_kind,
             source_context=source_context,
         )
+        is_followup_replan = _is_project_chat_followup_replan(request_kind)
         previous_messages = project_chat_store.list_messages(
             project_id,
             username,
@@ -16831,13 +16896,14 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         elif not effective_user_message and normalized_images:
             effective_user_message = "请基于我上传的图片给建议。"
         record_content = user_message or ("（发送了图片）" if normalized_images else "（发送了附件）")
-        _append_chat_record(
-            project_id=project_id, username=username, role="user", content=record_content,
-            message_id=str(req.message_id or "").strip(),
-            chat_session_id=chat_session_id,
-            attachments=attachment_names, images=normalized_images,
-            source_context=source_context,
-        )
+        if not is_followup_replan:
+            _append_chat_record(
+                project_id=project_id, username=username, role="user", content=record_content,
+                message_id=str(req.message_id or "").strip(),
+                chat_session_id=chat_session_id,
+                attachments=attachment_names, images=normalized_images,
+                source_context=source_context,
+            )
 
         cancel_event = asyncio.Event()
         cancel_events[request_id] = cancel_event
@@ -17392,12 +17458,21 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     reply_content=failed_answer,
                     is_error=True,
                 )
-                _append_chat_record(
-                    project_id=project_id, username=username, role="assistant", content=failed_answer,
-                    message_id=assistant_message_id,
-                    chat_session_id=chat_session_id,
-                    source_context=with_assistant_workflow_state(source_context, assistant_workflow_state),
-                )
+                if is_followup_replan and assistant_message_id:
+                    project_chat_store.update_message(
+                        project_id,
+                        username,
+                        assistant_message_id,
+                        content=failed_answer,
+                        source_context=with_assistant_workflow_state(source_context, assistant_workflow_state),
+                    )
+                else:
+                    _append_chat_record(
+                        project_id=project_id, username=username, role="assistant", content=failed_answer,
+                        message_id=assistant_message_id,
+                        chat_session_id=chat_session_id,
+                        source_context=with_assistant_workflow_state(source_context, assistant_workflow_state),
+                    )
             else:
                 assistant_images = _collect_chat_artifact_urls(assistant_artifacts, asset_type="image")
                 assistant_videos = _collect_chat_artifact_urls(assistant_artifacts, asset_type="video")
@@ -17440,17 +17515,26 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     assistant_source_context,
                     _build_project_chat_pending_interaction(last_done_payload or {}),
                 )
-                _append_chat_record(
-                    project_id=project_id,
-                    username=username,
-                    role="assistant",
-                    content=persisted_answer,
-                    message_id=assistant_message_id,
-                    chat_session_id=chat_session_id,
-                    images=assistant_images,
-                    videos=assistant_videos,
-                    source_context=assistant_source_context,
-                )
+                if is_followup_replan and assistant_message_id:
+                    project_chat_store.update_message(
+                        project_id,
+                        username,
+                        assistant_message_id,
+                        content=persisted_answer,
+                        source_context=assistant_source_context,
+                    )
+                else:
+                    _append_chat_record(
+                        project_id=project_id,
+                        username=username,
+                        role="assistant",
+                        content=persisted_answer,
+                        message_id=assistant_message_id,
+                        chat_session_id=chat_session_id,
+                        images=assistant_images,
+                        videos=assistant_videos,
+                        source_context=assistant_source_context,
+                    )
                 _save_project_chat_memory_snapshot(
                     project_id=project_id,
                     user_message=effective_user_message,
@@ -17460,7 +17544,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     or (last_done_payload or {}).get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
                     source=_compose_project_chat_memory_source("project-chat-ws", chat_surface),
-                    allow_requirement_record=allow_requirement_record,
+                    allow_requirement_record=allow_requirement_record and not is_followup_replan,
                 )
         except asyncio.CancelledError:
             if cancel_event.is_set():
@@ -17599,6 +17683,35 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     )
                 continue
             if payload_type == "interaction_submit":
+                if _should_handle_project_chat_operation_interaction_submit(payload):
+                    try:
+                        task = await run_in_threadpool(
+                            lambda: _handle_project_chat_operation_interaction_submit(
+                                username=username,
+                                payload=payload,
+                            )
+                        )
+                    except Exception as exc:
+                        await _send_project_chat_event(
+                            {
+                                "type": "error",
+                                "request_id": request_id,
+                                "message": str(exc),
+                            }
+                        )
+                        continue
+                    done_payload = _build_project_chat_done_payload(
+                        content="已提交结构化交互，正在继续执行。",
+                        project_id=project_id,
+                        username=username,
+                        chat_session_id=str(payload.get("chat_session_id") or "").strip(),
+                        provider_id=str(payload.get("provider_id") or "").strip(),
+                        model_name=str(payload.get("model_name") or "").strip(),
+                    )
+                    done_payload["request_id"] = request_id
+                    done_payload["operation_task"] = task
+                    await _send_project_chat_event(done_payload)
+                    continue
                 try:
                     interaction_payload = _build_project_chat_interaction_request_payload(
                         project_id,
@@ -17681,6 +17794,7 @@ async def stream_project_chat(
         request_kind,
         source_context=source_context,
     )
+    is_followup_replan = _is_project_chat_followup_replan(request_kind)
     previous_messages = project_chat_store.list_messages(
         project_id,
         username,
@@ -17693,17 +17807,18 @@ async def stream_project_chat(
     elif not effective_user_message and normalized_images:
         effective_user_message = "请基于我上传的图片给建议。"
     record_content = user_message or ("（发送了图片）" if normalized_images else "（发送了附件）")
-    _append_chat_record(
-        project_id=project_id,
-        username=username,
-        role="user",
-        content=record_content,
-        message_id=str(req.message_id or "").strip(),
-        chat_session_id=chat_session_id,
-        attachments=attachment_names,
-        images=normalized_images,
-        source_context=source_context,
-    )
+    if not is_followup_replan:
+        _append_chat_record(
+            project_id=project_id,
+            username=username,
+            role="user",
+            content=record_content,
+            message_id=str(req.message_id or "").strip(),
+            chat_session_id=chat_session_id,
+            attachments=attachment_names,
+            images=normalized_images,
+            source_context=source_context,
+        )
 
     runtime_settings = _resolve_chat_runtime_settings(req, project)
     try:
@@ -18247,15 +18362,24 @@ async def stream_project_chat(
                     reply_content=failed_answer,
                     is_error=True,
                 )
-                _append_chat_record(
-                    project_id=project_id,
-                    username=username,
-                    role="assistant",
-                    content=failed_answer,
-                    message_id=assistant_message_id,
-                    chat_session_id=chat_session_id,
-                    source_context=with_assistant_workflow_state(source_context, assistant_workflow_state_local),
-                )
+                if is_followup_replan and assistant_message_id:
+                    project_chat_store.update_message(
+                        project_id,
+                        username,
+                        assistant_message_id,
+                        content=failed_answer,
+                        source_context=with_assistant_workflow_state(source_context, assistant_workflow_state_local),
+                    )
+                else:
+                    _append_chat_record(
+                        project_id=project_id,
+                        username=username,
+                        role="assistant",
+                        content=failed_answer,
+                        message_id=assistant_message_id,
+                        chat_session_id=chat_session_id,
+                        source_context=with_assistant_workflow_state(source_context, assistant_workflow_state_local),
+                    )
             else:
                 assistant_images = _collect_chat_artifact_urls(assistant_artifacts, asset_type="image")
                 assistant_videos = _collect_chat_artifact_urls(assistant_artifacts, asset_type="video")
@@ -18294,17 +18418,26 @@ async def stream_project_chat(
                     assistant_source_context,
                     _build_project_chat_pending_interaction(last_done_payload or {}),
                 )
-                _append_chat_record(
-                    project_id=project_id,
-                    username=username,
-                    role="assistant",
-                    content=persisted_answer,
-                    message_id=assistant_message_id,
-                    chat_session_id=chat_session_id,
-                    images=assistant_images,
-                    videos=assistant_videos,
-                    source_context=assistant_source_context,
-                )
+                if is_followup_replan and assistant_message_id:
+                    project_chat_store.update_message(
+                        project_id,
+                        username,
+                        assistant_message_id,
+                        content=persisted_answer,
+                        source_context=assistant_source_context,
+                    )
+                else:
+                    _append_chat_record(
+                        project_id=project_id,
+                        username=username,
+                        role="assistant",
+                        content=persisted_answer,
+                        message_id=assistant_message_id,
+                        chat_session_id=chat_session_id,
+                        images=assistant_images,
+                        videos=assistant_videos,
+                        source_context=assistant_source_context,
+                    )
                 _save_project_chat_memory_snapshot(
                     project_id=project_id,
                     user_message=effective_user_message,
@@ -18314,7 +18447,7 @@ async def stream_project_chat(
                     or (last_done_payload or {}).get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
                     source=_compose_project_chat_memory_source("project-chat-sse", chat_surface),
-                    allow_requirement_record=allow_requirement_record,
+                    allow_requirement_record=allow_requirement_record and not is_followup_replan,
                 )
         except Exception as exc:
             done_payload, persisted_failure = _build_project_chat_failure_done_payload(

@@ -291,7 +291,7 @@
                           deletingExperienceRuleId === rule.id
                         "
                         @click="handleDeleteExperienceRule(rule)"
-                        >删除规则</el-button
+                        >移除规则</el-button
                       >
                     </div>
                   </div>
@@ -6634,15 +6634,15 @@ async function handleDeleteExperienceRule(rule) {
     rule?.systemSource === "project_experience" ? "项目私有经验" : "开发经验";
   const deleteMessage =
     rule?.systemSource === "development_experience"
-      ? "如果还有其他项目引用这条开发经验，只会移除当前项目绑定；没有其他引用时才会真正删除规则。"
-      : "删除后会从当前项目移除这条项目私有经验规则。";
+      ? "操作只会移除当前项目绑定，不会删除开发经验规则本体。"
+      : "操作只会从当前项目移除这条项目私有经验规则，不会删除规则本体。";
   try {
     await ElMessageBox.confirm(
-      `确定删除「${rule.displayTitle || rule.title || ruleId}」？\n${deleteMessage}`,
-      `删除${scopeLabel}`,
+      `确定移除「${rule.displayTitle || rule.title || ruleId}」？\n${deleteMessage}`,
+      `移除${scopeLabel}`,
       {
         type: "warning",
-        confirmButtonText: "删除",
+        confirmButtonText: "移除",
       },
     );
   } catch {
@@ -6656,9 +6656,7 @@ async function handleDeleteExperienceRule(rule) {
     );
     await fetchProject();
     const remainingCount = Number(data?.remaining_project_binding_count || 0);
-    if (data?.rule_deleted) {
-      ElMessage.success("经验规则已删除");
-    } else if (remainingCount > 0) {
+    if (remainingCount > 0) {
       ElMessage.success(
         `已移除当前项目引用，该经验仍被 ${remainingCount} 个其他项目使用`,
       );
@@ -6666,7 +6664,7 @@ async function handleDeleteExperienceRule(rule) {
       ElMessage.success("已从当前项目移除经验规则");
     }
   } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "删除经验规则失败");
+    ElMessage.error(err?.detail || err?.message || "移除经验规则失败");
   } finally {
     experienceRuleDeletingLoading.value = false;
     deletingExperienceRuleId.value = "";

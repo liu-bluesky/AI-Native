@@ -67,6 +67,9 @@ class ToolResultNormalizer:
             "succeeded",
             "success",
             "error",
+            "queued",
+            "running",
+            "waiting_user_action",
         }:
             status = str(payload.get("status") or "").strip().lower()
             return "succeeded" if status == "success" else status

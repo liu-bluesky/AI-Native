@@ -211,10 +211,7 @@ class QueryEngine:
                 if background_decision is not None:
                     latest_decision = background_decision
                     self._record_completion_decision(task_run.run_id, latest_decision)
-                    final_content = (
-                        final_content
-                        or "操作仍在继续，完成后会自动恢复本轮执行。"
-                    )
+                    final_content = self._background_operation_final_content(records)
                     task_run = self._state_store.append_event(
                         task_run,
                         "query_engine_waiting_operation",
@@ -411,9 +408,54 @@ class QueryEngine:
             }:
                 continue
             status = str(raw.get("status") or "").strip().lower()
-            if status in {"queued", "running", "waiting_user_action"}:
+            if status in {"queued", "running"}:
                 return CompletionDecision("request_user", ["background_operation_pending"])
+            if status == "waiting_user_action":
+                has_user_action = bool(
+                    str(raw.get("authorization_url") or "").strip()
+                    or (
+                        isinstance(raw.get("interaction_schema"), dict)
+                        and raw.get("interaction_schema")
+                    )
+                )
+                if has_user_action:
+                    return CompletionDecision("request_user", ["background_operation_pending"])
         return None
+
+    def _background_operation_final_content(
+        self,
+        records: list[ToolExecutionRecord],
+    ) -> str:
+        for item in records:
+            raw = item.raw_result if isinstance(item.raw_result, dict) else {}
+            if str(raw.get("source") or "").strip() not in {
+                "operation_wait_task",
+                "cli_plugin_login_task",
+            }:
+                continue
+            status = str(raw.get("status") or "").strip().lower()
+            if status not in {"queued", "running", "waiting_user_action"}:
+                continue
+            operation_kind = str(raw.get("operation_kind") or "").strip().lower()
+            authorization_url = str(raw.get("authorization_url") or "").strip()
+            interaction_schema = (
+                raw.get("interaction_schema")
+                if isinstance(raw.get("interaction_schema"), dict)
+                else None
+            )
+            next_step = str(raw.get("next_step") or raw.get("message") or "").strip()
+            if status == "queued":
+                return "已创建内部授权任务，正在等待返回下一步操作。"
+            if status == "running":
+                return "内部授权流程已启动，正在等待后续结果。"
+            if interaction_schema:
+                return next_step or "内部授权任务已创建，等待你在表单中选择授权范围。"
+            if authorization_url:
+                return next_step or "内部授权任务已创建，等待你打开授权链接并在浏览器完成授权。"
+            if operation_kind == "auth_login":
+                return "内部授权任务正在处理，等待返回授权链接或表单。"
+            return next_step or "操作仍在继续，完成后会自动恢复本轮执行。"
+        return "操作仍在继续，完成后会自动恢复本轮执行。"
 
     def _blocked_tool_final_content(
         self,

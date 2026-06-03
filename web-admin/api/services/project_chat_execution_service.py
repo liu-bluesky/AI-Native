@@ -115,6 +115,7 @@ async def run_project_chat_once(
         request_kind,
         source_context=source_context,
     )
+    is_followup_replan = projects_router._is_project_chat_followup_replan(request_kind)
     previous_messages = projects_router.project_chat_store.list_messages(
         project_id,
         username,
@@ -128,18 +129,20 @@ async def run_project_chat_once(
         effective_user_message = "请基于我上传的图片给建议。"
 
     record_content = user_message or ("（发送了图片）" if normalized_images else "（发送了附件）")
-    user_record = projects_router._append_chat_record(
-        project_id=project_id,
-        username=username,
-        role="user",
-        content=record_content,
-        message_id=str(req.message_id or "").strip(),
-        chat_session_id=chat_session_id,
-        attachments=attachment_names,
-        images=normalized_images,
-        source_context=source_context,
-    )
-    if publish_realtime:
+    user_record = None
+    if not is_followup_replan:
+        user_record = projects_router._append_chat_record(
+            project_id=project_id,
+            username=username,
+            role="user",
+            content=record_content,
+            message_id=str(req.message_id or "").strip(),
+            chat_session_id=chat_session_id,
+            attachments=attachment_names,
+            images=normalized_images,
+            source_context=source_context,
+        )
+    if publish_realtime and user_record is not None:
         await projects_router.publish_project_chat_record_realtime(
             project_id=project_id,
             username=username,
@@ -400,20 +403,30 @@ async def run_project_chat_once(
                 reply_content=content,
                 is_error=True,
             )
-            assistant_record = projects_router._append_chat_record(
-                project_id=project_id,
-                username=username,
-                role="assistant",
-                content=content,
-                message_id=assistant_message_id,
-                chat_session_id=chat_session_id,
-                source_context=_assistant_source_context_with_archive_workflow(
-                    source_context,
-                    content,
-                    assistant_workflow_state,
-                ),
+            assistant_source_context = _assistant_source_context_with_archive_workflow(
+                source_context,
+                content,
+                assistant_workflow_state,
             )
-            if publish_realtime:
+            if is_followup_replan and assistant_message_id:
+                assistant_record = projects_router.project_chat_store.update_message(
+                    project_id,
+                    username,
+                    assistant_message_id,
+                    content=content,
+                    source_context=assistant_source_context,
+                )
+            else:
+                assistant_record = projects_router._append_chat_record(
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content=content,
+                    message_id=assistant_message_id,
+                    chat_session_id=chat_session_id,
+                    source_context=assistant_source_context,
+                )
+            if publish_realtime and assistant_record is not None:
                 await projects_router.publish_project_chat_record_realtime(
                     project_id=project_id,
                     username=username,
@@ -461,18 +474,27 @@ async def run_project_chat_once(
             assistant_source_context,
             projects_router._build_project_chat_pending_interaction(last_done_payload or {}),
         )
-        assistant_record = projects_router._append_chat_record(
-            project_id=project_id,
-            username=username,
-            role="assistant",
-            content=persisted_answer,
-            message_id=assistant_message_id,
-            chat_session_id=chat_session_id,
-            images=images,
-            videos=videos,
-            source_context=assistant_source_context,
-        )
-        if publish_realtime:
+        if is_followup_replan and assistant_message_id:
+            assistant_record = projects_router.project_chat_store.update_message(
+                project_id,
+                username,
+                assistant_message_id,
+                content=persisted_answer,
+                source_context=assistant_source_context,
+            )
+        else:
+            assistant_record = projects_router._append_chat_record(
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=persisted_answer,
+                message_id=assistant_message_id,
+                chat_session_id=chat_session_id,
+                images=images,
+                videos=videos,
+                source_context=assistant_source_context,
+            )
+        if publish_realtime and assistant_record is not None:
             await projects_router.publish_project_chat_record_realtime(
                 project_id=project_id,
                 username=username,
@@ -507,20 +529,30 @@ async def run_project_chat_once(
             reply_content=content,
             is_error=True,
         )
-        assistant_record = projects_router._append_chat_record(
-            project_id=project_id,
-            username=username,
-            role="assistant",
-            content=content,
-            message_id=assistant_message_id,
-            chat_session_id=chat_session_id,
-            source_context=_assistant_source_context_with_archive_workflow(
-                source_context,
-                content,
-                assistant_workflow_state,
-            ),
+        assistant_source_context = _assistant_source_context_with_archive_workflow(
+            source_context,
+            content,
+            assistant_workflow_state,
         )
-        if publish_realtime:
+        if is_followup_replan and assistant_message_id:
+            assistant_record = projects_router.project_chat_store.update_message(
+                project_id,
+                username,
+                assistant_message_id,
+                content=content,
+                source_context=assistant_source_context,
+            )
+        else:
+            assistant_record = projects_router._append_chat_record(
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=content,
+                message_id=assistant_message_id,
+                chat_session_id=chat_session_id,
+                source_context=assistant_source_context,
+            )
+        if publish_realtime and assistant_record is not None:
             await projects_router.publish_project_chat_record_realtime(
                 project_id=project_id,
                 username=username,

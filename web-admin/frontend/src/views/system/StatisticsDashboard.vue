@@ -4,180 +4,48 @@
     <div class="statistics-page__ambient statistics-page__ambient--right" aria-hidden="true" />
     <div class="statistics-page__mesh" aria-hidden="true" />
 
-    <section class="statistics-hero">
-      <div class="statistics-hero__copy">
-        <div class="statistics-hero__eyebrow">Work Review</div>
-        <h1 class="statistics-hero__title">这个月做了什么</h1>
-        <p class="statistics-hero__summary">
-          按时间窗口复盘各项目实际发生的工作、状态和验证结果，再决定老板要关注哪里。
-        </p>
-        <div class="upgrade-decision" :class="`is-${upgradeDecision.tone}`">
-          <span>老板视角</span>
-          <strong>{{ upgradeDecision.title }}</strong>
-          <p>{{ upgradeDecision.description }}</p>
+    <section class="panel-card panel-card--wide statistics-controls">
+      <div class="panel-card__head">
+        <div>
+          <div class="panel-card__eyebrow">Statistics</div>
+          <h1 class="panel-card__title">统计页面</h1>
         </div>
-        <div class="statistics-hero__meta">
-          <span>统计窗口 {{ days }} 天</span>
-          <span>统计范围 {{ currentScopeLabel }}</span>
-          <span>生成时间 {{ formatDateTime(data.generated_at) }}</span>
-          <span>查看人 {{ data.viewer.username || "-" }}</span>
+        <div class="panel-card__tag">统计范围 {{ currentScopeLabel }}</div>
+      </div>
+      <div class="statistics-hero__controls">
+        <div class="statistics-hero__controls-main">
+          <el-select
+            v-model="selectedProjectScope"
+            class="statistics-page__project-scope"
+            filterable
+            clearable
+            :loading="projectScopeLoading"
+            placeholder="选择统计项目"
+          >
+            <el-option label="全局统计" value="" />
+            <el-option
+              v-for="item in normalizedProjectScopeOptions"
+              :key="item.value"
+              :label="item.recentLabel || item.label"
+              :value="item.value"
+            />
+          </el-select>
+          <el-select v-model="days" class="statistics-page__range" @change="refresh">
+            <el-option :value="7" label="近 7 天" />
+            <el-option :value="30" label="近 30 天" />
+            <el-option :value="90" label="近 90 天" />
+          </el-select>
+        </div>
+        <div class="statistics-hero__controls-actions">
+          <el-button plain @click="copyCurrentStatisticsLink">复制当前统计链接</el-button>
+          <el-button @click="refresh">刷新</el-button>
         </div>
       </div>
-
-      <aside class="upgrade-loop-panel">
-        <div class="statistics-hero__controls">
-          <div class="statistics-hero__controls-main">
-            <el-select
-              v-model="selectedProjectScope"
-              class="statistics-page__project-scope"
-              filterable
-              clearable
-              :loading="projectScopeLoading"
-              placeholder="选择统计项目"
-            >
-              <el-option label="全局统计" value="" />
-              <el-option
-                v-for="item in normalizedProjectScopeOptions"
-                :key="item.value"
-                :label="item.recentLabel || item.label"
-                :value="item.value"
-              />
-            </el-select>
-            <el-select v-model="days" class="statistics-page__range" @change="refresh">
-              <el-option :value="7" label="近 7 天" />
-              <el-option :value="30" label="近 30 天" />
-              <el-option :value="90" label="近 90 天" />
-            </el-select>
-          </div>
-          <div class="statistics-hero__controls-actions">
-            <el-button plain @click="copyCurrentStatisticsLink">复制当前统计链接</el-button>
-            <el-button @click="refresh">刷新</el-button>
-          </div>
-        </div>
-
-        <div class="upgrade-loop-panel__head">
-          <div>
-            <span>项目风险</span>
-            <strong>{{ upgradeDecision.status }}</strong>
-          </div>
-          <b>{{ executiveSummary.risk_project_count || 0 }}</b>
-        </div>
-
-        <div class="upgrade-loop">
-          <article
-            v-for="item in upgradeLoopSteps"
-            :key="item.label"
-            class="upgrade-loop__step"
-            :class="`is-${item.tone}`"
-          >
-            <span>{{ item.label }}</span>
-            <strong>{{ item.value }}</strong>
-            <small>{{ item.meta }}</small>
-          </article>
-        </div>
-      </aside>
-    </section>
-
-    <section class="upgrade-briefing">
-      <article class="upgrade-briefing__primary">
-        <span>Next Decision</span>
-        <strong>{{ upgradeAction.title }}</strong>
-        <p>{{ upgradeAction.description }}</p>
-        <small>{{ upgradeAction.evidence }}</small>
-      </article>
-      <div class="upgrade-briefing__signals">
-        <article v-for="card in upgradeSignalCards" :key="card.label" class="upgrade-signal-card">
-          <span>{{ card.label }}</span>
-          <strong>{{ card.value }}</strong>
-          <small>{{ card.hint }}</small>
-        </article>
+      <div class="statistics-hero__meta">
+        <span>统计窗口 {{ days }} 天</span>
+        <span>生成时间 {{ formatDateTime(data.generated_at) }}</span>
+        <span>查看人 {{ data.viewer.username || "-" }}</span>
       </div>
-    </section>
-
-    <section class="summary-grid">
-      <article v-for="card in summaryCards" :key="card.label" class="summary-card">
-        <span class="summary-card__label">{{ card.label }}</span>
-        <strong class="summary-card__value">{{ card.value }}</strong>
-        <small class="summary-card__hint">{{ card.hint }}</small>
-      </article>
-    </section>
-
-    <section class="executive-grid">
-      <article class="panel-card executive-portfolio-panel">
-        <div class="panel-card__head">
-          <div>
-            <div class="panel-card__eyebrow">Work By Project</div>
-            <h2 class="panel-card__title">本窗口工作内容</h2>
-          </div>
-          <div class="panel-card__tag">按风险和最近工作排序</div>
-        </div>
-        <div v-if="executivePortfolioItems.length" class="executive-project-list">
-          <article
-            v-for="item in executivePortfolioItems"
-            :key="item.project_id || item.project_name"
-            class="executive-project-card"
-            :class="`is-${item.status || 'unknown'}`"
-          >
-            <div class="executive-project-card__main">
-              <div>
-                <strong>{{ item.project_name || item.project_id || "未标记项目" }}</strong>
-                <small>{{ item.project_id || "项目 ID 待补齐" }}</small>
-              </div>
-              <span>{{ item.status_label || "待观察" }}</span>
-            </div>
-            <div class="executive-project-card__metrics">
-              <span>工作会话 {{ item.session_count || 0 }}</span>
-              <span>已闭环 {{ item.completed_sessions || 0 }}</span>
-              <span>进行中 {{ item.in_progress_sessions || 0 }}</span>
-              <span>阻塞 {{ item.blocked_sessions || 0 }}</span>
-              <span>最近 {{ formatDateTime(item.latest_activity_at) }}</span>
-            </div>
-            <div v-if="item.workItems?.length" class="executive-work-list">
-              <article v-for="work in item.workItems" :key="work.session_id" class="executive-work-item">
-                <div>
-                  <strong>{{ work.work_summary || work.stageLabel }}</strong>
-                  <small>{{ work.statusLabel }} · {{ formatDateTime(work.latest_updated_at) }}</small>
-                </div>
-                <p>{{ work.verification_summary || "还没有写入验证说明" }}</p>
-              </article>
-            </div>
-            <small v-else class="executive-project-card__empty">当前窗口内还没有可复盘的工作内容</small>
-          </article>
-        </div>
-        <el-empty v-else description="当前窗口内暂无工作内容数据" />
-      </article>
-
-      <article class="panel-card executive-risk-panel">
-        <div class="panel-card__head">
-          <div>
-            <div class="panel-card__eyebrow">Attention</div>
-            <h2 class="panel-card__title">需要老板关注</h2>
-          </div>
-        </div>
-        <div v-if="executiveRiskItems.length" class="executive-risk-list">
-          <article v-for="item in executiveRiskItems" :key="item.project_id || item.project_name" class="executive-risk-item">
-            <strong>{{ item.project_name || item.project_id || "未标记项目" }}</strong>
-            <small>{{ item.status_label || "有风险" }} · 未闭环 {{ Number(item.in_progress_sessions || 0) + Number(item.blocked_sessions || 0) }} · 阻塞 {{ item.blocked_sessions || 0 }}</small>
-          </article>
-        </div>
-        <el-empty v-else description="暂无高风险项目" />
-      </article>
-
-      <article class="panel-card executive-risk-panel">
-        <div class="panel-card__head">
-          <div>
-            <div class="panel-card__eyebrow">Recent Work</div>
-            <h2 class="panel-card__title">最近工作</h2>
-          </div>
-        </div>
-        <div v-if="executiveRecentSessions.length" class="executive-risk-list">
-          <article v-for="item in executiveRecentSessions" :key="item.session_id" class="executive-risk-item">
-            <strong>{{ item.project_name || item.project_id || "未标记项目" }}</strong>
-            <small>{{ item.statusLabel }} · {{ item.work_summary || item.stageLabel }} · {{ formatDateTime(item.latest_updated_at) }}</small>
-          </article>
-        </div>
-        <el-empty v-else description="暂无最近工作会话" />
-      </article>
     </section>
 
     <section v-if="aiReport" class="panel-card panel-card--wide ai-report-panel">
@@ -253,78 +121,7 @@
       </template>
     </section>
 
-    <section class="story-grid">
-      <article class="story-card">
-        <div class="story-card__head">
-          <div>
-            <div class="story-card__eyebrow">What Matters</div>
-            <h2 class="story-card__title">现在先看什么</h2>
-          </div>
-        </div>
-        <div v-if="highlightItems.length" class="signal-list">
-          <article
-            v-for="item in highlightItems"
-            :key="item.label"
-            class="signal-list__item"
-            :class="`is-${item.tone || 'neutral'}`"
-          >
-            <span class="signal-list__label">{{ item.label }}</span>
-            <strong class="signal-list__value">{{ item.value }}</strong>
-            <small class="signal-list__meta">{{ item.meta }}</small>
-          </article>
-        </div>
-        <el-empty v-else description="当前窗口内还没有足够的高信号数据" />
-      </article>
-
-      <article class="story-card story-card--risk">
-        <div class="story-card__head">
-          <div>
-            <div class="story-card__eyebrow">Blind Spots</div>
-            <h2 class="story-card__title">当前缺点 / 统计盲区</h2>
-          </div>
-        </div>
-
-        <div v-if="alertItems.length" class="alert-list">
-          <article
-            v-for="item in alertItems"
-            :key="item.title"
-            class="alert-list__item"
-            :class="`is-${item.tone || 'neutral'}`"
-          >
-            <strong>{{ item.title }}</strong>
-            <p>{{ item.description }}</p>
-          </article>
-        </div>
-
-        <div class="gap-list">
-          <article v-for="item in blindSpotItems" :key="item.key" class="gap-list__item">
-            <strong>{{ item.title }}</strong>
-            <p>{{ item.description }}</p>
-          </article>
-        </div>
-      </article>
-    </section>
-
     <section class="statistics-layout">
-      <article class="panel-card panel-card--wide">
-        <div class="panel-card__head">
-          <div>
-            <div class="panel-card__eyebrow">Activity Trend</div>
-            <h2 class="panel-card__title">MCP 交互趋势</h2>
-          </div>
-          <div class="panel-card__tag">先看趋势，再看明细</div>
-        </div>
-        <div v-if="usageDaily.length" class="trend-chart">
-          <div ref="trendChartRef" class="trend-chart__canvas" />
-          <div class="trend-chart__summary">
-            <span>总交互 {{ usageSummary.total_events || 0 }}</span>
-            <span>工具 {{ usageSummary.tool_calls || 0 }}</span>
-            <span>连接 {{ usageSummary.connections || 0 }}</span>
-          </div>
-        </div>
-        <el-empty v-else description="当前窗口内暂无 MCP 趋势数据" />
-      </article>
-
       <article class="panel-card panel-card--wide">
         <div class="panel-card__head">
           <div>
@@ -409,177 +206,6 @@
         </div>
         <el-empty v-else description="暂无项目活跃数据" />
       </article>
-
-      <article class="panel-card panel-card--wide">
-        <div class="panel-card__head">
-          <div>
-            <div class="panel-card__eyebrow">Delivery Closure</div>
-            <h2 class="panel-card__title">工作会话闭环趋势</h2>
-          </div>
-          <div class="panel-card__tag">先看完成率，再看最近会话</div>
-        </div>
-        <div v-if="workSessionDaily.length" class="trend-chart trend-chart--closure">
-          <div ref="closureTrendChartRef" class="trend-chart__canvas" />
-          <div class="trend-chart__summary">
-            <span>完成率 {{ formatPercent(workCompletionRate) }}</span>
-            <span>闭环缺口 {{ workSessionSummary.closure_gap_sessions || 0 }}</span>
-            <span>阻塞率 {{ formatPercent(workSessionSummary.blocked_rate) }}</span>
-          </div>
-        </div>
-        <el-empty v-else description="当前窗口内暂无工作会话趋势数据" />
-        <div class="session-summary-grid">
-          <article v-for="card in workSessionCards" :key="card.label" class="session-summary-pill">
-            <span>{{ card.label }}</span>
-            <strong>{{ card.value }}</strong>
-            <small>{{ card.hint }}</small>
-          </article>
-        </div>
-        <div v-if="recentSessions.length" class="session-list">
-          <article
-            v-for="item in recentSessions"
-            :key="item.session_id"
-            class="session-card"
-            :class="item.statusClass"
-          >
-            <div class="session-card__head">
-              <strong>{{ item.display_name }}</strong>
-              <span class="session-card__status">{{ item.statusLabel }}</span>
-            </div>
-            <div class="session-card__meta">
-              <span>{{ item.session_id }}</span>
-              <span>{{ formatDateTime(item.latest_updated_at) }}</span>
-            </div>
-            <p>{{ item.stageLabel }}</p>
-            <p>{{ item.verificationLabel }}</p>
-          </article>
-        </div>
-        <el-empty v-else description="当前窗口内暂无工作会话轨迹" />
-      </article>
-
-      <article class="panel-card panel-card--wide">
-        <div class="panel-card__head">
-          <div>
-            <div class="panel-card__eyebrow">Tool Coverage</div>
-            <h2 class="panel-card__title">工具频次与稳定性放在一起看</h2>
-          </div>
-          <div class="panel-card__tag">频次、完成态和时延在同一屏收束</div>
-        </div>
-        <div class="tool-overview-grid">
-          <article v-for="card in toolOverviewCards" :key="card.label" class="tool-overview-card">
-            <span>{{ card.label }}</span>
-            <strong>{{ card.value }}</strong>
-            <small>{{ card.hint }}</small>
-          </article>
-        </div>
-        <div v-if="rankedTools.length" class="rank-list">
-          <article v-for="item in rankedTools" :key="item.tool_name" class="rank-list__item rank-list__item--tool">
-            <div class="rank-list__meta">
-              <div class="rank-list__meta-body">
-                <strong>{{ item.tool_name }}</strong>
-                <small>
-                  成功 {{ Number(item.success_rate || 0).toFixed(1) }}%
-                  <template v-if="Number(item.avg_duration_ms || 0) > 0">
-                    · 平均 {{ Math.round(Number(item.avg_duration_ms || 0)) }}ms
-                  </template>
-                </small>
-              </div>
-              <span class="rank-list__score">{{ item.cnt }}</span>
-            </div>
-            <div class="rank-list__bar-shell">
-              <div class="rank-list__bar" :style="{ width: `${item.percent}%` }" />
-            </div>
-          </article>
-        </div>
-        <el-empty v-else description="当前窗口内还没有足够的工具调用数据" />
-      </article>
-
-      <article class="panel-card">
-        <div class="panel-card__head">
-          <div>
-            <div class="panel-card__eyebrow">Live MCP</div>
-            <h2 class="panel-card__title">在线入口状态</h2>
-          </div>
-        </div>
-        <div class="live-grid">
-          <article class="live-grid__item">
-            <span>活跃入口</span>
-            <strong>{{ liveSummary.active_entries || 0 }}</strong>
-          </article>
-          <article class="live-grid__item">
-            <span>入口类型</span>
-            <strong>{{ liveSummary.active_endpoint_types || 0 }}</strong>
-          </article>
-          <article class="live-grid__item">
-            <span>关联项目</span>
-            <strong>{{ liveSummary.active_projects || 0 }}</strong>
-          </article>
-          <article class="live-grid__item">
-            <span>开发者</span>
-            <strong>{{ liveSummary.active_developers || 0 }}</strong>
-          </article>
-        </div>
-        <div v-if="endpointItems.length" class="endpoint-list">
-          <article v-for="item in endpointItems" :key="item.endpoint_type" class="endpoint-list__item">
-            <span>{{ item.endpoint_type }}</span>
-            <strong>{{ item.count }}</strong>
-          </article>
-        </div>
-        <el-empty v-else description="当前没有在线入口快照" />
-      </article>
-
-      <article class="panel-card">
-        <div class="panel-card__head">
-          <div>
-            <div class="panel-card__eyebrow">Runtime Metrics</div>
-            <h2 class="panel-card__title">运行指标</h2>
-          </div>
-          <div class="panel-card__tag">服务端计数器与耗时样本</div>
-        </div>
-        <div class="runtime-grid">
-          <article class="runtime-grid__item">
-            <span>Counter</span>
-            <strong>{{ data.runtime_metrics.counter_total || 0 }}</strong>
-          </article>
-          <article class="runtime-grid__item">
-            <span>Histogram</span>
-            <strong>{{ data.runtime_metrics.histogram_total || 0 }}</strong>
-          </article>
-          <article class="runtime-grid__item">
-            <span>峰值样本</span>
-            <strong>{{ runtimeHistogramItems[0]?.count || 0 }}</strong>
-          </article>
-          <article class="runtime-grid__item">
-            <span>平均耗时</span>
-            <strong>{{ runtimeHistogramItems[0]?.avg ? `${Math.round(Number(runtimeHistogramItems[0]?.avg || 0))}ms` : "暂无" }}</strong>
-          </article>
-        </div>
-        <div v-if="runtimeCounterItems.length || runtimeHistogramItems.length" class="runtime-columns">
-          <div class="runtime-column">
-            <div class="runtime-column__title">Top Counters</div>
-            <div v-if="runtimeCounterItems.length" class="metric-list">
-              <article v-for="item in runtimeCounterItems" :key="item.key" class="metric-list__item">
-                <span>{{ item.key }}</span>
-                <strong>{{ item.value }}</strong>
-              </article>
-            </div>
-            <el-empty v-else description="暂无 counter 指标" />
-          </div>
-          <div class="runtime-column">
-            <div class="runtime-column__title">Top Histograms</div>
-            <div v-if="runtimeHistogramItems.length" class="metric-list">
-              <article v-for="item in runtimeHistogramItems" :key="item.key" class="metric-list__item">
-                <div class="metric-list__body">
-                  <span>{{ item.key }}</span>
-                  <small>count {{ item.count }} · avg {{ Math.round(Number(item.avg || 0)) }}ms</small>
-                </div>
-                <strong>{{ Math.round(Number(item.max || 0)) }}ms</strong>
-              </article>
-            </div>
-            <el-empty v-else description="暂无 histogram 指标" />
-          </div>
-        </div>
-        <el-empty v-else description="当前还没有可展示的运行指标" />
-      </article>
     </section>
   </div>
 </template>
@@ -588,7 +214,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import * as echarts from "echarts/core";
-import { BarChart, LineChart } from "echarts/charts";
+import { BarChart } from "echarts/charts";
 import { DataZoomComponent, GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 
@@ -597,7 +223,7 @@ import { formatDateTime } from "@/utils/date.js";
 import { useRoute, useRouter } from "vue-router";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 
-echarts.use([BarChart, LineChart, DataZoomComponent, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+echarts.use([BarChart, DataZoomComponent, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
 const RECENT_STATISTICS_PROJECTS_STORAGE_KEY = "statistics_recent_project_ids";
 const STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX = "statistics_analysis_draft";
@@ -614,8 +240,6 @@ const loading = ref(false);
 const projectScopeLoading = ref(false);
 const days = ref(7);
 const aiReportExpanded = ref(false);
-const trendChartRef = ref(null);
-const closureTrendChartRef = ref(null);
 const entryActivityChartRef = ref(null);
 const agentActivityChartRef = ref(null);
 const developerActivityChartRef = ref(null);
@@ -633,37 +257,11 @@ const data = ref({
     top_projects: [],
     tool_health: {},
   },
-  work_sessions: {
-    summary: {},
-    daily: [],
-    recent: [],
-    top_projects: [],
-    top_employees: [],
-  },
   live_activity: {
     summary: {},
     endpoint_breakdown: [],
     top_projects: [],
     top_agents: [],
-  },
-  runtime_metrics: {
-    counter_total: 0,
-    histogram_total: 0,
-    top_counters: [],
-    top_histograms: [],
-  },
-  insights: {
-    health_score: 0,
-    highlights: [],
-    alerts: [],
-    flow: [],
-  },
-  blind_spots: [],
-  executive: {
-    summary: {},
-    project_portfolio: [],
-    risk_projects: [],
-    recent_sessions: [],
   },
   ai_report: null,
 });
@@ -774,11 +372,6 @@ const normalizedProjectScopeOptions = computed(() => {
 
 const usageSummary = computed(() => data.value?.usage?.summary || {});
 const liveSummary = computed(() => data.value?.live_activity?.summary || {});
-const workSessionSummary = computed(() => data.value?.work_sessions?.summary || {});
-const toolHealthSummary = computed(() => data.value?.usage?.tool_health || {});
-const executiveData = computed(() => data.value?.executive || {});
-const executiveSummary = computed(() => executiveData.value?.summary || {});
-const workCompletionRate = computed(() => Number(workSessionSummary.value.completion_rate || 0));
 
 function formatPercent(value) {
   return `${Number(value || 0).toFixed(1)}%`;
@@ -786,8 +379,7 @@ function formatPercent(value) {
 
 const leadingProject = computed(() => {
   const usageTop = Array.isArray(data.value?.usage?.top_projects) ? data.value.usage.top_projects[0] : null;
-  const workTop = Array.isArray(data.value?.work_sessions?.top_projects) ? data.value.work_sessions.top_projects[0] : null;
-  return usageTop || workTop || null;
+  return usageTop || null;
 });
 
 const projectConcentrationPercent = computed(() => {
@@ -799,173 +391,6 @@ const projectConcentrationPercent = computed(() => {
   if (totalEvents <= 0) return 0;
   return Math.round((leaderEvents / totalEvents) * 1000) / 10;
 });
-
-const summaryCards = computed(() => [
-  {
-    label: "项目总数",
-    value: executiveSummary.value.project_count || usageSummary.value.active_projects || workSessionSummary.value.active_projects || 0,
-    hint: `活跃 ${executiveSummary.value.active_project_count || 0} · 统计窗口 ${days.value} 天`,
-  },
-  {
-    label: "风险项目",
-    value: executiveSummary.value.risk_project_count || 0,
-    hint: `阻塞会话 ${executiveSummary.value.blocked_sessions || workSessionSummary.value.blocked_sessions || 0}`,
-  },
-  {
-    label: "工作闭环率",
-    value: formatPercent(executiveSummary.value.completion_rate || workCompletionRate.value),
-    hint: `完成 ${executiveSummary.value.completed_sessions || 0} · 进行中 ${executiveSummary.value.in_progress_sessions || 0}`,
-  },
-  {
-    label: "最近工作",
-    value: executiveData.value?.recent_sessions?.length || recentSessions.value.length || 0,
-    hint: "当前时间窗口内有轨迹的工作会话",
-  },
-  {
-    label: "参与智能体",
-    value: usageSummary.value.active_employees || liveSummary.value.active_agents || workSessionSummary.value.active_employees || 0,
-    hint: "当前时间窗口内参与工作的 AI 员工",
-  },
-  {
-    label: "技术事件",
-    value: usageSummary.value.total_events || 0,
-    hint: `工具 ${usageSummary.value.tool_calls || 0} · 作为辅助观测`,
-  },
-]);
-
-const healthLabel = computed(() => {
-  const score = Number(data.value?.insights?.health_score || 0);
-  if (score >= 80) return "主链状态稳定";
-  if (score >= 60) return "有结论，但还不够完整";
-  return "能看见问题，但观测还偏弱";
-});
-
-const upgradeDecision = computed(() => {
-  const riskProjectCount = Number(executiveSummary.value.risk_project_count || 0);
-  const projectCount = Number(executiveSummary.value.project_count || 0);
-  const completionRate = Number(executiveSummary.value.completion_rate || workCompletionRate.value || 0);
-  const blockedSessions = Number(executiveSummary.value.blocked_sessions || workSessionSummary.value.blocked_sessions || 0);
-  if (riskProjectCount > 0 || blockedSessions > 0) {
-    return {
-      tone: "warning",
-      status: `${riskProjectCount || blockedSessions} 个关注点`,
-      title: "先看有阻塞或未闭环的工作",
-      description: executiveData.value?.recommendation || "老板视角下，阻塞工作和未闭环工作比平台调用量更值得优先处理。",
-    };
-  }
-  if (completionRate > 0 && completionRate < 40) {
-    return {
-      tone: "warning",
-      status: "先补闭环",
-      title: "当前窗口工作闭环偏低",
-      description: `当前闭环率 ${formatPercent(completionRate)}，需要先把进行中的工作收口到可验证结果。`,
-    };
-  }
-  if (projectCount > 0) {
-    return {
-      tone: "good",
-      status: "工作可复盘",
-      title: executiveData.value?.headline || "当前窗口工作内容已经可见",
-      description: executiveData.value?.recommendation || "继续跟踪工作内容、最近验证和未闭环会话，避免只看活跃度。",
-    };
-  }
-  return {
-    tone: "neutral",
-    status: "缺少工作数据",
-    title: "当前窗口缺少工作内容数据",
-    description: "需要先补项目归因、阶段步骤和验证写回，老板视角才能复盘这段时间做了什么。",
-  };
-});
-
-const upgradeAction = computed(() => {
-  const riskProject = executiveRiskItems.value[0];
-  if (riskProject) {
-    return {
-      title: `先处理 ${riskProject.project_name || riskProject.project_id || "风险项目"}`,
-      description: `当前状态：${riskProject.status_label || "有风险"}，未闭环 ${Number(riskProject.in_progress_sessions || 0) + Number(riskProject.blocked_sessions || 0)} 个，阻塞 ${riskProject.blocked_sessions || 0} 个。`,
-      evidence: `最近工作 ${formatDateTime(riskProject.latest_activity_at)} · 统计窗口 ${days.value} 天`,
-    };
-  }
-  const focus = aiReportFocusPoints.value[0];
-  if (focus) {
-    return {
-      title: focus.title || "优先处理 AI 关注点",
-      description: focus.recommended_action || focus.evidence || "先把 AI 报表中的最高优先级问题转成可执行升级任务。",
-      evidence: focus.evidence || "来源：AI Ready Report",
-    };
-  }
-  const alert = alertItems.value[0];
-  if (alert) {
-    return {
-      title: alert.title || "优先处理当前告警",
-      description: alert.description || "先处理影响判断质量的异常信号。",
-      evidence: "来源：当前统计告警",
-    };
-  }
-  const blindSpot = blindSpotItems.value[0];
-  if (blindSpot) {
-    return {
-      title: blindSpot.title || "先补统计盲区",
-      description: blindSpot.description || "先补齐会影响升级判断的数据缺口。",
-      evidence: "来源：统计盲区",
-    };
-  }
-  return {
-    title: "把最近工作沉淀成项目复盘",
-    description: "当前没有强风险时，优先看各项目本窗口做过什么、最近验证和仍未闭环的工作会话。",
-    evidence: `项目 ${executiveSummary.value.project_count || 0} · 统计窗口 ${days.value} 天`,
-  };
-});
-
-const upgradeLoopSteps = computed(() => [
-  {
-    label: "项目",
-    value: executiveSummary.value.project_count || 0,
-    meta: `活跃 ${executiveSummary.value.active_project_count || 0}`,
-    tone: Number(executiveSummary.value.project_count || 0) > 0 ? "good" : "neutral",
-  },
-  {
-    label: "风险",
-    value: upgradeDecision.value.status,
-    meta: upgradeDecision.value.title,
-    tone: upgradeDecision.value.tone,
-  },
-  {
-    label: "工作",
-    value: executiveData.value?.recent_sessions?.length || 0,
-    meta: "最近工作会话",
-    tone: executiveData.value?.recent_sessions?.length ? "good" : "neutral",
-  },
-  {
-    label: "闭环",
-    value: formatPercent(executiveSummary.value.completion_rate || workCompletionRate.value),
-    meta: `阻塞 ${executiveSummary.value.blocked_sessions || 0}`,
-    tone: Number(executiveSummary.value.completion_rate || workCompletionRate.value || 0) >= 60 ? "good" : "warning",
-  },
-]);
-
-const upgradeSignalCards = computed(() => [
-  {
-    label: "活跃项目",
-    value: executiveSummary.value.active_project_count || 0,
-    hint: `项目总数 ${executiveSummary.value.project_count || 0}`,
-  },
-  {
-    label: "工作闭环",
-    value: formatPercent(executiveSummary.value.completion_rate || workCompletionRate.value),
-    hint: `完成 ${executiveSummary.value.completed_sessions || 0} / 进行中 ${executiveSummary.value.in_progress_sessions || 0}`,
-  },
-  {
-    label: "风险项目",
-    value: executiveSummary.value.risk_project_count || 0,
-    hint: `阻塞 ${executiveSummary.value.blocked_sessions || 0}`,
-  },
-  {
-    label: "工作会话",
-    value: executiveSummary.value.total_sessions || 0,
-    hint: "时间窗口内的工作轨迹",
-  },
-]);
 
 const aiReport = computed(() => data.value?.ai_report || null);
 const aiReportAnalysisMode = computed(() => aiReport.value?.analysis_mode || aiReport.value?.measurement_position || {});
@@ -988,83 +413,6 @@ const aiReportStructuredPreview = computed(() => {
   if (!payload || typeof payload !== "object") return "";
   return JSON.stringify(payload, null, 2);
 });
-const highlightItems = computed(() => data.value?.insights?.highlights || []);
-const alertItems = computed(() => data.value?.insights?.alerts || []);
-const blindSpotItems = computed(() => data.value?.blind_spots || []);
-const workSessionCards = computed(() => [
-  {
-    label: "进行中",
-    value: workSessionSummary.value.in_progress_sessions || 0,
-    hint: "仍在推进的工作会话",
-  },
-  {
-    label: "已完成",
-    value: workSessionSummary.value.completed_sessions || 0,
-    hint: "已经收尾并写回验证的会话",
-  },
-  {
-    label: "完成率",
-    value: formatPercent(workSessionSummary.value.completion_rate),
-    hint: `闭环缺口 ${workSessionSummary.value.closure_gap_sessions || 0}`,
-  },
-  {
-    label: "阻塞",
-    value: workSessionSummary.value.blocked_sessions || 0,
-    hint: "需要重点排查的会话",
-  },
-  {
-    label: "参与智能体",
-    value: workSessionSummary.value.active_employees || 0,
-    hint: "近窗口内出现在会话轨迹里的真实 AI 员工",
-  },
-]);
-const toolOverviewCards = computed(() => [
-  {
-    label: "成功率",
-    value: `${Number(toolHealthSummary.value.success_rate || 0).toFixed(0)}%`,
-    hint: `成功 ${toolHealthSummary.value.successful_calls || 0} / 失败 ${Number(toolHealthSummary.value.failed_calls || 0) + Number(toolHealthSummary.value.timeout_calls || 0)}`,
-  },
-  {
-    label: "完成态",
-    value: toolHealthSummary.value.finalized_calls || 0,
-    hint: "已记录 success / failed / timeout 的调用",
-  },
-  {
-    label: "平均时延",
-    value: toolHealthSummary.value.avg_duration_ms ? `${Math.round(Number(toolHealthSummary.value.avg_duration_ms || 0))}ms` : "暂无",
-    hint: "仅基于完成态样本计算",
-  },
-  {
-    label: "工具覆盖",
-    value: usageSummary.value.active_tools || 0,
-    hint: "近窗口内实际被调用过的工具数",
-  },
-]);
-
-const usageDaily = computed(() => {
-  const daily = Array.isArray(data.value?.usage?.daily) ? data.value.usage.daily : [];
-  return daily.map((item) => ({
-    ...item,
-    total_events: Number(item?.total_events || 0),
-    tool_calls: Number(item?.tool_calls || 0),
-    connections: Number(item?.connections || 0),
-  }));
-});
-
-const workSessionDaily = computed(() => {
-  const daily = Array.isArray(data.value?.work_sessions?.daily) ? data.value.work_sessions.daily : [];
-  return daily.map((item) => ({
-    ...item,
-    total_sessions: Number(item?.total_sessions || 0),
-    completed_sessions: Number(item?.completed_sessions || 0),
-    in_progress_sessions: Number(item?.in_progress_sessions || 0),
-    blocked_sessions: Number(item?.blocked_sessions || 0),
-    completion_rate: Number(item?.completion_rate || 0),
-  }));
-});
-
-let trendChart = null;
-let closureTrendChart = null;
 let entryActivityChart = null;
 let agentActivityChart = null;
 let developerActivityChart = null;
@@ -1111,252 +459,6 @@ function createHorizontalDataZoom(itemCount, visibleCount = 7) {
     },
   ];
 }
-
-const trendChartOption = computed(() => {
-  const labels = usageDaily.value.map((item) => item.date || "");
-  const totalSeries = usageDaily.value.map((item) => item.total_events || 0);
-  const toolSeries = usageDaily.value.map((item) => item.tool_calls || 0);
-  const connectionSeries = usageDaily.value.map((item) => item.connections || 0);
-  return {
-    animationDuration: 400,
-    color: ["#f97316", "#2563eb", "#0f172a"],
-    grid: {
-      top: 42,
-      right: 16,
-      bottom: 52,
-      left: 16,
-      containLabel: true,
-    },
-    dataZoom: createHorizontalDataZoom(labels.length, 7),
-    legend: {
-      top: 0,
-      icon: "circle",
-      itemWidth: 10,
-      itemHeight: 10,
-      textStyle: {
-        color: "#475569",
-        fontSize: 12,
-      },
-    },
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "rgba(15, 23, 42, 0.92)",
-      borderWidth: 0,
-      textStyle: {
-        color: "#e2e8f0",
-      },
-    },
-    xAxis: {
-      type: "category",
-      boundaryGap: false,
-      data: labels,
-      axisLine: {
-        lineStyle: {
-          color: "rgba(148, 163, 184, 0.35)",
-        },
-      },
-      axisTick: {
-        show: false,
-      },
-      axisLabel: {
-        color: "#64748b",
-        fontSize: 11,
-      },
-    },
-    yAxis: {
-      type: "value",
-      splitNumber: 4,
-      axisLine: {
-        show: false,
-      },
-      axisTick: {
-        show: false,
-      },
-      axisLabel: {
-        color: "#64748b",
-        fontSize: 11,
-      },
-      splitLine: {
-        lineStyle: {
-          color: "rgba(148, 163, 184, 0.18)",
-        },
-      },
-    },
-    series: [
-      {
-        name: "总交互",
-        type: "line",
-        smooth: true,
-        symbol: "circle",
-        symbolSize: 8,
-        lineStyle: {
-          width: 3,
-        },
-        areaStyle: {
-          color: "rgba(249, 115, 22, 0.12)",
-        },
-        data: totalSeries,
-      },
-      {
-        name: "工具调用",
-        type: "line",
-        smooth: true,
-        symbol: "circle",
-        symbolSize: 7,
-        lineStyle: {
-          width: 2.5,
-        },
-        data: toolSeries,
-      },
-      {
-        name: "连接",
-        type: "line",
-        smooth: true,
-        symbol: "circle",
-        symbolSize: 6,
-        lineStyle: {
-          width: 2,
-          type: "dashed",
-        },
-        data: connectionSeries,
-      },
-    ],
-  };
-});
-
-const closureTrendChartOption = computed(() => {
-  const labels = workSessionDaily.value.map((item) => item.date || "");
-  const completedSeries = workSessionDaily.value.map((item) => item.completed_sessions || 0);
-  const progressSeries = workSessionDaily.value.map((item) => item.in_progress_sessions || 0);
-  const completionRateSeries = workSessionDaily.value.map((item) => item.completion_rate || 0);
-  return {
-    animationDuration: 400,
-    color: ["#16a34a", "#f97316", "#2563eb"],
-    grid: {
-      top: 42,
-      right: 18,
-      bottom: 52,
-      left: 16,
-      containLabel: true,
-    },
-    dataZoom: createHorizontalDataZoom(labels.length, 7),
-    legend: {
-      top: 0,
-      icon: "circle",
-      itemWidth: 10,
-      itemHeight: 10,
-      textStyle: {
-        color: "#475569",
-        fontSize: 12,
-      },
-    },
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "rgba(15, 23, 42, 0.92)",
-      borderWidth: 0,
-      textStyle: {
-        color: "#e2e8f0",
-      },
-    },
-    xAxis: {
-      type: "category",
-      boundaryGap: false,
-      data: labels,
-      axisLine: {
-        lineStyle: {
-          color: "rgba(148, 163, 184, 0.35)",
-        },
-      },
-      axisTick: {
-        show: false,
-      },
-      axisLabel: {
-        color: "#64748b",
-        fontSize: 11,
-      },
-    },
-    yAxis: [
-      {
-        type: "value",
-        splitNumber: 4,
-        axisLine: {
-          show: false,
-        },
-        axisTick: {
-          show: false,
-        },
-        axisLabel: {
-          color: "#64748b",
-          fontSize: 11,
-        },
-        splitLine: {
-          lineStyle: {
-            color: "rgba(148, 163, 184, 0.18)",
-          },
-        },
-      },
-      {
-        type: "value",
-        min: 0,
-        max: 100,
-        axisLine: {
-          show: false,
-        },
-        axisTick: {
-          show: false,
-        },
-        axisLabel: {
-          color: "#64748b",
-          fontSize: 11,
-          formatter: "{value}%",
-        },
-        splitLine: {
-          show: false,
-        },
-      },
-    ],
-    series: [
-      {
-        name: "已完成",
-        type: "line",
-        smooth: true,
-        symbol: "circle",
-        symbolSize: 8,
-        lineStyle: {
-          width: 3,
-        },
-        areaStyle: {
-          color: "rgba(22, 163, 74, 0.12)",
-        },
-        data: completedSeries,
-      },
-      {
-        name: "进行中",
-        type: "line",
-        smooth: true,
-        symbol: "circle",
-        symbolSize: 7,
-        lineStyle: {
-          width: 2.5,
-        },
-        data: progressSeries,
-      },
-      {
-        name: "完成率",
-        type: "line",
-        smooth: true,
-        yAxisIndex: 1,
-        symbol: "circle",
-        symbolSize: 6,
-        lineStyle: {
-          width: 2,
-          type: "dashed",
-        },
-        data: completionRateSeries,
-      },
-    ],
-  };
-});
 
 const activityLegendItems = computed(() => [
   { label: "智能体", color: ACTIVITY_GROUP_COLORS.agent },
@@ -1537,13 +639,13 @@ const projectActivityJudgement = computed(() => {
   if (!leader) {
     return {
       title: "项目活跃度还不足以排序",
-      meta: "暂无可归因项目、在线入口或工作会话样本。",
+      meta: "暂无可归因项目或在线入口样本。",
     };
   }
   const concentration = projectConcentrationPercent.value;
   return {
     title: `主项目：${leader.display_name}`,
-    meta: `活跃分 ${leader.activity_score || 0} · 集中度 ${formatPercent(concentration)} · 会话 ${leader.session_count || 0}`,
+    meta: `活跃分 ${leader.activity_score || 0} · 集中度 ${formatPercent(concentration)} · 在线 ${leader.active_entries || 0}`,
   };
 });
 
@@ -1559,11 +661,11 @@ const projectActivityCards = computed(() => [
     hint: leadingProject.value?.project_name || leadingProject.value?.project_id || "暂无主项目",
   },
   {
-    label: "会话最多",
+    label: "最活跃项目",
     value: projectActivityItems.value
       .slice()
-      .sort((left, right) => Number(right.session_count || 0) - Number(left.session_count || 0))[0]?.display_name || "暂无",
-    hint: "按工作会话数判断",
+      .sort((left, right) => Number(right.activity_score || 0) - Number(left.activity_score || 0))[0]?.display_name || "暂无",
+    hint: "按技术活跃样本判断",
   },
 ]);
 
@@ -1593,7 +695,7 @@ const projectChartOption = computed(() => {
         const item = items[params?.[0]?.dataIndex] || {};
         return [
           `${item.display_name || ""}: ${item.activity_score || 0}`,
-          `归因 ${item.cnt || 0} · 会话 ${item.session_count || 0} · 在线 ${item.active_entries || 0}`,
+          `归因 ${item.cnt || 0} · 在线 ${item.active_entries || 0} · 开发账户 ${item.developer_count || 0}`,
         ].join("<br/>");
       },
     },
@@ -1645,18 +747,6 @@ const projectChartOption = computed(() => {
   };
 });
 
-function disposeTrendChart() {
-  if (!trendChart) return;
-  trendChart.dispose();
-  trendChart = null;
-}
-
-function disposeClosureTrendChart() {
-  if (!closureTrendChart) return;
-  closureTrendChart.dispose();
-  closureTrendChart = null;
-}
-
 function disposeEntryActivityChart() {
   if (!entryActivityChart) return;
   entryActivityChart.dispose();
@@ -1687,16 +777,6 @@ function disposeProjectChart() {
   projectChart = null;
 }
 
-function resizeTrendChart() {
-  if (!trendChart) return;
-  trendChart.resize();
-}
-
-function resizeClosureTrendChart() {
-  if (!closureTrendChart) return;
-  closureTrendChart.resize();
-}
-
 function resizeActivityCharts() {
   entryActivityChart?.resize();
   agentActivityChart?.resize();
@@ -1706,30 +786,6 @@ function resizeActivityCharts() {
 function resizeProjectChart() {
   if (!projectChart) return;
   projectChart.resize();
-}
-
-async function renderTrendChart() {
-  await nextTick();
-  if (!usageDaily.value.length || !trendChartRef.value) {
-    disposeTrendChart();
-    return;
-  }
-  trendChart = echarts.getInstanceByDom(trendChartRef.value) || echarts.init(trendChartRef.value);
-  trendChart.setOption(trendChartOption.value, true);
-  trendChart.resize();
-}
-
-async function renderClosureTrendChart() {
-  await nextTick();
-  if (!workSessionDaily.value.length || !closureTrendChartRef.value) {
-    disposeClosureTrendChart();
-    return;
-  }
-  closureTrendChart =
-    echarts.getInstanceByDom(closureTrendChartRef.value) ||
-    echarts.init(closureTrendChartRef.value);
-  closureTrendChart.setOption(closureTrendChartOption.value, true);
-  closureTrendChart.resize();
 }
 
 async function renderEntryActivityChart() {
@@ -1799,7 +855,6 @@ function withPercent(list, key) {
   }));
 }
 
-const rankedTools = computed(() => withPercent(data.value?.usage?.top_tools, "cnt"));
 const rankedDevelopers = computed(() => withPercent(data.value?.usage?.top_developers, "cnt"));
 const userManagementAccountItems = computed(() => {
   const usageByAccount = new Map();
@@ -1831,20 +886,6 @@ const userManagementAccountItems = computed(() => {
     "cnt",
   );
 });
-const endpointItems = computed(() => withPercent(data.value?.live_activity?.endpoint_breakdown, "count"));
-const runtimeCounterItems = computed(() => {
-  const counters = Array.isArray(data.value?.runtime_metrics?.top_counters)
-    ? data.value.runtime_metrics.top_counters
-    : [];
-  return counters.slice(0, 4);
-});
-const runtimeHistogramItems = computed(() => {
-  const histograms = Array.isArray(data.value?.runtime_metrics?.top_histograms)
-    ? data.value.runtime_metrics.top_histograms
-    : [];
-  return histograms.slice(0, 4);
-});
-
 const PROJECT_NAME_ALIASES = new Set([
   "当前项目",
   "<当前项目名>",
@@ -1877,97 +918,9 @@ const entryScopeItems = computed(() => {
   );
 });
 
-const recentSessions = computed(() => {
-  const sessions = Array.isArray(data.value?.work_sessions?.recent) ? data.value.work_sessions.recent : [];
-  return sessions.slice(0, 4).map((item) => {
-    const rawStatus = String(item?.latest_status || "").toLowerCase();
-    let statusLabel = "进行中";
-    let statusClass = "";
-    if (rawStatus === "completed") {
-      statusLabel = "已完成";
-      statusClass = "is-done";
-    } else if (["blocked", "failed"].includes(rawStatus)) {
-      statusLabel = "待处理";
-      statusClass = "is-warning";
-    }
-    return {
-      ...item,
-      statusClass,
-      statusLabel,
-      project_name: normalizeProjectName(item?.project_name),
-      display_name: resolveProjectDisplayName(item?.project_name, item?.project_id),
-      stageLabel: [item?.phases?.[0], item?.steps?.[0]].filter(Boolean).join(" · ") || "阶段信息待补齐",
-      verificationLabel: item?.verification?.[0] || "还没有写入验证说明",
-    };
-  });
-});
-
-function normalizeExecutiveWorkItem(item) {
-  const rawStatus = String(item?.latest_status || "").toLowerCase();
-  let statusLabel = "进行中";
-  if (rawStatus === "completed") {
-    statusLabel = "已完成";
-  } else if (["blocked", "failed"].includes(rawStatus)) {
-    statusLabel = "待处理";
-  }
-  const stageLabel = [item?.phases?.[0], item?.steps?.[0]].filter(Boolean).join(" · ") || "工作内容待补齐";
-  return {
-    ...item,
-    statusLabel,
-    project_name: resolveProjectDisplayName(item?.project_name, item?.project_id),
-    stageLabel,
-    work_summary: item?.work_summary || stageLabel,
-    verification_summary: item?.verification_summary || item?.verification?.[0] || "还没有写入验证说明",
-  };
-}
-
-const executivePortfolioItems = computed(() => {
-  const items = Array.isArray(executiveData.value?.project_portfolio)
-    ? executiveData.value.project_portfolio
-    : [];
-  if (items.length) {
-    return items.map((item) => ({
-      ...item,
-      workItems: Array.isArray(item?.work_items)
-        ? item.work_items.map(normalizeExecutiveWorkItem)
-        : [],
-    }));
-  }
-  return projectActivityItems.value.map((item) => ({
-    ...item,
-    project_name: item.display_name || item.project_name,
-    status: Number(item.blocked_sessions || 0) > 0 ? "blocked" : "active",
-    status_label: Number(item.blocked_sessions || 0) > 0 ? "有阻塞" : "有活动",
-    closure_rate: Number(item.completion_rate || 0),
-    latest_activity_at: item.latest_updated_at || item.latest_seen_at || "",
-    workItems: recentSessions.value
-      .filter((session) => session.project_id && session.project_id === item.project_id)
-      .map(normalizeExecutiveWorkItem),
-  }));
-});
-
-const executiveRiskItems = computed(() => {
-  const items = Array.isArray(executiveData.value?.risk_projects)
-    ? executiveData.value.risk_projects
-    : [];
-  return items.length
-    ? items
-    : executivePortfolioItems.value.filter((item) => ["blocked", "at_risk"].includes(item.status));
-});
-
-const executiveRecentSessions = computed(() => {
-  const sessions = Array.isArray(executiveData.value?.recent_sessions)
-    ? executiveData.value.recent_sessions
-    : [];
-  return sessions.slice(0, 5).map(normalizeExecutiveWorkItem);
-});
-
 const agentActivityItems = computed(() => {
   const usageAgents = Array.isArray(data.value?.usage?.top_employees) ? data.value.usage.top_employees : [];
   const liveAgents = Array.isArray(data.value?.live_activity?.top_agents) ? data.value.live_activity.top_agents : [];
-  const workSessionAgents = Array.isArray(data.value?.work_sessions?.top_employees)
-    ? data.value.work_sessions.top_employees
-    : [];
   const merged = new Map();
 
   for (const row of usageAgents) {
@@ -2005,28 +958,6 @@ const agentActivityItems = computed(() => {
     });
   }
 
-  for (const row of workSessionAgents) {
-    const key = row?.employee_id || row?.employee_name;
-    if (!key) continue;
-    const existing = merged.get(key) || {
-      employee_id: row.employee_id || "",
-      employee_name: row.employee_name || row.employee_id || "未知智能体",
-      cnt: 0,
-      active_entries: 0,
-      project_count: 0,
-      activity_score: 0,
-    };
-    const sessionEvents = Number(row.event_count || row.session_count || 0);
-    merged.set(key, {
-      ...existing,
-      employee_id: existing.employee_id || row.employee_id || "",
-      employee_name: existing.employee_name || row.employee_name || row.employee_id || "未知智能体",
-      cnt: Math.max(Number(existing.cnt || 0), sessionEvents),
-      project_count: Math.max(Number(existing.project_count || 0), Number(row.project_count || 0)),
-      activity_score: Number(existing.activity_score || 0) + sessionEvents,
-    });
-  }
-
   return [...merged.values()]
     .sort((left, right) => Number(right.activity_score || 0) - Number(left.activity_score || 0));
 });
@@ -2034,9 +965,6 @@ const agentActivityItems = computed(() => {
 const projectActivityItems = computed(() => {
   const usageProjects = Array.isArray(data.value?.usage?.top_projects)
     ? data.value.usage.top_projects
-    : [];
-  const workProjects = Array.isArray(data.value?.work_sessions?.top_projects)
-    ? data.value.work_sessions.top_projects
     : [];
   const liveProjects = Array.isArray(data.value?.live_activity?.top_projects)
     ? data.value.live_activity.top_projects
@@ -2056,29 +984,6 @@ const projectActivityItems = computed(() => {
       active_entries: 0,
       developer_count: Number(row.developer_count || 0),
       avg_duration_ms: Number(row.avg_duration_ms || 0),
-    });
-  }
-
-  for (const row of workProjects) {
-    const normalizedProjectName = normalizeProjectName(row?.project_name);
-    const key = row?.project_id || normalizedProjectName;
-    if (!key) continue;
-    const existing = merged.get(key) || {
-      project_id: row.project_id || "",
-      project_name: "",
-      cnt: 0,
-      session_count: 0,
-      event_count: 0,
-      active_entries: 0,
-      developer_count: 0,
-      avg_duration_ms: 0,
-    };
-    merged.set(key, {
-      ...existing,
-      project_id: existing.project_id || row.project_id || "",
-      project_name: existing.project_name || normalizedProjectName,
-      session_count: Number(row.session_count || 0),
-      event_count: Math.max(Number(existing.event_count || 0), Number(row.event_count || 0)),
     });
   }
 
@@ -2113,7 +1018,7 @@ const projectActivityItems = computed(() => {
           Number(row.cnt || 0) +
           Number(row.event_count || 0) +
           Number(row.active_entries || 0) +
-          Number(row.session_count || 0),
+          Number(row.developer_count || 0),
       }))
       .sort((left, right) => Number(right.activity_score || 0) - Number(left.activity_score || 0)),
     "activity_score",
@@ -2285,8 +1190,6 @@ onMounted(() => {
   if (scopedProjectId.value) {
     rememberRecentProject(scopedProjectId.value);
   }
-  window.addEventListener("resize", resizeTrendChart);
-  window.addEventListener("resize", resizeClosureTrendChart);
   window.addEventListener("resize", resizeActivityCharts);
   window.addEventListener("resize", resizeProjectChart);
   fetchProjectScopes();
@@ -2295,22 +1198,10 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", resizeTrendChart);
-  window.removeEventListener("resize", resizeClosureTrendChart);
   window.removeEventListener("resize", resizeActivityCharts);
   window.removeEventListener("resize", resizeProjectChart);
-  disposeTrendChart();
-  disposeClosureTrendChart();
   disposeActivityCharts();
   disposeProjectChart();
-});
-
-watch(usageDaily, () => {
-  renderTrendChart();
-});
-
-watch(workSessionDaily, () => {
-  renderClosureTrendChart();
 });
 
 watch(activityChartItems, () => {

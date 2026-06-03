@@ -542,7 +542,9 @@ class ToolExecutor:
         if not action_type:
             action_type = "open_url" if authorization_url else "interaction_form" if interaction_schema else "none"
         status = str(task.get("status") or "").strip().lower()
-        waiting_user_action = status == "waiting_user_action"
+        waiting_user_action = status == "waiting_user_action" and bool(
+            authorization_url or interaction_schema
+        )
         execution_ok = bool(task.get("execution_ok", task.get("ok")))
         return {
             "ok": execution_ok,
