@@ -40,7 +40,7 @@ def _build_project_mcp_monitor_client(tmp_path, monkeypatch, auth_payload):
     from core.deps import require_auth
     from core.server import create_app
     from stores import factory as store_factory
-    from services import project_mcp_presence as project_mcp_presence_service
+    from services.mcp import project_mcp_presence as project_mcp_presence_service
 
     monkeypatch.setenv("CORE_STORE_BACKEND", "json")
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
@@ -438,7 +438,7 @@ def test_query_mcp_prompt_surfaces_use_project_local_skill_wording():
         "AGENTS.md",
         "web-admin/api/stores/json/system_config_store.py",
         "web-admin/api/routers/projects.py",
-        "web-admin/api/services/dynamic_mcp_apps_query.py",
+        "web-admin/api/services/mcp/dynamic_mcp_apps_query.py",
         "web-admin/frontend/src/views/system/SystemConfig.vue",
         "web-admin/frontend/src/components/UnifiedMcpAccessDialog.vue",
     ]
@@ -500,7 +500,7 @@ def test_project_manual_template_avoids_frontend_route_specific_wording(tmp_path
 def test_project_mcp_proxy_tracks_runtime_presence(monkeypatch):
     import asyncio
 
-    from services import dynamic_mcp_proxy_apps as proxy_apps
+    from services.mcp import dynamic_mcp_proxy_apps as proxy_apps
 
     captured: list[dict] = []
 
@@ -653,8 +653,8 @@ def test_system_mcp_activity_lists_multiple_endpoint_types(tmp_path, monkeypatch
 def test_query_mcp_proxy_backfills_project_from_request_context(monkeypatch):
     from fastapi import FastAPI, Request
 
-    from services import dynamic_mcp_proxy_apps as proxy_apps
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp import dynamic_mcp_proxy_apps as proxy_apps
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     captured: list[dict] = []
 

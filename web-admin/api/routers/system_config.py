@@ -20,9 +20,9 @@ from core.deps import (
     user_store,
 )
 from models.requests import SystemConfigUpdateReq
-from services.bot_connector_service import list_bot_connectors, replace_bot_connectors
-from services.llm_provider_service import get_llm_provider_service
-from services.system_mcp_discovery import list_system_mcp_skills
+from services.connectors.bot_connector_service import list_bot_connectors, replace_bot_connectors
+from services.providers.llm_provider_service import get_llm_provider_service
+from services.mcp.system_mcp_discovery import list_system_mcp_skills
 from stores.json.system_config_store import (
     normalize_global_assistant_guide_modules,
     normalize_voice_allowed_role_ids,

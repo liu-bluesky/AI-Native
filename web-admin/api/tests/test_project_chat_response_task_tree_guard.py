@@ -331,7 +331,7 @@ def test_project_chat_ws_cancel_returns_done_and_unlocks_request(tmp_path, monke
         lambda llm_service, *args, **kwargs: llm_service,
     )
     monkeypatch.setattr(
-        "services.llm_provider_service.get_llm_provider_service",
+        "services.providers.llm_provider_service.get_llm_provider_service",
         lambda: object(),
     )
     monkeypatch.setattr(projects_router, "get_redis_client", AsyncMock(return_value=object()))
@@ -495,7 +495,7 @@ def test_project_chat_ws_llm_502_returns_done_and_allows_next_turn(tmp_path, mon
         lambda llm_service, *args, **kwargs: llm_service,
     )
     monkeypatch.setattr(
-        "services.llm_provider_service.get_llm_provider_service",
+        "services.providers.llm_provider_service.get_llm_provider_service",
         lambda: object(),
     )
     monkeypatch.setattr(projects_router, "get_redis_client", AsyncMock(return_value=object()))

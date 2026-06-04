@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 
 def test_darwin_system_speech_temporarily_unmutes_and_restores(monkeypatch):
-    from services import system_speech_service as service
+    from services.providers import system_speech_service as service
 
     calls = []
 
@@ -38,7 +38,7 @@ def test_darwin_system_speech_temporarily_unmutes_and_restores(monkeypatch):
 
 
 def test_darwin_system_speech_uses_configured_reminder_volume(monkeypatch):
-    from services import system_speech_service as service
+    from services.providers import system_speech_service as service
 
     calls = []
 
@@ -66,7 +66,7 @@ def test_darwin_system_speech_uses_configured_reminder_volume(monkeypatch):
 
 
 def test_darwin_system_speech_still_speaks_when_volume_state_unavailable(monkeypatch):
-    from services import system_speech_service as service
+    from services.providers import system_speech_service as service
 
     calls = []
 

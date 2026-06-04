@@ -17,7 +17,11 @@ class _FakeCursor:
         self._fetchall_results = [
             [{"tool_name": "demo_tool", "cnt": 2}],
             [{"employee_id": "emp-1", "cnt": 2}],
+            [],
             [{"developer_name": "admin", "cnt": 3}],
+            [],
+            [],
+            [],
             [{"project_id": "proj-1", "project_name": "项目 A", "cnt": 3}],
             [{"date": "2026-04-22", "total_events": 3, "tool_calls": 2, "connections": 1}],
             [{"employee_id": "emp-1", "created_at": "2026-04-22T00:00:00+00:00"}],

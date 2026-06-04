@@ -9767,6 +9767,8 @@ function isGenericRequestLifecycleOperation(operation) {
 }
 
 function shouldHideGenericRequestLifecycleOperation(operation, row) {
+  const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+  if (phase === "waiting_user") return false;
   return (
     hasNonTerminalUserWaitingOperation(row) &&
     isGenericRequestLifecycleOperation(operation)

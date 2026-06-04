@@ -25,9 +25,9 @@ from models.requests import (
     AgentTemplateTranslateNamesReq,
     EmployeeAgentTemplateImportReq,
 )
-from services.employee_template_import_service import import_agent_templates
-from services.llm_provider_service import get_llm_provider_service
-from services.local_connector_service import (
+from services.skills.employee_template_import_service import import_agent_templates
+from services.providers.llm_provider_service import get_llm_provider_service
+from services.connectors.local_connector_service import (
     build_local_connector_provider_id,
     connector_base_url,
     list_connector_llm_models,

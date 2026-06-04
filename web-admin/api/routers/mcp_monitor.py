@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core.deps import external_mcp_store, require_auth
 from routers.mcp_modules import run_external_mcp_connection_test
-from services.project_mcp_presence import list_active_project_mcp_presence, list_active_system_mcp_presence
+from services.mcp.project_mcp_presence import list_active_project_mcp_presence, list_active_system_mcp_presence
 
 
 router = APIRouter(prefix="/api/system/mcp-monitor", dependencies=[Depends(require_auth)])

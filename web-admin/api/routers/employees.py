@@ -30,11 +30,11 @@ from core.deps import (
     system_config_store,
 )
 from core.role_permissions import has_permission
-from services.external_rule_service import suggest_external_rules as build_external_rule_suggestions
-from services.external_skill_service import suggest_external_skills as build_external_skill_suggestions
-from services.employee_template_import_service import import_agent_templates
+from services.external.rule_service import suggest_external_rules as build_external_rule_suggestions
+from services.external.skill_service import suggest_external_skills as build_external_skill_suggestions
+from services.skills.employee_template_import_service import import_agent_templates
 from stores.json.employee_store import EmployeeConfig, _now_iso
-from services.system_mcp_discovery import list_system_mcp_skills
+from services.mcp.system_mcp_discovery import list_system_mcp_skills
 from stores.mcp_bridge import (
     ResourceDef,
     RiskDomain,
@@ -1621,7 +1621,7 @@ async def generate_employee_draft(
     req: EmployeeDraftGenerateReq,
     auth_payload: dict = Depends(require_auth),
 ):
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     message = _normalize_text_value(req.message, limit=8000)
     if not message:

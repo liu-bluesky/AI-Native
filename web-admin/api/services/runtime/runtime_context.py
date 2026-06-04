@@ -16,4 +16,4 @@ def runtime_tools(context: ChatRuntimeContext) -> list[dict[str, Any]]:
 
 
 def runtime_capability_routing(context: ChatRuntimeContext) -> dict[str, Any]:
-    return dict(context.capability_routing or {})
+    return dict(getattr(context, "capability_routing", None) or {})

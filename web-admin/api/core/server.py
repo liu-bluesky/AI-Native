@@ -48,22 +48,22 @@ from routers import (
     statistics,
     work_sessions,
 )
-from services.dynamic_mcp_runtime import (
+from services.mcp.dynamic_mcp_runtime import (
     employee_mcp_proxy_app,
     project_mcp_proxy_app,
     query_mcp_proxy_app,
     rule_mcp_proxy_app,
     skill_mcp_proxy_app,
 )
-from services.project_experience_summary_service import (
+from services.projects.project_experience_summary_service import (
     ProjectExperienceSummaryBackgroundService,
 )
-from services.feishu_bot_long_connection_supervisor import FeishuBotLongConnectionSupervisor
-from services.global_assistant_task_service import (
+from services.feishu.feishu_bot_long_connection_supervisor import FeishuBotLongConnectionSupervisor
+from services.assistant.global_assistant_task_service import (
     start_global_assistant_task_scheduler,
     stop_global_assistant_task_scheduler,
 )
-from services.project_chat_realtime_service import (
+from services.chat.project_chat_realtime_service import (
     start_project_chat_realtime_subscriber,
     stop_project_chat_realtime_subscriber,
 )

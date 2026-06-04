@@ -7,7 +7,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 
-from services.feishu_bot_service import (
+from services.feishu.feishu_bot_service import (
     build_feishu_event_handler,
     get_feishu_message_resource_file,
     get_feishu_connector,

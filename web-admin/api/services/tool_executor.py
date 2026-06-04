@@ -168,7 +168,7 @@ def _normalize_cli_auth_operation_command(command: str) -> dict[str, str]:
         return {}
     command_candidates = _iter_cli_auth_command_candidates(normalized_command)
 
-    from services.cli_plugin_market_service import list_cli_plugins
+    from services.plugins.cli_plugin_market_service import list_cli_plugins
 
     for plugin in list_cli_plugins(include_status=False):
         auth = plugin.get("auth") if isinstance(plugin.get("auth"), dict) else {}
@@ -300,7 +300,7 @@ class ToolExecutor:
         return payload
 
     async def _execute_tool(self, tool_name: str, args: dict) -> dict:
-        from services.global_assistant_service import (
+        from services.assistant.global_assistant_service import (
             is_global_assistant_builtin_tool,
             execute_global_assistant_builtin_tool,
         )
@@ -319,7 +319,7 @@ class ToolExecutor:
             return await self._execute_project_host_terminal_tool(tool_name, args)
         if str(tool_name or "").strip().startswith("local_connector_"):
             return await self._execute_local_connector_tool(tool_name, args)
-        from services.dynamic_mcp_runtime import invoke_project_tool_runtime
+        from services.mcp.dynamic_mcp_runtime import invoke_project_tool_runtime
         from starlette.concurrency import run_in_threadpool
         result = await run_in_threadpool(
             invoke_project_tool_runtime,
@@ -335,7 +335,7 @@ class ToolExecutor:
         return result
 
     async def _execute_local_connector_tool(self, tool_name: str, args: dict) -> dict:
-        from services.local_connector_service import (
+        from services.connectors.local_connector_service import (
             LOCAL_CONNECTOR_FILE_TOOL_NAMES,
             list_connector_workspace_files,
             read_connector_file,
@@ -410,7 +410,7 @@ class ToolExecutor:
         if routed_login_result is not None:
             return routed_login_result
 
-        from services.project_host_command_service import run_project_host_command
+        from services.connectors.project_host_command_service import run_project_host_command
         from starlette.concurrency import run_in_threadpool
 
         return await run_in_threadpool(
@@ -427,7 +427,7 @@ class ToolExecutor:
         normalized_tool_name = str(tool_name or "").strip()
         try:
             if normalized_tool_name == "project_host_terminal_start":
-                from services.project_host_terminal_service import start_or_attach_project_host_terminal
+                from services.connectors.project_host_terminal_service import start_or_attach_project_host_terminal
 
                 result = await start_or_attach_project_host_terminal(
                     project_id=self._project_id,
@@ -444,7 +444,7 @@ class ToolExecutor:
                     **dict(result),
                 }
             if normalized_tool_name == "project_host_terminal_input":
-                from services.project_host_terminal_service import (
+                from services.connectors.project_host_terminal_service import (
                     get_project_host_terminal_session,
                     write_project_host_terminal_input,
                 )
@@ -467,7 +467,7 @@ class ToolExecutor:
                     **dict(result),
                 }
             if normalized_tool_name == "project_host_terminal_read":
-                from services.project_host_terminal_service import read_project_host_terminal_output
+                from services.connectors.project_host_terminal_service import read_project_host_terminal_output
 
                 return {
                     "source": "project_host_terminal",
@@ -479,7 +479,7 @@ class ToolExecutor:
                     ),
                 }
             if normalized_tool_name == "project_host_terminal_stop":
-                from services.project_host_terminal_service import (
+                from services.connectors.project_host_terminal_service import (
                     get_project_host_terminal_session,
                     stop_project_host_terminal,
                 )

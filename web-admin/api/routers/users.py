@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.data_scope import can_view_username_data, data_scope_payload, filter_records_by_data_scope
 from core.deps import department_store, ensure_any_permission, ensure_permission, is_admin_like, project_store, require_auth, role_store, user_store
 from models.requests import UserCreateReq, UserPasswordUpdateReq, UserSettingsUpdateReq, UserUpdateReq
-from services.llm_provider_service import get_llm_provider_service
+from services.providers.llm_provider_service import get_llm_provider_service
 from stores.json.user_store import User, hash_password
 
 router = APIRouter(prefix="/api/users", dependencies=[Depends(require_auth)])

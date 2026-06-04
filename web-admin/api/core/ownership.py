@@ -65,12 +65,12 @@ def can_view_record(item: Any, auth_payload: dict | None) -> bool:
     if username == created_by:
         return True
     scope = share_scope(item)
-    if not can_view_username_data(auth_payload, created_by):
-        return False
     if scope == "all_users":
         return True
     if scope == "selected_users" and username in shared_usernames(item):
         return True
+    if not can_view_username_data(auth_payload, created_by):
+        return False
     return False
 
 

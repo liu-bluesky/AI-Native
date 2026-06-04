@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 
 from core.deps import ensure_permission, require_auth
 from models.requests import SkillResourceInstallReq, SkillResourceResolveReq
-from services.skill_resource_service import SkillResourceService
+from services.skills.skill_resource_service import SkillResourceService
 
 def _require_skill_resource_permission(auth_payload: dict = Depends(require_auth)) -> None:
     ensure_permission(auth_payload, "menu.skills")

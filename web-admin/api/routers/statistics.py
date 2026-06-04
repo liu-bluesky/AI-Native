@@ -15,7 +15,7 @@ from core.deps import (
     work_session_store,
 )
 from core.observability import metrics
-from services.project_mcp_presence import list_active_system_mcp_presence
+from services.mcp.project_mcp_presence import list_active_system_mcp_presence
 
 
 router = APIRouter(prefix="/api/statistics")

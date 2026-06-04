@@ -212,9 +212,9 @@ def test_global_assistant_ws_returns_fallback_text_when_done_content_is_empty(
 ):
     from core.auth import create_token
     from routers import projects as projects_router
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
-    class _FakeAgentOrchestrator:
+    class _FakeAgentRuntime:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -243,7 +243,11 @@ def test_global_assistant_ws_returns_fallback_text_when_done_content_is_empty(
         {"sub": "tester", "role": "admin"},
     )
 
-    monkeypatch.setattr(projects_router, "AgentOrchestrator", _FakeAgentOrchestrator)
+    monkeypatch.setattr(
+        projects_router,
+        "build_agent_orchestrator",
+        lambda *args, **kwargs: _FakeAgentRuntime(),
+    )
     monkeypatch.setattr(projects_router, "get_redis_client", _fake_get_redis_client)
     monkeypatch.setattr(
         projects_router,
@@ -286,12 +290,12 @@ def test_global_assistant_ws_injects_runtime_project_context_and_non_refusal_pro
 ):
     from core.auth import create_token
     from routers import projects as projects_router
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
     from stores.json.project_store import ProjectConfig
 
     captured_messages = []
 
-    class _FakeAgentOrchestrator:
+    class _FakeAgentRuntime:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -324,7 +328,11 @@ def test_global_assistant_ws_injects_runtime_project_context_and_non_refusal_pro
         ProjectConfig(id="proj-d16591a6", name="AI 设计规范")
     )
 
-    monkeypatch.setattr(projects_router, "AgentOrchestrator", _FakeAgentOrchestrator)
+    monkeypatch.setattr(
+        projects_router,
+        "build_agent_orchestrator",
+        lambda *args, **kwargs: _FakeAgentRuntime(),
+    )
     monkeypatch.setattr(projects_router, "get_redis_client", _fake_get_redis_client)
     monkeypatch.setattr(
         projects_router,
@@ -375,12 +383,12 @@ def test_global_assistant_ws_injects_runtime_project_context_and_non_refusal_pro
 def test_global_assistant_ws_registers_system_guide_tool(tmp_path, monkeypatch):
     from core.auth import create_token
     from routers import projects as projects_router
-    from services import llm_provider_service as llm_provider_service_module
-    from services.global_assistant_service import GLOBAL_ASSISTANT_SYSTEM_GUIDE_TOOL_NAME
+    from services.providers import llm_provider_service as llm_provider_service_module
+    from services.assistant.global_assistant_service import GLOBAL_ASSISTANT_SYSTEM_GUIDE_TOOL_NAME
 
     captured_run_kwargs = {}
 
-    class _FakeAgentOrchestrator:
+    class _FakeAgentRuntime:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -410,7 +418,11 @@ def test_global_assistant_ws_registers_system_guide_tool(tmp_path, monkeypatch):
         {"sub": "tester", "role": "admin", "roles": ["admin"]},
     )
 
-    monkeypatch.setattr(projects_router, "AgentOrchestrator", _FakeAgentOrchestrator)
+    monkeypatch.setattr(
+        projects_router,
+        "build_agent_orchestrator",
+        lambda *args, **kwargs: _FakeAgentRuntime(),
+    )
     monkeypatch.setattr(projects_router, "get_redis_client", _fake_get_redis_client)
     monkeypatch.setattr(
         projects_router,
@@ -457,7 +469,7 @@ def test_global_assistant_ws_registers_system_guide_tool(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_global_assistant_builtin_browser_tool_uses_bridge(tmp_path, monkeypatch):
-    from services.global_assistant_service import GLOBAL_ASSISTANT_BROWSER_REQUESTS_TOOL_NAME
+    from services.assistant.global_assistant_service import GLOBAL_ASSISTANT_BROWSER_REQUESTS_TOOL_NAME
     from services.tool_executor import ToolExecutor
 
     captured_calls = []
@@ -498,7 +510,7 @@ async def test_global_assistant_builtin_browser_tool_uses_bridge(tmp_path, monke
 
 
 def test_global_assistant_browser_actions_schema_exposes_navigate():
-    from services.global_assistant_service import (
+    from services.assistant.global_assistant_service import (
         GLOBAL_ASSISTANT_BROWSER_ACTIONS_TOOL_NAME,
         build_global_assistant_builtin_tools,
     )
@@ -519,15 +531,15 @@ def test_global_assistant_browser_actions_schema_exposes_navigate():
 def test_global_assistant_ws_registers_browser_tools(tmp_path, monkeypatch):
     from core.auth import create_token
     from routers import projects as projects_router
-    from services import llm_provider_service as llm_provider_service_module
-    from services.global_assistant_service import (
+    from services.providers import llm_provider_service as llm_provider_service_module
+    from services.assistant.global_assistant_service import (
         GLOBAL_ASSISTANT_BROWSER_ACTIONS_TOOL_NAME,
         GLOBAL_ASSISTANT_BROWSER_REQUESTS_TOOL_NAME,
     )
 
     captured_run_kwargs = {}
 
-    class _FakeAgentOrchestrator:
+    class _FakeAgentRuntime:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -557,7 +569,11 @@ def test_global_assistant_ws_registers_browser_tools(tmp_path, monkeypatch):
         {"sub": "tester", "role": "admin", "roles": ["admin"]},
     )
 
-    monkeypatch.setattr(projects_router, "AgentOrchestrator", _FakeAgentOrchestrator)
+    monkeypatch.setattr(
+        projects_router,
+        "build_agent_orchestrator",
+        lambda *args, **kwargs: _FakeAgentRuntime(),
+    )
     monkeypatch.setattr(projects_router, "get_redis_client", _fake_get_redis_client)
     monkeypatch.setattr(
         projects_router,
@@ -605,7 +621,7 @@ def test_global_assistant_ws_registers_browser_tools(tmp_path, monkeypatch):
 def test_global_assistant_ws_allows_chat_when_user_cannot_manage_providers(tmp_path, monkeypatch):
     from core.auth import create_token
     from routers import projects as projects_router
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
     from stores.json.role_store import RoleConfig
 
     class _RestrictedProviderService:
@@ -631,7 +647,7 @@ def test_global_assistant_ws_allows_chat_when_user_cannot_manage_providers(tmp_p
                 }
             ]
 
-    class _FakeAgentOrchestrator:
+    class _FakeAgentRuntime:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -658,7 +674,11 @@ def test_global_assistant_ws_allows_chat_when_user_cannot_manage_providers(tmp_p
         )
     )
 
-    monkeypatch.setattr(projects_router, "AgentOrchestrator", _FakeAgentOrchestrator)
+    monkeypatch.setattr(
+        projects_router,
+        "build_agent_orchestrator",
+        lambda *args, **kwargs: _FakeAgentRuntime(),
+    )
     monkeypatch.setattr(projects_router, "get_redis_client", _fake_get_redis_client)
     monkeypatch.setattr(
         llm_provider_service_module,
@@ -694,7 +714,7 @@ def test_global_assistant_ws_allows_chat_when_user_cannot_manage_providers(tmp_p
 def test_global_assistant_ws_prefers_configured_chat_model(tmp_path, monkeypatch):
     from core.auth import create_token
     from routers import projects as projects_router
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
     from stores.json.role_store import RoleConfig
 
     class _ConfiguredProviderService:
@@ -733,7 +753,7 @@ def test_global_assistant_ws_prefers_configured_chat_model(tmp_path, monkeypatch
                 },
             ]
 
-    class _FakeAgentOrchestrator:
+    class _FakeAgentRuntime:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -766,7 +786,11 @@ def test_global_assistant_ws_prefers_configured_chat_model(tmp_path, monkeypatch
         }
     )
 
-    monkeypatch.setattr(projects_router, "AgentOrchestrator", _FakeAgentOrchestrator)
+    monkeypatch.setattr(
+        projects_router,
+        "build_agent_orchestrator",
+        lambda *args, **kwargs: _FakeAgentRuntime(),
+    )
     monkeypatch.setattr(projects_router, "get_redis_client", _fake_get_redis_client)
     monkeypatch.setattr(
         llm_provider_service_module,
@@ -801,7 +825,7 @@ def test_global_assistant_ws_prefers_configured_chat_model(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 async def test_global_assistant_builtin_tool_returns_system_guide(tmp_path, monkeypatch):
-    from services.global_assistant_service import GLOBAL_ASSISTANT_SYSTEM_GUIDE_TOOL_NAME
+    from services.assistant.global_assistant_service import GLOBAL_ASSISTANT_SYSTEM_GUIDE_TOOL_NAME
     from services.tool_executor import ToolExecutor
     from stores.json.user_store import User
 
@@ -839,7 +863,7 @@ async def test_global_assistant_builtin_tool_returns_system_guide(tmp_path, monk
 
 
 def test_global_assistant_system_guide_filters_hidden_data_by_permission_scope(tmp_path, monkeypatch):
-    from services.global_assistant_service import build_global_assistant_system_guide
+    from services.assistant.global_assistant_service import build_global_assistant_system_guide
     from stores.json.employee_store import EmployeeConfig
     from stores.json.project_store import ProjectConfig, ProjectUserMember
     from stores.json.role_store import RoleConfig
@@ -923,7 +947,7 @@ def test_global_assistant_system_guide_filters_hidden_data_by_permission_scope(t
 
 
 def test_global_assistant_system_guide_uses_configured_modules_and_public_entries(tmp_path, monkeypatch):
-    from services.global_assistant_service import build_global_assistant_system_guide
+    from services.assistant.global_assistant_service import build_global_assistant_system_guide
     from stores.json.role_store import RoleConfig
     from stores.json.user_store import User
 
@@ -1044,7 +1068,7 @@ async def test_global_assistant_temp_session_can_be_deleted():
 def test_global_assistant_voice_runtime_accepts_allowed_multi_role_user(tmp_path, monkeypatch):
     from routers import projects as projects_router
     from stores.json.role_store import RoleConfig
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -1443,7 +1467,7 @@ def test_bot_connector_platforms_and_feishu_diagnose(tmp_path, monkeypatch):
     assert "im.message.receive_v1" in feishu_manifest["required_events"]
 
     monkeypatch.setattr(
-        "services.bot_connector_installer_service.check_feishu_connector_credentials",
+        "services.connectors.bot_connector_installer_service.check_feishu_connector_credentials",
         lambda connector: {"ok": True, "message": "飞书应用凭证有效"},
     )
     diagnose_response = client.post("/api/bot-connectors/feishu-long/diagnose")
@@ -1714,7 +1738,7 @@ def test_system_config_patch_allows_guide_modules_when_both_permissions_present(
 
 
 def test_global_assistant_voice_runtime_uses_shared_scope_without_button_permission(tmp_path, monkeypatch):
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -1746,7 +1770,7 @@ def test_global_assistant_voice_runtime_uses_shared_scope_without_button_permiss
 
 def test_global_assistant_voice_transcription_uses_real_backend_route(tmp_path, monkeypatch):
     from stores.json.role_store import RoleConfig
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -1789,7 +1813,7 @@ def test_global_assistant_voice_transcription_uses_real_backend_route(tmp_path, 
 
 
 def test_global_assistant_voice_transcription_denies_user_outside_shared_voice_scope(tmp_path, monkeypatch):
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -1820,7 +1844,7 @@ def test_global_assistant_voice_transcription_denies_user_outside_shared_voice_s
 
 
 def test_global_assistant_speech_runtime_reports_backend_output_config(tmp_path, monkeypatch):
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -1852,7 +1876,7 @@ def test_global_assistant_speech_runtime_reports_backend_output_config(tmp_path,
 
 
 def test_global_assistant_speech_runtime_respects_shared_voice_scope(tmp_path, monkeypatch):
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -1882,7 +1906,7 @@ def test_global_assistant_speech_runtime_respects_shared_voice_scope(tmp_path, m
 
 
 def test_global_assistant_speech_generation_uses_real_backend_route(tmp_path, monkeypatch):
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -1952,7 +1976,7 @@ def test_global_assistant_system_speech_queues_backend_playback(tmp_path, monkey
 
 
 def test_global_assistant_speech_generation_denies_user_outside_shared_voice_scope(tmp_path, monkeypatch):
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -1984,7 +2008,7 @@ def test_global_assistant_speech_generation_denies_user_outside_shared_voice_sco
 
 def test_system_config_save_generates_global_greeting_audio_cache(tmp_path, monkeypatch):
     from routers import system_config as system_config_router
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -2037,7 +2061,7 @@ def test_system_config_save_generates_global_greeting_audio_cache(tmp_path, monk
 
 def test_global_greeting_audio_route_returns_cached_audio_file(tmp_path, monkeypatch):
     from routers import system_config as system_config_router
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -2085,7 +2109,7 @@ def test_global_greeting_audio_route_returns_cached_audio_file(tmp_path, monkeyp
 
 def test_global_assistant_voice_transcription_sanitizes_unsupported_format_error(tmp_path, monkeypatch):
     from stores.json.role_store import RoleConfig
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
 
@@ -2131,7 +2155,7 @@ def test_global_assistant_voice_transcription_sanitizes_unsupported_format_error
 
 def test_global_assistant_voice_transcription_returns_empty_text_for_blank_chunk(tmp_path, monkeypatch):
     from stores.json.role_store import RoleConfig
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
 
@@ -2176,7 +2200,7 @@ def test_global_assistant_voice_transcription_returns_empty_text_for_blank_chunk
 def test_global_assistant_voice_ws_stream_transcribes_incrementally(tmp_path, monkeypatch):
     from core.auth import create_token
     from stores.json.role_store import RoleConfig
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -2252,7 +2276,7 @@ def test_global_assistant_voice_ws_stream_transcribes_incrementally(tmp_path, mo
 def test_global_assistant_voice_ws_skips_tiny_recording_on_stop(tmp_path, monkeypatch):
     from core.auth import create_token
     from stores.json.role_store import RoleConfig
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)
@@ -2322,7 +2346,7 @@ def test_global_assistant_voice_ws_skips_tiny_recording_on_stop(tmp_path, monkey
 def test_global_assistant_voice_ws_uses_full_recording_on_stop_when_partial_is_blank(tmp_path, monkeypatch):
     from core.auth import create_token
     from stores.json.role_store import RoleConfig
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     transcribe_results = ["", "系统状态恢复正常"]
@@ -2428,7 +2452,7 @@ def test_global_assistant_voice_ws_uses_full_recording_on_stop_when_partial_is_b
 def test_global_assistant_voice_ws_sanitizes_repeated_partial_and_prefers_final_result(tmp_path, monkeypatch):
     from core.auth import create_token
     from stores.json.role_store import RoleConfig
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     transcribe_results = [
@@ -2536,7 +2560,7 @@ def test_global_assistant_voice_ws_sanitizes_repeated_partial_and_prefers_final_
 def test_global_assistant_voice_ws_allows_scope_open_user_without_voice_button_permission(tmp_path, monkeypatch):
     from core.auth import create_token
     from stores.json.role_store import RoleConfig
-    from services import llm_provider_service as llm_provider_service_module
+    from services.providers import llm_provider_service as llm_provider_service_module
 
     fake_llm_service = _FakeLlmProviderService()
     monkeypatch.setattr(llm_provider_service_module, "get_llm_provider_service", lambda: fake_llm_service)

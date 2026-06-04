@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, Request
 
 from core.deps import ensure_permission, require_auth, system_config_store
 from models.requests import BotConnectorCollectionReq
-from services.bot_connector_service import list_bot_connectors, replace_bot_connectors
-from services.bot_connector_installer_service import (
+from services.connectors.bot_connector_service import list_bot_connectors, replace_bot_connectors
+from services.connectors.bot_connector_installer_service import (
     bot_connector_platform_manifests,
     diagnose_bot_connector,
 )

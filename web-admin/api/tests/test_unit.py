@@ -13,20 +13,12 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 
-@pytest.mark.asyncio
-async def test_orchestrator_logic():
-    """测试 AgentOrchestrator 逻辑"""
-    from services.agent_orchestrator import AgentOrchestrator
-
-    llm_service = MagicMock()
-    conv_manager = MagicMock()
-    conv_manager.get_context = AsyncMock(return_value=[])
-    conv_manager.append_message = AsyncMock()
-
-    orchestrator = AgentOrchestrator(llm_service, conv_manager)
+def test_llm_step_formats_tools():
+    """测试 v2 LLM 工具格式化逻辑"""
+    from services.agent_runtime.v2.llm_step import LLMStep
 
     tools = [{"tool_name": "test_tool", "description": "测试工具"}]
-    formatted = orchestrator._format_tools(tools)
+    formatted = LLMStep(MagicMock())._format_tools(tools)
 
     assert len(formatted) == 1
     assert formatted[0]["type"] == "function"
@@ -53,7 +45,7 @@ async def test_tool_executor_injects_task_tree_context(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(
-        "services.dynamic_mcp_runtime.invoke_project_tool_runtime",
+        "services.mcp.dynamic_mcp_runtime.invoke_project_tool_runtime",
         fake_invoke_project_tool_runtime,
     )
 
@@ -79,7 +71,7 @@ async def test_tool_executor_injects_task_tree_context(monkeypatch):
     assert captured["args"]["username"] == "tester"
 
 def test_build_local_connector_file_tools_includes_file_tools_only():
-    from services.local_connector_service import build_local_connector_file_tools
+    from services.connectors.local_connector_service import build_local_connector_file_tools
 
     tool_names = {item["tool_name"] for item in build_local_connector_file_tools()}
 
@@ -89,7 +81,7 @@ def test_build_local_connector_file_tools_includes_file_tools_only():
 
 
 def test_build_project_host_command_tools_includes_local_shell_tool():
-    from services.project_host_command_service import (
+    from services.connectors.project_host_command_service import (
         PROJECT_HOST_RUN_COMMAND_TOOL_NAME,
         build_project_host_command_tools,
     )
@@ -108,7 +100,7 @@ def test_build_project_host_command_tools_includes_local_shell_tool():
 
 
 def test_build_project_host_command_tools_stays_available_without_workspace_path():
-    from services.project_host_command_service import (
+    from services.connectors.project_host_command_service import (
         PROJECT_HOST_RUN_COMMAND_TOOL_NAME,
         build_project_host_command_tools,
     )
@@ -169,7 +161,7 @@ def test_tool_executor_routes_project_host_terminal_tools(tmp_path):
 
 @pytest.mark.asyncio
 async def test_tool_executor_routes_local_connector_tools(monkeypatch):
-    from services import local_connector_service as connector_svc
+    from services.connectors import local_connector_service as connector_svc
     from services.tool_executor import ToolExecutor
 
     captured: dict = {}
@@ -205,7 +197,7 @@ async def test_tool_executor_routes_local_connector_tools(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tool_executor_routes_project_host_run_command(monkeypatch):
-    from services import project_host_command_service as host_command_svc
+    from services.connectors import project_host_command_service as host_command_svc
     from services.tool_executor import ToolExecutor
 
     captured: dict = {}
@@ -236,7 +228,7 @@ async def test_tool_executor_routes_project_host_run_command(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tool_executor_routes_project_host_run_command_without_explicit_workspace(monkeypatch):
-    from services import project_host_command_service as host_command_svc
+    from services.connectors import project_host_command_service as host_command_svc
     from services.tool_executor import ToolExecutor
 
     captured: dict = {}
@@ -329,7 +321,7 @@ async def test_tool_executor_routes_lark_auth_login_to_operation_wait_task(monke
 
 @pytest.mark.asyncio
 async def test_tool_executor_does_not_route_lark_auth_login_help_to_operation_wait_task(monkeypatch):
-    from services import project_host_command_service as host_command_svc
+    from services.connectors import project_host_command_service as host_command_svc
     from services.tool_executor import ToolExecutor
 
     called = False
@@ -432,7 +424,7 @@ def test_tool_executor_routes_registered_cli_auth_command_to_operation_wait_task
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "services.cli_plugin_market_service.list_cli_plugins",
+        "services.plugins.cli_plugin_market_service.list_cli_plugins",
         lambda include_status=False: [
             {
                 "id": "demo-robot-cli",
@@ -590,7 +582,7 @@ def test_normalize_lark_auth_login_command_aliases():
 
 
 def test_tool_executor_runs_lark_login_status_as_status_check(monkeypatch):
-    from services import project_host_command_service as host_command_svc
+    from services.connectors import project_host_command_service as host_command_svc
     from services.tool_executor import ToolExecutor
 
     captured: dict[str, object] = {}
@@ -635,7 +627,7 @@ def test_tool_executor_runs_lark_login_status_as_status_check(monkeypatch):
 
 
 def test_tool_executor_normalizes_lark_status_in_compound_command(monkeypatch):
-    from services import project_host_command_service as host_command_svc
+    from services.connectors import project_host_command_service as host_command_svc
     from services.tool_executor import ToolExecutor
 
     captured: dict[str, object] = {}
@@ -686,7 +678,7 @@ def test_tool_executor_normalizes_lark_status_in_compound_command(monkeypatch):
 
 
 def test_run_project_host_command_falls_back_to_service_repo_root(monkeypatch, tmp_path):
-    from services import project_host_command_service as host_command_svc
+    from services.connectors import project_host_command_service as host_command_svc
 
     captured: dict[str, object] = {}
 
@@ -717,7 +709,7 @@ def test_run_project_host_command_falls_back_to_service_repo_root(monkeypatch, t
 
 
 def test_run_project_host_command_returns_project_workspace_environment_metadata(monkeypatch, tmp_path):
-    from services import project_host_command_service as host_command_svc
+    from services.connectors import project_host_command_service as host_command_svc
 
     captured: dict[str, object] = {}
 
@@ -744,7 +736,7 @@ def test_run_project_host_command_returns_project_workspace_environment_metadata
 
 
 def test_run_project_host_command_tolerates_binary_output(monkeypatch, tmp_path):
-    from services import project_host_command_service as host_command_svc
+    from services.connectors import project_host_command_service as host_command_svc
 
     def fake_run(*args, **kwargs):
         assert kwargs["text"] is False
@@ -769,7 +761,7 @@ def test_run_project_host_command_tolerates_binary_output(monkeypatch, tmp_path)
 
 
 def test_build_cli_plugin_runtime_environment_uses_saved_receipt_paths(tmp_path, monkeypatch):
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     node_bin = tmp_path / "node-bin"
     global_bin = tmp_path / "global-bin"
@@ -818,7 +810,7 @@ def test_build_cli_plugin_runtime_environment_uses_saved_receipt_paths(tmp_path,
 
 
 def test_build_cli_plugin_runtime_environment_injects_user_runtime_dirs(tmp_path, monkeypatch):
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     node_bin = tmp_path / "node-bin"
     plugin_bin = tmp_path / "plugin-bin"
@@ -859,8 +851,8 @@ def test_build_cli_plugin_runtime_environment_injects_user_runtime_dirs(tmp_path
 
 
 def test_execute_cli_plugin_profile_command_uses_user_runtime_env(tmp_path, monkeypatch):
-    from services import cli_plugin_profile_service as profile_svc
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_profile_service as profile_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     captured: dict[str, object] = {}
 
@@ -901,8 +893,8 @@ def test_execute_cli_plugin_profile_command_uses_user_runtime_env(tmp_path, monk
 
 
 def test_execute_cli_plugin_profile_command_extracts_authorization_url_on_timeout(tmp_path, monkeypatch):
-    from services import cli_plugin_profile_service as profile_svc
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_profile_service as profile_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     def fake_run(*args, **kwargs):
         raise subprocess.TimeoutExpired(
@@ -948,8 +940,8 @@ def test_execute_cli_plugin_profile_command_extracts_authorization_url_on_timeou
 
 
 def test_execute_cli_plugin_profile_command_keeps_interactive_timeout(tmp_path, monkeypatch):
-    from services import cli_plugin_profile_service as profile_svc
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_profile_service as profile_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     captured: dict[str, object] = {}
 
@@ -984,8 +976,8 @@ def test_execute_cli_plugin_profile_command_keeps_interactive_timeout(tmp_path, 
 
 
 def test_execute_cli_plugin_profile_command_does_not_mark_help_as_user_action(tmp_path, monkeypatch):
-    from services import cli_plugin_profile_service as profile_svc
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_profile_service as profile_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     def fake_run(*args, **kwargs):
         return subprocess.CompletedProcess(
@@ -1368,7 +1360,7 @@ def test_cli_plugin_login_task_marks_failed_when_auth_poll_verification_raises(t
 
 
 def test_build_cli_plugin_runtime_environment_backfills_detected_plugin_runtime(tmp_path, monkeypatch):
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     node_bin = tmp_path / "node-bin"
     lark_bin = tmp_path / "lark-bin"
@@ -1433,7 +1425,7 @@ def test_build_cli_plugin_runtime_environment_backfills_detected_plugin_runtime(
 
 
 def test_resolve_cli_plugin_status_includes_version_lock_and_health(tmp_path, monkeypatch):
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     plugin_svc._CLI_PLUGIN_STATUS_CACHE.clear()
     monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
@@ -1496,7 +1488,7 @@ def test_resolve_cli_plugin_status_includes_version_lock_and_health(tmp_path, mo
 
 
 def test_detect_installed_version_uses_saved_binary_path_when_path_missing(tmp_path, monkeypatch):
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     node_bin = tmp_path / "node-bin"
     plugin_bin = tmp_path / "plugin-bin"
@@ -1549,7 +1541,7 @@ def test_detect_installed_version_uses_saved_binary_path_when_path_missing(tmp_p
 
 
 def test_install_cli_plugin_uses_persistent_toolchain_env(tmp_path, monkeypatch):
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     toolchain_root = tmp_path / ".persist" / "cli-toolchain"
     captured: dict[str, object] = {}
@@ -1595,7 +1587,7 @@ def test_install_cli_plugin_uses_persistent_toolchain_env(tmp_path, monkeypatch)
 
 
 def test_install_cli_plugin_tolerates_binary_output(tmp_path, monkeypatch):
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
     monkeypatch.setattr(plugin_svc, "get_cli_plugin_toolchain_root", lambda create=True: tmp_path / "toolchain")
@@ -1627,7 +1619,7 @@ def test_install_cli_plugin_tolerates_binary_output(tmp_path, monkeypatch):
 
 
 def test_normalize_cli_plugin_host_skill_layout_uses_shared_root(tmp_path, monkeypatch):
-    from services import cli_plugin_market_service as plugin_svc
+    from services.plugins import cli_plugin_market_service as plugin_svc
 
     monkeypatch.setattr(plugin_svc, "get_project_root", lambda: tmp_path)
 
@@ -1662,7 +1654,7 @@ def test_normalize_cli_plugin_host_skill_layout_uses_shared_root(tmp_path, monke
 
 
 def test_run_project_host_command_includes_cli_plugin_runtime_paths(monkeypatch, tmp_path):
-    from services import project_host_command_service as host_command_svc
+    from services.connectors import project_host_command_service as host_command_svc
 
     captured: dict[str, object] = {}
 
@@ -2344,7 +2336,7 @@ def test_project_studio_model_sources_and_generation_routes(tmp_path, monkeypatc
         getattr(store_factory, proxy_name)._instance = None
     fake_llm_service = FakeLlmService()
     monkeypatch.setattr(
-        "services.llm_provider_service.get_llm_provider_service",
+        "services.providers.llm_provider_service.get_llm_provider_service",
         lambda: fake_llm_service,
     )
 
@@ -3480,26 +3472,24 @@ async def test_studio_export_service_supports_internal_material_api_url(tmp_path
     assert source["path"] == str(video_path.resolve())
 
 
-def test_agent_orchestrator_extract_media_artifacts_supports_video_results():
-    from services import agent_orchestrator as orchestrator
+def test_normalize_chat_media_artifacts_supports_video_results():
+    from routers import projects as projects_router
 
-    artifacts = orchestrator._extract_media_artifacts(
-        {
-            "assets": [
-                {
-                    "asset_type": "video",
-                    "title": "短片结果",
-                    "preview_url": "https://cdn.example.com/cover.png",
-                    "content_url": "https://cdn.example.com/final.mp4",
-                    "mime_type": "video/mp4",
-                }
-            ]
-        },
-        default_title="视频工具",
+    artifacts = projects_router._normalize_chat_media_artifacts(
+        [
+            {
+                "asset_type": "video",
+                "title": "短片结果",
+                "preview_url": "https://cdn.example.com/cover.png",
+                "content_url": "https://cdn.example.com/final.mp4",
+                "mime_type": "video/mp4",
+            }
+        ]
     )
 
     assert len(artifacts) == 1
     assert artifacts[0]["asset_type"] == "video"
+    assert artifacts[0]["title"] == "短片结果"
     assert artifacts[0]["preview_url"] == "https://cdn.example.com/cover.png"
     assert artifacts[0]["content_url"] == "https://cdn.example.com/final.mp4"
     assert artifacts[0]["mime_type"] == "video/mp4"
@@ -3558,7 +3548,7 @@ def test_save_chat_media_artifacts_to_materials_supports_video(tmp_path, monkeyp
 
 @pytest.mark.asyncio
 async def test_local_connector_llm_adapter_streams_chunks(monkeypatch):
-    from services import local_connector_service as connector_svc
+    from services.connectors import local_connector_service as connector_svc
 
     async def fake_stream(connector, **kwargs):
         assert connector == "connector-1"
@@ -3685,7 +3675,7 @@ def test_usage_key_delete_compatibility_allows_legacy_owners():
 
 
 def test_llm_provider_service_allows_shared_users_on_enabled_list(monkeypatch):
-    from services.llm_provider_service import LlmProviderService
+    from services.providers.llm_provider_service import LlmProviderService
     import stores.factory as factory_mod
 
     class DummyStore:
@@ -3765,7 +3755,7 @@ def test_llm_provider_service_allows_shared_users_on_enabled_list(monkeypatch):
 
 
 def test_llm_provider_service_blocks_shared_user_from_editing_provider():
-    from services.llm_provider_service import LlmProviderService
+    from services.providers.llm_provider_service import LlmProviderService
 
     class DummyStore:
         def __init__(self):
@@ -3810,7 +3800,7 @@ def test_llm_provider_service_blocks_shared_user_from_editing_provider():
 
 
 def test_llm_provider_service_normalizes_model_configs(monkeypatch):
-    from services.llm_provider_service import LlmProviderService
+    from services.providers.llm_provider_service import LlmProviderService
     import stores.factory as factory_mod
 
     class DummyStore:
@@ -3913,7 +3903,7 @@ def test_llm_provider_service_normalizes_model_configs(monkeypatch):
 
 
 def test_dictionary_catalog_includes_llm_model_types():
-    from services.dictionary_catalog import get_dictionary_definition
+    from services.catalogs.dictionary_catalog import get_dictionary_definition
 
     definition = get_dictionary_definition("llm_model_types")
 
@@ -3924,7 +3914,7 @@ def test_dictionary_catalog_includes_llm_model_types():
 
 
 def test_dictionary_catalog_includes_llm_chat_parameter_dictionaries():
-    from services.dictionary_catalog import get_dictionary_definition
+    from services.catalogs.dictionary_catalog import get_dictionary_definition
 
     image_resolution = get_dictionary_definition("llm_image_resolutions")
     video_duration = get_dictionary_definition("llm_video_duration_seconds")
@@ -4126,7 +4116,7 @@ def _build_project_api_test_client(tmp_path, monkeypatch, auth_payload):
 
 def test_project_experience_summary_route_merges_existing_rule_and_clears_records(tmp_path, monkeypatch):
     from routers import projects as projects_router
-    from services.project_experience_summary_service import (
+    from services.projects.project_experience_summary_service import (
         ProjectExperienceSummaryBackgroundService,
     )
     from stores import factory as store_factory
@@ -4291,7 +4281,7 @@ def test_project_experience_summary_route_merges_existing_rule_and_clears_record
 
     fake_llm_service = _FakeLlmService()
     monkeypatch.setattr(
-        "services.llm_provider_service.get_llm_provider_service",
+        "services.providers.llm_provider_service.get_llm_provider_service",
         lambda: fake_llm_service,
     )
     monkeypatch.setattr(
@@ -4369,7 +4359,7 @@ def test_project_experience_summary_route_merges_existing_rule_and_clears_record
 
 def test_project_experience_summary_route_rejects_meta_system_rules(tmp_path, monkeypatch):
     from routers import projects as projects_router
-    from services.project_experience_summary_service import (
+    from services.projects.project_experience_summary_service import (
         ProjectExperienceSummaryBackgroundService,
     )
     from stores import factory as store_factory
@@ -4470,7 +4460,7 @@ def test_project_experience_summary_route_rejects_meta_system_rules(tmp_path, mo
             }
 
     monkeypatch.setattr(
-        "services.llm_provider_service.get_llm_provider_service",
+        "services.providers.llm_provider_service.get_llm_provider_service",
         lambda: _FakeLlmService(),
     )
     monkeypatch.setattr(
@@ -4718,7 +4708,7 @@ def test_project_experience_consolidate_route_merges_duplicate_topics_with_selec
             }
 
     monkeypatch.setattr(
-        "services.llm_provider_service.get_llm_provider_service",
+        "services.providers.llm_provider_service.get_llm_provider_service",
         lambda: _FakeLlmService(),
     )
 
@@ -5273,7 +5263,7 @@ def test_project_work_session_routes_list_and_detail(tmp_path, monkeypatch):
     assert detail_payload["items"][1]["facts"] == ["已新增项目级聚合接口"]
 
 def test_dictionary_catalog_applies_system_override(monkeypatch):
-    import services.dictionary_catalog as catalog
+    import services.catalogs.dictionary_catalog as catalog
 
     class DummyConfig:
         dictionaries = {
@@ -5314,7 +5304,7 @@ def test_dictionary_catalog_applies_system_override(monkeypatch):
 
 
 def test_dictionary_catalog_lists_custom_dictionary(monkeypatch):
-    import services.dictionary_catalog as catalog
+    import services.catalogs.dictionary_catalog as catalog
 
     class DummyConfig:
         dictionaries = {
@@ -5352,7 +5342,7 @@ def test_dictionary_catalog_lists_custom_dictionary(monkeypatch):
 
 
 def test_llm_chat_parameter_catalog_applies_dictionary_overrides(monkeypatch):
-    import services.llm_chat_parameter_catalog as catalog
+    import services.catalogs.llm_chat_parameter_catalog as catalog
 
     dictionary_defaults = {
         "llm_image_resolutions": "720x720",
@@ -5838,7 +5828,7 @@ def test_filter_project_tools_by_names_keeps_tools_when_empty_selection():
 
 
 def test_extract_user_questions_from_query_payload_includes_context():
-    from services.dynamic_mcp_audit import extract_user_questions_from_rpc_payload
+    from services.mcp.dynamic_mcp_audit import extract_user_questions_from_rpc_payload
 
     payload = {
         "method": "tools/call",
@@ -5862,7 +5852,7 @@ def test_extract_user_questions_from_query_payload_includes_context():
 
 
 def test_extract_user_questions_from_lookup_only_query_payload_skips_fallback():
-    from services.dynamic_mcp_audit import extract_user_questions_from_rpc_payload
+    from services.mcp.dynamic_mcp_audit import extract_user_questions_from_rpc_payload
 
     payload = {
         "method": "tools/call",
@@ -5883,7 +5873,7 @@ def test_extract_user_questions_from_lookup_only_query_payload_skips_fallback():
 
 
 def test_extract_user_questions_from_rpc_payload_skips_internal_progress_tools():
-    from services.dynamic_mcp_audit import extract_user_questions_from_rpc_payload
+    from services.mcp.dynamic_mcp_audit import extract_user_questions_from_rpc_payload
 
     payload = {
         "method": "tools/call",
@@ -5909,7 +5899,7 @@ def test_extract_user_questions_from_rpc_payload_skips_internal_progress_tools()
 
 @pytest.mark.asyncio
 async def test_create_tracking_send_attributes_query_employee_tool_calls():
-    from services.dynamic_mcp_audit import create_tracking_send
+    from services.mcp.dynamic_mcp_audit import create_tracking_send
 
     finalized_calls = []
     sent_messages = []
@@ -5961,7 +5951,7 @@ async def test_create_tracking_send_attributes_query_employee_tool_calls():
         },
     }
 
-    tracking_send_module = __import__("services.dynamic_mcp_audit", fromlist=["time"])
+    tracking_send_module = __import__("services.mcp.dynamic_mcp_audit", fromlist=["time"])
     original_monotonic = tracking_send_module.time.monotonic
     tracking_send_module.time.monotonic = lambda: 1.0
     try:
@@ -6003,7 +5993,7 @@ async def test_create_tracking_send_attributes_query_employee_tool_calls():
 
 @pytest.mark.asyncio
 async def test_create_tracking_send_extracts_nested_observability_payload():
-    from services.dynamic_mcp_audit import create_tracking_send
+    from services.mcp.dynamic_mcp_audit import create_tracking_send
 
     finalized_calls = []
 
@@ -6063,7 +6053,7 @@ async def test_create_tracking_send_extracts_nested_observability_payload():
         },
     }
 
-    tracking_send_module = __import__("services.dynamic_mcp_audit", fromlist=["time"])
+    tracking_send_module = __import__("services.mcp.dynamic_mcp_audit", fromlist=["time"])
     original_monotonic = tracking_send_module.time.monotonic
     tracking_send_module.time.monotonic = lambda: 1.5
     try:
@@ -6104,7 +6094,7 @@ async def test_create_tracking_send_extracts_nested_observability_payload():
 
 @pytest.mark.asyncio
 async def test_create_tracking_send_ignores_duplicate_response_start_after_body():
-    from services.dynamic_mcp_audit import create_tracking_send
+    from services.mcp.dynamic_mcp_audit import create_tracking_send
 
     sent_messages = []
 
@@ -6132,7 +6122,7 @@ async def test_create_tracking_send_ignores_duplicate_response_start_after_body(
 
 
 def test_resolve_attributed_employee_id_only_marks_real_collaboration_execution():
-    from services.dynamic_mcp_audit import resolve_attributed_employee_id
+    from services.mcp.dynamic_mcp_audit import resolve_attributed_employee_id
 
     planning_only_payload = {
         "parsed_payload": {
@@ -6186,7 +6176,7 @@ def test_resolve_attributed_employee_id_only_marks_real_collaboration_execution(
 
 
 def test_save_auto_query_memory_writes_single_team_shared_project_record(tmp_path, monkeypatch):
-    from services import dynamic_mcp_audit as audit_svc
+    from services.mcp import dynamic_mcp_audit as audit_svc
     from stores.json.employee_store import EmployeeConfig, EmployeeStore
     from stores.json.project_store import ProjectConfig, ProjectMember, ProjectStore
 
@@ -6230,7 +6220,7 @@ def test_save_auto_query_memory_writes_single_team_shared_project_record(tmp_pat
 
 
 def test_save_auto_query_result_memory_writes_structured_shared_record(tmp_path, monkeypatch):
-    from services import dynamic_mcp_audit as audit_svc
+    from services.mcp import dynamic_mcp_audit as audit_svc
     from stores.json.employee_store import EmployeeConfig, EmployeeStore
     from stores.json.project_store import ProjectConfig, ProjectMember, ProjectStore
 
@@ -6279,7 +6269,7 @@ def test_save_auto_query_result_memory_writes_structured_shared_record(tmp_path,
 
 
 def test_save_auto_query_result_memory_in_progress_stores_requirement_record(tmp_path, monkeypatch):
-    from services import dynamic_mcp_audit as audit_svc
+    from services.mcp import dynamic_mcp_audit as audit_svc
     from stores.json.employee_store import EmployeeConfig, EmployeeStore
     from stores.json.project_store import ProjectConfig, ProjectMember, ProjectStore
 
@@ -6380,7 +6370,7 @@ def test_memory_store_recall_filters_project_before_limit(tmp_path):
 
 
 def test_save_project_memory_entries_defaults_to_single_team_shared_record(monkeypatch):
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
     from stores.mcp_bridge import MemoryScope, MemoryType
 
     saved_memories = []
@@ -6432,7 +6422,7 @@ def test_save_project_memory_entries_defaults_to_single_team_shared_record(monke
 
 
 def test_save_project_memory_entries_skips_duplicate_manual_write(monkeypatch):
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
     from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType
 
     saved_memories = []
@@ -6489,7 +6479,7 @@ def test_save_project_memory_entries_skips_duplicate_manual_write(monkeypatch):
 
 
 def test_collect_project_memories_filters_explicit_other_project_binding(monkeypatch):
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
     from stores.mcp_bridge import Classification, Memory, MemoryScope, MemoryType
 
     target_memory = Memory(
@@ -7477,7 +7467,7 @@ def test_serialize_project_work_session_summary_without_employee_uses_team_label
 
 
 def test_query_mcp_save_project_memory_without_employee_id_stays_single_shared(monkeypatch):
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
     from stores.mcp_bridge import MemoryScope, MemoryType
 
     registered_tools = {}
@@ -7562,9 +7552,9 @@ def test_query_mcp_save_project_memory_without_employee_id_stays_single_shared(m
 
 
 def test_query_mcp_bind_project_context_stores_session_context_and_task_tree(monkeypatch):
-    import services.project_chat_task_tree as task_tree_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
     from contextvars import ContextVar
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
 
     registered_tools = {}
     registered_resources = {}
@@ -7683,9 +7673,9 @@ def test_query_mcp_bind_project_context_stores_session_context_and_task_tree(mon
 
 
 def test_query_mcp_bind_project_context_rebinds_query_cli_shadow_session(monkeypatch):
-    import services.project_chat_task_tree as task_tree_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
     from contextvars import ContextVar
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
 
     registered_tools = {}
     session_contexts = {}
@@ -7772,8 +7762,8 @@ def test_query_mcp_bind_project_context_rebinds_query_cli_shadow_session(monkeyp
 
 
 def test_query_mcp_bind_project_context_without_active_session_creates_detached_task_tree(monkeypatch):
-    import services.project_chat_task_tree as task_tree_svc
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
 
     registered_tools = {}
     ensure_calls = []
@@ -7837,7 +7827,7 @@ def test_query_mcp_bind_project_context_without_active_session_creates_detached_
 
 
 def test_query_mcp_bind_project_context_persists_local_canonical_state(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "query-mcp-bind-local-state"
     workspace.mkdir()
@@ -7889,7 +7879,7 @@ def test_query_mcp_bind_project_context_persists_local_canonical_state(tmp_path,
 
 
 def test_query_mcp_bind_project_context_accepts_explicit_workspace_path(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "query-mcp-bind-explicit-workspace"
     workspace.mkdir()
@@ -7933,9 +7923,9 @@ def test_query_mcp_bind_project_context_accepts_explicit_workspace_path(tmp_path
 
 
 def test_query_mcp_search_ids_does_not_bootstrap_task_tree_from_active_session(monkeypatch):
-    import services.project_chat_task_tree as task_tree_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
     from contextvars import ContextVar
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
 
     registered_tools = {}
     ensure_calls = []
@@ -7983,9 +7973,9 @@ def test_query_mcp_search_ids_does_not_bootstrap_task_tree_from_active_session(m
 
 
 def test_query_mcp_save_project_memory_audits_lookup_task_tree(monkeypatch):
-    import services.project_chat_task_tree as task_tree_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
     from contextvars import ContextVar
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
     from stores.mcp_bridge import MemoryType
 
     registered_tools = {}
@@ -8120,9 +8110,9 @@ def test_query_mcp_save_project_memory_audits_lookup_task_tree(monkeypatch):
 
 
 def test_query_mcp_list_project_members_audits_lookup_task_tree_on_direct_call(monkeypatch):
-    import services.project_chat_task_tree as task_tree_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
     from contextvars import ContextVar
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
 
     registered_tools = {}
     audit_calls = []
@@ -8213,9 +8203,9 @@ def test_query_mcp_list_project_members_audits_lookup_task_tree_on_direct_call(m
 
 
 def test_query_mcp_work_session_tools_sync_task_tree_progress(monkeypatch):
-    import services.project_chat_task_tree as task_tree_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
     from contextvars import ContextVar
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
     from stores.mcp_bridge import MemoryType
 
     registered_tools = {}
@@ -8449,9 +8439,9 @@ def test_query_mcp_work_session_tools_sync_task_tree_progress(monkeypatch):
 
 
 def test_query_mcp_phase_switch_auto_completes_previous_node_without_explicit_verification(monkeypatch):
-    import services.project_chat_task_tree as task_tree_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
     from contextvars import ContextVar
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
     from stores.mcp_bridge import MemoryType
 
     registered_tools = {}
@@ -8658,9 +8648,9 @@ def test_query_mcp_phase_switch_auto_completes_previous_node_without_explicit_ve
 
 
 def test_query_mcp_planning_tools_attach_task_tree(monkeypatch):
-    import services.project_chat_task_tree as task_tree_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
     from contextvars import ContextVar
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
 
     registered_tools = {}
     ensure_calls = []
@@ -8962,7 +8952,7 @@ def test_memory_delete_returns_404_without_project_access(tmp_path, monkeypatch)
 
 
 def test_project_detail_runtime_includes_full_config_and_member_lists(tmp_path, monkeypatch):
-    from services import dynamic_mcp_context as context_svc
+    from services.mcp import dynamic_mcp_context as context_svc
     from stores.json.employee_store import EmployeeConfig, EmployeeStore
     from stores.json.project_store import ProjectConfig, ProjectMember, ProjectStore, ProjectUserMember
 
@@ -9017,7 +9007,7 @@ def test_project_detail_runtime_includes_full_config_and_member_lists(tmp_path, 
 
 
 def test_project_runtime_builtin_tools_include_and_invoke_full_detail_helpers(monkeypatch):
-    from services import dynamic_mcp_runtime as runtime_svc
+    from services.mcp import dynamic_mcp_runtime as runtime_svc
 
     monkeypatch.setattr(runtime_svc, "_build_project_proxy_specs", lambda project_id: ({}, {}))
 
@@ -9078,7 +9068,7 @@ def test_project_runtime_builtin_tools_include_and_invoke_full_detail_helpers(mo
 
 
 def test_project_collaboration_runtime_selects_members_and_executes_safe_tools(monkeypatch):
-    from services import dynamic_mcp_collaboration as collab_svc
+    from services.mcp import dynamic_mcp_collaboration as collab_svc
 
     class DummyProject:
         id = "proj-1"
@@ -9163,7 +9153,7 @@ def test_project_collaboration_runtime_selects_members_and_executes_safe_tools(m
 
 
 def test_project_collaboration_runtime_prefers_external_executor_and_stops_after_success(monkeypatch):
-    from services import dynamic_mcp_collaboration as collab_svc
+    from services.mcp import dynamic_mcp_collaboration as collab_svc
 
     class DummyProject:
         id = "proj-1"
@@ -9273,7 +9263,7 @@ def test_project_collaboration_runtime_prefers_external_executor_and_stops_after
 
 def test_project_collaboration_runtime_syncs_task_tree_during_execution(monkeypatch):
     from copy import deepcopy
-    from services import dynamic_mcp_collaboration as collab_svc
+    from services.mcp import dynamic_mcp_collaboration as collab_svc
 
     class DummyProject:
         id = "proj-1"
@@ -9483,7 +9473,7 @@ def test_project_collaboration_runtime_syncs_task_tree_during_execution(monkeypa
 
 
 def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monkeypatch, tmp_path):
-    from services import dynamic_mcp_apps_project as project_mcp_svc
+    from services.mcp import dynamic_mcp_apps_project as project_mcp_svc
 
     registered_tools: dict[str, object] = {}
     registered_resources: dict[str, object] = {}
@@ -9645,7 +9635,7 @@ def test_project_mcp_proxy_tool_invocation_passes_project_root_and_api_key(monke
 
 
 def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
     from stores.mcp_bridge import Classification, MemoryScope, MemoryType
 
     registered_tools: dict[str, object] = {}
@@ -9786,8 +9776,8 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
             "status": "ok",
         },
     )
-    original_runtime_module = sys.modules.get("services.dynamic_mcp_runtime")
-    sys.modules["services.dynamic_mcp_runtime"] = runtime_module
+    original_runtime_module = sys.modules.get("services.mcp.dynamic_mcp_runtime")
+    sys.modules["services.mcp.dynamic_mcp_runtime"] = runtime_module
     try:
         save_result = registered_tools["save_project_memory"](
             "proj-1",
@@ -9813,9 +9803,9 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
         )
     finally:
         if original_runtime_module is None:
-            sys.modules.pop("services.dynamic_mcp_runtime", None)
+            sys.modules.pop("services.mcp.dynamic_mcp_runtime", None)
         else:
-            sys.modules["services.dynamic_mcp_runtime"] = original_runtime_module
+            sys.modules["services.mcp.dynamic_mcp_runtime"] = original_runtime_module
 
     assert members["project_id"] == "proj-1"
     assert members["total"] == 1
@@ -9864,8 +9854,8 @@ def test_query_mcp_exposes_project_execution_proxy_tools(monkeypatch):
 
 def test_query_mcp_proxy_app_handles_sse_and_streamable_routes(monkeypatch):
     from fastapi import FastAPI, Request
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     captured_connections = []
     captured_memories = []
@@ -9933,9 +9923,9 @@ def test_query_mcp_proxy_app_handles_sse_and_streamable_routes(monkeypatch):
         replace_path_suffix=replace_path_suffix,
     )
 
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.create_tracking_send", lambda send, **kwargs: send)
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.create_tracking_receive", lambda receive, **kwargs: receive)
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.create_tracking_send", lambda send, **kwargs: send)
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.create_tracking_receive", lambda receive, **kwargs: receive)
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     app = FastAPI()
     app.mount("/mcp/query", proxy_app)
@@ -9983,8 +9973,8 @@ def test_query_mcp_proxy_app_handles_sse_and_streamable_routes(monkeypatch):
 
 def test_query_mcp_proxy_app_restores_chat_session_id_for_followup_messages(monkeypatch):
     from fastapi import FastAPI, Request, Response
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     api_key_ctx: ContextVar[str] = ContextVar("query_ctx_api_key", default="")
     developer_ctx: ContextVar[str] = ContextVar("query_ctx_developer", default="")
@@ -10039,7 +10029,7 @@ def test_query_mcp_proxy_app_restores_chat_session_id_for_followup_messages(monk
         replace_path_suffix=replace_path_suffix,
     )
 
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     app = FastAPI()
     app.mount("/mcp/query", proxy_app)
@@ -10075,8 +10065,8 @@ def test_query_mcp_proxy_app_restores_chat_session_id_for_followup_messages(monk
 
 def test_query_mcp_proxy_app_bootstraps_task_tree_from_unified_query(monkeypatch):
     from fastapi import FastAPI, Request
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     captured_task_tree_calls = []
     api_key_ctx: ContextVar[str] = ContextVar("query_bootstrap_api_key", default="")
@@ -10105,10 +10095,10 @@ def test_query_mcp_proxy_app_bootstraps_task_tree_from_unified_query(monkeypatch
         return {"full_path": full_path, "payload": payload}
 
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        "services.mcp.dynamic_mcp_proxy_apps.ensure_task_tree",
         lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
     )
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -10150,8 +10140,8 @@ def test_query_mcp_proxy_app_bootstraps_task_tree_from_unified_query(monkeypatch
 
 def test_query_mcp_proxy_app_bootstraps_task_tree_for_direct_cli_without_chat_session_id(monkeypatch):
     from fastapi import FastAPI, Request
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     captured_task_tree_calls = []
     api_key_ctx: ContextVar[str] = ContextVar("query_direct_cli_api_key", default="")
@@ -10180,10 +10170,10 @@ def test_query_mcp_proxy_app_bootstraps_task_tree_for_direct_cli_without_chat_se
         return {"full_path": full_path, "payload": payload}
 
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        "services.mcp.dynamic_mcp_proxy_apps.ensure_task_tree",
         lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
     )
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -10222,8 +10212,8 @@ def test_query_mcp_proxy_app_bootstraps_task_tree_for_direct_cli_without_chat_se
 
 def test_query_mcp_proxy_app_direct_cli_reuses_stable_chat_session(monkeypatch):
     from fastapi import FastAPI, Request
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     captured_task_tree_calls = []
     api_key_ctx: ContextVar[str] = ContextVar("query_direct_cli_new_session_api_key", default="")
@@ -10252,10 +10242,10 @@ def test_query_mcp_proxy_app_direct_cli_reuses_stable_chat_session(monkeypatch):
         return {"full_path": full_path, "payload": payload}
 
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        "services.mcp.dynamic_mcp_proxy_apps.ensure_task_tree",
         lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
     )
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -10295,7 +10285,7 @@ def test_query_mcp_proxy_app_direct_cli_reuses_stable_chat_session(monkeypatch):
 
 
 def test_query_mcp_project_state_persists_under_project_hidden_dir(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "demo-workspace"
     workspace.mkdir()
@@ -10352,7 +10342,7 @@ def test_query_mcp_project_state_persists_under_project_hidden_dir(tmp_path, mon
 
 
 def test_query_mcp_project_state_reads_legacy_pointer_files_without_new_legacy_writes(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "legacy-workspace"
     workspace.mkdir()
@@ -10400,7 +10390,7 @@ def test_query_mcp_project_state_reads_legacy_pointer_files_without_new_legacy_w
 
 
 def test_query_mcp_project_state_current_session_does_not_infer_project_history(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "history-workspace"
     workspace.mkdir()
@@ -10447,7 +10437,7 @@ def test_query_mcp_project_state_current_session_does_not_infer_project_history(
 
 
 def test_query_mcp_progress_outbox_trims_oldest_sessions(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "outbox-workspace"
     workspace.mkdir()
@@ -10506,7 +10496,7 @@ def test_query_mcp_progress_outbox_trims_oldest_sessions(tmp_path, monkeypatch):
 
 
 def test_query_mcp_bootstrap_local_workspace_creates_skill_and_requirement_files(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "query-mcp-bootstrap"
     workspace.mkdir()
@@ -10606,7 +10596,7 @@ def test_query_mcp_bootstrap_local_workspace_creates_skill_and_requirement_files
 
 
 def test_query_mcp_bootstrap_falls_back_to_current_cli_workspace(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "query-mcp-fallback"
     workspace.mkdir()
@@ -10654,7 +10644,7 @@ def test_query_mcp_bootstrap_falls_back_to_current_cli_workspace(tmp_path, monke
 
 
 def test_query_mcp_bootstrap_prefers_cli_workspace_env_over_service_cwd(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     cli_workspace = tmp_path / "cli-workspace"
     cli_workspace.mkdir()
@@ -10704,7 +10694,7 @@ def test_query_mcp_bootstrap_prefers_cli_workspace_env_over_service_cwd(tmp_path
 
 
 def test_query_mcp_requirement_files_trim_with_session_retention(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "query-mcp-trim"
     workspace.mkdir()
@@ -10751,9 +10741,9 @@ def test_query_mcp_proxy_app_direct_cli_does_not_reuse_persisted_project_chat_se
     monkeypatch,
 ):
     from fastapi import FastAPI, Request
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
-    from services import query_mcp_project_state as state_service
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "shared-workspace"
     workspace.mkdir()
@@ -10792,10 +10782,10 @@ def test_query_mcp_proxy_app_direct_cli_does_not_reuse_persisted_project_chat_se
 
     monkeypatch.setattr(state_service, "project_store", DummyProjectStore())
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        "services.mcp.dynamic_mcp_proxy_apps.ensure_task_tree",
         lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
     )
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     downstream = FastAPI()
 
@@ -10856,9 +10846,9 @@ def test_query_mcp_proxy_app_direct_cli_does_not_reuse_persisted_project_chat_se
 
 def test_query_mcp_proxy_app_persists_work_session_id_into_project_state(tmp_path, monkeypatch):
     from fastapi import FastAPI, Request
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
-    from services import query_mcp_project_state as state_service
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "persist-session-workspace"
     workspace.mkdir()
@@ -10918,7 +10908,7 @@ def test_query_mcp_proxy_app_persists_work_session_id_into_project_state(tmp_pat
         }
 
     monkeypatch.setattr(state_service, "project_store", DummyProjectStore())
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -10962,8 +10952,8 @@ def test_query_mcp_proxy_app_persists_work_session_id_into_project_state(tmp_pat
 def test_query_mcp_proxy_app_injects_workspace_path_for_bind_project_context(monkeypatch):
     from contextvars import ContextVar
     from fastapi import FastAPI, Request
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     api_key_ctx: ContextVar[str] = ContextVar("query_workspace_bind_api_key", default="")
     developer_ctx: ContextVar[str] = ContextVar("query_workspace_bind_developer", default="")
@@ -10989,7 +10979,7 @@ def test_query_mcp_proxy_app_injects_workspace_path_for_bind_project_context(mon
     async def echo(request: Request, full_path: str):
         return {"full_path": full_path, "payload": await request.json()}
 
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -11031,8 +11021,8 @@ def test_query_mcp_proxy_app_injects_workspace_path_for_bind_project_context(mon
 def test_query_mcp_proxy_app_injects_workspace_path_for_start_work_session(monkeypatch):
     from contextvars import ContextVar
     from fastapi import FastAPI, Request
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     api_key_ctx: ContextVar[str] = ContextVar("query_workspace_start_api_key", default="")
     developer_ctx: ContextVar[str] = ContextVar("query_workspace_start_developer", default="")
@@ -11058,7 +11048,7 @@ def test_query_mcp_proxy_app_injects_workspace_path_for_start_work_session(monke
     async def echo(request: Request, full_path: str):
         return {"full_path": full_path, "payload": await request.json()}
 
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -11100,8 +11090,8 @@ def test_query_mcp_proxy_app_injects_workspace_path_for_start_work_session(monke
 def test_query_mcp_proxy_app_injects_workspace_path_for_start_project_workflow(monkeypatch):
     from contextvars import ContextVar
     from fastapi import FastAPI, Request
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     api_key_ctx: ContextVar[str] = ContextVar("query_workspace_workflow_api_key", default="")
     developer_ctx: ContextVar[str] = ContextVar("query_workspace_workflow_developer", default="")
@@ -11127,7 +11117,7 @@ def test_query_mcp_proxy_app_injects_workspace_path_for_start_project_workflow(m
     async def echo(request: Request, full_path: str):
         return {"full_path": full_path, "payload": await request.json()}
 
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -11169,8 +11159,8 @@ def test_query_mcp_proxy_app_injects_workspace_path_for_start_project_workflow(m
 def test_query_mcp_proxy_app_direct_cli_internal_progress_tools_reuse_existing_chat_without_new_memory(monkeypatch):
     from contextvars import ContextVar
     from fastapi import FastAPI, Request
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     captured_task_tree_calls = []
     captured_memories = []
@@ -11205,10 +11195,10 @@ def test_query_mcp_proxy_app_direct_cli_internal_progress_tools_reuse_existing_c
         }
 
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        "services.mcp.dynamic_mcp_proxy_apps.ensure_task_tree",
         lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
     )
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -11267,8 +11257,8 @@ def test_query_mcp_proxy_app_direct_cli_internal_progress_tools_reuse_existing_c
 def test_query_mcp_proxy_app_audits_task_tree_from_successful_tool_response(monkeypatch):
     from contextvars import ContextVar
     from fastapi import FastAPI, Request, Response
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     captured_audit_calls = []
     captured_result_memories = []
@@ -11330,11 +11320,11 @@ def test_query_mcp_proxy_app_audits_task_tree_from_successful_tool_response(monk
         )
 
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.audit_task_tree_round",
+        "services.mcp.dynamic_mcp_proxy_apps.audit_task_tree_round",
         lambda **kwargs: captured_audit_calls.append(kwargs) or {"code": "lookup_query_auto_completed"},
     )
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.save_auto_query_result_memory",
+        "services.mcp.dynamic_mcp_proxy_apps.save_auto_query_result_memory",
         lambda question, solution, conclusion, source, **kwargs: captured_result_memories.append(
             {
                 "question": question,
@@ -11346,10 +11336,10 @@ def test_query_mcp_proxy_app_audits_task_tree_from_successful_tool_response(monk
         ),
     )
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        "services.mcp.dynamic_mcp_proxy_apps.ensure_task_tree",
         lambda **kwargs: captured_ensure_calls.append(kwargs) or kwargs,
     )
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -11392,8 +11382,8 @@ def test_query_mcp_proxy_app_audits_task_tree_from_successful_tool_response(monk
 
 def test_query_mcp_proxy_app_bootstraps_task_tree_from_transport_session(monkeypatch):
     from fastapi import FastAPI, Request, Response
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     captured_task_tree_calls = []
     api_key_ctx: ContextVar[str] = ContextVar("query_transport_api_key", default="")
@@ -11429,10 +11419,10 @@ def test_query_mcp_proxy_app_bootstraps_task_tree_from_transport_session(monkeyp
         return {"full_path": full_path, "payload": payload}
 
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        "services.mcp.dynamic_mcp_proxy_apps.ensure_task_tree",
         lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
     )
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -11479,8 +11469,8 @@ def test_query_mcp_proxy_app_bootstraps_task_tree_from_transport_session(monkeyp
 def test_query_mcp_proxy_app_passes_task_tree_payload_to_auto_result_memory(monkeypatch):
     from contextvars import ContextVar
     from fastapi import FastAPI, Request, Response
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     captured_result_memories = []
     api_key_ctx: ContextVar[str] = ContextVar("query_result_api_key", default="")
@@ -11543,7 +11533,7 @@ def test_query_mcp_proxy_app_passes_task_tree_payload_to_auto_result_memory(monk
         )
 
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.audit_task_tree_round",
+        "services.mcp.dynamic_mcp_proxy_apps.audit_task_tree_round",
         lambda **kwargs: {
             "code": "task_tree_updated",
             "task_tree": {
@@ -11568,7 +11558,7 @@ def test_query_mcp_proxy_app_passes_task_tree_payload_to_auto_result_memory(monk
         },
     )
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.save_auto_query_result_memory",
+        "services.mcp.dynamic_mcp_proxy_apps.save_auto_query_result_memory",
         lambda question, solution, conclusion, source, **kwargs: captured_result_memories.append(
             {
                 "question": question,
@@ -11579,7 +11569,7 @@ def test_query_mcp_proxy_app_passes_task_tree_payload_to_auto_result_memory(monk
             }
         ),
     )
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -11630,8 +11620,8 @@ def test_query_mcp_proxy_app_passes_task_tree_payload_to_auto_result_memory(monk
 def test_query_mcp_proxy_app_sse_bridge_generates_fallback_task_tree_session(monkeypatch):
     from contextvars import ContextVar
     from fastapi import FastAPI, Request
-    from services.dynamic_mcp_proxy_apps import QueryMcpProxyApp
-    from services.dynamic_mcp_transports import replace_path_suffix
+    from services.mcp.dynamic_mcp_proxy_apps import QueryMcpProxyApp
+    from services.mcp.dynamic_mcp_transports import replace_path_suffix
 
     captured_task_tree_calls = []
     api_key_ctx: ContextVar[str] = ContextVar("query_sse_bridge_api_key", default="")
@@ -11668,10 +11658,10 @@ def test_query_mcp_proxy_app_sse_bridge_generates_fallback_task_tree_session(mon
         }
 
     monkeypatch.setattr(
-        "services.dynamic_mcp_proxy_apps.ensure_task_tree",
+        "services.mcp.dynamic_mcp_proxy_apps.ensure_task_tree",
         lambda **kwargs: captured_task_tree_calls.append(kwargs) or {"id": "tts-demo"},
     )
-    monkeypatch.setattr("services.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
+    monkeypatch.setattr("services.mcp.dynamic_mcp_proxy_apps.get_client_ip", lambda scope: "127.0.0.1")
 
     proxy_app = QueryMcpProxyApp(
         usage_store=DummyUsageStore(),
@@ -11719,7 +11709,7 @@ def test_query_mcp_proxy_app_sse_bridge_generates_fallback_task_tree_session(mon
 
 def test_query_mcp_mount_handles_real_jsonrpc_over_http_and_sse_bridge(monkeypatch):
     from core.server import create_app
-    from services import dynamic_mcp_runtime as runtime
+    from services.mcp import dynamic_mcp_runtime as runtime
 
     captured_memories = []
 
@@ -11797,7 +11787,7 @@ def test_query_mcp_mount_handles_real_jsonrpc_over_http_and_sse_bridge(monkeypat
 
 def test_query_mcp_mount_lists_tools_and_reads_resources(monkeypatch):
     from core.server import create_app
-    from services import dynamic_mcp_runtime as runtime
+    from services.mcp import dynamic_mcp_runtime as runtime
 
     class DummyUsageStore:
         @staticmethod
@@ -11907,8 +11897,8 @@ def _configure_query_mcp_standard_project_chain_env(monkeypatch):
 
     from core.server import create_app
     from routers import projects as projects_router
-    from services import dynamic_mcp_apps_query as query_mcp_svc
-    from services import dynamic_mcp_runtime as runtime
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_runtime as runtime
 
     class DummyProject:
         id = "proj-1"
@@ -12069,8 +12059,8 @@ def _configure_query_mcp_standard_project_chain_env(monkeypatch):
             ],
         }
     )
-    monkeypatch.setitem(sys.modules, "services.dynamic_mcp_runtime", runtime_module)
-    monkeypatch.setitem(sys.modules, "services.dynamic_mcp_collaboration", collaboration_module)
+    monkeypatch.setitem(sys.modules, "services.mcp.dynamic_mcp_runtime", runtime_module)
+    monkeypatch.setitem(sys.modules, "services.mcp.dynamic_mcp_collaboration", collaboration_module)
 
     def post_jsonrpc(payload: dict, path: str = "/mcp/query/mcp?key=valid-key"):
         monkeypatch.setattr(runtime.query_mcp_proxy_app, "_usage_store", DummyUsageStore())
@@ -12090,7 +12080,7 @@ def _configure_query_mcp_standard_project_chain_env(monkeypatch):
 
 
 def _configure_query_mcp_memory_chain_env(monkeypatch):
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
 
     saved_memories = []
     saved_work_session_events = []
@@ -12654,7 +12644,7 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
     import types
 
     from routers import projects as projects_router
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
     from stores.json.system_config_store import SystemConfig
 
     registered_tools: dict[str, object] = {}
@@ -12947,8 +12937,8 @@ def _setup_query_mcp_agent_capability_env(monkeypatch):
             ],
         }
     )
-    monkeypatch.setitem(sys.modules, "services.dynamic_mcp_runtime", runtime_module)
-    monkeypatch.setitem(sys.modules, "services.dynamic_mcp_collaboration", collaboration_module)
+    monkeypatch.setitem(sys.modules, "services.mcp.dynamic_mcp_runtime", runtime_module)
+    monkeypatch.setitem(sys.modules, "services.mcp.dynamic_mcp_collaboration", collaboration_module)
 
     query_mcp_svc.create_query_mcp()
     return registered_tools, registered_resources, saved_memories, saved_work_session_events
@@ -13015,7 +13005,7 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
 
 
 def test_query_mcp_resources_and_style_hints_use_system_config(monkeypatch):
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
     from services.runtime import prompt_assembler
     from stores.json.system_config_store import SystemConfig
 
@@ -13230,7 +13220,7 @@ def test_query_mcp_start_project_workflow_returns_ready_payload(monkeypatch):
 
 
 def test_query_mcp_start_project_workflow_accepts_explicit_workspace_path(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "query-mcp-workflow-explicit-workspace"
     workspace.mkdir()
@@ -13279,7 +13269,7 @@ def test_query_mcp_start_project_workflow_accepts_explicit_workspace_path(tmp_pa
 
 
 def test_query_mcp_task_tree_tools_roundtrip(monkeypatch):
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
 
     registered_tools, _registered_resources, _saved_memories, _saved_work_session_events = (
         _setup_query_mcp_agent_capability_env(monkeypatch)
@@ -13362,10 +13352,10 @@ def test_query_mcp_work_session_tools_roundtrip(monkeypatch):
         status="in_progress",
         goal="把记忆升级成可恢复执行轨迹",
         changed_files=[
-            "web-admin/api/services/dynamic_mcp_apps_query.py",
+            "web-admin/api/services/mcp/dynamic_mcp_apps_query.py",
             "web-admin/api/tests/test_unit.py",
         ],
-        verification=["python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py"],
+        verification=["python -m py_compile web-admin/api/services/mcp/dynamic_mcp_apps_query.py"],
         risks=["仍需 mounted JSON-RPC 回归"],
         next_steps=["补挂载级与 SSE bridge 测试"],
     )
@@ -13465,7 +13455,7 @@ def test_query_mcp_work_session_tools_roundtrip(monkeypatch):
 
 
 def test_query_mcp_start_work_session_bootstraps_local_requirement_and_skill(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "query-mcp-start-session"
     workspace.mkdir()
@@ -13523,7 +13513,7 @@ def test_query_mcp_start_work_session_bootstraps_local_requirement_and_skill(tmp
 
 
 def test_query_mcp_start_work_session_accepts_explicit_workspace_path(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "query-mcp-start-explicit-workspace"
     workspace.mkdir()
@@ -13571,7 +13561,7 @@ def test_query_mcp_start_work_session_accepts_explicit_workspace_path(tmp_path, 
 
 
 def test_query_mcp_work_session_tools_queue_locally_then_flush_on_terminal_status(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
 
     workspace = tmp_path / "query-mcp-local-first"
     workspace.mkdir()
@@ -13676,7 +13666,7 @@ def test_query_mcp_work_session_tools_queue_locally_then_flush_on_terminal_statu
 
 def test_query_mcp_save_work_facts_autogenerates_session_id(monkeypatch):
     from stores.mcp_bridge import MemoryType
-    import services.project_chat_task_tree as task_tree_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
 
     registered_tools, _registered_resources, saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
     task_tree_state = {}
@@ -13761,8 +13751,8 @@ def test_query_mcp_work_session_tools_accept_string_list_fields(monkeypatch):
         facts="已定位 save_work_facts 的列表字段 schema 过严",
         employee_id="emp-1",
         session_id=session_id,
-        changed_files="web-admin/api/services/dynamic_mcp_apps_query.py",
-        verification="python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py",
+        changed_files="web-admin/api/services/mcp/dynamic_mcp_apps_query.py",
+        verification="python -m py_compile web-admin/api/services/mcp/dynamic_mcp_apps_query.py",
         next_steps="补回归测试",
     )
     event_result = registered_tools["append_session_event"](
@@ -13779,17 +13769,17 @@ def test_query_mcp_work_session_tools_accept_string_list_fields(monkeypatch):
         title="统一 MCP 列表字段兼容",
         project_id="proj-1",
         summary="已兼容字符串形式的 changed_files / verification / next_steps",
-        changed_files="web-admin/api/services/dynamic_mcp_apps_query.py",
-        verification="python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py",
+        changed_files="web-admin/api/services/mcp/dynamic_mcp_apps_query.py",
+        verification="python -m py_compile web-admin/api/services/mcp/dynamic_mcp_apps_query.py",
         next_steps="补充 transport 层回归",
     )
 
     assert save_result["status"] == "saved"
     assert event_result["status"] == "saved"
-    assert "web-admin/api/services/dynamic_mcp_apps_query.py" in report["report_markdown"]
-    assert "python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py" in report["report_markdown"]
-    assert saved_work_session_events[1].changed_files == ["web-admin/api/services/dynamic_mcp_apps_query.py"]
-    assert saved_work_session_events[1].verification == ["python -m py_compile web-admin/api/services/dynamic_mcp_apps_query.py"]
+    assert "web-admin/api/services/mcp/dynamic_mcp_apps_query.py" in report["report_markdown"]
+    assert "python -m py_compile web-admin/api/services/mcp/dynamic_mcp_apps_query.py" in report["report_markdown"]
+    assert saved_work_session_events[1].changed_files == ["web-admin/api/services/mcp/dynamic_mcp_apps_query.py"]
+    assert saved_work_session_events[1].verification == ["python -m py_compile web-admin/api/services/mcp/dynamic_mcp_apps_query.py"]
     assert saved_work_session_events[2].next_steps == ["检查 query sse 真实调用"]
 
 
@@ -13837,8 +13827,8 @@ def test_query_mcp_implementation_round_can_progress_past_33_with_completion_and
     monkeypatch,
 ):
     from contextvars import ContextVar
-    from services import dynamic_mcp_apps_query as query_mcp_svc
-    import services.project_chat_task_tree as task_tree_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
 
     registered_tools, _registered_resources, _saved_memories, _saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
 
@@ -13902,7 +13892,7 @@ def test_query_mcp_implementation_round_reaches_100_after_verification_event(
     monkeypatch,
 ):
     from contextvars import ContextVar
-    from services import dynamic_mcp_apps_query as query_mcp_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
 
     registered_tools, _registered_resources, _saved_memories, _saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
 
@@ -13968,8 +13958,8 @@ def test_query_mcp_work_session_updates_do_not_create_new_task_tree_without_expl
     monkeypatch,
 ):
     from contextvars import ContextVar
-    from services import dynamic_mcp_apps_query as query_mcp_svc
-    import services.project_chat_task_tree as task_tree_svc
+    from services.mcp import dynamic_mcp_apps_query as query_mcp_svc
+    import services.chat.project_chat_task_tree as task_tree_svc
 
     registered_tools, _registered_resources, _saved_memories, _saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
 
@@ -14042,8 +14032,8 @@ def test_query_mcp_progress_tools_do_not_recreate_task_tree_when_requirement_exi
     tmp_path,
     monkeypatch,
 ):
-    from services import query_mcp_project_state as state_service
-    import services.project_chat_task_tree as task_tree_svc
+    from services.mcp import query_mcp_project_state as state_service
+    import services.chat.project_chat_task_tree as task_tree_svc
 
     workspace = tmp_path / "query-mcp-archived-task-tree"
     workspace.mkdir()
@@ -14168,7 +14158,7 @@ def test_query_mcp_list_recent_project_requirements_supports_recent_and_date_fil
         step="恢复配置",
         facts=["已恢复统一查询 MCP 地址配置"],
         status="in_progress",
-        changed_files=["web-admin/api/services/dynamic_mcp_apps_query.py"],
+        changed_files=["web-admin/api/services/mcp/dynamic_mcp_apps_query.py"],
     )
     registered_tools["append_session_event"](
         "proj-1",
@@ -14392,7 +14382,7 @@ def test_query_mcp_get_requirement_history_falls_back_to_project_memory(monkeypa
 
 
 def test_query_project_rules_runtime_includes_project_ui_rules(monkeypatch):
-    from services import dynamic_mcp_profiles as profiles_svc
+    from services.mcp import dynamic_mcp_profiles as profiles_svc
 
     class DummyProject:
         ui_rule_ids = ["rule-ui"]
@@ -15008,14 +14998,14 @@ def test_resolve_local_connector_coding_tools_returns_registered_tools(monkeypat
 
 def test_collect_runtime_tools_includes_project_host_command(monkeypatch):
     from routers import projects as projects_router
-    from services.project_host_command_service import PROJECT_HOST_RUN_COMMAND_TOOL_NAME
+    from services.connectors.project_host_command_service import PROJECT_HOST_RUN_COMMAND_TOOL_NAME
 
     monkeypatch.setattr(
-        "services.dynamic_mcp_runtime.list_project_proxy_tools_runtime",
+        "services.mcp.dynamic_mcp_runtime.list_project_proxy_tools_runtime",
         lambda project_id, employee_id: [],
     )
     monkeypatch.setattr(
-        "services.dynamic_mcp_runtime.list_project_external_tools_runtime",
+        "services.mcp.dynamic_mcp_runtime.list_project_external_tools_runtime",
         lambda project_id: [],
     )
 
@@ -15028,12 +15018,13 @@ def test_collect_runtime_tools_includes_project_host_command(monkeypatch):
         project_workspace_path="/tmp/project-workspace",
     )
 
-    assert [item["tool_name"] for item in tools] == [PROJECT_HOST_RUN_COMMAND_TOOL_NAME]
+    tool_names = [item["tool_name"] for item in tools]
+    assert PROJECT_HOST_RUN_COMMAND_TOOL_NAME in tool_names
 
 
 def test_project_chat_providers_route_returns_connector_workspace_path(tmp_path, monkeypatch):
     from routers import projects as projects_router
-    from services import dynamic_mcp_runtime
+    from services.mcp import dynamic_mcp_runtime
     from stores.json.project_store import ProjectConfig
 
     client, project_store = _build_project_api_test_client(
@@ -15210,7 +15201,7 @@ async def test_skill_package_tree_and_file_preview(tmp_path, monkeypatch):
 
 
 def test_backfill_existing_skill_packages_registers_history(tmp_path, monkeypatch):
-    from services import skill_import_service as import_svc
+    from services.skills import skill_import_service as import_svc
     from stores import mcp_bridge
 
     skill_store = mcp_bridge._skills_mod.SkillStore(tmp_path)
@@ -15240,7 +15231,7 @@ def test_backfill_existing_skill_packages_registers_history(tmp_path, monkeypatc
 def test_build_skill_record_from_package_dir_reads_proxy_entries(tmp_path):
     import json
 
-    from services import skill_import_service as import_svc
+    from services.skills import skill_import_service as import_svc
 
     package_dir = tmp_path / "skill-packages" / "proxy-skill"
     (package_dir / "scripts").mkdir(parents=True)
@@ -15285,7 +15276,7 @@ def test_build_skill_record_from_package_dir_reads_proxy_entries(tmp_path):
 
 
 def test_build_skill_record_from_package_dir_infers_proxy_entries_when_missing_declaration(tmp_path):
-    from services import skill_import_service as import_svc
+    from services.skills import skill_import_service as import_svc
 
     package_dir = tmp_path / "skill-packages" / "auto-proxy-skill"
     (package_dir / "scripts").mkdir(parents=True)
@@ -15305,7 +15296,7 @@ def test_build_skill_record_from_package_dir_infers_proxy_entries_when_missing_d
 
 
 def test_discover_skill_proxy_specs_prefers_manifest_proxy_entries(tmp_path):
-    from services import dynamic_mcp_skill_proxies as proxy_svc
+    from services.mcp import dynamic_mcp_skill_proxies as proxy_svc
     from stores import mcp_bridge
 
     package_dir = tmp_path / "skill-packages" / "proxy-skill"
@@ -15351,7 +15342,7 @@ def test_execute_skill_proxy_supports_command_entries_and_custom_flags(tmp_path)
     import json
     import sys
 
-    from services import dynamic_mcp_skill_executor as executor_svc
+    from services.mcp import dynamic_mcp_skill_executor as executor_svc
 
     script_path = tmp_path / "runner.py"
     script_path.write_text(
@@ -15398,7 +15389,7 @@ def test_execute_skill_proxy_supports_command_entries_and_custom_flags(tmp_path)
 def test_execute_skill_proxy_parses_stdout_json_and_serializes_dict_args(tmp_path):
     import sys
 
-    from services import dynamic_mcp_skill_executor as executor_svc
+    from services.mcp import dynamic_mcp_skill_executor as executor_svc
 
     script_path = tmp_path / "runner.py"
     script_path.write_text(

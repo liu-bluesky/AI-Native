@@ -99,7 +99,7 @@ def test_summarize_effective_tools_infers_sources():
 
 
 def test_assistant_capability_router_prefers_project_skill_for_docs_workflow():
-    from services.assistant_capability_router_service import apply_capability_routing
+    from services.assistant.assistant_capability_router_service import apply_capability_routing
 
     routed = apply_capability_routing(
         [

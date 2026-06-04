@@ -31,7 +31,7 @@ def _build_project_chat_task_tree_test_client(tmp_path, monkeypatch, auth_payloa
 
 
 def test_project_chat_task_tree_routes_generate_update_and_clear(tmp_path, monkeypatch):
-    from services.dynamic_mcp_collaboration import invoke_project_builtin_tool
+    from services.mcp.dynamic_mcp_collaboration import invoke_project_builtin_tool
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -224,7 +224,7 @@ def test_project_chat_task_tree_routes_generate_update_and_clear(tmp_path, monke
 
 
 def test_project_chat_task_tree_rebuilds_stale_active_tree_for_new_goal(tmp_path, monkeypatch):
-    from services.project_chat_task_tree import ensure_task_tree
+    from services.chat.project_chat_task_tree import ensure_task_tree
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -264,7 +264,7 @@ def test_project_chat_task_tree_rebuilds_stale_active_tree_for_new_goal(tmp_path
 
 
 def test_project_chat_task_tree_keeps_active_tree_for_short_continuation(tmp_path, monkeypatch):
-    from services.project_chat_task_tree import ensure_task_tree
+    from services.chat.project_chat_task_tree import ensure_task_tree
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -303,7 +303,7 @@ def test_project_chat_task_tree_keeps_active_tree_for_short_continuation(tmp_pat
 
 
 def test_project_chat_task_tree_groups_same_route_feature_repair_round(tmp_path, monkeypatch):
-    from services.project_chat_task_tree import archive_task_tree, ensure_task_tree
+    from services.chat.project_chat_task_tree import archive_task_tree, ensure_task_tree
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -355,7 +355,7 @@ def test_project_chat_task_tree_groups_same_route_feature_repair_round(tmp_path,
 
 
 def test_project_chat_task_tree_starts_new_chain_for_different_route_after_archive(tmp_path, monkeypatch):
-    from services.project_chat_task_tree import archive_task_tree, ensure_task_tree
+    from services.chat.project_chat_task_tree import archive_task_tree, ensure_task_tree
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -642,7 +642,7 @@ def test_project_chat_ongoing_task_state_ignores_archived_done_task(tmp_path, mo
     )
     assert generate_response.status_code == 200
 
-    from services.project_chat_task_tree import audit_task_tree_round
+    from services.chat.project_chat_task_tree import audit_task_tree_round
 
     audit_payload = audit_task_tree_round(
         project_id="proj-1",
@@ -664,7 +664,7 @@ def test_project_chat_ongoing_task_state_ignores_archived_done_task(tmp_path, mo
 
 
 def test_project_chat_ongoing_task_state_marks_orphaned_query_state(tmp_path, monkeypatch):
-    from services import query_mcp_project_state as state_service
+    from services.mcp import query_mcp_project_state as state_service
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -817,7 +817,7 @@ def test_project_chat_task_tree_audit_keeps_unverified_completion_out_of_done(
     tmp_path,
     monkeypatch,
 ):
-    from services.project_chat_task_tree import audit_task_tree_round
+    from services.chat.project_chat_task_tree import audit_task_tree_round
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -867,7 +867,7 @@ def test_project_chat_task_tree_audit_auto_completes_leaf_when_completion_and_ve
     tmp_path,
     monkeypatch,
 ):
-    from services.project_chat_task_tree import audit_task_tree_round
+    from services.chat.project_chat_task_tree import audit_task_tree_round
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -919,7 +919,7 @@ def test_project_chat_task_tree_audit_auto_completes_context_bootstrap_step(
     monkeypatch,
 ):
     from core.deps import project_chat_task_store
-    from services.project_chat_task_tree import audit_task_tree_round
+    from services.chat.project_chat_task_tree import audit_task_tree_round
     from stores.json.project_chat_task_store import ProjectChatTaskNode, ProjectChatTaskSession
     from stores.json.project_store import ProjectConfig
 
@@ -1138,7 +1138,7 @@ def test_project_chat_task_tree_health_flags_template_goal_mismatch(
     monkeypatch,
 ):
     from core.deps import project_chat_task_store
-    from services.project_chat_task_tree import serialize_task_tree
+    from services.chat.project_chat_task_tree import serialize_task_tree
     from stores.json.project_chat_task_store import ProjectChatTaskNode, ProjectChatTaskSession
     from stores.json.project_store import ProjectConfig
 
@@ -1207,7 +1207,7 @@ def test_project_chat_task_tree_generation_mismatch_records_evolution_sample(
     monkeypatch,
 ):
     from core.deps import project_chat_task_store
-    from services.project_chat_task_tree import _record_task_tree_health_evolution_samples
+    from services.chat.project_chat_task_tree import _record_task_tree_health_evolution_samples
     from stores.json.project_chat_task_store import ProjectChatTaskNode, ProjectChatTaskSession
     from stores.json.project_store import ProjectConfig
 
@@ -1372,7 +1372,7 @@ def test_project_chat_task_tree_audit_auto_completes_lookup_query(
     tmp_path,
     monkeypatch,
 ):
-    from services.project_chat_task_tree import audit_task_tree_round
+    from services.chat.project_chat_task_tree import audit_task_tree_round
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -1439,7 +1439,7 @@ def test_project_chat_task_tree_audit_auto_completes_colloquial_lookup_query(
     tmp_path,
     monkeypatch,
 ):
-    from services.project_chat_task_tree import audit_task_tree_round
+    from services.chat.project_chat_task_tree import audit_task_tree_round
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -1484,7 +1484,7 @@ def test_project_chat_task_tree_audit_recovers_embedded_task_completion_call(
     tmp_path,
     monkeypatch,
 ):
-    from services.project_chat_task_tree import audit_task_tree_round
+    from services.chat.project_chat_task_tree import audit_task_tree_round
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -2406,7 +2406,7 @@ def test_rebind_task_tree_chat_session_moves_query_cli_shadow_session(
     tmp_path,
     monkeypatch,
 ):
-    from services.project_chat_task_tree import get_task_tree, rebind_task_tree_chat_session
+    from services.chat.project_chat_task_tree import get_task_tree, rebind_task_tree_chat_session
     from stores.json.project_chat_task_store import ProjectChatTaskSession
     from stores.json.project_store import ProjectConfig
 
@@ -2457,7 +2457,7 @@ def test_project_chat_task_tree_requires_started_status_before_completion(
     tmp_path,
     monkeypatch,
 ):
-    from services.dynamic_mcp_collaboration import invoke_project_builtin_tool
+    from services.mcp.dynamic_mcp_collaboration import invoke_project_builtin_tool
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_task_tree_test_client(
@@ -2631,7 +2631,7 @@ def test_project_chat_task_tree_sessions_exclude_synthetic_query_cli_rows(
 
 
 def test_build_task_tree_session_filters_internal_tool_plan_into_goal_steps(monkeypatch):
-    from services import project_chat_task_tree as task_tree_svc
+    from services.chat import project_chat_task_tree as task_tree_svc
 
     monkeypatch.setattr(
         task_tree_svc,
@@ -2679,7 +2679,7 @@ def test_build_task_tree_session_filters_internal_tool_plan_into_goal_steps(monk
 
 
 def test_build_task_tree_prompt_explicitly_forbids_internal_tools_as_nodes():
-    from services.project_chat_task_tree import build_task_tree_prompt
+    from services.chat.project_chat_task_tree import build_task_tree_prompt
     from stores.json.project_chat_task_store import ProjectChatTaskNode, ProjectChatTaskSession
 
     session = ProjectChatTaskSession(

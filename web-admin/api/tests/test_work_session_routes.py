@@ -51,7 +51,7 @@ def test_work_session_routes_list_and_detail(tmp_path, monkeypatch):
             status="in_progress",
             goal="补独立工作轨迹存储",
             facts=["已保存工作事实"],
-            changed_files=["web-admin/api/services/dynamic_mcp_apps_query.py"],
+            changed_files=["web-admin/api/services/mcp/dynamic_mcp_apps_query.py"],
             verification=["python -m py_compile"],
             next_steps=["追加 verification 事件"],
         )
@@ -81,7 +81,7 @@ def test_work_session_routes_list_and_detail(tmp_path, monkeypatch):
     assert items[0]["session_id"] == "sess-1"
     assert items[0]["latest_status"] == "completed"
     assert items[0]["phases"] == ["Phase 3"]
-    assert "web-admin/api/services/dynamic_mcp_apps_query.py" in items[0]["changed_files"]
+    assert "web-admin/api/services/mcp/dynamic_mcp_apps_query.py" in items[0]["changed_files"]
 
     detail_response = client.get("/api/work-sessions/sess-1", params={"project_id": "proj-1"})
     assert detail_response.status_code == 200

@@ -7,9 +7,9 @@ import time
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.deps import ensure_any_permission, ensure_permission, is_admin_like, require_auth, user_store
-from services.dictionary_catalog import get_dictionary_definition
-from services.llm_model_type_catalog import DEFAULT_MODEL_TYPE, MODEL_TYPE_DICTIONARY_KEY
-from services.llm_provider_service import get_llm_provider_service
+from services.catalogs.dictionary_catalog import get_dictionary_definition
+from services.catalogs.llm_model_type_catalog import DEFAULT_MODEL_TYPE, MODEL_TYPE_DICTIONARY_KEY
+from services.providers.llm_provider_service import get_llm_provider_service
 from models.requests import LlmProviderCreateReq, LlmProviderTestReq, LlmProviderUpdateReq
 
 def _require_llm_provider_permission(auth_payload: dict = Depends(require_auth)) -> None:

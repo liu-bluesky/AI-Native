@@ -24,7 +24,7 @@ if str(API_DIR) not in sys.path:
 
 from core.config import get_settings
 from core.deps import project_store
-from services.project_chat_task_tree import archive_task_tree, list_project_task_tree_summaries
+from services.chat.project_chat_task_tree import archive_task_tree, list_project_task_tree_summaries
 from stores.factory import project_chat_task_store, work_session_store
 
 _INTERNAL_TOOL_TAGS = {

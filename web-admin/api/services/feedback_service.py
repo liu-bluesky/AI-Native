@@ -8,7 +8,7 @@ from typing import Any
 from core.config import get_settings
 from core.deps import employee_store
 from stores.postgres.feedback_store import FeedbackStorePostgres
-from services.llm_provider_service import get_llm_provider_service
+from services.providers.llm_provider_service import get_llm_provider_service
 from stores.mcp_bridge import RiskDomain, Rule, Severity, rule_store, rules_now_iso
 
 _ALLOWED_SEVERITY = {"low", "medium", "high", "critical"}

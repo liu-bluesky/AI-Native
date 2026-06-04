@@ -19,7 +19,7 @@ from models.requests import (
     CliPluginProfileLogoutReq,
     CliPluginProfileSharingUpdateReq,
 )
-from services.cli_plugin_install_task_service import (
+from services.plugins.cli_plugin_install_task_service import (
     create_install_task,
     get_install_task,
     list_install_tasks,
@@ -31,8 +31,8 @@ from services.operation_wait_task_service import (
     list_login_tasks,
     subscribe_login_task_events,
 )
-from services.cli_plugin_market_service import install_cli_plugin, list_cli_plugins
-from services.cli_plugin_profile_service import (
+from services.plugins.cli_plugin_market_service import install_cli_plugin, list_cli_plugins
+from services.plugins.cli_plugin_profile_service import (
     _default_cli_plugin_login_command,
     _default_cli_plugin_logout_command,
     _default_cli_plugin_test_command,

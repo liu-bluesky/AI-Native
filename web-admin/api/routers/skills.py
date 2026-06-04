@@ -24,8 +24,8 @@ from core.ownership import (
     ownership_payload,
 )
 from models.requests import SkillCreateReq, SkillInstallReq, SkillUpdateReq
-from services.dynamic_mcp_skill_proxies import discover_skill_proxy_specs
-from services.skill_import_service import (
+from services.mcp.dynamic_mcp_skill_proxies import discover_skill_proxy_specs
+from services.skills.skill_import_service import (
     PROJECT_ROOT,
     SENSITIVE_SKILL_FILE_PATTERNS,
     backfill_existing_skill_packages,

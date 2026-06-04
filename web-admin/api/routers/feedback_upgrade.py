@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from core.deps import project_store, require_auth, role_store
 from core.role_permissions import resolve_role_permissions
 from services.feedback_service import get_feedback_service
-from services.llm_provider_service import get_llm_provider_service
+from services.providers.llm_provider_service import get_llm_provider_service
 from models.requests import (
     FeedbackAnalyzeReq,
     FeedbackBatchAnalyzeReq,

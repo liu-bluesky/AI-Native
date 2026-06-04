@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.config import get_project_root
-from services.cli_plugin_profile_service import (
+from services.plugins.cli_plugin_profile_service import (
     _cli_plugin_auth_config,
     _default_cli_plugin_login_command,
     _default_cli_plugin_test_command,
@@ -21,7 +21,7 @@ from services.cli_plugin_profile_service import (
     serialize_cli_plugin_profile,
     update_cli_plugin_profile,
 )
-from services.cli_plugin_market_service import get_cli_plugin
+from services.plugins.cli_plugin_market_service import get_cli_plugin
 
 _TASK_LOCK = threading.RLock()
 _TASK_SUBSCRIBERS: dict[str, set[Callable[[dict[str, Any]], None]]] = defaultdict(set)

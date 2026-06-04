@@ -12,7 +12,7 @@ API_ROOT = Path(__file__).resolve().parents[1]
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
 
-from services.feishu_bot_service import (  # noqa: E402
+from services.feishu.feishu_bot_service import (  # noqa: E402
     build_feishu_event_handler,
     get_feishu_connector,
     get_feishu_sdk_error_message,

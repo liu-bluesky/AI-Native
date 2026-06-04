@@ -27,7 +27,7 @@ class _FakeProcess:
 async def test_project_host_terminal_session_reuses_owner_and_writes_initial_command(
     monkeypatch,
 ):
-    from services import project_host_terminal_service as service
+    from services.connectors import project_host_terminal_service as service
 
     fake_process = _FakeProcess()
     writes: list[tuple[int, bytes]] = []
@@ -45,6 +45,7 @@ async def test_project_host_terminal_session_reuses_owner_and_writes_initial_com
     monkeypatch.setattr(service.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
     monkeypatch.setattr(service, "_pump_terminal_session", _fake_pump_terminal_session)
     monkeypatch.setattr(service.pty, "openpty", lambda: (101, 202))
+    monkeypatch.setattr(service.os, "set_blocking", lambda fd, blocking: None)
     monkeypatch.setattr(service.os, "write", lambda fd, data: writes.append((fd, data)))
     monkeypatch.setattr(service.os, "close", lambda fd: closed_fds.append(fd))
 
@@ -70,8 +71,8 @@ async def test_project_host_terminal_session_reuses_owner_and_writes_initial_com
 
     assert attached["attached_existing"] is True
     assert attached["session_id"] == session_id
-    assert writes[0][1].decode("utf-8") == "lark-cli config init --new\r"
-    assert writes[1][1].decode("utf-8") == "lark-cli auth login --recommend\r"
+    assert writes[0][1].decode("utf-8") == "lark-cli config init --new\n"
+    assert writes[1][1].decode("utf-8") == "lark-cli auth login --recommend\n"
 
     service.detach_project_host_terminal_listener(session_id, queue)
     stopped = await service.stop_project_host_terminal(session_id)

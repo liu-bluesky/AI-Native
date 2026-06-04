@@ -31,7 +31,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 import asyncio
-from services.agent_orchestrator import AgentOrchestrator
 from services.conversation_manager import ConversationManager
 from core.redis_client import get_redis_client
 
@@ -45,28 +44,28 @@ from core.ownership import can_view_record
 from core.redis_client import get_redis_client
 from core.deps import employee_store, ensure_any_permission, ensure_permission, external_mcp_store, get_auth_role_ids, is_admin_like, local_connector_store, project_chat_runtime_store, project_chat_store, project_chat_task_store, project_experience_summary_store, project_material_store, project_studio_export_store, project_store, require_auth, resolve_role_ids_permissions, role_store, system_config_store, user_store, work_session_store
 from services.feedback_service import get_feedback_service
-from services.global_assistant_service import (
+from services.assistant.global_assistant_service import (
     build_global_assistant_builtin_tools,
     build_global_assistant_visibility_context,
 )
-from services.local_connector_service import (
+from services.connectors.local_connector_service import (
     build_local_connector_file_tools,
     chat_completion_via_connector,
     parse_local_connector_provider_id,
 )
-from services.llm_chat_parameter_catalog import (
+from services.catalogs.llm_chat_parameter_catalog import (
     get_chat_parameter_default_value,
     normalize_chat_parameter_value,
 )
-from services.llm_model_type_catalog import DEFAULT_MODEL_TYPE
-from services.project_host_command_service import (
+from services.catalogs.llm_model_type_catalog import DEFAULT_MODEL_TYPE
+from services.connectors.project_host_command_service import (
     PROJECT_HOST_RUN_COMMAND_TOOL_NAME,
     build_project_host_command_tools,
     run_project_host_command,
 )
-from services.project_voice_service import get_project_voice_service
-from services.system_speech_service import enqueue_system_speech
-from services.global_assistant_task_service import (
+from services.projects.project_voice_service import get_project_voice_service
+from services.providers.system_speech_service import enqueue_system_speech
+from services.assistant.global_assistant_task_service import (
     delete_global_assistant_task,
     _infer_natural_schedule_time,
     _parse_iso_datetime,
@@ -74,27 +73,27 @@ from services.global_assistant_task_service import (
     update_global_assistant_task,
     upsert_global_assistant_task,
 )
-from services.assistant_workflow_state_service import (
+from services.assistant.assistant_workflow_state_service import (
     detect_assistant_task_types,
     evolve_assistant_workflow_state,
     with_assistant_workflow_state,
 )
-from services.assistant_workflow_policy_service import (
+from services.assistant.assistant_workflow_policy_service import (
     build_assistant_workflow_prompt,
     build_capability_routing_prompt,
     latest_assistant_workflow_state_from_messages,
     prepare_assistant_workflow_state,
 )
-from services.assistant_capability_router_service import (
+from services.assistant.assistant_capability_router_service import (
     apply_capability_routing,
     build_capability_routing_decision,
 )
-from services.archive_workflow_state_service import (
+from services.chat.archive_workflow_state_service import (
     build_pending_archive_workflow_state,
     reply_contains_structured_pending_archive,
     with_archive_workflow_state,
 )
-from services.project_chat_task_tree import (
+from services.chat.project_chat_task_tree import (
     audit_task_tree_round,
     archive_task_tree,
     build_ongoing_task_resume_state,
@@ -122,19 +121,19 @@ from services.runtime.prompt_assembler import (
 )
 from services.runtime.orchestrator_factory import build_agent_orchestrator
 from services.runtime.run_request_factory import build_orchestrator_run_kwargs
-from services.agent_runtime_v2.operation_resume import OperationResumeCoordinator
-from services.agent_runtime_v2.permission_actions import PermissionActionService
-from services.agent_runtime_v2.permission_store import (
+from services.agent_runtime.v2.operation_resume import OperationResumeCoordinator
+from services.agent_runtime.v2.permission_actions import PermissionActionService
+from services.agent_runtime.v2.permission_store import (
     normalize_permission_command,
     permission_command_signature,
 )
-from services.agent_runtime_v2.event_log import RuntimeEvent
-from services.agent_runtime_v2.event_stream import EventStream
-from services.agent_runtime_v2.resume_service import (
+from services.agent_runtime.core.event_log import RuntimeEvent
+from services.agent_runtime.v2.event_stream import EventStream
+from services.agent_runtime.v2.resume_service import (
     AgentRuntimeResumeRequest,
     AgentRuntimeResumeService,
 )
-from services.agent_runtime_v2.run_inspector import AgentRuntimeInspector
+from services.agent_runtime.v2.run_inspector import AgentRuntimeInspector
 from services.runtime.tool_registry import (
     collect_project_runtime_tools as collect_project_runtime_tools_via_registry,
     filter_tools_by_employee_ids as filter_tools_by_employee_ids_via_registry,
@@ -145,12 +144,12 @@ from services.runtime.tool_registry import (
     summarize_effective_tools as summarize_effective_tools_via_registry,
 )
 from services.runtime.runtime_resolver import build_chat_runtime_context
-from services.project_chat_realtime_service import (
+from services.chat.project_chat_realtime_service import (
     register_project_chat_ws,
     unregister_project_chat_ws,
 )
 from services.task_tree_guard.task_tree_evolution import build_task_tree_evolution_summary
-from services.bot_connector_service import get_bot_connector, list_bot_connectors
+from services.connectors.bot_connector_service import get_bot_connector, list_bot_connectors
 from services.operation_wait_task_service import (
     claim_operation_wait_task_resume,
     continue_cli_plugin_auth_operation_task_with_interaction,
@@ -733,7 +732,7 @@ def _pick_studio_audio_mixer_value(payload: dict[str, Any], *keys: str) -> Any:
 
 
 def _list_studio_model_providers(auth_payload: dict) -> list[dict[str, Any]]:
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
     providers = llm_service.list_providers(
@@ -797,7 +796,7 @@ def _resolve_studio_model_target(
     preferred_provider_id: str = "",
     preferred_model_name: str = "",
 ) -> tuple[dict[str, Any], str]:
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     providers = _list_studio_model_providers(auth_payload)
     if not providers:
@@ -2670,7 +2669,7 @@ async def _resolve_agent_runtime_resume_llm_service(
         model_name,
         missing_model_message="model_name is required",
     )
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     return _resolve_chat_llm_service_runtime(
         get_llm_provider_service(),
@@ -3264,7 +3263,7 @@ def _ensure_any_permission(auth_payload: dict, permission_keys: list[str]) -> No
 
 
 def _project_chat_employee_candidates(project_id: str) -> list[dict[str, Any]]:
-    from services.dynamic_mcp_runtime import list_project_member_profiles_runtime
+    from services.mcp.dynamic_mcp_runtime import list_project_member_profiles_runtime
 
     profiles = list_project_member_profiles_runtime(
         project_id,
@@ -3555,7 +3554,7 @@ def _project_tool_display_name(tool_name: str) -> str:
 
 
 def _build_project_related_mcp_modules(project_id: str) -> list[dict[str, Any]]:
-    from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
+    from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools_runtime
 
     project = project_store.get(project_id)
     project_workspace_path = str(getattr(project, "workspace_path", "") or "").strip()
@@ -3762,7 +3761,7 @@ def _collect_runtime_tools(
     tool_priority: list[str] | None,
     project_workspace_path: str = "",
 ) -> list[dict[str, Any]]:
-    from services.dynamic_mcp_runtime import list_project_external_tools_runtime, list_project_proxy_tools_runtime
+    from services.mcp.dynamic_mcp_runtime import list_project_external_tools_runtime, list_project_proxy_tools_runtime
 
     project_tools = collect_project_runtime_tools_via_registry(
         project_id,
@@ -3804,6 +3803,12 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
             value = str(connector_defaults.get(key) or "").strip()
             if value:
                 merged[key] = value
+        connector_prompt = str(connector_defaults.get("system_prompt") or "").strip()
+        if connector_prompt:
+            merged["system_prompt"] = _merge_project_chat_system_prompts(
+                connector_prompt,
+                merged.get("system_prompt"),
+            )
         connector_employee_ids = _to_unique_string_list(
             connector_defaults.get("selected_employee_ids"),
             max_items=200,
@@ -3844,7 +3849,13 @@ def _resolve_chat_runtime_settings(req: ProjectChatReq, project: ProjectConfig) 
     }
     for key, value in override.items():
         if key in req.model_fields_set and value is not None:
-            merged[key] = value
+            if key == "system_prompt":
+                merged[key] = _merge_project_chat_system_prompts(
+                    merged.get("system_prompt"),
+                    value,
+                )
+            else:
+                merged[key] = value
             if key == "auto_use_tools":
                 merged["auto_use_tools_explicit"] = True
     return _normalize_project_chat_settings(merged)
@@ -4162,8 +4173,100 @@ def _build_project_chat_messages(
     task_tree_prompt: str = "",
     assistant_workflow_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    base_prompt = str(custom_system_prompt or "").strip()
+    if not base_prompt:
+        base_prompt = "你是当前项目的 AI 协作助手。"
+
+    project_lines = [
+        f"当前绑定项目：`{getattr(project, 'name', '') or getattr(project, 'id', '')}`",
+        f"项目 ID：`{getattr(project, 'id', '') or '-'}`",
+    ]
+    project_description = str(getattr(project, "description", "") or "").strip()
+    if project_description:
+        project_lines.append(f"项目描述：{project_description}")
+    workspace = str(getattr(project, "workspace_path", "") or "").strip() or str(workspace_path or "").strip()
+    if workspace:
+        project_lines.append(f"工作区路径：`{workspace}`")
+    project_prompt = "\n".join(project_lines)
+
+    ui_rule_bindings = _resolve_project_ui_rule_bindings(project, include_content=True)
+    ui_rule_prompt = ""
+    if ui_rule_bindings:
+        ui_lines = [
+            "当前项目已绑定 UI 规则，优先级高于员工个人规则和通用 UI 习惯。",
+            "涉及界面、页面、交互、样式或前端实现时，必须优先参考这些规则。",
+        ]
+        for item in ui_rule_bindings:
+            title = str(item.get("title") or item.get("id") or "").strip()
+            domain = str(item.get("domain") or "").strip()
+            content = _summarize_prompt_text(item.get("content"), limit=900)
+            ui_lines.append(f"- {title or '-'} ({domain or 'ui'}): {content or '无正文'}")
+        ui_rule_prompt = "\n".join(ui_lines)
+
+    selected_employee_prompt = ""
+    if isinstance(selected_employee, dict) and str(selected_employee.get("id") or "").strip():
+        employee_name = str(selected_employee.get("name") or selected_employee.get("id") or "").strip()
+        employee_id = str(selected_employee.get("id") or "").strip()
+        lines = [
+            f"当前执行员工：`{employee_name}` (`{employee_id}`)",
+            f"员工目标：{str(selected_employee.get('goal') or '-').strip() or '-'}",
+            f"员工技能：{_summarize_prompt_values(selected_employee.get('skill_names') or [])}",
+            f"员工规则：{_summarize_prompt_values([item.get('title') or item.get('id') for item in (selected_employee.get('rule_bindings') or [])])}",
+            "执行要求：优先使用当前项目已绑定的员工、规则和技能；只有项目绑定能力无法覆盖时，才自行补足。",
+            "执行要求：每次新请求都要重新获取与当前问题直接相关的规则正文，不要只依赖规则标题。",
+        ]
+        workflow = [
+            str(item or "").strip()
+            for item in (selected_employee.get("default_workflow") or [])
+            if str(item or "").strip()
+        ]
+        if workflow:
+            lines.append(f"员工默认工作流：{_summarize_prompt_values(workflow)}")
+        selected_employee_prompt = "\n".join(lines)
+
+    workflow_skill_bindings = _resolve_project_workflow_skill_bindings(project)
+    workflow_skill_prompt = ""
+    if workflow_skill_bindings:
+        lines = [
+            "当前项目已启用系统工作流技能。",
+            "这些技能用于规范执行流程和工具编排；不要把技能说明当成已完成的后端校验。",
+        ]
+        for item in workflow_skill_bindings:
+            default_label = "，默认" if bool(item.get("is_default")) else ""
+            name = str(item.get("name") or item.get("id") or "").strip()
+            description = _summarize_prompt_text(item.get("description"), limit=300)
+            lines.append(f"- {name or '-'} (`{item.get('id') or ''}`{default_label}): {description or '-'}")
+        workflow_skill_prompt = "\n".join(lines)
+
+    collaboration_prompt = ""
+    if str(employee_coordination_mode or "auto").strip().lower() != "manual":
+        collaboration_prompt = _build_multi_employee_collaboration_prompt(
+            selected_employees,
+            tools,
+        )
+
+    style_hint, order_hint = resolve_chat_style_hints(
+        answer_style,
+        prefer_conclusion_first=prefer_conclusion_first,
+    )
+    system_prompt = join_prompt_sections(
+        base_prompt,
+        project_prompt,
+        ui_rule_prompt,
+        selected_employee_prompt,
+        workflow_skill_prompt,
+        collaboration_prompt,
+        str(task_tree_prompt or "").strip(),
+        order_hint,
+        style_hint,
+        _build_skill_resource_prompt_block(skill_resource_directory),
+        build_assistant_workflow_prompt(assistant_workflow_state),
+        build_capability_routing_prompt(tools),
+        _build_url_fetch_prompt(user_message, tools),
+        _build_host_command_execution_prompt(user_message, tools),
+    )
     return assemble_chat_messages(
-        system_messages=[str(custom_system_prompt or "").strip()],
+        system_messages=[system_prompt],
         history=history,
         user_message=user_message,
         images=images,
@@ -4381,9 +4484,38 @@ def _assistant_workflow_plan_payload(
     request_id: str = "",
     tools_enabled: bool = False,
     effective_tool_total: int = 0,
+    task_tree_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    # Do not synthesize a deterministic conversation plan here. Project chat
-    # should show model/runtime-authored plans and real tool/command events only.
+    payload = task_tree_payload if isinstance(task_tree_payload, dict) else {}
+    nodes = [item for item in payload.get("nodes", []) or [] if isinstance(item, dict)]
+    task_steps: list[dict[str, Any]] = []
+    for item in nodes:
+        if str(item.get("node_kind") or "").strip().lower() == "goal":
+            continue
+        step_id = str(item.get("id") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not step_id or not title:
+            continue
+        task_steps.append(
+            {
+                "step_id": step_id,
+                "stage_key": str(item.get("stage_key") or "").strip(),
+                "title": title,
+                "description": str(item.get("description") or "").strip(),
+                "status": str(item.get("status") or "pending").strip() or "pending",
+            }
+        )
+    if task_steps:
+        return {
+            "type": "assistant_workflow_plan",
+            "request_id": str(request_id or "").strip(),
+            "planning_mode": "task_tree",
+            "user_message": str(user_message or "").strip(),
+            "tools_enabled": bool(tools_enabled),
+            "effective_tool_total": int(effective_tool_total or 0),
+            "assistant_workflow": dict(assistant_workflow_state or {}),
+            "steps": task_steps,
+        }
     return None
 
 
@@ -8166,7 +8298,7 @@ def _build_global_voice_runtime(auth_payload: dict) -> dict[str, Any]:
             "idle_timeout_sec": idle_timeout_sec,
         }
 
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
     provider = llm_service.get_provider_raw(
@@ -8294,7 +8426,7 @@ def _build_global_speech_runtime(auth_payload: dict) -> dict[str, Any]:
             "reason": "当前账号未开通全局助手语音",
         }
 
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
     provider = llm_service.get_provider_raw(
@@ -8506,7 +8638,7 @@ async def _transcribe_global_voice_stream_chunk(
         with NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
             temp_file.write(wav_bytes)
             temp_path = temp_file.name
-        from services.llm_provider_service import get_llm_provider_service
+        from services.providers.llm_provider_service import get_llm_provider_service
 
         llm_service = get_llm_provider_service()
         result = await llm_service.transcribe_audio(
@@ -8966,7 +9098,7 @@ async def _classify_global_assistant_task_creation(
     if not description:
         return task
     try:
-        from services.llm_provider_service import get_llm_provider_service
+        from services.providers.llm_provider_service import get_llm_provider_service
 
         now_local = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
         messages = [
@@ -9116,7 +9248,7 @@ async def generate_global_assistant_speech(
     req: GlobalAssistantSpeechReq,
     auth_payload: dict = Depends(require_auth),
 ):
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     _ensure_permission(auth_payload, "menu.ai.chat")
     runtime = _require_global_speech_runtime(auth_payload)
@@ -9179,7 +9311,7 @@ async def transcribe_global_assistant_voice(
     is_final: bool = Form(False),
     auth_payload: dict = Depends(require_auth),
 ):
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     _ensure_permission(auth_payload, "menu.ai.chat")
     runtime = _require_global_voice_runtime(auth_payload)
@@ -9836,7 +9968,7 @@ async def ws_global_assistant_chat(websocket: WebSocket):
         )
 
         try:
-            from services.llm_provider_service import get_llm_provider_service
+            from services.providers.llm_provider_service import get_llm_provider_service
 
             llm_service = get_llm_provider_service()
             llm_service_runtime = _resolve_chat_llm_service_runtime(
@@ -9855,7 +9987,6 @@ async def ws_global_assistant_chat(websocket: WebSocket):
                 llm_service_runtime,
                 conv_manager,
                 runtime_settings,
-                orchestrator_cls=AgentOrchestrator,
             )
 
             final_answer = ""
@@ -9958,7 +10089,7 @@ async def chat_without_project(
     req: ProjectChatReq,
     auth_payload: dict = Depends(require_auth),
 ):
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     _ensure_permission(auth_payload, "menu.ai.chat")
 
@@ -10073,7 +10204,6 @@ async def chat_without_project(
             llm_service_runtime,
             conv_manager,
             runtime_settings,
-            orchestrator_cls=AgentOrchestrator,
         )
 
         answer = ""
@@ -11303,7 +11433,7 @@ async def create_project_studio_voice(
             file_size_bytes = await _write_material_upload_file(sample_file, absolute_path)
         finally:
             await sample_file.close()
-        from services.llm_provider_service import get_llm_provider_service
+        from services.providers.llm_provider_service import get_llm_provider_service
 
         llm_service = get_llm_provider_service()
         try:
@@ -11420,7 +11550,7 @@ async def delete_project_studio_voice(
     provider_id = _normalize_material_text(voice.get("provider_id"), limit=120)
     provider_voice_id = _normalize_material_text(voice.get("voice_id"), limit=200)
     if source_type != "manual_binding" and provider_id and provider_voice_id:
-        from services.llm_provider_service import get_llm_provider_service
+        from services.providers.llm_provider_service import get_llm_provider_service
 
         llm_service = get_llm_provider_service()
         try:
@@ -11489,7 +11619,7 @@ async def generate_project_studio_voiceover(
         )
         if existing_preview_storage_path:
             _delete_material_storage_path(existing_preview_storage_path)
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
     payload = await llm_service.generate_audio_speech(
@@ -11584,7 +11714,7 @@ async def generate_project_studio_character_references(
     target_view = _normalize_studio_character_view(req.target_view)
     requested_views = list(_PROJECT_STUDIO_CHARACTER_VIEWS if req.generate_all_views else (target_view,))
 
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
     items: list[dict[str, Any]] = []
@@ -11676,7 +11806,7 @@ async def run_project_studio_extraction(
         preferred_provider_id=req.provider_id,
         preferred_model_name=req.model_name,
     )
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
     try:
@@ -11722,7 +11852,7 @@ async def generate_project_studio_storyboards(
         preferred_provider_id=req.provider_id,
         preferred_model_name=req.model_name,
     )
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
     try:
@@ -12226,8 +12356,8 @@ async def retry_project_studio_export(
 @router.post("/{project_id}/smart-query")
 async def smart_query_project(project_id: str, request: dict, auth_payload: dict = Depends(require_auth)):
     """AI 智能查询端点：自动决策调用数据库或工具"""
-    from services.dynamic_mcp_runtime import list_project_proxy_tools_runtime
-    from services.llm_provider_service import get_llm_provider_service
+    from services.mcp.dynamic_mcp_runtime import list_project_proxy_tools_runtime
+    from services.providers.llm_provider_service import get_llm_provider_service
     from starlette.concurrency import run_in_threadpool
     import json
 
@@ -12252,7 +12382,7 @@ async def smart_query_project(project_id: str, request: dict, auth_payload: dict
     provider_id = provider.get("id", "")
     model_name = provider.get("default_model", "")
 
-    from services.dynamic_mcp_runtime import invoke_project_tool_runtime, list_project_external_tools_runtime, list_project_proxy_tools_runtime
+    from services.mcp.dynamic_mcp_runtime import invoke_project_tool_runtime, list_project_external_tools_runtime, list_project_proxy_tools_runtime
 
     tools = list_project_proxy_tools_runtime(project_id, "") + list_project_external_tools_runtime(project_id)
     decision = await ai_decide_action(llm_service, provider_id, model_name, user_message, project_id, tools)
@@ -12484,7 +12614,7 @@ async def remove_project_user(project_id: str, username: str, auth_payload: dict
 
 @router.get("/{project_id}/members")
 async def list_project_members(project_id: str, auth_payload: dict = Depends(require_auth)):
-    from services.dynamic_mcp_runtime import list_project_member_profiles_runtime
+    from services.mcp.dynamic_mcp_runtime import list_project_member_profiles_runtime
 
     _ensure_permission(auth_payload, "menu.projects")
     _ensure_project_access(project_id, auth_payload)
@@ -12568,7 +12698,7 @@ async def list_project_chat_providers(
     auth_payload: dict = Depends(require_auth),
 ):
     _ensure_permission(auth_payload, "menu.ai.chat")
-    from services.dynamic_mcp_runtime import list_project_external_tools_runtime
+    from services.mcp.dynamic_mcp_runtime import list_project_external_tools_runtime
 
     project = _ensure_project_access(project_id, auth_payload)
     try:
@@ -12647,7 +12777,7 @@ async def publish_project_chat_record_realtime(
 ) -> None:
     if message is None:
         return
-    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+    from services.chat.project_chat_realtime_service import publish_project_chat_realtime_event
 
     message_payload = asdict(message) if hasattr(message, "__dataclass_fields__") else dict(message)
     normalized_session_id = str(
@@ -12678,7 +12808,7 @@ async def publish_project_chat_record_update_realtime(
 ) -> None:
     if message is None:
         return
-    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+    from services.chat.project_chat_realtime_service import publish_project_chat_realtime_event
 
     message_payload = asdict(message) if hasattr(message, "__dataclass_fields__") else dict(message)
     normalized_session_id = str(
@@ -12708,7 +12838,7 @@ async def publish_project_chat_session_realtime(
     status: str = "",
     message: str = "",
 ) -> None:
-    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+    from services.chat.project_chat_realtime_service import publish_project_chat_realtime_event
 
     normalized_session_id = str(chat_session_id or "").strip()
     await publish_project_chat_realtime_event(
@@ -12741,7 +12871,7 @@ async def publish_agent_runtime_permission_action_realtime(
     resume: dict[str, Any] | None = None,
     assistant_message: ProjectChatMessage | dict[str, Any] | None = None,
 ) -> None:
-    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+    from services.chat.project_chat_realtime_service import publish_project_chat_realtime_event
 
     assistant_payload = (
         asdict(assistant_message)
@@ -12822,7 +12952,7 @@ async def publish_agent_runtime_operation_resume_realtime(
     task_id: str,
     resume: dict[str, Any] | None = None,
 ) -> None:
-    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+    from services.chat.project_chat_realtime_service import publish_project_chat_realtime_event
 
     await publish_project_chat_realtime_event(
         {
@@ -13285,7 +13415,7 @@ async def publish_project_chat_group_status_realtime(
     message: str,
     source_context: dict[str, Any] | None = None,
 ) -> None:
-    from services.project_chat_realtime_service import publish_project_chat_realtime_event
+    from services.chat.project_chat_realtime_service import publish_project_chat_realtime_event
 
     normalized_session_id = str(chat_session_id or "").strip()
     await publish_project_chat_realtime_event(
@@ -14588,7 +14718,7 @@ async def _summarize_project_experience_cards(
     max_cards: int,
     auth_payload: dict,
 ) -> list[dict[str, Any]]:
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
     provider = llm_service.get_provider_raw(
@@ -14636,7 +14766,7 @@ async def _review_project_experience_cards(
     min_confidence: float,
     max_evidence_snippets_per_record: int,
 ) -> dict[str, Any]:
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     review_payload = _build_project_experience_review_payload(
         project,
@@ -14685,7 +14815,7 @@ def _resolve_project_experience_llm_target(
     provider_id: str = "",
     model_name: str = "",
 ) -> tuple[str, str]:
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     llm_service = get_llm_provider_service()
     resolved_provider_id = str(provider_id or "").strip()
@@ -14789,7 +14919,7 @@ async def _merge_experience_cards_with_llm(
     model_name: str = "",
     max_cards: int = 1,
 ) -> list[dict[str, Any]]:
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     if len(cards) <= 1:
         return cards[:1]
@@ -16056,7 +16186,7 @@ async def resolve_project_chat_session_source(
     payload: dict[str, Any] | None = Body(default=None),
     auth_payload: dict = Depends(require_auth),
 ):
-    from services.feishu_bot_service import get_feishu_connector, resolve_feishu_chat_by_name
+    from services.feishu.feishu_bot_service import get_feishu_connector, resolve_feishu_chat_by_name
 
     _ensure_permission(auth_payload, "menu.ai.chat")
     _ensure_project_access(project_id, auth_payload)
@@ -16546,7 +16676,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     await task
         finally:
             if session_id:
-                from services.project_host_terminal_service import (
+                from services.connectors.project_host_terminal_service import (
                     detach_project_host_terminal_listener,
                 )
 
@@ -16558,7 +16688,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         queue: asyncio.Queue[dict[str, Any]],
         chat_session_id: str,
     ) -> None:
-        from services.project_host_terminal_service import (
+        from services.connectors.project_host_terminal_service import (
             detach_project_host_terminal_listener,
         )
 
@@ -16619,7 +16749,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 terminal_streams.pop(_terminal_stream_key(chat_session_id), None)
 
     async def _handle_terminal_mirror_start(payload: dict[str, Any]) -> None:
-        from services.project_host_terminal_service import (
+        from services.connectors.project_host_terminal_service import (
             attach_project_host_terminal_listener,
             get_project_host_terminal_session,
             start_or_attach_project_host_terminal,
@@ -16665,7 +16795,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 "command": initial_command,
             }
             if initial_command:
-                from services.project_host_terminal_service import (
+                from services.connectors.project_host_terminal_service import (
                     write_project_host_terminal_input,
                 )
 
@@ -16772,7 +16902,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                 )
 
     async def _handle_terminal_mirror_input(payload: dict[str, Any]) -> None:
-        from services.project_host_terminal_service import (
+        from services.connectors.project_host_terminal_service import (
             get_project_host_terminal_session,
             write_project_host_terminal_input,
         )
@@ -16791,7 +16921,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         )
 
     async def _handle_terminal_mirror_stop(payload: dict[str, Any]) -> None:
-        from services.project_host_terminal_service import (
+        from services.connectors.project_host_terminal_service import (
             get_project_host_terminal_session,
             stop_project_host_terminal,
         )
@@ -17088,7 +17218,7 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             selected_provider = resolved_runtime.provider
             provider_id = resolved_runtime.provider_id
             model_name = resolved_runtime.model_name
-            from services.llm_provider_service import get_llm_provider_service
+            from services.providers.llm_provider_service import get_llm_provider_service
 
             llm_service = get_llm_provider_service()
             model_parameter_mode = _resolve_provider_model_parameter_mode(
@@ -17281,11 +17411,12 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         )
         execution_plan_payload = _assistant_workflow_plan_payload(
             assistant_workflow_state,
-            user_message=effective_user_message,
-            request_id=request_id,
-            tools_enabled=bool(tools),
-            effective_tool_total=effective_tool_total,
-        )
+                user_message=effective_user_message,
+                request_id=request_id,
+                tools_enabled=bool(tools),
+                effective_tool_total=effective_tool_total,
+                task_tree_payload=task_tree_payload,
+            )
         execution_plan_context = _project_chat_plan_step_ids(execution_plan_payload)
         if execution_plan_payload:
             await _send_project_chat_event(execution_plan_payload)
@@ -17314,7 +17445,6 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     assistant_workflow_state,
                     tools,
                 ),
-                orchestrator_cls=AgentOrchestrator,
             )
             runtime_event_queue: asyncio.Queue[dict[str, Any] | None] | None = None
             runtime_event_pump_task: asyncio.Task | None = None
@@ -17760,7 +17890,7 @@ async def stream_project_chat(
     req: ProjectChatReq,
     auth_payload: dict = Depends(require_auth),
 ):
-    from services.llm_provider_service import get_llm_provider_service
+    from services.providers.llm_provider_service import get_llm_provider_service
 
     _ensure_permission(auth_payload, "menu.ai.chat")
     project = _ensure_project_access(project_id, auth_payload)
@@ -18167,6 +18297,16 @@ async def stream_project_chat(
     )
     if tools_enabled and local_connector_tools:
         tools.extend(local_connector_tools)
+    tools = apply_capability_routing(
+        tools,
+        assistant_workflow=assistant_workflow_state,
+        chat_surface=chat_surface,
+    )
+    capability_routing = build_capability_routing_decision(
+        tools,
+        assistant_workflow=assistant_workflow_state,
+        chat_surface=chat_surface,
+    )
     effective_tools, effective_tool_total = _summarize_effective_tools(tools)
 
     messages = _build_project_chat_messages(
@@ -18208,6 +18348,7 @@ async def stream_project_chat(
         messages=messages,
         local_connector=selected_local_connector,
         local_connector_sandbox_mode=local_connector_sandbox_mode,
+        capability_routing=capability_routing,
         metadata={
             "assistant_workflow": assistant_workflow_state,
             "request_kind": request_kind,
@@ -18239,6 +18380,7 @@ async def stream_project_chat(
             request_id=sse_request_id,
             tools_enabled=bool(tools),
             effective_tool_total=effective_tool_total,
+            task_tree_payload=task_tree_payload,
         )
         execution_plan_context = _project_chat_plan_step_ids(execution_plan_payload)
         if execution_plan_payload:
@@ -18261,7 +18403,6 @@ async def stream_project_chat(
                     assistant_workflow_state,
                     tools,
                 ),
-                orchestrator_cls=AgentOrchestrator,
             )
 
             final_answer = ""

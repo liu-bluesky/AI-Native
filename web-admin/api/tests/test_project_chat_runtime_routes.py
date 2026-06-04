@@ -38,7 +38,7 @@ def _build_project_chat_runtime_test_client(tmp_path, monkeypatch, auth_payload)
 
 
 def test_feishu_project_chat_session_id_isolates_group_and_private_messages():
-    from services.feishu_bot_service import _resolve_feishu_project_chat_session_id
+    from services.feishu.feishu_bot_service import _resolve_feishu_project_chat_session_id
 
     group_sender_1 = _resolve_feishu_project_chat_session_id(
         connector_id="conn-feishu-1",
@@ -82,7 +82,7 @@ def test_feishu_project_chat_session_id_isolates_group_and_private_messages():
 
 
 def test_parse_feishu_text_message_preserves_mention_display_name():
-    from services.feishu_bot_service import _parse_feishu_text_message
+    from services.feishu.feishu_bot_service import _parse_feishu_text_message
 
     class Obj:
         def __init__(self, **kwargs):
@@ -375,7 +375,7 @@ def test_agent_runtime_resume_does_not_fallback_to_tool_output_without_final_ans
 
 def test_project_chat_session_update_and_feishu_manual_binding(tmp_path, monkeypatch):
     from routers import projects as projects_router
-    from services.feishu_bot_service import _find_or_bind_feishu_manual_chat_session
+    from services.feishu.feishu_bot_service import _find_or_bind_feishu_manual_chat_session
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -479,7 +479,7 @@ def test_project_chat_session_resolve_source_uses_feishu_search(tmp_path, monkey
         return {"chat_id": "oc_real_group_1", "name": "产品研发群"}
 
     monkeypatch.setattr(
-        "services.feishu_bot_service.resolve_feishu_chat_by_name",
+        "services.feishu.feishu_bot_service.resolve_feishu_chat_by_name",
         fake_resolve,
     )
     resolve_response = client.post(
@@ -537,7 +537,7 @@ def test_project_chat_session_resolve_source_can_use_user_identity(tmp_path, mon
         return {"chat_id": "oc_user_visible_group", "name": "产品研发群"}
 
     monkeypatch.setattr(
-        "services.feishu_bot_service.resolve_feishu_chat_by_name",
+        "services.feishu.feishu_bot_service.resolve_feishu_chat_by_name",
         fake_resolve,
     )
     resolve_response = client.post(
@@ -556,7 +556,7 @@ def test_project_chat_session_resolve_source_can_use_user_identity(tmp_path, mon
 
 
 def test_feishu_message_event_routes_by_project_chat_session_binding(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -621,15 +621,15 @@ def test_feishu_message_event_routes_by_project_chat_session_binding(tmp_path, m
         return {"queued": True, "reason": ""}
 
     monkeypatch.setattr(
-        "services.feishu_bot_service.run_project_chat_once",
+        "services.feishu.feishu_bot_service.run_project_chat_once",
         fake_run_project_chat_once,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service._reply_feishu_text",
+        "services.feishu.feishu_bot_service._reply_feishu_text",
         fake_reply_feishu_text,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service.enqueue_system_speech",
+        "services.feishu.feishu_bot_service.enqueue_system_speech",
         fake_enqueue_system_speech,
     )
 
@@ -673,7 +673,7 @@ def test_feishu_message_event_routes_by_project_chat_session_binding(tmp_path, m
 
 
 def test_feishu_message_event_auto_binds_unbound_group_to_connector_project(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -717,15 +717,15 @@ def test_feishu_message_event_auto_binds_unbound_group_to_connector_project(tmp_
         replies.append((connector, kwargs))
 
     monkeypatch.setattr(
-        "services.feishu_bot_service.run_project_chat_once",
+        "services.feishu.feishu_bot_service.run_project_chat_once",
         fake_run_project_chat_once,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service._reply_feishu_text",
+        "services.feishu.feishu_bot_service._reply_feishu_text",
         fake_reply_feishu_text,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service._resolve_feishu_chat_name_by_id",
+        "services.feishu.feishu_bot_service._resolve_feishu_chat_name_by_id",
         lambda connector, chat_id: "数转CRM技术小组",
     )
 
@@ -779,7 +779,7 @@ def test_feishu_message_event_auto_binds_unbound_group_to_connector_project(tmp_
 
 
 def test_feishu_record_bug_message_does_not_confirm_stale_pending_archive(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -839,7 +839,7 @@ def test_feishu_record_bug_message_does_not_confirm_stale_pending_archive(tmp_pa
         },
     )
 
-    from services import global_assistant_task_service as tasks
+    from services.assistant import global_assistant_task_service as tasks
 
     archive_calls = []
     model_calls = []
@@ -860,8 +860,8 @@ def test_feishu_record_bug_message_does_not_confirm_stale_pending_archive(tmp_pa
         replies.append((connector, kwargs))
 
     monkeypatch.setattr(tasks, "archive_feishu_task_message", fake_archive)
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -895,7 +895,7 @@ def test_feishu_record_bug_message_does_not_confirm_stale_pending_archive(tmp_pa
 
 
 def test_feishu_message_event_unbound_group_without_project_binding_still_replies(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -934,11 +934,11 @@ def test_feishu_message_event_unbound_group_without_project_binding_still_replie
         replies.append((connector, kwargs))
 
     monkeypatch.setattr(
-        "services.feishu_bot_service.run_project_chat_once",
+        "services.feishu.feishu_bot_service.run_project_chat_once",
         fake_run_project_chat_once,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service._reply_feishu_text",
+        "services.feishu.feishu_bot_service._reply_feishu_text",
         fake_reply_feishu_text,
     )
 
@@ -978,7 +978,7 @@ def test_feishu_message_event_unbound_group_without_project_binding_still_replie
 
 
 def test_feishu_group_text_without_mention_is_ignored(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -1014,8 +1014,8 @@ def test_feishu_group_text_without_mention_is_ignored(tmp_path, monkeypatch):
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -1047,7 +1047,7 @@ def test_feishu_group_text_without_mention_is_ignored(tmp_path, monkeypatch):
 
 
 def test_feishu_group_text_mentioning_other_user_without_bot_identity_is_ignored(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -1083,8 +1083,8 @@ def test_feishu_group_text_mentioning_other_user_without_bot_identity_is_ignored
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -1121,7 +1121,7 @@ def test_feishu_group_text_mentioning_other_user_without_bot_identity_is_ignored
 
 
 def test_feishu_event_handler_acknowledges_message_read_events():
-    from services import feishu_bot_service as service
+    from services.feishu import feishu_bot_service as service
 
     if not service.is_feishu_sdk_available():
         pytest.skip(service.get_feishu_sdk_error_message())
@@ -1137,7 +1137,7 @@ def test_feishu_event_handler_acknowledges_message_read_events():
 
 
 def test_feishu_group_text_mentioning_other_user_is_ignored(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -1174,8 +1174,8 @@ def test_feishu_group_text_mentioning_other_user_is_ignored(tmp_path, monkeypatc
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -1212,7 +1212,7 @@ def test_feishu_group_text_mentioning_other_user_is_ignored(tmp_path, monkeypatc
 
 
 def test_feishu_group_text_mentioning_configured_bot_is_processed(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -1252,8 +1252,8 @@ def test_feishu_group_text_mentioning_configured_bot_is_processed(tmp_path, monk
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -1292,7 +1292,7 @@ def test_feishu_followup_group_text_without_explicit_mention_is_ignored_even_if_
     tmp_path,
     monkeypatch,
 ):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -1332,8 +1332,8 @@ def test_feishu_followup_group_text_without_explicit_mention_is_ignored_even_if_
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -1381,7 +1381,7 @@ def test_feishu_followup_group_text_without_explicit_mention_is_ignored_even_if_
 
 
 def test_feishu_group_text_with_visible_bot_name_mention_is_processed_without_bot_id(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -1420,8 +1420,8 @@ def test_feishu_group_text_with_visible_bot_name_mention_is_processed_without_bo
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -1452,7 +1452,7 @@ def test_feishu_group_text_with_visible_bot_name_mention_is_processed_without_bo
 
 
 def test_feishu_group_text_uses_runtime_bot_identity_when_connector_name_differs(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -1491,10 +1491,10 @@ def test_feishu_group_text_uses_runtime_bot_identity_when_connector_name_differs
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
     monkeypatch.setattr(
-        "services.feishu_bot_service._get_feishu_runtime_bot_identity",
+        "services.feishu.feishu_bot_service._get_feishu_runtime_bot_identity",
         lambda connector: {
             "bot_open_id": "ou_runtime_bot_1",
             "bot_name": "jx 飞书 CLI",
@@ -1530,7 +1530,7 @@ def test_feishu_group_text_uses_runtime_bot_identity_when_connector_name_differs
 
 
 def test_feishu_group_text_with_thread_id_without_mention_is_ignored(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -1566,8 +1566,8 @@ def test_feishu_group_text_with_thread_id_without_mention_is_ignored(tmp_path, m
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -1599,7 +1599,7 @@ def test_feishu_group_text_with_thread_id_without_mention_is_ignored(tmp_path, m
 
 
 def test_feishu_group_image_without_mention_is_ignored(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -1640,9 +1640,9 @@ def test_feishu_group_image_without_mention_is_ignored(tmp_path, monkeypatch):
         downloads.append(kwargs)
         raise AssertionError("unmentioned group image should not be downloaded")
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
-    monkeypatch.setattr("services.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -1675,7 +1675,7 @@ def test_feishu_group_image_without_mention_is_ignored(tmp_path, monkeypatch):
 
 
 def test_feishu_listen_all_group_messages_does_not_reply_to_plain_text(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -1713,8 +1713,8 @@ def test_feishu_listen_all_group_messages_does_not_reply_to_plain_text(tmp_path,
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -1746,7 +1746,7 @@ def test_feishu_listen_all_group_messages_does_not_reply_to_plain_text(tmp_path,
 
 
 def test_feishu_reply_uses_lark_cli_with_configured_identity(monkeypatch):
-    from services import feishu_bot_service as service
+    from services.feishu import feishu_bot_service as service
 
     calls = []
 
@@ -1778,7 +1778,7 @@ def test_feishu_reply_uses_lark_cli_with_configured_identity(monkeypatch):
 
 
 def test_feishu_bot_reply_uses_open_api_without_lark_cli(monkeypatch):
-    from services import feishu_bot_service as service
+    from services.feishu import feishu_bot_service as service
 
     calls = []
 
@@ -1826,7 +1826,7 @@ def test_feishu_bot_reply_uses_open_api_without_lark_cli(monkeypatch):
 
 
 def test_feishu_bot_reply_open_api_error_is_clear(monkeypatch):
-    from services import feishu_bot_service as service
+    from services.feishu import feishu_bot_service as service
 
     class FakeResponse:
         def __init__(self, payload):
@@ -1856,7 +1856,7 @@ def test_feishu_bot_reply_open_api_error_is_clear(monkeypatch):
 
 
 def test_feishu_non_text_image_message_routes_resource_to_model_context(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -1912,7 +1912,7 @@ def test_feishu_non_text_image_message_routes_resource_to_model_context(tmp_path
         replies.append((connector, kwargs))
 
     def fake_download_resource(connector, **kwargs):
-        from services.feishu_bot_service import _feishu_resource_root
+        from services.feishu.feishu_bot_service import _feishu_resource_root
 
         image_path = _feishu_resource_root() / "conn-feishu-1" / "om_image_1" / "img_v3_1.png"
         image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1927,15 +1927,15 @@ def test_feishu_non_text_image_message_routes_resource_to_model_context(tmp_path
         }
 
     monkeypatch.setattr(
-        "services.feishu_bot_service.run_project_chat_once",
+        "services.feishu.feishu_bot_service.run_project_chat_once",
         fake_run_project_chat_once,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service._reply_feishu_text",
+        "services.feishu.feishu_bot_service._reply_feishu_text",
         fake_reply_feishu_text,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service._download_feishu_message_resource",
+        "services.feishu.feishu_bot_service._download_feishu_message_resource",
         fake_download_resource,
     )
     class Obj:
@@ -1981,7 +1981,7 @@ def test_feishu_non_text_image_message_routes_resource_to_model_context(tmp_path
 
 def test_feishu_group_follow_up_resource_message_continues_open_workflow_without_new_mention(tmp_path, monkeypatch):
     from stores.json.project_chat_store import ProjectChatMessage
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -2080,7 +2080,7 @@ def test_feishu_group_follow_up_resource_message_continues_open_workflow_without
         replies.append((connector, kwargs))
 
     def fake_download_resource(connector, **kwargs):
-        from services.feishu_bot_service import _feishu_resource_root
+        from services.feishu.feishu_bot_service import _feishu_resource_root
 
         image_path = _feishu_resource_root() / "conn-feishu-1" / "om_image_followup_1" / "img_v3_followup_1.png"
         image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2094,9 +2094,9 @@ def test_feishu_group_follow_up_resource_message_continues_open_workflow_without
             "content_type": "image/png",
         }
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
-    monkeypatch.setattr("services.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -2127,7 +2127,7 @@ def test_feishu_group_follow_up_resource_message_continues_open_workflow_without
 
 
 def test_feishu_text_redownloads_recent_image_resource_for_model_context(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -2223,9 +2223,9 @@ def test_feishu_text_redownloads_recent_image_resource_for_model_context(tmp_pat
             "content_type": "image/png",
         }
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
-    monkeypatch.setattr("services.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -2268,7 +2268,7 @@ def test_feishu_text_redownloads_recent_image_resource_for_model_context(tmp_pat
 
 
 def test_feishu_text_recovers_recent_image_resource_from_previous_reply_text(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -2356,9 +2356,9 @@ def test_feishu_text_recovers_recent_image_resource_from_previous_reply_text(tmp
             "content_type": "image/png",
         }
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
-    monkeypatch.setattr("services.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -2391,7 +2391,7 @@ def test_feishu_text_recovers_recent_image_resource_from_previous_reply_text(tmp
 
 
 def test_feishu_resource_ref_text_parser_keeps_message_id_file_key_pairs():
-    from services.feishu_bot_service import _extract_feishu_resource_refs_from_text
+    from services.feishu.feishu_bot_service import _extract_feishu_resource_refs_from_text
 
     refs = _extract_feishu_resource_refs_from_text(
         "【已定位图片】\n"
@@ -2419,7 +2419,7 @@ def test_feishu_resource_ref_text_parser_keeps_message_id_file_key_pairs():
 
 
 def test_feishu_resource_ref_text_parser_ignores_unpaired_keys():
-    from services.feishu_bot_service import _extract_feishu_resource_refs_from_text
+    from services.feishu.feishu_bot_service import _extract_feishu_resource_refs_from_text
 
     refs = _extract_feishu_resource_refs_from_text(
         "图片 key：`img_v3_old_key`\n\n"
@@ -2439,7 +2439,7 @@ def test_feishu_resource_ref_text_parser_ignores_unpaired_keys():
 
 
 def test_download_feishu_message_resource_reports_feishu_error_body(tmp_path, monkeypatch):
-    from services import feishu_bot_service
+    from services.feishu import feishu_bot_service
 
     class FakeResponse:
         status_code = 400
@@ -2475,7 +2475,7 @@ def test_download_feishu_message_resource_reports_feishu_error_body(tmp_path, mo
 
 
 def test_feishu_text_with_image_and_target_title_routes_to_model_with_resource_context(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -2541,9 +2541,9 @@ def test_feishu_text_with_image_and_target_title_routes_to_model_with_resource_c
             "content_type": "image/png",
         }
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
-    monkeypatch.setattr("services.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -2590,7 +2590,7 @@ def test_feishu_text_with_image_and_target_title_routes_to_model_with_resource_c
 
 
 def test_feishu_post_message_with_image_routes_text_to_project_chat(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -2658,15 +2658,15 @@ def test_feishu_post_message_with_image_routes_text_to_project_chat(tmp_path, mo
         }
 
     monkeypatch.setattr(
-        "services.feishu_bot_service.run_project_chat_once",
+        "services.feishu.feishu_bot_service.run_project_chat_once",
         fake_run_project_chat_once,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service._reply_feishu_text",
+        "services.feishu.feishu_bot_service._reply_feishu_text",
         fake_reply_feishu_text,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service._download_feishu_message_resource",
+        "services.feishu.feishu_bot_service._download_feishu_message_resource",
         fake_download_resource,
     )
 
@@ -2713,7 +2713,7 @@ def test_feishu_post_message_with_image_routes_text_to_project_chat(tmp_path, mo
 
 
 def test_feishu_text_message_recursively_extracts_nested_image_and_file_resources(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -2781,9 +2781,9 @@ def test_feishu_text_message_recursively_extracts_nested_image_and_file_resource
             "content_type": "image/png" if kwargs["resource_type"] == "image" else "text/plain",
         }
 
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
-    monkeypatch.setattr("services.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -2857,7 +2857,7 @@ def _cli_json_arg(args, flag):
 
 def test_feishu_archive_attachment_append_updates_latest_bitable_record(tmp_path, monkeypatch):
     from core import config as core_config
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
     core_config.get_settings.cache_clear()
@@ -2949,7 +2949,7 @@ def test_feishu_archive_attachment_append_updates_latest_bitable_record(tmp_path
 
 def test_feishu_archive_attachment_append_can_target_record_by_title(tmp_path, monkeypatch):
     from core import config as core_config
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
     core_config.get_settings.cache_clear()
@@ -3026,7 +3026,7 @@ def test_feishu_archive_attachment_append_can_target_record_by_title(tmp_path, m
 
 def test_feishu_archive_attachment_append_skips_when_target_title_not_found(tmp_path, monkeypatch):
     from core import config as core_config
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
     core_config.get_settings.cache_clear()
@@ -3098,7 +3098,7 @@ def test_feishu_archive_attachment_append_skips_when_target_title_not_found(tmp_
 
 def test_feishu_archive_attachment_upload_uses_existing_attachment_field_name(tmp_path, monkeypatch):
     from core import config as core_config
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
     core_config.get_settings.cache_clear()
@@ -3164,7 +3164,7 @@ def test_feishu_archive_attachment_upload_uses_existing_attachment_field_name(tm
 
 def test_feishu_archive_attachment_append_creates_attachment_field_for_legacy_text_field(tmp_path, monkeypatch):
     from core import config as core_config
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
     core_config.get_settings.cache_clear()
@@ -3238,7 +3238,7 @@ def test_feishu_archive_attachment_append_creates_attachment_field_for_legacy_te
 
 def test_feishu_archive_attachment_append_reuses_existing_attachment_field(tmp_path, monkeypatch):
     from core import config as core_config
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
     core_config.get_settings.cache_clear()
@@ -3316,8 +3316,8 @@ def test_feishu_archive_attachment_append_reuses_existing_attachment_field(tmp_p
 
 
 def test_feishu_message_event_queues_speech_only_when_task_listener_matches(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
-    from services.global_assistant_task_service import upsert_global_assistant_task
+    from services.feishu.feishu_bot_service import process_feishu_message_event
+    from services.assistant.global_assistant_task_service import upsert_global_assistant_task
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -3387,15 +3387,15 @@ def test_feishu_message_event_queues_speech_only_when_task_listener_matches(tmp_
         return {"queued": True, "reason": ""}
 
     monkeypatch.setattr(
-        "services.feishu_bot_service.run_project_chat_once",
+        "services.feishu.feishu_bot_service.run_project_chat_once",
         fake_run_project_chat_once,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service._reply_feishu_text",
+        "services.feishu.feishu_bot_service._reply_feishu_text",
         fake_reply_feishu_text,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service.enqueue_system_speech",
+        "services.feishu.feishu_bot_service.enqueue_system_speech",
         fake_enqueue_system_speech,
     )
 
@@ -3443,7 +3443,7 @@ def test_global_assistant_task_listener_extracts_need_trigger(tmp_path, monkeypa
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services.global_assistant_task_service import (
+    from services.assistant.global_assistant_task_service import (
         match_global_assistant_tasks_for_event,
         upsert_global_assistant_task,
     )
@@ -3476,7 +3476,7 @@ def test_global_assistant_task_infers_dynamic_project_chat_action_for_reminder(t
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services.global_assistant_task_service import upsert_global_assistant_task
+    from services.assistant.global_assistant_task_service import upsert_global_assistant_task
 
     task = upsert_global_assistant_task(
         username="tester",
@@ -3502,7 +3502,7 @@ def test_global_assistant_task_module_empty_speech_action_migrates_to_stable_sys
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services.global_assistant_task_service import upsert_global_assistant_task
+    from services.assistant.global_assistant_task_service import upsert_global_assistant_task
 
     task = upsert_global_assistant_task(
         username="tester",
@@ -3531,7 +3531,7 @@ def test_global_assistant_task_engine_records_event_execution(tmp_path, monkeypa
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services.global_assistant_task_service import (
+    from services.assistant.global_assistant_task_service import (
         list_global_assistant_tasks,
         process_global_assistant_tasks_for_event,
         upsert_global_assistant_task,
@@ -3580,7 +3580,7 @@ def test_global_assistant_task_upsert_preserves_runtime_execution_fields(tmp_pat
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services.global_assistant_task_service import (
+    from services.assistant.global_assistant_task_service import (
         execute_global_assistant_task,
         list_global_assistant_tasks,
         upsert_global_assistant_task,
@@ -3635,7 +3635,7 @@ def test_global_assistant_task_rejects_edit_while_doing(tmp_path, monkeypatch):
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services.global_assistant_task_service import (
+    from services.assistant.global_assistant_task_service import (
         list_global_assistant_tasks,
         upsert_global_assistant_task,
     )
@@ -3694,7 +3694,7 @@ def test_global_assistant_task_engine_runs_due_schedule(tmp_path, monkeypatch):
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services.global_assistant_task_service import (
+    from services.assistant.global_assistant_task_service import (
         list_global_assistant_tasks,
         run_due_global_assistant_tasks,
         upsert_global_assistant_task,
@@ -3736,7 +3736,7 @@ def test_global_assistant_task_infers_schedule_from_natural_reminder_time(tmp_pa
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services.global_assistant_task_service import list_global_assistant_tasks, upsert_global_assistant_task
+    from services.assistant.global_assistant_task_service import list_global_assistant_tasks, upsert_global_assistant_task
 
     upsert_global_assistant_task(
         username="tester",
@@ -3810,7 +3810,7 @@ def test_global_assistant_task_route_uses_llm_classifier_schedule(tmp_path, monk
 
     monkeypatch.setattr(projects_router, "_resolve_global_assistant_chat_runtime", fake_resolve_runtime)
     monkeypatch.setattr(
-        "services.llm_provider_service.get_llm_provider_service",
+        "services.providers.llm_provider_service.get_llm_provider_service",
         lambda: FakeLlmService(),
     )
 
@@ -3901,7 +3901,7 @@ def test_global_assistant_task_classifier_prefers_local_same_day_daily_time():
 def test_global_assistant_reminder_classifier_uses_stable_system_speech_action(tmp_path, monkeypatch):
     from core import config as core_config
     from routers.projects import _merge_global_task_classifier_result
-    from services.global_assistant_task_service import upsert_global_assistant_task
+    from services.assistant.global_assistant_task_service import upsert_global_assistant_task
 
     monkeypatch.setenv("API_DATA_DIR", str(tmp_path / "api-data"))
     core_config.get_settings.cache_clear()
@@ -4049,8 +4049,8 @@ def test_global_assistant_task_engine_queues_due_system_speech(tmp_path, monkeyp
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import system_speech_service
-    from services.global_assistant_task_service import (
+    from services.providers import system_speech_service
+    from services.assistant.global_assistant_task_service import (
         list_global_assistant_tasks,
         run_due_global_assistant_tasks,
         upsert_global_assistant_task,
@@ -4111,8 +4111,8 @@ def test_global_assistant_system_speech_action_respects_disabled_config_in_event
     import asyncio
     from types import SimpleNamespace
 
-    from services import system_speech_service
-    from services.global_assistant_task_service import _enqueue_system_speech_action
+    from services.providers import system_speech_service
+    from services.assistant.global_assistant_task_service import _enqueue_system_speech_action
 
     monkeypatch.setattr(
         system_speech_service.system_config_store,
@@ -4146,8 +4146,8 @@ def test_global_assistant_project_chat_action_uses_llm_dynamic_plan_for_repeated
     )
     store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
 
-    from services import project_chat_execution_service, system_speech_service
-    from services.global_assistant_task_service import execute_global_assistant_task, upsert_global_assistant_task
+    from services.chat import project_chat_execution_service, system_speech_service
+    from services.assistant.global_assistant_task_service import execute_global_assistant_task, upsert_global_assistant_task
 
     chat_calls = []
     queued_calls = []
@@ -4218,8 +4218,8 @@ def test_global_assistant_async_project_chat_action_finalizes_execution_history(
     )
     store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
 
-    from services import project_chat_execution_service, system_speech_service
-    from services.global_assistant_task_service import (
+    from services.chat import project_chat_execution_service, system_speech_service
+    from services.assistant.global_assistant_task_service import (
         execute_global_assistant_task,
         list_global_assistant_tasks,
         upsert_global_assistant_task,
@@ -4291,8 +4291,8 @@ def test_global_assistant_async_project_chat_failure_reactivates_schedule_for_re
     )
     store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
 
-    from services import project_chat_execution_service
-    from services.global_assistant_task_service import (
+    from services.chat import project_chat_execution_service
+    from services.assistant.global_assistant_task_service import (
         execute_global_assistant_task,
         list_global_assistant_tasks,
         upsert_global_assistant_task,
@@ -4357,8 +4357,8 @@ def test_global_assistant_system_speech_action_repeats_without_llm(tmp_path, mon
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import system_speech_service
-    from services.global_assistant_task_service import (
+    from services.providers import system_speech_service
+    from services.assistant.global_assistant_task_service import (
         execute_global_assistant_task,
         upsert_global_assistant_task,
     )
@@ -4419,7 +4419,7 @@ def test_feishu_meeting_reminder_parser_handles_fixed_time():
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from services.feishu_scheduled_reminder_service import parse_feishu_meeting_reminder
+    from services.feishu.feishu_scheduled_reminder_service import parse_feishu_meeting_reminder
 
     parsed = parse_feishu_meeting_reminder(
         "@_user_1 明天下午三点开会，提醒大家",
@@ -4442,8 +4442,8 @@ def test_feishu_meeting_reminder_parser_handles_fixed_time():
 
 
 def test_feishu_message_event_creates_group_meeting_reminder(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
-    from services.global_assistant_task_service import list_global_assistant_tasks
+    from services.feishu.feishu_bot_service import process_feishu_message_event
+    from services.assistant.global_assistant_task_service import list_global_assistant_tasks
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -4496,11 +4496,11 @@ def test_feishu_message_event_creates_group_meeting_reminder(tmp_path, monkeypat
         replies.append((connector, kwargs))
 
     monkeypatch.setattr(
-        "services.feishu_bot_service.run_project_chat_once",
+        "services.feishu.feishu_bot_service.run_project_chat_once",
         fake_run_project_chat_once,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service._reply_feishu_text",
+        "services.feishu.feishu_bot_service._reply_feishu_text",
         fake_reply_feishu_text,
     )
 
@@ -4547,8 +4547,8 @@ def test_feishu_scheduled_reminder_sends_due_message_and_completes(tmp_path, mon
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_scheduled_reminder_service as reminders
-    from services.global_assistant_task_service import (
+    from services.feishu import feishu_scheduled_reminder_service as reminders
+    from services.assistant.global_assistant_task_service import (
         list_global_assistant_tasks,
         run_due_global_assistant_tasks,
         upsert_global_assistant_task,
@@ -4605,7 +4605,7 @@ def test_feishu_archive_writer_docx_creates_once_then_appends_when_configured(tm
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -4681,7 +4681,7 @@ def test_feishu_archive_writer_sheet_creates_once_then_appends(tmp_path, monkeyp
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -4758,7 +4758,7 @@ def test_feishu_archive_writer_bitable_creates_once_then_adds_records(tmp_path, 
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -4839,7 +4839,7 @@ def test_feishu_archive_writer_cli_user_docx_creates_once_then_updates(tmp_path,
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -4916,7 +4916,7 @@ def test_feishu_archive_writer_cli_user_sheet_creates_once_then_appends(tmp_path
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -4987,7 +4987,7 @@ def test_feishu_archive_writer_cli_user_bitable_accepts_string_category_config(t
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5078,7 +5078,7 @@ def test_feishu_archive_writer_cli_user_bitable_writes_friendly_structured_field
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5170,7 +5170,7 @@ def test_feishu_archive_writer_cli_user_bitable_uploads_attachments_from_top_lev
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5242,7 +5242,7 @@ def test_feishu_archive_writer_cli_user_bitable_keeps_record_when_attachment_tok
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5305,7 +5305,7 @@ def test_feishu_archive_writer_cli_user_bitable_does_not_fallback_to_manual_medi
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5369,7 +5369,7 @@ def test_feishu_archive_writer_cli_user_bitable_does_not_fallback_to_manual_medi
 
 
 def test_feishu_confirmed_archive_reply_mentions_attachment_failure_after_saved_record():
-    from services.feishu_bot_service import _build_confirmed_archive_reply
+    from services.feishu.feishu_bot_service import _build_confirmed_archive_reply
 
     reply = _build_confirmed_archive_reply(
         [
@@ -5407,7 +5407,7 @@ def test_feishu_archive_writer_cli_user_bitable_uploads_attachments_from_record_
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5501,7 +5501,7 @@ def test_feishu_archive_writer_cli_user_bitable_uploads_attachments_from_object_
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5586,7 +5586,7 @@ def test_feishu_archive_writer_cli_user_bitable_parses_inline_numbered_markdown(
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5664,7 +5664,7 @@ def test_feishu_archive_writer_cli_user_bitable_normalizes_at_mentions_in_person
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5732,7 +5732,7 @@ def test_feishu_archive_writer_defaults_requirement_archive_to_bitable(tmp_path,
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5802,7 +5802,7 @@ def test_feishu_archive_writer_cli_user_bitable_existing_table_adds_friendly_fie
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5894,7 +5894,7 @@ def test_feishu_archive_writer_uses_pending_archive_type_for_requirement_bitable
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -5982,7 +5982,7 @@ def test_feishu_archive_writer_skips_raw_feishu_auto_archive_message(tmp_path, m
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -6025,7 +6025,7 @@ def test_feishu_archive_writer_cli_user_bitable_recreates_deleted_base(tmp_path,
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -6123,7 +6123,7 @@ def test_global_assistant_archive_action_returns_saved(tmp_path, monkeypatch):
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import global_assistant_task_service as tasks
+    from services.assistant import global_assistant_task_service as tasks
 
     monkeypatch.setattr(
         tasks,
@@ -6181,7 +6181,7 @@ def test_global_assistant_archive_action_preserves_skipped_status(tmp_path, monk
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import global_assistant_task_service as tasks
+    from services.assistant import global_assistant_task_service as tasks
 
     monkeypatch.setattr(
         tasks,
@@ -6229,7 +6229,7 @@ def test_global_assistant_archive_action_preserves_skipped_status(tmp_path, monk
 
 
 def test_feishu_confirmed_archive_reply_overrides_model_text():
-    from services.feishu_bot_service import _build_confirmed_archive_reply
+    from services.feishu.feishu_bot_service import _build_confirmed_archive_reply
 
     reply = _build_confirmed_archive_reply(
         [
@@ -6259,7 +6259,7 @@ def test_feishu_confirmed_archive_reply_overrides_model_text():
 
 
 def test_feishu_archive_truth_prompt_binds_current_group_and_bot():
-    from services.feishu_bot_service import _build_feishu_archive_truth_prompt
+    from services.feishu.feishu_bot_service import _build_feishu_archive_truth_prompt
 
     prompt = _build_feishu_archive_truth_prompt(
         {"agent_name": "飞书机器人"},
@@ -6277,7 +6277,7 @@ def test_feishu_archive_truth_prompt_binds_current_group_and_bot():
 
 
 def test_feishu_agent_workflow_prompt_uses_ai_tools_and_does_not_force_base():
-    from services.feishu_bot_service import _build_feishu_agent_workflow_prompt
+    from services.feishu.feishu_bot_service import _build_feishu_agent_workflow_prompt
 
     prompt = _build_feishu_agent_workflow_prompt(
         {"reply_identity": "bot"},
@@ -6306,7 +6306,7 @@ def test_feishu_agent_workflow_prompt_uses_ai_tools_and_does_not_force_base():
 
 
 def test_feishu_archive_clarification_request_is_skipped(tmp_path, monkeypatch):
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -6360,8 +6360,8 @@ def test_feishu_structured_pending_archive_reply_executes_archive_task(tmp_path,
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import global_assistant_task_service as tasks
-    from services.feishu_bot_service import _process_feishu_archive_tasks_after_reply
+    from services.assistant import global_assistant_task_service as tasks
+    from services.feishu.feishu_bot_service import _process_feishu_archive_tasks_after_reply
 
     archive_calls = []
 
@@ -6443,7 +6443,7 @@ def test_feishu_archive_writer_docx_entry_includes_structured_category_fields(tm
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -6515,7 +6515,7 @@ def test_feishu_archive_writer_docx_entry_includes_structured_category_fields(tm
 
 
 def test_feishu_failed_archive_reply_reports_failure():
-    from services.feishu_bot_service import _build_failed_archive_reply
+    from services.feishu.feishu_bot_service import _build_failed_archive_reply
 
     reply = _build_failed_archive_reply(
         [
@@ -6543,7 +6543,7 @@ def test_feishu_failed_archive_reply_reports_failure():
 
 
 def test_feishu_failed_archive_reply_hides_internal_budget_details():
-    from services.feishu_bot_service import _build_failed_archive_reply
+    from services.feishu.feishu_bot_service import _build_failed_archive_reply
 
     reply = _build_failed_archive_reply(
         [
@@ -6580,8 +6580,8 @@ def test_feishu_structured_pending_archive_reruns_after_failed_pre_match(tmp_pat
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import global_assistant_task_service as tasks
-    from services.feishu_bot_service import _process_feishu_archive_tasks_after_reply
+    from services.assistant import global_assistant_task_service as tasks
+    from services.feishu.feishu_bot_service import _process_feishu_archive_tasks_after_reply
 
     calls = []
 
@@ -6655,7 +6655,7 @@ def test_feishu_structured_pending_archive_reruns_after_failed_pre_match(tmp_pat
 
 
 def test_feishu_confirmation_retries_recent_pending_archive_without_model(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -6725,7 +6725,7 @@ def test_feishu_confirmation_retries_recent_pending_archive_without_model(tmp_pa
         },
     )
 
-    from services import global_assistant_task_service as tasks
+    from services.assistant import global_assistant_task_service as tasks
 
     archive_calls = []
     replies = []
@@ -6752,8 +6752,8 @@ def test_feishu_confirmation_retries_recent_pending_archive_without_model(tmp_pa
         replies.append((connector, kwargs))
 
     monkeypatch.setattr(tasks, "archive_feishu_task_message", fake_archive)
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
     tasks.upsert_global_assistant_task(
         username="tester",
         project_id="proj-1",
@@ -6814,7 +6814,7 @@ def test_feishu_confirmation_retries_recent_pending_archive_without_model(tmp_pa
 
 
 def test_feishu_confirmation_retries_direct_bitable_pending_reply_without_model(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -6895,7 +6895,7 @@ def test_feishu_confirmation_retries_direct_bitable_pending_reply_without_model(
         },
     )
 
-    from services import global_assistant_task_service as tasks
+    from services.assistant import global_assistant_task_service as tasks
 
     archive_calls = []
     replies = []
@@ -6928,8 +6928,8 @@ def test_feishu_confirmation_retries_direct_bitable_pending_reply_without_model(
         replies.append((connector, kwargs))
 
     monkeypatch.setattr(tasks, "archive_feishu_task_message", fake_archive)
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
     tasks.upsert_global_assistant_task(
         username="tester",
         project_id="proj-1",
@@ -6982,7 +6982,7 @@ def test_feishu_confirmation_retries_direct_bitable_pending_reply_without_model(
 
 
 def test_feishu_confirmation_retries_direct_bitable_attachment_pending_reply_without_model(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -7057,7 +7057,7 @@ def test_feishu_confirmation_retries_direct_bitable_attachment_pending_reply_wit
         },
     )
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     lark_calls = []
     replies = []
@@ -7082,8 +7082,8 @@ def test_feishu_confirmation_retries_direct_bitable_attachment_pending_reply_wit
         replies.append((connector, kwargs))
 
     monkeypatch.setattr(writer, "_run_lark_cli_json", fake_run_lark_cli_json)
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -7116,7 +7116,7 @@ def test_feishu_confirmation_retries_direct_bitable_attachment_pending_reply_wit
 
 
 def test_feishu_confirmation_executes_direct_bitable_create_with_resource_ref_without_model(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -7247,10 +7247,10 @@ def test_feishu_confirmation_executes_direct_bitable_create_with_resource_ref_wi
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
 
-    monkeypatch.setattr("services.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
-    monkeypatch.setattr("services.feishu_bot_service.archive_feishu_task_message", fake_archive)
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.archive_feishu_task_message", fake_archive)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -7284,7 +7284,7 @@ def test_feishu_confirmation_executes_direct_bitable_create_with_resource_ref_wi
 
 
 def test_feishu_direct_bitable_resource_download_failure_reports_real_cause(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -7387,10 +7387,10 @@ def test_feishu_direct_bitable_resource_download_failure_reports_real_cause(tmp_
     async def fake_reply_feishu_text(connector, **kwargs):
         replies.append((connector, kwargs))
 
-    monkeypatch.setattr("services.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
-    monkeypatch.setattr("services.feishu_bot_service.archive_feishu_task_message", fake_archive)
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._download_feishu_message_resource", fake_download_resource)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.archive_feishu_task_message", fake_archive)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -7426,7 +7426,7 @@ def test_feishu_direct_bitable_resource_download_failure_reports_real_cause(tmp_
 
 
 def test_redownload_feishu_message_resources_sanitizes_reserved_log_extra(monkeypatch, caplog):
-    from services import feishu_bot_service
+    from services.feishu import feishu_bot_service
 
     def fake_download_resource(connector, *, connector_id, message_id, file_key, resource_type):
         raise RuntimeError(
@@ -7470,7 +7470,7 @@ def test_feishu_archive_writer_uses_direct_bitable_target_from_pending_reply(tmp
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -7552,7 +7552,7 @@ def test_feishu_archive_writer_bitable_without_record_id_is_not_reported_as_save
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -7619,7 +7619,7 @@ def test_feishu_archive_writer_bitable_without_record_id_falls_back_to_title_loo
     core_config.get_settings.cache_clear()
     core_config._file_env_values.cache_clear()
 
-    from services import feishu_archive_writer_service as writer
+    from services.feishu import feishu_archive_writer_service as writer
 
     monkeypatch.setattr(
         writer,
@@ -7687,7 +7687,7 @@ def test_feishu_archive_writer_bitable_without_record_id_falls_back_to_title_loo
 
 
 def test_feishu_unconfirmed_archive_reply_is_downgraded():
-    from services.feishu_bot_service import _downgrade_unconfirmed_archive_reply
+    from services.feishu.feishu_bot_service import _downgrade_unconfirmed_archive_reply
 
     reply = _downgrade_unconfirmed_archive_reply(
         "已归档，保存到：**bug文档【机器人】**",
@@ -7715,7 +7715,7 @@ def test_feishu_unconfirmed_archive_reply_is_downgraded():
 
 
 def test_feishu_success_reply_prevents_retrying_older_pending_archive(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -7799,7 +7799,7 @@ def test_feishu_success_reply_prevents_retrying_older_pending_archive(tmp_path, 
         },
     )
 
-    from services import global_assistant_task_service as tasks
+    from services.assistant import global_assistant_task_service as tasks
 
     archive_calls = []
     model_calls = []
@@ -7820,8 +7820,8 @@ def test_feishu_success_reply_prevents_retrying_older_pending_archive(tmp_path, 
         replies.append((connector, kwargs))
 
     monkeypatch.setattr(tasks, "archive_feishu_task_message", fake_archive)
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -7852,7 +7852,7 @@ def test_feishu_success_reply_prevents_retrying_older_pending_archive(tmp_path, 
 
 
 def test_feishu_legacy_success_reply_still_blocks_retry_of_older_pending(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     client, store_factory = _build_project_chat_runtime_test_client(
@@ -7928,7 +7928,7 @@ def test_feishu_legacy_success_reply_still_blocks_retry_of_older_pending(tmp_pat
         },
     )
 
-    from services import global_assistant_task_service as tasks
+    from services.assistant import global_assistant_task_service as tasks
 
     archive_calls = []
     model_calls = []
@@ -7948,8 +7948,8 @@ def test_feishu_legacy_success_reply_still_blocks_retry_of_older_pending(tmp_pat
         return None
 
     monkeypatch.setattr(tasks, "archive_feishu_task_message", fake_archive)
-    monkeypatch.setattr("services.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
-    monkeypatch.setattr("services.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.run_project_chat_once", fake_run_project_chat_once)
+    monkeypatch.setattr("services.feishu.feishu_bot_service._reply_feishu_text", fake_reply_feishu_text)
 
     class Obj:
         def __init__(self, **kwargs):
@@ -7979,7 +7979,7 @@ def test_feishu_legacy_success_reply_still_blocks_retry_of_older_pending(tmp_pat
 
 
 def test_feishu_message_event_without_session_binding_auto_creates_session_and_replies(tmp_path, monkeypatch):
-    from services.feishu_bot_service import process_feishu_message_event
+    from services.feishu.feishu_bot_service import process_feishu_message_event
     from stores.json.project_store import ProjectConfig, ProjectUserMember
 
     _client, store_factory = _build_project_chat_runtime_test_client(
@@ -8020,11 +8020,11 @@ def test_feishu_message_event_without_session_binding_auto_creates_session_and_r
         replies.append((connector, kwargs))
 
     monkeypatch.setattr(
-        "services.feishu_bot_service.run_project_chat_once",
+        "services.feishu.feishu_bot_service.run_project_chat_once",
         fake_run_project_chat_once,
     )
     monkeypatch.setattr(
-        "services.feishu_bot_service._reply_feishu_text",
+        "services.feishu.feishu_bot_service._reply_feishu_text",
         fake_reply_feishu_text,
     )
 
@@ -8064,7 +8064,7 @@ def test_feishu_message_event_without_session_binding_auto_creates_session_and_r
 
 
 def test_resolve_feishu_chat_by_name_reads_search_meta_data(monkeypatch):
-    from services.feishu_bot_service import resolve_feishu_chat_by_name
+    from services.feishu.feishu_bot_service import resolve_feishu_chat_by_name
 
     class FakeResponse:
         def __init__(self, payload):
@@ -8101,7 +8101,7 @@ def test_resolve_feishu_chat_by_name_reads_search_meta_data(monkeypatch):
             )
         raise AssertionError(f"unexpected url: {url}")
 
-    monkeypatch.setattr("services.feishu_bot_service.requests.post", fake_post)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.requests.post", fake_post)
 
     chat = resolve_feishu_chat_by_name(
         {"app_id": "cli_xxx", "app_secret": "secret_xxx"},
@@ -8117,7 +8117,7 @@ def test_resolve_feishu_chat_by_name_reads_search_meta_data(monkeypatch):
 
 
 def test_resolve_feishu_chat_by_name_user_identity_uses_lark_cli(monkeypatch):
-    from services.feishu_bot_service import resolve_feishu_chat_by_name
+    from services.feishu.feishu_bot_service import resolve_feishu_chat_by_name
 
     calls = []
 
@@ -8142,7 +8142,7 @@ def test_resolve_feishu_chat_by_name_user_identity_uses_lark_cli(monkeypatch):
         calls.append({"command": command, "kwargs": kwargs})
         return Completed()
 
-    monkeypatch.setattr("services.feishu_bot_service.subprocess.run", fake_run)
+    monkeypatch.setattr("services.feishu.feishu_bot_service.subprocess.run", fake_run)
 
     chat = resolve_feishu_chat_by_name(
         {"app_id": "cli_xxx", "app_secret": "secret_xxx"},
@@ -8158,7 +8158,7 @@ def test_resolve_feishu_chat_by_name_user_identity_uses_lark_cli(monkeypatch):
 
 
 def test_resolve_feishu_chat_by_name_user_identity_reports_authorization_hint(monkeypatch):
-    from services.feishu_bot_service import resolve_feishu_chat_by_name
+    from services.feishu.feishu_bot_service import resolve_feishu_chat_by_name
 
     class Completed:
         returncode = 1
@@ -8182,7 +8182,7 @@ def test_resolve_feishu_chat_by_name_user_identity_reports_authorization_hint(mo
         stderr = ""
 
     monkeypatch.setattr(
-        "services.feishu_bot_service.subprocess.run",
+        "services.feishu.feishu_bot_service.subprocess.run",
         lambda *args, **kwargs: Completed(),
     )
 
@@ -8200,7 +8200,7 @@ def test_resolve_feishu_chat_by_name_user_identity_reports_authorization_hint(mo
 
 
 def test_archive_workflow_state_service_builds_pending_state():
-    from services.archive_workflow_state_service import (
+    from services.chat.archive_workflow_state_service import (
         archive_workflow_status,
         build_pending_archive_workflow_state,
         reply_contains_structured_pending_archive,
@@ -8226,7 +8226,7 @@ def test_archive_workflow_state_service_builds_pending_state():
 
 def test_run_project_chat_once_persists_pending_archive_workflow_state(tmp_path, monkeypatch):
     from core import config as core_config
-    from services.project_chat_execution_service import run_project_chat_once
+    from services.chat.project_chat_execution_service import run_project_chat_once
     from stores.json.project_store import ProjectConfig
 
     monkeypatch.setenv("CORE_STORE_BACKEND", "json")
@@ -8338,7 +8338,7 @@ def test_run_project_chat_once_persists_pending_archive_workflow_state(tmp_path,
         lambda llm_service, *args, **kwargs: llm_service,
     )
     monkeypatch.setattr(
-        "services.llm_provider_service.get_llm_provider_service",
+        "services.providers.llm_provider_service.get_llm_provider_service",
         lambda: object(),
     )
     monkeypatch.setattr(projects_router, "get_redis_client", AsyncMock(return_value=object()))
@@ -8386,7 +8386,7 @@ def test_run_project_chat_once_persists_pending_archive_workflow_state(tmp_path,
 
 
 def test_prepare_assistant_workflow_state_keeps_confirmed_once_for_follow_up():
-    from services.assistant_workflow_policy_service import prepare_assistant_workflow_state
+    from services.assistant.assistant_workflow_policy_service import prepare_assistant_workflow_state
 
     previous_state = {
         "primary_task_type": "bugfix",
@@ -8412,7 +8412,7 @@ def test_prepare_assistant_workflow_state_keeps_confirmed_once_for_follow_up():
 
 
 def test_assistant_workflow_keeps_plain_chat_as_direct_answer_with_tools_allowed():
-    from services.assistant_workflow_state_service import build_assistant_workflow_state
+    from services.assistant.assistant_workflow_state_service import build_assistant_workflow_state
 
     state = build_assistant_workflow_state(user_message="你好", auto_use_tools=True)
 
@@ -8437,7 +8437,7 @@ def test_project_chat_tools_remain_enabled_for_explicit_tool_intent():
 
 def test_project_chat_tools_follow_previous_tool_workflow_for_short_continue():
     from routers import projects as projects_router
-    from services.assistant_workflow_policy_service import prepare_assistant_workflow_state
+    from services.assistant.assistant_workflow_policy_service import prepare_assistant_workflow_state
 
     previous_state = {
         "primary_task_type": "automation",
@@ -8488,7 +8488,7 @@ def test_tool_intent_keeps_agent_runtime_wrapper_available():
 
 def test_run_project_chat_once_reuses_previous_confirmed_workflow_for_short_follow_up(tmp_path, monkeypatch):
     from core import config as core_config
-    from services.project_chat_execution_service import run_project_chat_once
+    from services.chat.project_chat_execution_service import run_project_chat_once
     from stores.json.project_chat_store import ProjectChatMessage
     from stores.json.project_store import ProjectConfig
 
@@ -8617,7 +8617,7 @@ def test_run_project_chat_once_reuses_previous_confirmed_workflow_for_short_foll
         lambda llm_service, *args, **kwargs: llm_service,
     )
     monkeypatch.setattr(
-        "services.llm_provider_service.get_llm_provider_service",
+        "services.providers.llm_provider_service.get_llm_provider_service",
         lambda: object(),
     )
     monkeypatch.setattr(projects_router, "get_redis_client", AsyncMock(return_value=object()))
@@ -8664,7 +8664,7 @@ def test_run_project_chat_once_reuses_previous_confirmed_workflow_for_short_foll
 
 
 def test_capability_routing_prompt_prefers_existing_cli_and_tools():
-    from services.assistant_workflow_policy_service import build_capability_routing_prompt
+    from services.assistant.assistant_workflow_policy_service import build_capability_routing_prompt
 
     prompt = build_capability_routing_prompt(
         [
@@ -8717,7 +8717,7 @@ def test_build_project_chat_messages_includes_capability_routing_prompt(tmp_path
 
 
 def test_assistant_capability_router_builds_write_first_route_after_confirmation():
-    from services.assistant_capability_router_service import (
+    from services.assistant.assistant_capability_router_service import (
         apply_capability_routing,
         build_capability_routing_decision,
     )

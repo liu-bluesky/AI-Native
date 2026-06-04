@@ -1,4 +1,4 @@
-from services.llm_provider_service import LlmProviderService
+from services.providers.llm_provider_service import LlmProviderService
 
 
 def test_llm_provider_service_supports_bigmodel_openai_compatible_base_url():

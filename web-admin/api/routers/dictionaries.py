@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from core.deps import ensure_any_permission, ensure_permission, require_auth, system_config_store
 from models.requests import DictionaryCreateReq, DictionaryUpdateReq
-from services.dictionary_catalog import (
+from services.catalogs.dictionary_catalog import (
     get_dictionary_definition,
     has_dictionary,
     has_builtin_dictionary,

@@ -8,9 +8,9 @@ from typing import Any, Callable
 from fastapi import HTTPException
 
 from core.deps import is_admin_like
-from services.llm_model_type_catalog import DEFAULT_MODEL_TYPE
-from services import llm_provider_service
-from services.local_connector_service import (
+from services.catalogs.llm_model_type_catalog import DEFAULT_MODEL_TYPE
+from services.providers import llm_provider_service
+from services.connectors.local_connector_service import (
     LocalConnectorLlmAdapter,
     build_local_connector_provider_id,
     connector_base_url,

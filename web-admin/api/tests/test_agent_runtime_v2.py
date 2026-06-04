@@ -4,82 +4,77 @@ import json
 import pytest
 
 
-@pytest.mark.asyncio
-async def test_agent_runtime_v2_can_delegate_to_legacy_when_requested(tmp_path):
-    from services.agent_runtime_v2.runtime import AgentTaskRuntime
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+def test_agent_runtime_v2_normalizes_delegate_mode_to_query_engine(tmp_path):
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
-    class _LegacyOrchestrator:
-        async def run(self, **kwargs):
-            yield {"type": "delta", "content": "ok"}
-            yield {"type": "done", "content": "ok"}
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {"content": "ok"}
 
     runtime = AgentTaskRuntime(
-        _LegacyOrchestrator(),
+        llm_service=_FakeLLM(),
         state_store=TaskRunStore(tmp_path / "runs"),
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
         event_log=RuntimeEventLog(tmp_path / "events"),
     )
     chunks = []
-    async for chunk in runtime.run(
-        session_id="session-1",
-        user_message="修复问题",
-        tools=[],
-        provider_id="provider-1",
-        model_name="model-1",
-        temperature=0.1,
-        max_tokens=256,
-        project_id="proj-1",
-        employee_id="emp-1",
-        cancel_event=asyncio.Event(),
-        username="tester",
-        chat_session_id="chat-1",
-        assistant_workflow={"agent_runtime_mode": "delegate"},
-    ):
-        chunks.append(chunk)
+
+    async def _run():
+        async for chunk in runtime.run(
+            session_id="session-1",
+            user_message="修复问题",
+            tools=[],
+            provider_id="provider-1",
+            model_name="model-1",
+            temperature=0.1,
+            max_tokens=256,
+            project_id="proj-1",
+            employee_id="emp-1",
+            cancel_event=asyncio.Event(),
+            username="tester",
+            chat_session_id="chat-1",
+            assistant_workflow={"agent_runtime_mode": "delegate"},
+        ):
+            chunks.append(chunk)
+
+    asyncio.run(_run())
 
     assert chunks[0]["type"] == "runtime_status"
     assert chunks[0]["runtime"] == "agent_runtime_v2"
-    assert chunks[1:] == [
-        {"type": "delta", "content": "ok"},
-        {"type": "done", "content": "ok"},
-    ]
+    assert chunks[1]["mode"] == "query_engine"
+    assert chunks[-1]["type"] == "done"
+    assert chunks[-1]["content"] == "ok"
     files = list((tmp_path / "runs").glob("run_*.json"))
     assert len(files) == 1
     payload = files[0].read_text(encoding="utf-8")
-    assert '"status": "completed"' in payload
     assert '"type": "run_created"' in payload
-    assert '"type": "legacy_orchestrator_finished"' in payload
+    assert '"type": "query_engine_started"' in payload
     transcript_files = list((tmp_path / "transcripts").glob("run_*.jsonl"))
     assert len(transcript_files) == 1
     transcript_payload = transcript_files[0].read_text(encoding="utf-8")
     assert '"type": "user_message"' in transcript_payload
-    assert '"type": "legacy_done"' in transcript_payload
+    assert '"type": "model_output"' in transcript_payload
     event_files = list((tmp_path / "events").glob("run_*.jsonl"))
     assert len(event_files) == 1
     event_payload = event_files[0].read_text(encoding="utf-8")
     assert '"event_type": "run_started"' in event_payload
-    assert '"event_type": "run_finished"' in event_payload
+    assert '"event_type": "completion_decision"' in event_payload
 
 
 @pytest.mark.asyncio
 async def test_agent_runtime_v2_persists_resume_context(tmp_path):
-    from services.agent_runtime_v2.runtime import AgentTaskRuntime
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
-
-    class _LegacyOrchestrator:
-        async def run(self, **kwargs):
-            yield {"type": "done", "content": "ok"}
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _LocalConnector:
         id = "connector-1"
 
     runtime = AgentTaskRuntime(
-        _LegacyOrchestrator(),
         state_store=TaskRunStore(tmp_path / "runs"),
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
         event_log=RuntimeEventLog(tmp_path / "events"),
@@ -132,10 +127,10 @@ async def test_agent_runtime_v2_persists_resume_context(tmp_path):
 
 
 def test_agent_runtime_inspector_lists_and_loads_run_snapshot(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.run_inspector import AgentRuntimeInspector
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.run_inspector import AgentRuntimeInspector
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     state_store = TaskRunStore(tmp_path / "runs")
     event_log = RuntimeEventLog(tmp_path / "events")
@@ -186,6 +181,388 @@ def test_project_chat_settings_enable_agent_runtime_by_default():
     settings = projects_router._normalize_project_chat_settings({})
 
     assert settings["agent_runtime_enabled"] is True
+
+
+def test_agent_runtime_v2_legacy_namespace_is_removed():
+    import importlib.util
+
+    assert importlib.util.find_spec("services.agent_runtime_v2") is None
+
+
+def test_agent_runtime_shared_tool_registry_is_canonical():
+    from services.agent_runtime.shared.tool_registry import PluginRegistry
+    from services.agent_runtime.v2 import PluginRegistry as V2NamespacePluginRegistry
+    from services.agent_runtime.shared.tool_registry import (
+        PluginRegistry as LegacyPluginRegistry,
+    )
+
+    assert V2NamespacePluginRegistry is PluginRegistry
+    assert LegacyPluginRegistry is PluginRegistry
+
+
+def test_agent_runtime_shared_tool_calls_are_canonical():
+    from services.agent_runtime.shared.tool_calls import CollectedToolCall, ToolCallCollector
+    from services.agent_runtime.v2 import (
+        CollectedToolCall as V2NamespaceCollectedToolCall,
+        ToolCallCollector as V2NamespaceToolCallCollector,
+    )
+    from services.agent_runtime.shared.tool_calls import (
+        CollectedToolCall as LegacyCollectedToolCall,
+        ToolCallCollector as LegacyToolCallCollector,
+    )
+
+    assert V2NamespaceCollectedToolCall is CollectedToolCall
+    assert V2NamespaceToolCallCollector is ToolCallCollector
+    assert LegacyCollectedToolCall is CollectedToolCall
+    assert LegacyToolCallCollector is ToolCallCollector
+
+
+def test_agent_runtime_shared_tool_results_are_canonical():
+    from services.agent_runtime.shared.tool_results import ToolObservation, ToolResultNormalizer
+    from services.agent_runtime.v2 import (
+        ToolObservation as V2NamespaceToolObservation,
+        ToolResultNormalizer as V2NamespaceToolResultNormalizer,
+    )
+    from services.agent_runtime.shared.tool_results import (
+        ToolObservation as LegacyToolObservation,
+        ToolResultNormalizer as LegacyToolResultNormalizer,
+    )
+
+    assert V2NamespaceToolObservation is ToolObservation
+    assert V2NamespaceToolResultNormalizer is ToolResultNormalizer
+    assert LegacyToolObservation is ToolObservation
+    assert LegacyToolResultNormalizer is ToolResultNormalizer
+
+
+def test_agent_runtime_shared_tool_execution_runner_is_canonical():
+    from services.agent_runtime.shared.tool_execution_runner import (
+        ToolExecutionRecord,
+        ToolExecutionRunner,
+    )
+    from services.agent_runtime.v2 import (
+        ToolExecutionRecord as V2NamespaceToolExecutionRecord,
+        ToolExecutionRunner as V2NamespaceToolExecutionRunner,
+    )
+    from services.agent_runtime.shared.tool_execution_runner import (
+        ToolExecutionRecord as LegacyToolExecutionRecord,
+        ToolExecutionRunner as LegacyToolExecutionRunner,
+    )
+
+    assert V2NamespaceToolExecutionRecord is ToolExecutionRecord
+    assert V2NamespaceToolExecutionRunner is ToolExecutionRunner
+    assert LegacyToolExecutionRecord is ToolExecutionRecord
+    assert LegacyToolExecutionRunner is ToolExecutionRunner
+
+
+def test_agent_runtime_shared_task_run_is_canonical():
+    from services.agent_runtime.core import (
+        TaskRun as CoreTaskRun,
+        new_run_id as core_new_run_id,
+        utc_now_iso as core_utc_now_iso,
+    )
+    from services.agent_runtime.shared.task_run import TaskRun, new_run_id, utc_now_iso
+    from services.agent_runtime.v2 import (
+        TaskRun as V2NamespaceTaskRun,
+        new_run_id as v2_namespace_new_run_id,
+        utc_now_iso as v2_namespace_utc_now_iso,
+    )
+    from services.agent_runtime.core.task_run import (
+        TaskRun as LegacyTaskRun,
+        new_run_id as legacy_new_run_id,
+        utc_now_iso as legacy_utc_now_iso,
+    )
+
+    assert CoreTaskRun is TaskRun
+    assert core_new_run_id is new_run_id
+    assert core_utc_now_iso is utc_now_iso
+    assert V2NamespaceTaskRun is TaskRun
+    assert v2_namespace_new_run_id is new_run_id
+    assert v2_namespace_utc_now_iso is utc_now_iso
+    assert LegacyTaskRun is TaskRun
+    assert legacy_new_run_id is new_run_id
+    assert legacy_utc_now_iso is utc_now_iso
+
+
+def test_agent_runtime_shared_transcript_store_is_canonical():
+    from services.agent_runtime.core import TranscriptStore as CoreTranscriptStore
+    from services.agent_runtime.shared.transcript_store import TranscriptStore
+    from services.agent_runtime.v2 import TranscriptStore as V2NamespaceTranscriptStore
+    from services.agent_runtime.core.transcript_store import (
+        TranscriptStore as LegacyTranscriptStore,
+    )
+
+    assert CoreTranscriptStore is TranscriptStore
+    assert V2NamespaceTranscriptStore is TranscriptStore
+    assert LegacyTranscriptStore is TranscriptStore
+
+
+def test_agent_runtime_shared_trust_policy_is_canonical():
+    from services.agent_runtime.shared.trust_policy import TrustPolicy, WorkspaceTrust
+    from services.agent_runtime.v2 import (
+        TrustPolicy as V2NamespaceTrustPolicy,
+        WorkspaceTrust as V2NamespaceWorkspaceTrust,
+    )
+    from services.agent_runtime.shared.trust_policy import (
+        TrustPolicy as LegacyTrustPolicy,
+        WorkspaceTrust as LegacyWorkspaceTrust,
+    )
+
+    assert V2NamespaceTrustPolicy is TrustPolicy
+    assert V2NamespaceWorkspaceTrust is WorkspaceTrust
+    assert LegacyTrustPolicy is TrustPolicy
+    assert LegacyWorkspaceTrust is WorkspaceTrust
+
+
+def test_agent_runtime_shared_verification_policy_is_canonical():
+    from services.agent_runtime.shared.verification_policy import (
+        VerificationEvidence,
+        VerificationPolicy,
+        VerificationState,
+    )
+    from services.agent_runtime.v2 import (
+        VerificationEvidence as V2NamespaceVerificationEvidence,
+        VerificationPolicy as V2NamespaceVerificationPolicy,
+        VerificationState as V2NamespaceVerificationState,
+    )
+    from services.agent_runtime.shared.verification_policy import (
+        VerificationEvidence as LegacyVerificationEvidence,
+        VerificationPolicy as LegacyVerificationPolicy,
+        VerificationState as LegacyVerificationState,
+    )
+
+    assert V2NamespaceVerificationEvidence is VerificationEvidence
+    assert V2NamespaceVerificationPolicy is VerificationPolicy
+    assert V2NamespaceVerificationState is VerificationState
+    assert LegacyVerificationEvidence is VerificationEvidence
+    assert LegacyVerificationPolicy is VerificationPolicy
+    assert LegacyVerificationState is VerificationState
+
+
+def test_agent_runtime_shared_completion_policy_is_canonical():
+    from services.agent_runtime.shared.completion_policy import (
+        CompletionDecision,
+        CompletionPolicy,
+    )
+    from services.agent_runtime.v2 import (
+        CompletionDecision as V2NamespaceCompletionDecision,
+        CompletionPolicy as V2NamespaceCompletionPolicy,
+    )
+    from services.agent_runtime.shared.completion_policy import (
+        CompletionDecision as LegacyCompletionDecision,
+        CompletionPolicy as LegacyCompletionPolicy,
+    )
+
+    assert V2NamespaceCompletionDecision is CompletionDecision
+    assert V2NamespaceCompletionPolicy is CompletionPolicy
+    assert LegacyCompletionDecision is CompletionDecision
+    assert LegacyCompletionPolicy is CompletionPolicy
+
+
+def test_agent_runtime_v2_dynamic_tool_pool_relocation_is_canonical():
+    from services.agent_runtime.v2.dynamic_tool_pool import DynamicToolPool
+    from services.agent_runtime.v2 import DynamicToolPool as V2NamespaceDynamicToolPool
+    from services.agent_runtime.v2.dynamic_tool_pool import (
+        DynamicToolPool as LegacyDynamicToolPool,
+    )
+
+    assert V2NamespaceDynamicToolPool is DynamicToolPool
+    assert LegacyDynamicToolPool is DynamicToolPool
+
+
+def test_agent_runtime_v2_main_modules_are_canonical():
+    from services.agent_runtime.v2 import (
+        AgentRuntimeInspector,
+        AgentRuntimeResumeRequest,
+        AgentRuntimeResumeService,
+        AgentTaskRuntime,
+        EventStream,
+        LLMStep,
+        LLMStepResult,
+        OperationResumeCoordinator,
+        QueryEngine,
+    )
+    from services.agent_runtime.v2 import (
+        AgentRuntimeInspector as LegacyNamespaceAgentRuntimeInspector,
+        AgentRuntimeResumeRequest as LegacyNamespaceAgentRuntimeResumeRequest,
+        AgentRuntimeResumeService as LegacyNamespaceAgentRuntimeResumeService,
+        AgentTaskRuntime as LegacyNamespaceAgentTaskRuntime,
+        EventStream as LegacyNamespaceEventStream,
+        LLMStep as LegacyNamespaceLLMStep,
+        LLMStepResult as LegacyNamespaceLLMStepResult,
+        OperationResumeCoordinator as LegacyNamespaceOperationResumeCoordinator,
+        QueryEngine as LegacyNamespaceQueryEngine,
+    )
+    from services.agent_runtime.v2.event_stream import EventStream as LegacyEventStream
+    from services.agent_runtime.v2.llm_step import (
+        LLMStep as LegacyLLMStep,
+        LLMStepResult as LegacyLLMStepResult,
+    )
+    from services.agent_runtime.v2.operation_resume import (
+        OperationResumeCoordinator as LegacyOperationResumeCoordinator,
+    )
+    from services.agent_runtime.v2.query_engine import QueryEngine as LegacyQueryEngine
+    from services.agent_runtime.v2.resume_service import (
+        AgentRuntimeResumeRequest as LegacyAgentRuntimeResumeRequest,
+        AgentRuntimeResumeService as LegacyAgentRuntimeResumeService,
+    )
+    from services.agent_runtime.v2.run_inspector import (
+        AgentRuntimeInspector as LegacyAgentRuntimeInspector,
+    )
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime as LegacyAgentTaskRuntime
+
+    assert LegacyNamespaceAgentRuntimeInspector is AgentRuntimeInspector
+    assert LegacyNamespaceAgentRuntimeResumeRequest is AgentRuntimeResumeRequest
+    assert LegacyNamespaceAgentRuntimeResumeService is AgentRuntimeResumeService
+    assert LegacyNamespaceAgentTaskRuntime is AgentTaskRuntime
+    assert LegacyNamespaceEventStream is EventStream
+    assert LegacyNamespaceLLMStep is LLMStep
+    assert LegacyNamespaceLLMStepResult is LLMStepResult
+    assert LegacyNamespaceOperationResumeCoordinator is OperationResumeCoordinator
+    assert LegacyNamespaceQueryEngine is QueryEngine
+    assert LegacyAgentRuntimeInspector is AgentRuntimeInspector
+    assert LegacyAgentRuntimeResumeRequest is AgentRuntimeResumeRequest
+    assert LegacyAgentRuntimeResumeService is AgentRuntimeResumeService
+    assert LegacyAgentTaskRuntime is AgentTaskRuntime
+    assert LegacyEventStream is EventStream
+    assert LegacyLLMStep is LLMStep
+    assert LegacyLLMStepResult is LLMStepResult
+    assert LegacyOperationResumeCoordinator is OperationResumeCoordinator
+    assert LegacyQueryEngine is QueryEngine
+
+
+def test_agent_runtime_core_state_and_events_are_canonical():
+    from services.agent_runtime.core import (
+        RuntimeEvent,
+        RuntimeEventLog,
+        TaskRunStore,
+        TranscriptStore,
+    )
+    from services.agent_runtime.core.event_log import (
+        RuntimeEvent as LegacyRuntimeEvent,
+        RuntimeEventLog as LegacyRuntimeEventLog,
+    )
+    from services.agent_runtime.core.state_store import TaskRunStore as LegacyTaskRunStore
+    from services.agent_runtime.core.transcript_store import (
+        TranscriptStore as LegacyTranscriptStore,
+    )
+
+    assert LegacyRuntimeEvent is RuntimeEvent
+    assert LegacyRuntimeEventLog is RuntimeEventLog
+    assert LegacyTaskRunStore is TaskRunStore
+    assert LegacyTranscriptStore is TranscriptStore
+
+
+def test_agent_runtime_skill_registry_resolves_slash_commands():
+    from services.agent_runtime.shared import (
+        RuntimeSkill,
+        SkillRegistry,
+        SlashCommand,
+        runtime_skill_from_manifest,
+    )
+
+    skill = runtime_skill_from_manifest(
+        {
+            "id": "project-summary",
+            "description": "Summarize project sessions",
+            "slash_commands": [
+                {
+                    "name": "summary",
+                    "description": "Summarize",
+                    "aliases": ["/sum"],
+                }
+            ],
+        }
+    )
+    assert skill is not None
+
+    registry = SkillRegistry([skill])
+    command = registry.resolve_command("/sum latest")
+
+    assert isinstance(skill, RuntimeSkill)
+    assert isinstance(command, SlashCommand)
+    assert command.name == "/summary"
+    assert command.skill_id == "project-summary"
+    assert registry.summary()["available_skill_total"] == 1
+
+
+def test_agent_runtime_core_memory_boundary_filters_records():
+    from services.agent_runtime.core import (
+        InMemoryAgentMemoryIndex,
+        MemoryQuery,
+        MemoryRecord,
+    )
+
+    index = InMemoryAgentMemoryIndex()
+    index.remember(
+        MemoryRecord(
+            memory_id="mem-1",
+            content="Hermes gateway adapter notes",
+            project_id="proj-1",
+            tags=("gateway",),
+        )
+    )
+    index.remember(
+        MemoryRecord(
+            memory_id="mem-2",
+            content="Legacy orchestrator notes",
+            project_id="proj-2",
+            tags=("legacy",),
+        )
+    )
+
+    result = index.search(
+        MemoryQuery(query="gateway", project_id="proj-1", tags=("gateway",))
+    )
+
+    assert result.total == 1
+    assert result.records[0].memory_id == "mem-1"
+    assert result.summary()["backend"] == "memory"
+
+
+def test_agent_runtime_gateway_router_normalizes_platform_messages():
+    from services.agent_runtime.integrations import (
+        BasicRuntimeGatewayAdapter,
+        RuntimeGatewayMessage,
+        RuntimeGatewayRouter,
+    )
+
+    router = RuntimeGatewayRouter([BasicRuntimeGatewayAdapter("project_chat")])
+    message = RuntimeGatewayMessage(
+        source="project_chat",
+        text="继续",
+        project_id="proj-1",
+        chat_session_id="chat-1",
+    )
+
+    response = router.dispatch(
+        message,
+        lambda runtime_input: {
+            "text": runtime_input["message"],
+            "metadata": {"project_id": runtime_input["project_id"]},
+        },
+    )
+
+    assert router.to_runtime_input(message)["chat_session_id"] == "chat-1"
+    assert response.text == "继续"
+    assert response.metadata == {"project_id": "proj-1"}
+
+
+def test_agent_runtime_v2_delegation_boundary_is_canonical():
+    from services.agent_runtime.v2 import (
+        DelegationPlanner,
+        DelegationPolicy,
+        DelegationTask,
+    )
+    from services.agent_runtime.v2.delegation import DelegationTask as CanonicalDelegationTask
+    from services.agent_runtime.v2.delegation import DelegationTask as LegacyDelegationTask
+
+    planner = DelegationPlanner(DelegationPolicy(max_parallel=2, max_depth=1))
+    tasks = planner.plan_batch(["inspect tools", "inspect skills"], parent_run_id="run-1")
+
+    assert DelegationTask is CanonicalDelegationTask
+    assert LegacyDelegationTask is CanonicalDelegationTask
+    assert len(tasks) == 2
+    assert tasks[0].runtime_input()["parent_run_id"] == "run-1"
 
 
 def test_agent_runtime_resume_context_helpers_extract_tools():
@@ -310,7 +687,7 @@ def test_agent_runtime_permission_request_lookup_falls_back_to_latest_matching_c
 
 
 def test_tool_result_normalizer_maps_result_status():
-    from services.agent_runtime_v2.tool_result_normalizer import ToolResultNormalizer
+    from services.agent_runtime.shared.tool_results import ToolResultNormalizer
 
     normalizer = ToolResultNormalizer()
     succeeded = normalizer.normalize(
@@ -333,7 +710,7 @@ def test_tool_result_normalizer_maps_result_status():
 
 
 def test_tool_call_collector_assembles_streaming_chunks():
-    from services.agent_runtime_v2.tool_call_collector import ToolCallCollector
+    from services.agent_runtime.shared.tool_calls import ToolCallCollector
 
     collector = ToolCallCollector()
     collector.add_chunk(
@@ -374,12 +751,12 @@ def test_tool_call_collector_assembles_streaming_chunks():
 
 @pytest.mark.asyncio
 async def test_query_engine_creates_observation_and_continues_after_tool(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.llm_step import LLMStep
-    from services.agent_runtime_v2.query_engine import QueryEngine
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FakeLLM:
         def __init__(self):
@@ -455,12 +832,12 @@ async def test_query_engine_creates_observation_and_continues_after_tool(tmp_pat
 
 @pytest.mark.asyncio
 async def test_query_engine_fails_when_tool_succeeds_but_model_never_answers(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.llm_step import LLMStep
-    from services.agent_runtime_v2.query_engine import QueryEngine
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FakeLLM:
         def __init__(self):
@@ -531,14 +908,14 @@ async def test_query_engine_fails_when_tool_succeeds_but_model_never_answers(tmp
 
 @pytest.mark.asyncio
 async def test_query_engine_waits_when_permission_required(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.llm_step import LLMStep
-    from services.agent_runtime_v2.permission_policy import PermissionPolicy
-    from services.agent_runtime_v2.permission_store import PermissionStore
-    from services.agent_runtime_v2.query_engine import QueryEngine
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FakeLLM:
         async def chat_completion_stream(self, **kwargs):
@@ -613,12 +990,12 @@ async def test_query_engine_waits_when_permission_required(tmp_path):
 
 @pytest.mark.asyncio
 async def test_query_engine_continues_when_operation_wait_has_no_user_action(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.llm_step import LLMStep
-    from services.agent_runtime_v2.query_engine import QueryEngine
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FakeLLM:
         def __init__(self):
@@ -697,12 +1074,12 @@ async def test_query_engine_continues_when_operation_wait_has_no_user_action(tmp
 
 @pytest.mark.asyncio
 async def test_query_engine_waits_when_background_operation_has_interaction_schema(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.llm_step import LLMStep
-    from services.agent_runtime_v2.query_engine import QueryEngine
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FakeLLM:
         async def chat_completion_stream(self, **kwargs):
@@ -777,12 +1154,12 @@ async def test_query_engine_waits_when_background_operation_has_interaction_sche
 
 @pytest.mark.asyncio
 async def test_query_engine_waiting_operation_ignores_model_command_tutorial(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.llm_step import LLMStep
-    from services.agent_runtime_v2.query_engine import QueryEngine
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FakeLLM:
         async def chat_completion_stream(self, **kwargs):
@@ -855,7 +1232,7 @@ async def test_query_engine_waiting_operation_ignores_model_command_tutorial(tmp
 
 @pytest.mark.asyncio
 async def test_llm_step_returns_structured_error_when_stream_raises_dns_error():
-    from services.agent_runtime_v2.llm_step import LLMStep
+    from services.agent_runtime.v2.llm_step import LLMStep
 
     class _FailingLLM:
         async def chat_completion_stream(self, **kwargs):
@@ -882,11 +1259,11 @@ async def test_llm_step_returns_structured_error_when_stream_raises_dns_error():
 
 @pytest.mark.asyncio
 async def test_query_engine_returns_llm_error_content_when_stream_raises(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.llm_step import LLMStep
-    from services.agent_runtime_v2.query_engine import QueryEngine
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FailingLLM:
         async def chat_completion_stream(self, **kwargs):
@@ -931,17 +1308,17 @@ async def test_query_engine_returns_llm_error_content_when_stream_raises(tmp_pat
 
 def test_query_engine_blocks_when_permission_rule_denies(tmp_path):
     async def _run():
-        from services.agent_runtime_v2.event_log import RuntimeEventLog
-        from services.agent_runtime_v2.llm_step import LLMStep
-        from services.agent_runtime_v2.permission_policy import PermissionPolicy
-        from services.agent_runtime_v2.permission_store import (
+        from services.agent_runtime.core.event_log import RuntimeEventLog
+        from services.agent_runtime.v2.llm_step import LLMStep
+        from services.agent_runtime.v2.permission_policy import PermissionPolicy
+        from services.agent_runtime.v2.permission_store import (
             PermissionRule,
             PermissionStore,
         )
-        from services.agent_runtime_v2.query_engine import QueryEngine
-        from services.agent_runtime_v2.state_store import TaskRunStore
-        from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
-        from services.agent_runtime_v2.transcript_store import TranscriptStore
+        from services.agent_runtime.v2.query_engine import QueryEngine
+        from services.agent_runtime.core.state_store import TaskRunStore
+        from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+        from services.agent_runtime.core.transcript_store import TranscriptStore
 
         class _FakeLLM:
             async def chat_completion_stream(self, **kwargs):
@@ -1029,11 +1406,11 @@ def test_query_engine_blocks_when_permission_rule_denies(tmp_path):
 
 @pytest.mark.asyncio
 async def test_query_engine_empty_model_response_does_not_complete(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.llm_step import LLMStep
-    from services.agent_runtime_v2.query_engine import QueryEngine
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _EmptyLLM:
         async def chat_completion_stream(self, **kwargs):
@@ -1077,12 +1454,12 @@ async def test_query_engine_empty_model_response_does_not_complete(tmp_path):
 
 @pytest.mark.asyncio
 async def test_query_engine_continue_decision_runs_another_model_step(tmp_path):
-    from services.agent_runtime_v2.completion_policy import CompletionDecision
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.llm_step import LLMStep
-    from services.agent_runtime_v2.query_engine import QueryEngine
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.shared.completion_policy import CompletionDecision
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FakeLLM:
         def __init__(self):
@@ -1142,11 +1519,11 @@ async def test_query_engine_continue_decision_runs_another_model_step(tmp_path):
 
 @pytest.mark.asyncio
 async def test_query_engine_continue_budget_exceeded_fails_not_running(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.llm_step import LLMStep
-    from services.agent_runtime_v2.query_engine import QueryEngine
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FakeLLM:
         def __init__(self):
@@ -1196,24 +1573,17 @@ async def test_query_engine_continue_budget_exceeded_fails_not_running(tmp_path)
 
 @pytest.mark.asyncio
 async def test_agent_runtime_v2_query_engine_mode_is_default(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.runtime import AgentTaskRuntime
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FakeLLM:
         async def chat_completion_stream(self, **kwargs):
             yield {"content": "可以继续。"}
 
-    class _LegacyOrchestrator:
-        def __init__(self):
-            self._llm = _FakeLLM()
-
-        async def run(self, **kwargs):
-            yield {"type": "done", "content": "legacy"}
-
     runtime = AgentTaskRuntime(
-        _LegacyOrchestrator(),
+        llm_service=_FakeLLM(),
         state_store=TaskRunStore(tmp_path / "runs"),
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
         event_log=RuntimeEventLog(tmp_path / "events"),
@@ -1243,12 +1613,312 @@ async def test_agent_runtime_v2_query_engine_mode_is_default(tmp_path):
     assert chunks[-1]["agent_runtime"]["status"] == "completed"
 
 
+def test_agent_runtime_v2_query_engine_mode_accepts_injected_llm_service(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {"content": "已注入。"}
+
+    runtime = AgentTaskRuntime(
+        llm_service=_FakeLLM(),
+        state_store=TaskRunStore(tmp_path / "runs"),
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        event_log=RuntimeEventLog(tmp_path / "events"),
+    )
+    chunks = []
+
+    async def _run():
+        async for chunk in runtime.run(
+            session_id="session-1",
+            user_message="查询状态",
+            tools=[],
+            provider_id="provider-1",
+            model_name="model-1",
+            temperature=0.1,
+            max_tokens=256,
+            project_id="proj-1",
+            employee_id="emp-1",
+            cancel_event=asyncio.Event(),
+            username="tester",
+            chat_session_id="chat-1",
+        ):
+            chunks.append(chunk)
+
+    asyncio.run(_run())
+
+    assert chunks[0]["type"] == "runtime_status"
+    assert chunks[1]["mode"] == "query_engine"
+    assert chunks[-1]["type"] == "done"
+    assert chunks[-1]["content"] == "已注入。"
+    assert chunks[-1]["agent_runtime"]["status"] == "completed"
+
+
+def test_agent_runtime_v2_query_engine_mode_requires_explicit_llm_service(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    runtime = AgentTaskRuntime(
+        state_store=TaskRunStore(tmp_path / "runs"),
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        event_log=RuntimeEventLog(tmp_path / "events"),
+    )
+    chunks = []
+
+    async def _run():
+        async for chunk in runtime.run(
+            session_id="session-1",
+            user_message="查询状态",
+            tools=[],
+            provider_id="provider-1",
+            model_name="model-1",
+            temperature=0.1,
+            max_tokens=256,
+            project_id="proj-1",
+            employee_id="emp-1",
+            cancel_event=asyncio.Event(),
+            username="tester",
+            chat_session_id="chat-1",
+        ):
+            chunks.append(chunk)
+
+    asyncio.run(_run())
+
+    assert chunks[-1]["type"] == "error"
+    assert chunks[-1]["message"] == (
+        "agent_runtime_v2 query engine unavailable: llm service is missing"
+    )
+
+
+def test_agent_runtime_v2_legacy_mode_does_not_use_fallback_factory(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {"content": "v2 ok"}
+
+    runtime = AgentTaskRuntime(
+        llm_service=_FakeLLM(),
+        state_store=TaskRunStore(tmp_path / "runs"),
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        event_log=RuntimeEventLog(tmp_path / "events"),
+    )
+    chunks = []
+
+    async def _run():
+        async for chunk in runtime.run(
+            session_id="session-1",
+            user_message="交给 legacy",
+            tools=[],
+            provider_id="provider-1",
+            model_name="model-1",
+            temperature=0.1,
+            max_tokens=256,
+            project_id="proj-1",
+            employee_id="emp-1",
+            cancel_event=asyncio.Event(),
+            username="tester",
+            chat_session_id="chat-1",
+            assistant_workflow={"agent_runtime_mode": "legacy"},
+        ):
+            chunks.append(chunk)
+
+    asyncio.run(_run())
+
+    assert chunks[0]["type"] == "runtime_status"
+    assert chunks[1]["mode"] == "query_engine"
+    assert chunks[-1]["type"] == "done"
+    assert chunks[-1]["content"] == "v2 ok"
+
+
+def test_agent_runtime_v2_query_engine_default_uses_injected_llm(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {"content": "query ok"}
+
+    runtime = AgentTaskRuntime(
+        llm_service=_FakeLLM(),
+        state_store=TaskRunStore(tmp_path / "runs"),
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        event_log=RuntimeEventLog(tmp_path / "events"),
+    )
+    chunks = []
+
+    async def _run():
+        async for chunk in runtime.run(
+            session_id="session-1",
+            user_message="默认 v2",
+            tools=[],
+            provider_id="provider-1",
+            model_name="model-1",
+            temperature=0.1,
+            max_tokens=256,
+            project_id="proj-1",
+            employee_id="emp-1",
+            cancel_event=asyncio.Event(),
+            username="tester",
+            chat_session_id="chat-1",
+        ):
+            chunks.append(chunk)
+
+    asyncio.run(_run())
+
+    assert chunks[1]["mode"] == "query_engine"
+    assert chunks[-1]["type"] == "done"
+    assert chunks[-1]["content"] == "query ok"
+
+
+def test_agent_runtime_v2_accepts_injected_conversation_manager():
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+
+    conversation_manager = object()
+
+    runtime = AgentTaskRuntime(
+        conversation_manager=conversation_manager,
+    )
+
+    assert runtime._resolve_conversation_manager() is conversation_manager
+
+
+def test_agent_runtime_v2_tool_executor_factory_receives_query_context():
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+
+    executor = object()
+    calls = []
+
+    def _build_tool_executor(**kwargs):
+        calls.append(kwargs)
+        return executor
+
+    runtime = AgentTaskRuntime(tool_executor_factory=_build_tool_executor)
+
+    resolved = runtime._resolve_tool_executor(
+        project_id="proj-1",
+        employee_id="emp-1",
+        username="tester",
+        chat_session_id="chat-1",
+        role_ids=["role-1"],
+        allowed_tool_names=["status_lookup"],
+        local_connector=None,
+        local_connector_workspace_path="/tmp/local",
+        host_workspace_path="/tmp/host",
+        local_connector_sandbox_mode="workspace-write",
+        global_assistant_bridge_handler=None,
+    )
+
+    assert resolved is executor
+    assert calls == [
+        {
+            "project_id": "proj-1",
+            "employee_id": "emp-1",
+            "username": "tester",
+            "chat_session_id": "chat-1",
+            "role_ids": ["role-1"],
+            "allowed_tool_names": ["status_lookup"],
+            "local_connector": None,
+            "local_connector_workspace_path": "/tmp/local",
+            "host_workspace_path": "/tmp/host",
+            "local_connector_sandbox_mode": "workspace-write",
+            "global_assistant_bridge_handler": None,
+        }
+    ]
+
+
+def test_agent_runtime_v2_query_engine_uses_injected_tool_executor(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_completion_stream(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-1",
+                            "function": {
+                                "name": "status_lookup",
+                                "arguments": "{}",
+                            },
+                        }
+                    ]
+                }
+                return
+            yield {"content": "查询结果：tool ok"}
+
+    class _FakeToolExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute_parallel(self, tool_calls, timeout=None):
+            self.calls.extend(tool_calls)
+            return [{"ok": True, "result": "tool ok"}]
+
+    executor = _FakeToolExecutor()
+    runtime = AgentTaskRuntime(
+        llm_service=_FakeLLM(),
+        tool_executor=executor,
+        state_store=TaskRunStore(tmp_path / "runs"),
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        event_log=RuntimeEventLog(tmp_path / "events"),
+    )
+    chunks = []
+
+    async def _run():
+        async for chunk in runtime.run(
+            session_id="session-1",
+            user_message="查询状态",
+            tools=[
+                {
+                    "tool_name": "status_lookup",
+                    "parameters_schema": {"type": "object", "properties": {}},
+                }
+            ],
+            provider_id="provider-1",
+            model_name="model-1",
+            temperature=0.1,
+            max_tokens=256,
+            project_id="proj-1",
+            employee_id="emp-1",
+            cancel_event=asyncio.Event(),
+            username="tester",
+            chat_session_id="chat-1",
+        ):
+            chunks.append(chunk)
+
+    asyncio.run(_run())
+
+    assert executor.calls[0]["function"]["name"] == "status_lookup"
+    assert chunks[1]["mode"] == "query_engine"
+    assert chunks[-1]["type"] == "done"
+    assert chunks[-1]["content"] == "查询结果：tool ok"
+
+
 @pytest.mark.asyncio
 async def test_agent_runtime_v2_done_marks_permission_waiting_user(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.runtime import AgentTaskRuntime
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FakeLLM:
         async def chat_completion_stream(self, **kwargs):
@@ -1265,15 +1935,8 @@ async def test_agent_runtime_v2_done_marks_permission_waiting_user(tmp_path):
                 ]
             }
 
-    class _LegacyOrchestrator:
-        def __init__(self):
-            self._llm = _FakeLLM()
-
-        async def run(self, **kwargs):
-            yield {"type": "done", "content": "legacy"}
-
     runtime = AgentTaskRuntime(
-        _LegacyOrchestrator(),
+        llm_service=_FakeLLM(),
         state_store=TaskRunStore(tmp_path / "runs"),
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
         event_log=RuntimeEventLog(tmp_path / "events"),
@@ -1306,10 +1969,10 @@ async def test_agent_runtime_v2_done_marks_permission_waiting_user(tmp_path):
 
 @pytest.mark.asyncio
 async def test_agent_runtime_v2_done_preserves_operation_wait_task_interaction_schema(tmp_path, monkeypatch):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.runtime import AgentTaskRuntime
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
 
     class _FakeLLM:
         async def chat_completion_stream(self, **kwargs):
@@ -1350,15 +2013,8 @@ async def test_agent_runtime_v2_done_preserves_operation_wait_task_interaction_s
         _fake_execute_parallel,
     )
 
-    class _LegacyOrchestrator:
-        def __init__(self):
-            self._llm = _FakeLLM()
-
-        async def run(self, **kwargs):
-            yield {"type": "done", "content": "legacy"}
-
     runtime = AgentTaskRuntime(
-        _LegacyOrchestrator(),
+        llm_service=_FakeLLM(),
         state_store=TaskRunStore(tmp_path / "runs"),
         transcript_store=TranscriptStore(tmp_path / "transcripts"),
         event_log=RuntimeEventLog(tmp_path / "events"),
@@ -1390,8 +2046,8 @@ async def test_agent_runtime_v2_done_preserves_operation_wait_task_interaction_s
 
 
 def test_completion_policy_requires_verification_for_dev_task():
-    from services.agent_runtime_v2.completion_policy import CompletionPolicy
-    from services.agent_runtime_v2.verification_policy import VerificationPolicy
+    from services.agent_runtime.shared.completion_policy import CompletionPolicy
+    from services.agent_runtime.shared.verification_policy import VerificationPolicy
 
     verification = VerificationPolicy().build_state(user_goal="修复接口并跑测试")
     decision = CompletionPolicy().evaluate(
@@ -1438,8 +2094,8 @@ def test_project_chat_done_operation_wait_task_builds_auth_operation_event():
 
 
 def test_permission_policy_asks_when_workspace_untrusted(tmp_path):
-    from services.agent_runtime_v2.permission_policy import PermissionPolicy
-    from services.agent_runtime_v2.permission_store import PermissionStore
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
 
     decision = PermissionPolicy(PermissionStore(tmp_path)).evaluate(
         run_id="run-1",
@@ -1458,11 +2114,11 @@ def test_permission_policy_asks_when_workspace_untrusted(tmp_path):
 
 
 def test_permission_action_allow_always_reuses_lark_auth_status_signature(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.permission_actions import PermissionActionService
-    from services.agent_runtime_v2.permission_policy import PermissionPolicy
-    from services.agent_runtime_v2.permission_store import PermissionStore
-    from services.agent_runtime_v2.trust_policy import TrustPolicy
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.permission_actions import PermissionActionService
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+    from services.agent_runtime.shared.trust_policy import TrustPolicy
 
     store = PermissionStore(tmp_path / "permissions")
     service = PermissionActionService(
@@ -1555,11 +2211,11 @@ def test_agent_runtime_trace_merges_lark_auth_permission_cards_by_signature():
 
 @pytest.mark.asyncio
 async def test_tool_runner_blocks_permission_ask_without_executor_call(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.permission_policy import PermissionPolicy
-    from services.agent_runtime_v2.permission_store import PermissionStore
-    from services.agent_runtime_v2.tool_call_collector import CollectedToolCall
-    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+    from services.agent_runtime.shared.tool_calls import CollectedToolCall
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
 
     class _FakeToolExecutor:
         def __init__(self):
@@ -1606,14 +2262,14 @@ async def test_tool_runner_blocks_permission_ask_without_executor_call(tmp_path)
 
 @pytest.mark.asyncio
 async def test_tool_runner_executes_when_permission_rule_allows(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.permission_policy import PermissionPolicy
-    from services.agent_runtime_v2.permission_store import (
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import (
         PermissionRule,
         PermissionStore,
     )
-    from services.agent_runtime_v2.tool_call_collector import CollectedToolCall
-    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.shared.tool_calls import CollectedToolCall
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
 
     class _FakeToolExecutor:
         def __init__(self):
@@ -1671,7 +2327,7 @@ async def test_tool_runner_executes_when_permission_rule_allows(tmp_path):
 
 
 def test_trust_policy_marks_workspace_trusted(tmp_path):
-    from services.agent_runtime_v2.trust_policy import TrustPolicy
+    from services.agent_runtime.shared.trust_policy import TrustPolicy
 
     policy = TrustPolicy(tmp_path)
     trust = policy.mark_trusted(
@@ -1685,11 +2341,11 @@ def test_trust_policy_marks_workspace_trusted(tmp_path):
 
 
 def test_permission_action_service_saves_allow_once_rule(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.permission_actions import PermissionActionService
-    from services.agent_runtime_v2.permission_policy import PermissionPolicy
-    from services.agent_runtime_v2.permission_store import PermissionStore
-    from services.agent_runtime_v2.trust_policy import TrustPolicy
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.permission_actions import PermissionActionService
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+    from services.agent_runtime.shared.trust_policy import TrustPolicy
 
     store = PermissionStore(tmp_path / "permissions")
     service = PermissionActionService(
@@ -1738,14 +2394,14 @@ def test_permission_action_service_saves_allow_once_rule(tmp_path):
 
 @pytest.mark.asyncio
 async def test_operation_resume_runs_original_permission_tool_call(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.operation_resume import OperationResumeCoordinator
-    from services.agent_runtime_v2.permission_actions import PermissionActionService
-    from services.agent_runtime_v2.permission_policy import PermissionPolicy
-    from services.agent_runtime_v2.permission_store import PermissionStore
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
-    from services.agent_runtime_v2.trust_policy import TrustPolicy
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.operation_resume import OperationResumeCoordinator
+    from services.agent_runtime.v2.permission_actions import PermissionActionService
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+    from services.agent_runtime.shared.trust_policy import TrustPolicy
 
     class _FakeToolExecutor:
         def __init__(self):
@@ -1832,14 +2488,14 @@ async def test_operation_resume_runs_original_permission_tool_call(tmp_path):
 
 @pytest.mark.asyncio
 async def test_operation_resume_can_continue_query_engine_after_allow_once(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.operation_resume import OperationResumeCoordinator
-    from services.agent_runtime_v2.permission_actions import PermissionActionService
-    from services.agent_runtime_v2.permission_policy import PermissionPolicy
-    from services.agent_runtime_v2.permission_store import PermissionStore
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
-    from services.agent_runtime_v2.trust_policy import TrustPolicy
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.operation_resume import OperationResumeCoordinator
+    from services.agent_runtime.v2.permission_actions import PermissionActionService
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+    from services.agent_runtime.shared.trust_policy import TrustPolicy
 
     class _FakeLLM:
         def __init__(self):
@@ -1938,13 +2594,13 @@ async def test_operation_resume_can_continue_query_engine_after_allow_once(tmp_p
 
 @pytest.mark.asyncio
 async def test_operation_resume_can_continue_after_background_task_completion(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.operation_resume import OperationResumeCoordinator
-    from services.agent_runtime_v2.permission_policy import PermissionPolicy
-    from services.agent_runtime_v2.permission_store import PermissionStore
-    from services.agent_runtime_v2.state_store import TaskRunStore
-    from services.agent_runtime_v2.transcript_store import TranscriptStore
-    from services.agent_runtime_v2.trust_policy import TrustPolicy
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.operation_resume import OperationResumeCoordinator
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+    from services.agent_runtime.shared.trust_policy import TrustPolicy
 
     class _FakeLLM:
         def __init__(self):
@@ -2045,11 +2701,11 @@ async def test_operation_resume_can_continue_after_background_task_completion(tm
 async def test_tool_execution_runner_passes_runtime_metadata_to_project_host_command(tmp_path):
     import json
 
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.permission_policy import PermissionPolicy
-    from services.agent_runtime_v2.permission_store import PermissionStore
-    from services.agent_runtime_v2.tool_call_collector import CollectedToolCall
-    from services.agent_runtime_v2.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+    from services.agent_runtime.shared.tool_calls import CollectedToolCall
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
 
     class _FakeToolExecutor:
         def __init__(self):
@@ -2116,11 +2772,11 @@ async def test_tool_execution_runner_passes_runtime_metadata_to_project_host_com
 
 
 def test_permission_action_service_saves_deny_rule(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.permission_actions import PermissionActionService
-    from services.agent_runtime_v2.permission_policy import PermissionPolicy
-    from services.agent_runtime_v2.permission_store import PermissionStore
-    from services.agent_runtime_v2.trust_policy import TrustPolicy
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.permission_actions import PermissionActionService
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+    from services.agent_runtime.shared.trust_policy import TrustPolicy
 
     store = PermissionStore(tmp_path / "permissions")
     PermissionActionService(
@@ -2154,10 +2810,10 @@ def test_permission_action_service_saves_deny_rule(tmp_path):
 
 
 def test_permission_action_service_trusts_workspace(tmp_path):
-    from services.agent_runtime_v2.event_log import RuntimeEventLog
-    from services.agent_runtime_v2.permission_actions import PermissionActionService
-    from services.agent_runtime_v2.permission_store import PermissionStore
-    from services.agent_runtime_v2.trust_policy import TrustPolicy
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.permission_actions import PermissionActionService
+    from services.agent_runtime.v2.permission_store import PermissionStore
+    from services.agent_runtime.shared.trust_policy import TrustPolicy
 
     trust_policy = TrustPolicy(tmp_path / "trust")
     service = PermissionActionService(
@@ -2178,7 +2834,7 @@ def test_permission_action_service_trusts_workspace(tmp_path):
 
 
 def test_dynamic_tool_pool_deduplicates_and_summarizes_tools():
-    from services.agent_runtime_v2.dynamic_tool_pool import DynamicToolPool
+    from services.agent_runtime.v2.dynamic_tool_pool import DynamicToolPool
 
     pool = DynamicToolPool.from_runtime_tools(
         [
@@ -2197,7 +2853,7 @@ def test_dynamic_tool_pool_deduplicates_and_summarizes_tools():
 
 
 def test_plugin_registry_classifies_runtime_tool_sources():
-    from services.agent_runtime_v2.plugin_registry import PluginRegistry
+    from services.agent_runtime.shared.tool_registry import PluginRegistry
 
     registry = PluginRegistry.from_runtime_tools(
         [
@@ -2220,7 +2876,7 @@ def test_plugin_registry_classifies_runtime_tool_sources():
 
 
 def test_plugin_registry_reads_skill_manifest_version_and_blocks_untrusted_project_skill(tmp_path):
-    from services.agent_runtime_v2.plugin_registry import (
+    from services.agent_runtime.shared.tool_registry import (
         PluginRegistry,
         PluginRegistryContext,
     )
@@ -2260,8 +2916,8 @@ def test_plugin_registry_reads_skill_manifest_version_and_blocks_untrusted_proje
 
 
 def test_dynamic_tool_pool_filters_browser_tools_until_workspace_trusted():
-    from services.agent_runtime_v2.dynamic_tool_pool import DynamicToolPool
-    from services.agent_runtime_v2.plugin_registry import PluginRegistryContext
+    from services.agent_runtime.v2.dynamic_tool_pool import DynamicToolPool
+    from services.agent_runtime.shared.tool_registry import PluginRegistryContext
 
     untrusted_pool = DynamicToolPool.from_runtime_tools(
         [],
@@ -2292,7 +2948,7 @@ def test_dynamic_tool_pool_filters_browser_tools_until_workspace_trusted():
 
 
 def test_plugin_registry_uses_cli_plugin_status_for_availability():
-    from services.agent_runtime_v2.plugin_registry import (
+    from services.agent_runtime.shared.tool_registry import (
         PluginRegistry,
         PluginRegistryContext,
     )
@@ -2336,7 +2992,7 @@ def test_plugin_registry_uses_cli_plugin_status_for_availability():
 
 
 def test_default_plugin_registry_context_reads_cli_plugin_install_receipt(tmp_path, monkeypatch):
-    from services.agent_runtime_v2 import plugin_registry
+    from services.agent_runtime.shared import tool_registry as plugin_registry
 
     state_dir = tmp_path / ".ai-employee" / "cli-plugin-market"
     state_dir.mkdir(parents=True)
@@ -2367,8 +3023,8 @@ def test_default_plugin_registry_context_reads_cli_plugin_install_receipt(tmp_pa
 
 @pytest.mark.asyncio
 async def test_event_stream_builds_agent_runtime_event_payload():
-    from services.agent_runtime_v2.event_log import RuntimeEvent
-    from services.agent_runtime_v2.event_stream import EventStream
+    from services.agent_runtime.core.event_log import RuntimeEvent
+    from services.agent_runtime.v2.event_stream import EventStream
 
     published = []
 
