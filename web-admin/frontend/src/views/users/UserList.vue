@@ -372,6 +372,7 @@ import api from '@/utils/api.js'
 import { authStateVersion, getStoredAuthProfile } from '@/utils/auth-storage.js'
 import { formatDateTime, parseDateTime } from '@/utils/date.js'
 import { hasPermission } from '@/utils/permissions.js'
+import { resolveServerOrigin } from '@/utils/server-profile.js'
 
 const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{1,63}$/
 
@@ -753,7 +754,12 @@ async function updatePassword() {
 }
 
 function buildInviteRegisterUrl(token) {
-  const baseUrl = `${window.location.origin}${window.location.pathname}`
+  const origin =
+    resolveServerOrigin() ||
+    (typeof window !== 'undefined' ? window.location.origin : '')
+  const pathname =
+    typeof window !== 'undefined' ? window.location.pathname || '/' : '/'
+  const baseUrl = `${origin}${pathname}`
   return `${baseUrl}#/register?invite=${encodeURIComponent(token)}`
 }
 

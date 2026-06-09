@@ -9,6 +9,7 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+libc = "0.2"
 portable-pty = "0.8"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }

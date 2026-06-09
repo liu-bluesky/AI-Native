@@ -21,6 +21,7 @@ dependencies = [
 name = "ai-employee-factory-desktop"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "portable-pty",
  "rfd",
  "serde",

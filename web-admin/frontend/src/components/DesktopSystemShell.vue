@@ -394,10 +394,10 @@ const meshStyle = computed(() => ({
 }));
 const dockTone = computed(() => props.wallpaperAppearance?.dockTone || {});
 const dockStyleVars = computed(() => ({
-  "--dock-surface-border": "rgba(255, 255, 255, 0.34)",
-  "--dock-surface-top": "rgba(255, 255, 255, 0.24)",
-  "--dock-surface-mid": "rgba(255, 255, 255, 0.18)",
-  "--dock-surface-bottom": "rgba(255, 255, 255, 0.12)",
+  "--dock-surface-border": "rgba(148, 163, 184, 0.42)",
+  "--dock-surface-top": "rgba(255, 255, 255, 0.92)",
+  "--dock-surface-mid": "rgba(248, 250, 252, 0.84)",
+  "--dock-surface-bottom": "rgba(226, 232, 240, 0.74)",
   "--dock-surface-shadow": "rgba(15, 23, 42, 0.12)",
   "--dock-ambient-shadow": "rgba(15, 23, 42, 0.08)",
   "--dock-inner-highlight": "rgba(255, 255, 255, 0.28)",
@@ -407,7 +407,7 @@ const dockStyleVars = computed(() => ({
   "--dock-item-hover-top": String(dockTone.value?.itemHoverTop || "rgba(255, 255, 255, 0.34)"),
   "--dock-item-hover-bottom": String(dockTone.value?.itemHoverBottom || "rgba(255, 255, 255, 0.16)"),
   "--dock-item-border": String(dockTone.value?.itemBorder || "rgba(255, 255, 255, 0.24)"),
-  "--dock-label-color": String(dockTone.value?.labelColor || "#526071"),
+  "--dock-label-color": "#334155",
   "--dock-icon-border": String(dockTone.value?.iconBorder || "rgba(255, 255, 255, 0.26)"),
   "--dock-icon-top": String(dockTone.value?.iconTop || "rgba(250, 252, 255, 0.96)"),
   "--dock-icon-bottom": String(dockTone.value?.iconBottom || "rgba(232, 238, 246, 0.74)"),
@@ -1687,7 +1687,12 @@ onBeforeUnmount(() => {
   padding: 9px 12px;
   border-radius: 999px;
   border: 1px solid var(--dock-surface-border);
-  background: color-mix(in srgb, var(--dock-surface-top) 100%, transparent);
+  background: linear-gradient(
+    180deg,
+    var(--dock-surface-top) 0%,
+    var(--dock-surface-mid) 54%,
+    var(--dock-surface-bottom) 100%
+  );
   box-shadow:
     0 18px 40px var(--dock-surface-shadow),
     0 8px 18px var(--dock-ambient-shadow),
@@ -1913,6 +1918,7 @@ onBeforeUnmount(() => {
   line-height: 1.15;
   text-align: center;
   text-overflow: ellipsis;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
   white-space: nowrap;
 }
 

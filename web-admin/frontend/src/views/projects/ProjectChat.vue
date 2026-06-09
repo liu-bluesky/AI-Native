@@ -440,8 +440,8 @@
                               <span></span>
                             </div>
                             <div class="message-external-waiting__body">
-                              <strong>外部模型正在生成回复</strong>
-                              <span>已连接执行器，正在等待模型返回结果</span>
+                              <strong>{{ externalAgentWaitingMessageTitle(item) }}</strong>
+                              <span>{{ externalAgentWaitingMessageDescription(item) }}</span>
                               <div class="message-external-waiting__bar">
                                 <i></i>
                               </div>
@@ -1599,6 +1599,66 @@
               </div>
             </section>
 
+            <section class="local-runner-card local-runner-card--process">
+              <div class="local-runner-card__head">
+                <div>
+                  <div class="local-runner-card__eyebrow">Process</div>
+                  <div class="local-runner-card__title">执行过程</div>
+                </div>
+                <el-tag
+                  size="small"
+                  effect="plain"
+                  :type="localRunnerProcessStatusTagType"
+                >
+                  {{ terminalPanelStatusText }}
+                </el-tag>
+              </div>
+              <div class="local-process-summary">
+                <div>
+                  <span>会话</span>
+                  <strong>{{ hostTerminalSessionId || "未连接" }}</strong>
+                </div>
+                <div>
+                  <span>命令</span>
+                  <strong>{{ terminalActiveCommand || "等待任务" }}</strong>
+                </div>
+                <div>
+                  <span>日志</span>
+                  <strong>{{ terminalPanelLineCount }} 行</strong>
+                </div>
+              </div>
+              <div class="local-process-timeline">
+                <div
+                  v-for="item in localRunnerProcessItems"
+                  :key="item.id"
+                  class="local-process-timeline__item"
+                  :class="`is-${item.phase}`"
+                >
+                  <span class="local-process-timeline__marker">
+                    <CircleCheck
+                      v-if="item.phase === 'completed'"
+                      :size="13"
+                    />
+                    <span v-else></span>
+                  </span>
+                  <span class="local-process-timeline__main">
+                    <span class="local-process-timeline__title">
+                      {{ item.title }}
+                    </span>
+                    <span
+                      v-if="item.summary"
+                      class="local-process-timeline__summary"
+                    >
+                      {{ item.summary }}
+                    </span>
+                  </span>
+                  <span class="local-process-timeline__phase">
+                    {{ item.phaseLabel }}
+                  </span>
+                </div>
+              </div>
+            </section>
+
             <section class="local-runner-card local-runner-card--sessions">
               <div class="local-runner-card__head">
                 <div>
@@ -1863,15 +1923,6 @@
                 >
                   复制完整日志
                 </el-button>
-                <el-button
-                  v-if="nativeExternalAgentSession?.status === 'running'"
-                  size="small"
-                  type="danger"
-                  plain
-                  @click="cancelActiveNativeExternalAgentSession"
-                >
-                  取消 Runner
-                </el-button>
               </div>
               <div class="runner-session-detail__grid">
                 <div>
@@ -1887,103 +1938,210 @@
                   <strong>{{ nativeExternalAgentCommandText || "-" }}</strong>
                 </div>
               </div>
-              <section class="runner-session-detail__section runner-session-detail__terminal">
-                <div class="runner-session-detail__section-head">
-                  <div>
-                    <strong>运行终端</strong>
-                    <span>{{ nativeExternalAgentTerminalStatusText }}</span>
+              <el-tabs
+                v-model="nativeExternalAgentDetailActiveTab"
+                class="runner-session-detail__tabs"
+              >
+                <el-tab-pane name="terminal">
+                  <template #label>
+                    <span>终端</span>
+                    <em>{{ nativeExternalAgentLogStats.total }}</em>
+                  </template>
+                  <section class="runner-session-detail__section runner-session-detail__terminal">
+                    <div class="runner-session-detail__section-head">
+                      <div>
+                        <strong>运行终端</strong>
+                        <span>{{ nativeExternalAgentTerminalStatusText }}</span>
+                      </div>
+                      <div class="runner-session-detail__terminal-actions">
+                        <el-button
+                          v-for="item in nativeExternalAgentTerminalControls"
+                          :key="item.key"
+                          size="small"
+                          text
+                          :type="item.type || 'default'"
+                          :disabled="!canWriteNativeExternalAgentStdin"
+                          :loading="nativeExternalAgentStdinSending"
+                          @click="sendNativeExternalAgentControl(item.content)"
+                        >
+                          {{ item.label }}
+                        </el-button>
+                      </div>
+                    </div>
+                    <pre
+                      ref="nativeExternalAgentTerminalRef"
+                      class="runner-session-detail__terminal-output"
+                      :class="{ 'is-running': nativeExternalAgentSession?.status === 'running' }"
+                    >{{ nativeExternalAgentTerminalText || "Runner 启动后会在这里显示执行器输出" }}</pre>
+                  </section>
+                  <div
+                    v-if="nativeExternalAgentInteractionPrompt"
+                    class="runner-session-detail__interaction"
+                  >
+                    <div class="runner-session-detail__section-head">
+                      <strong>{{ nativeExternalAgentInteractionPrompt.title }}</strong>
+                      <span>{{ nativeExternalAgentInteractionPrompt.description }}</span>
+                    </div>
+                    <ElementEasyForm
+                      :form-json="nativeExternalAgentInteractionFormJson"
+                      class="runner-session-detail__easy-form"
+                    />
+                    <div class="runner-session-detail__actions">
+                      <el-button size="small" text @click="dismissNativeExternalAgentInteraction">
+                        手动输入
+                      </el-button>
+                      <el-button
+                        size="small"
+                        type="primary"
+                        :loading="nativeExternalAgentStdinSending"
+                        @click="submitNativeExternalAgentInteraction"
+                      >
+                        确认
+                      </el-button>
+                    </div>
                   </div>
-                  <div class="runner-session-detail__terminal-actions">
-                    <el-button
-                      v-for="item in nativeExternalAgentTerminalControls"
-                      :key="item.key"
+                  <div
+                    v-if="canWriteNativeExternalAgentStdin"
+                    class="runner-session-detail__stdin"
+                  >
+                    <el-input
+                      v-model="nativeExternalAgentStdinDraft"
                       size="small"
-                      text
-                      :type="item.type || 'default'"
-                      :disabled="!canWriteNativeExternalAgentStdin"
+                      placeholder="发送给 Runner 的输入"
+                      clearable
+                      @keyup.enter="sendNativeExternalAgentStdin"
+                    />
+                    <el-button
+                      size="small"
+                      type="primary"
                       :loading="nativeExternalAgentStdinSending"
-                      @click="sendNativeExternalAgentControl(item.content)"
+                      @click="sendNativeExternalAgentStdin"
                     >
-                      {{ item.label }}
+                      发送
                     </el-button>
                   </div>
-                </div>
-                <pre
-                  ref="nativeExternalAgentTerminalRef"
-                  class="runner-session-detail__terminal-output"
-                  :class="{ 'is-running': nativeExternalAgentSession?.status === 'running' }"
-                >{{ nativeExternalAgentTerminalText || "Runner 启动后会在这里显示执行器输出" }}</pre>
-              </section>
-              <div
-                v-if="nativeExternalAgentInteractionPrompt"
-                class="runner-session-detail__interaction"
-              >
-                <div class="runner-session-detail__section-head">
-                  <strong>{{ nativeExternalAgentInteractionPrompt.title }}</strong>
-                  <span>{{ nativeExternalAgentInteractionPrompt.description }}</span>
-                </div>
-                <ElementEasyForm
-                  :form-json="nativeExternalAgentInteractionFormJson"
-                  class="runner-session-detail__easy-form"
-                />
-                <div class="runner-session-detail__actions">
-                  <el-button size="small" text @click="dismissNativeExternalAgentInteraction">
-                    手动输入
-                  </el-button>
-                  <el-button
-                    size="small"
-                    type="primary"
-                    :loading="nativeExternalAgentStdinSending"
-                    @click="submitNativeExternalAgentInteraction"
+                </el-tab-pane>
+                <el-tab-pane name="final">
+                  <template #label>
+                    <span>最终回答</span>
+                  </template>
+                  <section class="runner-session-detail__section">
+                    <div class="runner-session-detail__section-head">
+                      <strong>最终回答</strong>
+                      <span>优先展示 Runner finalOutput</span>
+                    </div>
+                    <pre class="runner-session-detail__output">{{
+                      nativeExternalAgentFinalAnswerText || "暂无最终回答"
+                    }}</pre>
+                  </section>
+                </el-tab-pane>
+                <el-tab-pane name="files">
+                  <template #label>
+                    <span>文件</span>
+                    <em>{{ nativeExternalAgentFileEvidenceItems.length }}</em>
+                  </template>
+                  <div
+                    v-if="nativeExternalAgentFileEvidenceItems.length"
+                    class="runner-session-detail__evidence-list"
                   >
-                    确认
-                  </el-button>
-                </div>
-              </div>
-              <div
-                v-if="canWriteNativeExternalAgentStdin"
-                class="runner-session-detail__stdin"
-              >
-                <el-input
-                  v-model="nativeExternalAgentStdinDraft"
-                  size="small"
-                  placeholder="发送给 Runner 的输入"
-                  clearable
-                  @keyup.enter="sendNativeExternalAgentStdin"
-                />
-                <el-button
-                  size="small"
-                  type="primary"
-                  :loading="nativeExternalAgentStdinSending"
-                  @click="sendNativeExternalAgentStdin"
-                >
-                  发送
-                </el-button>
-              </div>
-              <section class="runner-session-detail__section">
-                <div class="runner-session-detail__section-head">
-                  <strong>最终回答</strong>
-                </div>
-                <pre class="runner-session-detail__output">{{
-                  nativeExternalAgentFinalAnswerText || "暂无最终回答"
-                }}</pre>
-              </section>
-              <section class="runner-session-detail__section">
-                <div class="runner-session-detail__section-head">
-                  <strong>stdout</strong>
-                </div>
-                <pre class="runner-session-detail__output">{{
-                  nativeExternalAgentStdoutText || "无 stdout"
-                }}</pre>
-              </section>
-              <section class="runner-session-detail__section">
-                <div class="runner-session-detail__section-head">
-                  <strong>stderr / system</strong>
-                </div>
-                <pre class="runner-session-detail__output">{{
-                  nativeExternalAgentDiagnosticText || "无诊断日志"
-                }}</pre>
-              </section>
+                    <article
+                      v-for="(item, index) in nativeExternalAgentFileEvidenceItems"
+                      :key="`runner-file-${index}`"
+                      class="runner-session-detail__evidence"
+                    >
+                      <span>{{ item.kind }}</span>
+                      <strong>{{ item.path || item.title }}</strong>
+                      <p v-if="item.summary">{{ item.summary }}</p>
+                      <small v-if="item.status">{{ item.status }}</small>
+                    </article>
+                  </div>
+                  <div v-else class="runner-session-detail__empty">
+                    当前 Runner 会话暂无文件、diff 或写入准备记录。
+                  </div>
+                </el-tab-pane>
+                <el-tab-pane name="verification">
+                  <template #label>
+                    <span>验证</span>
+                    <em>{{ nativeExternalAgentVerificationItems.length }}</em>
+                  </template>
+                  <div
+                    v-if="nativeExternalAgentVerificationItems.length"
+                    class="runner-session-detail__evidence-list"
+                  >
+                    <article
+                      v-for="(item, index) in nativeExternalAgentVerificationItems"
+                      :key="`runner-verification-${index}`"
+                      class="runner-session-detail__evidence"
+                    >
+                      <span>{{ item.kind }}</span>
+                      <strong>{{ item.title }}</strong>
+                      <p v-if="item.summary">{{ item.summary }}</p>
+                      <small v-if="runnerEvidenceMetaText(item)">
+                        {{ runnerEvidenceMetaText(item) }}
+                      </small>
+                    </article>
+                  </div>
+                  <div v-else class="runner-session-detail__empty">
+                    当前 Runner 会话暂无验证命令或自检结果。
+                  </div>
+                </el-tab-pane>
+                <el-tab-pane name="permissions">
+                  <template #label>
+                    <span>权限</span>
+                    <em>{{ nativeExternalAgentSessionPermissionRecords.length }}</em>
+                  </template>
+                  <div
+                    v-if="nativeExternalAgentSessionPermissionRecords.length"
+                    class="runner-session-detail__evidence-list"
+                  >
+                    <article
+                      v-for="record in nativeExternalAgentSessionPermissionRecords"
+                      :key="record.id || `${record.command}-${record.createdAtEpochMs}`"
+                      class="runner-session-detail__evidence"
+                    >
+                      <span>{{ runnerPermissionDecisionLabel(record) }}</span>
+                      <strong>{{ runnerPermissionRecordSummary(record) }}</strong>
+                      <small>{{ runnerPermissionRecordTime(record) }}</small>
+                    </article>
+                  </div>
+                  <div v-else class="runner-session-detail__empty">
+                    当前 Runner 会话暂无权限决策记录。
+                  </div>
+                </el-tab-pane>
+                <el-tab-pane name="diagnostics">
+                  <template #label>
+                    <span>诊断</span>
+                    <em>{{ nativeExternalAgentLogStats.stderr + nativeExternalAgentLogStats.system }}</em>
+                  </template>
+                  <div class="runner-session-detail__diagnostic-grid">
+                    <div
+                      v-for="item in nativeExternalAgentDiagnosticItems"
+                      :key="item.label"
+                    >
+                      <span>{{ item.label }}</span>
+                      <strong>{{ item.value }}</strong>
+                    </div>
+                    <div>
+                      <span>logs</span>
+                      <strong>
+                        stdout={{ nativeExternalAgentLogStats.stdout }}
+                        stderr={{ nativeExternalAgentLogStats.stderr }}
+                        stdin={{ nativeExternalAgentLogStats.stdin }}
+                        system={{ nativeExternalAgentLogStats.system }}
+                      </strong>
+                    </div>
+                  </div>
+                  <section class="runner-session-detail__section">
+                    <div class="runner-session-detail__section-head">
+                      <strong>stderr / system / stdin</strong>
+                      <span>默认归入诊断，不进入主回答</span>
+                    </div>
+                    <pre class="runner-session-detail__output">{{
+                      nativeExternalAgentDiagnosticText || "无诊断日志"
+                    }}</pre>
+                  </section>
+                </el-tab-pane>
+              </el-tabs>
             </div>
           </el-drawer>
           </div>
@@ -2071,16 +2229,6 @@
                   >
                     {{ agentWorkflowState.actionLabel }}
                   </el-button>
-                  <el-button
-                    v-if="showPauseGenerationButton"
-                    class="agent-workflow-status__stop"
-                    size="small"
-                    text
-                    type="danger"
-                    @click="stopGeneration"
-                  >
-                    停止
-                  </el-button>
                 </div>
               </div>
               <div
@@ -2103,16 +2251,6 @@
                     {{ item }}
                   </span>
                 </div>
-                <el-button
-                  v-if="showPauseGenerationButton"
-                  class="chat-working-status__stop"
-                  size="small"
-                  text
-                  type="danger"
-                  @click="stopGeneration"
-                >
-                  停止
-                </el-button>
               </div>
               <div
                 class="chat-input-wrapper"
@@ -2234,16 +2372,79 @@
                     <div v-else class="chat-model-pill">
                       {{ externalAgentDisplayLabel }}
                     </div>
-                    <button
+                    <el-popover
                       v-if="hasSelectedProject"
-                      type="button"
-                      class="execution-status-chip"
-                      :class="executionRuntimeToneClass"
-                      @click="openSettingsCenter('chat')"
+                      trigger="click"
+                      placement="top-start"
+                      :width="360"
+                      popper-class="execution-status-popover"
+                      :teleported="false"
                     >
-                      <span class="execution-status-chip__dot"></span>
-                      <span>{{ composerExecutionChipLabel }}</span>
-                    </button>
+                      <template #reference>
+                        <button
+                          type="button"
+                          class="execution-status-chip"
+                          :class="executionRuntimeToneClass"
+                        >
+                          <span class="execution-status-chip__dot"></span>
+                          <span>{{ composerExecutionChipLabel }}</span>
+                        </button>
+                      </template>
+                      <div class="execution-status-popover__body">
+                        <div class="execution-status-popover__head">
+                          <div>
+                            <strong>{{ executionRuntimeTitle }}</strong>
+                            <span>{{ executionRuntimeDescription }}</span>
+                          </div>
+                          <el-tag
+                            size="small"
+                            effect="plain"
+                            :type="composerExecutionStatusTagType"
+                          >
+                            {{ composerExecutionStatusLabel }}
+                          </el-tag>
+                        </div>
+                        <div class="execution-status-popover__grid">
+                          <div
+                            v-for="item in composerExecutionSummaryItems"
+                            :key="item.label"
+                          >
+                            <span>{{ item.label }}</span>
+                            <strong>{{ item.value }}</strong>
+                          </div>
+                        </div>
+                        <div class="execution-status-popover__actions">
+                          <el-button
+                            size="small"
+                            text
+                            @click="openSettingsCenter('chat')"
+                          >
+                            打开设置
+                          </el-button>
+                          <el-button
+                            size="small"
+                            text
+                            :disabled="!composerExecutionDetailAvailable"
+                            @click="openComposerExecutionDetail"
+                          >
+                            查看详情
+                          </el-button>
+                          <el-button
+                            size="small"
+                            type="primary"
+                            plain
+                            :loading="
+                              nativeExecutorDetecting ||
+                              nativeRunnerSelfChecking ||
+                              externalAgentWarmupLoading
+                            "
+                            @click="handleComposerExecutionPrimaryAction"
+                          >
+                            {{ executionRuntimeActionLabel }}
+                          </el-button>
+                        </div>
+                      </div>
+                    </el-popover>
                     <el-upload
                       action="#"
                       :auto-upload="false"
@@ -3424,15 +3625,6 @@
                           >
                             启动 Runner
                           </el-button>
-                          <el-button
-                            v-if="nativeExternalAgentSession?.status === 'running'"
-                            size="small"
-                            plain
-                            type="danger"
-                            @click="cancelActiveNativeExternalAgentSession"
-                          >
-                            取消
-                          </el-button>
                         </div>
                         <div
                           v-if="nativeWorkspaceStatusLabel"
@@ -3441,7 +3633,7 @@
                           {{ nativeWorkspaceStatusLabel }}
                         </div>
                         <div class="settings-runtime-status-card__hint">
-                          Runner 会启动当前外部 Agent 的非交互进程并持续采集日志；取消会终止本机进程。
+                          Runner 会启动当前外部 Agent 的非交互进程并持续采集日志；聊天区暂停只会转入后台运行。
                         </div>
                         <div
                           v-if="nativeExternalAgentSession"
@@ -4605,6 +4797,7 @@ import {
   detectNativeExecutors,
   getNativeExternalAgentSession,
   getNativeRuntimeInfo,
+  hardKillNativeExternalAgentSession,
   hasNativeDesktopBridge,
   listNativeExternalAgentSessions,
   listNativeRunnerPermissionDecisions,
@@ -4616,6 +4809,7 @@ import {
   recordNativeRunnerPermissionDecision,
   runNativeRunnerCommand,
   startNativeExternalAgentSession as startNativeExternalAgentSessionCommand,
+  subscribeNativeExternalAgentSessionEvents,
   writeNativeExternalAgentSessionInput,
 } from "@/utils/native-desktop-bridge.js";
 import {
@@ -5082,12 +5276,15 @@ const wsConnected = ref(false);
 const wsClient = ref(null);
 const wsProjectId = ref("");
 const pendingRequests = reactive(new Map());
+const chatSessionMessageCache = new Map();
+const chatSessionComposerCache = new Map();
 const queuedFollowupMessages = ref([]);
 let followupQueueDraining = false;
 let activeFollowupAssistantMessageId = "";
 const activeGenerationRequestId = ref("");
 const workingStatusStartedAt = ref(0);
 const workingStatusNow = ref(Date.now());
+const workingStatusStartedAtBySession = new Map();
 let workingStatusTimer = null;
 let lastNoActiveGenerationWarningAt = 0;
 const pendingAgentPrepares = new Map();
@@ -5108,12 +5305,26 @@ const nativeExternalAgentSession = ref(null);
 const nativeExternalAgentSessionLogs = ref([]);
 const nativeExternalAgentMessageId = ref("");
 const nativeExternalAgentChatSessionId = ref("");
+const nativeExternalAgentSessionsById = reactive(new Map());
+const nativeExternalAgentSessionLogsById = reactive(new Map());
+const nativeExternalAgentRunnerSessionByChatSessionId = reactive(new Map());
+const nativeExternalAgentChatSessionByRunnerSessionId = reactive(new Map());
+const nativeExternalAgentMessageByRunnerSessionId = reactive(new Map());
+const nativeExternalAgentLaunchingChatSessionIds = ref(new Set());
+const nativeExternalAgentBackgroundedChatSessionIds = ref(new Set());
 const nativeExternalAgentPersistedSessions = ref(new Set());
+const nativeExternalAgentFinalizedSessionIds = new Set();
+const nativeExternalAgentFastKilledSessionIds = new Set();
+const nativeExternalAgentCancelledSessionIds = new Set();
+const nativeExternalAgentDeferredCleanupTimers = new Map();
 let nativeExternalAgentSessionPollTimer = null;
+const nativeExternalAgentSessionPollTimers = new Map();
+let nativeExternalAgentSessionEventUnlisten = null;
 const nativeExternalAgentSessionRecords = ref([]);
 const nativeExternalAgentSessionRecordsLoading = ref(false);
 const selectedNativeExternalAgentRecordId = ref("");
 const nativeExternalAgentSessionDetailVisible = ref(false);
+const nativeExternalAgentDetailActiveTab = ref("terminal");
 const nativeExternalAgentTerminalRef = ref(null);
 const nativeExternalAgentStdinDraft = ref("");
 const nativeExternalAgentStdinSending = ref(false);
@@ -5314,6 +5525,233 @@ const canTrustAgentRuntimeWorkspace = computed(
 const workspacePathDraftNormalized = computed(() =>
   String(workspacePathDraft.value || "").trim(),
 );
+
+function normalizeNativeExternalAgentSessionId(value) {
+  if (value && typeof value === "object") {
+    return String(value.sessionId || value.session_id || "").trim();
+  }
+  return String(value || "").trim();
+}
+
+function isLiveNativeExternalAgentStatus(status) {
+  return ["running", "cancelling"].includes(String(status || "").trim());
+}
+
+function setNativeExternalAgentLaunching(chatSessionId, launching) {
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedChatSessionId) return;
+  const next = new Set(nativeExternalAgentLaunchingChatSessionIds.value);
+  if (launching) {
+    next.add(normalizedChatSessionId);
+  } else {
+    next.delete(normalizedChatSessionId);
+  }
+  nativeExternalAgentLaunchingChatSessionIds.value = next;
+  syncNativeExternalAgentRunningFlag();
+  syncChatLoadingWithCurrentSession();
+}
+
+function setNativeExternalAgentBackgrounded(chatSessionId, backgrounded) {
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedChatSessionId) return;
+  const next = new Set(nativeExternalAgentBackgroundedChatSessionIds.value);
+  if (backgrounded) {
+    next.add(normalizedChatSessionId);
+  } else {
+    next.delete(normalizedChatSessionId);
+  }
+  nativeExternalAgentBackgroundedChatSessionIds.value = next;
+  syncNativeExternalAgentRunningFlag();
+  syncChatLoadingWithCurrentSession();
+}
+
+function rememberNativeExternalAgentSessionBinding({
+  sessionId = "",
+  chatSessionId = "",
+  messageId = "",
+} = {}) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  if (!normalizedSessionId) return;
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  const normalizedMessageId = String(messageId || "").trim();
+  if (normalizedChatSessionId) {
+    nativeExternalAgentChatSessionByRunnerSessionId.set(
+      normalizedSessionId,
+      normalizedChatSessionId,
+    );
+    nativeExternalAgentRunnerSessionByChatSessionId.set(
+      normalizedChatSessionId,
+      normalizedSessionId,
+    );
+  }
+  if (normalizedMessageId) {
+    nativeExternalAgentMessageByRunnerSessionId.set(
+      normalizedSessionId,
+      normalizedMessageId,
+    );
+  }
+}
+
+function getNativeExternalAgentRunnerSessionIdForChatSession(chatSessionId) {
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedChatSessionId) return "";
+  const mapped = String(
+    nativeExternalAgentRunnerSessionByChatSessionId.get(normalizedChatSessionId) ||
+      "",
+  ).trim();
+  if (mapped) return mapped;
+  if (
+    String(nativeExternalAgentChatSessionId.value || "").trim() ===
+    normalizedChatSessionId
+  ) {
+    return normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value);
+  }
+  return "";
+}
+
+function getNativeExternalAgentChatSessionIdForRunnerSession(sessionId) {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  if (!normalizedSessionId) return "";
+  const mapped = String(
+    nativeExternalAgentChatSessionByRunnerSessionId.get(normalizedSessionId) ||
+      "",
+  ).trim();
+  if (mapped) return mapped;
+  if (
+    normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value) ===
+    normalizedSessionId
+  ) {
+    return String(nativeExternalAgentChatSessionId.value || "").trim();
+  }
+  return "";
+}
+
+function getNativeExternalAgentMessageIdForRunnerSession(sessionId) {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  if (!normalizedSessionId) return "";
+  const mapped = String(
+    nativeExternalAgentMessageByRunnerSessionId.get(normalizedSessionId) || "",
+  ).trim();
+  if (mapped) return mapped;
+  if (
+    normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value) ===
+    normalizedSessionId
+  ) {
+    return String(nativeExternalAgentMessageId.value || "").trim();
+  }
+  return "";
+}
+
+function clearActiveNativeExternalAgentSessionBinding(
+  sessionId = "",
+  chatSessionId = "",
+) {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  const normalizedChatSessionId = String(
+    chatSessionId ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId) ||
+      "",
+  ).trim();
+  if (!normalizedSessionId || !normalizedChatSessionId) return;
+  const mappedSessionId = normalizeNativeExternalAgentSessionId(
+    nativeExternalAgentRunnerSessionByChatSessionId.get(normalizedChatSessionId),
+  );
+  if (mappedSessionId === normalizedSessionId) {
+    nativeExternalAgentRunnerSessionByChatSessionId.delete(
+      normalizedChatSessionId,
+    );
+  }
+  if (
+    String(nativeExternalAgentChatSessionId.value || "").trim() ===
+      normalizedChatSessionId &&
+    normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value) ===
+      normalizedSessionId
+  ) {
+    nativeExternalAgentChatSessionId.value = "";
+    nativeExternalAgentMessageId.value = "";
+  }
+  syncNativeExternalAgentRunningFlag();
+  syncChatLoadingWithCurrentSession();
+}
+
+function clearActiveExecutionTransportState(assistantIndex = -1) {
+  terminalPanelStatus.value = "idle";
+  terminalMirrorConnected.value = false;
+  hostTerminalSessionId.value = "";
+  terminalStructuredInteraction.value = null;
+  terminalStructuredInteractionRefreshPending = false;
+  const normalizedAssistantIndex = Number(assistantIndex);
+  if (
+    !Number.isFinite(normalizedAssistantIndex) ||
+    normalizedAssistantIndex < 0 ||
+    normalizedAssistantIndex === Number(activeTerminalMirrorAssistantIndex.value)
+  ) {
+    activeTerminalMirrorAssistantIndex.value = -1;
+  }
+}
+
+function syncNativeExternalAgentRunningFlag() {
+  const currentChatSessionIdValue = String(currentChatSessionId.value || "").trim();
+  const currentRunnerSessionId = getNativeExternalAgentRunnerSessionIdForChatSession(
+    currentChatSessionIdValue,
+  );
+  const currentSnapshot = currentRunnerSessionId
+    ? nativeExternalAgentSessionsById.get(currentRunnerSessionId)
+    : null;
+  const isBackgrounded =
+    nativeExternalAgentBackgroundedChatSessionIds.value.has(
+      currentChatSessionIdValue,
+    );
+  nativeExternalAgentRunning.value =
+    !isBackgrounded &&
+    (isLiveNativeExternalAgentStatus(currentSnapshot?.status) ||
+      nativeExternalAgentLaunchingChatSessionIds.value.has(
+        currentChatSessionIdValue,
+      ) ||
+      (currentChatSessionIdValue &&
+        String(nativeExternalAgentChatSessionId.value || "").trim() ===
+          currentChatSessionIdValue &&
+        isLiveNativeExternalAgentStatus(nativeExternalAgentSession.value?.status)));
+}
+
+function syncNativeExternalAgentSessionPanel(preferredSessionId = "") {
+  const normalizedPreferredSessionId = normalizeNativeExternalAgentSessionId(
+    preferredSessionId,
+  );
+  const currentRunnerSessionId = getNativeExternalAgentRunnerSessionIdForChatSession(
+    currentChatSessionId.value,
+  );
+  const selectedSessionId = String(
+    selectedNativeExternalAgentRecordId.value || "",
+  ).trim();
+  const sessionId =
+    normalizedPreferredSessionId ||
+    currentRunnerSessionId ||
+    (selectedSessionId && nativeExternalAgentSessionsById.has(selectedSessionId)
+      ? selectedSessionId
+      : "");
+  if (!sessionId) {
+    nativeExternalAgentSession.value = null;
+    nativeExternalAgentSessionLogs.value = [];
+    nativeExternalAgentMessageId.value = "";
+    nativeExternalAgentChatSessionId.value = "";
+    syncNativeExternalAgentRunningFlag();
+    return;
+  }
+  const snapshot = nativeExternalAgentSessionsById.get(sessionId) || null;
+  nativeExternalAgentSession.value = snapshot;
+  nativeExternalAgentSessionLogs.value = Array.isArray(
+    nativeExternalAgentSessionLogsById.get(sessionId),
+  )
+    ? nativeExternalAgentSessionLogsById.get(sessionId)
+    : [];
+  nativeExternalAgentMessageId.value =
+    getNativeExternalAgentMessageIdForRunnerSession(sessionId);
+  nativeExternalAgentChatSessionId.value =
+    getNativeExternalAgentChatSessionIdForRunnerSession(sessionId);
+  syncNativeExternalAgentRunningFlag();
+}
+
 const nativeExternalAgentSessionOutput = computed(() =>
   nativeExternalAgentSessionLogs.value
     .filter((item) => item.stream !== "stderr")
@@ -5360,6 +5798,153 @@ const nativeExternalAgentFinalAnswerText = computed(() => {
     return String(finalLog.content).trim();
   }
   return nativeExternalAgentStdoutText.value;
+});
+function normalizeRunnerEvidenceArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === "object") return [value];
+  const text = String(value || "").trim();
+  return text ? [text] : [];
+}
+
+function normalizeRunnerEvidenceItem(value, fallbackKind = "record") {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const path = String(
+      value.path ||
+        value.file_path ||
+        value.filePath ||
+        value.name ||
+        value.relative_path ||
+        "",
+    ).trim();
+    const title = String(
+      value.title ||
+        value.command ||
+        value.summary ||
+        value.status ||
+        path ||
+        fallbackKind,
+    ).trim();
+    return {
+      kind: String(value.kind || value.type || fallbackKind).trim() || fallbackKind,
+      title,
+      path,
+      status: String(value.status || value.state || value.result || "").trim(),
+      summary: String(
+        value.summary ||
+          value.description ||
+          value.message ||
+          value.reason ||
+          value.diff_stat ||
+          value.output ||
+          "",
+      ).trim(),
+      exitCode:
+        (value.exit_code === null || value.exit_code === undefined) &&
+        (value.exitCode === null || value.exitCode === undefined)
+          ? ""
+          : String(value.exit_code ?? value.exitCode).trim(),
+    };
+  }
+  const text = String(value || "").trim();
+  return {
+    kind: fallbackKind,
+    title: text,
+    path: text,
+    status: "",
+    summary: "",
+    exitCode: "",
+  };
+}
+
+function runnerEvidenceMetaText(item) {
+  const status = String(item?.status || "").trim();
+  const exitCode = String(item?.exitCode || item?.exit_code || "").trim();
+  return [status, exitCode ? `exit=${exitCode}` : ""].filter(Boolean).join(" · ");
+}
+
+const nativeExternalAgentFileEvidenceItems = computed(() => {
+  const snapshot = nativeExternalAgentSession.value || {};
+  return [
+    ...normalizeRunnerEvidenceArray(snapshot.files),
+    ...normalizeRunnerEvidenceArray(snapshot.fileRecords || snapshot.file_records),
+    ...normalizeRunnerEvidenceArray(snapshot.fileEvents || snapshot.file_events),
+    ...normalizeRunnerEvidenceArray(snapshot.changedFiles || snapshot.changed_files),
+    ...normalizeRunnerEvidenceArray(snapshot.diffSummary || snapshot.diff_summary),
+  ]
+    .map((item) => normalizeRunnerEvidenceItem(item, "file"))
+    .filter((item) => item.title || item.path || item.summary)
+    .slice(0, 80);
+});
+
+const nativeExternalAgentVerificationItems = computed(() => {
+  const snapshot = nativeExternalAgentSession.value || {};
+  const explicit = [
+    ...normalizeRunnerEvidenceArray(snapshot.verification),
+    ...normalizeRunnerEvidenceArray(snapshot.verifications),
+    ...normalizeRunnerEvidenceArray(snapshot.validation),
+    ...normalizeRunnerEvidenceArray(snapshot.validations),
+    ...normalizeRunnerEvidenceArray(snapshot.checks),
+    ...normalizeRunnerEvidenceArray(snapshot.testResults || snapshot.test_results),
+  ]
+    .map((item) => normalizeRunnerEvidenceItem(item, "verification"))
+    .filter((item) => item.title || item.summary || item.status);
+  if (explicit.length) return explicit.slice(0, 80);
+  return (nativeRunnerSelfCheckResults.value || [])
+    .map((item) => ({
+      kind: "self-check",
+      title: String(item?.label || item?.title || item?.command || "Runner 自检").trim(),
+      path: "",
+      status: String(item?.status || item?.tone || "").trim(),
+      summary: String(item?.summary || item?.message || item?.reason || "").trim(),
+      exitCode:
+        item?.exitCode === null || item?.exitCode === undefined
+          ? ""
+          : String(item.exitCode).trim(),
+    }))
+    .filter((item) => item.title || item.summary || item.status);
+});
+
+const nativeExternalAgentSessionPermissionRecords = computed(() => {
+  const sessionId = String(nativeExternalAgentSession.value?.sessionId || "").trim();
+  const workspacePath = String(
+    nativeExternalAgentSession.value?.workspacePath || "",
+  ).trim();
+  return (nativeRunnerPermissionRecords.value || []).filter((record) => {
+    const recordSessionId = String(
+      record?.sessionId ||
+        record?.session_id ||
+        record?.runnerSessionId ||
+        record?.runner_session_id ||
+        "",
+    ).trim();
+    if (sessionId && recordSessionId) return recordSessionId === sessionId;
+    const recordWorkspace = String(
+      record?.workspacePath || record?.workspace_path || "",
+    ).trim();
+    if (workspacePath && recordWorkspace) return recordWorkspace === workspacePath;
+    return !recordSessionId && !recordWorkspace;
+  });
+});
+
+const nativeExternalAgentDiagnosticItems = computed(() => {
+  const snapshot = nativeExternalAgentSession.value || {};
+  return [
+    ["session", snapshot.sessionId],
+    ["status", snapshot.status],
+    ["agent", snapshot.agentType],
+    ["exit", snapshot.exitCode ?? ""],
+    ["started", snapshot.startedAt || snapshot.started_at || ""],
+    ["ended", snapshot.endedAt || snapshot.ended_at || ""],
+    ["duration", snapshot.durationMs || snapshot.duration_ms || ""],
+    ["stdin", snapshot.stdinOpen ? "open" : "closed"],
+    ["blocked", snapshot.blockedReason],
+  ]
+    .map(([label, value]) => ({
+      label,
+      value: String(value ?? "").trim(),
+    }))
+    .filter((item) => item.value);
 });
 const nativeExternalAgentFullLogText = computed(() =>
   nativeExternalAgentSessionLogs.value
@@ -5408,6 +5993,24 @@ const nativeExternalAgentTerminalText = computed(() => {
   const limit = 20000;
   if (text.length <= limit) return text.trim();
   return `[只显示最近输出]\n${text.slice(text.length - limit).trim()}`;
+});
+const nativeExternalAgentLogStats = computed(() => {
+  const rows = Array.isArray(nativeExternalAgentSessionLogs.value)
+    ? nativeExternalAgentSessionLogs.value
+    : [];
+  const byStream = rows.reduce((acc, item) => {
+    const stream = String(item?.stream || "stdout").trim().toLowerCase() || "stdout";
+    acc[stream] = Number(acc[stream] || 0) + 1;
+    return acc;
+  }, {});
+  return {
+    total: rows.length,
+    stdout: Number(byStream.stdout || 0) + Number(byStream.pty || 0),
+    stderr: Number(byStream.stderr || 0),
+    stdin: Number(byStream.stdin || 0),
+    system: Number(byStream.system || 0),
+    final: Number(byStream.final || 0),
+  };
 });
 const canWriteNativeExternalAgentStdin = computed(() => {
   const status = String(nativeExternalAgentSession.value?.status || "").trim();
@@ -5764,6 +6367,76 @@ const executionRuntimeActionLabel = computed(() => {
   if (!workspacePathConfigured.value || workspacePathDirty.value) return "配置工作区";
   return nativeDesktopBridgeAvailable.value ? "检查环境" : "环境设置";
 });
+const composerExecutionStatusTagType = computed(() => {
+  const tone = String(executionRuntimeToneClass.value || "").trim();
+  if (tone === "is-danger") return "danger";
+  if (tone === "is-warning" || tone === "is-pending") return "warning";
+  if (tone === "is-ready") return "success";
+  if (tone === "is-running") return "primary";
+  return "info";
+});
+const composerExecutionStatusLabel = computed(() => {
+  if (!isExternalAgentMode.value) return "系统对话";
+  if (externalAgentUnavailable.value) return "不可用";
+  if (externalAgentConnectorRequired.value || !workspacePathConfigured.value) {
+    return "未就绪";
+  }
+  if (workspacePathDirty.value) return "待保存";
+  if (externalAgentWarmupLoading.value || nativeExternalAgentRunning.value) {
+    return "运行中";
+  }
+  if (externalAgentInfo.value.ready || nativeRunnerSelfCheckPassed.value) {
+    return "已就绪";
+  }
+  return "待检查";
+});
+const composerExecutionRuntimeLocation = computed(() => {
+  if (!isExternalAgentMode.value) return "服务端模型";
+  if (nativeDesktopBridgeAvailable.value) return "桌面端原生桥";
+  if (usingLocalConnector.value) return "本地连接器";
+  return "网页模式";
+});
+const composerExecutionSummaryItems = computed(() => [
+  {
+    label: "运行位置",
+    value: composerExecutionRuntimeLocation.value,
+  },
+  {
+    label: "执行器",
+    value: isExternalAgentMode.value
+      ? externalAgentDisplayLabel.value
+      : currentModelSummary.value || "系统模型",
+  },
+  {
+    label: "工作区",
+    value: executionWorkspaceLabel.value,
+  },
+  {
+    label: "权限",
+    value:
+      String(
+        projectChatSettings.value.connector_sandbox_mode ||
+          projectChatSettings.value.external_agent_sandbox_mode ||
+          externalAgentInfo.value.sandbox_mode ||
+          "",
+      ).trim() || "workspace-write",
+  },
+  {
+    label: "任务树",
+    value: hasChatTaskTree.value ? taskTreeProgressLabel.value : "未生成",
+  },
+  {
+    label: "终端",
+    value: terminalPanelStatusText.value,
+  },
+]);
+const composerExecutionDetailAvailable = computed(
+  () =>
+    Boolean(nativeExternalAgentSession.value?.sessionId) ||
+    hasChatTaskTree.value ||
+    terminalPanelLineCount.value > 0 ||
+    Boolean(terminalApprovalPrompt.value),
+);
 const nativeRunnerSelfCheckPassed = computed(() => {
   const results = nativeRunnerSelfCheckResults.value || [];
   return results.length > 0 && results.every((item) => item?.tone === "success");
@@ -6316,14 +6989,11 @@ async function selectNativeExternalAgentSessionRecord(record) {
       sessionId,
       sinceSeq: 0,
     });
-    nativeExternalAgentSession.value = snapshot;
-    nativeExternalAgentSessionLogs.value = Array.isArray(snapshot.logs)
-      ? snapshot.logs.slice(-500)
-      : [];
-    nativeExternalAgentRunning.value = snapshot.status === "running";
+    applyNativeExternalAgentSessionSnapshot(snapshot, { select: true });
+    nativeExternalAgentDetailActiveTab.value = "terminal";
     nativeExternalAgentSessionDetailVisible.value = true;
     if (snapshot.status === "running" || snapshot.status === "cancelling") {
-      stopNativeExternalAgentSessionPolling();
+      stopNativeExternalAgentSessionPolling(sessionId);
       void pollNativeExternalAgentSession(sessionId);
     }
   } catch (err) {
@@ -6697,32 +7367,201 @@ async function prepareNativeExternalAgentLaunchPlan() {
   }
 }
 
-function stopNativeExternalAgentSessionPolling() {
+function stopNativeExternalAgentSessionPolling(sessionId = "") {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  if (normalizedSessionId) {
+    const timer = nativeExternalAgentSessionPollTimers.get(normalizedSessionId);
+    if (timer) {
+      window.clearTimeout(timer);
+      nativeExternalAgentSessionPollTimers.delete(normalizedSessionId);
+    }
+    if (
+      nativeExternalAgentSessionPollTimer &&
+      normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value) ===
+        normalizedSessionId
+    ) {
+      window.clearTimeout(nativeExternalAgentSessionPollTimer);
+      nativeExternalAgentSessionPollTimer = null;
+    }
+    return;
+  }
+  nativeExternalAgentSessionPollTimers.forEach((timer) => {
+    window.clearTimeout(timer);
+  });
+  nativeExternalAgentSessionPollTimers.clear();
   if (nativeExternalAgentSessionPollTimer) {
     window.clearTimeout(nativeExternalAgentSessionPollTimer);
     nativeExternalAgentSessionPollTimer = null;
   }
 }
 
-function applyNativeExternalAgentSessionSnapshot(snapshot) {
-  if (!snapshot?.sessionId) return;
-  nativeExternalAgentSession.value = snapshot;
-  const existingSeqs = new Set(
-    nativeExternalAgentSessionLogs.value.map((item) => item.seq),
-  );
-  const nextLogs = Array.isArray(snapshot.logs)
-    ? snapshot.logs.filter((item) => !existingSeqs.has(item.seq))
-    : [];
-  if (nextLogs.length) {
-    nativeExternalAgentSessionLogs.value = [
-      ...nativeExternalAgentSessionLogs.value,
-      ...nextLogs,
-    ].slice(-500);
+function stopNativeExternalAgentSessionEventSubscription() {
+  const unlisten = nativeExternalAgentSessionEventUnlisten;
+  nativeExternalAgentSessionEventUnlisten = null;
+  if (typeof unlisten !== "function") return;
+  try {
+    const result = unlisten();
+    if (result && typeof result.catch === "function") {
+      result.catch((err) => {
+        console.warn("unsubscribe native external agent session events failed", err);
+      });
+    }
+  } catch (err) {
+    console.warn("unsubscribe native external agent session events failed", err);
   }
 }
 
-function buildNativeExternalAgentLogPreview(limit = 12000) {
-  const text = nativeExternalAgentSessionLogs.value
+async function startNativeExternalAgentSessionEventSubscription() {
+  if (nativeExternalAgentSessionEventUnlisten) return;
+  nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
+  if (!nativeDesktopBridgeAvailable.value) return;
+  nativeExternalAgentSessionEventUnlisten =
+    await subscribeNativeExternalAgentSessionEvents((event) => {
+      void handleNativeExternalAgentSessionEvent(event);
+    });
+}
+
+function getNativeExternalAgentSessionLogs(sessionId = "") {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  if (normalizedSessionId) {
+    const logs = nativeExternalAgentSessionLogsById.get(normalizedSessionId);
+    return Array.isArray(logs) ? logs : [];
+  }
+  return Array.isArray(nativeExternalAgentSessionLogs.value)
+    ? nativeExternalAgentSessionLogs.value
+    : [];
+}
+
+function applyNativeExternalAgentSessionSnapshot(snapshot, options = {}) {
+  const sessionId = normalizeNativeExternalAgentSessionId(snapshot);
+  if (!sessionId) return;
+  const chatSessionId = String(
+    options.chatSessionId ||
+      snapshot.chatSessionId ||
+      snapshot.chat_session_id ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(sessionId) ||
+      "",
+  ).trim();
+  const messageId = String(
+    options.messageId ||
+      snapshot.messageId ||
+      snapshot.message_id ||
+      getNativeExternalAgentMessageIdForRunnerSession(sessionId) ||
+      "",
+  ).trim();
+  rememberNativeExternalAgentSessionBinding({
+    sessionId,
+    chatSessionId,
+    messageId,
+  });
+  nativeExternalAgentSessionsById.set(sessionId, snapshot);
+  const existingLogs = getNativeExternalAgentSessionLogs(sessionId);
+  const existingSeqs = new Set(existingLogs.map((item) => item.seq));
+  const nextLogs = Array.isArray(snapshot.logs)
+    ? snapshot.logs.filter((item) => !existingSeqs.has(item.seq))
+    : [];
+  if (Array.isArray(snapshot.logs) && !existingLogs.length) {
+    nativeExternalAgentSessionLogsById.set(sessionId, snapshot.logs.slice(-500));
+  }
+  if (nextLogs.length) {
+    nativeExternalAgentSessionLogsById.set(
+      sessionId,
+      [...existingLogs, ...nextLogs].slice(-500),
+    );
+  }
+  const shouldSyncPanel =
+    Boolean(options.select) ||
+    sessionId ===
+      getNativeExternalAgentRunnerSessionIdForChatSession(
+        currentChatSessionId.value,
+      ) ||
+    sessionId === String(selectedNativeExternalAgentRecordId.value || "").trim();
+  if (shouldSyncPanel) {
+    syncNativeExternalAgentSessionPanel(sessionId);
+  } else {
+    syncNativeExternalAgentRunningFlag();
+  }
+}
+
+function isTerminalNativeExternalAgentSessionStatus(status) {
+  return ["blocked", "completed", "failed", "cancelled", "unavailable"].includes(
+    String(status || "").trim(),
+  );
+}
+
+function shouldApplyNativeExternalAgentSessionEvent(event) {
+  const eventSessionId = String(event?.sessionId || "").trim();
+  if (!eventSessionId) return false;
+  return true;
+}
+
+function finalizeNativeExternalAgentSessionOnce(snapshot, chatSessionId = "") {
+  const sessionId = String(snapshot?.sessionId || "").trim();
+  if (!sessionId) {
+    finalizeNativeExternalAgentMessage(snapshot, chatSessionId);
+    return true;
+  }
+  const status = String(snapshot?.status || "").trim();
+  if (
+    (nativeExternalAgentFastKilledSessionIds.has(sessionId) ||
+      nativeExternalAgentCancelledSessionIds.has(sessionId)) &&
+    status !== "cancelled"
+  ) {
+    return false;
+  }
+  if (nativeExternalAgentFinalizedSessionIds.has(sessionId)) return false;
+  if (!findNativeExternalAgentMessage(sessionId)) return false;
+  nativeExternalAgentFinalizedSessionIds.add(sessionId);
+  finalizeNativeExternalAgentMessage(snapshot, chatSessionId);
+  return true;
+}
+
+async function handleNativeExternalAgentSessionEvent(event) {
+  const snapshot = event?.snapshot;
+  if (!snapshot?.sessionId || !shouldApplyNativeExternalAgentSessionEvent(event)) {
+    return;
+  }
+  const status = String(snapshot.status || "").trim();
+  if (
+    nativeExternalAgentFastKilledSessionIds.has(String(snapshot.sessionId).trim()) ||
+    nativeExternalAgentCancelledSessionIds.has(String(snapshot.sessionId).trim())
+  ) {
+    const cancelledSnapshot = buildFastKilledNativeExternalAgentSnapshot(
+      snapshot.sessionId,
+    );
+    applyNativeExternalAgentSessionSnapshot(cancelledSnapshot);
+    markNativeExternalAgentOperationCancelledFast(snapshot.sessionId);
+    stopNativeExternalAgentSessionPolling(snapshot.sessionId);
+    syncChatLoadingWithCurrentSession();
+    scheduleNativeExternalAgentDeferredCleanup(
+      snapshot.sessionId,
+      getNativeExternalAgentChatSessionIdForRunnerSession(snapshot.sessionId),
+      cancelledSnapshot,
+    );
+    return;
+  }
+  applyNativeExternalAgentSessionSnapshot(snapshot);
+  upsertNativeExternalAgentMessageOperation(snapshot);
+  if (!isTerminalNativeExternalAgentSessionStatus(status)) {
+    syncChatLoadingWithCurrentSession();
+    schedulePersistChatRuntime();
+    return;
+  }
+  stopNativeExternalAgentSessionPolling(snapshot.sessionId);
+  syncChatLoadingWithCurrentSession();
+  finalizeNativeExternalAgentSessionOnce(
+    snapshot,
+    getNativeExternalAgentChatSessionIdForRunnerSession(snapshot.sessionId),
+  );
+  schedulePersistChatRuntime();
+  await Promise.allSettled([
+    refreshNativeRunnerPermissionRecords(),
+    refreshNativeExternalAgentSessionRecords({ silent: true }),
+  ]);
+}
+
+function buildNativeExternalAgentLogPreview(limit = 12000, sessionId = "") {
+  const text = getNativeExternalAgentSessionLogs(sessionId)
     .map((item) => {
       const stream = String(item.stream || "stdout").trim();
       const content = String(item.content || "");
@@ -6751,8 +7590,8 @@ function isNativeExternalAgentInternalDiagnostic(stream, content) {
   );
 }
 
-function buildNativeExternalAgentDiagnosticPreview(limit = 4000) {
-  const text = nativeExternalAgentSessionLogs.value
+function buildNativeExternalAgentDiagnosticPreview(limit = 4000, sessionId = "") {
+  const text = getNativeExternalAgentSessionLogs(sessionId)
     .filter((item) => {
       const stream = String(item.stream || "").trim();
       return stream !== "final";
@@ -6773,7 +7612,9 @@ function buildNativeExternalAgentDiagnosticPreview(limit = 4000) {
 function resolveNativeExternalAgentFinalOutput(snapshot) {
   const explicit = String(snapshot?.finalOutput || "").trim();
   if (explicit) return explicit;
-  const finalLog = [...nativeExternalAgentSessionLogs.value]
+  const finalLog = [
+    ...getNativeExternalAgentSessionLogs(snapshot?.sessionId || ""),
+  ]
     .reverse()
     .find((item) => String(item.stream || "").trim() === "final");
   if (finalLog?.content && String(finalLog.content).trim()) {
@@ -6879,16 +7720,67 @@ function buildNativeExternalAgentCommandPreview(snapshot) {
   return [command, ...visibleArgs].filter(Boolean).join(" ");
 }
 
-function findNativeExternalAgentMessage() {
-  const messageId = String(nativeExternalAgentMessageId.value || "").trim();
+function nativeExternalAgentRowsForSession(sessionId = "", chatSessionId = "") {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  const normalizedChatSessionId = String(
+    chatSessionId ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId) ||
+      nativeExternalAgentChatSessionId.value ||
+      currentChatSessionId.value ||
+      "",
+  ).trim();
+  const projectId = String(selectedProjectId.value || "").trim();
+  if (!projectId || !normalizedChatSessionId) return messages.value;
+  if (isCurrentChatSession(projectId, normalizedChatSessionId)) return messages.value;
+  const rememberedRows = getRememberedChatSessionMessages(
+    projectId,
+    normalizedChatSessionId,
+  );
+  return Array.isArray(rememberedRows) ? rememberedRows : [];
+}
+
+function persistNativeExternalAgentRowsForSession(chatSessionId = "") {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!projectId || !normalizedChatSessionId) {
+    schedulePersistChatRuntime();
+    return;
+  }
+  if (isCurrentChatSession(projectId, normalizedChatSessionId)) {
+    persistCurrentChatRuntimeNow(projectId, normalizedChatSessionId);
+    return;
+  }
+  const rows = getRememberedChatSessionMessages(projectId, normalizedChatSessionId);
+  if (!Array.isArray(rows)) return;
+  const payload = {
+    ...buildRuntimePayloadForRows(rows),
+    native_external_agent:
+      buildNativeExternalAgentRuntimeSnapshotForChatSession(
+        normalizedChatSessionId,
+      ),
+    native_external_agents:
+      listNativeExternalAgentRuntimeSnapshotsForCurrentProject(),
+  };
+  writePersistedChatRuntime(projectId, normalizedChatSessionId, payload);
+  void persistChatRuntimeToServer(projectId, normalizedChatSessionId, payload);
+}
+
+function findNativeExternalAgentMessage(sessionId = "") {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  const messageId = String(
+    (normalizedSessionId
+      ? getNativeExternalAgentMessageIdForRunnerSession(normalizedSessionId)
+      : "") || nativeExternalAgentMessageId.value || "",
+  ).trim();
   if (!messageId) return null;
-  return messages.value.find(
+  const rows = nativeExternalAgentRowsForSession(normalizedSessionId);
+  return rows.find(
     (item) => String(item?.id || "").trim() === messageId,
   );
 }
 
 function applyNativeExternalAgentCancellingMessage(snapshot = null) {
-  const row = findNativeExternalAgentMessage();
+  const row = findNativeExternalAgentMessage(snapshot?.sessionId || "");
   if (!row) return;
   row.content = "正在取消外部 Agent Runner 会话。";
   row.displayMode = "";
@@ -6896,11 +7788,13 @@ function applyNativeExternalAgentCancellingMessage(snapshot = null) {
   if (snapshot?.sessionId) {
     upsertNativeExternalAgentMessageOperation(snapshot);
   }
-  schedulePersistChatRuntime();
+  persistNativeExternalAgentRowsForSession(
+    getNativeExternalAgentChatSessionIdForRunnerSession(snapshot?.sessionId || ""),
+  );
 }
 
 function upsertNativeExternalAgentMessageOperation(snapshot) {
-  const row = findNativeExternalAgentMessage();
+  const row = findNativeExternalAgentMessage(snapshot?.sessionId || "");
   if (!row || !snapshot?.sessionId) return;
   const status = String(snapshot.status || "").trim();
   const operationPhase =
@@ -6923,7 +7817,7 @@ function upsertNativeExternalAgentMessageOperation(snapshot) {
           : status === "cancelled"
             ? "已取消"
             : "已结束",
-    detail: buildNativeExternalAgentLogPreview(6000),
+    detail: buildNativeExternalAgentLogPreview(6000, snapshot.sessionId),
     phase: operationPhase,
     actionType: "none",
     meta: {
@@ -6935,7 +7829,7 @@ function upsertNativeExternalAgentMessageOperation(snapshot) {
       command: buildNativeExternalAgentCommandPreview(snapshot),
       cwd: snapshot.workspacePath,
       exit_code: snapshot.exitCode,
-      output_preview: buildNativeExternalAgentLogPreview(4000),
+      output_preview: buildNativeExternalAgentLogPreview(4000, snapshot.sessionId),
       error: snapshot.blockedReason || "",
     },
   });
@@ -6971,8 +7865,14 @@ function completeNativeExternalAgentRunningOperations(
   summary = "外部 Agent Runner 会话已结束",
 ) {
   const normalizedSessionId = String(sessionId || "").trim();
+  const chatSessionId =
+    getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId);
+  const rows = nativeExternalAgentRowsForSession(
+    normalizedSessionId,
+    chatSessionId,
+  );
   let changed = false;
-  messages.value.forEach((row) => {
+  rows.forEach((row) => {
     if (!row || !Array.isArray(row.operations)) return;
     row.operations = row.operations.map((operation) => {
       if (!isNativeExternalAgentOperation(operation, normalizedSessionId)) {
@@ -6998,9 +7898,160 @@ function completeNativeExternalAgentRunningOperations(
     });
   });
   if (changed) {
-    schedulePersistChatRuntime();
+    persistNativeExternalAgentRowsForSession(chatSessionId);
   }
   return changed;
+}
+
+function markNativeExternalAgentOperationCancelledFast(
+  sessionId,
+  summary = "外部 Agent Runner 会话已取消",
+) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  const chatSessionId =
+    getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId);
+  const rows = nativeExternalAgentRowsForSession(
+    normalizedSessionId,
+    chatSessionId,
+  );
+  rows.forEach((row) => {
+    if (!row || !Array.isArray(row.operations)) return;
+    row.operations = row.operations.map((operation) => {
+      if (!isNativeExternalAgentOperation(operation, normalizedSessionId)) {
+        return operation;
+      }
+      const meta =
+        operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+      return {
+        ...operation,
+        phase: "completed",
+        actionType: "none",
+        summary,
+        updatedAt: nowText(),
+        meta: {
+          ...meta,
+          runner_status: "cancelled",
+          hide_in_message_process: "true",
+        },
+      };
+    });
+  });
+}
+
+function buildFastKilledNativeExternalAgentSnapshot(sessionId = "") {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  const existing =
+    nativeExternalAgentSessionsById.get(normalizedSessionId) ||
+    nativeExternalAgentSession.value ||
+    {};
+  const label = String(existing.label || "外部 Agent").trim();
+  return {
+    ...existing,
+    sessionId: normalizedSessionId,
+    status: "cancelled",
+    exitCode: -15,
+    logs: [],
+    summary: `${label} Runner 会话已取消`,
+    updatedAtEpochMs: Date.now(),
+  };
+}
+
+function scheduleNativeExternalAgentDeferredCleanup(
+  sessionId = "",
+  chatSessionId = "",
+  snapshot = null,
+) {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  if (!normalizedSessionId) return;
+  const existingTimer =
+    nativeExternalAgentDeferredCleanupTimers.get(normalizedSessionId);
+  if (existingTimer) {
+    window.clearTimeout(existingTimer);
+  }
+  const timer = window.setTimeout(() => {
+    nativeExternalAgentDeferredCleanupTimers.delete(normalizedSessionId);
+    const latestSnapshot =
+      snapshot ||
+      nativeExternalAgentSessionsById.get(normalizedSessionId) ||
+      buildFastKilledNativeExternalAgentSnapshot(normalizedSessionId);
+    finalizeNativeExternalAgentSessionOnce(
+      latestSnapshot,
+      chatSessionId ||
+        getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId),
+    );
+    clearActiveNativeExternalAgentSessionBinding(
+      normalizedSessionId,
+      chatSessionId ||
+        getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId),
+    );
+    schedulePersistChatRuntime();
+    void Promise.allSettled([
+      refreshNativeRunnerPermissionRecords(),
+      refreshNativeExternalAgentSessionRecords({ silent: true }),
+    ]);
+  }, 650);
+  nativeExternalAgentDeferredCleanupTimers.set(normalizedSessionId, timer);
+}
+
+function applyNativeExternalAgentFastKilledSession(sessionId = "", chatSessionId = "") {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  if (!normalizedSessionId) return null;
+  const normalizedChatSessionId = String(
+    chatSessionId ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId) ||
+      currentChatSessionId.value ||
+      "",
+  ).trim();
+  nativeExternalAgentFastKilledSessionIds.add(normalizedSessionId);
+  nativeExternalAgentCancelledSessionIds.add(normalizedSessionId);
+  stopNativeExternalAgentSessionPolling(normalizedSessionId);
+  if (normalizedChatSessionId) {
+    const nextLaunching = new Set(nativeExternalAgentLaunchingChatSessionIds.value);
+    nextLaunching.delete(normalizedChatSessionId);
+    nativeExternalAgentLaunchingChatSessionIds.value = nextLaunching;
+    const nextBackgrounded = new Set(
+      nativeExternalAgentBackgroundedChatSessionIds.value,
+    );
+    nextBackgrounded.delete(normalizedChatSessionId);
+    nativeExternalAgentBackgroundedChatSessionIds.value = nextBackgrounded;
+  }
+  const snapshot = buildFastKilledNativeExternalAgentSnapshot(normalizedSessionId);
+  applyNativeExternalAgentSessionSnapshot(snapshot, {
+    chatSessionId: normalizedChatSessionId,
+    select: true,
+  });
+  markNativeExternalAgentOperationCancelledFast(
+    normalizedSessionId,
+    "外部 Agent Runner 会话已取消",
+  );
+  const row = findNativeExternalAgentMessage(normalizedSessionId);
+  if (row) {
+    row.displayMode = "";
+    row.content =
+      String(row.content || "").trim() || "本次外部 Agent 执行已取消。";
+    row.time = nowText();
+    completeFinishedMessageOperations(row, "外部 Agent Runner 会话已取消");
+    closeOpenAgentRuntimeOperationsForCompletedTurn(
+      row,
+      "外部 Agent Runner 会话已取消",
+    );
+  }
+  const rowIndex = row ? messages.value.findIndex((item) => item === row) : -1;
+  clearActiveExecutionTransportState(rowIndex);
+  clearActiveNativeExternalAgentSessionBinding(
+    normalizedSessionId,
+    normalizedChatSessionId,
+  );
+  syncChatLoadingWithCurrentSession();
+  schedulePersistChatRuntime();
+  window.setTimeout(() => {
+    scheduleNativeExternalAgentDeferredCleanup(
+      normalizedSessionId,
+      normalizedChatSessionId,
+      snapshot,
+    );
+  }, 0);
+  return snapshot;
 }
 
 function appendNativeExternalAgentMessages(
@@ -7010,6 +8061,10 @@ function appendNativeExternalAgentMessages(
   taskPrompt = "",
   runContext = {},
 ) {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const normalizedChatSessionId = String(
+    chatSessionId || currentChatSessionId.value || "",
+  ).trim();
   const userMessage = {
     id: createLocalMessageId(),
     role: "user",
@@ -7037,13 +8092,27 @@ function appendNativeExternalAgentMessages(
     operations: [],
     time: nowText(),
   };
-  nativeExternalAgentMessageId.value = assistantMessage.id;
-  messages.value.push(userMessage);
-  messages.value.push(assistantMessage);
+  rememberNativeExternalAgentSessionBinding({
+    sessionId: snapshot?.sessionId,
+    chatSessionId: normalizedChatSessionId,
+    messageId: assistantMessage.id,
+  });
+  if (isCurrentChatSession(projectId, normalizedChatSessionId)) {
+    nativeExternalAgentMessageId.value = assistantMessage.id;
+    nativeExternalAgentChatSessionId.value = normalizedChatSessionId;
+  }
+  const targetRows = isCurrentChatSession(projectId, normalizedChatSessionId)
+    ? messages.value
+    : getRememberedChatSessionMessages(projectId, normalizedChatSessionId) || [];
+  targetRows.push(userMessage);
+  targetRows.push(assistantMessage);
+  if (!isCurrentChatSession(projectId, normalizedChatSessionId)) {
+    rememberChatSessionMessages(projectId, normalizedChatSessionId, targetRows);
+  }
   upsertNativeExternalAgentMessageOperation(snapshot);
-  schedulePersistChatRuntime();
+  persistNativeExternalAgentRowsForSession(normalizedChatSessionId);
   void upsertProjectChatRequirementRecord({
-    chatSessionId,
+    chatSessionId: normalizedChatSessionId,
     status: "in_progress",
     rootGoal: prompt,
     messageId: userMessage.id,
@@ -7061,11 +8130,19 @@ function appendNativeExternalAgentMessages(
       command: buildNativeExternalAgentCommandPreview(snapshot),
     },
   });
-  scrollToBottom();
+  if (isCurrentChatSession(projectId, normalizedChatSessionId)) {
+    scrollToBottom();
+  }
 }
 
 function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
-  const row = findNativeExternalAgentMessage();
+  const sessionId = normalizeNativeExternalAgentSessionId(snapshot);
+  const normalizedChatSessionId = String(
+    chatSessionId ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(sessionId) ||
+      "",
+  ).trim();
+  const row = findNativeExternalAgentMessage(sessionId);
   if (!row || !snapshot) return;
   const status = String(snapshot.status || "").trim();
   completeNativeExternalAgentRunningOperations(
@@ -7095,17 +8172,20 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
   row.displayMode = "";
   row.time = nowText();
   upsertNativeExternalAgentMessageOperation(snapshot);
-  schedulePersistChatRuntime();
-  scrollToBottom();
-  const assistantIndex = messages.value.findIndex(
+  persistNativeExternalAgentRowsForSession(normalizedChatSessionId);
+  if (isCurrentChatSession(selectedProjectId.value, normalizedChatSessionId)) {
+    scrollToBottom();
+  }
+  const rows = nativeExternalAgentRowsForSession(sessionId, normalizedChatSessionId);
+  const assistantIndex = rows.findIndex(
     (item) => String(item?.id || "").trim() === String(row.id || "").trim(),
   );
   const userMessage =
-    assistantIndex > 0 ? messages.value[assistantIndex - 1] : null;
+    assistantIndex > 0 ? rows[assistantIndex - 1] : null;
   const rootGoal =
     userMessage?.role === "user" ? String(userMessage.content || "").trim() : "";
   void upsertProjectChatRequirementRecord({
-    chatSessionId,
+    chatSessionId: normalizedChatSessionId,
     status: status === "completed" ? "done" : "blocked",
     rootGoal,
     messageId: userMessage?.id || "",
@@ -7125,21 +8205,31 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
       workspace_path: snapshot.workspacePath || "",
       blocked_reason: snapshot.blockedReason || "",
       shown_blocked_reason: blockedReason,
-      diagnostics: buildNativeExternalAgentDiagnosticPreview(3000),
+      diagnostics: buildNativeExternalAgentDiagnosticPreview(3000, sessionId),
     },
   });
-  void persistNativeExternalAgentFinalMessages(snapshot, row);
+  void persistNativeExternalAgentFinalMessages(snapshot, row, normalizedChatSessionId);
 }
 
-async function persistNativeExternalAgentChatMessage(message, snapshot, role) {
+async function persistNativeExternalAgentChatMessage(
+  message,
+  snapshot,
+  role,
+  chatSessionId = "",
+) {
   const projectId = String(selectedProjectId.value || "").trim();
-  const chatSessionId = String(currentChatSessionId.value || "").trim();
-  if (!projectId || !chatSessionId || !message?.content) return null;
+  const normalizedChatSessionId = String(
+    chatSessionId ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(snapshot?.sessionId) ||
+      currentChatSessionId.value ||
+      "",
+  ).trim();
+  if (!projectId || !normalizedChatSessionId || !message?.content) return null;
   try {
     const data = await api.post(
       `/projects/${encodeURIComponent(projectId)}/chat/history/messages`,
       {
-        chat_session_id: chatSessionId,
+        chat_session_id: normalizedChatSessionId,
         message_id: String(message.id || "").trim(),
         role,
         content: String(message.content || ""),
@@ -7174,7 +8264,11 @@ async function persistNativeExternalAgentChatMessage(message, snapshot, role) {
   }
 }
 
-async function persistNativeExternalAgentFinalMessages(snapshot, assistantMessage) {
+async function persistNativeExternalAgentFinalMessages(
+  snapshot,
+  assistantMessage,
+  chatSessionId = "",
+) {
   const sessionId = String(snapshot?.sessionId || "").trim();
   if (!sessionId || nativeExternalAgentPersistedSessions.value.has(sessionId)) {
     return;
@@ -7183,23 +8277,43 @@ async function persistNativeExternalAgentFinalMessages(snapshot, assistantMessag
     ...nativeExternalAgentPersistedSessions.value,
     sessionId,
   ]);
-  const assistantIndex = messages.value.findIndex(
+  const normalizedChatSessionId = String(
+    chatSessionId ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(sessionId) ||
+      "",
+  ).trim();
+  const rows = nativeExternalAgentRowsForSession(
+    sessionId,
+    normalizedChatSessionId,
+  );
+  const assistantIndex = rows.findIndex(
     (item) => String(item?.id || "").trim() === String(assistantMessage?.id || "").trim(),
   );
   const userMessage =
-    assistantIndex > 0 ? messages.value[assistantIndex - 1] : null;
+    assistantIndex > 0 ? rows[assistantIndex - 1] : null;
   if (userMessage?.role === "user") {
-    await persistNativeExternalAgentChatMessage(userMessage, snapshot, "user");
+    await persistNativeExternalAgentChatMessage(
+      userMessage,
+      snapshot,
+      "user",
+      normalizedChatSessionId,
+    );
   }
-  await persistNativeExternalAgentChatMessage(assistantMessage, snapshot, "assistant");
+  await persistNativeExternalAgentChatMessage(
+    assistantMessage,
+    snapshot,
+    "assistant",
+    normalizedChatSessionId,
+  );
   void refreshChatSessionsKeepingCurrent();
 }
 
 async function pollNativeExternalAgentSession(sessionId) {
   const normalizedSessionId = String(sessionId || "").trim();
   if (!normalizedSessionId) return;
+  stopNativeExternalAgentSessionPolling(normalizedSessionId);
   try {
-    const lastSeq = nativeExternalAgentSessionLogs.value.reduce(
+    const lastSeq = getNativeExternalAgentSessionLogs(normalizedSessionId).reduce(
       (maxSeq, item) => Math.max(maxSeq, Number(item.seq || 0)),
       0,
     );
@@ -7207,29 +8321,49 @@ async function pollNativeExternalAgentSession(sessionId) {
       sessionId: normalizedSessionId,
       sinceSeq: lastSeq,
     });
-    applyNativeExternalAgentSessionSnapshot(snapshot);
-    upsertNativeExternalAgentMessageOperation(snapshot);
-    if (snapshot.status === "running" || snapshot.status === "cancelling") {
-      nativeExternalAgentRunning.value = snapshot.status === "running";
-      chatLoading.value =
-        snapshot.status === "running" ? true : pendingRequests.size > 0;
-      nativeExternalAgentSessionPollTimer = window.setTimeout(
-        () => void pollNativeExternalAgentSession(normalizedSessionId),
-        800,
+    if (
+      nativeExternalAgentFastKilledSessionIds.has(normalizedSessionId) ||
+      nativeExternalAgentCancelledSessionIds.has(normalizedSessionId)
+    ) {
+      const cancelledSnapshot =
+        buildFastKilledNativeExternalAgentSnapshot(normalizedSessionId);
+      applyNativeExternalAgentSessionSnapshot(cancelledSnapshot);
+      markNativeExternalAgentOperationCancelledFast(normalizedSessionId);
+      stopNativeExternalAgentSessionPolling(normalizedSessionId);
+      syncChatLoadingWithCurrentSession();
+      scheduleNativeExternalAgentDeferredCleanup(
+        normalizedSessionId,
+        getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId),
+        cancelledSnapshot,
       );
       return;
     }
-    nativeExternalAgentRunning.value = false;
-    chatLoading.value = pendingRequests.size > 0;
-    finalizeNativeExternalAgentMessage(
+    applyNativeExternalAgentSessionSnapshot(snapshot);
+    upsertNativeExternalAgentMessageOperation(snapshot);
+    if (snapshot.status === "running" || snapshot.status === "cancelling") {
+      syncChatLoadingWithCurrentSession();
+      const timer = window.setTimeout(
+        () => void pollNativeExternalAgentSession(normalizedSessionId),
+        800,
+      );
+      nativeExternalAgentSessionPollTimers.set(normalizedSessionId, timer);
+      if (
+        normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value) ===
+        normalizedSessionId
+      ) {
+        nativeExternalAgentSessionPollTimer = timer;
+      }
+      return;
+    }
+    syncChatLoadingWithCurrentSession();
+    finalizeNativeExternalAgentSessionOnce(
       snapshot,
-      nativeExternalAgentChatSessionId.value,
+      getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId),
     );
     await refreshNativeRunnerPermissionRecords();
     await refreshNativeExternalAgentSessionRecords({ silent: true });
   } catch (err) {
-    nativeExternalAgentRunning.value = false;
-    chatLoading.value = pendingRequests.size > 0;
+    syncChatLoadingWithCurrentSession();
     ElMessage.warning(err?.message || "读取 Runner 会话失败");
   }
 }
@@ -7237,13 +8371,14 @@ async function pollNativeExternalAgentSession(sessionId) {
 async function startNativeExternalAgentSession(chatSessionId = "", options = {}) {
   nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
   if (!nativeDesktopBridgeAvailable.value) {
-    nativeExternalAgentSession.value = null;
-    nativeExternalAgentSessionLogs.value = [];
     ElMessage.info("当前是网页模式；桌面端原生桥接入后可启动 Runner。");
     return false;
   }
-  if (nativeExternalAgentRunning.value) {
-    ElMessage.warning("外部 Agent Runner 正在执行，请等待完成或先取消");
+  const effectiveChatSessionId = String(
+    chatSessionId || currentChatSessionId.value || "",
+  ).trim();
+  if (isNativeExternalAgentRunningForChatSession(effectiveChatSessionId)) {
+    ElMessage.warning("当前对话已有外部 Agent Runner 正在执行");
     return false;
   }
   const workspacePath = String(
@@ -7272,31 +8407,36 @@ async function startNativeExternalAgentSession(chatSessionId = "", options = {})
   }
   const taskPrompt = buildNativeExternalAgentTaskPrompt({
     userPrompt: executionPrompt || displayPrompt,
-    chatSessionId,
+    chatSessionId: effectiveChatSessionId,
     workspacePath,
     agentLabel,
     attachmentNames: options.attachmentNames || [],
     slashCommandKind: options.slashCommandKind || "",
   });
-  nativeExternalAgentRunning.value = true;
-  nativeExternalAgentChatSessionId.value = String(
-    chatSessionId || currentChatSessionId.value || "",
-  ).trim();
-  nativeExternalAgentSession.value = null;
-  nativeExternalAgentSessionLogs.value = [];
-  stopNativeExternalAgentSessionPolling();
+  if (String(currentChatSessionId.value || "").trim() === effectiveChatSessionId) {
+    nativeExternalAgentRunning.value = true;
+    nativeExternalAgentChatSessionId.value = effectiveChatSessionId;
+    nativeExternalAgentSession.value = null;
+    nativeExternalAgentSessionLogs.value = [];
+  }
+  setNativeExternalAgentBackgrounded(effectiveChatSessionId, false);
+  setNativeExternalAgentLaunching(effectiveChatSessionId, true);
   try {
     const snapshot = await startNativeExternalAgentSessionCommand({
       agentType,
       workspacePath,
       prompt: taskPrompt,
     });
-    applyNativeExternalAgentSessionSnapshot(snapshot);
+    applyNativeExternalAgentSessionSnapshot(snapshot, {
+      chatSessionId: effectiveChatSessionId,
+      select:
+        String(currentChatSessionId.value || "").trim() === effectiveChatSessionId,
+    });
     selectedNativeExternalAgentRecordId.value = String(snapshot.sessionId || "").trim();
     appendNativeExternalAgentMessages(
       displayPrompt || executionPrompt,
       snapshot,
-      nativeExternalAgentChatSessionId.value,
+      effectiveChatSessionId,
       taskPrompt,
       {
         attachmentNames: options.attachmentNames || [],
@@ -7362,65 +8502,83 @@ async function startNativeExternalAgentSession(chatSessionId = "", options = {})
       void pollNativeExternalAgentSession(snapshot.sessionId);
       return true;
     }
-    nativeExternalAgentRunning.value = false;
-    finalizeNativeExternalAgentMessage(
+    syncChatLoadingWithCurrentSession();
+    finalizeNativeExternalAgentSessionOnce(
       snapshot,
-      nativeExternalAgentChatSessionId.value,
+      effectiveChatSessionId,
     );
     ElMessage.warning(
       snapshot.blockedReason || snapshot.summary || "外部 Agent Runner 未启动",
     );
     return false;
   } catch (err) {
-    nativeExternalAgentRunning.value = false;
-    nativeExternalAgentChatSessionId.value = "";
+    syncChatLoadingWithCurrentSession();
     ElMessage.error(err?.message || "外部 Agent Runner 启动失败");
     return false;
+  } finally {
+    setNativeExternalAgentLaunching(effectiveChatSessionId, false);
   }
 }
 
-async function cancelActiveNativeExternalAgentSession() {
-  const sessionId = String(nativeExternalAgentSession.value?.sessionId || "").trim();
-  if (!sessionId) return;
-  stopNativeExternalAgentSessionPolling();
-  nativeExternalAgentRunning.value = false;
-  chatLoading.value = pendingRequests.size > 0;
-  nativeExternalAgentSession.value = {
-    ...nativeExternalAgentSession.value,
-    sessionId,
-    status: "cancelling",
-    summary: "正在取消 Runner 会话",
-  };
-  applyNativeExternalAgentCancellingMessage(nativeExternalAgentSession.value);
-  try {
-    const snapshot = await cancelNativeExternalAgentSession({
-      sessionId,
+function cancelActiveNativeExternalAgentSession() {
+  const sessionId = String(
+    nativeExternalAgentSession.value?.sessionId ||
+      getNativeExternalAgentRunnerSessionIdForChatSession(
+        currentChatSessionId.value,
+      ) ||
+      "",
+  ).trim();
+  return cancelNativeExternalAgentSessionById(sessionId);
+}
+
+function cancelNativeExternalAgentSessionById(sessionId = "") {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  if (!normalizedSessionId) return false;
+  const chatSessionId =
+    getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId) ||
+    String(currentChatSessionId.value || "").trim();
+  applyNativeExternalAgentFastKilledSession(normalizedSessionId, chatSessionId);
+  ElMessage.success("已终止 Runner 会话");
+  void hardKillNativeExternalAgentSession({ sessionId: normalizedSessionId })
+    .then(() => {
+      scheduleNativeExternalAgentDeferredCleanup(
+        normalizedSessionId,
+        chatSessionId,
+        buildFastKilledNativeExternalAgentSnapshot(normalizedSessionId),
+      );
+    })
+    .catch((err) => {
+      console.warn("hard kill Runner session failed, fallback to cancel", err);
+      void cancelNativeExternalAgentSession({ sessionId: normalizedSessionId })
+        .then(() => {
+          scheduleNativeExternalAgentDeferredCleanup(
+            normalizedSessionId,
+            chatSessionId,
+            buildFastKilledNativeExternalAgentSnapshot(normalizedSessionId),
+          );
+        })
+        .catch((fallbackErr) => {
+          ElMessage.error(fallbackErr?.message || "终止 Runner 会话失败");
+        });
     });
-    applyNativeExternalAgentSessionSnapshot(snapshot);
-    upsertNativeExternalAgentMessageOperation(snapshot);
-    if (snapshot.status === "cancelling") {
-      applyNativeExternalAgentCancellingMessage(snapshot);
-    } else if (snapshot.status !== "running") {
-      completeNativeExternalAgentRunningOperations(
-        snapshot.sessionId,
-        "外部 Agent Runner 会话已结束",
-      );
-      finalizeNativeExternalAgentMessage(
-        snapshot,
-        nativeExternalAgentChatSessionId.value,
-      );
-    }
-    await refreshNativeExternalAgentSessionRecords({ silent: true });
-    nativeExternalAgentRunning.value = snapshot.status === "running";
-    chatLoading.value =
-      snapshot.status === "running" ? true : pendingRequests.size > 0;
-    if (snapshot.status === "running" || snapshot.status === "cancelling") {
-      void pollNativeExternalAgentSession(sessionId);
-    }
-    ElMessage.success("已发送取消指令");
-  } catch (err) {
-    ElMessage.error(err?.message || "取消 Runner 会话失败");
+  return true;
+}
+
+function backgroundCurrentNativeExternalAgentSession() {
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!chatSessionId) return false;
+  const runnerSessionId =
+    getNativeExternalAgentRunnerSessionIdForChatSession(chatSessionId);
+  const snapshot = runnerSessionId
+    ? nativeExternalAgentSessionsById.get(runnerSessionId)
+    : null;
+  if (!runnerSessionId || !isLiveNativeExternalAgentStatus(snapshot?.status)) {
+    return false;
   }
+  setNativeExternalAgentBackgrounded(chatSessionId, true);
+  persistCurrentChatRuntimeNow(selectedProjectId.value, chatSessionId);
+  ElMessage.info("已转入后台运行，任务不会取消");
+  return true;
 }
 
 async function hydrateNativeDesktopRuntimeInfo() {
@@ -8514,15 +9672,19 @@ const agentWorkflowState = computed(() => {
   }
 
   const running = findLatestAgentWorkflowOperation(["running", "pending"]);
+  const hasCurrentPendingRequest = hasPendingRequestForChatSession(
+    currentChatSessionId.value,
+  );
   const isRunning = Boolean(
     running ||
       chatLoading.value ||
-      pendingRequests.size > 0 ||
-      nativeExternalAgentRunning.value ||
+      hasCurrentPendingRequest ||
+      currentChatSessionNativeExternalAgentRunning.value ||
       backgroundTerminalCount.value > 0,
   );
   if (isRunning) {
-    const isNativeExternalAgentRunning = nativeExternalAgentRunning.value;
+    const isNativeExternalAgentRunning =
+      currentChatSessionNativeExternalAgentRunning.value;
     return {
       phase: "running",
       title:
@@ -8611,9 +9773,9 @@ function focusAgentWorkflowOperation() {
 
 const showPauseGenerationButton = computed(
   () =>
-    (Boolean(activeGenerationRequestId.value) ||
-      nativeExternalAgentRunning.value) &&
-    (chatLoading.value || nativeExternalAgentRunning.value) &&
+    (Boolean(getActiveRequestId()) ||
+      currentChatSessionNativeExternalAgentRunning.value) &&
+    (chatLoading.value || currentChatSessionNativeExternalAgentRunning.value) &&
     !isAwaitingUserInteraction.value &&
     !isTerminalInteractionMode.value,
 );
@@ -8623,13 +9785,17 @@ const backgroundTerminalCount = computed(() => {
   return hasLiveTerminalSession.value ? 1 : 0;
 });
 
+const currentChatSessionNativeExternalAgentRunning = computed(() =>
+  isNativeExternalAgentRunningForChatSession(currentChatSessionId.value),
+);
+
 const showWorkingStatusBar = computed(() => {
   if (!String(selectedProjectId.value || "").trim()) return false;
   if (isAwaitingUserInteraction.value) return false;
   return Boolean(
     chatLoading.value ||
-      pendingRequests.size > 0 ||
-      nativeExternalAgentRunning.value ||
+      hasPendingRequestForChatSession(currentChatSessionId.value) ||
+      currentChatSessionNativeExternalAgentRunning.value ||
       backgroundTerminalCount.value > 0,
   );
 });
@@ -8680,10 +9846,27 @@ function formatWorkingDuration(totalSeconds) {
   return `${remainingSeconds}s`;
 }
 
-function startWorkingStatusTimer() {
-  if (!workingStatusStartedAt.value) {
-    workingStatusStartedAt.value = Date.now();
+function workingStatusSessionKey(chatSessionId = currentChatSessionId.value) {
+  return String(chatSessionId || "").trim() || "__current__";
+}
+
+function clearWorkingStatusStartForChatSession(chatSessionId = "") {
+  const key = workingStatusSessionKey(chatSessionId);
+  workingStatusStartedAtBySession.delete(key);
+  if (key === workingStatusSessionKey()) {
+    workingStatusStartedAt.value = 0;
+    workingStatusNow.value = Date.now();
   }
+}
+
+function startWorkingStatusTimer() {
+  const key = workingStatusSessionKey();
+  let startedAt = Number(workingStatusStartedAtBySession.get(key) || 0);
+  if (!startedAt) {
+    startedAt = Date.now();
+    workingStatusStartedAtBySession.set(key, startedAt);
+  }
+  workingStatusStartedAt.value = startedAt;
   workingStatusNow.value = Date.now();
   if (workingStatusTimer !== null) return;
   workingStatusTimer = window.setInterval(() => {
@@ -8877,6 +10060,80 @@ const terminalPanelText = computed(() => {
   ]
     .filter(Boolean)
     .join("\n");
+});
+const terminalPanelLineCount = computed(() =>
+  Array.isArray(terminalPanelLines.value)
+    ? terminalPanelLines.value
+        .map((line) => String(line || "").trim())
+        .filter(Boolean).length
+    : 0,
+);
+const localRunnerProcessStatusTagType = computed(() => {
+  if (terminalPanelStatus.value === "error") return "danger";
+  if (terminalApprovalPrompt.value) return "warning";
+  if (terminalMirrorConnected.value || terminalPanelStatus.value === "running") {
+    return "primary";
+  }
+  return "info";
+});
+const activeTerminalMirrorRow = computed(() => {
+  const index = Number(activeTerminalMirrorAssistantIndex.value);
+  if (!Number.isInteger(index) || index < 0) return null;
+  return messages.value[index] || null;
+});
+const localRunnerProcessItems = computed(() => {
+  const row = activeTerminalMirrorRow.value;
+  const index = Number(activeTerminalMirrorAssistantIndex.value);
+  const liveItems = row ? messageLiveProgressItems(row, index) : [];
+  if (liveItems.length) return liveItems;
+  if (terminalApprovalPrompt.value) {
+    return [
+      {
+        id: "approval",
+        phase: "waiting_user",
+        title: terminalApprovalPrompt.value.title || "等待命令审批",
+        summary: terminalApprovalPrompt.value.description || "",
+        phaseLabel: "待处理",
+      },
+    ];
+  }
+  if (terminalMirrorConnected.value || terminalPanelStatus.value === "running") {
+    return [
+      {
+        id: "terminal-running",
+        phase: "running",
+        title: terminalActiveCommand.value || "项目终端运行中",
+        summary: hostTerminalWorkspacePath.value || projectWorkspaceResolved.value || "",
+        phaseLabel: "进行中",
+      },
+    ];
+  }
+  const recentLines = Array.isArray(terminalPanelLines.value)
+    ? terminalPanelLines.value
+        .map((line) => String(line || "").trim())
+        .filter(Boolean)
+        .slice(-4)
+    : [];
+  if (recentLines.length) {
+    return recentLines.map((line, index) => ({
+      id: `terminal-line-${index}`,
+      phase: "completed",
+      title: clipText(line, 140),
+      summary: "",
+      phaseLabel: "已记录",
+    }));
+  }
+  return [
+    {
+      id: "idle",
+      phase: "pending",
+      title: "等待执行任务",
+      summary: canUseHostTerminal.value
+        ? "启动终端或运行外部 Agent 后会显示过程细节"
+        : "先保存项目工作区后再启动终端",
+      phaseLabel: "待命",
+    },
+  ];
 });
 function extractTerminalApprovalPrompt(rawText) {
   const raw = String(rawText || "");
@@ -9437,6 +10694,195 @@ function restoreChatSession(projectId) {
   return String(localStorage.getItem(key) || "").trim();
 }
 
+function chatSessionMessageCacheKey(projectId, chatSessionId) {
+  const normalizedProjectId = String(projectId || "").trim();
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (!normalizedProjectId || !normalizedChatSessionId) return "";
+  return `${normalizedProjectId}:${normalizedChatSessionId}`;
+}
+
+function isCurrentChatSession(projectId, chatSessionId) {
+  return (
+    String(projectId || "").trim() ===
+      String(selectedProjectId.value || "").trim() &&
+    String(chatSessionId || "").trim() ===
+      String(currentChatSessionId.value || "").trim()
+  );
+}
+
+function rememberChatSessionMessages(projectId, chatSessionId, rows) {
+  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
+  if (!key || !Array.isArray(rows)) return;
+  chatSessionMessageCache.set(key, rows);
+}
+
+function rememberCurrentChatSessionMessages() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!projectId || !chatSessionId) return;
+  rememberChatSessionMessages(projectId, chatSessionId, messages.value);
+}
+
+function getRememberedChatSessionMessages(projectId, chatSessionId) {
+  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
+  if (!key) return null;
+  const rows = chatSessionMessageCache.get(key);
+  return Array.isArray(rows) ? rows : null;
+}
+
+function normalizeComposerUploadItem(item) {
+  if (!item || typeof item !== "object") return null;
+  return {
+    ...item,
+    name: String(item.name || item.raw?.name || "").trim(),
+    kind: String(item.kind || "").trim(),
+    url: String(item.url || "").trim(),
+    raw: item.raw || null,
+  };
+}
+
+function rememberChatSessionComposerState(projectId, chatSessionId, state) {
+  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
+  if (!key || !state || typeof state !== "object") return;
+  chatSessionComposerCache.set(key, {
+    draftText: String(state.draftText || ""),
+    uploadFiles: Array.isArray(state.uploadFiles)
+      ? state.uploadFiles.map(normalizeComposerUploadItem).filter(Boolean)
+      : [],
+    activeComposerAssist: String(state.activeComposerAssist || "").trim(),
+    singleRoundAnswerOnly: Boolean(state.singleRoundAnswerOnly),
+  });
+}
+
+function rememberCurrentChatSessionComposerState() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!projectId || !chatSessionId) return;
+  rememberChatSessionComposerState(projectId, chatSessionId, {
+    draftText: draftText.value,
+    uploadFiles: uploadFiles.value,
+    activeComposerAssist: activeComposerAssist.value,
+    singleRoundAnswerOnly: singleRoundAnswerOnly.value,
+  });
+}
+
+function applyChatSessionComposerState(projectId, chatSessionId) {
+  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
+  const state = key ? chatSessionComposerCache.get(key) : null;
+  draftText.value = String(state?.draftText || "");
+  uploadFiles.value = Array.isArray(state?.uploadFiles)
+    ? state.uploadFiles.map(normalizeComposerUploadItem).filter(Boolean)
+    : [];
+  activeComposerAssist.value = String(state?.activeComposerAssist || "").trim();
+  singleRoundAnswerOnly.value = Boolean(state?.singleRoundAnswerOnly);
+  slashCommandHighlightIndex.value = 0;
+}
+
+function clearCurrentChatSessionComposerState() {
+  const projectId = String(selectedProjectId.value || "").trim();
+  const chatSessionId = String(currentChatSessionId.value || "").trim();
+  if (!projectId || !chatSessionId) return;
+  rememberChatSessionComposerState(projectId, chatSessionId, {
+    draftText: "",
+    uploadFiles: [],
+    activeComposerAssist: activeComposerAssist.value,
+    singleRoundAnswerOnly: singleRoundAnswerOnly.value,
+  });
+}
+
+function hasPendingRequestForChatSession(chatSessionId) {
+  const normalizedSessionId = String(chatSessionId || "").trim();
+  if (!normalizedSessionId) return false;
+  for (const pending of pendingRequests.values()) {
+    if (String(pending?.chatSessionId || "").trim() === normalizedSessionId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isNativeExternalAgentRunningForChatSession(chatSessionId) {
+  const normalizedSessionId = String(chatSessionId || "").trim();
+  if (!normalizedSessionId) return false;
+  if (nativeExternalAgentBackgroundedChatSessionIds.value.has(normalizedSessionId)) {
+    return false;
+  }
+  if (nativeExternalAgentLaunchingChatSessionIds.value.has(normalizedSessionId)) {
+    return true;
+  }
+  const runnerSessionId =
+    getNativeExternalAgentRunnerSessionIdForChatSession(normalizedSessionId);
+  const snapshot = runnerSessionId
+    ? nativeExternalAgentSessionsById.get(runnerSessionId)
+    : null;
+  if (snapshot) {
+    return isLiveNativeExternalAgentStatus(snapshot.status);
+  }
+  return (
+    String(nativeExternalAgentChatSessionId.value || "").trim() ===
+      normalizedSessionId &&
+    isLiveNativeExternalAgentStatus(nativeExternalAgentSession.value?.status)
+  );
+}
+
+function isChatSessionBusy(chatSessionId = currentChatSessionId.value) {
+  const normalizedSessionId = String(chatSessionId || "").trim();
+  if (!normalizedSessionId) return false;
+  return (
+    hasPendingRequestForChatSession(normalizedSessionId) ||
+    (isExternalAgentMode.value &&
+      isNativeExternalAgentRunningForChatSession(normalizedSessionId))
+  );
+}
+
+function syncChatLoadingWithCurrentSession() {
+  chatLoading.value = isChatSessionBusy();
+}
+
+function buildRuntimePayloadForRows(rows) {
+  return {
+    version: 1,
+    updated_at: new Date().toISOString(),
+    messages: (Array.isArray(rows) ? rows : [])
+      .map(normalizeRuntimeMessageSnapshot)
+      .filter(Boolean),
+  };
+}
+
+function persistRememberedChatSessionMessages(projectId, chatSessionId) {
+  const rows = isCurrentChatSession(projectId, chatSessionId)
+    ? messages.value
+    : getRememberedChatSessionMessages(projectId, chatSessionId);
+  if (!Array.isArray(rows) || !rows.length) return;
+  const payload = isCurrentChatSession(projectId, chatSessionId)
+    ? buildPersistedChatRuntimePayload()
+    : buildRuntimePayloadForRows(rows);
+  writePersistedChatRuntime(projectId, chatSessionId, payload);
+  void persistChatRuntimeToServer(projectId, chatSessionId, payload);
+}
+
+function resolvePendingRequestRow(pending) {
+  if (!pending) return null;
+  const projectId = String(
+    pending.projectId || selectedProjectId.value || "",
+  ).trim();
+  const chatSessionId = String(
+    pending.chatSessionId || currentChatSessionId.value || "",
+  ).trim();
+  const rows = isCurrentChatSession(projectId, chatSessionId)
+    ? messages.value
+    : getRememberedChatSessionMessages(projectId, chatSessionId);
+  if (!Array.isArray(rows)) return null;
+  const assistantMessageId = String(pending.assistantMessageId || "").trim();
+  if (assistantMessageId) {
+    const matched = rows.find(
+      (item) => String(item?.id || "").trim() === assistantMessageId,
+    );
+    if (matched) return matched;
+  }
+  return rows[Number(pending.assistantIndex ?? -1)] || null;
+}
+
 function rememberTaskTreeSession(projectId, sessionId) {
   const key = taskTreeSessionStorageKey(projectId);
   if (!key) return;
@@ -9694,6 +11140,61 @@ function normalizeNativeExternalAgentRuntimeSnapshot(value) {
   };
 }
 
+function buildNativeExternalAgentRuntimeSnapshotForSession(sessionId = "") {
+  const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
+  if (!normalizedSessionId) return null;
+  const snapshot = nativeExternalAgentSessionsById.get(normalizedSessionId);
+  if (!snapshot) return null;
+  return normalizeNativeExternalAgentRuntimeSnapshot({
+    session_id: normalizedSessionId,
+    chat_session_id:
+      getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId),
+    message_id:
+      getNativeExternalAgentMessageIdForRunnerSession(normalizedSessionId),
+    running: isLiveNativeExternalAgentStatus(snapshot.status),
+    session: snapshot,
+    logs: getNativeExternalAgentSessionLogs(normalizedSessionId).slice(-500),
+  });
+}
+
+function buildNativeExternalAgentRuntimeSnapshotForChatSession(chatSessionId = "") {
+  const runnerSessionId =
+    getNativeExternalAgentRunnerSessionIdForChatSession(chatSessionId);
+  if (runnerSessionId) {
+    return buildNativeExternalAgentRuntimeSnapshotForSession(runnerSessionId);
+  }
+  const normalizedChatSessionId = String(chatSessionId || "").trim();
+  if (
+    normalizedChatSessionId &&
+    String(nativeExternalAgentChatSessionId.value || "").trim() ===
+      normalizedChatSessionId
+  ) {
+    return normalizeNativeExternalAgentRuntimeSnapshot({
+      session_id: String(nativeExternalAgentSession.value?.sessionId || "").trim(),
+      chat_session_id: normalizedChatSessionId,
+      message_id: String(nativeExternalAgentMessageId.value || "").trim(),
+      running: isLiveNativeExternalAgentStatus(
+        nativeExternalAgentSession.value?.status,
+      ),
+      session:
+        nativeExternalAgentSession.value &&
+        typeof nativeExternalAgentSession.value === "object"
+          ? nativeExternalAgentSession.value
+          : null,
+      logs: Array.isArray(nativeExternalAgentSessionLogs.value)
+        ? nativeExternalAgentSessionLogs.value.slice(-500)
+        : [],
+    });
+  }
+  return null;
+}
+
+function listNativeExternalAgentRuntimeSnapshotsForCurrentProject() {
+  return Array.from(nativeExternalAgentSessionsById.keys())
+    .map((sessionId) => buildNativeExternalAgentRuntimeSnapshotForSession(sessionId))
+    .filter(Boolean);
+}
+
 function buildPersistedChatRuntimePayload() {
   const activeIndex = Number(activeTerminalMirrorAssistantIndex.value ?? -1);
   const activeRow =
@@ -9722,20 +11223,10 @@ function buildPersistedChatRuntimePayload() {
       active_assistant_index: activeIndex,
       active_assistant_message_id: String(activeRow?.id || "").trim(),
     },
-    native_external_agent: normalizeNativeExternalAgentRuntimeSnapshot({
-      session_id: String(nativeExternalAgentSession.value?.sessionId || "").trim(),
-      chat_session_id: String(nativeExternalAgentChatSessionId.value || "").trim(),
-      message_id: String(nativeExternalAgentMessageId.value || "").trim(),
-      running: Boolean(nativeExternalAgentRunning.value),
-      session:
-        nativeExternalAgentSession.value &&
-        typeof nativeExternalAgentSession.value === "object"
-          ? nativeExternalAgentSession.value
-          : null,
-      logs: Array.isArray(nativeExternalAgentSessionLogs.value)
-        ? nativeExternalAgentSessionLogs.value.slice(-500)
-        : [],
-    }),
+    native_external_agent: buildNativeExternalAgentRuntimeSnapshotForChatSession(
+      currentChatSessionId.value,
+    ),
+    native_external_agents: listNativeExternalAgentRuntimeSnapshotsForCurrentProject(),
   };
 }
 
@@ -9829,93 +11320,117 @@ async function restoreNativeExternalAgentRuntime(
   }
   nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
   if (!nativeDesktopBridgeAvailable.value) return;
-  const runtimeSnapshot = normalizeNativeExternalAgentRuntimeSnapshot(
+  const runtimeSnapshots = [
+    ...(Array.isArray(runtimePayload?.native_external_agents)
+      ? runtimePayload.native_external_agents
+      : []),
     runtimePayload?.native_external_agent,
-  );
-  const restoredMessage = findNativeExternalAgentRuntimeMessage(runtimeSnapshot);
-  const restoredSessionId =
-    String(runtimeSnapshot?.session_id || "").trim() ||
-    resolveNativeExternalAgentSessionIdFromMessage(restoredMessage);
-  if (!restoredSessionId || !restoredMessage) return;
-
-  nativeExternalAgentMessageId.value = String(restoredMessage.id || "").trim();
-  nativeExternalAgentChatSessionId.value = activeChatSessionId;
-  nativeExternalAgentSessionLogs.value = Array.isArray(runtimeSnapshot?.logs)
-    ? runtimeSnapshot.logs.slice(-500)
-    : [];
-  nativeExternalAgentSession.value =
-    runtimeSnapshot?.session && typeof runtimeSnapshot.session === "object"
-      ? runtimeSnapshot.session
-      : {
-          sessionId: restoredSessionId,
-          status: "running",
-          logs: [],
-        };
-
-  let snapshot = null;
-  try {
-    snapshot = await getNativeExternalAgentSession({
-      sessionId: restoredSessionId,
-      sinceSeq: 0,
+  ]
+    .map(normalizeNativeExternalAgentRuntimeSnapshot)
+    .filter(Boolean)
+    .filter((item, index, list) => {
+      const sessionId = String(item.session_id || "").trim();
+      if (!sessionId) return false;
+      return (
+        list.findIndex(
+          (candidate) =>
+            String(candidate?.session_id || "").trim() === sessionId,
+        ) === index
+      );
+    })
+    .filter((item) => {
+      const snapshotChatSessionId = String(item.chat_session_id || "").trim();
+      return !snapshotChatSessionId || snapshotChatSessionId === activeChatSessionId;
     });
-  } catch (err) {
-    console.warn("restore native external agent session failed", err);
-  }
-  if (snapshot?.sessionId) {
-    nativeExternalAgentSessionLogs.value = Array.isArray(snapshot.logs)
-      ? snapshot.logs.slice(-500)
-      : [];
-    applyNativeExternalAgentSessionSnapshot(snapshot);
-    upsertNativeExternalAgentMessageOperation(snapshot);
-    if (snapshot.status === "running") {
-      restoredMessage.displayMode =
-        String(restoredMessage.displayMode || "").trim() ||
-        "external-agent-waiting";
-      nativeExternalAgentRunning.value = true;
-      chatLoading.value = true;
-      stopNativeExternalAgentSessionPolling();
-      void pollNativeExternalAgentSession(restoredSessionId);
-      return;
+  for (const runtimeSnapshot of runtimeSnapshots) {
+    rememberNativeExternalAgentSessionBinding({
+      sessionId: runtimeSnapshot.session_id,
+      chatSessionId: activeChatSessionId,
+      messageId: runtimeSnapshot.message_id,
+    });
+    if (runtimeSnapshot.logs.length) {
+      nativeExternalAgentSessionLogsById.set(
+        runtimeSnapshot.session_id,
+        runtimeSnapshot.logs.slice(-500),
+      );
     }
-    if (snapshot.status === "cancelling") {
-      nativeExternalAgentRunning.value = false;
-      chatLoading.value = pendingRequests.size > 0;
+    if (runtimeSnapshot.session) {
+      nativeExternalAgentSessionsById.set(
+        runtimeSnapshot.session_id,
+        runtimeSnapshot.session,
+      );
+    }
+    const restoredMessage = findNativeExternalAgentRuntimeMessage(runtimeSnapshot);
+    const restoredSessionId =
+      String(runtimeSnapshot?.session_id || "").trim() ||
+      resolveNativeExternalAgentSessionIdFromMessage(restoredMessage);
+    if (!restoredSessionId || !restoredMessage) continue;
+    rememberNativeExternalAgentSessionBinding({
+      sessionId: restoredSessionId,
+      chatSessionId: activeChatSessionId,
+      messageId: restoredMessage.id,
+    });
+    syncNativeExternalAgentSessionPanel(restoredSessionId);
+
+    let snapshot = null;
+    try {
+      snapshot = await getNativeExternalAgentSession({
+        sessionId: restoredSessionId,
+        sinceSeq: 0,
+      });
+    } catch (err) {
+      console.warn("restore native external agent session failed", err);
+    }
+    if (snapshot?.sessionId) {
+      applyNativeExternalAgentSessionSnapshot(snapshot, {
+        chatSessionId: activeChatSessionId,
+        messageId: restoredMessage.id,
+        select: true,
+      });
+      upsertNativeExternalAgentMessageOperation(snapshot);
+      if (snapshot.status === "running" || snapshot.status === "cancelling") {
+        restoredMessage.displayMode =
+          snapshot.status === "running"
+            ? String(restoredMessage.displayMode || "").trim() ||
+              "external-agent-waiting"
+            : "";
+        if (snapshot.status === "cancelling") {
+          restoredMessage.content =
+            String(restoredMessage.content || "").trim() ||
+            "正在取消外部 Agent Runner 会话。";
+          completeNativeExternalAgentRunningOperations(
+            restoredSessionId,
+            "外部 Agent Runner 会话正在取消",
+          );
+        }
+        syncChatLoadingWithCurrentSession();
+        void pollNativeExternalAgentSession(restoredSessionId);
+        continue;
+      }
+      syncChatLoadingWithCurrentSession();
+      completeNativeExternalAgentRunningOperations(
+        restoredSessionId,
+        "外部 Agent Runner 会话已结束",
+      );
+      finalizeNativeExternalAgentMessage(snapshot, activeChatSessionId);
+      continue;
+    }
+
+    if (runtimeSnapshot?.running) {
       restoredMessage.displayMode = "";
       restoredMessage.content =
         String(restoredMessage.content || "").trim() ||
-        "正在取消外部 Agent Runner 会话。";
+        "外部 Agent Runner 会话状态不可确认，已停止恢复为进行中。";
+      syncChatLoadingWithCurrentSession();
       completeNativeExternalAgentRunningOperations(
         restoredSessionId,
-        "外部 Agent Runner 会话正在取消",
+        "外部 Agent Runner 会话状态不可确认，已停止恢复为进行中",
       );
       schedulePersistChatRuntime();
-      stopNativeExternalAgentSessionPolling();
-      void pollNativeExternalAgentSession(restoredSessionId);
-      return;
     }
-    nativeExternalAgentRunning.value = false;
-    chatLoading.value = pendingRequests.size > 0;
-    completeNativeExternalAgentRunningOperations(
-      restoredSessionId,
-      "外部 Agent Runner 会话已结束",
-    );
-    finalizeNativeExternalAgentMessage(snapshot, activeChatSessionId);
-    return;
   }
-
-  if (runtimeSnapshot?.running) {
-    restoredMessage.displayMode = "";
-    restoredMessage.content =
-      String(restoredMessage.content || "").trim() ||
-      "外部 Agent Runner 会话状态不可确认，已停止恢复为进行中。";
-    nativeExternalAgentRunning.value = false;
-    chatLoading.value = pendingRequests.size > 0;
-    completeNativeExternalAgentRunningOperations(
-      restoredSessionId,
-      "外部 Agent Runner 会话状态不可确认，已停止恢复为进行中",
-    );
-    schedulePersistChatRuntime();
-  }
+  syncNativeExternalAgentSessionPanel();
+  syncChatLoadingWithCurrentSession();
 }
 
 async function restoreInteractiveChatRuntime(
@@ -9972,10 +11487,30 @@ function schedulePersistChatRuntime() {
     ) {
       return;
     }
-    const payload = buildPersistedChatRuntimePayload();
-    writePersistedChatRuntime(projectId, chatSessionId, payload);
-    void persistChatRuntimeToServer(projectId, chatSessionId, payload);
+    persistCurrentChatRuntimeNow(projectId, chatSessionId);
   }, 300);
+}
+
+function persistCurrentChatRuntimeNow(projectId = "", chatSessionId = "") {
+  const normalizedProjectId = String(
+    projectId || selectedProjectId.value || "",
+  ).trim();
+  const normalizedChatSessionId = String(
+    chatSessionId || currentChatSessionId.value || "",
+  ).trim();
+  if (!normalizedProjectId || !normalizedChatSessionId) return;
+  if (!isCurrentChatSession(normalizedProjectId, normalizedChatSessionId)) return;
+  if (chatRuntimePersistTimer) {
+    clearTimeout(chatRuntimePersistTimer);
+    chatRuntimePersistTimer = null;
+  }
+  const payload = buildPersistedChatRuntimePayload();
+  writePersistedChatRuntime(normalizedProjectId, normalizedChatSessionId, payload);
+  void persistChatRuntimeToServer(
+    normalizedProjectId,
+    normalizedChatSessionId,
+    payload,
+  );
 }
 
 function normalizeChatSourceContext(item) {
@@ -10993,7 +12528,10 @@ const canSend = computed(() => {
       String(draftText.value || "").trim() || hasLiveTerminalSession.value,
     );
   }
-  if (isExternalAgentMode.value && nativeExternalAgentRunning.value) {
+  if (
+    isExternalAgentMode.value &&
+    isNativeExternalAgentRunningForChatSession(currentChatSessionId.value)
+  ) {
     return false;
   }
   if (
@@ -13707,10 +15245,10 @@ function isCurrentChatTaskTreeDone() {
 function hasLiveExecutionActivity() {
   return Boolean(
     chatLoading.value ||
-      pendingRequests.size > 0 ||
-      activeGenerationRequestId.value ||
+      hasPendingRequestForChatSession(currentChatSessionId.value) ||
+      Boolean(getActiveRequestId()) ||
       externalAgentWarmupLoading.value ||
-      nativeExternalAgentRunning.value ||
+      currentChatSessionNativeExternalAgentRunning.value ||
       backgroundTerminalCount.value > 0 ||
       terminalMirrorConnected.value ||
       terminalPanelStatus.value === "running",
@@ -13925,7 +15463,7 @@ function completePendingExternalOperationRequest(matched, message) {
     if (row !== matched.row) continue;
     completeTerminalInputOperations(row, normalizedMessage);
     resolvePendingRequest(requestId, pending, row.content || normalizedMessage);
-    chatLoading.value = pendingRequests.size > 0;
+    syncChatLoadingWithCurrentSession();
     break;
   }
 }
@@ -13973,7 +15511,7 @@ function completePendingExternalOperationRequestByRow(
     }
   }
   if (changed) {
-    chatLoading.value = pendingRequests.size > 0;
+    syncChatLoadingWithCurrentSession();
   }
   return changed;
 }
@@ -14295,7 +15833,7 @@ function completePendingRequestForAssistantRow(row) {
     if (pendingRow !== row) continue;
     resolvePendingRequest(requestId, pending, row.content || "");
   }
-  chatLoading.value = pendingRequests.size > 0;
+  syncChatLoadingWithCurrentSession();
 }
 
 function completeAgentRuntimeOperationsForRun(row, runId) {
@@ -15181,7 +16719,7 @@ async function continueChatWithInteractionPayload(payloadText) {
     ElMessage.error(err?.message || "交互提交失败");
     return false;
   } finally {
-    chatLoading.value = pendingRequests.size > 0;
+    syncChatLoadingWithCurrentSession();
     scrollToBottom();
   }
 }
@@ -15230,6 +16768,10 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
       resolve,
       reject,
       requestId,
+      projectId,
+      chatSessionId: activeChatSessionId,
+      chatMode: "system",
+      assistantMessageId: String(assistantMessage?.id || "").trim(),
       assistantIndex,
       userPrompt: payloadText,
       mcpApprovalCancelled: false,
@@ -15349,12 +16891,11 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
     await donePromise;
     return true;
   } catch (err) {
-    messages.value[assistantIndex].content =
-      `请求失败：${err?.message || "未知错误"}`;
+    assistantMessage.content = `请求失败：${err?.message || "未知错误"}`;
     ElMessage.error(err?.message || "交互提交失败");
     return false;
   } finally {
-    chatLoading.value = pendingRequests.size > 0;
+    syncChatLoadingWithCurrentSession();
     if (sourceRow) {
       sourceRow.processExpanded = true;
     }
@@ -16292,6 +17833,29 @@ function isExternalAgentWaitingMessage(item) {
   );
 }
 
+function isBackgroundedNativeExternalAgentMessage(item) {
+  const runnerSessionId = resolveNativeExternalAgentSessionIdFromMessage(item);
+  if (!runnerSessionId) return false;
+  const chatSessionId =
+    getNativeExternalAgentChatSessionIdForRunnerSession(runnerSessionId);
+  return (
+    Boolean(chatSessionId) &&
+    nativeExternalAgentBackgroundedChatSessionIds.value.has(chatSessionId)
+  );
+}
+
+function externalAgentWaitingMessageTitle(item) {
+  return isBackgroundedNativeExternalAgentMessage(item)
+    ? "外部任务已转入后台"
+    : "外部模型正在生成回复";
+}
+
+function externalAgentWaitingMessageDescription(item) {
+  return isBackgroundedNativeExternalAgentMessage(item)
+    ? "后台继续执行，完成后会自动写回这条消息"
+    : "已连接执行器，正在等待模型返回结果";
+}
+
 function messageRoleName(item) {
   if (String(item?.role || "").trim() === "user") return "登录用户";
   if (String(item?.displayMode || "").trim() === "terminal") {
@@ -16410,12 +17974,14 @@ async function sendNativeExternalAgentInputContent(content, options = {}) {
     }
     applyNativeExternalAgentSessionSnapshot(snapshot);
     upsertNativeExternalAgentMessageOperation(snapshot);
-    schedulePersistChatRuntime();
+    persistNativeExternalAgentRowsForSession(
+      getNativeExternalAgentChatSessionIdForRunnerSession(sessionId),
+    );
     if (!options.silent) {
       ElMessage.success("已发送到 Runner");
     }
     if (String(snapshot.status || "").trim() === "running") {
-      stopNativeExternalAgentSessionPolling();
+      stopNativeExternalAgentSessionPolling(sessionId);
       void pollNativeExternalAgentSession(sessionId);
     }
     return true;
@@ -16639,6 +18205,18 @@ function applyDeleteTargetLocally(target) {
   chatHistoryLoadedCount.value = messages.value.length;
 }
 
+function isChatHistoryTruncateNotFound(err) {
+  if (Number(err?.status || 0) !== 404) return false;
+  const detail = String(err?.detail || err?.message || "")
+    .trim()
+    .toLowerCase();
+  return (
+    !detail ||
+    detail.includes("not found") ||
+    detail.includes("message not found")
+  );
+}
+
 function buildDeleteSuccessText(item) {
   const role = String(item?.role || "").trim();
   return role === "user" ? "消息已删除" : "该轮对话已删除";
@@ -16777,6 +18355,13 @@ async function deleteMessageAt(messageIndex) {
     applyDeleteTargetLocally(target);
     ElMessage.success(buildDeleteSuccessText(item));
   } catch (err) {
+    if (isChatHistoryTruncateNotFound(err)) {
+      applyDeleteTargetLocally(target);
+      clearPersistedChatRuntime(projectId, chatSessionId);
+      rememberCurrentChatSessionMessages();
+      ElMessage.success(buildDeleteSuccessText(item));
+      return;
+    }
     ElMessage.error(err?.detail || err?.message || buildDeleteErrorText(item));
   }
 }
@@ -19026,6 +20611,7 @@ function attachmentTypeLabel(attachment) {
 
 function applyStarterPrompt(prompt) {
   draftText.value = String(prompt || "").trim();
+  rememberCurrentChatSessionComposerState();
 }
 
 function handleFileChange(file) {
@@ -19054,6 +20640,7 @@ function handleFileChange(file) {
     file.kind = "document";
   }
   uploadFiles.value.push(file);
+  rememberCurrentChatSessionComposerState();
 }
 
 function handleDragOver() {
@@ -19151,11 +20738,13 @@ function handleEditorPaste(event) {
 
 function removeFile(index) {
   uploadFiles.value.splice(index, 1);
+  rememberCurrentChatSessionComposerState();
 }
 
 function resetDraft() {
   draftText.value = "";
   uploadFiles.value = [];
+  clearCurrentChatSessionComposerState();
 }
 
 function currentActiveAssistantRow() {
@@ -19392,8 +20981,9 @@ async function sendMergedFollowupRequest(queueItems = [], assistantMessageId = "
     : [];
   chatLoading.value = true;
   scrollToBottom();
+  let requestCancelled = false;
   try {
-    await sendProjectChatRequest({
+    const sendResult = await sendProjectChatRequest({
       projectId: selectedProjectId.value,
       activeChatSessionId,
       userMessageId: "",
@@ -19410,13 +21000,15 @@ async function sendMergedFollowupRequest(queueItems = [], assistantMessageId = "
       requestKind: "followup_replan",
       replaceAssistantContentOnDone: true,
     });
+    requestCancelled = Boolean(sendResult?.cancelled);
+    if (requestCancelled) return;
   } catch (err) {
     assistantMessage.content = `请求失败：${err?.message || "未知错误"}`;
     ElMessage.error(err?.message || "追加需求处理失败");
   } finally {
-    chatLoading.value = pendingRequests.size > 0;
+    syncChatLoadingWithCurrentSession();
     singleRoundAnswerOnly.value = false;
-    if (selectedProjectId.value) {
+    if (selectedProjectId.value && !requestCancelled) {
       await fetchChatSessions(selectedProjectId.value, activeChatSessionId);
     }
     scrollToBottom();
@@ -19566,6 +21158,47 @@ function openSettingsCenter(panelId = "chat") {
     ? resolveSettingsAwarePanelPath(route.path, normalizedPanelId, "/chat")
     : buildChatSettingsRoute("/chat");
   void router.push(targetPath);
+}
+
+function openComposerExecutionDetail() {
+  const runnerSessionId = String(
+    nativeExternalAgentSession.value?.sessionId || "",
+  ).trim();
+  if (runnerSessionId) {
+    nativeExternalAgentDetailActiveTab.value = "terminal";
+    nativeExternalAgentSessionDetailVisible.value = true;
+    return;
+  }
+  if (hasChatTaskTree.value) {
+    void openTaskTreePanel();
+    return;
+  }
+  if (terminalApprovalPrompt.value) {
+    terminalApprovalDialogVisible.value = true;
+    return;
+  }
+  openSettingsCenter("chat");
+}
+
+async function handleComposerExecutionPrimaryAction() {
+  if (!hasSelectedProject.value) {
+    ElMessage.warning("请先选择项目");
+    return;
+  }
+  if (!isExternalAgentMode.value) {
+    openSettingsCenter("chat");
+    return;
+  }
+  if (
+    externalAgentConnectorRequired.value ||
+    !workspacePathConfigured.value ||
+    workspacePathDirty.value ||
+    !nativeDesktopBridgeAvailable.value
+  ) {
+    openSettingsCenter("chat");
+    return;
+  }
+  await runNativeRunnerSelfCheck({ silent: false });
 }
 
 function closeSettingsCenter() {
@@ -20593,6 +22226,8 @@ async function fetchChatSessions(
     chatSessions.value = [];
     currentChatSessionId.value = "";
     messages.value = [];
+    draftText.value = "";
+    uploadFiles.value = [];
     chatHistoryLoadedCount.value = 0;
     return "";
   }
@@ -20632,12 +22267,17 @@ async function fetchChatSessions(
           !excludedSessionIds.has(candidate) &&
           chatSessions.value.some((item) => item.id === candidate),
       ) || "";
+    rememberCurrentChatSessionMessages();
+    rememberCurrentChatSessionComposerState();
     currentChatSessionId.value = resolved;
+    applyChatSessionComposerState(projectId, resolved);
     rememberChatSession(projectId, resolved);
     return resolved;
   } catch (err) {
     chatSessions.value = [];
     currentChatSessionId.value = "";
+    draftText.value = "";
+    uploadFiles.value = [];
     chatHistoryLoadedCount.value = 0;
     ElMessage.error(err?.detail || err?.message || "加载会话列表失败");
     return "";
@@ -20658,10 +22298,13 @@ async function fetchChatHistory(
   chatSessionId = currentChatSessionId.value,
   options = {},
 ) {
+  const append = options.append === true;
   if (!projectId) {
     activeChatHistoryLoadingKey = "";
     chatHistoryLoading.value = false;
     messages.value = [];
+    draftText.value = "";
+    uploadFiles.value = [];
     chatHistoryLoadedCount.value = 0;
     chatHistoryReachedEnd.value = false;
     applyTaskTreePayload(null);
@@ -20669,7 +22312,15 @@ async function fetchChatHistory(
     return;
   }
   const normalizedSessionId = String(chatSessionId || "").trim();
+  if (!append) {
+    rememberCurrentChatSessionMessages();
+    rememberCurrentChatSessionComposerState();
+  }
   currentChatSessionId.value = normalizedSessionId;
+  if (!append) {
+    applyChatSessionComposerState(projectId, normalizedSessionId);
+  }
+  syncChatLoadingWithCurrentSession();
   if (!normalizedSessionId) {
     activeChatHistoryLoadingKey = "";
     chatHistoryLoading.value = false;
@@ -20680,7 +22331,6 @@ async function fetchChatHistory(
     resetTerminalPanel();
     return;
   }
-  const append = options.append === true;
   const loadingKey = [
     String(projectId || "").trim(),
     normalizedSessionId,
@@ -20717,11 +22367,14 @@ async function fetchChatHistory(
     if (append) {
       messages.value = [...historyRows, ...messages.value];
     } else {
-      messages.value = applyPersistedChatRuntimeRows(
-        historyRows,
-        runtimePayload,
-      );
+      const liveRows = hasPendingRequestForChatSession(normalizedSessionId)
+        ? getRememberedChatSessionMessages(projectId, normalizedSessionId)
+        : null;
+      messages.value = Array.isArray(liveRows) && liveRows.length
+        ? liveRows
+        : applyPersistedChatRuntimeRows(historyRows, runtimePayload);
     }
+    rememberChatSessionMessages(projectId, normalizedSessionId, messages.value);
     chatHistoryLoadedCount.value = messages.value.length;
     rememberChatSession(projectId, normalizedSessionId);
     await fetchChatTaskTree(projectId, normalizedSessionId, { silent: true });
@@ -20850,7 +22503,10 @@ async function createChatSession(options = {}) {
       ...chatSessions.value.filter((item) => item.id !== session.id),
     ];
     if (options.switchTo !== false) {
+      rememberCurrentChatSessionMessages();
+      rememberCurrentChatSessionComposerState();
       currentChatSessionId.value = session.id;
+      applyChatSessionComposerState(projectId, session.id);
       rememberChatSession(projectId, session.id);
       clearTaskTreeSessionMemory(projectId);
       clearWorkSessionMemory(projectId);
@@ -21240,6 +22896,8 @@ async function handleCreateNewConversation() {
   }
   if ((chatSessions.value || []).length) {
     const projectId = String(selectedProjectId.value || "").trim();
+    rememberCurrentChatSessionMessages();
+    rememberCurrentChatSessionComposerState();
     currentChatSessionId.value = "";
     rememberChatSession(projectId, "");
     clearTaskTreeSessionMemory(projectId);
@@ -21265,10 +22923,6 @@ async function selectChatSession(sessionId) {
   const projectId = String(selectedProjectId.value || "").trim();
   const normalizedSessionId = String(sessionId || "").trim();
   if (!projectId || !normalizedSessionId) return;
-  if (chatLoading.value) {
-    ElMessage.warning("当前回答进行中，暂时不能切换会话");
-    return;
-  }
   await fetchChatHistory(projectId, normalizedSessionId);
 }
 
@@ -21720,7 +23374,7 @@ async function handleSocketMessage(eventData) {
           } catch (error) {
             assistantMessage.content = `自动继续失败：${error?.message || "未知错误"}`;
           } finally {
-            chatLoading.value = pendingRequests.size > 0;
+            syncChatLoadingWithCurrentSession();
           }
         }
       }
@@ -22000,13 +23654,18 @@ async function handleSocketMessage(eventData) {
   }
   const pending = pendingRequests.get(requestId);
   if (!pending) return;
-  const row = messages.value[pending.assistantIndex];
+  const row = resolvePendingRequestRow(pending);
   if (!row) {
     pendingRequests.delete(requestId);
     clearTrackedPendingRequest(requestId);
+    syncChatLoadingWithCurrentSession();
     pending.reject(new Error("消息上下文已失效"));
     return;
   }
+  const isPendingCurrentSession = isCurrentChatSession(
+    pending.projectId,
+    pending.chatSessionId,
+  );
   if (eventType === "operation_event") {
     upsertMessageOperation(row, eventData);
     scrollToBottom();
@@ -22056,6 +23715,7 @@ async function handleSocketMessage(eventData) {
       ? resolveTaskTreeEventPayload(eventData)
       : null;
     if (
+      isPendingCurrentSession &&
       eventData &&
       (Object.prototype.hasOwnProperty.call(eventData, "task_tree") ||
         Object.prototype.hasOwnProperty.call(eventData, "history_task_tree"))
@@ -22063,6 +23723,7 @@ async function handleSocketMessage(eventData) {
       applyTaskTreePayload(taskTreePayload);
     }
     if (
+      isPendingCurrentSession &&
       eventData?.work_session &&
       taskTreePayload &&
       !isTaskTreeArchivedOrDone(taskTreePayload)
@@ -22553,6 +24214,7 @@ async function handleSocketMessage(eventData) {
       pending.lastToolName = toolName;
     }
     if (
+      isPendingCurrentSession &&
       eventData &&
       Object.prototype.hasOwnProperty.call(eventData, "task_tree")
     ) {
@@ -22697,6 +24359,7 @@ async function handleSocketMessage(eventData) {
         ? resolveTaskTreeEventPayload(eventData)
         : null;
       if (
+        isPendingCurrentSession &&
         eventData &&
         (Object.prototype.hasOwnProperty.call(eventData, "task_tree") ||
           Object.prototype.hasOwnProperty.call(eventData, "history_task_tree"))
@@ -22704,6 +24367,7 @@ async function handleSocketMessage(eventData) {
         applyTaskTreePayload(taskTreePayload);
       }
       if (
+        isPendingCurrentSession &&
         eventData?.work_session &&
         taskTreePayload &&
         !isTaskTreeArchivedOrDone(taskTreePayload)
@@ -22761,7 +24425,7 @@ async function handleSocketMessage(eventData) {
       if (!keepRequestOpenAfterDone) {
         resolvePendingRequest(requestId, pending, row.content || "");
       } else {
-        chatLoading.value = pendingRequests.size > 0;
+        syncChatLoadingWithCurrentSession();
       }
       scrollToBottom();
     }
@@ -22793,6 +24457,11 @@ function resolvePendingRequest(requestId, pending, content = "") {
   if (!pending || !requestId) return;
   pendingRequests.delete(requestId);
   clearTrackedPendingRequest(requestId);
+  if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
+    clearWorkingStatusStartForChatSession(pending.chatSessionId);
+  }
+  persistRememberedChatSessionMessages(pending.projectId, pending.chatSessionId);
+  syncChatLoadingWithCurrentSession();
   pending.resolve(String(content || "").trim());
 }
 
@@ -22800,6 +24469,11 @@ function rejectPendingRequest(requestId, pending, error) {
   if (!pending || !requestId) return;
   pendingRequests.delete(requestId);
   clearTrackedPendingRequest(requestId);
+  if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
+    clearWorkingStatusStartForChatSession(pending.chatSessionId);
+  }
+  persistRememberedChatSessionMessages(pending.projectId, pending.chatSessionId);
+  syncChatLoadingWithCurrentSession();
   pending.reject(
     error instanceof Error ? error : new Error(String(error || "未知错误")),
   );
@@ -22809,14 +24483,19 @@ function rejectPendingRequests(reason) {
   const message = String(reason || "连接已断开").trim();
   const items = Array.from(pendingRequests.entries());
   for (const [requestId, pending] of items) {
-    const row = messages.value[pending.assistantIndex];
+    const row = resolvePendingRequestRow(pending);
     if (row && !String(row.content || "").trim()) {
       row.content = `请求失败：${message}`;
     }
     pending.reject(new Error(message));
     pendingRequests.delete(requestId);
     clearTrackedPendingRequest(requestId);
+    if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
+      clearWorkingStatusStartForChatSession(pending.chatSessionId);
+    }
+    persistRememberedChatSessionMessages(pending.projectId, pending.chatSessionId);
   }
+  syncChatLoadingWithCurrentSession();
 }
 
 function rejectPendingAgentPrepares(reason) {
@@ -23355,11 +25034,17 @@ async function sendProjectChatRequest({
 }) {
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const client = await ensureWsClient(projectId);
+  const requestChatMode = isExternalAgentMode.value ? "external_agent" : "system";
+  let pendingState = null;
   const donePromise = new Promise((resolve, reject) => {
-    pendingRequests.set(requestId, {
+    pendingState = {
       resolve,
       reject,
       requestId,
+      projectId,
+      chatSessionId: activeChatSessionId,
+      chatMode: requestChatMode,
+      assistantMessageId: String(assistantMessage?.id || "").trim(),
       assistantIndex,
       userPrompt: finalUserPrompt,
       mcpApprovalCancelled: false,
@@ -23367,7 +25052,9 @@ async function sendProjectChatRequest({
       handoffTriggered: false,
       projectHostTerminalHandoffTriggered: false,
       lastToolName: "",
-    });
+      cancelled: false,
+    };
+    pendingRequests.set(requestId, pendingState);
     trackPendingRequest(requestId);
   });
   const employeeIds = normalizeStringList(selectedEmployeeIds.value || []);
@@ -23377,7 +25064,7 @@ async function sendProjectChatRequest({
     assistant_message_id: String(assistantMessage?.id || "").trim(),
     chat_session_id: activeChatSessionId,
     request_kind: String(requestKind || "user_message").trim() || "user_message",
-    chat_mode: isExternalAgentMode.value ? "external_agent" : "system",
+    chat_mode: requestChatMode,
     chat_surface: chatSurface.value,
     source_context: activeSessionSourceContext,
     external_agent_type: String(
@@ -23479,8 +25166,14 @@ async function sendProjectChatRequest({
   );
   client.send(requestPayload);
   await donePromise;
+  if (pendingState?.cancelled) {
+    return {
+      requestId,
+      cancelled: true,
+    };
+  }
   if (replaceAssistantContentOnDone) {
-    const row = messages.value[assistantIndex];
+    const row = assistantMessage;
     const finalContent = String(row?.content || "").trim();
     const followupPlanId = String(assistantMessage?.id || "").trim();
     if (row && followupPlanId) {
@@ -23499,25 +25192,43 @@ async function sendProjectChatRequest({
     }
   }
   if (
-    !String(messages.value[assistantIndex]?.content || "").trim() &&
-    !messageOperations(messages.value[assistantIndex]).length
+    !String(assistantMessage?.content || "").trim() &&
+    !messageOperations(assistantMessage).length
   ) {
-    messages.value[assistantIndex].content = "模型未返回内容。";
-  } else if (!String(messages.value[assistantIndex]?.content || "").trim()) {
-    messages.value[assistantIndex].content =
+    assistantMessage.content = "模型未返回内容。";
+  } else if (!String(assistantMessage?.content || "").trim()) {
+    assistantMessage.content =
       "模型未返回最终回答，请检查本轮执行过程。";
   }
   if (typeof onAfterDone === "function") {
     await onAfterDone();
   }
-  return requestId;
+  return {
+    requestId,
+    cancelled: false,
+  };
 }
 
 function getActiveRequestId() {
+  const currentSessionId = String(currentChatSessionId.value || "").trim();
+  if (currentSessionId) {
+    const currentEntries = Array.from(pendingRequests.entries()).filter(
+      ([, pending]) =>
+        String(pending?.chatSessionId || "").trim() === currentSessionId,
+    );
+    if (currentEntries.length > 0) {
+      return currentEntries[currentEntries.length - 1][0];
+    }
+  }
   const activeRequestId = String(activeGenerationRequestId.value || "").trim();
-  if (activeRequestId && pendingRequests.has(activeRequestId)) {
+  if (
+    activeRequestId &&
+    pendingRequests.has(activeRequestId) &&
+    !currentSessionId
+  ) {
     return activeRequestId;
   }
+  if (currentSessionId) return null;
   const entries = Array.from(pendingRequests.entries());
   if (entries.length > 0) {
     return entries[entries.length - 1][0];
@@ -23534,29 +25245,116 @@ function trackPendingRequest(requestId) {
 
 function clearTrackedPendingRequest(requestId) {
   const normalizedRequestId = String(requestId || "").trim();
+  const activeRequestId = String(activeGenerationRequestId.value || "").trim();
   if (
     normalizedRequestId &&
-    String(activeGenerationRequestId.value || "").trim() !== normalizedRequestId
+    activeRequestId &&
+    activeRequestId !== normalizedRequestId &&
+    pendingRequests.has(activeRequestId)
   ) {
     return;
   }
   activeGenerationRequestId.value = getActiveRequestId() || "";
 }
 
+function resolvePendingRequestFast(requestId, pending, content = "") {
+  if (!pending || !requestId) return;
+  pendingRequests.delete(requestId);
+  clearTrackedPendingRequest(requestId);
+  if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
+    clearWorkingStatusStartForChatSession(pending.chatSessionId);
+  }
+  syncChatLoadingWithCurrentSession();
+  persistRememberedChatSessionMessages(pending.projectId, pending.chatSessionId);
+  pending.resolve(String(content || "").trim());
+}
+
+function cancelPendingChatRequestFast(requestId, pending) {
+  if (!pending || !requestId) return false;
+  pending.cancelled = true;
+  const row = resolvePendingRequestRow(pending);
+  const message = "已停止生成。";
+  queuedFollowupMessages.value = [];
+  activeFollowupAssistantMessageId = "";
+  if (row) {
+    row.displayMode = "";
+    row.content = String(row.content || "").trim() || message;
+    row.time = nowText();
+    completeFinishedMessageOperations(row, message);
+    closeOpenAgentRuntimeOperationsForCompletedTurn(row, message);
+    upsertMessageOperation(row, {
+      operationId: `request:${requestId}`,
+      kind: "request",
+      title: "本轮执行",
+      summary: message,
+      detail: "",
+      phase: "completed",
+      actionType: "none",
+      meta: {
+        request_id: requestId,
+        cancelled: true,
+      },
+    });
+    appendMessageProcessLog(row, {
+      level: "info",
+      text: message,
+    });
+  }
+  clearActiveExecutionTransportState(pending?.assistantIndex ?? -1);
+  resolvePendingRequestFast(requestId, pending, row?.content || message);
+  scrollToBottom();
+  return true;
+}
+
+function sendCancelRequestNow(requestId) {
+  const normalizedRequestId = String(requestId || "").trim();
+  if (!normalizedRequestId) return false;
+  const activeClient = wsClient.value;
+  if (!activeClient || !activeClient.isOpen()) return false;
+  try {
+    activeClient.send({ type: "cancel", request_id: normalizedRequestId });
+    return true;
+  } catch (err) {
+    console.warn("send cancel request failed", err);
+    return false;
+  }
+}
+
+function sendCancelRequestInBackground(requestId) {
+  const normalizedRequestId = String(requestId || "").trim();
+  if (!normalizedRequestId) return;
+  window.setTimeout(() => {
+    sendCancelRequestNow(normalizedRequestId);
+  }, 0);
+}
+
+function closeIdleChatWsAfterFastCancel() {
+  if (!wsClient.value || pendingRequests.size > 0) return;
+  wsClient.value.close(1000, "generation cancelled");
+  terminalMirrorConnected.value = false;
+  wsClient.value = null;
+  wsConnected.value = false;
+  wsProjectId.value = "";
+}
+
 function stopGeneration() {
-  if (nativeExternalAgentRunning.value) {
-    void cancelActiveNativeExternalAgentSession();
+  const currentRequestId = getActiveRequestId();
+  if (currentRequestId) {
+    const pending = pendingRequests.get(currentRequestId);
+    if (cancelPendingChatRequestFast(currentRequestId, pending)) {
+      sendCancelRequestNow(currentRequestId);
+      closeIdleChatWsAfterFastCancel();
+      ElMessage.info("已停止生成");
+      return;
+    }
+    sendCancelRequestInBackground(currentRequestId);
+    ElMessage.info("已发送停止指令");
     return;
   }
-  const currentRequestId = getActiveRequestId();
-  if (currentRequestId && wsClient.value && wsClient.value.isOpen()) {
-    wsClient.value.send({ type: "cancel", request_id: currentRequestId });
-    ElMessage.info(
-      isExternalAgentMode.value
-        ? "已发送 Ctrl+C 到外部 Agent"
-        : "已发送停止指令",
-    );
-    return;
+  if (currentChatSessionNativeExternalAgentRunning.value) {
+    if (cancelActiveNativeExternalAgentSession()) {
+      return;
+    }
   }
   const now = Date.now();
   if (now - lastNoActiveGenerationWarningAt < 1200) return;
@@ -24079,8 +25877,9 @@ async function doSend(options = {}) {
   resetDraft();
   scrollToBottom();
 
+  let requestCancelled = false;
   try {
-    await sendProjectChatRequest({
+    const sendResult = await sendProjectChatRequest({
       projectId: selectedProjectId.value,
       activeChatSessionId,
       userMessageId: userMessage.id,
@@ -24108,9 +25907,9 @@ async function doSend(options = {}) {
             }
           : null,
     });
-    const finalAssistantContent = String(
-      messages.value[assistantIndex]?.content || "",
-    ).trim();
+    requestCancelled = Boolean(sendResult?.cancelled);
+    if (requestCancelled) return;
+    const finalAssistantContent = String(assistantMessage.content || "").trim();
     await upsertProjectChatRequirementRecord({
       chatSessionId: activeChatSessionId,
       status: "done",
@@ -24129,15 +25928,14 @@ async function doSend(options = {}) {
       },
     });
   } catch (err) {
-    messages.value[assistantIndex].content =
-      `请求失败：${err?.message || "未知错误"}`;
+    assistantMessage.content = `请求失败：${err?.message || "未知错误"}`;
     void upsertProjectChatRequirementRecord({
       chatSessionId: activeChatSessionId,
       status: "blocked",
       rootGoal: displayUserMessageContent,
       messageId: userMessage.id,
       assistantMessageId: assistantMessage.id,
-      resultSummary: messages.value[assistantIndex].content,
+      resultSummary: assistantMessage.content,
       verificationResult: err?.message || "AI 对话请求失败。",
       source: isExternalAgentMode.value ? "external_agent_connector" : "project_chat",
       sourceContext: {
@@ -24148,12 +25946,21 @@ async function doSend(options = {}) {
     });
     ElMessage.error(err?.message || "对话失败");
   } finally {
-    chatLoading.value = pendingRequests.size > 0;
+    syncChatLoadingWithCurrentSession();
     singleRoundAnswerOnly.value = false;
-    if (selectedProjectId.value) {
-      await fetchChatSessions(selectedProjectId.value, activeChatSessionId);
+    if (selectedProjectId.value && !requestCancelled) {
+      const sessionToKeep =
+        String(currentChatSessionId.value || "").trim() || activeChatSessionId;
+      await fetchChatSessions(selectedProjectId.value, sessionToKeep, {
+        useRemembered: false,
+      });
+      syncChatLoadingWithCurrentSession();
     }
-    if (!chatLoading.value && queuedFollowupMessages.value.length) {
+    if (
+      !requestCancelled &&
+      pendingRequests.size === 0 &&
+      queuedFollowupMessages.value.length
+    ) {
       void drainQueuedFollowupMessages();
     }
     scrollToBottom();
@@ -24577,6 +26384,11 @@ watch(selectedProjectId, async (value) => {
 watch(
   () => String(currentChatSessionId.value || "").trim(),
   (sessionId) => {
+    syncNativeExternalAgentSessionPanel();
+    syncChatLoadingWithCurrentSession();
+    if (showWorkingStatusBar.value) {
+      startWorkingStatusTimer();
+    }
     const noticeSessionId = String(
       ongoingTaskRestoreNotice.value?.chat_session_id || "",
     ).trim();
@@ -24645,6 +26457,7 @@ onMounted(async () => {
   loading.value = true;
   window.addEventListener(PROJECT_CREATED_EVENT, handleProjectCreated);
   window.addEventListener("keydown", handleWorkingStatusKeydown);
+  void startNativeExternalAgentSessionEventSubscription();
   void hydrateNativeDesktopRuntimeInfo();
   window.setTimeout(() => {
     void hydrateNativeDesktopRuntimeInfo();
@@ -24691,6 +26504,12 @@ onUnmounted(() => {
     connectorPollTimer = null;
   }
   clearExternalAgentStatusRefreshTimer();
+  stopNativeExternalAgentSessionPolling();
+  stopNativeExternalAgentSessionEventSubscription();
+  nativeExternalAgentDeferredCleanupTimers.forEach((timer) => {
+    window.clearTimeout(timer);
+  });
+  nativeExternalAgentDeferredCleanupTimers.clear();
   stopWorkingStatusTimer();
   if (chatRuntimePersistTimer !== null) {
     window.clearTimeout(chatRuntimePersistTimer);
@@ -29184,6 +31003,87 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+:deep(.execution-status-popover) {
+  padding: 0;
+}
+
+.execution-status-popover__body {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.execution-status-popover__head {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.execution-status-popover__head > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.execution-status-popover__head strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.execution-status-popover__head span {
+  min-width: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.execution-status-popover__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.execution-status-popover__grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 8px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.execution-status-popover__grid span {
+  min-width: 0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.execution-status-popover__grid strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.execution-status-popover__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .footer-right {
   display: flex;
   align-items: center;
@@ -31116,10 +33016,6 @@ onUnmounted(() => {
   box-shadow: 0 0 0 5px rgba(99, 102, 241, 0.12);
 }
 
-.agent-workflow-status__stop {
-  flex-shrink: 0;
-}
-
 .chat-working-status__main,
 .chat-working-status__meta {
   display: flex;
@@ -31161,12 +33057,6 @@ onUnmounted(() => {
   content: "·";
   margin-right: 8px;
   color: rgba(100, 116, 139, 0.55);
-}
-
-.chat-working-status__stop {
-  flex: 0 0 auto;
-  min-height: 28px;
-  padding: 0 8px !important;
 }
 
 @keyframes workingPulse {
@@ -32320,6 +34210,10 @@ onUnmounted(() => {
   flex: 0 0 auto;
 }
 
+.local-runner-card--process {
+  flex: 0 0 auto;
+}
+
 .local-runner-card--terminal {
   flex: 0 0 auto;
 }
@@ -32353,6 +34247,138 @@ onUnmounted(() => {
   font-size: 15px;
   line-height: 1.3;
   font-weight: 700;
+}
+
+.local-process-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.local-process-summary > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border-radius: 13px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(248, 250, 252, 0.7);
+}
+
+.local-process-summary span {
+  min-width: 0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.local-process-summary strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-process-timeline {
+  max-height: 180px;
+  display: grid;
+  gap: 8px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.local-process-timeline__item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.local-process-timeline__item:first-child {
+  border-top: 0;
+}
+
+.local-process-timeline__marker {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.14);
+  color: #64748b;
+}
+
+.local-process-timeline__marker > span {
+  width: 7px;
+  height: 7px;
+  border-radius: inherit;
+  background: currentColor;
+}
+
+.local-process-timeline__item.is-running .local-process-timeline__marker {
+  background: rgba(14, 165, 233, 0.14);
+  color: #0284c7;
+}
+
+.local-process-timeline__item.is-waiting_user .local-process-timeline__marker,
+.local-process-timeline__item.is-blocked .local-process-timeline__marker {
+  background: rgba(245, 158, 11, 0.16);
+  color: #b45309;
+}
+
+.local-process-timeline__item.is-completed .local-process-timeline__marker {
+  background: rgba(16, 185, 129, 0.16);
+  color: #047857;
+}
+
+.local-process-timeline__item.is-failed .local-process-timeline__marker {
+  background: rgba(239, 68, 68, 0.14);
+  color: #dc2626;
+}
+
+.local-process-timeline__main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.local-process-timeline__title,
+.local-process-timeline__summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.local-process-timeline__title {
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.42;
+}
+
+.local-process-timeline__summary {
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.42;
+}
+
+.local-process-timeline__phase {
+  align-self: start;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #475569;
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1.45;
+  white-space: nowrap;
 }
 
 .local-runner-empty {
@@ -32620,6 +34646,144 @@ onUnmounted(() => {
 }
 
 .runner-session-detail__grid strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.runner-session-detail__tabs {
+  min-width: 0;
+}
+
+.runner-session-detail__tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
+}
+
+.runner-session-detail__tabs :deep(.el-tabs__item) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 128px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.runner-session-detail__tabs :deep(.el-tabs__item span) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runner-session-detail__tabs :deep(.el-tabs__item em) {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+  font-size: 10px;
+  line-height: 18px;
+  font-style: normal;
+  font-weight: 700;
+  text-align: center;
+}
+
+.runner-session-detail__evidence-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.runner-session-detail__evidence {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(92px, auto) minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.76);
+}
+
+.runner-session-detail__evidence span {
+  min-width: 0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.runner-session-detail__evidence strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.runner-session-detail__evidence p {
+  grid-column: 2;
+  min-width: 0;
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.runner-session-detail__evidence small {
+  grid-column: 2;
+  min-width: 0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.runner-session-detail__empty {
+  min-height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+  border: 1px dashed rgba(148, 163, 184, 0.34);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.72);
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: center;
+}
+
+.runner-session-detail__diagnostic-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.runner-session-detail__diagnostic-grid > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.runner-session-detail__diagnostic-grid span {
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.runner-session-detail__diagnostic-grid strong {
   min-width: 0;
   color: #0f172a;
   font-size: 12px;
@@ -33583,6 +35747,11 @@ onUnmounted(() => {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .runner-session-detail__grid,
+  .runner-session-detail__diagnostic-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .settings-summary-overview,
   .settings-tools-overview {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -33852,8 +36021,38 @@ onUnmounted(() => {
   .settings-chat-overview-grid,
   .settings-chat-quick-overview,
   .settings-tools-overview,
-  .settings-constraint-grid {
+  .settings-constraint-grid,
+  .runner-session-detail__grid,
+  .runner-session-detail__diagnostic-grid {
     grid-template-columns: 1fr;
+  }
+
+  .runner-session-detail__hero,
+  .runner-session-detail__section-head {
+    flex-direction: column;
+  }
+
+  .runner-session-detail__tabs :deep(.el-tabs__nav) {
+    max-width: 100%;
+  }
+
+  .runner-session-detail__tabs :deep(.el-tabs__item) {
+    max-width: 112px;
+    padding: 0 10px;
+  }
+
+  .runner-session-detail__evidence {
+    grid-template-columns: 1fr;
+  }
+
+  .runner-session-detail__evidence p,
+  .runner-session-detail__evidence small {
+    grid-column: 1;
+  }
+
+  .runner-session-detail__stdin {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .settings-form .el-form-item {

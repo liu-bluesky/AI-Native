@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,10 +12,11 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 type ExternalAgentSessionStore = Arc<Mutex<HashMap<String, ExternalAgentSessionState>>>;
 static EXTERNAL_AGENT_OUTPUT_COUNTER: AtomicU64 = AtomicU64::new(0);
+const EXTERNAL_AGENT_SESSION_EVENT: &str = "ai-employee://external-agent-session";
 
 #[derive(Debug, Serialize)]
 struct PickPathResult {
@@ -209,6 +212,7 @@ struct ExternalAgentSessionState {
     final_output: String,
     blocked_reason: String,
     summary: String,
+    child_process_id: Option<u32>,
     child: Option<Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>>,
     process_child: Option<Arc<Mutex<Child>>>,
     stdin: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
@@ -234,6 +238,17 @@ struct ExternalAgentSessionSnapshot {
     summary: String,
     #[serde(default)]
     stdin_open: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExternalAgentSessionEvent {
+    event_type: String,
+    session_id: String,
+    status: String,
+    stream: String,
+    log: Option<ExternalAgentSessionLog>,
+    snapshot: ExternalAgentSessionSnapshot,
 }
 
 #[derive(Debug, Deserialize)]
@@ -713,11 +728,13 @@ fn start_external_agent_session(
             final_output: String::new(),
             blocked_reason: plan.blocked_reason,
             summary: "外部 Agent Runner 会话被启动计划拦截".to_string(),
+            child_process_id: None,
             child: None,
             process_child: None,
             stdin: None,
         };
         persist_external_agent_session_snapshot(&app, &state)?;
+        emit_external_agent_session_event(&app, "blocked", &state, "system", None);
         return Ok(external_agent_session_snapshot(&state, 0));
     }
 
@@ -751,6 +768,7 @@ fn start_external_agent_session(
         .take_writer()
         .map_err(|err| format!("打开 PTY 输入失败：{err}"))?;
     drop(pair.slave);
+    let child_process_id = child.process_id();
     let child = Arc::new(Mutex::new(child));
     let now = current_epoch_millis();
     let session_id = format!("external-agent-session-{now}");
@@ -776,6 +794,7 @@ fn start_external_agent_session(
         final_output: String::new(),
         blocked_reason: String::new(),
         summary: format!("{} PTY Runner 会话运行中", plan.label),
+        child_process_id,
         child: Some(child.clone()),
         process_child: None,
         stdin: Some(Arc::new(Mutex::new(writer))),
@@ -784,6 +803,7 @@ fn start_external_agent_session(
     {
         let mut store = sessions.lock().map_err(|err| err.to_string())?;
         persist_external_agent_session_snapshot(&app, &state)?;
+        emit_external_agent_session_event(&app, "started", &state, "system", None);
         store.insert(session_id.clone(), state);
     }
     spawn_external_agent_log_reader(
@@ -815,9 +835,11 @@ fn start_external_agent_pipe_session(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    configure_command_process_group(&mut command);
     let mut child = command
         .spawn()
         .map_err(|err| format!("外部 Agent 进程启动失败：{err}"))?;
+    let child_process_id = Some(child.id());
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let child = Arc::new(Mutex::new(child));
@@ -845,6 +867,7 @@ fn start_external_agent_pipe_session(
         final_output: String::new(),
         blocked_reason: String::new(),
         summary: format!("{} one-shot Runner 会话运行中", plan.label),
+        child_process_id,
         child: None,
         process_child: Some(child.clone()),
         stdin: None,
@@ -853,6 +876,7 @@ fn start_external_agent_pipe_session(
     {
         let mut store = sessions.lock().map_err(|err| err.to_string())?;
         persist_external_agent_session_snapshot(&app, &state)?;
+        emit_external_agent_session_event(&app, "started", &state, "system", None);
         store.insert(session_id.clone(), state);
     }
     if let Some(stdout) = stdout {
@@ -954,25 +978,31 @@ fn cancel_external_agent_session(
     session_id: String,
 ) -> Result<ExternalAgentSessionSnapshot, String> {
     let normalized_session_id = session_id.trim().to_string();
-    let (child, process_child) = {
+    let (child_process_id, child, process_child) = {
         let mut store = sessions.lock().map_err(|err| err.to_string())?;
         let state = store
             .get_mut(&normalized_session_id)
             .ok_or_else(|| "Runner 会话不存在".to_string())?;
         state.status = "cancelling".to_string();
         state.updated_at_epoch_ms = current_epoch_millis();
-        push_external_agent_session_log(state, "system", "正在取消 Runner 会话\n");
+        let log = push_external_agent_session_log(state, "system", "正在取消 Runner 会话\n");
         state.stdin = None;
         persist_external_agent_session_snapshot(&app, state)?;
-        (state.child.clone(), state.process_child.clone())
+        emit_external_agent_session_event(&app, "log", state, "system", log);
+        (
+            state.child_process_id,
+            state.child.clone(),
+            state.process_child.clone(),
+        )
     };
+    signal_external_agent_process_tree(child_process_id);
     if let Some(child) = child {
-        if let Ok(mut child) = child.lock() {
+        if let Ok(mut child) = child.try_lock() {
             let _ = child.kill();
         }
     }
     if let Some(process_child) = process_child {
-        if let Ok(mut process_child) = process_child.lock() {
+        if let Ok(mut process_child) = process_child.try_lock() {
             let _ = process_child.kill();
         }
     }
@@ -983,12 +1013,78 @@ fn cancel_external_agent_session(
     state.status = "cancelled".to_string();
     state.exit_code = Some(-15);
     state.summary = format!("{} Runner 会话已取消", state.label);
+    state.child_process_id = None;
     state.child = None;
     state.process_child = None;
     state.updated_at_epoch_ms = current_epoch_millis();
-    push_external_agent_session_log(state, "system", "Runner 会话已取消\n");
+    let log = push_external_agent_session_log(state, "system", "Runner 会话已取消\n");
     persist_external_agent_session_snapshot(&app, state)?;
+    emit_external_agent_session_event(&app, "cancelled", state, "system", log);
     Ok(external_agent_session_snapshot(state, 0))
+}
+
+#[tauri::command]
+fn hard_kill_external_agent_session(
+    app: tauri::AppHandle,
+    sessions: tauri::State<'_, ExternalAgentSessionStore>,
+    session_id: String,
+) -> Result<ExternalAgentSessionSnapshot, String> {
+    let normalized_session_id = session_id.trim().to_string();
+    let (child_process_id, child, process_child) = {
+        let mut store = sessions.lock().map_err(|err| err.to_string())?;
+        let state = store
+            .get_mut(&normalized_session_id)
+            .ok_or_else(|| "Runner 会话不存在".to_string())?;
+        state.status = "cancelled".to_string();
+        state.exit_code = Some(-15);
+        state.summary = format!("{} Runner 会话已取消", state.label);
+        state.stdin = None;
+        state.updated_at_epoch_ms = current_epoch_millis();
+        (
+            state.child_process_id,
+            state.child.clone(),
+            state.process_child.clone(),
+        )
+    };
+    signal_external_agent_process_tree(child_process_id);
+    if let Some(child) = child {
+        if let Ok(mut child) = child.try_lock() {
+            let _ = child.kill();
+        }
+    }
+    if let Some(process_child) = process_child {
+        if let Ok(mut process_child) = process_child.try_lock() {
+            let _ = process_child.kill();
+        }
+    }
+    let (snapshot, event) = {
+        let mut store = sessions.lock().map_err(|err| err.to_string())?;
+        let state = store
+            .get_mut(&normalized_session_id)
+            .ok_or_else(|| "Runner 会话不存在".to_string())?;
+        state.status = "cancelled".to_string();
+        state.exit_code = Some(-15);
+        state.summary = format!("{} Runner 会话已取消", state.label);
+        state.child_process_id = None;
+        state.child = None;
+        state.process_child = None;
+        state.stdin = None;
+        state.updated_at_epoch_ms = current_epoch_millis();
+        let log = push_external_agent_session_log(state, "system", "Runner 会话已终止\n");
+        persist_external_agent_session_snapshot(&app, state)?;
+        let snapshot = external_agent_session_minimal_snapshot(state, log.as_ref());
+        let event = ExternalAgentSessionEvent {
+            event_type: "cancelled".to_string(),
+            session_id: state.session_id.clone(),
+            status: state.status.clone(),
+            stream: "system".to_string(),
+            log,
+            snapshot: snapshot.clone(),
+        };
+        (snapshot, event)
+    };
+    let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, event);
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -1035,12 +1131,13 @@ fn write_external_agent_session_input(
     } else {
         content.clone()
     };
-    push_external_agent_session_log(
+    let log = push_external_agent_session_log(
         state,
         "stdin",
         &format!("[user input] {}\n", preview.trim_end()),
     );
     persist_external_agent_session_snapshot(&app, state)?;
+    emit_external_agent_session_event(&app, "input", state, "stdin", log);
     Ok(external_agent_session_snapshot(state, 0))
 }
 
@@ -1456,6 +1553,7 @@ fn execute_external_agent_plan(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    configure_command_process_group(&mut command);
 
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -1504,6 +1602,7 @@ fn execute_external_agent_plan(
             Ok(Some(status)) => break Some(status),
             Ok(None) if started_at.elapsed() >= timeout => {
                 timed_out = true;
+                signal_external_agent_process_tree(Some(child.id()));
                 let _ = child.kill();
                 break child.wait().ok();
             }
@@ -1572,23 +1671,52 @@ fn push_external_agent_session_log(
     state: &mut ExternalAgentSessionState,
     stream: &str,
     content: &str,
-) {
+) -> Option<ExternalAgentSessionLog> {
     if content.is_empty() {
-        return;
+        return None;
     }
     let seq = state.next_seq;
     state.next_seq = state.next_seq.saturating_add(1);
-    state.logs.push(ExternalAgentSessionLog {
+    let log = ExternalAgentSessionLog {
         seq,
         stream: stream.to_string(),
         content: content.to_string(),
         created_at_epoch_ms: current_epoch_millis(),
-    });
+    };
+    state.logs.push(log.clone());
     if state.logs.len() > 1000 {
         let overflow = state.logs.len() - 1000;
         state.logs.drain(0..overflow);
     }
     state.updated_at_epoch_ms = current_epoch_millis();
+    Some(log)
+}
+
+fn emit_external_agent_session_event(
+    app: &tauri::AppHandle,
+    event_type: &str,
+    state: &ExternalAgentSessionState,
+    stream: &str,
+    log: Option<ExternalAgentSessionLog>,
+) {
+    let payload = external_agent_session_event_payload(event_type, state, stream, log);
+    let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
+}
+
+fn external_agent_session_event_payload(
+    event_type: &str,
+    state: &ExternalAgentSessionState,
+    stream: &str,
+    log: Option<ExternalAgentSessionLog>,
+) -> ExternalAgentSessionEvent {
+    ExternalAgentSessionEvent {
+        event_type: event_type.to_string(),
+        session_id: state.session_id.clone(),
+        status: state.status.clone(),
+        stream: stream.to_string(),
+        log,
+        snapshot: external_agent_session_snapshot(state, 0),
+    }
 }
 
 fn spawn_external_agent_log_reader<R>(
@@ -1607,23 +1735,46 @@ fn spawn_external_agent_log_reader<R>(
                 Ok(0) => break,
                 Ok(size) => {
                     let content = String::from_utf8_lossy(&buffer[..size]).to_string();
+                    let mut event = None;
                     if let Ok(mut store) = sessions.lock() {
                         if let Some(state) = store.get_mut(&session_id) {
-                            push_external_agent_session_log(state, stream_name, &content);
+                            if is_external_agent_terminal_status(&state.status) {
+                                continue;
+                            }
+                            let log = push_external_agent_session_log(state, stream_name, &content);
                             let _ = persist_external_agent_session_snapshot(&app, state);
+                            event = Some(external_agent_session_event_payload(
+                                "log",
+                                state,
+                                stream_name,
+                                log,
+                            ));
                         }
+                    }
+                    if let Some(payload) = event {
+                        let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
                     }
                 }
                 Err(err) => {
+                    let mut event = None;
                     if let Ok(mut store) = sessions.lock() {
                         if let Some(state) = store.get_mut(&session_id) {
-                            push_external_agent_session_log(
+                            if is_external_agent_terminal_status(&state.status) {
+                                break;
+                            }
+                            let log = push_external_agent_session_log(
                                 state,
                                 "system",
                                 &format!("读取 {stream_name} 失败：{err}\n"),
                             );
                             let _ = persist_external_agent_session_snapshot(&app, state);
+                            event = Some(external_agent_session_event_payload(
+                                "error", state, "system", log,
+                            ));
                         }
+                    }
+                    if let Some(payload) = event {
+                        let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
                     }
                     break;
                 }
@@ -1645,11 +1796,31 @@ fn spawn_external_agent_waiter(
                 Err(_) => None,
             }
         };
+        let mut event = None;
         if let Ok(mut store) = sessions.lock() {
             if let Some(state) = store.get_mut(&session_id) {
                 let exit_code = status
                     .map(|status| i32::try_from(status.exit_code()).unwrap_or(-1))
                     .unwrap_or(-1);
+                if state.status == "cancelled" || state.status == "cancelling" {
+                    state.status = "cancelled".to_string();
+                    state.exit_code = Some(state.exit_code.unwrap_or(exit_code));
+                    state.child_process_id = None;
+                    state.child = None;
+                    state.stdin = None;
+                    state.updated_at_epoch_ms = current_epoch_millis();
+                    let _ = persist_external_agent_session_snapshot(&app, state);
+                    event = Some(external_agent_session_event_payload(
+                        "cancelled",
+                        state,
+                        "system",
+                        None,
+                    ));
+                    if let Some(payload) = event {
+                        let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
+                    }
+                    return;
+                }
                 let final_output_path = state.final_output_path.clone();
                 let final_output = read_external_agent_final_output(&final_output_path);
                 let final_output = if final_output.trim().is_empty() {
@@ -1671,20 +1842,36 @@ fn spawn_external_agent_waiter(
                     "failed".to_string()
                 };
                 state.summary = format!("{} Runner 会话结束，退出码 {}", state.label, exit_code);
+                state.child_process_id = None;
                 state.child = None;
                 state.stdin = None;
                 state.updated_at_epoch_ms = current_epoch_millis();
                 if !state.final_output.trim().is_empty() {
                     let final_output = state.final_output.clone();
-                    push_external_agent_session_log(state, "final", &format!("{final_output}\n"));
+                    let _ = push_external_agent_session_log(
+                        state,
+                        "final",
+                        &format!("{final_output}\n"),
+                    );
                 }
-                push_external_agent_session_log(
+                let log = push_external_agent_session_log(
                     state,
                     "system",
                     &format!("Runner 会话结束，退出码 {exit_code}\n"),
                 );
                 let _ = persist_external_agent_session_snapshot(&app, state);
+                let event_type = match state.status.as_str() {
+                    "completed" => "completed",
+                    "cancelled" => "cancelled",
+                    _ => "error",
+                };
+                event = Some(external_agent_session_event_payload(
+                    event_type, state, "system", log,
+                ));
             }
+        }
+        if let Some(payload) = event {
+            let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
         }
     });
 }
@@ -1702,11 +1889,30 @@ fn spawn_external_agent_process_waiter(
                 Err(_) => None,
             }
         };
+        let mut event = None;
         if let Ok(mut store) = sessions.lock() {
             if let Some(state) = store.get_mut(&session_id) {
                 let exit_code = status
                     .map(|status| status.code().unwrap_or(-1))
                     .unwrap_or(-1);
+                if state.status == "cancelled" || state.status == "cancelling" {
+                    state.status = "cancelled".to_string();
+                    state.exit_code = Some(state.exit_code.unwrap_or(exit_code));
+                    state.child_process_id = None;
+                    state.process_child = None;
+                    state.updated_at_epoch_ms = current_epoch_millis();
+                    let _ = persist_external_agent_session_snapshot(&app, state);
+                    event = Some(external_agent_session_event_payload(
+                        "cancelled",
+                        state,
+                        "system",
+                        None,
+                    ));
+                    if let Some(payload) = event {
+                        let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
+                    }
+                    return;
+                }
                 let final_output_path = state.final_output_path.clone();
                 let final_output = read_external_agent_final_output(&final_output_path);
                 let final_output = if final_output.trim().is_empty() {
@@ -1728,19 +1934,35 @@ fn spawn_external_agent_process_waiter(
                     "failed".to_string()
                 };
                 state.summary = format!("{} Runner 会话结束，退出码 {}", state.label, exit_code);
+                state.child_process_id = None;
                 state.process_child = None;
                 state.updated_at_epoch_ms = current_epoch_millis();
                 if !state.final_output.trim().is_empty() {
                     let final_output = state.final_output.clone();
-                    push_external_agent_session_log(state, "final", &format!("{final_output}\n"));
+                    let _ = push_external_agent_session_log(
+                        state,
+                        "final",
+                        &format!("{final_output}\n"),
+                    );
                 }
-                push_external_agent_session_log(
+                let log = push_external_agent_session_log(
                     state,
                     "system",
                     &format!("Runner 会话结束，退出码 {exit_code}\n"),
                 );
                 let _ = persist_external_agent_session_snapshot(&app, state);
+                let event_type = match state.status.as_str() {
+                    "completed" => "completed",
+                    "cancelled" => "cancelled",
+                    _ => "error",
+                };
+                event = Some(external_agent_session_event_payload(
+                    event_type, state, "system", log,
+                ));
             }
+        }
+        if let Some(payload) = event {
+            let _ = app.emit(EXTERNAL_AGENT_SESSION_EVENT, payload);
         }
     });
 }
@@ -1805,6 +2027,30 @@ fn external_agent_session_snapshot(
             .collect(),
         next_seq: state.next_seq,
         final_output: state.final_output.clone(),
+        blocked_reason: state.blocked_reason.clone(),
+        summary: state.summary.clone(),
+        stdin_open: state.stdin.is_some(),
+    }
+}
+
+fn external_agent_session_minimal_snapshot(
+    state: &ExternalAgentSessionState,
+    log: Option<&ExternalAgentSessionLog>,
+) -> ExternalAgentSessionSnapshot {
+    ExternalAgentSessionSnapshot {
+        session_id: state.session_id.clone(),
+        agent_type: state.agent_type.clone(),
+        label: state.label.clone(),
+        command: state.command.clone(),
+        args: state.args.clone(),
+        workspace_path: state.workspace_path.clone(),
+        status: state.status.clone(),
+        exit_code: state.exit_code,
+        started_at_epoch_ms: state.started_at_epoch_ms,
+        updated_at_epoch_ms: state.updated_at_epoch_ms,
+        logs: log.cloned().into_iter().collect(),
+        next_seq: state.next_seq,
+        final_output: String::new(),
         blocked_reason: state.blocked_reason.clone(),
         summary: state.summary.clone(),
         stdin_open: state.stdin.is_some(),
@@ -1898,6 +2144,43 @@ fn normalize_detached_external_agent_session_snapshot(
     snapshot.next_seq = snapshot.next_seq.saturating_add(1);
     persist_external_agent_session_snapshot_value(app, &snapshot)?;
     Ok(snapshot)
+}
+
+fn is_external_agent_terminal_status(status: &str) -> bool {
+    matches!(
+        status.trim(),
+        "blocked" | "completed" | "failed" | "cancelled" | "unavailable"
+    )
+}
+
+fn configure_command_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+fn signal_external_agent_process_tree(child_process_id: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = child_process_id {
+        if pid > 0 {
+            let pgid = -(pid as libc::pid_t);
+            unsafe {
+                let _ = libc::kill(pgid, libc::SIGTERM);
+                thread::sleep(Duration::from_millis(80));
+                let _ = libc::kill(pgid, libc::SIGKILL);
+            }
+            return;
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = child_process_id;
 }
 
 fn read_external_agent_session_snapshot(
@@ -2208,6 +2491,7 @@ fn main() {
             get_external_agent_session,
             list_external_agent_sessions,
             cancel_external_agent_session,
+            hard_kill_external_agent_session,
             write_external_agent_session_input,
             record_runner_permission_decision,
             list_runner_permission_decisions

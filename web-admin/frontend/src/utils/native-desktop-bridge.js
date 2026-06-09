@@ -2,6 +2,7 @@ import {
   invoke as invokeTauriCommand,
   isTauri as isTauriRuntime,
 } from "@tauri-apps/api/core";
+import { listen as listenTauriEvent } from "@tauri-apps/api/event";
 
 const NATIVE_BRIDGE_NAMES = [
   "__AI_EMPLOYEE_DESKTOP__",
@@ -24,10 +25,14 @@ const TAURI_COMMAND_NAMES = {
   getExternalAgentSession: "get_external_agent_session",
   listExternalAgentSessions: "list_external_agent_sessions",
   cancelExternalAgentSession: "cancel_external_agent_session",
+  hardKillExternalAgentSession: "hard_kill_external_agent_session",
   writeExternalAgentSessionInput: "write_external_agent_session_input",
   recordRunnerPermissionDecision: "record_runner_permission_decision",
   listRunnerPermissionDecisions: "list_runner_permission_decisions",
 };
+
+export const NATIVE_EXTERNAL_AGENT_SESSION_EVENT =
+  "ai-employee://external-agent-session";
 
 function canUseWindow() {
   return typeof window !== "undefined";
@@ -333,6 +338,17 @@ export async function cancelNativeExternalAgentSession(options = {}) {
   return normalizeExternalAgentSessionSnapshot(result, payload);
 }
 
+export async function hardKillNativeExternalAgentSession(options = {}) {
+  const payload = {
+    sessionId: String(options?.sessionId || options?.session_id || "").trim(),
+  };
+  const result = await invokeNativeDesktopBridge(
+    "hardKillExternalAgentSession",
+    payload,
+  );
+  return normalizeExternalAgentSessionSnapshot(result, payload);
+}
+
 export async function writeNativeExternalAgentSessionInput(options = {}) {
   const payload = {
     sessionId: String(options?.sessionId || options?.session_id || "").trim(),
@@ -344,6 +360,24 @@ export async function writeNativeExternalAgentSessionInput(options = {}) {
     payload,
   );
   return normalizeExternalAgentSessionSnapshot(result, payload);
+}
+
+export async function subscribeNativeExternalAgentSessionEvents(handler) {
+  if (typeof handler !== "function" || !canUseTauriApi()) {
+    return () => {};
+  }
+  try {
+    const unlisten = await listenTauriEvent(
+      NATIVE_EXTERNAL_AGENT_SESSION_EVENT,
+      (event) => {
+        handler(normalizeExternalAgentSessionEvent(event?.payload));
+      },
+    );
+    return typeof unlisten === "function" ? unlisten : () => {};
+  } catch (err) {
+    console.warn("subscribe native external agent session events failed", err);
+    return () => {};
+  }
 }
 
 export async function recordNativeRunnerPermissionDecision(options = {}) {
@@ -574,14 +608,7 @@ function normalizeExternalAgentSessionSnapshot(value, fallback = {}) {
       value.updatedAtEpochMs ?? value.updated_at_epoch_ms ?? 0,
     ),
     logs: Array.isArray(value.logs)
-      ? value.logs.map((item) => ({
-          seq: Number(item.seq || 0),
-          stream: String(item.stream || "").trim(),
-          content: String(item.content || ""),
-          createdAtEpochMs: Number(
-            item.createdAtEpochMs ?? item.created_at_epoch_ms ?? 0,
-          ),
-        }))
+      ? value.logs.map((item) => normalizeExternalAgentSessionLog(item))
       : [],
     nextSeq: Number(value.nextSeq ?? value.next_seq ?? fallback.sinceSeq ?? 0),
     finalOutput: String(value.finalOutput || value.final_output || ""),
@@ -590,6 +617,44 @@ function normalizeExternalAgentSessionSnapshot(value, fallback = {}) {
     ).trim(),
     summary: String(value.summary || "").trim(),
     stdinOpen: Boolean(value.stdinOpen ?? value.stdin_open),
+  };
+}
+
+function normalizeExternalAgentSessionLog(value) {
+  if (!value || typeof value !== "object") {
+    return {
+      seq: 0,
+      stream: "",
+      content: "",
+      createdAtEpochMs: 0,
+    };
+  }
+  return {
+    seq: Number(value.seq || 0),
+    stream: String(value.stream || "").trim(),
+    content: String(value.content || ""),
+    createdAtEpochMs: Number(
+      value.createdAtEpochMs ?? value.created_at_epoch_ms ?? 0,
+    ),
+  };
+}
+
+function normalizeExternalAgentSessionEvent(value) {
+  const payload = value && typeof value === "object" ? value : {};
+  const snapshot = normalizeExternalAgentSessionSnapshot(payload.snapshot || {});
+  const log = payload.log ? normalizeExternalAgentSessionLog(payload.log) : null;
+  return {
+    eventType: String(payload.eventType || payload.event_type || "").trim(),
+    sessionId: String(
+      payload.sessionId ||
+        payload.session_id ||
+        snapshot.sessionId ||
+        "",
+    ).trim(),
+    status: String(payload.status || snapshot.status || "").trim(),
+    stream: String(payload.stream || log?.stream || "").trim(),
+    log,
+    snapshot,
   };
 }
 

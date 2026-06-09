@@ -10411,6 +10411,9 @@ async def ws_global_assistant_chat(websocket: WebSocket):
         if str(payload.get("type") or "").strip().lower() == "cancel":
             if request_id in cancel_events:
                 cancel_events[request_id].set()
+            task = active_tasks.get(request_id)
+            if task is not None and not task.done():
+                task.cancel()
             return
 
         try:
@@ -18144,6 +18147,9 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
         if str(payload.get("type") or "").strip().lower() == "cancel":
             if request_id in cancel_events:
                 cancel_events[request_id].set()
+            task = active_tasks.get(request_id)
+            if task is not None and not task.done():
+                task.cancel()
             return
 
         try:

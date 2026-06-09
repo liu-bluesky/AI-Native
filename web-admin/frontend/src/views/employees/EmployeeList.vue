@@ -663,7 +663,10 @@ import {
   canDeleteEmployee,
   canUpdateEmployee,
 } from "@/utils/employee-permissions.js";
-import { buildRuntimeUrl } from "@/utils/runtime-url.js";
+import {
+  buildRuntimeUrl,
+  fetchConfiguredRuntimeOrigin,
+} from "@/utils/runtime-url.js";
 import { resolveSettingsAwarePanelPath } from "@/utils/chat-settings-route.js";
 
 const route = useRoute();
@@ -689,6 +692,7 @@ const manualDialogTitle = ref("使用手册");
 const manualLoading = ref(false);
 const manualTargetEmployee = ref(null);
 const generatedManual = ref("");
+const runtimeOrigin = ref("");
 const showTemplateImportDialog = ref(false);
 const templateImportLoading = ref(false);
 const templateImportCreating = ref(false);
@@ -783,6 +787,7 @@ const mcpSseConfig = computed(() => {
           type: "sse",
           url: buildRuntimeUrl(
             `/mcp/employees/${currentEmployee.value.id}/sse?key=YOUR_API_KEY&project_id=default`,
+            runtimeOrigin.value,
           ),
         },
       },
@@ -805,6 +810,7 @@ const mcpHttpConfig = computed(() => {
             "@modelcontextprotocol/inspector",
             buildRuntimeUrl(
               `/mcp/employees/${currentEmployee.value.id}/mcp?key=YOUR_API_KEY&project_id=default`,
+              runtimeOrigin.value,
             ),
           ],
         },
@@ -1315,8 +1321,12 @@ async function copyActiveMcpConfig() {
   }
 }
 
+async function fetchRuntimeOrigin() {
+  runtimeOrigin.value = await fetchConfiguredRuntimeOrigin();
+}
+
 onMounted(async () => {
-  await fetchList();
+  await Promise.all([fetchRuntimeOrigin(), fetchList()]);
 });
 </script>
 

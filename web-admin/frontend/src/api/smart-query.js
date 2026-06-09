@@ -1,6 +1,5 @@
-import axios from 'axios'
+import api from '@/utils/api.js'
 
 export async function smartQuery(projectId, message) {
-  const response = await axios.post(`/api/projects/${projectId}/smart-query`, { message })
-  return response.data
+  return api.post(`/projects/${encodeURIComponent(projectId)}/smart-query`, { message })
 }

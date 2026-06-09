@@ -466,6 +466,7 @@
 import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
+import { buildServerUrl } from "@/utils/server-profile.js";
 
 const props = defineProps({
   modelValue: {
@@ -695,7 +696,7 @@ const connectorCards = computed(() =>
         connector.event_receive_mode === "long_connection"
           ? "长连接 worker"
           : connector.platform === "feishu" && connector.event_receive_mode === "http_callback"
-            ? `/api/bot-events/feishu/${connector.id}/event`
+            ? buildServerUrl(`/api/bot-events/feishu/${encodeURIComponent(connector.id)}/event`)
             : "待平台适配",
     };
   }),
