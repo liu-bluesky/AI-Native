@@ -1,4 +1,5 @@
 import api from '@/utils/api.js'
+import { buildServerUrl, resolveServerOrigin } from '@/utils/server-profile.js'
 
 function normalizePath(pathname) {
   const path = String(pathname || '').trim()
@@ -11,10 +12,7 @@ function normalizeOrigin(value) {
 }
 
 function currentOrigin() {
-  if (typeof window === 'undefined' || !window.location?.origin) {
-    return ''
-  }
-  return normalizeOrigin(window.location.origin)
+  return normalizeOrigin(resolveServerOrigin())
 }
 
 let configuredRuntimeOrigin = ''
@@ -46,5 +44,6 @@ export function buildRuntimeUrl(pathname, originOverride = '') {
     normalizeOrigin(originOverride) || configuredRuntimeOrigin || currentOrigin()
   const path = normalizePath(pathname)
   if (!origin) return path
+  if (origin === currentOrigin()) return buildServerUrl(path, origin)
   return `${origin}${path}`
 }

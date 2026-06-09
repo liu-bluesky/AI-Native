@@ -4948,6 +4948,34 @@ function normalizeWorkLogPlainText(value, fallback = "") {
   );
 }
 
+function escapeWorkLogRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function resolveWorkLogProjectDisplayName(project) {
+  const name = normalizeWorkLogPlainText(project?.name);
+  const id = normalizeWorkLogPlainText(project?.id);
+  return name && name !== id ? name : "所选项目";
+}
+
+function stripWorkLogProjectIds(text, projects) {
+  let output = String(text || "")
+    .replace(/\n?项目ID[:：]?\s*\b\S+\b\s*\n?/g, "\n")
+    .replace(/\bproj-[A-Za-z0-9_-]+\b/g, "");
+  const ids = Array.isArray(projects)
+    ? projects
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean)
+    : [];
+  ids.forEach((id) => {
+    const escapedId = escapeWorkLogRegExp(id);
+    output = output
+      .replace(new RegExp(`\\s*[（(]\\s*${escapedId}\\s*[)）]`, "g"), "")
+      .replace(new RegExp(escapedId, "g"), "");
+  });
+  return output.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function dedupeWorkLogItems(values, limit = 8) {
   const seen = new Set();
   return (Array.isArray(values) ? values : [])
@@ -5064,7 +5092,7 @@ function buildProjectWorkLogSection(project, sessions, options) {
         "当前时间范围内暂无工作会话",
       )}`
     : "";
-  return `## ${project.name || project.id}\n项目ID：${project.id}\n\n本周工作计划（由需求记录反推）：围绕 ${solvedCount + activeCount} 项需求推进，其中已解决/交付 ${solvedCount} 项，持续推进 ${activeCount} 项。\n\n本周解决了什么：\n${formatWorkLogList(
+  return `## ${resolveWorkLogProjectDisplayName(project)}\n\n本周工作计划（由需求记录反推）：围绕 ${solvedCount + activeCount} 项需求推进，其中已解决/交付 ${solvedCount} 项，持续推进 ${activeCount} 项。\n\n本周解决了什么：\n${formatWorkLogList(
     solvedItems,
     "本周暂无已闭环问题",
   )}\n\n本周仍在推进：\n${formatWorkLogList(
@@ -5094,7 +5122,7 @@ function buildWorkLogAiPrompt(formValue, reportTitle, draftText) {
     `总结重点：${resolveWorkLogSummaryFocusLabel(formValue.summary_focus)}。`,
     "核心目标：领导不需要看具体代码、文件、命令、工具、会话 ID 或执行过程，只需要看本周解决了哪些问题、哪些计划仍在推进、是否有需要协调的风险、下周准备做什么。",
     "请按需求标题和处理结论反推“本周工作计划/完成情况”：把技术动作改写成业务可读的解决内容，例如“修复某页面加载异常”“完成某功能联动”“优化某流程体验”。",
-    "输出要求：保留项目 ID；每个项目最多 3-6 条要点；不要堆砌“暂无验证记录”；无风险时写“暂无需要领导协调的阻塞”；除非用户打开明细开关，否则不要输出文件路径、接口路径、测试命令、MCP 工具名、session_id、task_node_id。",
+    "输出要求：不要输出项目 ID 或类似 proj-xxx 的内部标识；每个项目最多 3-6 条要点；不要堆砌“暂无验证记录”；无风险时写“暂无需要领导协调的阻塞”；除非用户打开明细开关，否则不要输出文件路径、接口路径、测试命令、MCP 工具名、session_id、task_node_id。",
     "建议结构：本周解决了什么 / 本周仍在推进 / 风险阻塞 / 下周计划。语言要像给领导看的周报，而不是研发过程流水账。",
     formValue.extra_notes ? `额外口径：${formValue.extra_notes}` : "",
     "原始结构化草稿如下：",
@@ -5176,12 +5204,12 @@ async function runWorkLogGeneration(rawFormValue) {
   if (formValue.use_ai_summary) {
     const summary = await summarizeWorkLogWithAi(formValue, reportTitle, draftText);
     return {
-      outputText: summary || draftText,
+      outputText: stripWorkLogProjectIds(summary || draftText, selectedProjects),
       message: summary ? "工作日志已由大模型总结" : "已生成结构化工作日志",
     };
   }
   return {
-    outputText: draftText,
+    outputText: stripWorkLogProjectIds(draftText, selectedProjects),
     message: "工作日志已生成",
   };
 }

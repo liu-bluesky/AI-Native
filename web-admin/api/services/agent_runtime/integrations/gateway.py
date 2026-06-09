@@ -7,6 +7,46 @@ from typing import Any, Callable, Protocol
 
 
 @dataclass(frozen=True)
+class RuntimeIntegrationEnvelope:
+    source: str
+    prompt: str = ""
+    project_id: str = ""
+    chat_session_id: str = ""
+    session_id: str = ""
+    user_id: str = ""
+    channel_id: str = ""
+    thread_id: str = ""
+    delivery_target: str = ""
+    schedule: str = ""
+    context_from: tuple[str, ...] = ()
+    attachments: tuple[dict[str, Any], ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def resume_key(self) -> str:
+        parts = [self.project_id, self.chat_session_id, self.session_id, self.source]
+        return ":".join(part for part in parts if part)
+
+    def to_runtime_input(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "message": self.prompt,
+            "project_id": self.project_id,
+            "chat_session_id": self.chat_session_id,
+            "session_id": self.session_id,
+            "user_id": self.user_id,
+            "channel_id": self.channel_id,
+            "thread_id": self.thread_id,
+            "delivery_target": self.delivery_target,
+            "schedule": self.schedule,
+            "context_from": list(self.context_from),
+            "attachments": list(self.attachments),
+            "metadata": dict(self.metadata),
+            "resume_key": self.resume_key,
+        }
+
+
+@dataclass(frozen=True)
 class RuntimeGatewayMessage:
     source: str
     text: str
@@ -16,22 +56,45 @@ class RuntimeGatewayMessage:
     chat_session_id: str = ""
     session_id: str = ""
     thread_id: str = ""
+    delivery_target: str = ""
+    schedule: str = ""
+    context_from: tuple[str, ...] = ()
     attachments: tuple[dict[str, Any], ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def envelope(self) -> RuntimeIntegrationEnvelope:
+        metadata = dict(self.metadata)
+        delivery_target = str(
+            metadata.get("delivery_target") or self.delivery_target or ""
+        ).strip()
+        schedule = str(metadata.get("schedule") or self.schedule or "").strip()
+        raw_context_from = metadata.get("context_from") or self.context_from or ()
+        if isinstance(raw_context_from, (list, tuple)):
+            context_from = tuple(
+                str(item or "").strip()
+                for item in raw_context_from
+                if str(item or "").strip()
+            )
+        else:
+            context_from = ()
+        return RuntimeIntegrationEnvelope(
+            source=self.source,
+            prompt=self.text,
+            project_id=self.project_id,
+            chat_session_id=self.chat_session_id,
+            session_id=self.session_id,
+            user_id=self.user_id,
+            channel_id=self.channel_id,
+            thread_id=self.thread_id,
+            delivery_target=delivery_target,
+            schedule=schedule,
+            context_from=context_from,
+            attachments=self.attachments,
+            metadata=metadata,
+        )
+
     def runtime_input(self) -> dict[str, Any]:
-        return {
-            "source": self.source,
-            "message": self.text,
-            "project_id": self.project_id,
-            "chat_session_id": self.chat_session_id,
-            "session_id": self.session_id,
-            "user_id": self.user_id,
-            "channel_id": self.channel_id,
-            "thread_id": self.thread_id,
-            "attachments": list(self.attachments),
-            "metadata": dict(self.metadata),
-        }
+        return self.envelope().to_runtime_input()
 
 
 @dataclass(frozen=True)

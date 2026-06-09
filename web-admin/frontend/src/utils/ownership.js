@@ -1,12 +1,18 @@
+import { getStoredAuthProfile } from "./auth-storage.js";
+
 export function canManageRecord(record) {
-  const currentRole = String(localStorage.getItem("role") || "").trim().toLowerCase();
-  if (currentRole === "admin") {
+  const profile = getStoredAuthProfile();
+  const currentRole = String(profile.role || "").trim().toLowerCase();
+  const currentRoleIds = Array.isArray(profile.roleIds)
+    ? profile.roleIds.map((item) => String(item || "").trim().toLowerCase())
+    : [];
+  if (currentRole === "admin" || currentRoleIds.includes("admin")) {
     return true;
   }
   if (typeof record?.can_manage === "boolean") {
     return record.can_manage;
   }
-  const currentUsername = String(localStorage.getItem("username") || "").trim();
+  const currentUsername = String(profile.username || "").trim();
   const owner = String(record?.created_by || record?.owner_username || "").trim();
   return !!currentUsername && !!owner && currentUsername === owner;
 }

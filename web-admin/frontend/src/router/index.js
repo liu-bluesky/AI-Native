@@ -2,6 +2,8 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import { getFallbackPath, hasPermission, isSuperAdmin, pathPermission } from '@/utils/permissions.js'
 import { isChatSettingsRoutePath, resolveSettingsAwarePath } from '@/utils/chat-settings-route.js'
 import api from '@/utils/api.js'
+import { getStoredToken } from '@/utils/auth-storage.js'
+import { resolveServerOrigin } from '@/utils/server-profile.js'
 
 const SettingsCenterChatStub = { render: () => null }
 
@@ -132,6 +134,7 @@ const router = createRouter({
 const PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
 let initializationStatus = null
 let initializationStatusPromise = null
+let initializationStatusOrigin = ''
 
 export function markSystemInitialized() {
   initializationStatus = true
@@ -139,6 +142,12 @@ export function markSystemInitialized() {
 }
 
 async function isSystemInitialized() {
+  const currentOrigin = resolveServerOrigin()
+  if (initializationStatusOrigin !== currentOrigin) {
+    initializationStatus = null
+    initializationStatusPromise = null
+    initializationStatusOrigin = currentOrigin
+  }
   if (initializationStatus !== null) {
     return initializationStatus
   }
@@ -173,7 +182,7 @@ router.beforeEach(async (to, from) => {
       return '/init'
     }
     if (initialized && normalizedPath === '/init') {
-      return localStorage.getItem('token') ? getFallbackPath() : '/login'
+      return getStoredToken() ? getFallbackPath() : '/login'
     }
   } catch {
     if (normalizedPath === '/') {
@@ -181,7 +190,7 @@ router.beforeEach(async (to, from) => {
     }
   }
 
-  const token = localStorage.getItem('token')
+  const token = getStoredToken()
   const isPublic = PUBLIC_PATHS.has(normalizedPath)
 
   if (!token && !isPublic) {

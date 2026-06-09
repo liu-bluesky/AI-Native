@@ -613,7 +613,7 @@ function handleProjectAction(project, actionKey) {
     case "detail":
       void openRouteInDesktop(router, `/projects/${project.id}`, {
         mode: "new-window",
-        appId: "projects",
+        appId: "project-detail",
         title: project.name || "项目详情",
         eyebrow: "Project Workspace",
         summary:

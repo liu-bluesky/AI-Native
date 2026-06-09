@@ -11,6 +11,7 @@ import GlobalAiAssistant from './components/GlobalAiAssistant.vue'
 import api from './utils/api.js'
 import { syncCurrentUser } from './utils/auth.js'
 import { authStateVersion, clearAuthSession, getStoredToken } from './utils/auth-storage.js'
+import { getServerScopedStorageKey, serverProfileVersion } from './utils/server-profile.js'
 
 const router = useRouter()
 const ONLINE_HEARTBEAT_INTERVAL_MS = 60 * 1000
@@ -60,7 +61,8 @@ function redirectToLoginIfNeeded() {
 }
 
 function handleAuthStorageChange(event) {
-  if (String(event?.key || '').trim() !== 'token') return
+  const key = String(event?.key || '').trim()
+  if (key !== getServerScopedStorageKey('token') && key !== 'token') return
   if (getStoredToken()) return
   stopOnlineHeartbeat()
   redirectToLoginIfNeeded()
@@ -115,7 +117,7 @@ onMounted(async () => {
 })
 
 watch(
-  () => authStateVersion.value,
+  () => [authStateVersion.value, serverProfileVersion.value],
   () => {
     if (!getStoredToken()) {
       stopOnlineHeartbeat()

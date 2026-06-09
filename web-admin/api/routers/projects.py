@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 import asyncio
 from services.conversation_manager import ConversationManager
@@ -51,8 +51,11 @@ from services.assistant.global_assistant_service import (
 from services.connectors.local_connector_service import (
     build_local_connector_file_tools,
     chat_completion_via_connector,
+    exec_stream_via_connector,
     parse_local_connector_provider_id,
+    probe_connector_workspace,
 )
+from services.agent_runtime.integrations import CodexRunnerStreamAdapter
 from services.catalogs.llm_chat_parameter_catalog import (
     get_chat_parameter_default_value,
     normalize_chat_parameter_value,
@@ -165,6 +168,8 @@ from models.requests import (
     ProjectExperienceSummaryReq,
     ProjectRequirementRecordBatchDeleteReq,
     ProjectChatHistoryTruncateReq,
+    ProjectChatHistoryAppendReq,
+    ProjectChatRequirementRecordUpsertReq,
     ProjectChatReq,
     ProjectChatSessionCreateReq,
     ProjectChatSessionUpdateReq,
@@ -202,10 +207,12 @@ from models.requests import (
 )
 from stores.json.system_config_store import normalize_query_mcp_bootstrap_prompt_template
 from stores.json.project_chat_store import ProjectChatMessage
+from stores.json.project_chat_task_store import ProjectChatTaskNode, ProjectChatTaskSession
 from stores.json.project_experience_summary_store import ProjectExperienceSummaryJob
 from stores.json.project_material_store import ProjectMaterialAsset
 from stores.json.project_studio_export_store import ProjectStudioExportJob
 from stores.json.project_store import ProjectConfig, ProjectMember, ProjectUserMember, _now_iso
+from stores.json.work_session_store import WorkSessionEvent
 from stores.json.system_config_store import (
     DEFAULT_GLOBAL_ASSISTANT_GREETING_TEXT,
     DEFAULT_GLOBAL_ASSISTANT_SYSTEM_PROMPT,
@@ -284,8 +291,30 @@ _EXPERIENCE_QUERY_STOPWORDS = {
     "功能",
 }
 
+
+class ProjectDesktopAuditEventReq(BaseModel):
+    session_id: str = Field("", max_length=120)
+    chat_session_id: str = Field("", max_length=120)
+    task_tree_session_id: str = Field("", max_length=120)
+    task_tree_chat_session_id: str = Field("", max_length=120)
+    task_node_id: str = Field("", max_length=120)
+    task_node_title: str = Field("", max_length=240)
+    event_type: str = Field("", max_length=80)
+    phase: str = Field("desktop_runtime", max_length=80)
+    step: str = Field("", max_length=160)
+    status: str = Field("done", max_length=40)
+    goal: str = Field("", max_length=500)
+    content: str = Field("", max_length=4000)
+    facts: list[str] = Field(default_factory=list, max_length=20)
+    changed_files: list[str] = Field(default_factory=list, max_length=20)
+    verification: list[str] = Field(default_factory=list, max_length=20)
+    risks: list[str] = Field(default_factory=list, max_length=20)
+    next_steps: list[str] = Field(default_factory=list, max_length=20)
+
+
 _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "chat_mode": "system",
+    "external_agent_type": "codex_cli",
     "local_connector_id": "",
     "connector_workspace_path": "",
     "connector_sandbox_mode": "workspace-write",
@@ -341,6 +370,24 @@ _PROJECT_CHAT_SETTINGS_DEFAULTS: dict[str, Any] = {
     "video_style": "cinematic",
     "video_duration_seconds": 5,
     "video_motion_strength": "medium",
+}
+
+_EXTERNAL_AGENT_TYPE_CATALOG: dict[str, dict[str, str]] = {
+    "codex_cli": {
+        "label": "Codex CLI",
+        "command": "codex",
+        "runtime_model_name": "codex-cli",
+    },
+    "hermes": {
+        "label": "Hermes",
+        "command": "hermes",
+        "runtime_model_name": "hermes",
+    },
+    "claude_code": {
+        "label": "Claude Code",
+        "command": "claude",
+        "runtime_model_name": "claude-code",
+    },
 }
 
 _PROJECT_TYPE_VALUES = {"image", "storyboard_video", "mixed"}
@@ -2393,7 +2440,18 @@ def _normalize_project_chat_settings(raw: dict[str, Any] | None) -> dict[str, An
     settings["video_style"] = get_chat_parameter_default_value("video_style")
     settings["video_duration_seconds"] = get_chat_parameter_default_value("video_duration_seconds")
     settings["video_motion_strength"] = get_chat_parameter_default_value("video_motion_strength")
-    settings["chat_mode"] = "system"
+    chat_mode = str(source.get("chat_mode", settings["chat_mode"]) or "").strip().lower()
+    settings["chat_mode"] = (
+        chat_mode if chat_mode in {"system", "external_agent"} else settings["chat_mode"]
+    )
+    external_agent_type = str(
+        source.get("external_agent_type", settings["external_agent_type"]) or ""
+    ).strip().lower()
+    settings["external_agent_type"] = (
+        external_agent_type
+        if external_agent_type in {"codex_cli", "claude_code", "hermes"}
+        else settings["external_agent_type"]
+    )
     sandbox_mode_explicit = _coerce_bool(
         source.get(
             "connector_sandbox_mode_explicit",
@@ -4060,6 +4118,356 @@ def _build_host_command_execution_prompt(
     )
 
 
+def _truncate_direct_host_command_output(value: Any, *, max_chars: int = 1600) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    half = max(120, max_chars // 2)
+    omitted = len(text) - half * 2
+    return f"{text[:half]}\n... [truncated {omitted} chars] ...\n{text[-half:]}"
+
+
+def _build_direct_lark_cli_command_reply(result: dict[str, Any]) -> str:
+    command = str(result.get("command") or "").strip()
+    status = str(result.get("status") or "").strip()
+    source = str(result.get("source") or "").strip()
+    stdout = _truncate_direct_host_command_output(result.get("stdout"))
+    stderr = _truncate_direct_host_command_output(result.get("stderr"))
+    error = str(result.get("error") or "").strip()
+    workspace = str(result.get("workspace_path") or "").strip()
+    cwd = str(result.get("cwd") or "").strip()
+    exit_code = result.get("exit_code")
+
+    if source in {"operation_wait_task", "cli_plugin_login_task"}:
+        waiting = bool(result.get("waiting_user_action") or result.get("requires_user_action"))
+        action = (
+            "已发起 lark-cli 授权流程，正在等待用户完成授权。"
+            if waiting
+            else "已发起 lark-cli 授权流程，正在等待后台返回结果。"
+        )
+        lines = [action]
+        if command:
+            lines.append(f"执行命令：`{command}`")
+        if status:
+            lines.append(f"状态：{status}")
+        next_step = str(result.get("next_step") or "").strip()
+        if next_step:
+            lines.append(f"下一步：{next_step}")
+        authorization_url = str(result.get("authorization_url") or "").strip()
+        if authorization_url:
+            lines.append(f"授权链接：{authorization_url}")
+        return "\n".join(lines).strip()
+
+    lines = ["已直接执行 lark-cli 命令。"]
+    if command:
+        lines.append(f"执行命令：`{command}`")
+    if workspace:
+        lines.append(f"工作目录来源：{workspace}")
+    if cwd and cwd != workspace:
+        lines.append(f"实际 cwd：{cwd}")
+    if exit_code is not None:
+        lines.append(f"退出码：{exit_code}")
+    if stdout:
+        lines.append(f"stdout：\n```text\n{stdout}\n```")
+    if stderr:
+        lines.append(f"stderr：\n```text\n{stderr}\n```")
+    if error:
+        lines.append(f"错误：{error}")
+    return "\n".join(lines).strip()
+
+
+def _build_direct_lark_cli_model_messages(
+    *,
+    user_message: str,
+    result: dict[str, Any],
+    fallback_reply: str,
+) -> list[dict[str, str]]:
+    command = str(result.get("command") or "").strip()
+    status = str(result.get("status") or "").strip()
+    source = str(result.get("source") or "").strip()
+    workspace = str(result.get("workspace_path") or result.get("cwd") or "").strip()
+    exit_code = result.get("exit_code")
+    stdout = _truncate_direct_host_command_output(result.get("stdout"), max_chars=5000)
+    stderr = _truncate_direct_host_command_output(result.get("stderr"), max_chars=2400)
+    error = _truncate_direct_host_command_output(result.get("error") or result.get("error_message"), max_chars=1200)
+    next_step = str(result.get("next_step") or "").strip()
+    payload = {
+        "user_request": str(user_message or "").strip(),
+        "executed_command": command,
+        "source": source,
+        "status": status,
+        "workspace": workspace,
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "error": error,
+        "next_step": next_step,
+        "fallback_execution_summary": fallback_reply,
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你正在处理一个已经由后端实际执行完的 lark-cli 请求。"
+                "必须基于给定执行结果回答，不要让用户再去执行同一个命令。"
+                "先给结论，再给关键执行信息；如果结果显示正在等待浏览器授权或用户动作，"
+                "明确说明当前等待什么。不要编造未出现在结果里的账号、路径或状态。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False, indent=2),
+        },
+    ]
+
+
+async def _build_direct_lark_cli_model_reply(
+    *,
+    llm_service: Any,
+    provider_id: str,
+    model_name: str,
+    user_message: str,
+    result: dict[str, Any],
+    fallback_reply: str,
+) -> dict[str, Any]:
+    normalized_provider_id = str(provider_id or "").strip()
+    normalized_model_name = str(model_name or "").strip()
+    fallback = str(fallback_reply or "").strip()
+    if not normalized_provider_id or not normalized_model_name or llm_service is None:
+        return {
+            "content": fallback,
+            "model_processed": False,
+            "model_error": "missing_model_runtime",
+        }
+    try:
+        response = await llm_service.chat_completion(
+            normalized_provider_id,
+            normalized_model_name,
+            _build_direct_lark_cli_model_messages(
+                user_message=user_message,
+                result=result,
+                fallback_reply=fallback,
+            ),
+            temperature=0.1,
+            max_tokens=900,
+            timeout=45,
+        )
+    except Exception as exc:
+        return {
+            "content": fallback,
+            "model_processed": False,
+            "model_error": str(exc),
+        }
+    content = str((response or {}).get("content") or "").strip()
+    if not content:
+        return {
+            "content": fallback,
+            "model_processed": False,
+            "model_error": "empty_model_response",
+        }
+    return {
+        "content": content,
+        "model_processed": True,
+        "provider_id": str((response or {}).get("provider_id") or normalized_provider_id).strip(),
+        "model_name": str((response or {}).get("model_name") or normalized_model_name).strip(),
+    }
+
+
+def _build_direct_lark_cli_pending_interaction(result: dict[str, Any]) -> dict[str, Any] | None:
+    if str(result.get("source") or "").strip() not in {
+        "operation_wait_task",
+        "cli_plugin_login_task",
+    }:
+        return None
+    status = str(result.get("status") or "").strip().lower()
+    if status not in {"queued", "running", "waiting_user_action"}:
+        return None
+    authorization_url = str(result.get("authorization_url") or "").strip()
+    interaction_schema = (
+        result.get("interaction_schema")
+        if isinstance(result.get("interaction_schema"), dict)
+        else None
+    )
+    action_type = str(result.get("action_type") or "").strip().lower()
+    if not action_type:
+        action_type = "open_url" if authorization_url else "interaction_form" if interaction_schema else "none"
+    workflow_id = str(result.get("task_id") or result.get("workflow_id") or "").strip()
+    workflow_state = {
+        "source": str(result.get("source") or "").strip(),
+        "workflow_kind": str(result.get("operation_kind") or "auth_login").strip(),
+        "workflow_label": str(result.get("operation_label") or "网页登录授权").strip(),
+        "workflow_id": workflow_id,
+        "task_id": workflow_id,
+        "status": status,
+        "status_label": str(result.get("status_label") or "").strip(),
+        "summary": str(result.get("next_step") or result.get("summary") or "").strip(),
+        "message": str(result.get("next_step") or result.get("message") or "").strip(),
+        "action_type": action_type,
+        "authorization_url": authorization_url,
+        "interaction_schema": interaction_schema,
+        "command": str(result.get("command") or "").strip(),
+    }
+    return _build_project_chat_pending_interaction(
+        {
+            "type": "done",
+            **workflow_state,
+        }
+    )
+
+
+_PROJECT_CHAT_AMBIGUOUS_UPDATE_PATTERN = re.compile(
+    r"^(?:你)?(?:是否|可否)?(?:可以|能不能|能否|能|会)?(?:帮我|帮忙)?"
+    r"(?:更新|升级|修改|优化|调整|处理)(?:一下|下|吗|么|吗\?|嘛)?$",
+    re.IGNORECASE,
+)
+
+
+def _is_ambiguous_project_chat_update_request(user_message: str) -> bool:
+    message = str(user_message or "").strip()
+    if not message:
+        return False
+    normalized = re.sub(r"[\s，。！？!?、；;：:]+", "", message)
+    if not normalized or len(normalized) > 18:
+        return False
+    if any(token in message for token in ("/", "\\", "`", "\n", "：", ":", "成", "为", "到")):
+        return False
+    return bool(_PROJECT_CHAT_AMBIGUOUS_UPDATE_PATTERN.fullmatch(normalized))
+
+
+def _build_project_chat_clarify_interaction_payload(
+    *,
+    user_message: str,
+    chat_session_id: str,
+    request_id: str = "",
+) -> dict[str, Any] | None:
+    if not _is_ambiguous_project_chat_update_request(user_message):
+        return None
+    seed = f"{chat_session_id}:{str(user_message or '').strip()}"
+    workflow_id = f"clarify-{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:12]}"
+    interaction_schema = {
+        "title": "需要你确认更新目标",
+        "description": "这条请求缺少更新对象，先选一个方向；有具体路径、文件或目标可以补充到下面。",
+        "submit_label": "确认并继续",
+        "response_template": "更新目标：{{update_target}}\n补充说明：{{details}}\n请按这个方向继续处理上一个请求。",
+        "model": {
+            "update_target": "code_feature",
+            "details": "",
+        },
+        "schema": [
+            {
+                "label": "更新目标",
+                "prop": "update_target",
+                "componentName": "ElRadioGroup",
+                "required": True,
+                "children": [
+                    {
+                        "componentName": "ElRadioButton",
+                        "attrs": {"label": "code_feature", "value": "code_feature"},
+                        "children": "更新某个项目的代码/功能",
+                    },
+                    {
+                        "componentName": "ElRadioButton",
+                        "attrs": {"label": "dependency_version", "value": "dependency_version"},
+                        "children": "更新依赖或版本",
+                    },
+                    {
+                        "componentName": "ElRadioButton",
+                        "attrs": {"label": "docs", "value": "docs"},
+                        "children": "更新文档/说明",
+                    },
+                    {
+                        "componentName": "ElRadioButton",
+                        "attrs": {"label": "agent_config", "value": "agent_config"},
+                        "children": "更新 Agent/配置",
+                    },
+                ],
+            },
+            {
+                "label": "补充说明",
+                "prop": "details",
+                "componentName": "ElInput",
+                "attrs": {
+                    "type": "textarea",
+                    "autosize": {"minRows": 2, "maxRows": 4},
+                    "placeholder": "例如：项目路径、文件、功能点，或希望更新成什么",
+                },
+            },
+        ],
+    }
+    payload: dict[str, Any] = {
+        "type": "user_action_required",
+        "request_id": str(request_id or "").strip(),
+        "chat_session_id": str(chat_session_id or "").strip(),
+        "task_id": workflow_id,
+        "workflow_id": workflow_id,
+        "workflow_kind": "clarify",
+        "workflow_label": "需求澄清",
+        "status_label": "需要你确认",
+        "title": "需要你确认更新目标",
+        "summary": "等待你选择更新方向",
+        "message": "请选择一个更新方向后继续。",
+        "action_type": "interaction_form",
+        "interaction_schema": interaction_schema,
+        "status": "waiting_user_action",
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "", {}, [])}
+
+
+def _build_project_chat_clarify_pending_interaction(
+    *,
+    user_message: str,
+    chat_session_id: str,
+    request_id: str = "",
+) -> dict[str, Any] | None:
+    payload = _build_project_chat_clarify_interaction_payload(
+        user_message=user_message,
+        chat_session_id=chat_session_id,
+        request_id=request_id,
+    )
+    return _build_project_chat_pending_interaction(payload or {})
+
+
+async def _execute_direct_lark_cli_project_host_command(
+    *,
+    project_id: str,
+    username: str,
+    chat_session_id: str,
+    employee_id: str,
+    project: ProjectConfig,
+    user_message: str,
+    timeout_sec: int | None = None,
+) -> dict[str, Any] | None:
+    from services.tool_executor import ToolExecutor, normalize_lark_cli_user_command
+
+    command = normalize_lark_cli_user_command(user_message)
+    if not command:
+        return None
+    executor = ToolExecutor(
+        project_id,
+        employee_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        host_workspace_path=str(project.workspace_path or "").strip(),
+        timeout_sec=timeout_sec,
+    )
+    result = await executor._execute_tool(
+        PROJECT_HOST_RUN_COMMAND_TOOL_NAME,
+        {
+            "command": command,
+            "timeout_sec": int(timeout_sec or 20),
+            "max_output_chars": 12000,
+        },
+    )
+    payload = dict(result or {})
+    payload.setdefault("command", command)
+    return {
+        "command": command,
+        "result": payload,
+        "content": _build_direct_lark_cli_command_reply(payload),
+        "pending_interaction": _build_direct_lark_cli_pending_interaction(payload),
+    }
+
+
 def _extract_project_chat_http_urls(user_message: str, *, max_urls: int = 3) -> list[str]:
     message = str(user_message or "").strip()
     if not message:
@@ -4864,9 +5272,17 @@ def _summarize_project_chat_completion(payload: dict[str, Any]) -> tuple[str, st
     guard_message = str(payload.get("guard_message") or "").strip()
     normalized_reason = guard_reason.lower()
     if normalized_reason == "background_task_pending":
-        return "running", guard_message or "后台任务仍在继续执行"
+        internal_queue_messages = {
+            "任务已创建，等待后台执行",
+            "后台任务仍在继续执行",
+        }
+        if not guard_message or guard_message in internal_queue_messages:
+            return "running", "操作已创建，正在等待后续结果"
+        return "running", guard_message
     if normalized_reason == "waiting_user_action":
         return "waiting_user", guard_message or "等待你完成当前操作"
+    if normalized_reason == "interaction_submit_ack":
+        return "running", guard_message or "已提交结构化交互，正在继续执行"
     if guard_message:
         return "blocked", guard_message
     if not normalized_reason or normalized_reason in {"completed", "done"}:
@@ -5099,6 +5515,8 @@ def _build_project_chat_operation_event(
                 "chat_session_id": chat_session_id,
                 "resume_command": str(payload.get("resume_command") or "").strip(),
                 "authorization_url": authorization_url,
+                "workflow_kind": str(payload.get("workflow_kind") or "").strip(),
+                "workflow_id": str(payload.get("workflow_id") or "").strip(),
                 "interaction_schema": (
                     payload.get("interaction_schema")
                     if isinstance(payload.get("interaction_schema"), dict)
@@ -5148,6 +5566,8 @@ def _build_project_chat_operation_event(
                 "chat_session_id": chat_session_id,
                 "resume_command": str(payload.get("resume_command") or "").strip(),
                 "authorization_url": authorization_url,
+                "workflow_kind": str(payload.get("workflow_kind") or "").strip(),
+                "workflow_id": str(payload.get("workflow_id") or "").strip(),
                 "interaction_schema": (
                     payload.get("interaction_schema")
                     if isinstance(payload.get("interaction_schema"), dict)
@@ -5755,6 +6175,146 @@ def _resolve_local_connector_coding_tools(
     )
 
 
+def _local_connector_codex_installed(connector_payload: dict[str, Any]) -> bool:
+    health = connector_payload.get("health")
+    if isinstance(health, dict) and "codex_available" in health:
+        return bool(health.get("codex_available"))
+    capabilities = connector_payload.get("capabilities")
+    if isinstance(capabilities, dict) and "codex_cli" in capabilities:
+        return bool(capabilities.get("codex_cli"))
+    return bool(connector_payload.get("online"))
+
+
+async def _build_project_external_agent_info(
+    *,
+    project: ProjectConfig,
+    auth_payload: dict,
+    settings: dict[str, Any],
+    workspace_path: str,
+) -> dict[str, Any]:
+    connectors = _list_accessible_local_connectors(auth_payload)
+    connector_payloads = [_serialize_chat_connector(item) for item in connectors]
+    agent_type = str(settings.get("external_agent_type") or "codex_cli").strip().lower()
+    if agent_type not in _EXTERNAL_AGENT_TYPE_CATALOG:
+        agent_type = "codex_cli"
+    agent_meta = _EXTERNAL_AGENT_TYPE_CATALOG[agent_type]
+    connector_id = str(settings.get("local_connector_id") or "").strip()
+    selected_connector = _resolve_accessible_local_connector(connector_id, auth_payload)
+    selected_payload = (
+        _serialize_chat_connector(selected_connector)
+        if selected_connector is not None
+        else {}
+    )
+    sandbox_mode = str(settings.get("connector_sandbox_mode") or "workspace-write").strip() or "workspace-write"
+    workspace_access: dict[str, Any] = {
+        "configured": bool(str(workspace_path or "").strip()),
+        "exists": False,
+        "is_dir": False,
+        "read_ok": False,
+        "write_ok": False,
+        "source": "",
+        "sandbox_mode": sandbox_mode,
+        "reason": "",
+    }
+    if selected_connector is not None and workspace_path:
+        try:
+            workspace_access = await probe_connector_workspace(
+                selected_connector,
+                workspace_path,
+                sandbox_mode,
+            )
+        except Exception as exc:
+            workspace_access = {
+                **workspace_access,
+                "configured": True,
+                "source": "local_connector",
+                "reason": str(exc),
+            }
+
+    connector_online = bool(selected_payload.get("online"))
+    connector_agent_installed = (
+        _local_connector_codex_installed(selected_payload)
+        if agent_type == "codex_cli"
+        else False
+    )
+    workspace_ready = bool(workspace_access.get("read_ok"))
+    available = bool(selected_connector is not None and connector_online and connector_agent_installed and workspace_ready)
+    if not selected_connector:
+        reason = "请先选择本地连接器"
+        command_source = "local_connector_required"
+    elif not connector_online:
+        reason = "本地连接器离线"
+        command_source = "local_connector"
+    elif not connector_agent_installed:
+        reason = (
+            f"{agent_meta['label']} 交互式执行尚未接入本地连接器"
+            if agent_type != "codex_cli"
+            else "连接器未检测到 Codex CLI"
+        )
+        command_source = "local_connector"
+    elif not workspace_ready:
+        reason = str(workspace_access.get("reason") or "工作区不可访问")
+        command_source = "local_connector"
+    else:
+        reason = ""
+        command_source = "local_connector"
+    agent_types = []
+    for item_type, item_meta in _EXTERNAL_AGENT_TYPE_CATALOG.items():
+        item_installed = (
+            _local_connector_codex_installed(selected_payload)
+            if item_type == "codex_cli"
+            else False
+        )
+        item_reason = (
+            reason
+            if item_type == agent_type
+            else (
+                ""
+                if item_type == "codex_cli" and item_installed
+                else f"{item_meta['label']} 需要 Tauri 本地 Runner / PTY 接入"
+            )
+        )
+        agent_types.append(
+            {
+                "agent_type": item_type,
+                "label": item_meta["label"],
+                "available": bool(item_type == agent_type and available),
+                "installed": item_installed,
+                "implemented": True,
+                "reason": item_reason,
+            }
+        )
+
+    return {
+        "agent_type": agent_type,
+        "label": agent_meta["label"],
+        "command": agent_meta["command"],
+        "resolved_command": str((selected_payload.get("health") or {}).get("codex_path") or "").strip()
+        if agent_type == "codex_cli" and isinstance(selected_payload.get("health"), dict)
+        else "",
+        "command_source": command_source,
+        "runtime_model_name": agent_meta["runtime_model_name"],
+        "execution_mode": "local_connector",
+        "runner_url": str(selected_payload.get("advertised_url") or "").strip(),
+        "available": available,
+        "installed": connector_agent_installed,
+        "implemented": True,
+        "reason": reason,
+        "supports_terminal_mirror": True,
+        "supports_workspace_write": True,
+        "ready": False,
+        "sandbox_mode": sandbox_mode,
+        "workspace_path": str(workspace_path or "").strip(),
+        "workspace_access": workspace_access,
+        "local_connector_id": connector_id,
+        "local_connector_name": str(selected_payload.get("connector_name") or "").strip(),
+        "local_connector_online": connector_online,
+        "sandbox_modes": ["read-only", "workspace-write"],
+        "agent_types": agent_types,
+        "local_connectors": connector_payloads,
+    }
+
+
 def _get_project_user_member(project_id: str, username: str) -> ProjectUserMember | None:
     normalized_project_id = str(project_id or "").strip()
     normalized_username = str(username or "").strip()
@@ -6140,6 +6700,24 @@ def _serialize_project_work_session_event(item: Any, employee_names: dict[str, s
         **asdict(item),
         "employee_name": employee_names.get(employee_id, employee_id) if employee_id else "团队协作",
     }
+
+
+def _normalize_desktop_audit_items(values: Any, *, item_limit: int = 400, max_items: int = 20) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    items: list[str] = []
+    for value in values[:max_items]:
+        normalized = _normalize_project_record_token(value, limit=item_limit)
+        if normalized and normalized not in items:
+            items.append(normalized)
+    return items
+
+
+def _desktop_audit_session_id(project_id: str, chat_session_id: str) -> str:
+    normalized_project_id = _normalize_project_record_token(project_id, limit=80)
+    normalized_chat_session_id = _normalize_project_record_token(chat_session_id, limit=120)
+    seed = f"{normalized_project_id}:{normalized_chat_session_id or 'desktop'}"
+    return f"desktop-audit-{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:12]}"
 
 
 def _extract_project_memory_section(content: Any, label: str) -> str:
@@ -7174,6 +7752,11 @@ def _project_chat_source_context_from_raw(raw: Any) -> dict[str, Any]:
         "sender_id",
         "sender_name",
         "thread_key",
+        "chat_mode",
+        "external_agent_type",
+        "agent_session_id",
+        "session_id",
+        "thread_id",
     ):
         if key in raw and raw.get(key) not in (None, ""):
             context[key] = raw.get(key)
@@ -7231,6 +7814,11 @@ def _normalize_project_chat_source_context(raw: Any, *, project_id: str = "", de
             "sender_id",
             "sender_name",
             "thread_key",
+            "chat_mode",
+            "external_agent_type",
+            "agent_session_id",
+            "session_id",
+            "thread_id",
         )
     )
     if not has_context_hint:
@@ -7273,6 +7861,16 @@ def _normalize_project_chat_source_context(raw: Any, *, project_id: str = "", de
     pending_interaction = context.get("pending_interaction")
     if isinstance(pending_interaction, dict) and pending_interaction:
         result["pending_interaction"] = dict(pending_interaction)
+    chat_mode = str(context.get("chat_mode") or "").strip().lower()
+    if chat_mode in {"system", "external_agent", "host_terminal"}:
+        result["chat_mode"] = chat_mode
+    external_agent_type = str(context.get("external_agent_type") or "").strip().lower()
+    if external_agent_type in {"codex_cli", "claude_code", "hermes"}:
+        result["external_agent_type"] = external_agent_type
+    for key in ("agent_session_id", "session_id", "thread_id"):
+        value = _normalize_project_chat_context_text(context.get(key), 120)
+        if value:
+            result[key] = value
     return result
 
 
@@ -8764,7 +9362,9 @@ def _build_query_mcp_cli_prompt(
         "",
         "强制接入步骤：",
         "1. 先读取 `query://usage-guide`；当前是 Codex CLI 时，再读取 `query://client-profile/codex`。",
-        "2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/active/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用。",
+        "1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/codex`，禁止反复调用 `list_mcp_resources`。",
+        "1.2 对“有几个员工 / 有哪些员工 / 有哪些工具 / 有哪些规则”这类简单查询，且 `project_id` 已明确时，直接调用对应业务工具（如 `list_project_members(project_id=...)`、`list_project_proxy_tools(...)`），不要为了满足 bootstrap 机械列资源目录。",
+        "2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用；canonical session 状态只使用 `active-sessions/<chat_session_id>.json` 与 `session-history/<project_id>__<chat_session_id>.json`。",
         "3. 再检查 `.ai-employee/skills/query-mcp-workflow/` 是否已存在；缺失时先通过 MCP 从服务端技能库同步或创建到当前工作区，已存在则直接复用，禁止重复创建。",
         "4. 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；核心文件优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。",
         "5. 若系统曾把 `.ai-employee` 或 `query-mcp-workflow` 隐式落到其他子目录，只能视为历史状态，不能替代当前 CLI 工作区初始化；当前入口仍要在当前工作区补齐。",
@@ -8781,7 +9381,7 @@ def _build_query_mcp_cli_prompt(
         "16. 如宿主支持任务树，`bind_project_context(...)` 后立刻读取 `get_current_task_tree`，核对 `root_goal/title/current_node` 是否属于当前问题；若明显属于旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。",
         "17. 真正进入执行前，再读取一次 `get_current_task_tree` 确认当前节点；开始节点用 `update_task_node_status`，完成节点必须用 `complete_task_node_with_verification` 补验证结果后再结束。",
         "18. 如果当前宿主拿不到上述任务树工具，只能明确说明“任务树闭环未完成”，不要把自然语言进度当成已闭环。",
-        "19. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。只有明确处理历史数据迁移或只读恢复时，才允许短期兼容，并必须标注范围、退出条件和后续清理方案。",
+        "19. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
         "",
         "当前接入上下文：",
     ]
@@ -8789,11 +9389,11 @@ def _build_query_mcp_cli_prompt(
     sections.append(chat_session_block)
     sections.extend(
         [
-            "- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。",
+            "- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。",
             "- requirement 本地对象与 query-mcp canonical 状态要同时维护；不要只写 session 文件而缺失 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。",
             "- 如果自动 bootstrap 把状态写到了别的服务子目录，不能把它当成当前仓库根目录已初始化；入口提示词必须以当前 CLI 工作区为准重新核对。",
             "- 若当前还没有 `session_id`，调用 `start_work_session` 后也要立刻持久化；中断恢复顺序固定为 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)`。",
-            "- 若项目工作区不可解析，再退回当前 CLI 自己的本地存储；不要新写 `current-session.json`、`chat_session_id.txt`、`session_id.txt`、`session.env` 这类 legacy 文件。",
+            "- 若项目工作区不可解析，再退回当前 CLI 自己的本地存储；不要在项目工作区写入分叉会话状态文件。",
             "",
             "回答要求：",
             "- 先基于 MCP 查询结果回答，不要把猜测写成事实。",
@@ -8842,6 +9442,8 @@ async def get_query_mcp_runtime(
             "bootstrap_checklist": [
                 "read query://usage-guide",
                 "read query://client-profile/codex",
+                "do not loop on list_mcp_resources; it is resource discovery only and may be called at most once per turn",
+                "for simple project queries with a known project_id, call the matching business tool directly instead of listing resources",
                 "initialize local .ai-employee state in the current CLI workspace and ensure query-mcp-workflow is available there",
                 "treat project-local .ai-employee/skills/query-mcp-workflow as the default skill location; use mcp-skills/knowledge only when maintaining the workflow source repo",
                 "generate and persist chat_session_id",
@@ -12713,20 +13315,41 @@ async def list_project_chat_providers(
     chat_settings = dict(persisted_chat_settings)
     runtime_external_tools = list_project_external_tools_runtime(project_id)
     effective_workspace_path = _resolve_project_workspace_for_chat(project, chat_settings)
+    external_agent_info = await _build_project_external_agent_info(
+        project=project,
+        auth_payload=auth_payload,
+        settings=chat_settings,
+        workspace_path=effective_workspace_path,
+    )
+    local_connectors = list(external_agent_info.get("local_connectors") or [])
 
     return {
         "project_id": project_id,
         "workspace_path": effective_workspace_path,
         "project_workspace_path": str(project.workspace_path or "").strip(),
         "project_ai_entry_file": str(project.ai_entry_file or "").strip(),
-        "chat_modes": [{"id": "system", "label": "系统对话"}],
+        "chat_modes": [
+            {"id": "system", "label": "系统对话"},
+            {
+                "id": "external_agent",
+                "label": "外部 Agent",
+                "available": bool(external_agent_info.get("available")),
+                "reason": str(external_agent_info.get("reason") or ""),
+            },
+        ],
         "providers": providers,
+        "local_connectors": local_connectors,
         "default_provider_id": str(selected_provider.get("id") or ""),
         "default_model_name": str(selected_provider.get("default_model") or ""),
         "employees": candidates,
         "default_employee_id": str((default_employee or {}).get("id") or ""),
         "mcp_modules": mcp_modules,
         "runtime_external_tools": runtime_external_tools,
+        "external_agent": {
+            key: value
+            for key, value in external_agent_info.items()
+            if key != "local_connectors"
+        },
         "chat_settings": _public_project_chat_settings(persisted_chat_settings),
     }
 
@@ -13450,7 +14073,11 @@ async def get_project_chat_settings(project_id: str, auth_payload: dict = Depend
 async def update_project_chat_settings(project_id: str, req: ProjectChatSettingsUpdateReq, auth_payload: dict = Depends(require_auth)):
     _ensure_permission(auth_payload, "menu.ai.chat")
     project = _ensure_project_access(project_id, auth_payload)
-    normalized = _public_project_chat_settings(req.settings or {})
+    merged_settings = {
+        **(getattr(project, "chat_settings", {}) or {}),
+        **(req.settings or {}),
+    }
+    normalized = _public_project_chat_settings(merged_settings)
     updated = replace(project, chat_settings=normalized, updated_at=_now_iso())
     project_store.save(updated)
     persisted = project_store.get(project_id)
@@ -15656,6 +16283,71 @@ async def get_project_work_session_detail(
     }
 
 
+@router.post("/{project_id}/chat/desktop-audit-events")
+async def record_project_chat_desktop_audit_event(
+    project_id: str,
+    req: ProjectDesktopAuditEventReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    project = _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    chat_session_id = _normalize_project_record_token(req.chat_session_id, limit=120)
+    task_tree_session_id = _normalize_project_record_token(req.task_tree_session_id, limit=120)
+    task_tree_chat_session_id = _normalize_project_record_token(
+        req.task_tree_chat_session_id or chat_session_id,
+        limit=120,
+    )
+    session_id = _normalize_project_record_token(req.session_id, limit=120) or _desktop_audit_session_id(
+        project.id,
+        chat_session_id or task_tree_chat_session_id,
+    )
+    event_type = _normalize_project_record_token(req.event_type, limit=80) or "desktop_audit"
+    now = _now_iso()
+    event = WorkSessionEvent(
+        id=work_session_store.new_id(),
+        project_id=project.id,
+        project_name=project.name,
+        employee_id=username,
+        session_id=session_id,
+        task_tree_session_id=task_tree_session_id,
+        task_tree_chat_session_id=task_tree_chat_session_id,
+        task_node_id=_normalize_project_record_token(req.task_node_id, limit=120),
+        task_node_title=_normalize_project_record_token(req.task_node_title, limit=240),
+        source_kind="desktop_audit",
+        event_type=event_type,
+        phase=_normalize_project_record_token(req.phase, limit=80) or "desktop_runtime",
+        step=_normalize_project_record_token(req.step, limit=160) or event_type,
+        status=_normalize_project_record_token(req.status, limit=40) or "done",
+        goal=_normalize_project_record_token(req.goal, limit=500),
+        content=_normalize_project_record_token(req.content, limit=4000),
+        facts=_normalize_desktop_audit_items(req.facts),
+        changed_files=_normalize_desktop_audit_items(req.changed_files, item_limit=240),
+        verification=_normalize_desktop_audit_items(req.verification),
+        risks=_normalize_desktop_audit_items(req.risks),
+        next_steps=_normalize_desktop_audit_items(req.next_steps),
+        created_at=now,
+        updated_at=now,
+    )
+    work_session_store.save(event)
+    employee_names = _project_employee_name_map(project.id)
+    return {
+        "event": _serialize_project_work_session_event(event, employee_names),
+        "session": _serialize_project_work_session_summary(
+            _summarize_project_work_session(
+                work_session_store.list_events(
+                    project_id=project.id,
+                    session_id=session_id,
+                    limit=200,
+                )
+            ),
+            employee_names,
+        ),
+        "project_id": project.id,
+        "project_name": project.name,
+    }
+
+
 @router.post("/{project_id}/chat/task-tree/generate")
 async def generate_project_chat_task_tree(
     project_id: str,
@@ -15771,6 +16463,197 @@ async def list_project_chat_history(
         chat_session_id=str(chat_session_id or "").strip(),
     )
     return {"messages": [asdict(item) for item in records]}
+
+
+@router.post("/{project_id}/chat/history/messages")
+async def append_project_chat_history_message(
+    project_id: str,
+    req: ProjectChatHistoryAppendReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    chat_session_id = str(req.chat_session_id or "").strip()
+    if not chat_session_id:
+        raise HTTPException(400, "chat_session_id is required")
+    content = str(req.content or "").strip()
+    if not content:
+        raise HTTPException(400, "content is required")
+    message = project_chat_store.append_message(
+        ProjectChatMessage(
+            id=str(req.message_id or "").strip() or f"chat-{uuid.uuid4().hex[:12]}",
+            project_id=project_id,
+            username=username,
+            role=str(req.role or "").strip().lower(),
+            content=content,
+            chat_session_id=chat_session_id,
+            display_mode=str(req.display_mode or "").strip(),
+            source_type="manual_ai_chat",
+            source_context=dict(req.source_context or {})
+            if isinstance(req.source_context, dict)
+            else {},
+            attachments=list(req.attachments or []),
+            images=list(req.images or []),
+            videos=list(req.videos or []),
+        )
+    )
+    return {"message": asdict(message)}
+
+
+def _build_project_chat_requirement_session(
+    *,
+    project_id: str,
+    username: str,
+    record_chat_session_id: str,
+    source_chat_session_id: str,
+    existing: ProjectChatTaskSession | None,
+    req: ProjectChatRequirementRecordUpsertReq,
+) -> ProjectChatTaskSession:
+    root_goal = str(req.root_goal or "").strip()
+    if not root_goal:
+        raise HTTPException(400, "root_goal is required")
+    title = str(req.title or "").strip() or root_goal[:120] or "AI 对话需求"
+    now = _now_iso()
+    session_id = getattr(existing, "id", "") or project_chat_task_store.new_session_id()
+    source_context = dict(req.source_context or {}) if isinstance(req.source_context, dict) else {}
+    runner_session_id = str(req.runner_session_id or "").strip()
+    runner_agent_type = str(req.runner_agent_type or "").strip()
+    source = str(req.source or "project_chat").strip() or "project_chat"
+    status = str(req.status or "in_progress").strip().lower()
+    if status not in {"pending", "in_progress", "blocked", "verifying", "done"}:
+        status = "in_progress"
+    result_summary = str(req.result_summary or "").strip()
+    verification_result = str(req.verification_result or "").strip()
+    if status == "done" and not verification_result:
+        verification_result = result_summary or "AI 对话已返回结果，需求完成。"
+    if status == "blocked" and not verification_result:
+        verification_result = result_summary
+
+    root_node_id = ""
+    run_node_id = ""
+    if existing and existing.nodes:
+        root_node = next((node for node in existing.nodes if not str(node.parent_id or "").strip()), None)
+        root_node_id = getattr(root_node, "id", "") if root_node else ""
+        run_node = next((node for node in existing.nodes if str(node.parent_id or "").strip()), None)
+        run_node_id = getattr(run_node, "id", "") if run_node else ""
+    root_node_id = root_node_id or project_chat_task_store.new_node_id()
+    run_node_id = run_node_id or project_chat_task_store.new_node_id()
+
+    child_status = "done" if status == "done" else "blocked" if status == "blocked" else "in_progress"
+    root_status = "done" if status == "done" else "blocked" if status == "blocked" else "in_progress"
+    source_bits = [
+        f"source={source}",
+        f"message={str(req.message_id or '').strip()}",
+        f"assistant={str(req.assistant_message_id or '').strip()}",
+        f"runner={runner_session_id}",
+        f"agent={runner_agent_type}",
+    ]
+    if source_context:
+        source_bits.append(f"context={json.dumps(source_context, ensure_ascii=False)[:500]}")
+    root_node = ProjectChatTaskNode(
+        id=root_node_id,
+        session_id=session_id,
+        parent_id="",
+        node_kind="goal",
+        stage_key="goal",
+        title=title[:160],
+        description=root_goal,
+        objective=root_goal,
+        level=0,
+        sort_order=0,
+        status=root_status,
+        done_definition="AI 对话需求有明确结果并写入验证结论。",
+        completion_criteria="AI 对话需求有明确结果并写入验证结论。",
+        verification_items=["对话需求已记录", "最终回答已回写"],
+        verification_method=["检查聊天历史和需求记录"],
+        verification_result=verification_result if status == "done" else "",
+        summary_for_model=root_goal,
+        latest_outcome=result_summary or root_goal,
+        created_at=getattr(existing, "created_at", "") or now,
+        updated_at=now,
+    )
+    run_node = ProjectChatTaskNode(
+        id=run_node_id,
+        session_id=session_id,
+        parent_id=root_node_id,
+        node_kind="plan_step",
+        stage_key="external_agent" if source == "tauri_external_agent_runner" else "ai_chat",
+        title="外部 Agent 执行" if source == "tauri_external_agent_runner" else "AI 对话处理",
+        description="\n".join([root_goal, *[bit for bit in source_bits if bit]]),
+        objective="通过 AI 对话或外部 Agent 处理用户需求。",
+        level=1,
+        sort_order=1,
+        status=child_status,
+        done_definition="最终回答已产生并写入聊天历史。",
+        completion_criteria="最终回答已产生并写入聊天历史。",
+        verification_items=["最终回答已写入当前聊天会话"],
+        verification_method=["检查聊天历史和 source_context"],
+        verification_result=verification_result if status == "done" else "",
+        summary_for_model=result_summary or root_goal,
+        latest_outcome=result_summary or root_goal,
+        created_at=getattr(existing, "created_at", "") or now,
+        updated_at=now,
+    )
+    session = ProjectChatTaskSession(
+        id=session_id,
+        project_id=project_id,
+        username=username,
+        chat_session_id=record_chat_session_id,
+        source_chat_session_id=source_chat_session_id,
+        record_kind="requirement",
+        source_session_id=(getattr(existing, "source_session_id", "") if existing else ""),
+        round_index=int(getattr(existing, "round_index", 1) or 1) if existing else 1,
+        title=title[:200],
+        root_goal=root_goal,
+        status=status,
+        lifecycle_status="active",
+        current_node_id=run_node_id,
+        nodes=[root_node, run_node],
+        created_at=getattr(existing, "created_at", "") or now,
+        updated_at=now,
+    )
+    return session
+
+
+@router.post("/{project_id}/chat/requirement-record")
+async def upsert_project_chat_requirement_record(
+    project_id: str,
+    req: ProjectChatRequirementRecordUpsertReq,
+    auth_payload: dict = Depends(require_auth),
+):
+    _ensure_permission(auth_payload, "menu.ai.chat")
+    _ensure_project_access(project_id, auth_payload)
+    username = _current_username(auth_payload)
+    chat_session_id = str(req.chat_session_id or "").strip()
+    if not chat_session_id:
+        raise HTTPException(400, "chat_session_id is required")
+    message_id = str(req.message_id or "").strip()
+    assistant_message_id = str(req.assistant_message_id or "").strip()
+    message_key = message_id or assistant_message_id
+    if message_key:
+        message_digest = hashlib.sha1(message_key.encode("utf-8")).hexdigest()[:16]
+        chat_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "_", chat_session_id).strip("._-")[:48]
+        record_chat_session_id = f"{chat_prefix or 'chat'}__msg__{message_digest}"
+    else:
+        record_chat_session_id = chat_session_id
+    existing = project_chat_task_store.get(project_id, username, record_chat_session_id)
+    session = _build_project_chat_requirement_session(
+        project_id=project_id,
+        username=username,
+        record_chat_session_id=record_chat_session_id,
+        source_chat_session_id=chat_session_id,
+        existing=existing,
+        req=req,
+    )
+    saved = project_chat_task_store.save(session)
+    await _invalidate_project_requirement_records_cache(project_id)
+    return {
+        "requirement_record": serialize_task_tree(saved),
+        "project_id": project_id,
+        "chat_session_id": record_chat_session_id,
+        "source_chat_session_id": chat_session_id,
+    }
 
 
 @router.get("/{project_id}/chat/runtime")
@@ -16310,6 +17193,15 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             return "模型与工具循环已启动"
         if event_type == "llm_step_completed":
             return "模型步骤完成，正在判断后续动作"
+        if event_type == "model_output_normalized":
+            parsed_count = int(payload.get("parsed_text_tool_call_count") or 0)
+            stripped_count = int(payload.get("stripped_protocol_block_count") or 0)
+            leak_detected = bool(payload.get("leak_detected"))
+            if parsed_count > 0:
+                return f"已从模型文本中解析 {parsed_count} 个工具调用"
+            if stripped_count > 0 or leak_detected:
+                return "已隐藏模型输出中的内部工具协议"
+            return "模型输出已完成可见内容清洗"
         if event_type == "tool_call_started":
             tool_name = str(payload.get("tool_name") or "").strip()
             return f"开始调用工具：{tool_name}" if tool_name else "开始调用工具"
@@ -16965,6 +17857,283 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             }
         )
 
+    async def _resolve_external_agent_runtime(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Any]:
+        req_payload = dict(payload or {})
+        req_payload["message"] = str(req_payload.get("message") or "__agent_prepare__")
+        req = ProjectChatReq.model_validate(req_payload)
+        runtime_settings = _resolve_chat_runtime_settings(req, project)
+        workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
+        external_agent_info = await _build_project_external_agent_info(
+            project=project,
+            auth_payload=auth_payload,
+            settings=runtime_settings,
+            workspace_path=workspace_path,
+        )
+        connector_id = str(runtime_settings.get("local_connector_id") or "").strip()
+        connector = _resolve_accessible_local_connector(connector_id, auth_payload)
+        if connector is None:
+            raise ValueError("请先选择本地连接器")
+        if not external_agent_info.get("available"):
+            raise ValueError(str(external_agent_info.get("reason") or "外部 Agent 不可用"))
+        return runtime_settings, external_agent_info, connector
+
+    async def _handle_agent_prepare(payload: dict[str, Any]) -> None:
+        request_id = str(payload.get("request_id") or "").strip()
+        runtime_settings, external_agent_info, _connector = await _resolve_external_agent_runtime(payload)
+        session_id = f"codex-{uuid.uuid4().hex[:12]}"
+        await _send_project_chat_event(
+            {
+                "type": "agent_ready",
+                "request_id": request_id,
+                "chat_mode": "external_agent",
+                "agent_type": str(runtime_settings.get("external_agent_type") or "codex_cli"),
+                "agent_session_id": session_id,
+                "session_id": session_id,
+                "thread_id": session_id,
+                **external_agent_info,
+                "ready": True,
+            }
+        )
+
+    async def _run_external_agent_chat(
+        *,
+        request_id: str,
+        chat_session_id: str,
+        assistant_message_id: str,
+        effective_user_message: str,
+        runtime_settings: dict[str, Any],
+        selected_employee: dict[str, Any] | None,
+        selected_employee_ids: list[str],
+        employee_id_val: str,
+        task_tree_payload: dict[str, Any] | None,
+        cancel_event: asyncio.Event,
+        allow_requirement_record: bool,
+        chat_surface: str,
+    ) -> None:
+        external_agent_info: dict[str, Any] = {}
+        session_id = f"codex-{uuid.uuid4().hex[:12]}"
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        exit_code: int | None = None
+        try:
+            workspace_path = _resolve_project_workspace_for_chat(project, runtime_settings)
+            external_agent_info = await _build_project_external_agent_info(
+                project=project,
+                auth_payload=auth_payload,
+                settings=runtime_settings,
+                workspace_path=workspace_path,
+            )
+            connector = _resolve_accessible_local_connector(
+                str(runtime_settings.get("local_connector_id") or "").strip(),
+                auth_payload,
+            )
+            if connector is None:
+                raise ValueError("请先选择本地连接器")
+            if not external_agent_info.get("available"):
+                raise ValueError(str(external_agent_info.get("reason") or "外部 Agent 不可用"))
+
+            start_payload = _build_project_chat_start_payload(
+                request_id=request_id,
+                project_id=project_id,
+                provider_id="external-agent",
+                model_name="codex-cli",
+                chat_mode="external_agent",
+                employee_id=employee_id_val,
+                employee_name=str((selected_employee or {}).get("name") or ""),
+                employee_ids=selected_employee_ids,
+                tools_enabled=True,
+                task_tree_payload=task_tree_payload,
+            )
+            start_payload.update(
+                {
+                    **external_agent_info,
+                    "agent_session_id": session_id,
+                    "session_id": session_id,
+                    "thread_id": session_id,
+                    "ready": True,
+                }
+            )
+            await _send_project_chat_event(start_payload)
+
+            sandbox_mode = str(runtime_settings.get("connector_sandbox_mode") or "workspace-write").strip() or "workspace-write"
+            cmd = ["codex", "exec", "--sandbox", sandbox_mode, effective_user_message]
+            command_text = shlex.join(cmd)
+            await _send_project_chat_event(
+                {
+                    "type": "command_start",
+                    "request_id": request_id,
+                    "chat_mode": "external_agent",
+                    "tool_name": "Codex CLI",
+                    "command": command_text,
+                    "cwd": workspace_path,
+                    "workspace_path": workspace_path,
+                }
+            )
+            task_node_id = str(
+                (task_tree_payload or {}).get("current_node_id")
+                or ((task_tree_payload or {}).get("current_node") or {}).get("id")
+                or ""
+            ).strip()
+            adapter = CodexRunnerStreamAdapter(task_node_id=task_node_id)
+            async for raw_event in exec_stream_via_connector(
+                connector,
+                cmd=cmd,
+                cwd=workspace_path,
+                env={},
+            ):
+                if cancel_event.is_set():
+                    exit_code = -1
+                    break
+                event = adapter.normalize_event(raw_event).to_dict()
+                raw_type = str(raw_event.get("type") or "").strip().lower()
+                message = str(event.get("message") or "").strip()
+                if raw_type in {"stdout", "chunk"} and message:
+                    stdout_chunks.append(message)
+                elif raw_type == "stderr" and message:
+                    stderr_chunks.append(message)
+                    await _send_project_chat_event(
+                        {
+                            "type": "stderr",
+                            "request_id": request_id,
+                            "chat_mode": "external_agent",
+                            "message": message,
+                            "stderr_preview": message[-500:],
+                        }
+                    )
+                if raw_type == "exit":
+                    try:
+                        exit_code = int(raw_event.get("returncode"))
+                    except (TypeError, ValueError):
+                        exit_code = 1
+                await _send_project_chat_event(
+                    {
+                        "type": "external_executor_event",
+                        "request_id": request_id,
+                        "chat_mode": "external_agent",
+                        "session_id": session_id,
+                        "thread_id": session_id,
+                        "event": event,
+                    }
+                )
+
+            if exit_code is None:
+                exit_code = 0
+            output_text = "".join(stdout_chunks).strip()
+            stderr_text = "".join(stderr_chunks).strip()
+            succeeded = exit_code == 0 and not cancel_event.is_set()
+            await _send_project_chat_event(
+                {
+                    "type": "command_result",
+                    "request_id": request_id,
+                    "chat_mode": "external_agent",
+                    "tool_name": "Codex CLI",
+                    "command": command_text,
+                    "cwd": workspace_path,
+                    "workspace_path": workspace_path,
+                    "status": "completed" if succeeded else "failed",
+                    "exit_code": exit_code,
+                    "output_preview": (output_text or stderr_text)[-1200:],
+                    "stdout_preview": output_text[-1200:],
+                    "stderr_preview": stderr_text[-1200:],
+                }
+            )
+            if cancel_event.is_set():
+                final_answer = "Codex CLI 执行已取消。"
+                completed_reason = "cancelled"
+            elif succeeded:
+                final_answer = output_text or "Codex CLI 执行完成。"
+                completed_reason = "completed"
+            else:
+                final_answer = (
+                    f"Codex CLI 执行失败，退出码 {exit_code}。"
+                    + (f"\n\n{stderr_text[-2000:]}" if stderr_text else "")
+                )
+                completed_reason = "runtime_error"
+            done_payload = _build_project_chat_done_payload(
+                content=final_answer,
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                provider_id="external-agent",
+                model_name="codex-cli",
+                task_tree_tool_used=True,
+            )
+            done_payload["request_id"] = request_id
+            done_payload["chat_mode"] = "external_agent"
+            done_payload["completed_reason"] = completed_reason
+            if not succeeded:
+                done_payload["guard_reason"] = completed_reason
+                done_payload["guard_message"] = "外部 Agent 执行未完成"
+            await _send_project_chat_event(done_payload)
+            assistant_source_context = _normalize_project_chat_source_context(
+                {
+                    "source_type": "manual_ai_chat",
+                    "chat_mode": "external_agent",
+                    "external_agent_type": str(
+                        runtime_settings.get("external_agent_type") or "codex_cli"
+                    ),
+                    "agent_session_id": session_id,
+                    "session_id": session_id,
+                    "thread_id": session_id,
+                },
+                project_id=project_id,
+                default_source_type="manual_ai_chat",
+            )
+            _append_chat_record(
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=final_answer,
+                message_id=assistant_message_id,
+                chat_session_id=chat_session_id,
+                source_context=assistant_source_context,
+            )
+            _save_project_chat_memory_snapshot(
+                project_id=project_id,
+                user_message=effective_user_message,
+                answer=final_answer,
+                chat_session_id=chat_session_id,
+                task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
+                selected_employee_ids=selected_employee_ids,
+                source=_compose_project_chat_memory_source("project-chat-ws-external-agent", chat_surface),
+                allow_requirement_record=allow_requirement_record,
+            )
+        except Exception as exc:
+            done_payload, final_answer = _build_project_chat_failure_done_payload(
+                exc=exc,
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                provider_id="external-agent",
+                model_name="codex-cli",
+            )
+            done_payload["request_id"] = request_id
+            done_payload["chat_mode"] = "external_agent"
+            await _send_project_chat_event(done_payload)
+            assistant_source_context = _normalize_project_chat_source_context(
+                {
+                    "source_type": "manual_ai_chat",
+                    "chat_mode": "external_agent",
+                    "external_agent_type": str(
+                        runtime_settings.get("external_agent_type") or "codex_cli"
+                    ),
+                    "agent_session_id": session_id,
+                    "session_id": session_id,
+                    "thread_id": session_id,
+                },
+                project_id=project_id,
+                default_source_type="manual_ai_chat",
+            )
+            _append_chat_record(
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=final_answer,
+                message_id=assistant_message_id,
+                chat_session_id=chat_session_id,
+                source_context=assistant_source_context,
+            )
+
     async def handle_request(payload: dict):
         nonlocal active_tasks, cancel_events
         request_id = str(payload.get("request_id") or "").strip()
@@ -17062,6 +18231,22 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
             task_tree_prompt = str(
                 (task_tree_payload or {}).get("model_context_summary") or ""
             ).strip()
+            if str(runtime_settings.get("chat_mode") or "").strip().lower() == "external_agent":
+                await _run_external_agent_chat(
+                    request_id=request_id,
+                    chat_session_id=chat_session_id,
+                    assistant_message_id=assistant_message_id,
+                    effective_user_message=effective_user_message,
+                    runtime_settings=runtime_settings,
+                    selected_employee=selected_employee,
+                    selected_employee_ids=selected_employee_ids,
+                    employee_id_val=employee_id_val,
+                    task_tree_payload=task_tree_payload,
+                    cancel_event=cancel_event,
+                    allow_requirement_record=allow_requirement_record,
+                    chat_surface=chat_surface,
+                )
+                return
             if not is_interaction_continuation and _is_project_meta_query(effective_user_message):
                 direct_answer = _build_project_meta_reply(project, selected_employee, candidates)
                 direct_done_payload = _build_project_chat_done_payload(
@@ -17206,6 +18391,161 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                     task_tree_payload=direct_done_payload.get("history_task_tree") or direct_done_payload.get("task_tree"),
                     selected_employee_ids=selected_employee_ids,
                     source=_compose_project_chat_memory_source("project-chat-ws-direct-mcp-modules", chat_surface),
+                    allow_requirement_record=allow_requirement_record,
+                )
+                return
+
+            direct_lark_cli = None if is_interaction_continuation else await _execute_direct_lark_cli_project_host_command(
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                employee_id=employee_id_val,
+                project=project,
+                user_message=effective_user_message,
+                timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 20),
+            )
+            if direct_lark_cli is not None:
+                try:
+                    direct_resolved_runtime = await _resolve_project_chat_runtime(
+                        runtime_settings,
+                        auth_payload,
+                    )
+                    provider_id = direct_resolved_runtime.provider_id
+                    model_name = direct_resolved_runtime.model_name
+                    from services.providers.llm_provider_service import get_llm_provider_service
+
+                    direct_llm_service = get_llm_provider_service()
+                except Exception:
+                    provider_id = ""
+                    model_name = ""
+                    direct_llm_service = None
+                model_reply = await _build_direct_lark_cli_model_reply(
+                    llm_service=direct_llm_service,
+                    provider_id=provider_id,
+                    model_name=model_name,
+                    user_message=effective_user_message,
+                    result=direct_lark_cli.get("result") if isinstance(direct_lark_cli.get("result"), dict) else {},
+                    fallback_reply=str(direct_lark_cli.get("content") or "").strip(),
+                )
+                direct_answer = str(model_reply.get("content") or direct_lark_cli.get("content") or "").strip()
+                direct_provider_id = (
+                    str(model_reply.get("provider_id") or provider_id).strip()
+                    if model_reply.get("model_processed")
+                    else ""
+                )
+                direct_model_name = (
+                    str(model_reply.get("model_name") or model_name).strip()
+                    if model_reply.get("model_processed")
+                    else "direct-lark-cli"
+                )
+                await _send_project_chat_event(
+                    _build_project_chat_start_payload(
+                        request_id=request_id,
+                        project_id=project_id,
+                        provider_id=direct_provider_id,
+                        model_name=direct_model_name,
+                        employee_id=employee_id_val,
+                        employee_name=str((selected_employee or {}).get("name") or ""),
+                        tools_enabled=True,
+                        effective_tools=[{"tool_name": PROJECT_HOST_RUN_COMMAND_TOOL_NAME}],
+                        effective_tool_total=1,
+                        task_tree_payload=task_tree_payload,
+                    )
+                )
+                direct_done_payload = _build_project_chat_done_payload(
+                    content=direct_answer,
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                    provider_id=direct_provider_id,
+                    model_name=direct_model_name,
+                    successful_tool_names=[PROJECT_HOST_RUN_COMMAND_TOOL_NAME],
+                )
+                direct_done_payload["request_id"] = request_id
+                await _send_project_chat_event(direct_done_payload)
+                assistant_source_context = _with_project_chat_pending_interaction(
+                    source_context,
+                    direct_lark_cli.get("pending_interaction")
+                    if isinstance(direct_lark_cli.get("pending_interaction"), dict)
+                    else None,
+                )
+                _append_chat_record(
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content=direct_answer,
+                    message_id=assistant_message_id,
+                    chat_session_id=chat_session_id,
+                    source_context=assistant_source_context,
+                )
+                _save_project_chat_memory_snapshot(
+                    project_id=project_id,
+                    user_message=effective_user_message,
+                    answer=direct_answer,
+                    chat_session_id=chat_session_id,
+                    task_tree_payload=direct_done_payload.get("history_task_tree") or direct_done_payload.get("task_tree"),
+                    selected_employee_ids=selected_employee_ids,
+                    source=_compose_project_chat_memory_source("project-chat-ws-direct-lark-cli", chat_surface),
+                    allow_requirement_record=allow_requirement_record,
+                )
+                return
+
+            clarify_payload = _build_project_chat_clarify_interaction_payload(
+                user_message=effective_user_message,
+                chat_session_id=chat_session_id,
+                request_id=request_id,
+            )
+            if clarify_payload is not None:
+                clarify_answer = "需要你先确认更新目标，我再继续处理。"
+                await _send_project_chat_event(
+                    _build_project_chat_start_payload(
+                        request_id=request_id,
+                        project_id=project_id,
+                        provider_id="",
+                        model_name="direct-clarify",
+                        employee_id=employee_id_val,
+                        employee_name=str((selected_employee or {}).get("name") or ""),
+                        tools_enabled=False,
+                        task_tree_payload=task_tree_payload,
+                    )
+                )
+                clarify_operation_event = _build_project_chat_operation_event(clarify_payload)
+                if clarify_operation_event:
+                    await _send_project_chat_event(clarify_operation_event)
+                direct_done_payload = _build_project_chat_done_payload(
+                    content=clarify_answer,
+                    project_id=project_id,
+                    username=username,
+                    chat_session_id=chat_session_id,
+                    provider_id="",
+                    model_name="direct-clarify",
+                )
+                direct_done_payload["request_id"] = request_id
+                direct_done_payload["completed_reason"] = "waiting_user_action"
+                direct_done_payload["guard_reason"] = "waiting_user_action"
+                direct_done_payload["guard_message"] = "等待你选择更新方向"
+                await _send_project_chat_event(direct_done_payload)
+                assistant_source_context = _with_project_chat_pending_interaction(
+                    source_context,
+                    _build_project_chat_pending_interaction(clarify_payload),
+                )
+                _append_chat_record(
+                    project_id=project_id,
+                    username=username,
+                    role="assistant",
+                    content=clarify_answer,
+                    message_id=assistant_message_id,
+                    chat_session_id=chat_session_id,
+                    source_context=assistant_source_context,
+                )
+                _save_project_chat_memory_snapshot(
+                    project_id=project_id,
+                    user_message=effective_user_message,
+                    answer=clarify_answer,
+                    chat_session_id=chat_session_id,
+                    task_tree_payload=direct_done_payload.get("history_task_tree") or direct_done_payload.get("task_tree"),
+                    selected_employee_ids=selected_employee_ids,
+                    source=_compose_project_chat_memory_source("project-chat-ws-direct-clarify", chat_surface),
                     allow_requirement_record=allow_requirement_record,
                 )
                 return
@@ -17812,6 +19152,18 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         }
                     )
                 continue
+            if payload_type == "agent_prepare":
+                try:
+                    await _handle_agent_prepare(payload)
+                except Exception as exc:
+                    await _send_project_chat_event(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "message": str(exc),
+                        }
+                    )
+                continue
             if payload_type == "interaction_submit":
                 if _should_handle_project_chat_operation_interaction_submit(payload):
                     try:
@@ -17830,8 +19182,17 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                             }
                         )
                         continue
+                    task_id = _resolve_project_chat_operation_interaction_task_id(payload)
+                    operation_id = str(
+                        payload.get("interaction_operation_id")
+                        or payload.get("operation_id")
+                        or payload.get("interaction_id")
+                        or ""
+                    ).strip()
+                    interaction_id = str(payload.get("interaction_id") or operation_id).strip()
+                    ack_summary = "已提交结构化交互，正在继续执行。"
                     done_payload = _build_project_chat_done_payload(
-                        content="已提交结构化交互，正在继续执行。",
+                        content="",
                         project_id=project_id,
                         username=username,
                         chat_session_id=str(payload.get("chat_session_id") or "").strip(),
@@ -17839,6 +19200,24 @@ async def ws_project_chat(project_id: str, websocket: WebSocket):
                         model_name=str(payload.get("model_name") or "").strip(),
                     )
                     done_payload["request_id"] = request_id
+                    done_payload["request_kind"] = "interaction_submit_ack"
+                    done_payload["completed_reason"] = "interaction_submit_ack"
+                    done_payload["guard_reason"] = "interaction_submit_ack"
+                    done_payload["guard_message"] = ack_summary
+                    done_payload["summary"] = ack_summary
+                    done_payload["suppress_request_operation"] = True
+                    done_payload["interaction_ack"] = {
+                        key: value
+                        for key, value in {
+                            "operation_id": operation_id,
+                            "interaction_id": interaction_id,
+                            "task_id": task_id,
+                            "chat_session_id": str(payload.get("chat_session_id") or "").strip(),
+                            "workflow_kind": str(payload.get("workflow_kind") or "").strip(),
+                            "summary": ack_summary,
+                        }.items()
+                        if value not in (None, "", {}, [])
+                    }
                     done_payload["operation_task"] = task
                     await _send_project_chat_event(done_payload)
                     continue
@@ -18150,6 +19529,184 @@ async def stream_project_chat(
 
         return StreamingResponse(
             direct_mcp_event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    direct_lark_cli = None if is_interaction_continuation else await _execute_direct_lark_cli_project_host_command(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        employee_id=employee_id_val,
+        project=project,
+        user_message=effective_user_message,
+        timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 20),
+    )
+    if direct_lark_cli is not None:
+        try:
+            direct_resolved_runtime = await _resolve_project_chat_runtime(
+                runtime_settings,
+                auth_payload,
+            )
+            provider_id = direct_resolved_runtime.provider_id
+            model_name = direct_resolved_runtime.model_name
+            direct_llm_service = get_llm_provider_service()
+        except Exception:
+            provider_id = ""
+            model_name = ""
+            direct_llm_service = None
+        model_reply = await _build_direct_lark_cli_model_reply(
+            llm_service=direct_llm_service,
+            provider_id=provider_id,
+            model_name=model_name,
+            user_message=effective_user_message,
+            result=direct_lark_cli.get("result") if isinstance(direct_lark_cli.get("result"), dict) else {},
+            fallback_reply=str(direct_lark_cli.get("content") or "").strip(),
+        )
+        answer = str(model_reply.get("content") or direct_lark_cli.get("content") or "").strip()
+        direct_provider_id = (
+            str(model_reply.get("provider_id") or provider_id).strip()
+            if model_reply.get("model_processed")
+            else ""
+        )
+        direct_model_name = (
+            str(model_reply.get("model_name") or model_name).strip()
+            if model_reply.get("model_processed")
+            else "direct-lark-cli"
+        )
+
+        async def direct_lark_cli_event_stream() -> AsyncIterator[str]:
+            done_payload = _build_project_chat_done_payload(
+                content=answer,
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                provider_id=direct_provider_id,
+                model_name=direct_model_name,
+                successful_tool_names=[PROJECT_HOST_RUN_COMMAND_TOOL_NAME],
+            )
+            yield _sse_payload(
+                "message",
+                _build_project_chat_start_payload(
+                    project_id=project_id,
+                    provider_id=direct_provider_id,
+                    model_name=direct_model_name,
+                    employee_id=str((selected_employee or {}).get("id") or ""),
+                    employee_name=str((selected_employee or {}).get("name") or ""),
+                    employee_ids=selected_employee_ids,
+                    tools_enabled=True,
+                    effective_tools=[{"tool_name": PROJECT_HOST_RUN_COMMAND_TOOL_NAME}],
+                    effective_tool_total=1,
+                    task_tree_payload=task_tree_payload,
+                ),
+            )
+            for part in _chunk_text(answer):
+                yield _sse_payload("message", {"type": "delta", "content": part})
+            yield _sse_payload("message", done_payload)
+            assistant_source_context = _with_project_chat_pending_interaction(
+                source_context,
+                direct_lark_cli.get("pending_interaction")
+                if isinstance(direct_lark_cli.get("pending_interaction"), dict)
+                else None,
+            )
+            _append_chat_record(
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=answer,
+                message_id=assistant_message_id,
+                chat_session_id=chat_session_id,
+                source_context=assistant_source_context,
+            )
+            _save_project_chat_memory_snapshot(
+                project_id=project_id,
+                user_message=effective_user_message,
+                answer=answer,
+                chat_session_id=chat_session_id,
+                task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
+                selected_employee_ids=selected_employee_ids,
+                source=_compose_project_chat_memory_source("project-chat-sse-direct-lark-cli", chat_surface),
+                allow_requirement_record=allow_requirement_record,
+            )
+
+        return StreamingResponse(
+            direct_lark_cli_event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    clarify_payload = _build_project_chat_clarify_interaction_payload(
+        user_message=effective_user_message,
+        chat_session_id=chat_session_id,
+    )
+    if clarify_payload is not None:
+        answer = "需要你先确认更新目标，我再继续处理。"
+
+        async def direct_clarify_event_stream() -> AsyncIterator[str]:
+            done_payload = _build_project_chat_done_payload(
+                content=answer,
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                provider_id="",
+                model_name="direct-clarify",
+            )
+            done_payload["completed_reason"] = "waiting_user_action"
+            done_payload["guard_reason"] = "waiting_user_action"
+            done_payload["guard_message"] = "等待你选择更新方向"
+            yield _sse_payload(
+                "message",
+                _build_project_chat_start_payload(
+                    project_id=project_id,
+                    provider_id="",
+                    model_name="direct-clarify",
+                    employee_id=str((selected_employee or {}).get("id") or ""),
+                    employee_name=str((selected_employee or {}).get("name") or ""),
+                    employee_ids=selected_employee_ids,
+                    tools_enabled=False,
+                    task_tree_payload=task_tree_payload,
+                ),
+            )
+            clarify_operation_event = _build_project_chat_operation_event(clarify_payload)
+            if clarify_operation_event:
+                yield _sse_payload("message", clarify_operation_event)
+            for part in _chunk_text(answer):
+                yield _sse_payload("message", {"type": "delta", "content": part})
+            yield _sse_payload("message", done_payload)
+            assistant_source_context = _with_project_chat_pending_interaction(
+                source_context,
+                _build_project_chat_pending_interaction(clarify_payload),
+            )
+            _append_chat_record(
+                project_id=project_id,
+                username=username,
+                role="assistant",
+                content=answer,
+                message_id=assistant_message_id,
+                chat_session_id=chat_session_id,
+                source_context=assistant_source_context,
+            )
+            _save_project_chat_memory_snapshot(
+                project_id=project_id,
+                user_message=effective_user_message,
+                answer=answer,
+                chat_session_id=chat_session_id,
+                task_tree_payload=done_payload.get("history_task_tree") or done_payload.get("task_tree"),
+                selected_employee_ids=selected_employee_ids,
+                source=_compose_project_chat_memory_source("project-chat-sse-direct-clarify", chat_surface),
+                allow_requirement_record=allow_requirement_record,
+            )
+
+        return StreamingResponse(
+            direct_clarify_event_stream(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from collections.abc import Iterable
 import hashlib
 import json
 
@@ -110,7 +111,13 @@ def _build_memory_backed_session_summary(memory, *, project_id: str, session_id:
 def _list_accessible_memories() -> list[object]:
     list_all = getattr(memory_store, "list_all", None)
     if callable(list_all):
-        return list(list_all())
+        try:
+            all_memories = list_all()
+        except Exception:
+            return []
+        if isinstance(all_memories, Iterable):
+            return list(all_memories)
+        return []
     list_by_employee = getattr(memory_store, "list_by_employee", None)
     if not callable(list_by_employee):
         return []
@@ -120,7 +127,13 @@ def _list_accessible_memories() -> list[object]:
         normalized_employee_id = _normalize_text(getattr(employee, "id", ""), 80)
         if not normalized_employee_id:
             continue
-        for memory in list_by_employee(normalized_employee_id) or []:
+        try:
+            employee_memories = list_by_employee(normalized_employee_id) or []
+        except Exception:
+            continue
+        if not isinstance(employee_memories, Iterable):
+            continue
+        for memory in employee_memories:
             memory_id = _normalize_text(getattr(memory, "id", ""), 80)
             dedupe_key = memory_id or json.dumps(
                 [

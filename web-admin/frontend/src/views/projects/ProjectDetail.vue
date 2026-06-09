@@ -2217,7 +2217,10 @@ import WorkSessionDetailPanel from "@/components/WorkSessionDetailPanel.vue";
 import { normalizeTaskTreeHealth } from "@/modules/task-tree-feedback/taskTreeFeedback";
 import api from "@/utils/api.js";
 import { formatDateTime } from "@/utils/date.js";
-import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
+import {
+  notifyDesktopRouteChange,
+  openRouteInDesktop,
+} from "@/utils/desktop-app-bridge.js";
 import {
   pickWorkspaceDirectory as openWorkspaceDirectoryPicker,
   pickWorkspaceFile as openWorkspaceFilePicker,
@@ -2527,7 +2530,28 @@ const projectHeroDescription = computed(() => {
   return getProjectTypeDescription(project.value?.type);
 });
 
+const currentProjectBadgeLabel = computed(() => {
+  const name = String(project.value?.name || "").trim();
+  const id = String(project.value?.id || projectId.value || "").trim();
+  const displayName = name || "当前项目";
+  if (id && id !== displayName) {
+    return `当前项目：${displayName} · ${id}`;
+  }
+  return `当前项目：${displayName}`;
+});
+
+const projectDesktopWindowTitle = computed(() => {
+  const name = String(project.value?.name || "").trim();
+  const id = String(project.value?.id || projectId.value || "").trim();
+  return `项目详情 · ${name || id || "当前项目"}`;
+});
+
 const projectHeroSignals = computed(() => [
+  {
+    key: "current-project",
+    label: currentProjectBadgeLabel.value,
+    type: "primary",
+  },
   {
     key: "type",
     label: getProjectTypeLabel(project.value?.type),
@@ -4093,9 +4117,26 @@ function normalizeProjectDetailTab(value) {
     : availableProjectDetailTabs.value[0] || "overview";
 }
 
+function syncProjectDesktopWindowTitle() {
+  notifyDesktopRouteChange(route.fullPath, {
+    appId: "project-detail",
+    title: projectDesktopWindowTitle.value,
+    eyebrow: "Project Workspace",
+    summary: "查看单个项目的详情、成员、规则与工作轨迹。",
+  });
+}
+
 watch([projectUsersPageSize, projectUsers], () => {
   projectUsersPage.value = 1;
 });
+
+watch(
+  () => [projectDesktopWindowTitle.value, route.fullPath],
+  () => {
+    syncProjectDesktopWindowTitle();
+  },
+  { immediate: true },
+);
 
 watch(
   () => projectId.value,
@@ -4679,6 +4720,7 @@ async function fetchProject(targetProjectId = projectId.value) {
       data.project?.experience_rule_ids || [],
     ),
   };
+  syncProjectDesktopWindowTitle();
   ensureUiRuleOptionCoverage();
   ensureExperienceRuleOptionCoverage();
 }
@@ -6357,6 +6399,8 @@ function openProjectChat(chatSessionId = "") {
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (normalizedChatSessionId) {
     query.chat_session_id = normalizedChatSessionId;
+  } else {
+    query.create_chat_session = "1";
   }
   void openRouteInDesktop(
     router,
@@ -7920,6 +7964,23 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.memory-detail-tags :deep(.el-tag) {
+  max-width: 100%;
+  height: auto;
+  white-space: normal;
+  line-height: 1.5;
+  align-items: flex-start;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.memory-detail-tags :deep(.el-tag__content) {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .memory-detail-task-tree {

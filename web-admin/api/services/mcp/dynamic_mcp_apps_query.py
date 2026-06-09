@@ -2177,6 +2177,31 @@ def _structured_session_items(memories: list[dict]) -> list[dict]:
     return [_decorate_work_memory(item) for item in memories]
 
 
+def _is_isolated_user_question_memory(item: dict) -> bool:
+    trajectory = item.get("trajectory") if isinstance(item.get("trajectory"), dict) else {}
+    if trajectory:
+        return False
+    content_value = _normalize_text(item.get("content"), 4000)
+    if "[用户提问]" not in content_value:
+        return False
+    if any(marker in content_value for marker in ("[执行轨迹JSON]", "[工作事实]", "[会话事件]")):
+        return False
+    significant_lines = []
+    for raw_line in content_value.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if re.match(r"^\[(?:项目ID|项目名称)\]\s*", line):
+            continue
+        significant_lines.append(line)
+    if not significant_lines:
+        return False
+    return all(
+        line.startswith("[用户提问]") or line.startswith("[关联会话]")
+        for line in significant_lines
+    )
+
+
 def _item_modified_at(item: dict) -> str:
     updated_at = _normalize_text(item.get("updated_at"))
     if updated_at:
@@ -2304,6 +2329,71 @@ def _requirement_titles_similar(left: object, right: object) -> bool:
         if token in left_compact and token in right_compact:
             matched_count += 1
     return matched_count >= 3 and matched_count / max(len(smaller_tokens), 1) >= 0.6
+
+
+def _requirement_path_route_anchor_keys(*values: object) -> list[str]:
+    text = " ".join(_normalize_text_lower(_normalize_text(value, 2000)) for value in values if value)
+    if not text:
+        return []
+    path_matches = re.findall(
+        r"(?:/[^\s`\"'“”‘’，,。！？!?:：;；()\[\]{}<>《》]+)+\."
+        r"(?:vue|dart|js|ts|tsx|jsx|py|md|json|ya?ml|html|css|scss)",
+        text,
+    )
+    normalized_paths = []
+    for value in path_matches:
+        normalized_path = re.sub(r"/+", "/", value).rstrip("/")
+        if normalized_path and normalized_path not in normalized_paths:
+            normalized_paths.append(normalized_path)
+
+    text_without_paths = text
+    for value in normalized_paths:
+        text_without_paths = text_without_paths.replace(value, " ")
+    route_matches = re.findall(r"(?<![\w.])#?/[a-z0-9][a-z0-9_/-]*", text_without_paths)
+    normalized_routes = []
+    for value in route_matches:
+        normalized_route = value.strip().rstrip("/")
+        if "." in normalized_route or len(normalized_route) > 80:
+            continue
+        if normalized_route and normalized_route not in normalized_routes:
+            normalized_routes.append(normalized_route)
+
+    anchors = []
+    for path_value in normalized_paths[:3]:
+        path_digest = hashlib.sha1(path_value.encode("utf-8")).hexdigest()[:16]
+        for route_value in normalized_routes[:3]:
+            anchors.append(f"intent:path-route:{path_digest}:{route_value}")
+    return anchors
+
+
+def _requirement_intent_titles_similar(left: object, right: object) -> bool:
+    def _without_path_route(value: object) -> str:
+        text = _normalize_text_lower(_normalize_text(value, 2000))
+        text = re.sub(
+            r"(?:/[^\s`\"'“”‘’，,。！？!?:：;；()\[\]{}<>《》]+)+\."
+            r"(?:vue|dart|js|ts|tsx|jsx|py|md|json|ya?ml|html|css|scss)",
+            " ",
+            text,
+        )
+        text = re.sub(r"(?<![\w.])#?/[a-z0-9][a-z0-9_/-]*", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    left_intent = _without_path_route(left)
+    right_intent = _without_path_route(right)
+    if not left_intent or not right_intent:
+        return False
+    if _requirement_titles_similar(left_intent, right_intent):
+        return True
+
+    left_compact = re.sub(r"\s+", "", left_intent)
+    right_compact = re.sub(r"\s+", "", right_intent)
+    left_bigrams = {left_compact[index : index + 2] for index in range(len(left_compact) - 1)}
+    right_bigrams = {right_compact[index : index + 2] for index in range(len(right_compact) - 1)}
+    smaller_count = min(len(left_bigrams), len(right_bigrams))
+    if smaller_count < 4:
+        return False
+    shared_count = len(left_bigrams & right_bigrams)
+    return shared_count >= 4 and shared_count / smaller_count >= 0.3
 
 
 def _filter_shadow_query_cli_requirement_items(items: list[dict]) -> list[dict]:
@@ -2443,6 +2533,135 @@ def _build_requirement_history_entry(
     }
 
 
+def _requirement_history_anchor_keys(history_item: dict) -> list[str]:
+    anchors: list[str] = []
+    for field, prefix in (
+        ("task_tree_session_id", "task-tree"),
+        ("session_id", "session"),
+    ):
+        value = _normalize_text(history_item.get(field), 120)
+        if value:
+            anchors.append(f"{prefix}:{value}")
+
+    session_id = _normalize_text(history_item.get("session_id"), 120)
+    chat_session_id = _normalize_text(history_item.get("task_tree_chat_session_id"), 120)
+    if session_id and chat_session_id:
+        anchors.append(f"session-chat:{session_id}:{chat_session_id}")
+    anchors.extend(
+        _requirement_path_route_anchor_keys(
+            history_item.get("requirement_title"),
+            history_item.get("summary"),
+            " ".join(history_item.get("changed_files") or []),
+        )
+    )
+    return anchors
+
+
+def _register_requirement_history_anchor_aliases(
+    anchor_aliases: dict[str, str],
+    requirement_key: str,
+    history_item: dict,
+) -> None:
+    for anchor_key in _requirement_history_anchor_keys(history_item):
+        anchor_aliases.setdefault(anchor_key, requirement_key)
+
+
+def _requirement_history_compatible_chat_anchor(history_item: dict) -> str:
+    chat_session_id = _normalize_text(history_item.get("task_tree_chat_session_id"), 120)
+    if not chat_session_id:
+        return ""
+    if _is_query_cli_task_tree_chat_session_id(chat_session_id):
+        return f"chat-intent:{chat_session_id}"
+    return ""
+
+
+def _requirement_history_titles_compatible(left: object, right: object) -> bool:
+    left_title = _normalize_text(left, 200)
+    right_title = _normalize_text(right, 200)
+    if not left_title or not right_title:
+        return True
+    return _requirement_titles_similar(
+        left_title,
+        right_title,
+    ) or _requirement_intent_titles_similar(
+        left_title,
+        right_title,
+    )
+
+
+def _requirement_title_priority(requirement: dict) -> tuple[int, int]:
+    status_value = _normalize_text(requirement.get("latest_status")).lower()
+    title_value = _normalize_text(requirement.get("requirement_title"), 200)
+    has_delivery_evidence = any(
+        requirement.get(field) for field in ("changed_files", "verification")
+    )
+    score = 0
+    if status_value in {"done", "completed", "complete", "success"}:
+        score += 6
+    if has_delivery_evidence:
+        score += 4
+    if re.search(r"(修复|完成|交付|验证|实现|迁移规划|调整|配置)", title_value):
+        score += 2
+    if re.search(r"(为什么|怎么|bug|问题)", title_value, re.IGNORECASE):
+        score -= 1
+    return score, len(title_value)
+
+
+def _merge_requirement_history_groups(
+    grouped: dict[str, dict],
+    anchor_aliases: dict[str, str],
+    *,
+    source_key: str,
+    target_key: str,
+    history_limit: int,
+) -> str:
+    if source_key == target_key or source_key not in grouped or target_key not in grouped:
+        return target_key
+    source = grouped.pop(source_key)
+    target = grouped[target_key]
+    if _normalize_text(source.get("requirement_title")) and _requirement_title_priority(
+        source
+    ) > _requirement_title_priority(target):
+        target["requirement_title"] = source.get("requirement_title")
+        target["requirement_key"] = source.get("requirement_key")
+    if source["_latest_dt"] > target["_latest_dt"]:
+        target["_latest_dt"] = source["_latest_dt"]
+        target["latest_modified_at"] = source.get("latest_modified_at", "")
+        target["latest_status"] = source.get("latest_status", "")
+        target["latest_summary"] = source.get("latest_summary", "")
+    if source["_first_seen_dt"] < target["_first_seen_dt"]:
+        target["_first_seen_dt"] = source["_first_seen_dt"]
+        target["first_seen_at"] = source.get("first_seen_at", "")
+    target["history_count"] += int(source.get("history_count") or 0)
+    for field in (
+        "session_ids",
+        "task_tree_session_ids",
+        "task_tree_chat_session_ids",
+        "employee_ids",
+        "phases",
+        "steps",
+        "changed_files",
+        "verification",
+        "risks",
+        "next_steps",
+        "source_kinds",
+        "event_types",
+    ):
+        for value in source.get(field) or []:
+            if value and value not in target[field]:
+                target[field].append(value)
+    normalized_history_limit = max(1, min(int(history_limit or 20), 50))
+    for history_item in source.get("history") or []:
+        if len(target["history"]) < normalized_history_limit:
+            target["history"].append(history_item)
+        for anchor_key in _requirement_history_anchor_keys(history_item):
+            anchor_aliases[anchor_key] = target_key
+    for anchor_key, alias_key in list(anchor_aliases.items()):
+        if alias_key == source_key:
+            anchor_aliases[anchor_key] = target_key
+    return target_key
+
+
 def _group_requirement_history(
     items: list[dict],
     *,
@@ -2451,10 +2670,55 @@ def _group_requirement_history(
 ) -> list[dict]:
     session_title_lookup = _session_requirement_title_lookup(items)
     grouped: dict[str, dict] = {}
+    anchor_aliases: dict[str, str] = {}
     for item in items:
         title = _derive_requirement_title(item, session_title_lookup=session_title_lookup)
         key = _normalize_requirement_key(title, item=item)
         history_item = _build_requirement_history_entry(item, title=title)
+        anchor_target_key = ""
+        chat_anchor_key = _requirement_history_compatible_chat_anchor(history_item)
+        if chat_anchor_key:
+            existing_key = anchor_aliases.get(chat_anchor_key)
+            if (
+                existing_key
+                and existing_key in grouped
+                and _requirement_history_titles_compatible(
+                    history_item.get("requirement_title"),
+                    grouped[existing_key].get("requirement_title"),
+                )
+            ):
+                anchor_target_key = existing_key
+        for anchor_key in _requirement_history_anchor_keys(history_item):
+            if anchor_target_key:
+                break
+            existing_key = anchor_aliases.get(anchor_key)
+            if existing_key and existing_key in grouped:
+                if (
+                    anchor_key.startswith("intent:path-route:")
+                    and not _requirement_intent_titles_similar(
+                        history_item.get("requirement_title"),
+                        grouped[existing_key].get("requirement_title"),
+                    )
+                ):
+                    continue
+                if not _requirement_history_titles_compatible(
+                    history_item.get("requirement_title"),
+                    grouped[existing_key].get("requirement_title"),
+                ):
+                    continue
+                anchor_target_key = existing_key
+                break
+        if anchor_target_key:
+            if key in grouped and key != anchor_target_key:
+                key = _merge_requirement_history_groups(
+                    grouped,
+                    anchor_aliases,
+                    source_key=key,
+                    target_key=anchor_target_key,
+                    history_limit=history_limit,
+                )
+            else:
+                key = anchor_target_key
         modified_at = _history_datetime_or_min(history_item.get("modified_at"))
         created_at = _history_datetime_or_min(history_item.get("created_at"))
         requirement = grouped.get(key)
@@ -2484,12 +2748,30 @@ def _group_requirement_history(
                 "_first_seen_dt": created_at,
             }
             grouped[key] = requirement
+        _register_requirement_history_anchor_aliases(anchor_aliases, key, history_item)
+        if chat_anchor_key and _requirement_history_titles_compatible(
+            requirement.get("requirement_title"),
+            history_item.get("requirement_title"),
+        ):
+            anchor_aliases[chat_anchor_key] = key
         requirement["history_count"] += 1
         if modified_at > requirement["_latest_dt"]:
             requirement["_latest_dt"] = modified_at
             requirement["latest_modified_at"] = history_item.get("modified_at") or history_item.get("created_at") or ""
             requirement["latest_status"] = _normalize_text(history_item.get("status"))
             requirement["latest_summary"] = _normalize_text(history_item.get("summary"), 240)
+            title_candidate = {
+                "requirement_title": _normalize_text(title, 200),
+                "latest_status": _normalize_text(history_item.get("status")),
+                "changed_files": history_item.get("changed_files") or [],
+                "verification": history_item.get("verification") or [],
+            }
+            if _requirement_title_priority(title_candidate) >= _requirement_title_priority(requirement):
+                requirement["requirement_title"] = title_candidate["requirement_title"]
+                requirement["requirement_key"] = _normalize_requirement_key(
+                    title_candidate["requirement_title"],
+                    item=item,
+                )
         if created_at < requirement["_first_seen_dt"]:
             requirement["_first_seen_dt"] = created_at
             requirement["first_seen_at"] = history_item.get("created_at") or history_item.get("modified_at") or ""
@@ -2598,6 +2880,9 @@ def _collect_requirement_history_items(
     )
     if error:
         return [], "", error
+    filtered_memory_items = [
+        item for item in filtered_memory_items if not _is_isolated_user_question_memory(item)
+    ]
     if filtered_memory_items or not work_items:
         return filtered_memory_items, "project-memory", ""
     return [], "work-session", ""
@@ -2630,8 +2915,8 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: `description` 只用于说明，不参与项目绑定；要续接任务树，优先让 URL 带上 `project_id` 和 `chat_session_id`，缺失时首轮调用 `bind_project_context(...)`。",
             "- 接入约束: 若 direct CLI fallback 先生成了临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话执行 `bind_project_context(...)` 时，系统会自动把影子任务树迁到正式会话；但仍建议首轮就传稳定 `chat_session_id`，避免产生影子链路。",
             "- 接入约束: 每个 CLI 会话都应自行生成唯一 `chat_session_id`；如能解析项目工作区，优先持久化到项目目录 `.ai-employee/query-mcp/`，否则再退回 CLI 自己的本地存储。同一轮任务内固定复用，只有新开的并行 CLI 或新任务才重新生成。",
-            "- 接入约束: `query-mcp` 本地状态必须只写三类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立，避免多进程冲突）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；`current-session.json`、`chat_session_id.txt`、`session_id.txt`、`current-work-session.json` 等 legacy 文件只允许兼容读取，不允许新写。",
-            "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。只有明确处理历史数据迁移或只读恢复时，才允许短期兼容，并必须标注范围、退出条件和后续清理方案。",
+            "- 接入约束: `query-mcp` 本地状态只能新写两类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态，避免多窗口冲突）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。",
+            "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 记忆约束: 仅在新需求开始、续跑恢复、修复旧问题或当前问题明显依赖历史经验时才检索记忆；同一任务轮若已生成任务树并进入执行，不要重复 recall。",
             f"- 交互约束: {clarity_threshold_line}",
             f"- 交互约束: {clarity_direct_line}",
@@ -2640,9 +2925,10 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 项目约束: 优先使用项目绑定员工、规则和技能；只有项目能力不足时才自行补足。",
             "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
             "- 任务树约束: 任务树节点必须描述面向用户目标的真实工作步骤；不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 或候选代理工具名直接写成节点。",
+            "- 任务树约束: 实现型、修复型、治理型、文档型任务禁止固定生成“分析 / 实现 / 验证”三步；必须先识别真实对象和任务类型，再生成差异化节点。节点标题不能把“当前需求”当作主要对象。",
             "- 工作流约束: 用户提需求后先规划，再执行；执行中只更新任务树、工作事实和会话事件，不要提前输出最终结论。",
             "- 工作流约束: 必须做到“完成一个节点、补一次验证、再进入下一步”；只有整棵任务树完成并写入验证结果后，当前需求才算结束。",
-            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起通过统一状态服务持久化到 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；若当前拿不到项目工作区，再退回 CLI 自己的本地存储。每完成一个子阶段调用 save_work_facts 或 append_session_event。",
+            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起通过统一状态服务持久化到 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。若当前拿不到项目工作区，再退回 CLI 自己的本地存储。每完成一个子阶段调用 save_work_facts 或 append_session_event。",
             "- 长任务建议: 中断恢复顺序应固定为“恢复本地 `chat_session_id/session_id` -> bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...) -> 按当前任务树继续执行”；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。",
             "- 宿主扩展: 如宿主需要展示任务树演化摘要，可按需读取 `/api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...`。",
             "- 适合自动化的能力: 任务分析、相关上下文聚合、执行步骤骨架、风险分类、工作轨迹恢复。",
@@ -2653,6 +2939,8 @@ def build_query_client_profile_text(client_name: str) -> str:
         focus = [
             "- 定位: 适合以代码任务拆解、补丁实现和结构化交付为主的开发型 CLI。",
             "- 推荐链路: query://usage-guide -> query://client-profile/codex -> start_project_workflow -> check_operation_policy -> save_work_facts/append_session_event -> build_delivery_report。",
+            "- 资源约束: `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/codex`，禁止反复列资源。",
+            "- 简单查询: 用户问项目有几个/哪些员工、工具、规则或需求历史，且 `project_id` 已明确时，直接调用对应业务工具，例如 `list_project_members(project_id=...)`；不要为了 bootstrap 机械调用 `list_mcp_resources`。",
             "- 固定入口: 优先调用 `start_project_workflow`，不要手动拼接 search_ids / get_manual_content / analyze_task / resolve_relevant_context / generate_execution_plan 这一整串前置步骤。",
             "- 接入约束: `description`、项目说明和“当前项目”文字不会自动绑定任务树；URL 或首轮工具参数里必须显式出现 `project_id`，需要续接时再补 `chat_session_id` 或 `bind_project_context(...)`。",
             "- 接入约束: 如果当前 CLI 没有活跃 MCP session，只要显式传了 `project_id + chat_session_id`，`bind_project_context(...)` 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 `chat_session_id`。",
@@ -2660,9 +2948,9 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 接入约束: 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；缺失时从系统技能库同步或创建到本地，已存在则直接复用，并优先读取本地副本。",
             "- 接入约束: 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。",
             "- 接入约束: 每个 Codex CLI 会话都应先持久化自己生成的 `chat_session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 Codex 自己的本地存储。同一进程整轮任务固定复用，只有新开的并行任务或全新需求才重新生成。",
-            "- 接入约束: `query-mcp` 本地状态必须只写三类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立，避免多进程冲突）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；`current-session.json`、`chat_session_id.txt`、`session_id.txt`、`current-query-session.json`、`current-work-session.json`、`session.env` 等 legacy 文件只允许兼容读取，不允许新写。",
+            "- 接入约束: `query-mcp` 本地状态只能新写两类 canonical 文件：`.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态，避免多窗口冲突）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。",
             "- 接入约束: 除 query-mcp canonical 状态外，每个需求还要维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；requirement 对象至少保留 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`。",
-            "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。只有明确处理历史数据迁移或只读恢复时，才允许短期兼容，并必须标注范围、退出条件和后续清理方案。",
+            "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 查询约束: 仅在缺少明确的 `project_id` / `employee_id` / `rule_id`，或需要跨项目检索时，再调用 `search_ids(keyword=\"<用户原始问题>\")`；当前项目和对象已明确时，可直接读取 `get_manual_content(project_id=...)` 或进入 `start_project_workflow(...)`。",
             f"- 交互约束: {clarity_threshold_line}",
             f"- 交互约束: {clarity_direct_line}",
@@ -2673,13 +2961,14 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 项目约束: 进入分析、实现或排查前，重新获取与当前任务直接相关的规则正文，不要只依赖规则标题。",
             "- 工作流约束: 本地优先推进分析、改动、验证和 requirement 记录，再通过 MCP 回写任务树、工作事实与交付结论。",
             "- 任务树约束: 查询型问题保持单检索节点；实现型任务节点才写成分析、实现、验证这类面向目标的步骤。不要把内部检索工具、规则查询工具、候选代理工具或 `Auto inferred proxy entry from scripts/...` 这类描述直接当成节点。",
+            "- 任务树约束: 实现型、修复型、治理型、文档型任务不能固定套“分析 / 实现 / 验证”三步；必须按真实对象生成差异化计划。若标题里用“当前需求”代替路径、功能名、状态枚举、MCP 对象或文档目录，应重建任务树。",
             "- 任务树约束: `bind_project_context(...)` 后如果宿主支持任务树，立刻调用 `get_current_task_tree` 核对 `root_goal/title/current_node` 是否属于当前用户原始问题；若明显挂到了旧任务树，停止复用当前 `chat_session_id`，改为新建并持久化新的 `chat_session_id` 后重新绑定。",
             "- 工作流约束: 用户提需求后先生成计划并挂到任务树，再按计划逐项推进；执行中不要把阶段性结果写成最终结论。",
             "- 工作流约束: 每完成一个计划项就立刻补验证结果，再处理下一个；只有所有计划项完成后，才能生成最终总结或补稳定结论记忆。",
             "- 工作流约束: 开始执行某个任务节点前，先调用 `update_task_node_status(status=in_progress|verifying)`；完成节点时必须调用 `complete_task_node_with_verification`，不要只在自然语言里声称“已完成”。",
             "- 工作流约束: 如果当前宿主拿不到 `get_current_task_tree`、`update_task_node_status` 或 `complete_task_node_with_verification`，只能给出“未完成闭环”的结论，不能把任务树执行闭环描述成已经完成。",
             "- 收尾要求: 若宿主未启用自动记忆，或本轮需要额外沉淀稳定结论/关键决策，再调用一次 save_project_memory(project_id, content, ...)；不要在同一需求的每个中间步骤重复补记。",
-            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起通过统一状态服务持久化到 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；若当前拿不到项目工作区，再退回 Codex 自己的本地存储。关键决策写入 save_work_facts，关键执行节点写入 append_session_event，并始终复用同一个 `chat_session_id` / `session_id`。",
+            "- 长任务建议: 新会话优先调用 start_work_session 获取服务端 session_id，并与 `chat_session_id` 一起通过统一状态服务持久化到 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态）和 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。若当前拿不到项目工作区，再退回 Codex 自己的本地存储。关键决策写入 save_work_facts，关键执行节点写入 append_session_event，并始终复用同一个 `chat_session_id` / `session_id`。",
             "- 长任务建议: 中断后恢复时，先从本地恢复 `chat_session_id + session_id`，再按 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)` 的顺序拉起上下文，随后紧接着继续当前任务；如果项目工作区不可解析，则恢复来源应是 Codex 自己的本地存储，而不是共享仓库根目录。",
             "- 宿主扩展: 如宿主需要展示任务树演化摘要，可按需读取 `/api/projects/{project_id}/chat/task-tree/evolution-summary?chat_session_id=...`。",
             "- 适合自动化的能力: 结构化任务分析、项目规则聚合、交付报告、更新日志条目生成。",
@@ -2692,7 +2981,7 @@ def build_query_client_profile_text(client_name: str) -> str:
             "- 推荐链路: query://usage-guide -> search_ids -> get_manual_content -> analyze_task -> resolve_relevant_context -> start_work_session。",
             "- 接入约束: `type=sse` 的客户端有些会直接使用 `POST /mcp/query/sse` 作为 JSON-RPC bridge；这时如果 URL 没有 `project_id` / `chat_session_id`，首轮必须调用 `bind_project_context(...)` 或在工具参数里显式传 `project_id`。",
             "- 接入约束: 统一入口 CLI 建议同时持久化自生成的 `chat_session_id` 和服务端返回的 `session_id`；如能解析项目工作区，优先写到项目目录 `.ai-employee/query-mcp/`，否则再写 CLI 自己的本地存储，这样中断后才能稳定续跑。",
-            "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。只有明确处理历史数据迁移或只读恢复时，才允许短期兼容，并必须标注范围、退出条件和后续清理方案。",
+            "- 根因约束: 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。",
             "- 记忆约束: 不要把 recall 当成每轮固定前置步骤；只有新需求、续跑恢复、修复旧问题或明显需要历史经验时才查记忆。",
             f"- 交互约束: {clarity_threshold_line}",
             f"- 交互约束: {clarity_direct_line}",
@@ -2746,6 +3035,8 @@ def build_query_usage_guide_text() -> str:
         "\n"
         "## 最少执行规则\n"
         "1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。\n"
+        "1.0.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 read_mcp_resource 读取 query://usage-guide 和对应 client profile，禁止反复调用 list_mcp_resources。\n"
+        "1.0.2 简单查询直达业务工具：用户询问项目有几个/哪些员工、工具、规则或需求历史，且 project_id 已明确时，直接调用 list_project_members / list_project_proxy_tools / get_current_task_tree / list_recent_project_requirements 等对应工具，不要为了 bootstrap 机械列资源目录。\n"
         "1.1 实现型需求优先调用 start_project_workflow(...) 作为固定入口，不要手动拼接十几个前置查询步骤。\n"
         "1.2 统一查询工作流默认先检查项目本地 `.ai-employee/skills/query-mcp-workflow/`；若不存在，再从系统技能库同步或创建到本地；已存在则直接复用，禁止重复创建。\n"
         "1.3 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。\n"
@@ -2754,7 +3045,7 @@ def build_query_usage_guide_text() -> str:
         "4. 如果当前 CLI 没有活跃 MCP session，只要显式传了 project_id + chat_session_id，bind_project_context(...) 也会走 detached 绑定并先建任务树；后续所有工具继续显式复用同一个 chat_session_id。\n"
         "4.0 如果 direct CLI fallback 已先生成临时 `query-cli.*` 会话，后续再用显式 `cli.*` 会话调用 bind_project_context(...) 时，系统会自动把影子任务树迁到正式会话；但最佳实践仍然是首轮就传稳定 chat_session_id。\n"
         "4.1 每个 CLI 会话都应持久化自己生成的 chat_session_id；如能解析项目工作区，优先写到项目目录 .ai-employee/query-mcp/，否则再退回 CLI 自己的本地存储。同一轮任务固定复用，只有新开的并行 CLI 或全新任务才重新生成。\n"
-        "4.2 query-mcp 本地持久化必须使用唯一文件规范：每进程会话文件为 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每个 CLI 进程写自己的独立文件，避免多进程冲突）；项目级权威状态文件为 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。除兼容历史数据时只读外，禁止新写 `current-session.json`、`chat_session_id.txt`、`session_id.txt`、`chat_session_id`、`session_id`、`session.env`、`current-query-session.json`、`current-work-session.json` 这类分叉文件。\n"
+        "4.2 query-mcp 本地持久化必须使用唯一文件规范：每进程/窗口会话文件为 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每个 CLI 进程或窗口写自己的独立文件，避免多进程和多窗口冲突）；历史索引文件为 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；需求记录文件为 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。不要写入其他分叉会话状态文件。\n"
         "4.3 每个需求还必须单独维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；一条需求一个对象，不要把多个需求混写到同一聚合文件。\n"
         "4.4 requirement 对象应至少记录 `workflow_skill`、`record_path`、`storage_scope`、`task_tree`、`current_task_node`、`task_branches`、`history`，保证本地推进和服务端任务树都能追溯到同一条需求。\n"
         "5. type=sse 的客户端可能直接使用 POST /mcp/query/sse 作为 JSON-RPC bridge，而不是先 GET /sse 再 /messages；这类接法若要自动创建项目任务树，首轮也必须显式提供 project_id，建议同时提供 chat_session_id 并调用 bind_project_context。\n"
@@ -2772,8 +3063,9 @@ def build_query_usage_guide_text() -> str:
         "8. 实现型需求必须遵守任务树闭环：先 analyze_task -> resolve_relevant_context -> generate_execution_plan，再 get_current_task_tree 确认节点；执行中用 update_task_node_status 回写状态，完成时必须 complete_task_node_with_verification 填写验证结果。\n"
         "9. 只有所有计划节点完成且验证结果齐全后，当前需求才算结束；执行中不得提前写“最终结论”。\n"
         "10. 查询型问题（谁 / 哪些 / 多少 / 从哪里）保持单检索节点，不要误拆成实现步骤；检索完成后应让任务树归档。\n"
+        "10.1 实现型、修复型、治理型、文档型任务禁止固定生成“分析 / 实现 / 验证”三步；必须按需求类型和真实对象生成不同节点。节点标题不能用“当前需求”替代路径、功能名、状态枚举、MCP 对象或文档目录。\n"
         "11. 如用户在“已完成”后发现问题，必须重新起一轮修复计划，并继续回写轨迹与验证；不得直接覆盖上一轮结论。\n"
-        "12. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。只有明确处理历史数据迁移或只读恢复时，才允许短期兼容，并必须标注范围、退出条件和后续清理方案。\n"
+        "12. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题；遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。\n"
         "\n"
         "## 任务树与绑定约束\n"
         "- 任务树与记忆必须使用同一条聊天会话线索；记录项目记忆、工作事实或会话事件时，应复用当前 chat_session_id / session_id，不得把任务树和记忆拆成两条无关轨迹。\n"
@@ -2804,7 +3096,7 @@ def build_query_usage_guide_text() -> str:
         "- 多轮任务先 start_work_session；后续复用同一个 chat_session_id / session_id，并用 save_work_facts、append_session_event、resume_work_session、summarize_checkpoint 维护轨迹。\n"
         "- start_work_session 可返回服务端生成的 session_id；save_work_facts 和 append_session_event 支持附带 session_id、phase、step、changed_files、verification、risks、next_steps 等结构化轨迹字段；resume_work_session / summarize_checkpoint 会聚合这些字段，直接输出阶段、步骤、文件、验证、风险和下一步。\n"
         "- 每个新聊天窗口的首轮有效对话，如用户未显式提供 session_id，应优先调用 start_work_session 获取服务端 session_id，再在本窗口后续所有 save_work_facts / append_session_event / resume_work_session / summarize_checkpoint 中复用同一个值；如果未先调用，save_work_facts 也会自动补生成一个。\n"
-        "- 建议把客户端自生成的 chat_session_id 和 start_work_session 返回的 session_id 一起持久化；如能解析项目工作区，优先通过统一状态服务写入 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`，并同步维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，否则再退回 CLI 自己的本地存储。这样 CLI 中断后可以直接恢复同一条任务树和工作轨迹。\n"
+        "- 建议把客户端自生成的 chat_session_id 和 start_work_session 返回的 session_id 一起持久化；如能解析项目工作区，优先通过统一状态服务写入 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（窗口级/进程级权威状态）、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`，并同步维护 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`，否则再退回 CLI 自己的本地存储。这样 CLI 中断后可以直接恢复同一条任务树和工作轨迹。\n"
         "- start_work_session 会立即写入一条 started 事件建立正式工作轨迹；首次拿到 session_id 后，仍建议尽快调用一次 save_work_facts 补充任务摘要、阶段和文件信息。若既不调用 start_work_session，也不写 save_work_facts / append_session_event，而只写 save_project_memory，会出现“有项目记忆但无正式工作轨迹”的情况。\n"
         "- 缺少活跃 MCP session 的 CLI / bridge 场景下，也必须显式传入并持续复用同一个 chat_session_id；否则容易出现“轨迹已写入，但当前主视图没有挂到任务树”的错觉。\n"
         "- 推荐的中断恢复顺序是：先从本地恢复 chat_session_id 和 session_id，再调用 bind_project_context(...)，然后依次调用 resume_work_session(...)、summarize_checkpoint(...)，最后按当前任务树继续执行；如果项目工作区不可解析，则恢复来源应是 CLI 自己的本地存储，而不是共享仓库根目录。\n"

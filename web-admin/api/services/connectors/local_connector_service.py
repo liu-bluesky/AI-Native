@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -124,6 +125,35 @@ async def materialize_connector_workspace(
     if isinstance(payload.get("workspace_access"), dict):
         payload["workspace_access"]["source"] = "local_connector"
     return payload
+
+
+async def exec_stream_via_connector(
+    connector: Any,
+    *,
+    cmd: list[str],
+    cwd: str,
+    env: dict[str, str] | None = None,
+):
+    url = f"{connector_base_url(connector)}/exec/stream"
+    headers = connector_headers(connector)
+    headers["Accept"] = "application/x-ndjson"
+    body = {
+        "cmd": [str(item) for item in list(cmd or []) if str(item).strip()],
+        "cwd": str(cwd or "").strip(),
+        "env": {str(key): str(value) for key, value in dict(env or {}).items()},
+    }
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream("POST", url, headers=headers, json=body) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                clean_line = str(line or "").strip()
+                if not clean_line:
+                    continue
+                try:
+                    payload = json.loads(clean_line)
+                except json.JSONDecodeError:
+                    payload = {"type": "chunk", "data": clean_line}
+                yield payload if isinstance(payload, dict) else {"type": "chunk", "data": payload}
 
 
 async def chat_completion_via_connector(
@@ -429,4 +459,3 @@ async def write_connector_file(
         },
     )
     return payload
-

@@ -3,18 +3,12 @@ import asyncio
 import json
 import re
 import shlex
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from core.config import get_settings
 
 
-_LARK_AUTH_LOGIN_ALIAS_PATTERN = re.compile(
-    r"^(?:lark-cli\s+)?(?:auth\s+)?(?:login|登录)(?:\s+([\s\S]*))?$",
-    re.IGNORECASE,
-)
-_LARK_AUTH_STATUS_ALIAS_PATTERN = re.compile(
-    r"^(?:lark-cli\s+)?(?:(?:auth\s+)?status|login\s+status)$",
-    re.IGNORECASE,
-)
 _LARK_AUTH_DOMAIN_ALIAS_NAMES = (
     "approval",
     "attendance",
@@ -41,6 +35,31 @@ _TASK_TREE_TOOL_NAMES = {
     "update_task_node_status",
     "complete_task_node_with_verification",
 }
+_LARK_AUTH_ACTION_TERMS = {
+    "login": frozenset({"login", "登录", "授权"}),
+    "logout": frozenset(
+        {
+            "logout",
+            "退出",
+            "退出登录",
+            "退出登陆",
+            "登出",
+            "登出登录",
+            "登出登陆",
+            "注销",
+            "注销登录",
+            "注销登陆",
+        }
+    ),
+    "status": frozenset({"status", "状态", "登录状态", "检测登录", "检测登录状态"}),
+}
+
+
+@dataclass(frozen=True)
+class _LarkCliAuthIntent:
+    action: str
+    suffix: str = ""
+    explicit_command: str = ""
 
 
 def _parse_shell_like_command(command: str) -> list[str]:
@@ -50,30 +69,124 @@ def _parse_shell_like_command(command: str) -> list[str]:
         return str(command or "").strip().split()
 
 
+def _compact_lark_cli_auth_text(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip()).lower()
+
+
+def _strip_lark_cli_command_prefix(command: str) -> str:
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        return ""
+    return re.sub(
+        r"^/?(?:\S+/)?lark-cli(?:\s+|$)",
+        "",
+        normalized_command,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def _parse_lark_cli_auth_intent(command: str) -> _LarkCliAuthIntent | None:
+    """Resolve user-facing lark-cli auth text into a canonical auth action."""
+
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        return None
+    args = _parse_shell_like_command(normalized_command)
+    if any(str(arg or "").strip().lower() in {"-h", "--help", "help"} for arg in args):
+        return None
+    has_lark_cli_prefix = False
+    if args and str(args[0] or "").split("/")[-1] == "lark-cli":
+        has_lark_cli_prefix = True
+        lowered = [str(item or "").strip().lower() for item in args]
+        if len(lowered) == 1:
+            return _LarkCliAuthIntent("status")
+        if len(lowered) >= 3 and lowered[1] == "auth" and lowered[2] in {
+            "login",
+            "logout",
+            "status",
+        }:
+            suffix = " ".join(args[3:]).strip()
+            return _LarkCliAuthIntent(
+                lowered[2],
+                suffix=suffix,
+                explicit_command=normalized_command,
+            )
+        if len(lowered) >= 3 and lowered[1] == "login" and lowered[2] in {
+            "logout",
+            "status",
+        }:
+            suffix = " ".join(args[3:]).strip()
+            return _LarkCliAuthIntent(lowered[2], suffix=suffix)
+        auth_text = _strip_lark_cli_command_prefix(normalized_command)
+    else:
+        auth_text = normalized_command
+
+    lowered_text = auth_text.lower()
+    compact_text = _compact_lark_cli_auth_text(auth_text)
+    if compact_text == "status" or (
+        has_lark_cli_prefix and compact_text in _LARK_AUTH_ACTION_TERMS["status"]
+    ):
+        return _LarkCliAuthIntent("status")
+    if compact_text in _LARK_AUTH_ACTION_TERMS["logout"]:
+        return _LarkCliAuthIntent("logout")
+    if lowered_text == "login status":
+        return _LarkCliAuthIntent("status")
+    if lowered_text == "login logout":
+        return _LarkCliAuthIntent("logout")
+    auth_match = re.match(
+        r"^auth\s+(login|logout|status)(?:\s+([\s\S]*))?$",
+        auth_text,
+        re.IGNORECASE,
+    )
+    if auth_match:
+        action = str(auth_match.group(1) or "").strip().lower()
+        suffix = str(auth_match.group(2) or "").strip()
+        return _LarkCliAuthIntent(action, suffix=suffix)
+    for term in sorted(_LARK_AUTH_ACTION_TERMS["login"], key=len, reverse=True):
+        if compact_text == term:
+            return _LarkCliAuthIntent("login")
+        if lowered_text.startswith(f"{term} "):
+            return _LarkCliAuthIntent("login", suffix=auth_text[len(term) :].strip())
+    return None
+
+
+def _lark_auth_login_args_include_authorization_scope(args: list[str]) -> bool:
+    lowered_args = [str(arg or "").strip().lower() for arg in args]
+    for index, arg in enumerate(lowered_args):
+        if arg in {"--recommend", "--device-code"}:
+            return True
+        if arg.startswith("--device-code="):
+            return True
+        if arg in {"--scope", "--domain"} and index + 1 < len(lowered_args):
+            return True
+        if arg.startswith("--scope=") or arg.startswith("--domain="):
+            return True
+    return False
+
+
 def _normalize_lark_auth_login_command(command: str) -> str:
     normalized_command = str(command or "").strip()
     if not normalized_command:
         return ""
-    if _normalize_lark_auth_status_command(normalized_command):
+    intent = _parse_lark_cli_auth_intent(normalized_command)
+    if intent is None or intent.action != "login":
         return ""
-    args = _parse_shell_like_command(normalized_command)
-    if any(str(arg or "").strip().lower() in {"-h", "--help", "help"} for arg in args):
-        return ""
-    if _command_matches_pattern(
-        normalized_command,
-        r"^(?:\S+/)?lark-cli\s+auth\s+login(?:\s|$)",
-    ):
-        lowered_args = [str(arg or "").strip().lower() for arg in args]
-        if len(lowered_args) == 3 and lowered_args[-3:] == ["lark-cli", "auth", "login"]:
+    if intent.explicit_command:
+        explicit_args = _parse_shell_like_command(intent.explicit_command)
+        if len(explicit_args) == 3:
             return "lark-cli auth login --recommend"
-        return normalized_command
-    match = _LARK_AUTH_LOGIN_ALIAS_PATTERN.match(normalized_command)
-    if not match:
-        return ""
-    suffix = str(match.group(1) or "").strip()
+        if not _lark_auth_login_args_include_authorization_scope(explicit_args[3:]):
+            return "lark-cli auth login --recommend"
+        return intent.explicit_command
+    suffix = intent.suffix
     if not suffix or suffix.lower() in {"recommend", "推荐"}:
         return "lark-cli auth login --recommend"
     if suffix.startswith("--"):
+        if not _lark_auth_login_args_include_authorization_scope(
+            _parse_shell_like_command(suffix)
+        ):
+            return "lark-cli auth login --recommend"
         return f"lark-cli auth login {suffix}"
     if _LARK_AUTH_DOMAIN_ALIAS_PATTERN.fullmatch(suffix):
         compact_suffix = re.sub(r"\s+", "", suffix)
@@ -81,33 +194,60 @@ def _normalize_lark_auth_login_command(command: str) -> str:
     return "lark-cli auth login --recommend"
 
 
+def _normalize_lark_auth_logout_command(command: str) -> str:
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        return ""
+    intent = _parse_lark_cli_auth_intent(normalized_command)
+    if intent is None or intent.action != "logout":
+        return ""
+    if not intent.explicit_command:
+        return "lark-cli auth logout"
+    return intent.explicit_command
+
+
 def _normalize_lark_auth_status_command(command: str) -> str:
     normalized_command = str(command or "").strip()
     if not normalized_command:
         return ""
-    if _LARK_AUTH_STATUS_ALIAS_PATTERN.fullmatch(normalized_command):
-        return "lark-cli auth status"
-    args = _parse_shell_like_command(normalized_command)
-    if not args:
+    intent = _parse_lark_cli_auth_intent(normalized_command)
+    if intent is None or intent.action != "status":
         return ""
-    binary = str(args[0] or "").split("/")[-1]
-    lowered = [str(item or "").strip().lower() for item in args]
-    if binary != "lark-cli":
-        return ""
-    if len(lowered) >= 3 and lowered[1:3] == ["auth", "status"]:
-        return normalized_command
-    if len(lowered) >= 3 and lowered[1:3] == ["login", "status"]:
-        return " ".join([args[0], "auth", "status", *args[3:]])
-    return ""
+    if intent.explicit_command:
+        return intent.explicit_command
+    return "lark-cli auth status"
 
 
-def _normalize_lark_status_command_segments(command: str) -> str:
+def normalize_lark_cli_user_command(command: str) -> str:
+    """Normalize explicit user-facing lark-cli aliases into executable commands."""
+
     normalized_command = str(command or "").strip()
     if not normalized_command:
         return ""
+    direct = (
+        _normalize_lark_auth_logout_command(normalized_command)
+        or _normalize_lark_auth_status_command(normalized_command)
+        or _normalize_lark_auth_login_command(normalized_command)
+    )
+    if direct:
+        return direct
+    return ""
+
+
+def _normalize_lark_command_segments(command: str) -> str:
+    normalized_command = str(command or "").strip()
+    if not normalized_command:
+        return ""
+    direct = normalize_lark_cli_user_command(normalized_command)
+    if direct:
+        return direct
     pieces = re.split(r"(\s*(?:&&|\|\||;)\s*)", normalized_command)
     if len(pieces) <= 1:
-        return _normalize_lark_auth_status_command(normalized_command) or normalized_command
+        return (
+            _normalize_lark_auth_logout_command(normalized_command)
+            or _normalize_lark_auth_status_command(normalized_command)
+            or normalized_command
+        )
     changed = False
     next_pieces: list[str] = []
     for piece in pieces:
@@ -115,7 +255,10 @@ def _normalize_lark_status_command_segments(command: str) -> str:
             next_pieces.append(piece)
             continue
         stripped = piece.strip()
-        replacement = _normalize_lark_auth_status_command(stripped)
+        replacement = (
+            _normalize_lark_auth_logout_command(stripped)
+            or _normalize_lark_auth_status_command(stripped)
+        )
         if replacement:
             leading = piece[: len(piece) - len(piece.lstrip())]
             trailing = piece[len(piece.rstrip()) :]
@@ -124,6 +267,22 @@ def _normalize_lark_status_command_segments(command: str) -> str:
         else:
             next_pieces.append(piece)
     return "".join(next_pieces) if changed else normalized_command
+
+
+def _normalize_lark_status_command_segments(command: str) -> str:
+    return _normalize_lark_command_segments(command)
+
+
+def _is_lark_cli_global_auth_command(command: str) -> bool:
+    args = _parse_shell_like_command(command)
+    if len(args) < 3:
+        return False
+    binary = str(args[0] or "").split("/")[-1]
+    lowered = [str(item or "").strip().lower() for item in args]
+    return binary == "lark-cli" and lowered[1] == "auth" and lowered[2] in {
+        "status",
+        "logout",
+    }
 
 
 def _command_matches_pattern(command: str, pattern: str) -> bool:
@@ -395,7 +554,7 @@ class ToolExecutor:
         )
 
     async def _execute_project_host_command(self, args: dict) -> dict:
-        command = _normalize_lark_status_command_segments(
+        command = _normalize_lark_command_segments(
             str(args.get("command") or "").strip()
         )
         routed_login_result = await self._maybe_execute_cli_auth_operation_task(
@@ -413,9 +572,15 @@ class ToolExecutor:
         from services.connectors.project_host_command_service import run_project_host_command
         from starlette.concurrency import run_in_threadpool
 
+        host_workspace_path = self._host_workspace_path
+        if _is_lark_cli_global_auth_command(command) and host_workspace_path:
+            candidate = Path(host_workspace_path).expanduser()
+            if not candidate.exists() or not candidate.is_dir():
+                host_workspace_path = ""
+
         return await run_in_threadpool(
             run_project_host_command,
-            workspace_path=self._host_workspace_path,
+            workspace_path=host_workspace_path,
             command=command,
             owner_username=self._username,
             cwd=str(args.get("cwd") or "").strip(),
@@ -530,6 +695,7 @@ class ToolExecutor:
                 "agent_runtime_v2": dict(agent_runtime_context or {}),
             },
             timeout_sec=max(15, min(int(timeout_sec or 120), 600)),
+            wait_for_initial_user_action_sec=1.5,
         )
         execution = dict(task.get("execution") or {})
         authorization_url = str(execution.get("authorization_url") or "").strip()

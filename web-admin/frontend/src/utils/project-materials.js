@@ -1,3 +1,6 @@
+import { getStoredToken } from "@/utils/auth-storage.js";
+import { resolveServerOrigin } from "@/utils/server-profile.js";
+
 export const MATERIAL_ASSET_TYPE_OPTIONS = [
   { value: "image", label: "图片" },
   { value: "storyboard", label: "分镜" },
@@ -160,18 +163,17 @@ export function resolveMaterialResourceUrl(url) {
   ) {
     return normalized;
   }
-  const token =
-    typeof window !== "undefined" ? String(localStorage.getItem("token") || "").trim() : "";
+  const token = typeof window !== "undefined" ? getStoredToken() : "";
   try {
     const base =
-      typeof window !== "undefined" && window.location?.origin
-        ? window.location.origin
+      typeof window !== "undefined"
+        ? resolveServerOrigin()
         : "http://localhost";
     const resolved = new URL(normalized, base);
     const isSameOrigin =
-      typeof window === "undefined" || !window.location?.origin
+      typeof window === "undefined"
         ? normalized.startsWith("/")
-        : resolved.origin === window.location.origin;
+        : resolved.origin === resolveServerOrigin();
     if (isSameOrigin && resolved.pathname.startsWith("/api/") && token) {
       resolved.searchParams.set("token", token);
     }

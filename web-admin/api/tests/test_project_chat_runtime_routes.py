@@ -1,5 +1,6 @@
 """项目聊天运行态快照路由测试"""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -371,6 +372,120 @@ def test_agent_runtime_resume_does_not_fallback_to_tool_output_without_final_ans
     )
 
     assert content == ""
+
+
+def test_direct_lark_cli_reply_is_processed_by_model():
+    from routers import projects as projects_router
+
+    class FakeLlmService:
+        def __init__(self):
+            self.calls = []
+
+        async def chat_completion(
+            self,
+            provider_id,
+            model_name,
+            messages,
+            temperature=0.2,
+            max_tokens=1024,
+            timeout=45,
+        ):
+            self.calls.append(
+                {
+                    "provider_id": provider_id,
+                    "model_name": model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "timeout": timeout,
+                }
+            )
+            return {
+                "content": "结论：当前没有 user 登录态，只能使用 bot 身份调用飞书 API。",
+                "provider_id": provider_id,
+                "model_name": model_name,
+            }
+
+    fallback = "已直接执行 lark-cli 命令。"
+    result = asyncio.run(
+        projects_router._build_direct_lark_cli_model_reply(
+            llm_service=FakeLlmService(),
+            provider_id="openai",
+            model_name="gpt-5.4",
+            user_message="/lark-cli 检测登录",
+            result={
+                "command": "lark-cli auth status",
+                "exit_code": 0,
+                "stdout": json.dumps({"identity": "bot", "note": "No user logged in."}),
+                "stderr": "",
+                "workspace_path": "/repo",
+            },
+            fallback_reply=fallback,
+        )
+    )
+
+    assert result["model_processed"] is True
+    assert result["content"].startswith("结论：当前没有 user 登录态")
+    assert result["content"] != fallback
+
+
+def test_ambiguous_update_request_builds_structured_clarify_interaction():
+    from routers import projects as projects_router
+
+    payload = projects_router._build_project_chat_clarify_interaction_payload(
+        user_message="你是否可以更新",
+        chat_session_id="chat-clarify-1",
+        request_id="req-clarify-1",
+    )
+
+    assert payload is not None
+    assert payload["type"] == "user_action_required"
+    assert payload["workflow_kind"] == "clarify"
+    assert payload["action_type"] == "interaction_form"
+    schema = payload["interaction_schema"]
+    assert schema["title"] == "需要你确认更新目标"
+    choice_field = schema["schema"][0]
+    assert choice_field["prop"] == "update_target"
+    assert choice_field["componentName"] == "ElRadioGroup"
+    assert len(choice_field["children"]) == 4
+
+    pending = projects_router._build_project_chat_pending_interaction(payload)
+    assert pending is not None
+    assert pending["phase"] == "waiting_user"
+    assert pending["workflow_kind"] == "clarify"
+    assert pending["interaction_schema"]["title"] == "需要你确认更新目标"
+    assert (
+        projects_router._should_handle_project_chat_operation_interaction_submit(
+            {
+                "chat_session_id": "chat-clarify-1",
+                "interaction_operation_id": pending["operation_id"],
+                "interaction_action_type": "interaction_form",
+                "workflow_kind": "clarify",
+                "workflow_state": payload,
+                "interaction_data": {"update_target": "code_feature"},
+            }
+        )
+        is False
+    )
+
+
+def test_clear_commands_do_not_trigger_update_clarify_interaction():
+    from routers import projects as projects_router
+
+    assert (
+        projects_router._build_project_chat_clarify_interaction_payload(
+            user_message="/lark-cli 退出",
+            chat_session_id="chat-clarify-1",
+        )
+        is None
+    )
+    assert (
+        projects_router._build_project_chat_clarify_interaction_payload(
+            user_message="学习 Hermes 后修改当前系统代码交互逻辑",
+            chat_session_id="chat-clarify-1",
+        )
+        is None
+    )
 
 
 def test_project_chat_session_update_and_feishu_manual_binding(tmp_path, monkeypatch):

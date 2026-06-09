@@ -13,18 +13,41 @@ class _StoreProxy:
     def __init__(self, factory: Callable[[], Any]) -> None:
         self._factory = factory
         self._instance: Any = None
+        self._instance_key: tuple[str, str, str] | None = None
         self._lock = Lock()
 
+    def _current_key(self) -> tuple[str, str, str]:
+        settings = get_settings()
+        return (
+            str(settings.core_store_backend),
+            str(settings.usage_store_backend),
+            str(_data_dir()),
+        )
+
     def _get_instance(self) -> Any:
-        if self._instance is not None:
+        current_key = self._current_key()
+        if self._instance is not None and self._instance_key == current_key:
             return self._instance
         with self._lock:
-            if self._instance is None:
+            if self._instance is None or self._instance_key != current_key:
                 self._instance = self._factory()
+                self._instance_key = current_key
         return self._instance
 
     def __getattr__(self, item: str) -> Any:
         return getattr(self._get_instance(), item)
+
+    def __setattr__(self, item: str, value: Any) -> None:
+        if item.startswith("_"):
+            object.__setattr__(self, item, value)
+            return
+        setattr(self._get_instance(), item, value)
+
+    def __delattr__(self, item: str) -> None:
+        if item.startswith("_"):
+            object.__delattr__(self, item)
+            return
+        delattr(self._get_instance(), item)
 
 
 def _missing_driver(setting_name: str) -> RuntimeError:

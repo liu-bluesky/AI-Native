@@ -273,6 +273,7 @@ def create_project_mcp(
                     "## 任务树工作流",
                     "- 当前项目聊天启用结构化任务树后，建议先读取 `get_current_task_tree`，确认当前节点和节点 ID。",
                     "- 任务树节点必须直接对应用户目标下的工作步骤，不得把 `search_project_context`、`query_project_rules`、`search_ids`、`get_manual_content`、`resolve_relevant_context`、`generate_execution_plan` 这类内部检索/规划工具直接当成节点标题。",
+                    "- 实现型、修复型、治理型、文档型任务不能固定套“分析 / 实现 / 验证”三步；节点标题必须写出路径、功能名、状态枚举、MCP 对象或文档目录等真实任务主体。",
                     "- 候选代理工具、脚本路径和类似 `Auto inferred proxy entry from scripts/...` 的描述，只能作为内部工具信息，不得直接展示为任务树节点。",
                     "- 通过当前 project MCP 或统一查询 MCP 发起的项目执行，只要命中有效项目任务并带上当前 MCP session，也会自动绑定到同一任务树会话。",
                     "- 如当前入口没有显式携带 `chat_session_id`，必须先绑定当前会话；否则不要假设任务树会自动出现在正确的聊天窗口里。",

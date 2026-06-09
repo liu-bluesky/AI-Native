@@ -14,7 +14,7 @@
 4. 通用场景下，工作流技能默认位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`。
 5. 优先读取本地同步副本；包内首先检查 `SKILL.md` 和 `manifest.json`。
 6. 只有当前仓库本身是这个工作流技能的 system source repo 时，才使用 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为源事实位置。
-7. 执行前先以当前 CLI 工作区为准补齐 `.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/active/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/`；不要把其他子目录里的历史状态视为当前工作区已初始化。
+7. 执行前先以当前 CLI 工作区为准补齐 `.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/`；canonical session 状态只使用 `active-sessions/<chat_session_id>.json` 与 `session-history/<project_id>__<chat_session_id>.json`；不要把其他子目录里的历史状态视为当前工作区已初始化。
 
 ## 技能类型
 
@@ -31,11 +31,22 @@
 6. 多轮任务必须固定复用同一个 `chat_session_id` 与同一个 `session_id`。
 7. 中断后继续执行时，按 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)` 的顺序恢复。
 8. 不要把自然语言进度当成任务闭环。只要宿主暴露了任务树工具，就必须写入工具可见的状态与验证结果。
-9. 如果远程回写失败、延迟或只把状态写到子目录 fallback，本地 requirement 和 query-mcp canonical 状态仍然是当前 CLI 工作区的权威记录；应保留 `sync_status`/outbox，而不是跳过本地直接记远程。
+9. 如果远程回写失败、延迟或只把状态写到子目录 fallback，本地 requirement 和 query-mcp canonical 状态仍然是当前 CLI 工作区的权威记录；应保留 `sync_status`/outbox，而不是跳过本地直接记远程。窗口级 canonical 状态只认 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`。
 10. 当修改 query-mcp 提示词、运行时契约、预览文案或技能包时，必须同步更新对应提示词入口和回归测试，而不是只改一个位置。
 11. 对开发、实现、修改、写入或其他会改变项目状态的需求，先判断本轮用户是否已经给出明确执行指令；“修复”“开始”“继续”“按这个做”“修改”“执行”“开始改”等表达视为对当前清晰范围的确认，可直接进入实际开发或执行，不要再次请求一般计划确认。
 12. 若目标、对象、范围或预期结果不清晰，仍需先输出需求理解、计划摘要和可能误解点并请求确认；任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作都必须单独说明对象、影响范围和可恢复性，并取得用户明确确认，不能把高风险确认合并在一般执行确认里。
-13. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题。遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态；只有历史数据迁移或只读恢复允许短期兼容，并必须说明兼容范围、退出条件和清理方案。
+13. 禁止以兜底、兼容、静默降级或重复写入多份状态来掩盖问题。遇到异常、缺失、路径不一致、状态不一致或接口不匹配时，优先定位并修正根因，收敛到唯一规范入口和 canonical 状态。
+
+## 任务树生成约束
+
+1. 生成任务树前先识别需求类型和真实对象：查询、文档、修复、治理/工作流、页面交互、优化或通用实现。
+2. 查询型问题保持 1 个检索回答节点，最多补 1 个轻量整理节点；不要拆成实现、修复或测试链路。
+3. 实现型、修复型、治理型、文档型任务禁止固定生成“分析 / 实现 / 验证”三步，也禁止把所有非查询任务固定扩成 5 个节点；节点数量、标题和阶段必须随需求类型、复杂度和交付形态变化。
+4. 节点标题不能把“当前需求”当作主要对象；必须写出用户原始需求里的路径、功能名、状态枚举、MCP 对象、文档目录或模块名。
+5. 治理/工作流类任务至少覆盖入口链路、任务树生成、健康检查、恢复续跑、提示词/技能同步和测试验证。
+6. 修复类任务至少覆盖复现、状态/数据映射定位、最小修复、回归测试和真实或模拟流程验证。
+7. 文档类任务至少覆盖目标路径确认、现有文档梳理、内容写入、回读校对和后续实现项记录。
+8. 如果已生成的任务树出现固定三步、多个节点含“当前需求”、缺少真实对象或实现型节点少于必要链路，必须重建后再展示或继续执行。
 
 ## 三层契约
 
@@ -58,4 +69,4 @@
 - 如果本地工作流技能已经存在且可用，不要重复创建。
 - 不要创建或依赖临时的 legacy 会话文件；应使用 canonical 的 query-mcp 状态文件路径或后端状态服务。
 - 不要把“远程已记录”当作“本地 requirement 已创建”；只要当前 CLI 工作区缺少 canonical 文件，就视为本地初始化未完成。
-- 不要新增长期 fallback 路径来绕过根因；如确需兼容历史输入，只能只读恢复或迁移，并在完成迁移后回到唯一 canonical 写路径。
+- 不要新增长期 fallback 路径来绕过根因；状态恢复和写入都应收敛到唯一 canonical 路径。

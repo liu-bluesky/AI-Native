@@ -65,12 +65,43 @@
           <div class="hero-copy__signals" aria-label="核心能力">
             <span v-for="signal in heroSignals" :key="signal">{{ signal }}</span>
           </div>
+
+          <div class="hero-copy__status" aria-label="生产状态">
+            <span
+              v-for="(status, index) in heroStatus"
+              :key="status.label"
+              class="hero-copy__status-item"
+              :style="{ '--status-delay': `${index * 0.42}s` }"
+            >
+              <span class="hero-copy__status-dot" aria-hidden="true" />
+              {{ status.label }}
+            </span>
+          </div>
         </div>
 
         <div class="hero-stage" data-reveal>
           <div class="hero-stage__shell">
             <div class="hero-stage__field">
               <div class="hero-stage__halo" />
+
+              <div class="hero-orbit" aria-hidden="true">
+                <span class="hero-orbit__track hero-orbit__track--outer" />
+                <span class="hero-orbit__track hero-orbit__track--middle" />
+                <span class="hero-orbit__track hero-orbit__track--inner" />
+                <span
+                  v-for="spark in orbitSparks"
+                  :key="spark.id"
+                  class="hero-orbit__spark"
+                  :class="`hero-orbit__spark--${spark.tone}`"
+                  :style="{
+                    '--spark-size': spark.size,
+                    '--spark-delay': spark.delay,
+                    '--spark-duration': spark.duration,
+                    '--spark-radius-x': spark.radiusX,
+                    '--spark-radius-y': spark.radiusY,
+                  }"
+                />
+              </div>
 
               <div class="hero-core">
                 <div class="hero-core__ring hero-core__ring--outer" />
@@ -116,6 +147,25 @@
                 </article>
               </div>
 
+              <div class="hero-console" data-reveal>
+                <div class="hero-console__header">
+                  <span>Live Pipeline</span>
+                  <span class="hero-console__status">Running</span>
+                </div>
+                <div class="hero-console__body">
+                  <div
+                    v-for="(line, index) in productionStream"
+                    :key="line.title"
+                    class="hero-console__line"
+                    :style="{ '--line-delay': `${index * 0.72}s` }"
+                  >
+                    <span class="hero-console__index">{{ line.step }}</span>
+                    <span class="hero-console__text">{{ line.title }}</span>
+                    <span class="hero-console__bar" aria-hidden="true" />
+                  </div>
+                </div>
+              </div>
+
               <div class="hero-stage__footer">
                 <span>对话</span>
                 <span>图像</span>
@@ -124,6 +174,34 @@
               </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section id="live-flow" class="content-section live-flow-section" data-reveal>
+        <div class="section-heading section-heading--center">
+          <div class="section-heading__eyebrow">Live Flow</div>
+          <h2 class="section-heading__title">生产流动起来。</h2>
+          <p class="section-heading__text">
+            从一句话到可复用资产，每一步都有上下文接力。
+          </p>
+        </div>
+
+        <div class="live-flow-panel">
+          <div class="live-flow-panel__beam" aria-hidden="true" />
+          <article
+            v-for="(item, index) in lifecycleItems"
+            :key="item.label"
+            class="live-flow-card"
+            data-reveal
+            :style="{ '--reveal-delay': `${index * 90}ms`, '--flow-delay': `${index * 0.55}s` }"
+          >
+            <div class="live-flow-card__index">{{ item.index }}</div>
+            <div class="live-flow-card__body">
+              <div class="live-flow-card__label">{{ item.label }}</div>
+              <h3 class="live-flow-card__title">{{ item.title }}</h3>
+              <p class="live-flow-card__text">{{ item.text }}</p>
+            </div>
+          </article>
         </div>
       </section>
 
@@ -417,6 +495,57 @@ const heroSignals = [
   '资产复用',
 ]
 
+const heroStatus = [
+  { label: '上下文已同步' },
+  { label: '生成队列运行中' },
+  { label: '资产自动回写' },
+]
+
+const productionStream = [
+  {
+    step: '01',
+    title: '需求解析',
+  },
+  {
+    step: '02',
+    title: '多模态生成',
+  },
+  {
+    step: '03',
+    title: '规则沉淀',
+  },
+]
+
+const orbitSparks = [
+  {
+    id: 'context',
+    tone: 'blue',
+    size: '13px',
+    delay: '0s',
+    duration: '9.6s',
+    radiusX: '218px',
+    radiusY: '122px',
+  },
+  {
+    id: 'media',
+    tone: 'cyan',
+    size: '10px',
+    delay: '-3.2s',
+    duration: '11.8s',
+    radiusX: '252px',
+    radiusY: '148px',
+  },
+  {
+    id: 'asset',
+    tone: 'warm',
+    size: '11px',
+    delay: '-6.4s',
+    duration: '13.4s',
+    radiusX: '184px',
+    radiusY: '104px',
+  },
+]
+
 const heroLinks = [
   {
     id: 'input',
@@ -483,6 +612,33 @@ const principles = [
     label: '可复用',
     title: '结果沉淀。',
     text: '生成结果进入项目资产，后续制作无需重来。',
+  },
+]
+
+const lifecycleItems = [
+  {
+    index: '01',
+    label: 'Input',
+    title: '一句话进入项目。',
+    text: '需求、参考、目标先落到同一条生产线。',
+  },
+  {
+    index: '02',
+    label: 'Compose',
+    title: 'AI 员工接力。',
+    text: '对话、图片、视频和规则在同一上下文里推进。',
+  },
+  {
+    index: '03',
+    label: 'Review',
+    title: '过程可追踪。',
+    text: '每次生成都有状态、记录和可回看的依据。',
+  },
+  {
+    index: '04',
+    label: 'Reuse',
+    title: '结果回到资产。',
+    text: '成品、经验和素材继续服务下一次制作。',
   },
 ]
 
@@ -1102,6 +1258,44 @@ onBeforeUnmount(() => {
   animation-delay: 1.8s;
 }
 
+.hero-copy__status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.hero-copy__status-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: var(--page-radius-pill);
+  background: rgba(255, 255, 255, 0.42);
+  color: var(--page-text-muted);
+  font-size: 12px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.035);
+  backdrop-filter: blur(12px);
+  animation: statusLift 6.8s ease-in-out infinite;
+  animation-delay: var(--status-delay);
+}
+
+.hero-copy__status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow:
+    0 0 0 5px rgba(56, 189, 248, 0.08),
+    0 0 16px rgba(56, 189, 248, 0.3);
+  animation: statusDotBlink 3.4s ease-in-out infinite;
+  animation-delay: var(--status-delay);
+}
+
 .hero-stage {
   width: min(100%, 1040px);
 }
@@ -1596,13 +1790,103 @@ onBeforeUnmount(() => {
   animation: fieldGlow 7.4s ease-in-out infinite;
 }
 
+.hero-orbit,
+.hero-orbit__track,
+.hero-orbit__spark {
+  position: absolute;
+}
+
+.hero-orbit {
+  inset: 0;
+  pointer-events: none;
+}
+
+.hero-orbit__track {
+  left: 50%;
+  top: 50%;
+  border: 1px solid rgba(56, 189, 248, 0.12);
+  border-radius: 50%;
+  opacity: 0.72;
+  transform: translate(-50%, -50%);
+}
+
+.hero-orbit__track--outer {
+  width: 560px;
+  height: 300px;
+}
+
+.hero-orbit__track--middle {
+  width: 450px;
+  height: 244px;
+  border-color: rgba(15, 23, 42, 0.07);
+  transform: translate(-50%, -50%) rotate(-16deg);
+}
+
+.hero-orbit__track--inner {
+  width: 330px;
+  height: 184px;
+  border-color: rgba(251, 191, 36, 0.14);
+  transform: translate(-50%, -50%) rotate(18deg);
+}
+
+.hero-orbit__spark {
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  width: var(--spark-size);
+  height: var(--spark-size);
+  border-radius: 50%;
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 22px rgba(56, 189, 248, 0.3);
+}
+
+.hero-orbit__spark::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border-radius: inherit;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.2), transparent 64%);
+}
+
+.hero-orbit__spark--blue {
+  background: #38bdf8;
+}
+
+.hero-orbit__spark--cyan {
+  background: #67e8f9;
+}
+
+.hero-orbit__spark--warm {
+  background: #fbbf24;
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.24);
+}
+
+.hero-stage.is-visible .hero-orbit__track--outer {
+  animation: orbitTilt 14s ease-in-out infinite;
+}
+
+.hero-stage.is-visible .hero-orbit__track--middle {
+  animation: orbitTilt 16s ease-in-out infinite reverse;
+}
+
+.hero-stage.is-visible .hero-orbit__track--inner {
+  animation: orbitTilt 12s ease-in-out infinite;
+}
+
+.hero-stage.is-visible .hero-orbit__spark {
+  animation: orbitSpark var(--spark-duration) linear infinite;
+  animation-delay: var(--spark-delay);
+}
+
 .hero-stage__halo,
 .hero-stage__links,
 .hero-link,
 .hero-core,
 .hero-core__ring,
 .hero-core__pulse,
-.hero-node {
+.hero-node,
+.hero-console {
   position: absolute;
 }
 
@@ -1888,6 +2172,127 @@ onBeforeUnmount(() => {
   letter-spacing: -0.05em;
 }
 
+.hero-console {
+  left: 34px;
+  bottom: 32px;
+  z-index: 2;
+  width: min(300px, calc(100% - 68px));
+  overflow: hidden;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.86);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.64);
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.07);
+  backdrop-filter: blur(18px);
+}
+
+.hero-console::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(103, 232, 249, 0.2), transparent 34%),
+    linear-gradient(120deg, transparent 22%, rgba(255, 255, 255, 0.58) 48%, transparent 76%);
+  opacity: 0.76;
+  pointer-events: none;
+  transform: translateX(-42%);
+  animation: consoleGlow 7.2s ease-in-out infinite;
+}
+
+.hero-console__header,
+.hero-console__body,
+.hero-console__line {
+  position: relative;
+  z-index: 1;
+}
+
+.hero-console__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--page-text-soft);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hero-console__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #0369a1;
+}
+
+.hero-console__status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.36);
+}
+
+.hero-console__body {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.hero-console__line {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 34px;
+  padding: 8px 10px;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.05);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.58);
+  animation: consoleLinePulse 5.8s ease-in-out infinite;
+  animation-delay: var(--line-delay);
+}
+
+.hero-console__index {
+  color: #0284c7;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hero-console__text {
+  min-width: 0;
+  color: var(--page-text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hero-console__bar {
+  grid-column: 1 / -1;
+  position: relative;
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--page-radius-pill);
+  background: rgba(15, 23, 42, 0.05);
+}
+
+.hero-console__bar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 52%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.12), rgba(56, 189, 248, 0.72), rgba(251, 191, 36, 0.28));
+  transform: translateX(-112%);
+  animation: consoleProgress 3.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+  animation-delay: var(--line-delay);
+}
+
 .hero-stage__footer {
   position: absolute;
   left: 50%;
@@ -1975,6 +2380,143 @@ onBeforeUnmount(() => {
 
 .content-section {
   margin-top: 92px;
+}
+
+.live-flow-section {
+  position: relative;
+}
+
+.live-flow-panel {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 32px;
+  padding: 22px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: var(--page-shadow-soft);
+  backdrop-filter: blur(20px);
+}
+
+.live-flow-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 12% 18%, rgba(56, 189, 248, 0.12), transparent 28%),
+    radial-gradient(circle at 88% 28%, rgba(251, 191, 36, 0.1), transparent 30%);
+  pointer-events: none;
+}
+
+.live-flow-panel__beam {
+  position: absolute;
+  top: 50%;
+  left: 5%;
+  right: 5%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.3), rgba(251, 191, 36, 0.2), transparent);
+  transform: scaleX(0.18);
+  transform-origin: 0 50%;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.live-flow-section.is-visible .live-flow-panel__beam {
+  animation: liveBeamReveal 1.1s cubic-bezier(0.22, 1, 0.36, 1) 0.22s both;
+}
+
+.live-flow-panel__beam::after {
+  content: '';
+  position: absolute;
+  inset: -3px auto -3px -18%;
+  width: 20%;
+  border-radius: var(--page-radius-pill);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), rgba(56, 189, 248, 0.48), transparent);
+  opacity: 0;
+}
+
+.live-flow-section.is-visible .live-flow-panel__beam::after {
+  animation: liveBeamSweep 3.6s cubic-bezier(0.22, 1, 0.36, 1) 0.8s infinite;
+}
+
+.live-flow-card {
+  position: relative;
+  z-index: 1;
+  min-height: 232px;
+  overflow: hidden;
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.045);
+  transition:
+    transform var(--page-transition),
+    border-color var(--page-transition),
+    box-shadow var(--page-transition);
+  animation: cardFloat 11.8s ease-in-out infinite;
+  animation-delay: var(--flow-delay);
+}
+
+.live-flow-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 22%, rgba(255, 255, 255, 0.72) 52%, transparent 82%);
+  opacity: 0;
+  transform: translateX(-124%);
+}
+
+.live-flow-card.is-visible::before {
+  animation: flowCardSweep 5.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+  animation-delay: var(--flow-delay);
+}
+
+.live-flow-card__index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 40% 30%, rgba(103, 232, 249, 0.18), transparent 70%),
+    rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', monospace;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.live-flow-card__body {
+  position: relative;
+  z-index: 1;
+  margin-top: 28px;
+}
+
+.live-flow-card__label {
+  color: var(--page-text-soft);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.live-flow-card__title {
+  margin: 14px 0 0;
+  font-family: 'Avenir Next', 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 27px;
+  line-height: 1.08;
+  letter-spacing: -0.05em;
+}
+
+.live-flow-card__text {
+  margin: 14px 0 0;
+  color: var(--page-text-muted);
+  font-size: 15px;
+  line-height: 1.8;
 }
 
 .section-heading {
@@ -2273,7 +2815,8 @@ onBeforeUnmount(() => {
 
 .principle-card.is-visible:hover,
 .market-card.is-visible:hover,
-.workflow-card.is-visible:hover {
+.workflow-card.is-visible:hover,
+.live-flow-card.is-visible:hover {
   transform: translate3d(0, -6px, 0);
   border-color: rgba(125, 211, 252, 0.26);
   box-shadow: 0 20px 42px rgba(15, 23, 42, 0.08);
@@ -2287,11 +2830,13 @@ onBeforeUnmount(() => {
 
   .principle-grid,
   .market-grid,
-  .workflow-panel {
+  .workflow-panel,
+  .live-flow-panel {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .workflow-panel__line {
+  .workflow-panel__line,
+  .live-flow-panel__beam {
     display: none;
   }
 }
@@ -2326,7 +2871,8 @@ onBeforeUnmount(() => {
 
   .principle-grid,
   .market-grid,
-  .workflow-panel {
+  .workflow-panel,
+  .live-flow-panel {
     grid-template-columns: 1fr;
   }
 
@@ -2336,8 +2882,17 @@ onBeforeUnmount(() => {
   }
 
   .hero-stage__halo,
-  .hero-stage__links {
+  .hero-stage__links,
+  .hero-orbit {
     display: none;
+  }
+
+  .hero-console {
+    position: relative;
+    left: auto;
+    bottom: auto;
+    width: 100%;
+    margin: 22px auto 0;
   }
 
   .hero-core {
@@ -2385,7 +2940,8 @@ onBeforeUnmount(() => {
   }
 
   .principle-card,
-  .workflow-card {
+  .workflow-card,
+  .live-flow-card {
     min-height: auto;
   }
 }
@@ -2413,6 +2969,7 @@ onBeforeUnmount(() => {
   .hero-copy__text,
   .section-heading__text,
   .principle-card__text,
+  .live-flow-card__text,
   .workflow-card__text,
   .cta-section__text,
   .hero-core__text {
@@ -2424,6 +2981,8 @@ onBeforeUnmount(() => {
   .principle-card,
   .market-card,
   .market-banner,
+  .live-flow-panel,
+  .live-flow-card,
   .workflow-panel,
   .workflow-card,
   .cta-section {
@@ -2431,12 +2990,19 @@ onBeforeUnmount(() => {
   }
 
   .hero-stage__field {
-    min-height: 540px;
+    min-height: auto;
   }
 
   .hero-copy__signals {
     grid-template-columns: 1fr;
     width: min(100%, 320px);
+  }
+
+  .hero-copy__status {
+    justify-content: flex-start;
+    width: min(100%, 320px);
+    margin-right: auto;
+    margin-left: auto;
   }
 
   .hero-stage__halo {
@@ -2476,6 +3042,7 @@ onBeforeUnmount(() => {
 
   .hero-node__title,
   .principle-card__title,
+  .live-flow-card__title,
   .market-card__title,
   .market-banner__title,
   .workflow-card__title {
@@ -2935,6 +3502,158 @@ onBeforeUnmount(() => {
   100% {
     transform: translateX(640%);
     opacity: 0;
+  }
+}
+
+@keyframes statusLift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    border-color: rgba(255, 255, 255, 0.76);
+  }
+  34% {
+    transform: translate3d(0, -3px, 0);
+    border-color: rgba(56, 189, 248, 0.22);
+  }
+  62% {
+    transform: translate3d(0, 0, 0);
+    border-color: rgba(255, 255, 255, 0.76);
+  }
+}
+
+@keyframes statusDotBlink {
+  0%,
+  100% {
+    opacity: 0.74;
+    transform: scale(0.92);
+  }
+  42% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
+@keyframes orbitTilt {
+  0%,
+  100% {
+    opacity: 0.52;
+    filter: saturate(100%);
+  }
+  50% {
+    opacity: 0.86;
+    filter: saturate(132%);
+  }
+}
+
+@keyframes orbitSpark {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) translate(var(--spark-radius-x), 0) scale(0.82);
+  }
+  8%,
+  86% {
+    opacity: 0.88;
+  }
+  25% {
+    transform: translate(-50%, -50%) translate(0, var(--spark-radius-y)) scale(1);
+  }
+  50% {
+    transform: translate(-50%, -50%) translate(calc(0px - var(--spark-radius-x)), 0) scale(0.92);
+  }
+  75% {
+    transform: translate(-50%, -50%) translate(0, calc(0px - var(--spark-radius-y))) scale(1.04);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) translate(var(--spark-radius-x), 0) scale(0.82);
+  }
+}
+
+@keyframes consoleGlow {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: translateX(-42%);
+  }
+  52% {
+    opacity: 0.78;
+    transform: translateX(16%);
+  }
+}
+
+@keyframes consoleLinePulse {
+  0%,
+  100% {
+    border-color: rgba(15, 23, 42, 0.05);
+    transform: translate3d(0, 0, 0);
+  }
+  28% {
+    border-color: rgba(56, 189, 248, 0.18);
+    transform: translate3d(0, -2px, 0);
+  }
+  58% {
+    border-color: rgba(15, 23, 42, 0.05);
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes consoleProgress {
+  0%,
+  100% {
+    transform: translateX(-112%);
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  64% {
+    transform: translateX(128%);
+    opacity: 1;
+  }
+  82% {
+    opacity: 0;
+  }
+}
+
+@keyframes liveBeamReveal {
+  0% {
+    opacity: 0;
+    transform: scaleX(0.18);
+  }
+  100% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes liveBeamSweep {
+  0%,
+  18% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+  34%,
+  74% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(640%);
+  }
+}
+
+@keyframes flowCardSweep {
+  0%,
+  100% {
+    opacity: 0;
+    transform: translateX(-124%);
+  }
+  26% {
+    opacity: 0.72;
+  }
+  48% {
+    opacity: 0;
+    transform: translateX(124%);
   }
 }
 </style>

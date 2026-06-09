@@ -142,7 +142,7 @@ def _build_task_status_reason(
 ) -> str:
     normalized_status = str(status or "").strip().lower()
     if normalized_status == "queued":
-        return "任务已创建，等待后台执行"
+        return "操作已创建，正在等待后续结果"
     if normalized_status == "running":
         return "正在执行操作"
     if normalized_status == "waiting_user_action":
@@ -597,6 +597,33 @@ def _mark_operation_task_waiting_for_user_action(
     )
 
 
+def _wait_for_task_initial_user_action(
+    task_id: str,
+    *,
+    timeout_sec: float = 1.5,
+) -> dict[str, Any] | None:
+    """Briefly wait for a streamed auth prompt so callers can answer with a URL."""
+
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        return None
+    deadline = time.time() + max(0.0, float(timeout_sec or 0.0))
+    last_task: dict[str, Any] | None = get_operation_wait_task(normalized_task_id)
+    while time.time() < deadline:
+        current = get_operation_wait_task(normalized_task_id)
+        if current is not None:
+            last_task = current
+            status = str(current.get("status") or "").strip().lower()
+            execution = current.get("execution") if isinstance(current.get("execution"), dict) else {}
+            plugin_id = str(current.get("plugin_id") or "").strip()
+            if status == "waiting_user_action" and _execution_has_user_action_payload(plugin_id, execution):
+                return current
+            if status in _TERMINAL_STATUSES:
+                return current
+        time.sleep(0.05)
+    return last_task
+
+
 def create_cli_plugin_auth_operation_task(
     plugin_id: str,
     *,
@@ -604,6 +631,7 @@ def create_cli_plugin_auth_operation_task(
     login_command: str = "",
     metadata: dict[str, Any] | None = None,
     timeout_sec: int = 120,
+    wait_for_initial_user_action_sec: float = 0.0,
 ) -> dict[str, Any]:
     plugin = get_cli_plugin(plugin_id, include_status=False)
     if plugin is None:
@@ -662,7 +690,11 @@ def create_cli_plugin_auth_operation_task(
     with _TASK_LOCK:
         _TASK_THREADS[str(normalized_task["task_id"])] = thread
     thread.start()
-    return normalized_task
+    refreshed_task = _wait_for_task_initial_user_action(
+        str(normalized_task["task_id"]),
+        timeout_sec=wait_for_initial_user_action_sec,
+    )
+    return refreshed_task or normalized_task
 
 
 def continue_cli_plugin_auth_operation_task_with_interaction(

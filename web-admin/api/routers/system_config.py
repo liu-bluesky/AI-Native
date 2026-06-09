@@ -834,7 +834,10 @@ async def patch_system_config(
         )
         or ""
     ).strip()
-    if global_assistant_chat_provider_id or global_assistant_chat_model_name:
+    if (
+        "global_assistant_chat_provider_id" in updates
+        or "global_assistant_chat_model_name" in updates
+    ):
         if not global_assistant_chat_provider_id:
             raise HTTPException(400, "global_assistant_chat_provider_id is required when chat model is configured")
         if not global_assistant_chat_model_name:

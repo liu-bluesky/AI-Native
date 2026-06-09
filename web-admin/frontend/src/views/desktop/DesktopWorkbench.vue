@@ -34,7 +34,6 @@
         v-for="app in apps"
         :key="app.id"
         class="workbench-app__card"
-        :class="{ 'is-active': activeAppId === app.id }"
       >
         <button
           type="button"
@@ -57,31 +56,25 @@
       </article>
     </div>
 
-    <section v-if="activePanel" class="workbench-app__workspace">
-      <div class="workbench-app__workspace-head">
-        <div>
-          <div class="workbench-app__workspace-eyebrow">Workbench Panel</div>
-          <h2>{{ activeApp?.label || "当前面板" }}</h2>
-          <p>{{ activeApp?.summary || "当前工作台内容" }}</p>
-        </div>
-        <button type="button" class="workbench-app__workspace-close" @click="closePanel">
-          返回工作台
-        </button>
-      </div>
-      <div class="workbench-app__workspace-body">
-        <component :is="activePanel" :key="activeAppId" />
-      </div>
-    </section>
   </section>
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, h, ref, watch } from "vue";
+import { computed } from "vue";
+import { useRouter } from "vue-router";
 import {
   canAccessDesktopApp,
   DESKTOP_LAUNCHER_ITEMS,
+  resolveDesktopLaunchPath,
 } from "@/utils/desktop-shell.js";
-import { isEmbeddedDesktopApp, requestDesktopPinApp } from "@/utils/desktop-app-bridge.js";
+import {
+  isEmbeddedDesktopApp,
+  openRouteInDesktop,
+  requestDesktopPinApp,
+} from "@/utils/desktop-app-bridge.js";
+
+const router = useRouter();
+const embeddedMode = isEmbeddedDesktopApp();
 
 function desktopIconStyle(app) {
   return {
@@ -95,8 +88,14 @@ function desktopIconStyle(app) {
 function openApp(appId) {
   const app = DESKTOP_LAUNCHER_ITEMS.find((item) => item.id === appId);
   if (!app || !canAccessDesktopApp(app)) return;
-  if (!WORKBENCH_PANELS[app.id]) return;
-  activeAppId.value = app.id;
+  const launchPath = resolveDesktopLaunchPath(app.id);
+  void openRouteInDesktop(router, launchPath, {
+    mode: "focus-or-open",
+    appId: app.id,
+    title: app.label,
+    summary: app.summary,
+    eyebrow: app.eyebrow,
+  });
 }
 
 function pinApp(app) {
@@ -105,95 +104,12 @@ function pinApp(app) {
   });
 }
 
-function closePanel() {
-  activeAppId.value = "";
-}
-
-function getStoredActivePanelId() {
-  if (typeof window === "undefined") return "";
-  return String(window.localStorage.getItem(WORKBENCH_PANEL_STORAGE_KEY) || "").trim();
-}
-
-function persistActivePanelId(panelId) {
-  if (typeof window === "undefined") return;
-  const normalized = String(panelId || "").trim();
-  if (normalized) {
-    window.localStorage.setItem(WORKBENCH_PANEL_STORAGE_KEY, normalized);
-    return;
-  }
-  window.localStorage.removeItem(WORKBENCH_PANEL_STORAGE_KEY);
-}
-
-function createWorkbenchPanel(loader) {
-  return defineAsyncComponent({
-    loader,
-    delay: 60,
-    timeout: 10000,
-    loadingComponent: AsyncLoading,
-    errorComponent: AsyncError,
-  });
-}
-
-const AsyncLoading = {
-  name: "WorkbenchAsyncLoading",
-  render() {
-    return h(
-      "div",
-      { class: "workbench-app__panel-state workbench-app__panel-state--loading" },
-      [
-        h("strong", "加载中"),
-        h("span", "正在按需加载工作台内容"),
-      ],
-    );
-  },
-};
-
-const AsyncError = {
-  name: "WorkbenchAsyncError",
-  render() {
-    return h(
-      "div",
-      { class: "workbench-app__panel-state workbench-app__panel-state--error" },
-      [
-        h("strong", "加载失败"),
-        h("span", "请重试打开该面板"),
-      ],
-    );
-  },
-};
-
-const WORKBENCH_PANEL_STORAGE_KEY = "desktop_workbench_active_panel";
-const embeddedMode = isEmbeddedDesktopApp();
-const activeAppId = ref(getStoredActivePanelId());
-const WORKBENCH_PANELS = {
-  chat: createWorkbenchPanel(() => import("@/views/projects/ProjectChat.vue")),
-  tasks: createWorkbenchPanel(() => import("@/views/tasks/TaskManager.vue")),
-  projects: createWorkbenchPanel(() => import("@/views/projects/ProjectList.vue")),
-  materials: createWorkbenchPanel(() => import("@/views/projects/ProjectCreationWorkspace.vue")),
-  market: createWorkbenchPanel(() => import("@/views/public/MarketPage.vue")),
-  "settings-home": createWorkbenchPanel(() => import("@/views/desktop/SettingsLauncher.vue")),
-  "settings-statistics": createWorkbenchPanel(() => import("@/views/system/StatisticsDashboard.vue")),
-};
-const WORKBENCH_PANEL_IDS = new Set(Object.keys(WORKBENCH_PANELS));
 const apps = computed(() =>
   DESKTOP_LAUNCHER_ITEMS.filter(
     (item) =>
       item.id !== "workbench"
-      && WORKBENCH_PANEL_IDS.has(item.id)
       && canAccessDesktopApp(item),
   ),
-);
-const activePanel = computed(() => WORKBENCH_PANELS[activeAppId.value] || null);
-const activeApp = computed(
-  () => DESKTOP_LAUNCHER_ITEMS.find((item) => item.id === activeAppId.value) || null,
-);
-
-watch(
-  activeAppId,
-  (value) => {
-    persistActivePanelId(value);
-  },
-  { immediate: true },
 );
 </script>
 

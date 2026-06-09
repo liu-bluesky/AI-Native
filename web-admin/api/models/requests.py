@@ -582,6 +582,33 @@ class ProjectChatHistoryTruncateReq(BaseModel):
     system_prompt: str | None = None
 
 
+class ProjectChatHistoryAppendReq(BaseModel):
+    chat_session_id: str = ""
+    role: Literal["user", "assistant", "system"]
+    content: str
+    message_id: str = ""
+    display_mode: str = ""
+    source_context: dict[str, Any] = Field(default_factory=dict)
+    attachments: list[str] = Field(default_factory=list)
+    images: list[str] = Field(default_factory=list)
+    videos: list[str] = Field(default_factory=list)
+
+
+class ProjectChatRequirementRecordUpsertReq(BaseModel):
+    chat_session_id: str = ""
+    message_id: str = ""
+    assistant_message_id: str = ""
+    root_goal: str = ""
+    title: str = ""
+    status: Literal["pending", "in_progress", "blocked", "verifying", "done"] = "in_progress"
+    result_summary: str = ""
+    verification_result: str = ""
+    runner_session_id: str = ""
+    runner_agent_type: str = ""
+    source: str = "project_chat"
+    source_context: dict[str, Any] = Field(default_factory=dict)
+
+
 class ProjectChatRuntimeSnapshotUpdateReq(BaseModel):
     chat_session_id: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)

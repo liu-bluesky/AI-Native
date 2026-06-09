@@ -23,11 +23,11 @@ from core.deps import (
     ensure_permission,
     is_super_admin_payload,
     require_auth,
+    resolve_role_ids_permissions,
     role_store,
     system_config_store,
     user_store,
 )
-from core.role_permissions import resolve_role_permissions
 from stores.json.user_store import User, hash_password, verify_password
 from models.requests import InitSetupReq, LoginReq, RegisterInvitationCreateReq, RegisterReq
 
@@ -76,12 +76,27 @@ def _sanitize_display_name(value: str, *, default: str = "") -> str:
     return display_name
 
 
-def _load_permissions(role_id: str, username: str = "") -> list[str]:
-    if is_super_admin_payload({"sub": username, "role": role_id, "roles": [role_id]}):
+def _normalize_role_ids(role_ids: list[str] | tuple[str, ...] | set[str] | None, *, fallback_role: str = "user") -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in role_ids or []:
+        role_id = str(item or "").strip().lower()
+        if not role_id or role_id in seen:
+            continue
+        seen.add(role_id)
+        normalized.append(role_id)
+    if normalized:
+        return normalized
+    fallback = str(fallback_role or "user").strip().lower() or "user"
+    return [fallback]
+
+
+def _load_permissions(role_ids: list[str] | tuple[str, ...] | set[str] | None, username: str = "") -> list[str]:
+    normalized_role_ids = _normalize_role_ids(role_ids)
+    primary_role_id = normalized_role_ids[0]
+    if is_super_admin_payload({"sub": username, "role": primary_role_id, "roles": normalized_role_ids}):
         return ["*"]
-    role = role_store.get(role_id)
-    role_permissions = getattr(role, "permissions", [])
-    return resolve_role_permissions(role_permissions, role_id)
+    return resolve_role_ids_permissions(normalized_role_ids)
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -299,13 +314,15 @@ async def login(req: LoginReq):
     user = user_store.get(username)
     if user is None or not verify_password(req.password, user.password_hash):
         raise HTTPException(401, "Invalid credentials")
-    token = create_token(user.username, user.role, user.role_ids or [user.role])
-    permissions = _load_permissions(user.role, user.username)
+    role_ids = _normalize_role_ids(user.role_ids or [user.role], fallback_role=user.role)
+    token = create_token(user.username, user.role, role_ids)
+    permissions = _load_permissions(role_ids, user.username)
     return {
         "token": token,
         "username": user.username,
         "display_name": user.display_name,
         "role": user.role,
+        "role_ids": role_ids,
         "permissions": permissions,
     }
 
@@ -316,11 +333,13 @@ async def auth_me(auth_payload: dict = Depends(require_auth)):
     user = user_store.get(username)
     if user is None:
         raise HTTPException(404, "User not found")
-    permissions = _load_permissions(user.role, user.username)
+    role_ids = _normalize_role_ids(user.role_ids or [user.role], fallback_role=user.role)
+    permissions = _load_permissions(role_ids, user.username)
     return {
         "username": user.username,
         "display_name": user.display_name,
         "role": user.role,
+        "role_ids": role_ids,
         "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
         "permissions": permissions,
     }

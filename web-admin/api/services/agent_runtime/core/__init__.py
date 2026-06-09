@@ -1,5 +1,13 @@
 """Shared runtime state and event primitives."""
 
+from services.agent_runtime.core.background_process import (
+    BackgroundProcessHandle,
+    BackgroundProcessRegistry,
+)
+from services.agent_runtime.core.context_checkpoint import (
+    ContextCheckpoint,
+    ContextCheckpointBuilder,
+)
 from services.agent_runtime.core.event_log import RuntimeEvent, RuntimeEventLog
 from services.agent_runtime.core.memory import (
     AgentMemoryIndex,
@@ -14,6 +22,10 @@ from services.agent_runtime.core.transcript_store import TranscriptStore
 
 __all__ = [
     "AgentMemoryIndex",
+    "BackgroundProcessHandle",
+    "BackgroundProcessRegistry",
+    "ContextCheckpoint",
+    "ContextCheckpointBuilder",
     "InMemoryAgentMemoryIndex",
     "MemoryQuery",
     "MemoryRecord",

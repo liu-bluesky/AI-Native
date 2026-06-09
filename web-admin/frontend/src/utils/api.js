@@ -1,8 +1,9 @@
 import axios from 'axios'
 
-import { clearAuthSession } from './auth-storage.js'
+import { clearAuthSession, getStoredToken } from './auth-storage.js'
+import { buildApiBaseUrl } from './server-profile.js'
 
-const api = axios.create({ baseURL: '/api' })
+const api = axios.create({ baseURL: buildApiBaseUrl() })
 const AUTH_PUBLIC_PATHS = new Set(['/loading', '/init', '/intro', '/market', '/updates', '/login', '/register'])
 
 function normalizeHashPath(hash) {
@@ -59,7 +60,8 @@ function normalizeApiError(err) {
 }
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
+  config.baseURL = buildApiBaseUrl()
+  const token = getStoredToken()
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }

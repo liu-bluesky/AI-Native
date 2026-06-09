@@ -539,6 +539,63 @@ def _refine_task_tree_in_place(
     return project_chat_task_store.save(_recompute_session(rebuilt))
 
 
+def _health_report_recommends_plan_rebuild(health_report: dict[str, Any] | None) -> bool:
+    if not isinstance(health_report, dict) or not bool(health_report.get("rebuild_recommended")):
+        return False
+    rebuild_codes = {
+        "generic_three_step_template",
+        "generic_current_requirement_subject",
+        "insufficient_intent_specific_nodes",
+        "missing_task_subject",
+        "template_goal_mismatch",
+        "internal_plan_node_detected",
+    }
+    return any(
+        _normalize_text(item.get("code"), 80) in rebuild_codes
+        for item in list(health_report.get("issues") or [])
+        if isinstance(item, dict)
+    )
+
+
+def _can_repair_task_tree_plan_in_place(session: ProjectChatTaskSession) -> bool:
+    normalized = _recompute_session(ProjectChatTaskSession(**asdict(session)))
+    children_by_parent = _children_map(normalized.nodes)
+    leaf_nodes = [node for node in normalized.nodes if not children_by_parent.get(node.id)]
+    if not leaf_nodes:
+        return True
+    for node in leaf_nodes:
+        if _normalize_status(getattr(node, "status", "")) == "done":
+            return False
+        if _normalize_text(getattr(node, "verification_result", ""), 2000):
+            return False
+    return True
+
+
+def _repair_task_tree_plan_in_place(
+    existing: ProjectChatTaskSession,
+    *,
+    max_steps: int = 6,
+) -> ProjectChatTaskSession:
+    root_goal = _normalize_text(existing.root_goal or existing.title, 1000)
+    rebuilt = build_task_tree_session(
+        project_id=existing.project_id,
+        username=existing.username,
+        chat_session_id=existing.chat_session_id,
+        root_goal=root_goal,
+        max_steps=max_steps,
+    )
+    rebuilt.id = existing.id
+    rebuilt.created_at = existing.created_at
+    rebuilt.updated_at = existing.updated_at
+    rebuilt.source_chat_session_id = existing.source_chat_session_id
+    rebuilt.record_kind = existing.record_kind
+    rebuilt.source_session_id = existing.source_session_id
+    rebuilt.round_index = existing.round_index
+    for node in rebuilt.nodes:
+        node.session_id = existing.id
+    return project_chat_task_store.save(_recompute_session(rebuilt))
+
+
 def _task_tree_chat_lineage_matches(session: ProjectChatTaskSession, chat_session_id: str) -> bool:
     normalized_chat_session_id = _normalize_text(chat_session_id, 80)
     if not normalized_chat_session_id:
@@ -722,7 +779,6 @@ def _build_lookup_query_plan_step(task_text: str) -> dict[str, str]:
     normalized_task = _normalize_text(task_text, 300) or "当前问题"
     return {
         "phase": "query",
-        "tool_name": "search_project_context",
         "step": "检索问题所需信息并直接回答用户",
         "purpose": (
             f"围绕“{normalized_task}”完成信息检索、整理结论并给出依据。"
@@ -741,6 +797,127 @@ _LEAF_PROGRESS_WEIGHTS = {
 def _extract_route_path(text: str) -> str:
     match = _ROUTE_PATH_RE.search(_normalize_text(text, 400))
     return _normalize_text(match.group(0), 200) if match else ""
+
+
+def _extract_task_subjects(task_text: str, *, limit: int = 6) -> list[str]:
+    normalized_task = _normalize_text(task_text, 1000)
+    if not normalized_task:
+        return []
+    lower_task = normalized_task.lower()
+    candidates: list[str] = []
+
+    def add(value: str) -> None:
+        normalized = _normalize_text(value, 80).strip(" ，。、；：:,.!?？'\"`")
+        if not normalized:
+            return
+        lowered = normalized.lower()
+        stop_terms = {
+            "当前",
+            "当前需求",
+            "需求",
+            "问题",
+            "任务",
+            "计划",
+            "方案",
+            "实现",
+            "修复",
+            "完成",
+            "验证",
+            "优化",
+            "修改",
+            "新增",
+            "这个",
+            "那个",
+            "the",
+            "and",
+            "for",
+            "with",
+        }
+        if lowered in stop_terms:
+            return
+        if normalized not in candidates:
+            candidates.append(normalized)
+
+    for route_path in _ROUTE_PATH_RE.findall(normalized_task):
+        add(route_path.rstrip("/"))
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{1,}(?:\.[A-Za-z0-9_-]+)?", normalized_task):
+        add(token)
+    for token in re.findall(r"[a-z][a-z0-9_]{2,}", lower_task):
+        add(token)
+
+    preferred_terms = (
+        "MCP 入口",
+        "统一 MCP",
+        "任务树生成",
+        "任务树",
+        "健康检查",
+        "恢复续跑",
+        "总结体验",
+        "需求记录",
+        "工作流",
+        "提示词",
+        "docs 目录",
+        "docs",
+        "lark-cli",
+        "queued",
+        "waiting_user_action",
+        "completed",
+    )
+    compact_lower = re.sub(r"\s+", "", lower_task)
+    for term in preferred_terms:
+        term_lower = term.lower()
+        if term_lower in lower_task or re.sub(r"\s+", "", term_lower) in compact_lower:
+            add(term)
+
+    chinese_chunks = re.findall(r"[\u4e00-\u9fffA-Za-z0-9_/-]{3,}", normalized_task)
+    generic_prefixes = (
+        "严格执行",
+        "继续",
+        "按照",
+        "把",
+        "将",
+        "让",
+        "使其",
+        "补全",
+        "修复",
+        "实现",
+        "开发",
+        "修改",
+    )
+    for chunk in chinese_chunks:
+        cleaned = chunk
+        for prefix in generic_prefixes:
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix) :]
+        if len(cleaned) <= 18:
+            add(cleaned)
+        for keyword in preferred_terms:
+            if keyword in cleaned:
+                add(keyword)
+
+    return candidates[: max(1, min(int(limit or 6), 10))]
+
+
+def _primary_task_subject(task_text: str, *, fallback: str = "当前目标") -> str:
+    subjects = _extract_task_subjects(task_text, limit=3)
+    if subjects:
+        if "/lark-cli" in subjects:
+            return "/lark-cli 登录"
+        if "MCP 入口" in subjects and "任务树生成" in subjects:
+            return "MCP 入口任务树生成"
+        return subjects[0]
+    normalized = _normalize_text(task_text, 80)
+    return normalized or fallback
+
+
+def _is_document_write_goal(task_text: str) -> bool:
+    normalized = _normalize_text(task_text, 1000).lower()
+    if not normalized:
+        return False
+    return (
+        ("docs" in normalized or "文档" in normalized or "目录" in normalized)
+        and any(term in normalized for term in ("写入", "写到", "写进", "记录", "沉淀", "整理"))
+    )
 
 
 def _compact_plan_step_text(item: dict[str, Any]) -> str:
@@ -799,6 +976,156 @@ def _has_verification_flavored_step(steps: list[dict[str, str]]) -> bool:
     return False
 
 
+def _task_tree_complexity_score(task_text: str, intent: str) -> int:
+    normalized_task = _normalize_text(task_text, 1000)
+    if not normalized_task or intent == "lookup_query":
+        return 0
+    lower_task = normalized_task.lower()
+    score = 0
+    subjects = _extract_task_subjects(normalized_task, limit=10)
+    if len(subjects) >= 3:
+        score += 1
+    if len(subjects) >= 5:
+        score += 1
+    if len(normalized_task) >= 80:
+        score += 1
+    if len(normalized_task) >= 160:
+        score += 1
+
+    multi_area_terms = (
+        "前端",
+        "后端",
+        "服务端",
+        "本地",
+        "远程",
+        "持久化",
+        "恢复",
+        "续跑",
+        "提示词",
+        "技能",
+        "测试",
+        "回归",
+        "健康检查",
+        "状态映射",
+        "任务树",
+        "requirement",
+        "session_id",
+        "chat_session_id",
+    )
+    matched_area_count = sum(1 for term in multi_area_terms if term in normalized_task or term in lower_task)
+    if matched_area_count >= 2:
+        score += 1
+    if matched_area_count >= 5:
+        score += 1
+
+    if any(sep in normalized_task for sep in ("，", "、", "并", "同时", "以及", "和", "与")):
+        score += 1
+    if intent == "governance":
+        score += 2
+    elif intent in {"bugfix", "ui_flow"} and (_extract_route_path(normalized_task) or matched_area_count >= 2):
+        score += 1
+    return min(score, 8)
+
+
+def _plan_step_leaf_count_for_intent(intent: str, task_text: str = "") -> int:
+    if intent == "lookup_query":
+        return 1
+    complexity = _task_tree_complexity_score(task_text, intent)
+    if intent == "governance":
+        return 5
+    if intent in {"documentation", "bugfix", "ui_flow"}:
+        return 4 if complexity >= 2 else 3
+    if intent in {"optimization", "general"}:
+        return 4 if complexity >= 3 else 3
+    return 3
+
+
+def _preferred_plan_step_leaf_count(intent: str, task_text: str, *, max_steps: int = 6) -> int:
+    step_limit = max(1, min(int(max_steps or 6), 10))
+    complexity = _task_tree_complexity_score(task_text, intent)
+    if intent == "lookup_query":
+        preferred = 1
+    elif intent == "governance":
+        preferred = 6 if complexity >= 5 else 5
+    elif intent == "documentation":
+        preferred = 5 if complexity >= 2 else 4
+    elif intent == "bugfix":
+        preferred = 6 if complexity >= 5 else 5 if complexity >= 2 else 4
+    elif intent == "ui_flow":
+        preferred = 6 if complexity >= 5 else 5 if complexity >= 2 else 4
+    elif intent == "optimization":
+        preferred = 5 if complexity >= 4 else 4 if complexity >= 2 else 3
+    else:
+        preferred = 5 if complexity >= 5 else 4 if complexity >= 2 else 3
+    minimum = _plan_step_leaf_count_for_intent(intent, task_text)
+    return max(minimum, min(preferred, step_limit))
+
+
+def _fit_plan_steps_to_count(
+    steps: list[dict[str, str]],
+    *,
+    count: int,
+) -> list[dict[str, str]]:
+    target_count = max(1, min(int(count or len(steps) or 1), len(steps) or 1))
+    if len(steps) <= target_count:
+        return steps
+    verification_index = next(
+        (
+            index
+            for index in range(len(steps) - 1, -1, -1)
+            if _has_verification_flavored_step([steps[index]])
+        ),
+        -1,
+    )
+    if verification_index >= 0 and target_count >= 2:
+        selected = steps[: target_count - 1]
+        verification_step = steps[verification_index]
+        if verification_step not in selected:
+            selected.append(verification_step)
+        return selected[:target_count]
+    return steps[:target_count]
+
+
+def _phase_sequence_is_generic_three_step(phases: list[str]) -> bool:
+    normalized = [item for item in phases if item]
+    return normalized == ["analysis", "implementation", "verification"]
+
+
+def _is_generic_three_step_plan(steps: list[dict[str, str]]) -> bool:
+    if len(steps) != 3:
+        return False
+    phases = [_normalize_text(item.get("phase"), 60).lower() for item in steps]
+    titles = [_normalize_text(item.get("step") or item.get("title"), 160) for item in steps]
+    compact_titles = "\n".join(titles)
+    if _phase_sequence_is_generic_three_step(phases):
+        return True
+    if (
+        any(title.startswith("梳理") for title in titles)
+        and any(title.startswith("完成") for title in titles)
+        and any(title.startswith("验证") for title in titles)
+    ):
+        return True
+    return compact_titles.count("当前需求") >= 1
+
+
+def _steps_include_task_subject(steps: list[dict[str, str]], task_text: str) -> bool:
+    subjects = _extract_task_subjects(task_text, limit=6)
+    if not subjects:
+        return True
+    haystack = "\n".join(_compact_plan_step_text(item) for item in steps).lower()
+    if not haystack:
+        return False
+    return any(subject.lower() in haystack for subject in subjects)
+
+
+def _repair_generic_plan_steps(
+    task_text: str,
+    *,
+    max_steps: int = 6,
+) -> list[dict[str, str]]:
+    return _build_goal_oriented_plan_steps(task_text, max_steps=max_steps)
+
+
 def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
     normalized = _normalize_text(text, 4000)
     if not normalized:
@@ -813,6 +1140,8 @@ def _classify_task_tree_intent(task_text: str) -> str:
         return "general"
     if _is_lookup_query_goal(normalized_task):
         return "lookup_query"
+    if _is_document_write_goal(normalized_task):
+        return "documentation"
     has_governance = _contains_any_term(normalized_task, _TASK_TREE_GOVERNANCE_TERMS)
     has_document = _contains_any_term(normalized_task, _TASK_TREE_DOCUMENT_TERMS)
     has_ui_surface = _contains_any_term(normalized_task, _TASK_TREE_UI_SURFACE_TERMS)
@@ -896,6 +1225,14 @@ def _build_task_tree_health_report(session: ProjectChatTaskSession | None) -> di
     detected_intent = _classify_task_tree_intent(normalized.root_goal or normalized.title)
     children_by_parent = _children_map(normalized.nodes)
     leaf_nodes = [node for node in normalized.nodes if not children_by_parent.get(node.id)]
+    leaf_plan_steps = [
+        {
+            "step": _normalize_text(node.title, 200),
+            "purpose": _normalize_text(node.description or node.objective, 280),
+            "phase": _normalize_text(node.stage_key, 80),
+        }
+        for node in leaf_nodes
+    ]
     issues: list[dict[str, Any]] = []
 
     if detected_intent == "lookup_query" and len(leaf_nodes) != 1:
@@ -909,6 +1246,86 @@ def _build_task_tree_health_report(session: ProjectChatTaskSession | None) -> di
                 evidence=[
                     f"根目标：{_normalize_text(normalized.root_goal or normalized.title, 200)}",
                     f"叶子节点数：{len(leaf_nodes)}",
+                ],
+            )
+        )
+
+    if detected_intent != "lookup_query" and _is_generic_three_step_plan(leaf_plan_steps):
+        issues.append(
+            _build_task_tree_health_issue(
+                code="generic_three_step_template",
+                severity="high",
+                category="generation_shape",
+                message="实现型任务被生成成固定三步模板，节点没有随需求类型和对象展开。",
+                recommended_action="按当前需求意图重建任务树，至少包含对象梳理、实现改造、健康/回归和验证收尾。",
+                evidence=[
+                    f"识别意图：{detected_intent}",
+                    f"叶子节点数：{len(leaf_nodes)}",
+                    *[
+                        f"节点：{_normalize_text(node.title, 160)}"
+                        for node in leaf_nodes[:3]
+                    ],
+                ],
+            )
+        )
+
+    current_requirement_titles = [
+        _normalize_text(node.title, 200)
+        for node in leaf_nodes
+        if "当前需求" in _normalize_text(node.title, 200)
+    ]
+    if detected_intent != "lookup_query" and current_requirement_titles:
+        issues.append(
+            _build_task_tree_health_issue(
+                code="generic_current_requirement_subject",
+                severity="high",
+                category="node_quality",
+                message="任务树节点把“当前需求”当成主体，缺少用户需求里的真实对象。",
+                recommended_action="重新生成节点标题，把路径、功能、状态枚举或 MCP 对象写入对应步骤。",
+                evidence=[f"命中节点：{item}" for item in current_requirement_titles[:4]],
+            )
+        )
+
+    expected_leaf_count = min(
+        max(1, min(int(len(leaf_nodes) or 1), 10)) if detected_intent == "lookup_query" else 10,
+        _plan_step_leaf_count_for_intent(detected_intent, normalized.root_goal or normalized.title),
+    )
+    if (
+        detected_intent != "lookup_query"
+        and len(leaf_nodes) < expected_leaf_count
+    ):
+        issues.append(
+            _build_task_tree_health_issue(
+                code="insufficient_intent_specific_nodes",
+                severity="high",
+                category="generation_shape",
+                message="实现型任务节点数量不足，无法覆盖当前意图所需的分析、实现、回归和验证链路。",
+                recommended_action="按识别出的任务意图重建为差异化任务计划。",
+                evidence=[
+                    f"识别意图：{detected_intent}",
+                    f"当前叶子节点数：{len(leaf_nodes)}",
+                    f"期望至少：{expected_leaf_count}",
+                ],
+            )
+        )
+
+    if (
+        detected_intent != "lookup_query"
+        and not _steps_include_task_subject(leaf_plan_steps, normalized.root_goal or normalized.title)
+    ):
+        issues.append(
+            _build_task_tree_health_issue(
+                code="missing_task_subject",
+                severity="medium",
+                category="node_quality",
+                message="任务树节点未体现用户需求中的关键对象，后续执行容易偏成通用模板。",
+                recommended_action="将路径、功能名、状态名或 MCP 对象写入节点标题与说明。",
+                evidence=[
+                    f"根目标：{_normalize_text(normalized.root_goal or normalized.title, 200)}",
+                    *[
+                        f"节点：{_normalize_text(node.title, 160)}"
+                        for node in leaf_nodes[:4]
+                    ],
                 ],
             )
         )
@@ -959,14 +1376,8 @@ def _build_task_tree_health_report(session: ProjectChatTaskSession | None) -> di
                 )
             )
 
-    if not _has_verification_flavored_step(
-        [
-            {
-                "step": _normalize_text(node.title, 200),
-                "purpose": _normalize_text(node.description or node.objective, 280),
-            }
-            for node in leaf_nodes
-        ]
+    if detected_intent != "lookup_query" and not _has_verification_flavored_step(
+        leaf_plan_steps
     ):
         issues.append(
             _build_task_tree_health_issue(
@@ -986,7 +1397,15 @@ def _build_task_tree_health_report(session: ProjectChatTaskSession | None) -> di
             item
             for item in issues
             if str(item.get("code") or "")
-            in {"lookup_query_overexpanded", "internal_plan_node_detected", "template_goal_mismatch"}
+            in {
+                "lookup_query_overexpanded",
+                "internal_plan_node_detected",
+                "template_goal_mismatch",
+                "generic_three_step_template",
+                "generic_current_requirement_subject",
+                "insufficient_intent_specific_nodes",
+                "missing_task_subject",
+            }
         ),
         None,
     )
@@ -1012,6 +1431,13 @@ def _infer_wrong_template_from_health_issue(issue: dict[str, Any]) -> str:
         return "lookup_query_overexpanded"
     if code == "internal_plan_node_detected":
         return "internal_tool_node"
+    if code in {
+        "generic_three_step_template",
+        "generic_current_requirement_subject",
+        "insufficient_intent_specific_nodes",
+        "missing_task_subject",
+    }:
+        return "generic_three_step"
     return ""
 
 
@@ -1092,43 +1518,67 @@ def _record_task_tree_health_evolution_samples(session: ProjectChatTaskSession) 
 
 def _build_goal_oriented_plan_steps(task_text: str, *, max_steps: int = 6) -> list[dict[str, str]]:
     normalized_task = _normalize_text(task_text, 300)
-    route_path = _extract_route_path(normalized_task)
-    target = route_path or "当前需求"
     detected_intent = _classify_task_tree_intent(normalized_task)
+    target = _primary_task_subject(normalized_task)
 
     if detected_intent == "governance":
         steps = [
             {
-                "step": f"梳理 {target} 当前任务链、反馈面和状态绑定",
-                "purpose": "先确认任务树、工作轨迹、前端反馈和持久化锚点的现状与缺口。",
-                "phase": "analysis",
+                "step": "梳理 MCP 入口与需求记录链路现状",
+                "purpose": "确认统一入口绑定、本地 requirement 和服务端任务树的生成链路。",
+                "phase": "discovery",
             },
             {
-                "step": f"完成 {target} 的稳定性补强与反馈透出",
-                "purpose": "围绕统一 MCP 主链补齐持久化、回写或健康反馈，不把问题误拆成页面切换改造。",
-                "phase": "implementation",
+                "step": "改造任务树生成规则并绑定真实需求对象",
+                "purpose": "按需求类型生成不同任务计划，节点标题必须包含真实对象，禁止用“当前需求”作为主体。",
+                "phase": "generation",
             },
             {
-                "step": "验证任务连续性、健康反馈和收尾结果",
-                "purpose": "确认中断恢复、状态透出和验证闭环都成立，再结束本轮任务。",
+                "step": "补强任务树健康检查与自动重建判断",
+                "purpose": "识别固定三步模板、缺少任务主体、实现型节点不足和验证尾节点缺失等问题。",
+                "phase": "health_check",
+            },
+            {
+                "step": "完善恢复续跑、需求记录与当前节点反馈",
+                "purpose": "确保 chat_session_id、session_id、requirement 路径、current_task_node 和任务分支能持续追溯。",
+                "phase": "recovery",
+            },
+            {
+                "step": "同步 MCP 入口提示词和工作流技能约束",
+                "purpose": "让入口提示词、本地技能包和系统技能包都明确禁止实现型任务固定三步。",
+                "phase": "prompt_sync",
+            },
+            {
+                "step": "补充测试并验证任务树生成、健康检查和总结体验",
+                "purpose": "覆盖治理、修复、文档、查询和坏模板健康检查，确认结果能被前端直接消费。",
                 "phase": "verification",
             },
         ]
     elif detected_intent == "documentation":
         steps = [
             {
-                "step": f"梳理 {target} 的背景、约束与现状",
-                "purpose": "先明确当前方案边界、已有实现和需要补齐的内容。",
-                "phase": "analysis",
+                "step": f"确认 {target} 的 docs 目录目标和现有文档",
+                "purpose": "先定位写入位置、已有相关文档和需要保留的上下文。",
+                "phase": "doc_scope",
             },
             {
-                "step": f"沉淀 {target} 的方案与执行说明",
-                "purpose": "输出面向当前目标的方案文档或说明，避免偏成页面改造任务。",
-                "phase": "implementation",
+                "step": "整理 MCP 工作流调整要点与边界",
+                "purpose": "把入口流程、任务树闭环、需求记录和同步约束组织成可读结构。",
+                "phase": "doc_design",
             },
             {
-                "step": "校对方案一致性并补齐收尾结论",
-                "purpose": "确认方案、实现和验证口径一致，再完成本轮收口。",
+                "step": "写入 docs 文档内容",
+                "purpose": "按目标文件更新正文，避免只生成口头方案或偏成代码实现任务。",
+                "phase": "doc_write",
+            },
+            {
+                "step": "回读校对文档一致性",
+                "purpose": "确认标题、路径、约束和执行步骤一致，没有遗漏关键规则。",
+                "phase": "doc_review",
+            },
+            {
+                "step": "记录后续实现项与验证结论",
+                "purpose": "把文档产生的后续开发项、验证结果和剩余风险写入需求记录。",
                 "phase": "verification",
             },
         ]
@@ -1145,30 +1595,80 @@ def _build_goal_oriented_plan_steps(task_text: str, *, max_steps: int = 6) -> li
                 "phase": "implementation",
             },
             {
+                "step": f"补齐 {target} 的边界状态和回退路径",
+                "purpose": "处理默认态、刷新、返回和异常输入下的显示一致性。",
+                "phase": "ui_edges",
+            },
+            {
+                "step": f"补充 {target} 的交互回归测试",
+                "purpose": "覆盖主要点击路径和状态保持，避免后续回归。",
+                "phase": "test",
+            },
+            {
                 "step": "验证 Tabs 切换、路由与边界状态",
                 "purpose": "确认切换体验、默认激活项和返回路径都正确，再收口本轮任务。",
                 "phase": "verification",
             },
         ]
-    elif any(term in normalized_task for term in ("修复", "bug", "错误", "异常", "不对")):
-        steps = [
-            {
-                "step": f"定位 {target} 的当前问题与影响范围",
-                "purpose": "先确认触发条件、关联模块和最小修改面。",
-                "phase": "analysis",
-            },
-            {
-                "step": f"修复 {target} 的核心问题",
-                "purpose": "完成最小增量改动，并处理必要的联动逻辑。",
-                "phase": "implementation",
-            },
-            {
-                "step": "验证修复结果并补充收尾说明",
-                "purpose": "确认关键路径可用，记录验证结果与剩余风险。",
-                "phase": "verification",
-            },
-        ]
-    elif any(term in normalized_task for term in ("优化", "完善", "重构")):
+    elif detected_intent == "bugfix":
+        status_bug_terms = ("queued", "waiting_user_action", "completed", "登录", "login")
+        if any(term in normalized_task.lower() or term in normalized_task for term in status_bug_terms):
+            steps = [
+                {
+                    "step": f"复现 {target} 的状态冲突和影响范围",
+                    "purpose": "确认 queued、completed 或等待用户动作被误判的触发条件和展示入口。",
+                    "phase": "analysis",
+                },
+                {
+                    "step": f"梳理 {target} 的状态映射与显示入口",
+                    "purpose": "定位 queued、waiting_user_action、completed 等状态在后端和前端消费中的转换边界。",
+                    "phase": "diagnosis",
+                },
+                {
+                    "step": "修复 queued/waiting_user_action 被显示成已完成的问题",
+                    "purpose": "只调整错误状态判定和必要的显示数据，不扩大到无关登录逻辑。",
+                    "phase": "fix",
+                },
+                {
+                    "step": "补充 queued/completed 状态回归测试",
+                    "purpose": "覆盖等待中、需用户操作和已完成的差异，防止状态再次串线。",
+                    "phase": "regression_test",
+                },
+                {
+                    "step": "验证真实或模拟登录流程并记录结论",
+                    "purpose": "确认登录链路在 queued、waiting_user_action 和 completed 下均按预期展示。",
+                    "phase": "verification",
+                },
+            ]
+        else:
+            steps = [
+                {
+                    "step": f"复现 {target} 的问题现象和影响范围",
+                    "purpose": "确认触发条件、实际表现和受影响入口。",
+                    "phase": "analysis",
+                },
+                {
+                    "step": f"定位 {target} 的责任边界和错误路径",
+                    "purpose": "找出数据、状态、交互或接口中的最小故障点。",
+                    "phase": "diagnosis",
+                },
+                {
+                    "step": f"修复 {target} 的核心问题",
+                    "purpose": "按最小改动原则修正错误逻辑，并避免扩大到无关功能。",
+                    "phase": "fix",
+                },
+                {
+                    "step": f"补充 {target} 的必要回归覆盖",
+                    "purpose": "按风险补测试或人工回归证据，防止同类问题复发。",
+                    "phase": "regression_test",
+                },
+                {
+                    "step": f"验证 {target} 的修复结果并记录结论",
+                    "purpose": "确认问题已消失，相关边界行为保持正常。",
+                    "phase": "verification",
+                },
+            ]
+    elif detected_intent == "optimization":
         steps = [
             {
                 "step": f"梳理 {target} 的现状与改动边界",
@@ -1176,9 +1676,19 @@ def _build_goal_oriented_plan_steps(task_text: str, *, max_steps: int = 6) -> li
                 "phase": "analysis",
             },
             {
-                "step": f"完成 {target} 的优化改造",
+                "step": f"设计 {target} 的最小优化路径",
+                "purpose": "明确要保留的行为、可调整的结构和验证口径。",
+                "phase": "design",
+            },
+            {
+                "step": f"完成 {target} 的核心优化改造",
                 "purpose": "按最小改动原则推进核心调整，并兼顾关联路径。",
                 "phase": "implementation",
+            },
+            {
+                "step": f"补齐 {target} 的关联路径和回归测试",
+                "purpose": "覆盖共享行为、边界输入和已有调用方。",
+                "phase": "test",
             },
             {
                 "step": "验证优化结果并整理交付结论",
@@ -1194,9 +1704,19 @@ def _build_goal_oriented_plan_steps(task_text: str, *, max_steps: int = 6) -> li
                 "phase": "analysis",
             },
             {
-                "step": f"完成“{normalized_task or '当前需求'}”的核心改动",
+                "step": f"确认 {target} 的实现路径和风险点",
+                "purpose": "把目标对象、改动入口、数据流和验证方式先收敛清楚。",
+                "phase": "design",
+            },
+            {
+                "step": f"完成 {target} 的核心改动",
                 "purpose": "围绕用户目标实现主路径，避免把内部工具步骤误当成任务节点。",
                 "phase": "implementation",
+            },
+            {
+                "step": f"补充 {target} 的边界处理和必要测试",
+                "purpose": "覆盖主路径之外的异常、空态或历史兼容风险。",
+                "phase": "test",
             },
             {
                 "step": "验证结果并完成本轮收尾",
@@ -1204,7 +1724,12 @@ def _build_goal_oriented_plan_steps(task_text: str, *, max_steps: int = 6) -> li
                 "phase": "verification",
             },
         ]
-    return steps[: max(1, min(int(max_steps or 6), 10))]
+    preferred_count = _preferred_plan_step_leaf_count(
+        detected_intent,
+        normalized_task,
+        max_steps=max_steps,
+    )
+    return _fit_plan_steps_to_count(steps, count=preferred_count)
 
 
 def _build_task_tree_plan_steps(
@@ -1214,6 +1739,7 @@ def _build_task_tree_plan_steps(
     max_steps: int = 6,
 ) -> list[dict[str, str]]:
     plan = _generate_execution_plan_payload(task_text, project_id=project_id, max_steps=max_steps)
+    detected_intent = _classify_task_tree_intent(task_text)
     normalized_steps = [
         item
         for item in (
@@ -1225,6 +1751,18 @@ def _build_task_tree_plan_steps(
     step_limit = max(1, min(int(max_steps or 6), 10))
     if len(normalized_steps) >= 2:
         normalized_steps = normalized_steps[:step_limit]
+        if (
+            _is_generic_three_step_plan(normalized_steps)
+            or (
+                detected_intent != "lookup_query"
+                and len(normalized_steps) < min(
+                    step_limit,
+                    _plan_step_leaf_count_for_intent(detected_intent, task_text),
+                )
+            )
+            or not _steps_include_task_subject(normalized_steps, task_text)
+        ):
+            return _repair_generic_plan_steps(task_text, max_steps=step_limit)
         if not _has_verification_flavored_step(normalized_steps) and len(normalized_steps) < step_limit:
             normalized_steps.append(
                 {
@@ -2041,6 +2579,31 @@ def ensure_task_tree(
     existing = get_task_tree(project_id, username, chat_session_id)
     related_chain_session: ProjectChatTaskSession | None = None
     if existing is not None:
+        existing_health = _build_task_tree_health_report(existing)
+        if (
+            not force
+            and _health_report_recommends_plan_rebuild(existing_health)
+            and _can_repair_task_tree_plan_in_place(existing)
+        ):
+            _record_task_tree_health_evolution_samples(existing)
+            repaired = _repair_task_tree_plan_in_place(existing, max_steps=max_steps)
+            current_node = next(
+                (item for item in repaired.nodes if item.id == repaired.current_node_id),
+                None,
+            )
+            next_steps = [f"当前节点：{current_node.title}"] if current_node and current_node.title else []
+            _save_task_tree_progress_event(
+                session=repaired,
+                node=current_node,
+                event_type="task_tree_auto_repaired",
+                content=(
+                    "检测到任务树计划模板不健康，已按当前需求对象原地重建计划节点。"
+                    f"共 {max(len(repaired.nodes) - 1, 0)} 个计划节点。"
+                ),
+                next_steps=next_steps,
+            )
+            _record_task_tree_health_evolution_samples(repaired)
+            return repaired
         if _can_refine_task_tree_in_place(existing, root_goal, force=force):
             refined = _refine_task_tree_in_place(
                 existing,
@@ -2517,6 +3080,7 @@ def build_task_tree_prompt(session: ProjectChatTaskSession | None) -> str:
         f"总目标：{normalized.root_goal or normalized.title or '-'}",
         f"整体状态：{normalized.status}，进度：{normalized.progress_percent}%",
         "任务树节点必须直接描述面向用户目标的工作步骤，例如分析现状、实现改动、验证结果。",
+        "任务树节点数量必须随需求复杂度收敛，不要把所有非查询任务固定扩成 5 个节点。",
         "不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 这类内部检索或规划工具直接写成任务节点。",
         "不要把候选代理工具、脚本路径或类似“Auto inferred proxy entry from scripts/... ”的描述当成任务节点。",
         "如果当前节点看起来像内部工具名、规则检索步骤或候选脚本，而不是面向需求的步骤，应按用户目标重述为真正的工作步骤后再继续执行。",

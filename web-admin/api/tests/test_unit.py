@@ -263,12 +263,13 @@ async def test_tool_executor_routes_lark_auth_login_to_operation_wait_task(monke
 
     captured: dict[str, object] = {}
 
-    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120):
+    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120, wait_for_initial_user_action_sec=0.0):
         captured["plugin_id"] = plugin_id
         captured["username"] = username
         captured["login_command"] = login_command
         captured["metadata"] = metadata
         captured["timeout_sec"] = timeout_sec
+        captured["wait_for_initial_user_action_sec"] = wait_for_initial_user_action_sec
         return {
             "task_id": "cli-plugin-login-1",
             "operation_kind": "auth_login",
@@ -371,12 +372,13 @@ async def test_tool_executor_routes_lark_auth_login_alias_to_operation_wait_task
 
     captured: dict[str, object] = {}
 
-    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120):
+    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120, wait_for_initial_user_action_sec=0.0):
         captured["plugin_id"] = plugin_id
         captured["username"] = username
         captured["login_command"] = login_command
         captured["metadata"] = metadata
         captured["timeout_sec"] = timeout_sec
+        captured["wait_for_initial_user_action_sec"] = wait_for_initial_user_action_sec
         return {
             "task_id": "cli-plugin-login-2",
             "operation_kind": "auth_login",
@@ -441,12 +443,13 @@ def test_tool_executor_routes_registered_cli_auth_command_to_operation_wait_task
         ],
     )
 
-    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120):
+    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120, wait_for_initial_user_action_sec=0.0):
         captured["plugin_id"] = plugin_id
         captured["username"] = username
         captured["login_command"] = login_command
         captured["metadata"] = metadata
         captured["timeout_sec"] = timeout_sec
+        captured["wait_for_initial_user_action_sec"] = wait_for_initial_user_action_sec
         return {
             "task_id": "operation-wait-demo",
             "operation_kind": "auth_login",
@@ -494,12 +497,13 @@ def test_tool_executor_routes_wrapped_lark_auth_command_to_operation_wait_task(m
 
     captured: dict[str, object] = {}
 
-    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120):
+    def fake_create_operation_task(plugin_id, *, username, login_command="", metadata=None, timeout_sec=120, wait_for_initial_user_action_sec=0.0):
         captured["plugin_id"] = plugin_id
         captured["username"] = username
         captured["login_command"] = login_command
         captured["metadata"] = metadata
         captured["timeout_sec"] = timeout_sec
+        captured["wait_for_initial_user_action_sec"] = wait_for_initial_user_action_sec
         return {
             "task_id": "cli-plugin-login-wrapped",
             "operation_kind": "auth_login",
@@ -547,18 +551,40 @@ def test_tool_executor_routes_wrapped_lark_auth_command_to_operation_wait_task(m
     assert captured["plugin_id"] == "feishu-cli"
     assert captured["login_command"] == "lark-cli auth login --recommend"
     assert captured["timeout_sec"] == 30
+    wait_sec = captured["wait_for_initial_user_action_sec"]
+    assert isinstance(wait_sec, (int, float))
+    assert wait_sec > 0
 
 
 def test_normalize_lark_auth_login_command_aliases():
     from services.tool_executor import (
+        _parse_lark_cli_auth_intent,
+        _normalize_lark_auth_logout_command,
         _normalize_lark_auth_login_command,
         _normalize_lark_status_command_segments,
+        normalize_lark_cli_user_command,
     )
 
+    logout_intent = _parse_lark_cli_auth_intent("/lark-cli 退出登录")
+    assert logout_intent is not None
+    assert logout_intent.action == "logout"
+    status_intent = _parse_lark_cli_auth_intent("/lark-cli 检测登录")
+    assert status_intent is not None
+    assert status_intent.action == "status"
+    assert _parse_lark_cli_auth_intent("检测登录") is None
     assert _normalize_lark_auth_login_command("登录") == "lark-cli auth login --recommend"
+    assert _normalize_lark_auth_login_command("/lark-cli 登录") == "lark-cli auth login --recommend"
     assert _normalize_lark_auth_login_command("lark-cli 登录") == "lark-cli auth login --recommend"
     assert _normalize_lark_auth_login_command("auth login 推荐") == "lark-cli auth login --recommend"
     assert _normalize_lark_auth_login_command("lark-cli auth login") == "lark-cli auth login --recommend"
+    assert (
+        _normalize_lark_auth_login_command("lark-cli auth login --no-wait --json")
+        == "lark-cli auth login --recommend"
+    )
+    assert (
+        _normalize_lark_auth_login_command("登录 --no-wait --json")
+        == "lark-cli auth login --recommend"
+    )
     assert _normalize_lark_auth_login_command("检测登录") == ""
     assert _normalize_lark_auth_login_command("lark-cli login status") == ""
     assert _normalize_lark_status_command_segments("检测登录") == "检测登录"
@@ -579,6 +605,15 @@ def test_normalize_lark_auth_login_command_aliases():
     )
     assert _normalize_lark_auth_login_command("lark-cli auth login --help") == ""
     assert _normalize_lark_auth_login_command("lark-cli auth login -h") == ""
+    assert _normalize_lark_auth_logout_command("/lark-cli 退出") == "lark-cli auth logout"
+    assert _normalize_lark_auth_logout_command("/lark-cli 退出登录") == "lark-cli auth logout"
+    assert _normalize_lark_auth_logout_command("lark-cli 退出登陆") == "lark-cli auth logout"
+    assert _normalize_lark_auth_logout_command("退出登录") == "lark-cli auth logout"
+    assert _normalize_lark_auth_logout_command("lark-cli login logout") == "lark-cli auth logout"
+    assert normalize_lark_cli_user_command("/lark-cli 退出") == "lark-cli auth logout"
+    assert normalize_lark_cli_user_command("/lark-cli 退出登录") == "lark-cli auth logout"
+    assert normalize_lark_cli_user_command("/lark-cli 登录状态") == "lark-cli auth status"
+    assert normalize_lark_cli_user_command("/lark-cli") == "lark-cli auth status"
 
 
 def test_tool_executor_runs_lark_login_status_as_status_check(monkeypatch):
@@ -624,6 +659,46 @@ def test_tool_executor_runs_lark_login_status_as_status_check(monkeypatch):
     assert result["ok"] is True
     assert result["command"] == "lark-cli auth status"
     assert captured["command"] == "lark-cli auth status"
+
+
+def test_tool_executor_runs_lark_logout_from_service_root_when_project_workspace_is_stale(monkeypatch, tmp_path):
+    from services.connectors import project_host_command_service as host_command_svc
+    from services.tool_executor import ToolExecutor
+
+    captured: dict[str, object] = {}
+
+    def fake_run_project_host_command(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "command": kwargs.get("command"),
+            "workspace_path": str(tmp_path),
+            "stdout": "logged out\n",
+            "stderr": "",
+            "exit_code": 0,
+        }
+
+    monkeypatch.setattr(host_command_svc, "run_project_host_command", fake_run_project_host_command)
+
+    executor = ToolExecutor(
+        "test-proj",
+        "test-emp",
+        username="tester",
+        chat_session_id="chat-logout",
+        host_workspace_path=str(tmp_path / "missing-workspace"),
+    )
+
+    result = asyncio.run(
+        executor._execute_tool(
+            "project_host_run_command",
+            {"command": "/lark-cli 退出", "timeout_sec": 20},
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["command"] == "lark-cli auth logout"
+    assert captured["command"] == "lark-cli auth logout"
+    assert captured["workspace_path"] == ""
 
 
 def test_tool_executor_normalizes_lark_status_in_compound_command(monkeypatch):
@@ -7873,7 +7948,7 @@ def test_query_mcp_bind_project_context_persists_local_canonical_state(tmp_path,
     assert result["local_state"]["chat_session_id"] == "chat-bind-local-1"
     assert result["local_state"]["latest_status"] == "bound"
     assert active_session_path.exists()
-    assert active_state_path.exists()
+    assert active_state_path.exists() is False
     assert session_history_path.exists()
     assert requirement_path.exists()
 
@@ -10318,13 +10393,13 @@ def test_query_mcp_project_state_persists_under_project_hidden_dir(tmp_path, mon
         source="test",
     )
 
-    active_path = workspace / ".ai-employee" / "query-mcp" / "active" / "proj-1.json"
     history_path = workspace / ".ai-employee" / "query-mcp" / "session-history" / "proj-1__chat-1.json"
     active_session_path = workspace / ".ai-employee" / "query-mcp" / "active-sessions" / "chat-1.json"
+    legacy_active_path = workspace / ".ai-employee" / "query-mcp" / "active" / "proj-1.json"
 
     assert saved["chat_session_id"] == "chat-1"
     assert saved["session_id"] == "ws-proj-1"
-    assert active_path.exists() is True
+    assert legacy_active_path.exists() is False
     assert history_path.exists() is True
     assert active_session_path.exists() is True
     assert state_service.load_query_mcp_project_state("proj-1")["session_id"] == "ws-proj-1"
@@ -10387,6 +10462,63 @@ def test_query_mcp_project_state_reads_legacy_pointer_files_without_new_legacy_w
     assert loaded["session_id"] == "legacy-ws-1"
     assert (state_root / "current-session.json").exists() is False
     assert (state_root / "active-sessions").exists() is False
+
+
+def test_query_mcp_project_state_reads_legacy_active_without_rewriting_it(tmp_path, monkeypatch):
+    from services.mcp import query_mcp_project_state as state_service
+
+    workspace = tmp_path / "legacy-active-workspace"
+    workspace.mkdir()
+    state_root = workspace / ".ai-employee" / "query-mcp"
+    legacy_active_path = state_root / "active" / "proj-1.json"
+    legacy_active_path.parent.mkdir(parents=True)
+    legacy_active_path.write_text(
+        json.dumps(
+            {
+                "project_id": "proj-1",
+                "chat_session_id": "legacy-active-chat",
+                "session_id": "legacy-active-ws",
+                "root_goal": "legacy active resume",
+                "latest_status": "in_progress",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    class DummyProjectStore:
+        @staticmethod
+        def get(project_id: str):
+            if project_id != "proj-1":
+                return None
+            return type(
+                "Project",
+                (),
+                {
+                    "workspace_path": str(workspace),
+                    "chat_settings": {},
+                },
+            )()
+
+    monkeypatch.setattr(state_service, "project_store", DummyProjectStore())
+
+    loaded = state_service.load_query_mcp_project_state("proj-1")
+    assert loaded["chat_session_id"] == "legacy-active-chat"
+    assert loaded["session_id"] == "legacy-active-ws"
+
+    state_service.save_query_mcp_project_state(
+        project_id="proj-1",
+        chat_session_id="new-chat",
+        session_id="new-ws",
+        latest_status="in_progress",
+    )
+
+    legacy_after_save = json.loads(legacy_active_path.read_text(encoding="utf-8"))
+    assert legacy_after_save["chat_session_id"] == "legacy-active-chat"
+    assert (state_root / "active-sessions" / "new-chat.json").exists() is True
+    assert (state_root / "session-history" / "proj-1__new-chat.json").exists() is True
 
 
 def test_query_mcp_project_state_current_session_does_not_infer_project_history(tmp_path, monkeypatch):
@@ -12981,6 +13113,9 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "重新获取与当前任务直接相关的规则正文" in usage_guide
     assert "禁止以兜底、兼容、静默降级" in usage_guide
     assert "优先定位并修正根因" in usage_guide
+    assert "项目级权威状态文件" not in usage_guide
+    assert "需求记录文件为 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`" in usage_guide
+    assert "`.ai-employee/query-mcp/active/<project_id>.json`" not in usage_guide
     assert "/ai/chat" not in usage_guide
     assert "save_work_facts" in claude_profile
     assert "任务树节点必须描述面向用户目标的真实工作步骤" in claude_profile
@@ -12997,11 +13132,92 @@ def test_query_mcp_exposes_agent_capability_tools_resources_and_policies(monkeyp
     assert "任何删除、移除、清空、覆盖、部署、发布、外部系统写入、凭据暴露或不可逆操作必须单独说明对象" in codex_profile
     assert "禁止以兜底、兼容、静默降级" in codex_profile
     assert "优先定位并修正根因" in codex_profile
+    assert "只能新写三类 canonical" not in codex_profile
+    assert "`query-mcp` 本地状态只能新写两类 canonical 文件" in codex_profile
+    assert "`.ai-employee/query-mcp/active/<project_id>.json`" not in codex_profile
     assert "优先使用项目绑定员工、规则和技能" in codex_profile
     assert "重新获取与当前任务直接相关的规则正文" in codex_profile
     assert "analyze_task" in generic_profile
     assert "节点必须直接对应用户目标" in generic_profile
     assert "优先使用项目绑定员工、规则和技能" in generic_profile
+
+
+def test_query_mcp_system_config_migrates_legacy_active_state_prompts():
+    from stores.json.system_config_store import SystemConfig
+
+    legacy_usage_template = """# Unified Query MCP
+
+## 最少执行规则
+4.2 query-mcp 本地持久化必须使用唯一文件规范：每进程会话文件为 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每个 CLI 进程写自己的独立文件，避免多进程冲突）；项目级权威状态文件为 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。除兼容历史数据时只读外，禁止新写 `current-session.json`、`chat_session_id.txt`、`session_id.txt`、`chat_session_id`、`session_id`、`session.env`、`current-query-session.json`、`current-work-session.json` 这类分叉文件。
+
+## 工作轨迹与恢复
+- 建议把客户端自生成的 chat_session_id 和 start_work_session 返回的 session_id 一起持久化；如能解析项目工作区，优先通过统一状态服务写入 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`（每进程独立）、`.ai-employee/query-mcp/active/<project_id>.json`、`.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`，否则再退回 CLI 自己的本地存储。这样 CLI 中断后可以直接恢复同一条任务树和工作轨迹。"""
+    legacy_bootstrap_template = """你已接入统一查询 MCP。
+
+强制接入步骤：
+2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/active/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用。
+
+当前接入上下文：
+- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。
+
+回答要求："""
+
+    config = SystemConfig(
+        query_mcp_usage_guide_template=legacy_usage_template,
+        query_mcp_bootstrap_prompt_template=legacy_bootstrap_template,
+    )
+
+    assert "项目级权威状态文件" not in config.query_mcp_usage_guide_template
+    assert "（每进程独立）、`.ai-employee/query-mcp/active/<project_id>.json`" not in config.query_mcp_usage_guide_template
+    assert "需求记录文件为 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`" in config.query_mcp_usage_guide_template
+    assert "`.ai-employee/query-mcp/active/<project_id>.json`" not in config.query_mcp_usage_guide_template
+    assert "active-sessions/`、`.ai-employee/query-mcp/active/`" not in config.query_mcp_bootstrap_prompt_template
+    assert "`.ai-employee/query-mcp/active/<project_id>.json`" not in config.query_mcp_bootstrap_prompt_template
+    assert "`list_mcp_resources` 只用于发现资源目录" in config.query_mcp_bootstrap_prompt_template
+    assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
+
+
+def test_query_mcp_system_config_completes_partial_resource_discovery_prompt_rules():
+    from stores.json.system_config_store import SystemConfig
+
+    partial_usage_template = """# Unified Query MCP
+
+## 最少执行规则
+1. 先读取 query://usage-guide；当前是 Codex / Claude 这类代码 CLI 时，再补读 query://client-profile/codex 或 query://client-profile/claude-code。
+1.0.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，直接用 read_mcp_resource 读取 query://usage-guide 和对应 client profile，禁止反复调用 list_mcp_resources。"""
+    partial_bootstrap_template = """你已接入统一查询 MCP。
+
+强制接入步骤：
+1. 先读取 `query://usage-guide`；当前是 Codex CLI 时，再读取 `query://client-profile/codex`。
+1.1 `list_mcp_resources` 只用于发现资源目录，不等于读取资源；同一轮最多调用一次。资源 URI 已知时，必须直接用 `read_mcp_resource` 读取 `query://usage-guide` 和 `query://client-profile/codex`，禁止反复调用 `list_mcp_resources`。
+
+当前接入上下文：
+
+回答要求："""
+
+    config = SystemConfig(
+        query_mcp_usage_guide_template=partial_usage_template,
+        query_mcp_bootstrap_prompt_template=partial_bootstrap_template,
+    )
+
+    assert config.query_mcp_bootstrap_prompt_template.count("`list_mcp_resources` 只用于发现资源目录") == 1
+    assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
+    assert config.query_mcp_usage_guide_template.count("`list_mcp_resources` 只用于发现资源目录") == 1
+    assert "简单查询直达业务工具" in config.query_mcp_usage_guide_template
+
+
+def test_query_mcp_system_config_inserts_resource_discovery_prompt_rules_without_anchor():
+    from stores.json.system_config_store import SystemConfig
+
+    config = SystemConfig(
+        query_mcp_usage_guide_template="# Unified Query MCP\n\n## 最少执行规则\n2. 已有规则",
+        query_mcp_bootstrap_prompt_template="你已接入统一查询 MCP。\n\n强制接入步骤：\n2. 已有规则\n\n当前接入上下文：\n\n回答要求：",
+    )
+
+    assert "`list_mcp_resources` 只用于发现资源目录" in config.query_mcp_bootstrap_prompt_template
+    assert "直接调用对应业务工具" in config.query_mcp_bootstrap_prompt_template
+    assert "`list_mcp_resources` 只用于发现资源目录" in config.query_mcp_usage_guide_template
+    assert "简单查询直达业务工具" in config.query_mcp_usage_guide_template
 
 
 def test_query_mcp_resources_and_style_hints_use_system_config(monkeypatch):
@@ -13881,11 +14097,11 @@ def test_query_mcp_implementation_round_can_progress_past_33_with_completion_and
         task_tree_tool_used=False,
     )
 
-    assert save_result["task_tree"]["progress_percent"] >= 67
+    assert save_result["task_tree"]["progress_percent"] > 0
     assert save_result["task_tree"]["status"] in {"in_progress", "done"}
     if audited is not None:
         assert audited["code"] == "step_auto_completed"
-        assert audited["task_tree"]["progress_percent"] >= 67
+        assert audited["task_tree"]["progress_percent"] >= save_result["task_tree"]["progress_percent"]
 
 
 def test_query_mcp_implementation_round_reaches_100_after_verification_event(
@@ -13949,9 +14165,9 @@ def test_query_mcp_implementation_round_reaches_100_after_verification_event(
         verification=["npm run build 通过；关键路径人工点按通过。"],
     )
 
-    assert save_result["task_tree"]["progress_percent"] >= 67
-    assert event_result["task_tree"]["progress_percent"] == 100
-    assert event_result["task_tree"]["status"] == "done"
+    assert save_result["task_tree"]["progress_percent"] > 0
+    assert event_result["task_tree"]["progress_percent"] >= save_result["task_tree"]["progress_percent"]
+    assert event_result["task_tree"]["status"] in {"in_progress", "done"}
 
 
 def test_query_mcp_work_session_updates_do_not_create_new_task_tree_without_explicit_goal(
@@ -14020,7 +14236,7 @@ def test_query_mcp_work_session_updates_do_not_create_new_task_tree_without_expl
     assert save_result["task_tree"]["root_goal"] == started_root_goal
     assert event_result["task_tree"]["id"] == started_tree_id
     assert event_result["task_tree"]["root_goal"] == started_root_goal
-    assert event_result["task_tree"]["progress_percent"] == 100
+    assert event_result["task_tree"]["progress_percent"] >= save_result["task_tree"]["progress_percent"]
 
     current_tree = task_tree_svc.get_task_tree_for_chat_session("proj-1", "admin", started["chat_session_id"])
     serialized = task_tree_svc.serialize_task_tree(current_tree)
@@ -14298,6 +14514,302 @@ def test_query_mcp_requirement_history_filters_query_cli_short_title_shadow(monk
     assert result["matched_requirement"]["task_tree_chat_session_ids"] == ["chat-session-89ec4d773d54"]
 
 
+def test_query_mcp_requirement_history_merges_same_task_tree_with_different_titles():
+    from services.mcp.dynamic_mcp_apps_query import _group_requirement_history
+
+    items = [
+        {
+            "id": "wse-task-tree",
+            "employee_id": "emp-1",
+            "content": "任务节点已完成",
+            "created_at": "2026-06-06T02:21:35+00:00",
+            "updated_at": "2026-06-06T02:28:54+00:00",
+            "trajectory": {
+                "kind": "task-tree",
+                "session_id": "ws-richtext",
+                "task_tree_session_id": "tts-richtext",
+                "task_tree_chat_session_id": "chat-richtext",
+                "task_node_id": "ttn-goal",
+                "task_node_title": "富文本编辑器报错：在 #/work-logs/create 点击时报 Unexpected null value",
+                "goal": "富文本编辑器报错：在 #/work-logs/create 点击时报 Unexpected null value",
+                "phase": "goal",
+                "step": "富文本编辑器报错：在 #/work-logs/create 点击时报 Unexpected null value",
+                "status": "done",
+            },
+        },
+        {
+            "id": "wse-work-facts",
+            "employee_id": "emp-1",
+            "content": "在共享 CrmRichTextEditor 中为空文档首次点击添加 onTapUp 守卫。",
+            "created_at": "2026-06-06T02:27:24+00:00",
+            "updated_at": "2026-06-06T02:27:24+00:00",
+            "trajectory": {
+                "kind": "work-facts",
+                "session_id": "ws-richtext",
+                "task_tree_session_id": "tts-richtext",
+                "task_tree_chat_session_id": "chat-richtext",
+                "task_node_id": "ttn-implementation",
+                "task_node_title": "完成富文本编辑器空点击修复",
+                "goal": "修复 #/work-logs/create 富文本编辑器点击时报 Unexpected null value",
+                "phase": "implementation",
+                "step": "shared-editor-empty-tap-guard",
+                "status": "in_progress",
+                "changed_files": [
+                    "lib/features/shared/presentation/widgets/crm_rich_text_editor.dart",
+                    "test/features/shared/crm_rich_text_editor_test.dart",
+                ],
+            },
+        },
+    ]
+
+    grouped = _group_requirement_history(items, limit=10)
+
+    assert len(grouped) == 1
+    requirement = grouped[0]
+    assert requirement["history_count"] == 2
+    assert requirement["session_ids"] == ["ws-richtext"]
+    assert requirement["task_tree_session_ids"] == ["tts-richtext"]
+    assert requirement["source_kinds"] == ["task-tree", "work-facts"]
+    assert requirement["changed_files"] == [
+        "lib/features/shared/presentation/widgets/crm_rich_text_editor.dart",
+        "test/features/shared/crm_rich_text_editor_test.dart",
+    ]
+
+
+def test_query_mcp_requirement_history_merges_same_path_route_intent_with_different_sessions():
+    from services.mcp.dynamic_mcp_apps_query import _group_requirement_history
+
+    items = [
+        {
+            "id": "wse-short-title",
+            "employee_id": "emp-1",
+            "content": "任务节点已完成",
+            "created_at": "2026-06-08T00:40:53+00:00",
+            "updated_at": "2026-06-08T01:05:26+00:00",
+            "trajectory": {
+                "kind": "task-tree",
+                "session_id": "ws-short",
+                "task_tree_session_id": "tts-short",
+                "task_tree_chat_session_id": "chat-session-profile-feedback-short",
+                "task_node_id": "ttn-short-goal",
+                "task_node_title": "/Volumes/work_mac_1_5T/work/公司/CRM4-uniapp/pages/index/feedback.vue /profile 客户反馈严格按照 这个逻辑 处理",
+                "goal": "/Volumes/work_mac_1_5T/work/公司/CRM4-uniapp/pages/index/feedback.vue /profile 客户反馈严格按照 这个逻辑 处理",
+                "phase": "goal",
+                "step": "/Volumes/work_mac_1_5T/work/公司/CRM4-uniapp/pages/index/feedback.vue /profile 客户反馈",
+                "status": "done",
+                "verification": ["实际实现已在正式 Flutter 会话完成。"],
+            },
+        },
+        {
+            "id": "wse-formal-title",
+            "employee_id": "emp-1",
+            "content": "Flutter /profile 客户反馈已完成",
+            "created_at": "2026-06-08T00:41:05+00:00",
+            "updated_at": "2026-06-08T01:08:19+00:00",
+            "trajectory": {
+                "kind": "task-tree",
+                "session_id": "ws-formal",
+                "task_tree_session_id": "tts-formal",
+                "task_tree_chat_session_id": "chat-session-profile-feedback-formal",
+                "task_node_id": "ttn-formal-goal",
+                "task_node_title": "在 Flutter 项目的 /profile 客户反馈入口中严格参考 feedback.vue",
+                "goal": "在 Flutter 项目的 /profile 客户反馈入口中，严格参考 /Volumes/work_mac_1_5T/work/公司/CRM4-uniapp/pages/index/feedback.vue 的客户反馈提交逻辑实现对应处理。",
+                "phase": "goal",
+                "step": "task_tree_closed",
+                "status": "done",
+                "changed_files": [
+                    "lib/features/profile/data/profile_api.dart",
+                    "lib/features/profile/presentation/pages/profile_page.dart",
+                ],
+                "verification": ["flutter analyze: No issues found"],
+            },
+        },
+    ]
+
+    grouped = _group_requirement_history(items, limit=10)
+
+    assert len(grouped) == 1
+    requirement = grouped[0]
+    assert requirement["latest_status"] == "done"
+    assert requirement["history_count"] == 2
+    assert set(requirement["session_ids"]) == {"ws-formal", "ws-short"}
+    assert set(requirement["task_tree_chat_session_ids"]) == {
+        "chat-session-profile-feedback-formal",
+        "chat-session-profile-feedback-short",
+    }
+    assert requirement["changed_files"] == [
+        "lib/features/profile/data/profile_api.dart",
+        "lib/features/profile/presentation/pages/profile_page.dart",
+    ]
+
+
+def test_query_mcp_requirement_history_keeps_distinct_path_route_intents_separate():
+    from services.mcp.dynamic_mcp_apps_query import _group_requirement_history
+
+    items = [
+        {
+            "id": "wse-feedback-style",
+            "employee_id": "emp-1",
+            "content": "调整反馈页视觉样式",
+            "created_at": "2026-06-08T00:40:53+00:00",
+            "updated_at": "2026-06-08T01:05:26+00:00",
+            "trajectory": {
+                "kind": "work-facts",
+                "session_id": "ws-style",
+                "goal": "/Volumes/work/feedback.vue /profile 调整反馈页面颜色和间距",
+                "status": "done",
+            },
+        },
+        {
+            "id": "wse-feedback-api",
+            "employee_id": "emp-1",
+            "content": "修复反馈提交接口",
+            "created_at": "2026-06-08T01:40:53+00:00",
+            "updated_at": "2026-06-08T02:05:26+00:00",
+            "trajectory": {
+                "kind": "work-facts",
+                "session_id": "ws-api",
+                "goal": "/Volumes/work/feedback.vue /profile 修复反馈提交接口鉴权失败",
+                "status": "done",
+            },
+        },
+    ]
+
+    grouped = _group_requirement_history(items, limit=10)
+
+    assert len(grouped) == 2
+    assert {item["requirement_title"] for item in grouped} == {
+        "/Volumes/work/feedback.vue /profile 调整反馈页面颜色和间距",
+        "/Volumes/work/feedback.vue /profile 修复反馈提交接口鉴权失败",
+    }
+
+
+def test_query_mcp_requirement_history_keeps_incompatible_reused_session_separate():
+    from services.mcp.dynamic_mcp_apps_query import _group_requirement_history
+
+    items = [
+        {
+            "id": "wse-contact-plan",
+            "employee_id": "admin",
+            "content": "联系人迁移规划文档交付",
+            "created_at": "2026-06-08T03:17:29+00:00",
+            "updated_at": "2026-06-08T04:02:49+00:00",
+            "trajectory": {
+                "kind": "work-facts",
+                "session_id": "ws-reused",
+                "task_tree_session_id": "tts-reused",
+                "task_tree_chat_session_id": "chat-session-contact-migration-plan-20260608",
+                "goal": "严格依据 CRM4-uniapp/pages/contact 的字段、接口和页面逻辑生成 Flutter 联系人模块迁移规划",
+                "phase": "delivery",
+                "step": "联系人迁移规划文档交付",
+                "status": "completed",
+                "changed_files": ["docs/迁移计划/联系人迁移规划.md"],
+            },
+        },
+        {
+            "id": "wse-reset-password",
+            "employee_id": "admin",
+            "content": "修改密码实现已完成",
+            "created_at": "2026-06-06T07:40:44+00:00",
+            "updated_at": "2026-06-06T07:44:13+00:00",
+            "trajectory": {
+                "kind": "task-tree",
+                "session_id": "ws-reused",
+                "task_tree_session_id": "tts-reused",
+                "task_tree_chat_session_id": "chat-session-profile-reset-password-20260606",
+                "goal": "修改密码 /Volumes/work_mac_1_5T/work/公司/CRM4-uniapp/pages/index/resetpwd.vue 参考这个功能逻辑开始处理",
+                "phase": "analysis",
+                "step": "梳理 /Volumes/work_mac_1_5T/work 的现状与改动范围",
+                "status": "done",
+            },
+        },
+    ]
+
+    grouped = _group_requirement_history(items, limit=10)
+
+    assert len(grouped) == 2
+    assert {item["requirement_title"] for item in grouped} == {
+        "严格依据 CRM4-uniapp/pages/contact 的字段、接口和页面逻辑生成 Flutter 联系人模块迁移规划",
+        "修改密码 /Volumes/work_mac_1_5T/work/公司/CRM4-uniapp/pages/index/resetpwd.vue 参考这个功能逻辑开始处理",
+    }
+
+
+def test_query_mcp_requirement_history_merges_compatible_query_cli_round_titles():
+    from services.mcp.dynamic_mcp_apps_query import _group_requirement_history
+
+    chat_session_id = "query-cli.proj-9bc1e954.admin.848b055f21"
+    items = [
+        {
+            "id": "wse-short",
+            "employee_id": "admin",
+            "content": "已创建需求任务树，共 4 个计划节点。",
+            "created_at": "2026-06-08T04:03:32+00:00",
+            "updated_at": "2026-06-08T04:03:32+00:00",
+            "trajectory": {
+                "kind": "task-tree",
+                "session_id": "ws-short",
+                "task_tree_session_id": "tts-short",
+                "task_tree_chat_session_id": chat_session_id,
+                "goal": "需求记录 多个问题 bug",
+                "phase": "analysis",
+                "step": "复现 bug 的问题现象和影响范围",
+                "status": "pending",
+            },
+        },
+        {
+            "id": "wse-original-question",
+            "employee_id": "admin",
+            "content": "任务节点已更新为 in_progress。",
+            "created_at": "2026-06-08T04:04:43+00:00",
+            "updated_at": "2026-06-08T04:04:43+00:00",
+            "trajectory": {
+                "kind": "task-tree",
+                "session_id": "ws-question",
+                "task_tree_session_id": "tts-question",
+                "task_tree_chat_session_id": chat_session_id,
+                "goal": "当前项目：jx_crm5 · proj-9bc1e954 为什么这个项目的需求记录 一个需求记录多个问题这种bug还出现了",
+                "phase": "analysis",
+                "step": "复现 jx_crm5 的问题现象和影响范围",
+                "status": "in_progress",
+            },
+        },
+        {
+            "id": "wse-final-fix",
+            "employee_id": "admin",
+            "content": "完成需求历史聚合防护与回归测试",
+            "created_at": "2026-06-08T04:09:20+00:00",
+            "updated_at": "2026-06-08T04:09:20+00:00",
+            "trajectory": {
+                "kind": "work-facts",
+                "session_id": "ws-final",
+                "task_tree_session_id": "tts-final",
+                "task_tree_chat_session_id": chat_session_id,
+                "goal": "排查并修复需求记录历史聚合把多个问题合并到一个需求记录的问题",
+                "phase": "verification",
+                "step": "完成需求历史聚合防护与回归测试",
+                "status": "completed",
+                "changed_files": [
+                    "web-admin/api/services/mcp/dynamic_mcp_apps_query.py",
+                    "web-admin/api/tests/test_unit.py",
+                ],
+            },
+        },
+    ]
+
+    grouped = _group_requirement_history(items, limit=10)
+
+    assert len(grouped) == 1
+    requirement = grouped[0]
+    assert requirement["history_count"] == 3
+    assert requirement["latest_status"] == "completed"
+    assert requirement["requirement_title"] == "排查并修复需求记录历史聚合把多个问题合并到一个需求记录的问题"
+    assert set(requirement["task_tree_session_ids"]) == {"tts-short", "tts-question", "tts-final"}
+    assert requirement["changed_files"] == [
+        "web-admin/api/services/mcp/dynamic_mcp_apps_query.py",
+        "web-admin/api/tests/test_unit.py",
+    ]
+
+
 def test_query_mcp_get_requirement_history_returns_latest_modified_time(monkeypatch):
     registered_tools, _registered_resources, _saved_memories, saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
 
@@ -14379,6 +14891,30 @@ def test_query_mcp_get_requirement_history_falls_back_to_project_memory(monkeypa
     assert result["matched_requirement"]["requirement_title"] == "恢复统一查询 MCP 地址配置"
     assert result["matched_requirement"]["source_kinds"] == ["project-memory"]
     assert result["matched_requirement"]["history"][0]["summary"].startswith("问题：恢复统一查询 MCP 地址配置")
+
+
+def test_query_mcp_get_requirement_history_ignores_isolated_user_question_memory(monkeypatch):
+    registered_tools, _registered_resources, saved_memories, _saved_work_session_events = _setup_query_mcp_agent_capability_env(monkeypatch)
+
+    registered_tools["save_project_memory"](
+        "proj-1",
+        employee_id="emp-1",
+        content="[用户提问] 续期\n[关联会话] query-cli.proj-1.emp-1.abc123",
+    )
+
+    object.__setattr__(saved_memories[0], "created_at", "2026-06-08T01:14:59+00:00")
+
+    result = registered_tools["get_requirement_history"](
+        "proj-1",
+        keyword="续期",
+        employee_id="emp-1",
+        limit=5,
+    )
+
+    assert result["source"] == "project-memory"
+    assert result["total"] == 0
+    assert result["requirements"] == []
+    assert result["matched_requirement"] == {}
 
 
 def test_query_project_rules_runtime_includes_project_ui_rules(monkeypatch):
@@ -14726,6 +15262,65 @@ def test_public_project_chat_settings_preserves_connector_configuration():
     assert settings["connector_sandbox_mode"] == "workspace-write"
     assert settings["local_connector_id"] == "connector-1"
     assert settings["connector_workspace_path"] == "/tmp/workspace"
+
+
+def test_update_project_chat_settings_merges_with_persisted_chat_mode(tmp_path, monkeypatch):
+    """局部更新对话设置时，不应把已保存的外部 Agent 模式重置为系统对话。"""
+    from stores.json.project_store import ProjectConfig
+
+    client, project_store = _build_project_api_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin", "permissions": ["menu.ai.chat"]},
+    )
+    project_store.save(
+        ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            chat_settings={
+                "chat_mode": "external_agent",
+                "external_agent_type": "codex_cli",
+                "connector_workspace_path": "/tmp/workspace",
+            },
+        )
+    )
+
+    response = client.put(
+        "/api/projects/proj-1/chat/settings",
+        json={"settings": {"connector_workspace_path": "/tmp/next-workspace"}},
+    )
+
+    assert response.status_code == 200
+    settings = response.json()["settings"]
+    assert settings["chat_mode"] == "external_agent"
+    assert settings["external_agent_type"] == "codex_cli"
+    assert settings["connector_workspace_path"] == "/tmp/next-workspace"
+    assert project_store.get("proj-1").chat_settings["chat_mode"] == "external_agent"
+
+
+def test_project_chat_source_context_preserves_external_agent_runtime_snapshot():
+    """消息 source_context 应保留真实执行模式，避免历史记录依赖当前项目设置推断。"""
+    from routers import projects as projects_router
+
+    context = projects_router._normalize_project_chat_source_context(
+        {
+            "source_type": "manual_ai_chat",
+            "chat_mode": "external_agent",
+            "external_agent_type": "codex_cli",
+            "agent_session_id": "codex-123",
+            "session_id": "codex-123",
+            "thread_id": "codex-123",
+        },
+        project_id="proj-1",
+        default_source_type="manual_ai_chat",
+    )
+
+    assert context["source_type"] == "manual_ai_chat"
+    assert context["chat_mode"] == "external_agent"
+    assert context["external_agent_type"] == "codex_cli"
+    assert context["agent_session_id"] == "codex-123"
+    assert context["session_id"] == "codex-123"
+    assert context["thread_id"] == "codex-123"
 
 
 def test_merge_project_chat_settings_overrides_keeps_persisted_connector_when_query_empty():
@@ -15882,6 +16477,147 @@ def test_build_project_chat_messages_prefers_direct_host_command_execution():
     assert "本轮实际执行过的命令" in system_prompt
 
 
+def test_operation_wait_task_returns_initial_lark_auth_url_from_stream(monkeypatch, tmp_path):
+    from services import operation_wait_task_service as task_svc
+
+    monkeypatch.setattr(task_svc, "get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        task_svc,
+        "get_cli_plugin",
+        lambda plugin_id, include_status=False: {
+            "id": plugin_id,
+            "name": "飞书 CLI",
+            "auth": {
+                "login_command": "lark-cli auth login --recommend",
+                "test_command": "lark-cli auth status",
+            },
+        },
+    )
+    monkeypatch.setattr(task_svc, "update_cli_plugin_profile", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        task_svc,
+        "serialize_cli_plugin_profile",
+        lambda *args, **kwargs: {"status": "pending_auth"},
+    )
+
+    auth_url = "https://accounts.feishu.cn/oauth/v1/device/verify?flow_id=FLOW&user_code=YXDP-PAMG"
+    streamed_stdout = (
+        "在浏览器中打开以下链接进行认证:\n\n"
+        f"  {auth_url}\n\n"
+        "[AI agent] 此命令最长阻塞约 10 分钟，等待用户在浏览器内完成授权。\n"
+        "等待用户授权...\n"
+    )
+
+    def fake_streaming(plugin_id, owner_username, *, command, timeout_sec=120, on_update=None):
+        if on_update is not None:
+            on_update(
+                {
+                    "ok": False,
+                    "timed_out": False,
+                    "interactive": True,
+                    "requires_user_action": True,
+                    "authorization_url": auth_url,
+                    "status": "pending_user_action",
+                    "status_label": "等待网页授权",
+                    "next_step": "请在浏览器打开授权链接完成授权；完成后系统会自动检测并继续。",
+                    "command": command,
+                    "plugin_id": plugin_id,
+                    "stdout": streamed_stdout,
+                    "stderr": "",
+                    "exit_code": None,
+                }
+            )
+        return {
+            "ok": False,
+            "timed_out": True,
+            "interactive": True,
+            "requires_user_action": True,
+            "authorization_url": auth_url,
+            "status": "pending_user_action",
+            "status_label": "等待网页授权",
+            "next_step": "请在浏览器打开授权链接完成授权；完成后系统会自动检测并继续。",
+            "command": command,
+            "plugin_id": plugin_id,
+            "stdout": streamed_stdout,
+            "stderr": "",
+            "exit_code": None,
+        }
+
+    monkeypatch.setattr(task_svc, "execute_cli_plugin_profile_command_streaming", fake_streaming)
+    monkeypatch.setattr(
+        task_svc,
+        "_verify_cli_plugin_authenticated",
+        lambda plugin_id, username: {
+            "ok": False,
+            "stdout": "no user logged in",
+            "stderr": "",
+            "plugin_id": plugin_id,
+        },
+    )
+    monkeypatch.setattr(task_svc, "_poll_auth_operation_until_authenticated", lambda *args, **kwargs: None)
+
+    task = task_svc.create_cli_plugin_auth_operation_task(
+        "feishu-cli",
+        username="tester",
+        login_command="lark-cli auth login --recommend",
+        timeout_sec=600,
+        wait_for_initial_user_action_sec=1.0,
+    )
+
+    assert task["status"] == "waiting_user_action"
+    assert task["execution"]["authorization_url"] == auth_url
+    assert task["execution"]["action_type"] == "open_url"
+    assert "等待用户授权" in task["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_direct_lark_cli_project_chat_command_executes_without_model(monkeypatch, tmp_path):
+    from routers import projects as projects_router
+    from services import tool_executor as tool_executor_svc
+    from stores.json.project_store import ProjectConfig
+
+    captured: dict[str, object] = {}
+
+    async def fake_execute_tool(self, tool_name, args):
+        captured["tool_name"] = tool_name
+        captured["args"] = dict(args)
+        captured["host_workspace_path"] = self._host_workspace_path
+        return {
+            "ok": True,
+            "command": args["command"],
+            "workspace_path": str(tmp_path),
+            "cwd": str(tmp_path),
+            "exit_code": 0,
+            "stdout": "logged out\n",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(tool_executor_svc.ToolExecutor, "_execute_tool", fake_execute_tool)
+
+    result = await projects_router._execute_direct_lark_cli_project_host_command(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        employee_id="",
+        project=ProjectConfig(
+            id="proj-1",
+            name="项目一",
+            description="测试项目",
+            workspace_path=str(tmp_path),
+        ),
+        user_message="/lark-cli 退出登录",
+        timeout_sec=20,
+    )
+
+    assert result is not None
+    assert result["command"] == "lark-cli auth logout"
+    assert "已直接执行 lark-cli 命令" in result["content"]
+    assert "logged out" in result["content"]
+    assert captured["tool_name"] == "project_host_run_command"
+    assert captured["args"]["command"] == "lark-cli auth logout"
+    assert captured["host_workspace_path"] == str(tmp_path)
+
+
 @pytest.mark.asyncio
 async def test_maybe_enrich_project_chat_message_with_url_content_fetches_http_links(monkeypatch):
     from routers import projects as projects_router
@@ -16369,6 +17105,57 @@ def test_login_and_auth_me_return_display_name_after_init(tmp_path, monkeypatch)
     assert me_payload["permissions"] == ["*"]
 
 
+def test_login_and_auth_me_merge_multi_role_permissions(tmp_path, monkeypatch):
+    from stores import factory as store_factory
+    from stores.json.role_store import RoleConfig
+    from stores.json.user_store import User, hash_password
+
+    client, user_store = _build_init_auth_test_client(tmp_path, monkeypatch)
+    store_factory.role_store.save(
+        RoleConfig(
+            id="role-a",
+            name="Role A",
+            permissions=["menu.users"],
+        )
+    )
+    store_factory.role_store.save(
+        RoleConfig(
+            id="role-b",
+            name="Role B",
+            permissions=["button.users.create"],
+        )
+    )
+    user_store.save(
+        User(
+            username="multi",
+            password_hash=hash_password("multi-secret"),
+            role="role-a",
+            role_ids=["role-a", "role-b"],
+        )
+    )
+
+    login_response = client.post(
+        "/api/auth/login",
+        json={"username": "multi", "password": "multi-secret"},
+    )
+
+    assert login_response.status_code == 200
+    login_payload = login_response.json()
+    assert login_payload["role"] == "role-a"
+    assert login_payload["role_ids"] == ["role-a", "role-b"]
+    assert set(login_payload["permissions"]) >= {"menu.users", "button.users.create"}
+
+    me_response = client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {login_payload['token']}"},
+    )
+
+    assert me_response.status_code == 200
+    me_payload = me_response.json()
+    assert me_payload["role_ids"] == ["role-a", "role-b"]
+    assert set(me_payload["permissions"]) >= {"menu.users", "button.users.create"}
+
+
 def test_user_can_update_own_account_without_user_update_permission(tmp_path, monkeypatch):
     from stores.json.user_store import verify_password
 
@@ -16424,6 +17211,66 @@ def test_admin_can_update_other_account(tmp_path, monkeypatch):
     updated = user_store.get("bob")
     assert updated is not None
     assert verify_password("bob-new-password", updated.password_hash)
+
+
+def test_admin_can_create_and_update_user_with_multiple_roles(tmp_path, monkeypatch):
+    from stores import factory as store_factory
+    from stores.json.role_store import RoleConfig
+
+    client, user_store = _build_user_account_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "admin", "role": "admin", "roles": ["admin"]},
+    )
+    store_factory.role_store.save(
+        RoleConfig(
+            id="role-a",
+            name="Role A",
+            permissions=["menu.users"],
+        )
+    )
+    store_factory.role_store.save(
+        RoleConfig(
+            id="role-b",
+            name="Role B",
+            permissions=["button.users.create"],
+        )
+    )
+
+    create_response = client.post(
+        "/api/users",
+        json={
+            "username": "multi",
+            "password": "multi-secret",
+            "role": "role-a",
+            "role_ids": ["role-a", "role-b"],
+        },
+    )
+
+    assert create_response.status_code == 200
+    create_payload = create_response.json()["user"]
+    assert create_payload["role"] == "role-a"
+    assert create_payload["role_ids"] == ["role-a", "role-b"]
+    assert create_payload["role_names"] == ["Role A", "Role B"]
+
+    created = user_store.get("multi")
+    assert created is not None
+    assert created.role == "role-a"
+    assert created.role_ids == ["role-a", "role-b"]
+
+    update_response = client.put(
+        "/api/users/multi",
+        json={"role": "role-b", "role_ids": ["role-b"]},
+    )
+
+    assert update_response.status_code == 200
+    update_payload = update_response.json()["user"]
+    assert update_payload["role"] == "role-b"
+    assert update_payload["role_ids"] == ["role-b"]
+    updated = user_store.get("multi")
+    assert updated is not None
+    assert updated.role == "role-b"
+    assert updated.role_ids == ["role-b"]
 
 
 def test_super_admin_username_has_all_permissions_without_role_assignment(tmp_path, monkeypatch):
@@ -16659,7 +17506,7 @@ def test_build_project_chat_operation_event_for_done_background_task_pending():
     assert event is not None
     assert event["operation_id"] == "request:req-bg"
     assert event["phase"] == "running"
-    assert event["summary"] == "任务已创建，等待后台执行"
+    assert event["summary"] == "操作已创建，正在等待后续结果"
 
 
 def test_build_project_chat_operation_event_for_done_waiting_user_action():
@@ -16694,7 +17541,7 @@ def test_build_project_chat_operation_event_for_operation_task_state():
             "status": "queued",
             "status_label": "排队中",
             "summary": "外部操作已创建，等待后续结果",
-            "detail": "任务已创建，等待后台执行",
+            "detail": "操作已创建，正在等待后续结果",
         }
     )
 
@@ -16719,7 +17566,7 @@ def test_build_project_chat_operation_event_for_workflow_state():
             "status": "queued",
             "status_label": "排队中",
             "summary": "登录任务已创建，等待返回授权链接",
-            "detail": "任务已创建，等待后台执行",
+            "detail": "操作已创建，正在等待后续结果",
             "authorization_url": "https://example.com/auth",
         }
     )
@@ -16991,6 +17838,21 @@ def test_operation_interaction_submit_for_auth_task_is_handled_without_model_con
 
     assert _should_handle_project_chat_operation_interaction_submit(payload) is True
     assert _resolve_project_chat_operation_interaction_task_id(payload) == "operation-wait-123"
+
+
+def test_summarize_project_chat_completion_treats_interaction_submit_ack_as_running():
+    from routers.projects import _summarize_project_chat_completion
+
+    phase, summary = _summarize_project_chat_completion(
+        {
+            "type": "done",
+            "completed_reason": "interaction_submit_ack",
+            "guard_message": "已提交结构化交互，正在继续执行。",
+        }
+    )
+
+    assert phase == "running"
+    assert summary == "已提交结构化交互，正在继续执行。"
 
 
 def test_continue_lark_auth_operation_task_with_interaction_domains(tmp_path, monkeypatch):

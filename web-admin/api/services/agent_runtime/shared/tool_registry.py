@@ -30,6 +30,11 @@ class RuntimeToolEntry:
     requires_trust: bool = False
     trusted: bool = True
     description: str = ""
+    parameters_schema: dict[str, Any] = field(default_factory=dict)
+    risk_level: str = "low"
+    permission_scope: str = "workspace"
+    execution_backend: str = "project"
+    audit_policy: str = "standard"
     raw_tool: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -48,6 +53,12 @@ class RuntimeToolEntry:
         payload.setdefault("load_status", self.load_status)
         payload.setdefault("requires_trust", self.requires_trust)
         payload.setdefault("trusted", self.trusted)
+        if self.parameters_schema:
+            payload.setdefault("parameters_schema", dict(self.parameters_schema))
+        payload.setdefault("risk_level", self.risk_level)
+        payload.setdefault("permission_scope", self.permission_scope)
+        payload.setdefault("execution_backend", self.execution_backend)
+        payload.setdefault("audit_policy", self.audit_policy)
         return payload
 
     def summary(self) -> dict[str, Any]:
@@ -63,6 +74,11 @@ class RuntimeToolEntry:
             "requires_trust": self.requires_trust,
             "trusted": self.trusted,
             "description": self.description,
+            "parameters_schema": dict(self.parameters_schema),
+            "risk_level": self.risk_level,
+            "permission_scope": self.permission_scope,
+            "execution_backend": self.execution_backend,
+            "audit_policy": self.audit_policy,
         }
 
 
@@ -120,6 +136,11 @@ class PluginRegistry:
             plugin_status=plugin_status,
             explicit_status=_string_value(tool, "load_status", "status"),
         )
+        parameters_schema = self._parameters_schema(tool)
+        risk_level = self._risk_level(tool, source=source, tool_name=tool_name)
+        permission_scope = self._permission_scope(tool, source=source)
+        execution_backend = self._execution_backend(tool, source=source, tool_name=tool_name)
+        audit_policy = self._audit_policy(tool, risk_level=risk_level)
         entry = RuntimeToolEntry(
             tool_name=tool_name,
             source=source,
@@ -137,11 +158,21 @@ class PluginRegistry:
                 _string_value(tool, "description", "label", "title")
                 or str(skill_manifest.get("description") or "").strip()
             ),
+            parameters_schema=parameters_schema,
+            risk_level=risk_level,
+            permission_scope=permission_scope,
+            execution_backend=execution_backend,
+            audit_policy=audit_policy,
             raw_tool={
                 **tool,
                 "tool_name": tool_name,
                 "source": source,
                 "plugin_id": plugin_id,
+                "parameters_schema": parameters_schema,
+                "risk_level": risk_level,
+                "permission_scope": permission_scope,
+                "execution_backend": execution_backend,
+                "audit_policy": audit_policy,
             },
         )
         self._entries[tool_name] = entry
@@ -198,6 +229,50 @@ class PluginRegistry:
             manifest = self._skill_manifests.get(plugin_id, {})
             return bool(manifest.get("project_local"))
         return False
+
+    def _parameters_schema(self, tool: dict[str, Any]) -> dict[str, Any]:
+        schema = tool.get("parameters_schema") or tool.get("parameters") or tool.get("schema")
+        return dict(schema) if isinstance(schema, dict) else {}
+
+    def _risk_level(self, tool: dict[str, Any], *, source: str, tool_name: str) -> str:
+        explicit = _string_value(tool, "risk_level", "risk")
+        if explicit:
+            return explicit
+        if tool_name == "project_host_run_command":
+            return "medium"
+        if tool_name.startswith("project_host_terminal_"):
+            return "medium"
+        if source in {"browser", "local_connector", "cli"}:
+            return "medium"
+        return "low"
+
+    def _permission_scope(self, tool: dict[str, Any], *, source: str) -> str:
+        explicit = _string_value(tool, "permission_scope", "scope")
+        if explicit:
+            return explicit
+        if source in {"project", "skill", "mcp"}:
+            return "project"
+        if source in {"browser", "local_connector", "cli"}:
+            return "workspace"
+        return "global"
+
+    def _execution_backend(self, tool: dict[str, Any], *, source: str, tool_name: str) -> str:
+        explicit = _string_value(tool, "execution_backend", "backend")
+        if explicit:
+            return explicit
+        if tool_name.startswith("project_host_terminal_") or tool_name == "project_host_run_command":
+            return "project_host"
+        return source
+
+    def _audit_policy(self, tool: dict[str, Any], *, risk_level: str) -> str:
+        explicit = _string_value(tool, "audit_policy")
+        if explicit:
+            return explicit
+        if risk_level in {"high", "critical"}:
+            return "full"
+        if risk_level == "medium":
+            return "standard"
+        return "summary"
 
     def _resolve_installed(
         self,

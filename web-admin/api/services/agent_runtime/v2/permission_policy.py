@@ -41,9 +41,11 @@ class PermissionPolicy:
         username: str = "",
         chat_session_id: str = "",
         workspace_trusted: bool = True,
+        tool_entry: dict[str, Any] | None = None,
     ) -> PermissionDecision:
         normalized_tool = str(tool_name or "").strip()
         payload = dict(args or {})
+        entry = dict(tool_entry or {}) if isinstance(tool_entry, dict) else {}
         matched_rule = self._match_rule(
             run_id=run_id,
             call_id=call_id,
@@ -53,7 +55,7 @@ class PermissionPolicy:
             username=username,
             chat_session_id=chat_session_id,
         )
-        risk_level = self._risk_level(normalized_tool, payload)
+        risk_level = self._risk_level(normalized_tool, payload, tool_entry=entry)
         if matched_rule is not None and matched_rule.behavior == DENY_BEHAVIOR:
             return self._record(
                 run_id=run_id,
@@ -74,7 +76,7 @@ class PermissionPolicy:
                 reason="matched permission rule",
                 matched_rule=matched_rule.to_dict(),
             )
-        if self._requires_trust(normalized_tool) and not workspace_trusted:
+        if self._requires_trust(normalized_tool, tool_entry=entry) and not workspace_trusted:
             return self._record(
                 run_id=run_id,
                 call_id=call_id,
@@ -152,28 +154,48 @@ class PermissionPolicy:
         )
         return self._store.record_decision(decision)
 
-    def _requires_trust(self, tool_name: str) -> bool:
+    def _requires_trust(self, tool_name: str, *, tool_entry: dict[str, Any] | None = None) -> bool:
+        entry = dict(tool_entry or {}) if isinstance(tool_entry, dict) else {}
+        if "requires_trust" in entry:
+            return bool(entry.get("requires_trust"))
+        permission_scope = str(entry.get("permission_scope") or "").strip().lower()
+        if permission_scope in {"workspace", "host", "local"}:
+            return True
         return (
             tool_name in {"project_host_run_command"}
             or tool_name.startswith("project_host_terminal_")
             or tool_name.startswith("local_connector_")
         )
 
-    def _risk_level(self, tool_name: str, args: dict[str, Any]) -> str:
+    def _risk_level(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        tool_entry: dict[str, Any] | None = None,
+    ) -> str:
+        entry = dict(tool_entry or {}) if isinstance(tool_entry, dict) else {}
+        metadata_risk = str(entry.get("risk_level") or "").strip().lower()
+        computed_risk = "low"
         if tool_name == "project_host_run_command":
             command = f" {str(args.get('command') or '').strip().lower()} "
-            if any(term in command for term in _SENSITIVE_COMMAND_TERMS):
-                return "high"
-            return "medium"
-        if tool_name == "project_host_terminal_start":
+            computed_risk = "high" if any(term in command for term in _SENSITIVE_COMMAND_TERMS) else "medium"
+        elif tool_name == "project_host_terminal_start":
             command = f" {str(args.get('initial_command') or '').strip().lower()} "
-            if any(term in command for term in _SENSITIVE_COMMAND_TERMS):
-                return "high"
-            return "medium"
-        if tool_name in {"project_host_terminal_input", "project_host_terminal_stop"}:
-            return "medium"
-        if tool_name == "project_host_terminal_read":
-            return "low"
-        if tool_name.startswith("local_connector_write"):
-            return "medium"
-        return "low"
+            computed_risk = "high" if any(term in command for term in _SENSITIVE_COMMAND_TERMS) else "medium"
+        elif tool_name in {"project_host_terminal_input", "project_host_terminal_stop"}:
+            computed_risk = "medium"
+        elif tool_name == "project_host_terminal_read":
+            computed_risk = "low"
+        elif tool_name.startswith("local_connector_write"):
+            computed_risk = "medium"
+        return self._max_risk_level(computed_risk, metadata_risk)
+
+    def _max_risk_level(self, *levels: str) -> str:
+        order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+        selected = "low"
+        for level in levels:
+            normalized = str(level or "").strip().lower()
+            if order.get(normalized, -1) > order[selected]:
+                selected = normalized
+        return selected

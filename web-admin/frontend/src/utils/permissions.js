@@ -1,5 +1,7 @@
 import { ref } from 'vue'
 
+import { getServerScopedStorageKey, isSameOriginServer } from './server-profile.js'
+
 const PERMISSION_STORAGE_KEY = 'permissions'
 const CHAT_SETTINGS_ROUTE_PREFIX = '/ai/chat/settings'
 const permissionStateVersion = ref(0)
@@ -64,9 +66,42 @@ const FALLBACK_PATHS = [
 ]
 
 export function isSuperAdmin() {
-  const role = String(localStorage.getItem('role') || 'user').trim().toLowerCase()
-  const username = String(localStorage.getItem('username') || '').trim().toLowerCase()
-  return role === 'admin' || username === 'admin'
+  const role = getScopedStorageValue('role') || 'user'
+  const roleIds = parsePermissionArray(getScopedStorageValue('role_ids'))
+    .map((item) => String(item || '').trim().toLowerCase())
+  const username = getScopedStorageValue('username').toLowerCase()
+  return role === 'admin' || roleIds.includes('admin') || username === 'admin'
+}
+
+function getScopedStorageValue(key) {
+  const scoped = localStorage.getItem(getServerScopedStorageKey(key))
+  if (scoped !== null) return String(scoped || '').trim()
+  if (isSameOriginServer()) {
+    return String(localStorage.getItem(key) || '').trim()
+  }
+  return ''
+}
+
+function setScopedStorageValue(key, value) {
+  const normalized = String(value || '').trim()
+  if (normalized) {
+    localStorage.setItem(getServerScopedStorageKey(key), normalized)
+    if (isSameOriginServer()) {
+      localStorage.setItem(key, normalized)
+    }
+    return
+  }
+  localStorage.removeItem(getServerScopedStorageKey(key))
+  if (isSameOriginServer()) {
+    localStorage.removeItem(key)
+  }
+}
+
+function removeScopedStorageValue(key) {
+  localStorage.removeItem(getServerScopedStorageKey(key))
+  if (isSameOriginServer()) {
+    localStorage.removeItem(key)
+  }
 }
 
 function parsePermissionArray(rawValue) {
@@ -83,26 +118,28 @@ function parsePermissionArray(rawValue) {
 }
 
 function legacyUserFallback(permissionKey) {
-  const role = String(localStorage.getItem('role') || 'user').toLowerCase()
-  if (role === 'admin') return true
+  const role = (getScopedStorageValue('role') || 'user').toLowerCase()
+  const roleIds = parsePermissionArray(getScopedStorageValue('role_ids'))
+    .map((item) => String(item || '').trim().toLowerCase())
+  if (role === 'admin' || roleIds.includes('admin')) return true
   if (role !== 'user') return false
   return LEGACY_USER_PERMISSION_KEYS.has(permissionKey)
 }
 
 export function getPermissionArray() {
-  return parsePermissionArray(localStorage.getItem(PERMISSION_STORAGE_KEY))
+  return parsePermissionArray(getScopedStorageValue(PERMISSION_STORAGE_KEY))
 }
 
 export function setPermissionArray(values) {
   const normalized = (Array.isArray(values) ? values : [])
     .map((item) => String(item || '').trim())
     .filter(Boolean)
-  localStorage.setItem(PERMISSION_STORAGE_KEY, JSON.stringify(Array.from(new Set(normalized))))
+  setScopedStorageValue(PERMISSION_STORAGE_KEY, JSON.stringify(Array.from(new Set(normalized))))
   permissionStateVersion.value += 1
 }
 
 export function clearPermissionArray() {
-  localStorage.removeItem(PERMISSION_STORAGE_KEY)
+  removeScopedStorageValue(PERMISSION_STORAGE_KEY)
   permissionStateVersion.value += 1
 }
 
@@ -110,7 +147,7 @@ function hasSinglePermission(permissionKey) {
   const target = String(permissionKey || '').trim()
   if (!target) return true
   if (isSuperAdmin()) return true
-  if (localStorage.getItem(PERMISSION_STORAGE_KEY) === null) {
+  if (!getScopedStorageValue(PERMISSION_STORAGE_KEY)) {
     return legacyUserFallback(target)
   }
   const permissions = getPermissionArray()

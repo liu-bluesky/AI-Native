@@ -1,309 +1,176 @@
-# 完整目录结构 & 文件讲解
+# 目录结构与模块边界
+
+> 更新日期：2026-06-04
 
 ## 顶级目录
 
-```
+```text
 ai-employee/
-├── web-admin/                # 🖥️ 管理台 (FastAPI后端 + Vue3前端)
-├── mcp-skills/               # 🧩 技能管理 MCP 服务
-├── mcp-rules/                # 📋 规则管理 MCP 服务
-├── mcp-memory/               # 🧠 记忆管理 MCP 服务
-├── mcp-persona/              # 🎭 人设管理 MCP 服务
-├── mcp-evolution/            # 🔄 进化引擎 MCP 服务
-├── mcp-sync/                 # 🔁 同步 MCP 服务
-├── docker/                   # 🐳 Docker Compose 部署配置
-├── remote-docker-deploy/     # 🚀 远程 Docker 发布工具
-├── docs/                     # 📚 项目文档 (架构设计/PRD/方案)
-├── rules/                    # ⚖️ AI 可消费的编码与架构规则
-├── agents/                   # 🤖 项目专属智能体定义
-├── assets/                   # 🖼️ 静态资源
-├── codeDocs/                 # 📖 代码文档 (本目录)
-├── AGENTS.md                 # AI Agent 接入规则
-├── CLAUDE.md                 # Claude Code 使用说明
-├── HERMES.md                 # Hermes 使用说明
-├── README.md                 # 项目主说明文档
-├── skills-lock.json          # 技能版本锁定文件
-├── 工作流.md                 # 工作流说明
-├── AI开发教程.md             # AI开发教程
-├── lark-cli.md               # 飞书CLI说明
-├── image.png                 # 项目截图
-└── LICENSE                   # 开源协议
+├── web-admin/                 # Web 管理台：FastAPI API + Vue 前端
+├── mcp-skills/                # 独立技能 MCP 服务与系统技能包知识库
+├── mcp-rules/                 # 独立规则 MCP 服务
+├── mcp-memory/                # 独立记忆 MCP 服务
+├── mcp-persona/               # 独立人设 MCP 服务
+├── mcp-evolution/             # 独立进化引擎 MCP 服务
+├── mcp-sync/                  # 独立同步 MCP 服务
+├── docker/                    # Docker Compose、镜像构建和发布文档
+├── remote-docker-deploy/      # 远程 Docker 发布、数据同步与回滚脚本
+├── docs/                      # 产品、架构、专项方案与历史设计文档
+├── rules/                     # 仓库级 Markdown 规则
+├── agents/                    # 仓库级专用 Agent 角色说明
+├── skills/                    # 本地/宿主技能目录，当前主要承载飞书技能体系
+├── assets/                    # 静态资源
+├── feishu-archive-upload/     # 飞书归档上传相关资产
+├── codeDocs/                  # 当前代码文档
+├── .ai-employee/              # 本地 query-mcp、requirement、技能副本和运行状态
+├── AGENTS.md                  # Codex/Agent 接入当前项目的强制规则
+├── CLAUDE.md                  # Claude Code 入口说明
+├── HERMES.md                  # Hermes 入口说明
+├── README.md                  # 项目主说明
+├── lark-cli.md                # 飞书 CLI 使用说明
+├── skills-lock.json           # 技能版本锁定
+├── 工作流.md                  # 工作流说明
+├── AI开发教程.md              # AI 开发教程
+└── LICENSE                    # 许可证
 ```
 
----
+## 根目录关键文件
 
-## 根目录文件详解
+| 路径 | 说明 |
+|---|---|
+| `AGENTS.md` | 当前项目内 Agent 的最高优先级项目入口规则。要求读取统一查询 MCP 资源、初始化 `.ai-employee/`、维护 requirement、任务树和工作事实。 |
+| `README.md` | 项目总览，说明 MCP-first 定位、核心功能、Web-Admin、任务树与工作流。 |
+| `CLAUDE.md` / `HERMES.md` | 不同宿主 Agent 的使用约定。 |
+| `skills-lock.json` | 锁定宿主技能版本，当前包含大量 `lark-*` 技能。 |
+| `lark-cli.md` | 飞书 CLI 命令、认证和技能使用说明。 |
+| `rules/*.md` | 仓库级规则，包括 `architecture.md`、`backend.md`、`frontend.md`、`homepage-ui.md`、`mcp-service.md`、`query-mcp-prompt-sync.md`、`ui-design.md`。 |
+| `agents/*.md` | 专用角色提示文档：后端、前端、MCP 架构、安全审计。 |
 
-### `AGENTS.md`
-**AI Agent 接入统一查询 MCP 的强制规则。** 这是项目最重要的入口文件之一。任何接入本项目的 AI Agent（如 Claude Code、Codex CLI）都必须遵循此文件中定义的规则。主要规定：
-- 必须先读取 `query://usage-guide` 和 `query://client-profile/codex`
-- 在当前 CLI 工作区初始化 `.ai-employee/` 目录结构
-- 检查并同步 `query-mcp-workflow` 技能包
-- 实现型需求优先调用 `start_project_workflow(...)` 作为固定入口
-- 维护本地 requirement 对象和服务端任务树双写
-- 清晰度评分机制（1-5分），低于3分需先确认再执行
+## `web-admin/`
 
-### `CLAUDE.md`
-**Claude Code CLI 的使用说明。** 指导用户如何在 Claude Code 环境中使用本项目，包括安装、配置、常用命令和工作流。
+详见 [web-admin.md](./web-admin.md)。
 
-### `HERMES.md`
-**Hermes AI 助手的使用说明。** 指导用户如何在 Hermes 环境中接入本项目的 MCP 能力。
-
-### `README.md`
-**项目主说明文档。** 介绍 AI 员工工厂的核心概念、功能特性、架构设计和快速开始指南。包括 AI 员工管理、项目管理、统一查询 MCP、技能/规则/记忆/人设体系等功能说明。
-
-### `skills-lock.json`
-**技能版本锁定文件。** 锁定当前项目中所有飞书技能包（22个 lark-* 技能）的版本，确保团队使用一致的技能版本。
-
-### `工作流.md`
-**工作流说明文档。** 描述项目的标准工作流程，包括需求分析、任务规划、执行和交付等阶段。
-
-### `AI开发教程.md`
-**AI 开发教程。** 面向开发者的教程文档，指导如何基于本项目进行 AI-Native 开发。
-
-### `lark-cli.md`
-**飞书 CLI 说明。** 介绍 `lark-cli` 命令行工具的使用方法，包括技能调用、命令语法和常见场景。
-
-### `LICENSE`
-**开源许可证文件。**
-
-### `image.png`
-**项目架构截图或示意图。**
-
----
-
-## 一级子目录详解
-
-### `web-admin/` — 管理台
-
-> 详细文档见 [web-admin.md](./web-admin.md)
-
-```
+```text
 web-admin/
-├── api/                      # FastAPI 后端
-│   ├── server.py             # 入口文件
-│   ├── pyproject.toml        # Python 项目配置
-│   ├── uv.lock               # uv 依赖锁定
-│   ├── .env / .env.example   # 环境变量配置
-│   ├── init_admin.py         # 初始化管理员脚本
-│   ├── system-policy.md      # 系统策略文档
-│   ├── core/                 # 核心模块
-│   ├── routers/              # API 路由 (28个模块)
-│   ├── services/             # 业务服务层
-│   ├── models/               # Pydantic 数据模型
-│   ├── schemas/              # 数据库 Schema
-│   ├── ws/                   # WebSocket 支持
-│   ├── tasks/                # 后台任务
-│   ├── db_utils/             # 数据库工具
-│   ├── utils/                # 通用工具
-│   ├── tests/                # 测试用例
-│   ├── mcp/                  # 内置 MCP 端点
-│   └── migrations/           # 数据库迁移
-├── frontend/                 # Vue3 前端
-│   ├── package.json          # npm 配置
-│   ├── vite.config.ts        # Vite 构建配置
-│   ├── index.html            # 入口 HTML
-│   ├── nginx.conf            # Nginx 配置
-│   ├── src/
-│   │   ├── main.ts           # 前端入口
-│   │   ├── App.vue           # 根组件
-│   │   ├── router/           # 路由配置
-│   │   ├── stores/           # Pinia 状态管理
-│   │   ├── api/              # API 请求层
-│   │   ├── views/            # 页面视图
-│   │   ├── components/       # 公共组件
-│   │   ├── layouts/          # 布局组件
-│   │   └── utils/            # 工具函数
-│   └── public/               # 静态资源
-├── docker-compose.yml        # 开发环境编排
-├── docker-compose.test.yml   # 测试环境编排
-├── docker-compose.prod.yml   # 生产环境编排
-└── docker-compose.base.yml   # 基础服务编排
+├── api/
+│   ├── server.py              # API 入口，转发到 core.server
+│   ├── pyproject.toml         # 后端依赖与 pytest 配置
+│   ├── core/                  # 配置、认证、依赖、迁移、权限、Redis、可观测性
+│   ├── core/sql_migrations/   # PostgreSQL SQL 迁移
+│   ├── routers/               # FastAPI 路由模块
+│   ├── services/              # 业务服务、动态 MCP、Agent Runtime、连接器、后台任务
+│   ├── stores/                # JSON/PostgreSQL store 实现与工厂
+│   ├── models/                # 请求、响应、数据库模型
+│   ├── scripts/               # 启停、迁移、初始化、修复脚本
+│   └── tests/                 # pytest 测试
+└── frontend/
+    ├── package.json           # 前端依赖与 npm scripts
+    ├── vite.config.js         # Vite 配置
+    ├── index.html             # SPA 入口
+    └── src/
+        ├── main.js            # Vue 应用入口
+        ├── App.vue
+        ├── router/            # Vue Router
+        ├── views/             # 页面
+        ├── components/        # 复用组件
+        ├── modules/           # 项目聊天、任务树反馈等局部模块
+        ├── utils/             # API、权限、认证、工作区、日期等工具
+        ├── api/               # 前端 API 封装
+        └── styles/            # UI 设计样式
 ```
 
-### `mcp-skills/` — 技能管理 MCP 服务
+## 独立 MCP 服务
 
-> 详细文档见 [mcp-services.md](./mcp-services.md)
+详见 [mcp-services.md](./mcp-services.md)。
 
-```
-mcp-skills/
-├── server.py                 # MCP 服务入口 (FastMCP)
-├── pyproject.toml            # Python 项目配置
-├── .env.example              # 环境变量模板
-└── knowledge/
-    ├── skills/               # 技能定义 (JSON)
-    │   ├── query-mcp-workflow.json  # 统一查询工作流技能定义
-    │   └── ...
-    └── skill-packages/       # 技能包目录
-        └── query-mcp-workflow/
-            ├── SKILL.md      # 技能主文档
-            ├── manifest.json # 技能清单
-            ├── prompts/      # 提示词模板
-            └── references/   # 参考文档
-```
+每个根目录 MCP 服务基本都有：
 
-**职责：** 管理所有可用技能的注册、发现、查询和下发。外部 Agent 通过此 MCP 服务获取可用的技能定义和提示词模板。
+- `server.py`：FastMCP 服务入口。
+- `store.py`：本地存储/知识库访问。
+- `pyproject.toml`：服务依赖。
+- `knowledge/`：对应服务的本地知识库或数据目录。
 
-### `mcp-rules/` — 规则管理 MCP 服务
+| 目录 | 服务名 | 主要职责 |
+|---|---|---|
+| `mcp-skills/` | `skills-service` | 技能查询、安装、卸载、技能资源。 |
+| `mcp-rules/` | `rules-service` | 规则查询、提交、演化、反馈统计。 |
+| `mcp-memory/` | `memory-service` | 记忆保存、召回、压缩、身份信号。 |
+| `mcp-persona/` | `persona-service` | 人设、语气、风格、快照、漂移评估。 |
+| `mcp-evolution/` | `evolution-engine` | 使用模式分析、候选规则、自动进化、报告。 |
+| `mcp-sync/` | `sync-service` | 更新推送、状态同步、Agent 通知。 |
 
-```
-mcp-rules/
-├── server.py                 # MCP 服务入口
-├── pyproject.toml            # Python 项目配置
-├── .env.example              # 环境变量模板
-└── knowledge/
-    └── rules/                # 规则定义 (JSON)
-        ├── coding-standards.json   # 编码规范
-        ├── architecture.json       # 架构约束
-        └── ...
-```
+## `docker/`
 
-**职责：** 管理项目规则、编码规范和架构约束。提供规则的 CRUD、检索和应用能力，确保 AI 员工行为符合项目约定。
+详见 [deploy-and-config.md](./deploy-and-config.md)。
 
-### `mcp-memory/` — 记忆管理 MCP 服务
-
-```
-mcp-memory/
-├── server.py                 # MCP 服务入口
-├── pyproject.toml            # Python 项目配置
-├── __init__.py               # 包初始化
-├── knowledge.db              # 知识库 (SQLite)
-└── memory_store.db           # 记忆存储 (SQLite)
-```
-
-**职责：** 管理 AI 员工和项目的长期记忆。支持记忆的持久化存储、检索和上下文注入，让 AI 员工可以跨会话保持知识连续性。
-
-### `mcp-persona/` — 人设管理 MCP 服务
-
-```
-mcp-persona/
-├── server.py                 # MCP 服务入口
-└── pyproject.toml            # Python 项目配置
-```
-
-**职责：** 管理 AI 员工的人设定义。包括角色性格、沟通风格、专业领域等配置，让每个 AI 员工具有独特的行为特征。
-
-### `mcp-evolution/` — 进化引擎 MCP 服务
-
-```
-mcp-evolution/
-├── server.py                 # MCP 服务入口
-├── pyproject.toml            # Python 项目配置
-└── __init__.py               # 包初始化
-```
-
-**职责：** 驱动 AI 员工的持续进化。根据使用反馈、任务表现和经验积累，自动调整和优化员工的能力配置、规则优先级和行为策略。
-
-### `mcp-sync/` — 同步 MCP 服务
-
-```
-mcp-sync/
-├── server.py                 # MCP 服务入口
-└── pyproject.toml            # Python 项目配置
-```
-
-**职责：** 负责跨服务间的数据同步。确保技能、规则、记忆、人设等模块的状态一致性，支持多服务协同工作。
-
----
-
-### `docker/` — Docker 部署配置
-
-```
+```text
 docker/
-├── docker-compose.yml        # 开发环境 Docker Compose
-├── docker-compose.test.yml   # 测试环境 Docker Compose
-├── docker-compose.prod.yml   # 生产环境 Docker Compose
-├── docker-compose.base.yml   # 基础服务 (DB/Redis) 编排
-├── .env.example              # 环境变量模板
-├── nginx/                    # Nginx 配置
-├── postgres/                 # PostgreSQL 初始化脚本
-├── redis/                    # Redis 配置
-├── scripts/                  # 辅助脚本
-└── README*.md                # 部署说明文档
+├── docker-compose.yml         # 本地/开发 Compose
+├── docker-compose.test.yml    # 测试 Compose
+├── compose.prod.yml           # 生产 Compose
+├── Dockerfile.api             # Python 3.12 + FastAPI API 镜像
+├── Dockerfile.frontend        # Node 20 build + Nginx runtime
+├── nginx.conf                 # 前端容器 Nginx 与 /api/ 反代
+├── deploy.sh / deploy.ps1     # 部署脚本
+├── build-publish-images.sh    # 镜像构建发布脚本
+├── init/001_usage_schema.sql  # 初始化 SQL
+├── backup/                    # 本地备份样例
+├── dist/                      # 镜像归档产物目录
+└── README*.md / 部署.md       # 部署、发布、迁移、测试说明
 ```
 
-> 详细文档见 [deploy-and-config.md](./deploy-and-config.md)
+## `remote-docker-deploy/`
 
-### `remote-docker-deploy/` — 远程部署工具
+远程发布工具集，当前不是单一 `deploy.sh` 结构，而是 Python 编排器加三个阶段脚本：
 
-```
-remote-docker-deploy/
-├── deploy.sh                 # 部署脚本
-├── Dockerfile                # 应用镜像定义
-├── docker-compose.yml        # 远程部署编排
-├── .env.example              # 环境变量模板
-└── *.py                      # 部署辅助脚本
-```
+| 文件 | 说明 |
+|---|---|
+| `remote_docker_deploy.py` | 主编排器，支持 `package`、`upload`、`remote`、`rollback` 等阶段。 |
+| `package_deploy_artifacts.sh` | 本地构建并打包离线镜像 tar，或 remote-build 源码包。 |
+| `upload_deploy_artifacts.sh` | 上传产物到远程服务器，不执行部署。 |
+| `update_remote_stack.sh` | 在远端做预检查、备份、`docker load/build`、`deploy.sh up`，默认带 `--update-db`。 |
+| `sync_postgres_data.py` | 将本地 PostgreSQL 业务表同步到远端。 |
+| `sync_resource_visibility.py` | 同步员工、规则、技能的可见范围。 |
+| `.remote-deploy.prod.json` | `prod` profile 的非敏感配置。 |
 
-**职责：** 将项目部署到远程 Docker 主机的工具集。包含镜像构建、服务启动、健康检查和回滚机制。
+## `docs/`
 
-### `docs/` — 项目文档
+`docs/` 是产品和技术方案库，和 `codeDocs/` 的职责不同。当前主要结构：
 
-```
+```text
 docs/
-├── architecture/             # 架构设计文档
-├── prd/                      # 产品需求文档
-├── design/                   # 设计方案
-├── guides/                   # 使用指南
-├── api/                      # API 文档
-└── images/                   # 文档图片
+├── README.md
+├── 开发经验.md
+├── 总结文档.md
+├── 00-项目总览/
+├── 10-平台架构设计/
+├── 20-产品应用设计/
+├── 30-专项功能方案/
+├── 40-数据存储升级/
+├── 反馈驱动规则升级模块/
+└── update/
 ```
 
-**职责：** 汇集项目的架构设计、产品需求、技术方案和使用指南文档。
+其中 `30-专项功能方案/` 保存大量当前功能演进方案，例如统一查询 MCP、任务树闭环、Agent Runtime、项目素材、短片工作室、飞书机器人等。
 
-### `rules/` — AI 编码规则
+## `.ai-employee/`
 
-```
-rules/
-├── coding-standards.md       # 编码规范
-├── architecture-rules.md     # 架构约束
-├── api-design.md             # API 设计规范
-├── testing.md                # 测试规范
-└── git-workflow.md           # Git 工作流规范
-```
+这是当前工作区的本地运行状态与技能副本目录，不能把其他子目录的同名目录当成当前根目录状态。
 
-**职责：** 定义 AI Agent 在开发和维护项目时必须遵循的规则。这些规则可被 MCP 规则服务读取并注入到 AI 上下文中。
+| 路径 | 说明 |
+|---|---|
+| `.ai-employee/skills/query-mcp-workflow/` | 本地统一查询 MCP 工作流技能副本。 |
+| `.ai-employee/query-mcp/active-sessions/` | 每个 CLI 会话的 canonical 本地状态。 |
+| `.ai-employee/query-mcp/active/<project_id>.json` | 历史遗留项目级指针，只读恢复使用，禁止新写，不能代表当前窗口。 |
+| `.ai-employee/query-mcp/session-history/` | 项目 + 会话历史状态。 |
+| `.ai-employee/requirements/<project_id>/` | 每个需求的本地 requirement 对象。 |
+| `.ai-employee/operation-wait-tasks/` | 操作等待任务状态。 |
+| `.ai-employee/cli-toolchain/` | CLI 插件/工具链根目录。 |
 
-### `agents/` — 智能体定义
+## 需要避免的旧文档误差
 
-```
-agents/
-├── developer.md              # 开发者智能体
-├── reviewer.md               # 代码审查智能体
-├── tester.md                 # 测试智能体
-└── architect.md              # 架构师智能体
-```
-
-**职责：** 定义项目中各类 AI 智能体的角色、职责、技能组合和行为规则。
-
----
-
-## 架构关系图
-
-```
-                   ┌──────────────────┐
-                   │  外部 AI/IDE/CLI  │
-                   └────────┬─────────┘
-                            │ MCP 协议
-              ┌─────────────┼─────────────┐
-              │             │             │
-    ┌─────────▼──┐  ┌──────▼──────┐  ┌──▼──────────┐
-    │  统一查询   │  │  员工 MCP   │  │  项目 MCP   │
-    │  /mcp/query │  │ /mcp/emp/*  │  │ /mcp/proj/* │
-    └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
-           │                │                │
-    ┌──────▼────────────────▼────────────────▼──────┐
-    │              Web-Admin API 网关                │
-    │         (FastAPI + 28 个路由模块)              │
-    └──────┬──────────┬──────────┬──────────────────┘
-           │          │          │
-    ┌──────▼──┐ ┌─────▼───┐ ┌───▼──────────┐
-    │ Skills  │ │  Rules  │ │ Memory/Persona│
-    │  MCP    │ │  MCP    │ │  MCP          │
-    └────┬────┘ └────┬────┘ └──────┬────────┘
-         │           │             │
-    ┌────▼───────────▼─────────────▼────┐
-    │     PostgreSQL 17 + Redis 7       │
-    │        (数据持久化层)              │
-    └───────────────────────────────────┘
-```
+- 前端入口是 `src/main.js`，不是 `main.ts`。
+- Vite 配置是 `vite.config.js`，不是 `vite.config.ts`。
+- 后端当前没有 `schemas/`、`ws/`、`tasks/`、`db_utils/` 这些顶层目录。
+- `docker/` 下没有 `docker-compose.prod.yml` 或 `docker-compose.base.yml`，生产编排是 `compose.prod.yml`。
+- `remote-docker-deploy/` 没有 `deploy.sh`、`Dockerfile`、`docker-compose.yml`，远程部署由 Python 编排器和阶段脚本完成。

@@ -67,7 +67,7 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 
 1. 执行前先读取 `query://usage-guide`。
 2. 当前宿主是 Codex CLI 时，再读取 `query://client-profile/codex`。
-3. 先以当前 CLI 工作区为准，检查并补齐本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/active/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用。
+3. 先以当前 CLI 工作区为准，检查并补齐本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用。
 4. 项目本地工作流技能默认位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。
 5. 只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。
 6. 如果本地技能已存在且可用，直接复用，不要重复创建。
@@ -83,19 +83,30 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 2. 进入项目内执行前，先调用 `get_manual_content(project_id=...)` 读取项目手册。
 3. 实现型任务在改文件前必须先走 `analyze_task -> resolve_relevant_context -> generate_execution_plan`。
 4. 显式调用 `bind_project_context(...)` 绑定当前任务；真正执行前再用 `get_current_task_tree(...)` 确认当前节点。
-5. 整个任务固定复用同一个 `chat_session_id` 和同一个 `session_id`；禁止再写 `current-session.json`、`chat_session_id.txt`、`session.env` 这类 legacy 文件。
+5. 整个任务固定复用同一个 `chat_session_id` 和同一个 `session_id`；不要在项目工作区写入分叉会话状态文件。
 6. 本地 requirement 记录写入 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`；本地 query-mcp 状态写入 `.ai-employee/query-mcp/` 下的 canonical 文件。
 7. 工作流必须本地优先：先完成分析、改动、验证和本地记录，再把任务树状态、工作事实和交付结果同步回服务端。
 8. 中断恢复顺序固定为：`bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)`。
 9. 开始节点前先调用 `update_task_node_status(...)`；完成节点时必须调用 `complete_task_node_with_verification(...)`。
 10. 如果宿主拿不到任务树读取或推进工具，只能明确说明“任务树闭环未完成”，不能把自然语言进度当成已完成。
 
+## 任务树生成约束
+
+1. 生成任务树前先识别需求类型和真实对象：查询、文档、修复、治理/工作流、页面交互、优化或通用实现。
+2. 查询型问题保持 1 个检索回答节点，最多补 1 个轻量整理节点；不要拆成实现、修复或测试链路。
+3. 实现型、修复型、治理型、文档型任务禁止固定生成“分析 / 实现 / 验证”三步。节点数量、标题和阶段必须随需求类型变化。
+4. 节点标题不能把“当前需求”当作主要对象；必须写出用户原始需求里的路径、功能名、状态枚举、MCP 对象、文档目录或模块名。
+5. 治理/工作流类任务至少覆盖入口链路、任务树生成、健康检查、恢复续跑、提示词/技能同步和测试验证。
+6. 修复类任务至少覆盖复现、状态/数据映射定位、最小修复、回归测试和真实或模拟流程验证。
+7. 文档类任务至少覆盖目标路径确认、现有文档梳理、内容写入、回读校对和后续实现项记录。
+8. 如果已生成的任务树出现固定三步、多个节点含“当前需求”、缺少真实对象或实现型节点少于必要链路，必须重建后再展示或继续执行。
+
 ## 本地存储约束
 
 - 一个需求对应一个 requirement 文件，不要把多个需求写进同一个聚合文件。
 - requirement 文件路径固定为 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。
 - 项目本地工作流技能路径固定为 `.ai-employee/skills/query-mcp-workflow/`。
-- query-mcp canonical 本地状态固定写在 `.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/active/`、`.ai-employee/query-mcp/session-history/`。
+- query-mcp canonical 本地状态固定写在 `.ai-employee/query-mcp/active-sessions/` 与 `.ai-employee/query-mcp/session-history/`。
 
 ## 同步约束
 
@@ -106,7 +117,7 @@ _QUERY_MCP_WORKFLOW_SKILL_TEXT = """# 项目本地 Query MCP 工作流
 
 - 不要只在自然语言里宣布任务完成；真正完成依赖任务树验证结果和最终同步状态。
 - 不要在每一步都把零碎进度立即推回服务端；在本地优先模式下，应优先维护本地状态并按节点回写。
-- 不要重新引入 legacy 会话文件或分叉指针文件。
+- 不要重新引入分叉会话状态文件。
 """
 
 
@@ -248,6 +259,11 @@ def _active_session_path(chat_session_id: str, project_id: str = "", workspace_p
 
 
 def _active_state_path(project_id: str, workspace_path: str = "") -> Path | None:
+    """Legacy project-level pointer path.
+
+    Do not write this path for new state. A single project-level active file is
+    last-write-wins and cannot represent multiple windows safely.
+    """
     state_root = _state_root(project_id, workspace_path)
     if state_root is None:
         return None
@@ -899,7 +915,7 @@ def _trim_query_mcp_session_artifacts(
     if len(sessions) <= keep_value:
         return []
 
-    active_payload = _read_json(_active_state_path(project_id_value, workspace_path))
+    active_payload = _load_latest_active_session(project_id_value, workspace_path)
     active_chat_session_id = _normalize_text(active_payload.get("chat_session_id"), 200)
     candidates = [item for item in sessions.values() if item["chat_session_id"] != active_chat_session_id]
 
@@ -1058,8 +1074,9 @@ def load_query_mcp_local_state(project_id: str, workspace_path: str = "") -> dic
     if not project_id_value:
         return {}
     return _merge_state_payloads(
-        _read_json(_active_state_path(project_id_value, workspace_path)),
+        _load_latest_active_session(project_id_value, workspace_path),
         _load_latest_history_payload(project_id_value, workspace_path),
+        _read_json(_active_state_path(project_id_value, workspace_path)),
         _load_legacy_pointer_state(project_id_value, workspace_path),
     )
 
@@ -1097,21 +1114,16 @@ def persist_query_mcp_local_state(
     chat_session_id_value = _normalize_text(chat_session_id, 200)
     if not project_id_value or not chat_session_id_value:
         return {}
-    active_path = _active_state_path(project_id_value, workspace_path)
     session_path = _session_state_path(project_id_value, chat_session_id_value, workspace_path)
     active_session_path = _active_session_path(chat_session_id_value, project_id_value, workspace_path)
-    if active_path is None or session_path is None or active_session_path is None:
+    if session_path is None or active_session_path is None:
         return {}
-    active_payload = _read_json(active_path)
-    if not _payload_matches_chat_session(active_payload, chat_session_id_value):
-        active_payload = {}
     legacy_payload = _load_legacy_pointer_state(project_id_value, workspace_path)
     if not _payload_matches_chat_session(legacy_payload, chat_session_id_value):
         legacy_payload = {}
     existing = _merge_state_payloads(
         _read_json(active_session_path),
         _read_json(session_path),
-        active_payload,
         legacy_payload,
     )
     payload = {
@@ -1153,7 +1165,6 @@ def persist_query_mcp_local_state(
     )
     _write_json(active_session_path, payload)
     _write_json(session_path, payload)
-    _write_json(active_path, payload)
     _trim_query_mcp_session_artifacts(project_id_value, workspace_path)
     return _normalize_state_payload(payload)
 

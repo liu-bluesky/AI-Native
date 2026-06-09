@@ -490,6 +490,13 @@ def test_project_chat_task_tree_routes_reconcile_stale_progress_from_work_events
     implementation_node.verification_result = ""
     verification_node.status = "done"
     verification_node.verification_result = "Vite build passed without syntax errors."
+    for extra_node in session.nodes:
+        if int(extra_node.level or 0) != 1:
+            continue
+        if extra_node.id in {analysis_node.id, implementation_node.id, verification_node.id}:
+            continue
+        extra_node.status = "done"
+        extra_node.verification_result = f"已完成额外节点：{extra_node.title}"
     root_node.status = "in_progress"
     root_node.verification_result = ""
     session.current_node_id = analysis_node.id
@@ -739,6 +746,13 @@ def test_project_chat_task_tree_routes_reconcile_prior_node_without_explicit_ver
     implementation_node.verification_result = "已完成树形结构和视觉降噪改造。"
     verification_node.status = "done"
     verification_node.verification_result = "npm run build 成功。"
+    for extra_node in session.nodes:
+        if int(extra_node.level or 0) != 1:
+            continue
+        if extra_node.id in {analysis_node.id, implementation_node.id, verification_node.id}:
+            continue
+        extra_node.status = "done"
+        extra_node.verification_result = f"已完成额外节点：{extra_node.title}"
     root_node.status = "in_progress"
     root_node.verification_result = ""
     session.current_node_id = analysis_node.id
@@ -904,7 +918,7 @@ def test_project_chat_task_tree_audit_auto_completes_leaf_when_completion_and_ve
     assert audit_payload["severity"] == "low"
     assert audit_payload["category"] == "task_tree_auto_completion"
     assert audit_payload["auto_updated"] is True
-    assert audit_payload["task_tree"]["progress_percent"] >= 33
+    assert audit_payload["task_tree"]["progress_percent"] > 0
     completed_leaf = next(
         item
         for item in audit_payload["task_tree"]["nodes"]
@@ -1131,6 +1145,260 @@ def test_project_chat_task_tree_governance_goal_avoids_tabs_template(
     assert health["detected_intent"] == "governance"
     assert health["rebuild_recommended"] is False
     assert health["safe_to_display"] is True
+
+
+def test_project_chat_task_tree_governance_goal_is_not_generic_three_step(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    generate_response = client.post(
+        "/api/projects/proj-1/chat/task-tree/generate",
+        json={
+            "chat_session_id": chat_session_id,
+            "message": "补全 MCP 入口工作流与任务树体验调整计划，使其包含可直接实施的任务树生成代码改造方案",
+        },
+    )
+    assert generate_response.status_code == 200
+    payload = generate_response.json()["task_tree"]
+    leaf_nodes = [item for item in payload["nodes"] if int(item["level"]) == 1]
+    assert len(leaf_nodes) >= 5
+    assert [item["stage_key"] for item in leaf_nodes] != [
+        "analysis",
+        "implementation",
+        "verification",
+    ]
+    assert not any("当前需求" in item["title"] for item in leaf_nodes)
+    joined_titles = "\n".join(item["title"] for item in leaf_nodes)
+    object_groups = [
+        "MCP 入口",
+        "任务树生成",
+        "健康检查",
+        "恢复续跑",
+        "总结体验",
+        "测试",
+    ]
+    assert sum(1 for term in object_groups if term in joined_titles) >= 3
+    assert payload["task_tree_health"]["rebuild_recommended"] is False
+
+
+def test_project_chat_task_tree_bugfix_goal_includes_status_repair_chain(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    generate_response = client.post(
+        "/api/projects/proj-1/chat/task-tree/generate",
+        json={
+            "chat_session_id": chat_session_id,
+            "message": "修复 /lark-cli 登录时 queued 被显示成已完成的问题",
+        },
+    )
+    assert generate_response.status_code == 200
+    payload = generate_response.json()["task_tree"]
+    leaf_nodes = [item for item in payload["nodes"] if int(item["level"]) == 1]
+    joined = "\n".join(
+        f"{item['title']}\n{item.get('description', '')}" for item in leaf_nodes
+    )
+    expected_terms = [
+        "queued",
+        "completed",
+        "状态映射",
+        "waiting_user_action",
+        "回归测试",
+        "登录流程",
+    ]
+    assert len(leaf_nodes) >= 5
+    assert all(term in joined for term in expected_terms)
+    assert payload["task_tree_health"]["rebuild_recommended"] is False
+
+
+def test_project_chat_task_tree_documentation_goal_uses_doc_workflow(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    generate_response = client.post(
+        "/api/projects/proj-1/chat/task-tree/generate",
+        json={
+            "chat_session_id": chat_session_id,
+            "message": "把 MCP 入口工作流调整计划写入 docs 目录",
+        },
+    )
+    assert generate_response.status_code == 200
+    payload = generate_response.json()["task_tree"]
+    leaf_nodes = [item for item in payload["nodes"] if int(item["level"]) == 1]
+    joined = "\n".join(
+        f"{item['title']}\n{item.get('description', '')}" for item in leaf_nodes
+    )
+    expected_terms = [
+        "docs 目录",
+        "现有文档",
+        "MCP 工作流调整要点",
+        "写入 docs",
+        "回读校对",
+        "后续实现项",
+    ]
+    assert len(leaf_nodes) >= 5
+    assert all(term in joined for term in expected_terms)
+    assert payload["task_tree_health"]["detected_intent"] == "documentation"
+
+
+def test_project_chat_task_tree_query_goal_stays_short(
+    tmp_path,
+    monkeypatch,
+):
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+
+    session_response = client.post("/api/projects/proj-1/chat/sessions")
+    assert session_response.status_code == 200
+    chat_session_id = session_response.json()["session"]["id"]
+
+    generate_response = client.post(
+        "/api/projects/proj-1/chat/task-tree/generate",
+        json={
+            "chat_session_id": chat_session_id,
+            "message": "这个项目有哪些 MCP 工具",
+        },
+    )
+    assert generate_response.status_code == 200
+    payload = generate_response.json()["task_tree"]
+    leaf_nodes = [item for item in payload["nodes"] if int(item["level"]) == 1]
+    joined = "\n".join(item["title"] for item in leaf_nodes)
+    assert 1 <= len(leaf_nodes) <= 2
+    assert "实现" not in joined
+    assert "修复" not in joined
+    assert "测试" not in joined
+    assert payload["task_tree_health"]["detected_intent"] == "lookup_query"
+
+
+def test_project_chat_task_tree_health_flags_generic_three_step_template(
+    tmp_path,
+    monkeypatch,
+):
+    from core.deps import project_chat_task_store
+    from services.chat.project_chat_task_tree import serialize_task_tree
+    from stores.json.project_chat_task_store import ProjectChatTaskNode, ProjectChatTaskSession
+    from stores.json.project_store import ProjectConfig
+
+    client, store_factory = _build_project_chat_task_tree_test_client(
+        tmp_path,
+        monkeypatch,
+        {"sub": "tester", "role": "admin"},
+    )
+    store_factory.project_store.save(ProjectConfig(id="proj-1", name="项目一"))
+    chat_session_id = "chat-session-health-generic-1"
+    session_id = "tts-health-generic-1"
+    root_node = ProjectChatTaskNode(
+        id="node-root-health-generic-1",
+        session_id=session_id,
+        title="补全 MCP 入口工作流与任务树体验调整计划，使其包含可直接实施的任务树生成代码改造方案",
+        description="根任务",
+        level=0,
+        sort_order=0,
+        status="pending",
+    )
+    leaf_nodes = [
+        ProjectChatTaskNode(
+            id="node-generic-analysis",
+            session_id=session_id,
+            parent_id=root_node.id,
+            title="梳理 当前需求 当前任务链、反馈面和状态绑定",
+            description="阶段：analysis",
+            level=1,
+            sort_order=1,
+            status="pending",
+            stage_key="analysis",
+        ),
+        ProjectChatTaskNode(
+            id="node-generic-implementation",
+            session_id=session_id,
+            parent_id=root_node.id,
+            title="完成 当前需求 的稳定性补强与反馈透出",
+            description="阶段：implementation",
+            level=1,
+            sort_order=2,
+            status="pending",
+            stage_key="implementation",
+        ),
+        ProjectChatTaskNode(
+            id="node-generic-verification",
+            session_id=session_id,
+            parent_id=root_node.id,
+            title="验证任务连续性、健康反馈和收尾结果",
+            description="阶段：verification",
+            level=1,
+            sort_order=3,
+            status="pending",
+            stage_key="verification",
+        ),
+    ]
+    saved = project_chat_task_store.save(
+        ProjectChatTaskSession(
+            id=session_id,
+            project_id="proj-1",
+            username="tester",
+            chat_session_id=chat_session_id,
+            title=root_node.title,
+            root_goal=root_node.title,
+            current_node_id=leaf_nodes[0].id,
+            nodes=[root_node, *leaf_nodes],
+        )
+    )
+
+    payload = serialize_task_tree(saved)
+    assert payload is not None
+    health = payload["task_tree_health"]
+    assert health["issue_count"] > 0
+    assert health["rebuild_recommended"] is True
+    issue_codes = {item["code"] for item in health["issues"]}
+    assert issue_codes & {
+        "generic_three_step_template",
+        "generic_current_requirement_subject",
+    }
 
 
 def test_project_chat_task_tree_health_flags_template_goal_mismatch(
@@ -2668,14 +2936,47 @@ def test_build_task_tree_session_filters_internal_tool_plan_into_goal_steps(monk
     leaf_titles = [node.title for node in session.nodes if int(node.level) == 1]
     leaf_descriptions = [node.description for node in session.nodes if int(node.level) == 1]
 
-    assert leaf_titles == [
+    assert len(leaf_titles) >= 5
+    assert leaf_titles[:2] == [
         "梳理 /ai/chat/settings/projects/proj-d16591a6 当前结构与切换路径",
         "改造成页内 Tabs 切换并保持状态同步",
-        "验证 Tabs 切换、路由与边界状态",
     ]
+    assert "验证 Tabs 切换、路由与边界状态" in leaf_titles
     assert not any("Auto inferred proxy entry" in text for text in leaf_titles + leaf_descriptions)
     assert not any("search_project_context" in text for text in leaf_descriptions)
     assert not any("query_project_rules" in text for text in leaf_descriptions)
+
+
+def test_build_task_tree_session_varies_bugfix_step_count_by_complexity(monkeypatch):
+    from services.chat import project_chat_task_tree as task_tree_svc
+
+    monkeypatch.setattr(
+        task_tree_svc,
+        "_generate_execution_plan_payload",
+        lambda *args, **kwargs: {"plan_steps": []},
+    )
+
+    simple_session = task_tree_svc.build_task_tree_session(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-simple-bug",
+        root_goal="修复按钮颜色不生效",
+    )
+    complex_session = task_tree_svc.build_task_tree_session(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-complex-bug",
+        root_goal="修复 /lark-cli 登录时 queued、waiting_user_action、completed 状态映射和前端展示串线的问题，并补回归测试",
+    )
+
+    simple_leaf_titles = [node.title for node in simple_session.nodes if int(node.level) == 1]
+    complex_leaf_titles = [node.title for node in complex_session.nodes if int(node.level) == 1]
+
+    assert 3 <= len(simple_leaf_titles) <= 4
+    assert len(complex_leaf_titles) > len(simple_leaf_titles)
+    assert len(complex_leaf_titles) >= 5
+    assert not (len(simple_leaf_titles) == len(complex_leaf_titles) == 5)
+    assert "验证" in simple_leaf_titles[-1]
 
 
 def test_build_task_tree_prompt_explicitly_forbids_internal_tools_as_nodes():
@@ -2712,5 +3013,6 @@ def test_build_task_tree_prompt_explicitly_forbids_internal_tools_as_nodes():
     prompt = build_task_tree_prompt(session)
 
     assert "任务树节点必须直接描述面向用户目标的工作步骤" in prompt
+    assert "不要把所有非查询任务固定扩成 5 个节点" in prompt
     assert "不要把 search_project_context、query_project_rules、search_ids、get_manual_content、resolve_relevant_context、generate_execution_plan 这类内部检索或规划工具直接写成任务节点。" in prompt
     assert "不要把候选代理工具、脚本路径或类似“Auto inferred proxy entry from scripts/... ”的描述当成任务节点。" in prompt

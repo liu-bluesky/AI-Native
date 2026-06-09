@@ -74,11 +74,17 @@
 
       <el-table :data="pagedUsers" stripe>
         <el-table-column prop="username" label="账号" min-width="180" />
-        <el-table-column prop="role" label="角色" width="140">
+        <el-table-column prop="role" label="角色" min-width="220">
           <template #default="{ row }">
-            <el-tag :type="row.role === 'admin' ? 'danger' : 'info'">
-              {{ row.role_name || row.role }}
-            </el-tag>
+            <div class="role-tags">
+              <el-tag
+                v-for="item in userRoleItems(row)"
+                :key="item.id"
+                :type="item.id === 'admin' ? 'danger' : 'info'"
+              >
+                {{ item.name || item.id }}
+              </el-tag>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="创建人" width="160">
@@ -148,8 +154,16 @@
         <el-form-item label="账号" prop="username">
           <el-input v-model="createForm.username" placeholder="请输入账号" />
         </el-form-item>
-        <el-form-item label="角色" prop="role">
-          <el-select v-model="createForm.role" style="width: 100%">
+        <el-form-item label="角色" prop="role_ids">
+          <el-select
+            v-model="createForm.role_ids"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            style="width: 100%"
+            placeholder="选择一个或多个角色"
+          >
             <el-option
               v-for="item in roleOptions"
               :key="item.id"
@@ -206,8 +220,17 @@
         <el-form-item label="账号" prop="username">
           <el-input v-model="editForm.username" disabled />
         </el-form-item>
-        <el-form-item label="角色" prop="role">
-          <el-select v-model="editForm.role" :disabled="isEditingCurrentUser" style="width: 100%">
+        <el-form-item label="角色" prop="role_ids">
+          <el-select
+            v-model="editForm.role_ids"
+            :disabled="isEditingCurrentUser"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            style="width: 100%"
+            placeholder="选择一个或多个角色"
+          >
             <el-option
               v-for="item in roleOptions"
               :key="item.id"
@@ -377,7 +400,7 @@ const filters = reactive({
 
 const createForm = reactive({
   username: '',
-  role: 'user',
+  role_ids: [],
   password: '',
   department_ids: [],
   primary_department_id: '',
@@ -385,7 +408,7 @@ const createForm = reactive({
 
 const editForm = reactive({
   username: '',
-  role: 'user',
+  role_ids: [],
   password: '',
   department_ids: [],
   primary_department_id: '',
@@ -429,7 +452,7 @@ const createRules = {
       trigger: 'blur',
     },
   ],
-  role: [{ required: true, message: '请选择角色', trigger: 'change' }],
+  role_ids: [{ type: 'array', required: true, min: 1, message: '请选择角色', trigger: 'change' }],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
     { min: 6, message: '密码至少 6 位', trigger: 'blur' },
@@ -437,7 +460,7 @@ const createRules = {
 }
 
 const editRules = {
-  role: [{ required: true, message: '请选择角色', trigger: 'change' }],
+  role_ids: [{ type: 'array', required: true, min: 1, message: '请选择角色', trigger: 'change' }],
   password: [{ validator: validateOptionalPassword, trigger: 'blur' }],
 }
 
@@ -495,8 +518,8 @@ function buildUserExportCsv(list) {
   const headers = ['账号', '角色ID', '角色名称', '部门', '创建人', '创建时间']
   const rows = list.map((item) => [
     item?.username || '',
-    item?.role || '',
-    item?.role_name || item?.role || '',
+    userRoleItems(item).map((role) => role.id).join(';'),
+    userRoleItems(item).map((role) => role.name || role.id).join(';'),
     (item?.departments || []).map((department) => department.name || department.id).join(';'),
     item?.created_by || '',
     formatDateTime(item?.created_at, { withSeconds: true }) || '',
@@ -528,7 +551,8 @@ const filteredUsers = computed(() => {
       (item?.departments || []).some((department) =>
         String(department?.name || department?.id || '').toLowerCase().includes(keyword),
       )
-    const matchesRole = !role || String(item?.role || '').trim() === role
+    const itemRoleIds = userRoleItems(item).map((roleItem) => String(roleItem.id || '').trim())
+    const matchesRole = !role || itemRoleIds.includes(role)
     const matchesDepartment =
       !departmentId ||
       (item?.department_ids || []).some((itemDepartmentId) => itemDepartmentId === departmentId)
@@ -580,7 +604,7 @@ watch(
 
 function resetCreateForm() {
   createForm.username = ''
-  createForm.role = roleOptions.value[0]?.id || 'user'
+  createForm.role_ids = [roleOptions.value[0]?.id || 'user'].filter(Boolean)
   createForm.password = ''
   createForm.department_ids = []
   createForm.primary_department_id = ''
@@ -597,7 +621,7 @@ function openCreateDialog() {
 
 function openEditDialog(row) {
   editForm.username = String(row?.username || '')
-  editForm.role = String(row?.role || roleOptions.value[0]?.id || 'user')
+  editForm.role_ids = normalizeRoleIds(row?.role_ids, row?.role || roleOptions.value[0]?.id || 'user')
   editForm.password = ''
   editForm.department_ids = Array.isArray(row?.department_ids) ? row.department_ids.slice() : []
   editForm.primary_department_id = String(row?.primary_department_id || editForm.department_ids[0] || '')
@@ -654,8 +678,8 @@ async function fetchRoles() {
   try {
     const data = await api.get('/users/role-options')
     roleOptions.value = Array.isArray(data?.roles) ? data.roles : []
-    if (!createForm.role && roleOptions.value.length) {
-      createForm.role = roleOptions.value[0].id
+    if (!createForm.role_ids.length && roleOptions.value.length) {
+      createForm.role_ids = [roleOptions.value[0].id]
     }
   } catch (err) {
     roleOptions.value = []
@@ -669,7 +693,8 @@ async function createUser() {
   try {
     const payload = {
       username: createForm.username,
-      role: createForm.role,
+      role: createForm.role_ids[0] || 'user',
+      role_ids: createForm.role_ids,
       password: createForm.password,
     }
     if (canAssignDepartments.value) {
@@ -692,7 +717,8 @@ async function updateUser() {
   saving.value = true
   try {
     const payload = {
-      role: editForm.role,
+      role: editForm.role_ids[0] || 'user',
+      role_ids: editForm.role_ids,
       password: editForm.password,
     }
     if (canAssignDepartments.value) {
@@ -806,6 +832,39 @@ function departmentName(departmentId) {
   const item = departmentOptions.value.find((department) => department.id === departmentId)
   return item?.name || departmentId
 }
+
+function normalizeRoleIds(values, fallbackRole = 'user') {
+  const normalized = []
+  const seen = new Set()
+  const rawValues = Array.isArray(values) ? values : []
+  for (const item of [...rawValues, fallbackRole]) {
+    const roleId = String(item || '').trim()
+    if (!roleId || seen.has(roleId)) continue
+    seen.add(roleId)
+    normalized.push(roleId)
+  }
+  return normalized.length ? normalized : ['user']
+}
+
+function roleName(roleId) {
+  const item = roleOptions.value.find((role) => role.id === roleId)
+  return item?.name || roleId
+}
+
+function userRoleItems(row) {
+  const roleIds = normalizeRoleIds(row?.role_ids, row?.role)
+  return roleIds.map((roleId, index) => {
+    const matchedRole = (row?.roles || []).find((item) => item.id === roleId)
+    return {
+      id: roleId,
+      name:
+        matchedRole?.name ||
+        (Array.isArray(row?.role_names) ? row.role_names[index] : '') ||
+        (roleId === row?.role ? row?.role_name : '') ||
+        roleName(roleId),
+    }
+  })
+}
 </script>
 
 <style scoped>
@@ -829,7 +888,8 @@ function departmentName(departmentId) {
   width: 100%;
 }
 
-.department-tags {
+.department-tags,
+.role-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;

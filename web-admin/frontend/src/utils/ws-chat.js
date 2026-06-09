@@ -1,6 +1,7 @@
+import { buildWsBaseUrl } from './server-profile.js'
+
 function wsBaseUrl() {
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${protocol}://${window.location.host}`
+  return buildWsBaseUrl()
 }
 
 function normalizeWsUrl(pathname, token) {

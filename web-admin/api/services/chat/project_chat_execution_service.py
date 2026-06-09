@@ -163,6 +163,118 @@ async def run_project_chat_once(
         if str(item.get("id") or "")
     ]
     employee_id_val = selected_employee_ids[0] if len(selected_employee_ids) == 1 else ""
+    direct_lark_cli = None if is_interaction_continuation else await projects_router._execute_direct_lark_cli_project_host_command(
+        project_id=project_id,
+        username=username,
+        chat_session_id=chat_session_id,
+        employee_id=employee_id_val,
+        project=project,
+        user_message=effective_user_message,
+        timeout_sec=int(runtime_settings.get("tool_timeout_sec") or 20),
+    )
+    if direct_lark_cli is not None:
+        try:
+            direct_resolved_runtime = await projects_router._resolve_project_chat_runtime(runtime_settings, auth_payload)
+            direct_provider_id = direct_resolved_runtime.provider_id
+            direct_model_name = direct_resolved_runtime.model_name
+            direct_llm_service = get_llm_provider_service()
+        except Exception:
+            direct_provider_id = ""
+            direct_model_name = ""
+            direct_llm_service = None
+        model_reply = await projects_router._build_direct_lark_cli_model_reply(
+            llm_service=direct_llm_service,
+            provider_id=direct_provider_id,
+            model_name=direct_model_name,
+            user_message=effective_user_message,
+            result=direct_lark_cli.get("result") if isinstance(direct_lark_cli.get("result"), dict) else {},
+            fallback_reply=str(direct_lark_cli.get("content") or "").strip(),
+        )
+        content = str(model_reply.get("content") or direct_lark_cli.get("content") or "").strip()
+        assistant_source_context = _assistant_source_context_with_archive_workflow(
+            source_context,
+            content,
+        )
+        assistant_source_context = projects_router._with_project_chat_pending_interaction(
+            assistant_source_context,
+            direct_lark_cli.get("pending_interaction")
+            if isinstance(direct_lark_cli.get("pending_interaction"), dict)
+            else None,
+        )
+        assistant_record = projects_router._append_chat_record(
+            project_id=project_id,
+            username=username,
+            role="assistant",
+            content=content,
+            message_id=assistant_message_id,
+            chat_session_id=chat_session_id,
+            source_context=assistant_source_context,
+        )
+        if publish_realtime and assistant_record is not None:
+            await projects_router.publish_project_chat_record_realtime(
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                message=assistant_record,
+            )
+        if save_memory_snapshot:
+            projects_router._save_project_chat_memory_snapshot(
+                project_id=project_id,
+                user_message=effective_user_message,
+                answer=content,
+                chat_session_id=chat_session_id,
+                selected_employee_ids=selected_employee_ids,
+                source=memory_source,
+                allow_requirement_record=False,
+            )
+        return ProjectChatExecutionResult(
+            content=content,
+            provider_id=(
+                str(model_reply.get("provider_id") or direct_provider_id).strip()
+                if model_reply.get("model_processed")
+                else ""
+            ),
+            model_name=(
+                str(model_reply.get("model_name") or direct_model_name).strip()
+                if model_reply.get("model_processed")
+                else "direct-lark-cli"
+            ),
+            selected_employee_ids=selected_employee_ids,
+        )
+
+    clarify_pending_interaction = projects_router._build_project_chat_clarify_pending_interaction(
+        user_message=effective_user_message,
+        chat_session_id=chat_session_id,
+    )
+    if clarify_pending_interaction is not None:
+        content = "需要你先确认更新目标，我再继续处理。"
+        assistant_source_context = projects_router._with_project_chat_pending_interaction(
+            source_context,
+            clarify_pending_interaction,
+        )
+        assistant_record = projects_router._append_chat_record(
+            project_id=project_id,
+            username=username,
+            role="assistant",
+            content=content,
+            message_id=assistant_message_id,
+            chat_session_id=chat_session_id,
+            source_context=assistant_source_context,
+        )
+        if publish_realtime and assistant_record is not None:
+            await projects_router.publish_project_chat_record_realtime(
+                project_id=project_id,
+                username=username,
+                chat_session_id=chat_session_id,
+                message=assistant_record,
+            )
+        return ProjectChatExecutionResult(
+            content=content,
+            provider_id="",
+            model_name="direct-clarify",
+            selected_employee_ids=selected_employee_ids,
+        )
+
     enabled_tool_names = list(runtime_settings.get("enabled_project_tool_names") or [])
     explicit_tool_filter = bool(enabled_tool_names)
 

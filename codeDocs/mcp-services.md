@@ -1,258 +1,257 @@
 # MCP 服务详解
 
-## 概述
+> 更新日期：2026-06-04
 
-项目包含 **6 个独立的 MCP 服务**，每个服务负责一种特定的能力领域。所有 MCP 服务基于 **FastMCP（>=3.0）** 框架构建，通过 MCP 协议向外暴露工具（Tools）和资源（Resources）。
+当前仓库有两类 MCP 能力：
 
----
+- 根目录 6 个独立 MCP 服务：`mcp-skills`、`mcp-rules`、`mcp-memory`、`mcp-persona`、`mcp-evolution`、`mcp-sync`。
+- Web-Admin API 内部动态 MCP：统一查询 MCP、项目 MCP、员工 MCP、技能 MCP、规则 MCP。
 
-## 一、技能管理 MCP (`mcp-skills/`)
+## 一、根目录独立 MCP 服务
 
-**服务名：** `skills-service`
+这些服务以 `server.py` 为入口，使用 `mcp.server.fastmcp.FastMCP` 构建。它们适合作为轻量、可独立运行的能力服务，也作为系统技能/规则/记忆/人设等知识库的本地源。
 
-### 目录结构
+### `mcp-skills/` - 技能管理
 
-```
+服务名：`skills-service`
+
+```text
 mcp-skills/
-├── server.py                 # MCP 服务入口
-├── pyproject.toml            # Python 项目配置
-├── .env.example              # 环境变量模板
-├── __init__.py               # 包初始化
-├── skills.db                 # 技能数据库 (SQLite)
+├── server.py
+├── store.py
+├── pyproject.toml
 └── knowledge/
-    ├── skills/               # 技能定义 (JSON)
-    │   ├── query-mcp-workflow.json      # 统一查询工作流
-    │   ├── animation-designer.json
-    │   ├── async-python-patterns.json
-    │   ├── auth-implementation-patterns.json
-    │   ├── css.json
-    │   ├── db-query.json
-    │   ├── java-spring-boot.json
-    │   ├── nodejs-backend-patterns.json
-    │   ├── php.json
-    │   ├── refactor.json
-    │   ├── software-architect.json
-    │   ├── sql-optimization-patterns.json
-    │   ├── system-mcp-prompts-chat.json
-    │   ├── ui.json
-    │   └── vue.json
-    └── skill-packages/       # 技能包目录（每个技能一个子目录）
-        └── query-mcp-workflow/
-            ├── SKILL.md      # 技能主文档（Markdown 格式）
-            ├── manifest.json # 技能清单（版本、依赖、能力声明）
-            ├── prompts/      # 提示词模板
-            └── references/   # 参考文档
+    └── skill-packages/
+        ├── query-mcp-workflow/
+        ├── db-query/
+        ├── ui/
+        ├── vue/
+        ├── css/
+        └── ...
 ```
 
-### 暴露的工具 (Tools)
+Tools：
 
-| 工具名 | 参数 | 说明 |
-|---|---|---|
-| `get_skill` | `skill_id`, `version` | 获取指定技能的完整定义和文档 |
-| `list_skills` | `tags`, `domain` | 列出所有可用技能，支持按标签和领域过滤 |
-| `install_skill` | `employee_id`, `skill_id` | 将技能安装到指定 AI 员工 |
-| `uninstall_skill` | `employee_id`, `skill_id` | 从 AI 员工卸载指定技能 |
-
-### 暴露的资源 (Resources)
-
-| 资源 URI | 说明 |
+| 工具 | 说明 |
 |---|---|
-| `skill://catalog` | 所有技能的摘要目录 |
-| `skill://{skill_id}` | 指定技能的完整详情 |
-| `skill://{skill_id}/tools` | 指定技能包含的工具列表 |
+| `get_skill(skill_id, version="")` | 获取技能定义。 |
+| `list_skills(tags="", domain="")` | 列出技能，可按标签/领域过滤。 |
+| `install_skill(employee_id, skill_id)` | 给员工安装技能。 |
+| `uninstall_skill(employee_id, skill_id)` | 从员工卸载技能。 |
 
-### 设计意图
+Resources：
 
-技能 MCP 是能力市场的中枢。它管理着从"前端开发（vue/css/ui）"到"后端架构（java-spring-boot/nodejs）"、从"数据库查询"到"代码重构"的全栈技能库。外部 Agent 通过此服务发现和安装需要的技能包。
+- `skill://catalog`
+- `skill://{skill_id}`
+- `skill://{skill_id}/tools`
 
----
+当前技能包覆盖：统一查询工作流、数据库查询、重构、前端、CSS、Vue、Node.js 后端、认证、异步 Python、Java Spring Boot、PHP、SQL 优化、软件架构、系统 MCP prompts、AI 图表 JSON 等。
 
-## 二、规则管理 MCP (`mcp-rules/`)
+### `mcp-rules/` - 规则管理
 
-**服务名：** `rules-service`
+服务名：`rules-service`
 
-### 目录结构
+Tools：
 
-```
-mcp-rules/
-├── server.py                 # MCP 服务入口
-├── pyproject.toml            # Python 项目配置
-├── __init__.py               # 包初始化
-├── .env.example              # 环境变量模板
-├── rules.db                  # 规则数据库 (SQLite)
-└── knowledge/
-    └── rules/                # 规则定义 (JSON)
-        ├── coding-standards.json
-        ├── architecture.json
-        ├── api-design.json
-        ├── testing.json
-        ├── git-workflow.json
-        └── security.json
-```
-
-### 暴露的工具 (Tools)
-
-| 工具名 | 参数 | 说明 |
-|---|---|---|
-| `query_rule` | `keyword`, `domain` | 按关键词和领域模糊检索规则 |
-| `get_rule` | `rule_id` | 获取单条规则的完整内容 |
-| `submit_rule` | `domain`, `title`, `content`, `severity`, `risk_domain` | 提交新规则（含严重级别和风险域） |
-| `evolve_rule` | `rule_id`, `change_description`, `author`, `bump_level` | **规则进化**。根据变更描述自动递增版本号（major/minor/patch） |
-| `get_rule_stats` | (无) | 获取规则库统计：总数、领域分布、平均置信度、已验证数、衰减数 |
-| `record_feedback` | `rule_id`, `adopted` | **反馈记录**。记录规则被采纳/拒绝，自动调整置信度 |
-
-### 暴露的资源 (Resources)
-
-| 资源 URI | 说明 |
+| 工具 | 说明 |
 |---|---|
-| `rules://catalog` | 所有规则摘要 |
-| `rules://domains` | 可用规则领域列表 |
-| `rules://{rule_id}` | 单条规则详情 |
+| `query_rule(keyword, domain="")` | 按关键词/领域查询规则。 |
+| `get_rule(rule_id)` | 获取单条规则。 |
+| `submit_rule(domain, title, content, severity, risk_domain)` | 提交规则。 |
+| `evolve_rule(rule_id, change_description, author, bump_level)` | 演化规则并递增版本。 |
+| `get_rule_stats()` | 获取规则统计。 |
+| `record_feedback(rule_id, adopted)` | 记录采纳/拒绝反馈。 |
 
-### 设计意图
+Resources：
 
-规则 MCP 实现了"规则即代码"的理念。它不仅管理静态规则，还支持规则的**进化（evolve）**——根据使用反馈自动调整置信度和版本。这构成了 AI 员工的"约束层"，确保其行为遵循项目规范。
+- `rules://catalog`
+- `rules://domains`
+- `rules://{rule_id}`
 
----
+### `mcp-memory/` - 记忆管理
 
-## 三、记忆管理 MCP (`mcp-memory/`)
+服务名：`memory-service`
 
-**服务名：** `memory-service`
+Tools：
 
-### 目录结构
-
-```
-mcp-memory/
-├── server.py                 # MCP 服务入口
-├── pyproject.toml            # Python 项目配置
-├── __init__.py               # 包初始化
-├── knowledge.db              # 知识库 (SQLite)
-└── memory_store.db           # 记忆存储 (SQLite)
-```
-
-### 暴露的工具 (Tools)
-
-| 工具名 | 参数 | 说明 |
-|---|---|---|
-| `save_memory` | `employee_id`, `content`, `type`, `importance`, `project_name` | 保存一条记忆，可指定重要性（0-1）和所属项目 |
-| `recall` | `employee_id`, `query`, `limit` | 按关键词检索记忆，返回最匹配的 N 条 |
-| `forget` | `memory_id` | 删除一条指定记忆 |
-| `compress_memories` | `employee_id`, `keep_top` | **记忆压缩**。保留高重要性记忆，清除低价值记忆 |
-| `save_identity_signal` | `employee_id`, `signal_type`, `content`, `importance`, `project_name` | **保存身份信号**。这是"数字分身"的核心——记录 AI 员工的偏好、决策模式、沟通风格 |
-| `list_identity_signals` | `employee_id`, `signal_type` | 查询指定类型的身份信号 |
-| `set_memory_classification` | `memory_id`, `level`, `purpose_tags` | 给记忆设置分级标签（公开/内部/机密）和用途标签 |
-
-### 暴露的资源 (Resources)
-
-| 资源 URI | 说明 |
+| 工具 | 说明 |
 |---|---|
-| `memory://{employee_id}/all` | 员工所有记忆 |
-| `memory://{employee_id}/recent` | 最近记忆 |
-| `memory://{employee_id}/important` | 重要记忆（重要性阈值筛选） |
-| `memory://{employee_id}/identity-signals` | 数字分身的身份信号集合 |
-| `memory://{employee_id}/isolation-policy` | 隔离策略（控制记忆的访问范围） |
+| `save_memory(employee_id, content, type, importance, project_name)` | 保存记忆。 |
+| `recall(employee_id, query="", limit=10)` | 召回记忆。 |
+| `forget(memory_id)` | 删除记忆。 |
+| `compress_memories(employee_id, keep_top=50)` | 压缩记忆。 |
+| `save_identity_signal(...)` | 保存身份信号。 |
+| `list_identity_signals(employee_id, signal_type="")` | 查询身份信号。 |
+| `set_memory_classification(...)` | 设置记忆分类和用途标签。 |
 
-### 设计意图
+Resources：
 
-记忆 MCP 是 AI 员工的"长期记忆系统"。核心特性：
-- **身份信号 (Identity Signals)**：区别于普通记忆，这是构建"数字分身"的关键——记录 AI 员工的个性、偏好和决策模式
-- **记忆压缩 (Compress)**：自动清理低价值记忆，保持记忆库的效率和相关性
-- **双后端支持**：开发环境用 SQLite，生产环境通过 bridge 连接 PostgreSQL
+- `memory://{employee_id}/all`
+- `memory://{employee_id}/recent`
+- `memory://{employee_id}/important`
+- `memory://{employee_id}/identity-signals`
+- `memory://{employee_id}/isolation-policy`
 
----
+实现上保留 SQLite/本地知识库，并可通过 Web-Admin store bridge 与 PostgreSQL 体系衔接。
 
-## 四、人设管理 MCP (`mcp-persona/`)
+### `mcp-persona/` - 人设管理
 
-**服务名：** `persona-service`
+服务名：`persona-service`
 
-### 目录结构
+Tools：
 
+| 工具 | 说明 |
+|---|---|
+| `get_persona(persona_id)` | 获取人设。 |
+| `set_tone(persona_id, tone)` | 设置语气。 |
+| `set_style(persona_id, verbosity="", behaviors="", style_hints="")` | 设置表达风格。 |
+| `train_persona_from_corpus(...)` | 根据语料训练人设。 |
+| `set_decision_policy(...)` | 设置决策策略。 |
+| `set_delegation_scope(...)` | 设置委派范围。 |
+| `get_persona_drift(persona_id)` | 查看漂移。 |
+| `snapshot_persona(persona_id)` | 生成快照。 |
+| `restore_persona(snapshot_id)` | 恢复快照。 |
+| `evaluate_persona_alignment(persona_id)` | 评估一致性。 |
+
+Resources：
+
+- `persona://{persona_id}`
+- `persona://templates`
+- `persona://{persona_id}/drift-report`
+- `persona://{persona_id}/snapshots`
+- `persona://{persona_id}/alignment-score`
+
+### `mcp-evolution/` - 进化引擎
+
+服务名：`evolution-engine`
+
+Tools：
+
+| 工具 | 说明 |
+|---|---|
+| `analyze_usage_patterns(employee_id, limit=200)` | 分析使用模式。 |
+| `propose_rule(...)` | 提出候选规则。 |
+| `auto_evolve(...)` | 自动进化。 |
+| `review_candidate(...)` | 审核候选。 |
+| `get_evolution_report(employee_id)` | 获取进化报告。 |
+
+Resources：
+
+- `evolution://candidates/{employee_id}`
+- `evolution://updates/{employee_id}`
+- `evolution://report/{employee_id}`
+
+### `mcp-sync/` - 同步服务
+
+服务名：`sync-service`
+
+Tools：
+
+| 工具 | 说明 |
+|---|---|
+| `push_update(...)` | 推送更新。 |
+| `sync_state(employee_id)` | 同步员工状态。 |
+| `notify_agent(...)` | 通知 Agent。 |
+
+Resources：
+
+- `sync://status/{employee_id}`
+- `sync://events/{employee_id}`
+
+## 二、Web-Admin 动态 MCP
+
+动态 MCP 挂载在 FastAPI 应用中，源码集中在 `web-admin/api/services/mcp/`。它们是当前项目实际工作流最重要的 MCP 入口。
+
+### 挂载路径
+
+| 路径 | 说明 |
+|---|---|
+| `/mcp/query` | 统一查询 MCP，聚合项目、员工、规则、任务树和工作轨迹。 |
+| `/mcp/projects/{project_id}` | 项目 MCP，围绕单个项目暴露手册、成员、规则、技能、协作工具等。 |
+| `/mcp/employees/{employee_id}` | 员工 MCP，围绕单个员工暴露手册、规则、技能和记忆工具。 |
+| `/mcp/skills/{skill_id}` | 技能 MCP proxy。 |
+| `/mcp/rules/{rule_id}` | 规则 MCP proxy。 |
+
+### 关键模块
+
+| 模块 | 说明 |
+|---|---|
+| `dynamic_mcp_runtime.py` | 创建并导出各类 MCP proxy app。 |
+| `dynamic_mcp_apps_query.py` | 统一查询 MCP 的工具定义。 |
+| `dynamic_mcp_apps_project.py` | 项目 MCP 工具。 |
+| `dynamic_mcp_apps_employee.py` | 员工 MCP 工具。 |
+| `dynamic_mcp_context.py` | 项目/员工上下文聚合。 |
+| `dynamic_mcp_collaboration.py` | 项目协作编排。 |
+| `dynamic_mcp_skill_executor.py` | 项目/员工技能代理执行。 |
+| `dynamic_mcp_skill_proxies.py` | 技能代理工具生成。 |
+| `dynamic_mcp_external_tools.py` | 外部工具接入。 |
+| `dynamic_mcp_transports.py` | MCP transport 兼容。 |
+| `query_mcp_project_state.py` | 统一查询 MCP 的本地状态、requirement 和任务树状态处理。 |
+| `project_mcp_presence.py` | 项目 MCP 存在性检测。 |
+
+## 三、统一查询 MCP 工作流
+
+统一查询 MCP 的核心是让 Codex/Claude/IDE 等宿主只接入一个入口，也能完成：
+
+1. 显式绑定 `project_id`、`chat_session_id`、`session_id`。
+2. 读取项目手册、员工手册和相关规则。
+3. 分析任务、聚合上下文、生成计划。
+4. 创建并维护本地 requirement。
+5. 推进任务树节点状态。
+6. 保存工作事实、会话事件、检查点和交付报告。
+7. 在中断后按同一会话线恢复。
+
+当前本地工作流技能副本位于：
+
+```text
+.ai-employee/skills/query-mcp-workflow/
+├── SKILL.md
+└── manifest.json
 ```
-mcp-persona/
-├── server.py                 # MCP 服务入口
-└── pyproject.toml            # Python 项目配置
+
+当前 canonical 本地状态路径：
+
+```text
+.ai-employee/query-mcp/active-sessions/<chat_session_id>.json
+.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json
+.ai-employee/requirements/<project_id>/<chat_session_id>.json
 ```
 
-### 设计意图
+`.ai-employee/query-mcp/active/<project_id>.json` 是历史遗留项目级指针，只允许只读恢复，禁止新写，也不能作为当前窗口状态。
 
-人设 MCP 管理 AI 员工的"人格层"。每个 AI 员工可以有不同的：
-- **角色定义**：前端工程师、后端架构师、产品经理等
-- **性格特征**：严谨/创意、主动/被动、详细/简洁
-- **沟通风格**：正式/轻松、中文/英文、技术向/业务向
+## 四、和 Agent Runtime v2 的关系
 
-这层配置决定了 AI 员工在交互中的"语气"和"思维方式"。
+MCP 工作流负责上下文、规则、任务树和状态闭环；Agent Runtime v2 负责真实执行型任务的运行时外壳。
 
----
+相关路径：
 
-## 五、进化引擎 MCP (`mcp-evolution/`)
+- `web-admin/api/services/agent_runtime/`
+- `web-admin/api/services/runtime/`
+- `web-admin/api/services/assistant/`
+- `web-admin/api/services/chat/`
 
-**服务名：** `evolution-service`
+常见链路：
 
-### 目录结构
-
-```
-mcp-evolution/
-├── server.py                 # MCP 服务入口
-├── pyproject.toml            # Python 项目配置
-└── __init__.py               # 包初始化
-```
-
-### 设计意图
-
-进化引擎是 AI 员工的"自我改进"系统。它：
-1. 收集 AI 员工的使用反馈和任务表现数据
-2. 分析弱点和改进机会
-3. 自动调整技能组合、规则优先级和记忆策略
-4. 生成进化报告，记录改进轨迹
-
----
-
-## 六、同步 MCP (`mcp-sync/`)
-
-**服务名：** `sync-service`
-
-### 目录结构
-
-```
-mcp-sync/
-├── server.py                 # MCP 服务入口
-└── pyproject.toml            # Python 项目配置
+```text
+用户需求
+  -> assistant 工作流识别
+  -> 能力路由
+  -> /mcp/query 或项目/员工 MCP 聚合上下文
+  -> requirement + 任务树绑定
+  -> Agent Runtime v2 / 本地连接器 / 项目工具执行
+  -> 权限、信任、验证策略
+  -> 工作事实、任务树完成、交付报告
 ```
 
-### 设计意图
+## 五、独立 MCP 与动态 MCP 的分工
 
-同步服务确保所有 MCP 服务之间的数据一致性。当技能、规则、记忆等模块发生变更时，同步服务负责：
-- 跨服务状态同步
-- 缓存失效通知
-- 数据迁移协调
+| 能力 | 独立 MCP 服务 | Web-Admin 动态 MCP |
+|---|---|---|
+| 技能目录 | `mcp-skills` 管理系统技能包 | 项目/员工技能 proxy、技能资源和执行 |
+| 规则目录 | `mcp-rules` 管理基础规则能力 | 项目规则、员工规则、反馈升级和经验规则 |
+| 记忆 | `mcp-memory` 提供轻量记忆工具 | 项目记忆、员工记忆、工作事实和工作会话 |
+| 人设 | `mcp-persona` 管理人设工具 | 员工页面、人设路由和项目上下文聚合 |
+| 进化 | `mcp-evolution` 提供候选和报告工具 | 反馈工单、候选评审、进化报告页面 |
+| 同步 | `mcp-sync` 推送和状态同步 | Web-Admin 同步路由、MCP 监控和 project state |
 
----
-
-## MCP 服务间关系
-
-```
-                    ┌─────────────┐
-                    │ sync (同步)  │ ← 协调所有服务的数据一致性
-                    └──────┬──────┘
-                           │
-    ┌──────────────────────┼──────────────────────┐
-    │                      │                      │
-┌───▼────┐          ┌──────▼──────┐        ┌──────▼──────┐
-│ skills  │          │    rules     │        │   memory    │
-│ (技能)  │          │   (规则)     │        │   (记忆)    │
-└───┬─────┘          └──────┬──────┘        └──────┬──────┘
-    │                       │                      │
-    │     ┌─────────────────┼──────────────────────┤
-    │     │                 │                      │
-    └─────┼─────────────────┼──────────────────────┘
-          │                 │
-    ┌─────▼─────┐    ┌──────▼──────┐
-    │  persona   │    │  evolution  │
-    │  (人设)    │    │  (进化)     │
-    └───────────┘    └─────────────┘
-```
-
-- **skills** + **rules** = 员工的能力和约束
-- **memory** + **persona** = 员工的知识和人格
-- **evolution** = 根据反馈持续优化上述四者
-- **sync** = 保证跨服务状态一致
+实际产品主链路优先走 Web-Admin 动态 MCP；根目录独立 MCP 服务提供基础能力、系统技能包和轻量接入面。

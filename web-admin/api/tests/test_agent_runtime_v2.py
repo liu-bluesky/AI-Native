@@ -254,6 +254,178 @@ def test_agent_runtime_shared_tool_execution_runner_is_canonical():
     assert LegacyToolExecutionRunner is ToolExecutionRunner
 
 
+def test_agent_runtime_external_executor_protocol_round_trips_task_input():
+    from services.agent_runtime.shared.external_executor_protocol import (
+        ExternalExecutorRiskPolicy,
+        ExternalExecutorTaskInput,
+    )
+
+    task_input = ExternalExecutorTaskInput.from_dict(
+        {
+            "project_id": "proj-1",
+            "chat_session_id": "chat-1",
+            "session_id": "ws-1",
+            "requirement_id": "req-1",
+            "task_tree_id": "tree-1",
+            "task_node_id": "node-1",
+            "executor_type": "codex_cli",
+            "workspace_path": "/tmp/workspace",
+            "sandbox_mode": "workspace-write",
+            "user_goal": "修复 bug",
+            "node_goal": "运行测试并修复失败",
+            "context_files": ["README.md", ""],
+            "allowed_tools": ["terminal", "file"],
+            "risk_policy": {
+                "require_confirmation_for_destructive_actions": True,
+                "network_access": "restricted",
+            },
+        }
+    )
+
+    assert isinstance(task_input.risk_policy, ExternalExecutorRiskPolicy)
+    assert task_input.to_dict() == {
+        "project_id": "proj-1",
+        "chat_session_id": "chat-1",
+        "session_id": "ws-1",
+        "requirement_id": "req-1",
+        "task_tree_id": "tree-1",
+        "task_node_id": "node-1",
+        "executor_type": "codex_cli",
+        "workspace_path": "/tmp/workspace",
+        "sandbox_mode": "workspace-write",
+        "user_goal": "修复 bug",
+        "node_goal": "运行测试并修复失败",
+        "context_files": ["README.md"],
+        "allowed_tools": ["terminal", "file"],
+        "risk_policy": {
+            "require_confirmation_for_destructive_actions": True,
+            "network_access": "restricted",
+            "sandbox_mode": "workspace-write",
+        },
+        "metadata": {},
+    }
+
+
+def test_agent_runtime_external_executor_protocol_maps_runner_events():
+    from services.agent_runtime.shared.external_executor_protocol import (
+        ExternalExecutorEvent,
+        ExternalExecutorResult,
+    )
+
+    stdout_event = ExternalExecutorEvent.from_runner_event(
+        {"type": "stdout", "data": "pytest passed\n"},
+        task_node_id="node-1",
+        executor_type="codex_cli",
+    ).to_dict()
+    failed_exit_event = ExternalExecutorEvent.from_runner_event(
+        {"type": "exit", "returncode": 2},
+        task_node_id="node-1",
+        executor_type="codex_cli",
+    ).to_dict()
+    result = ExternalExecutorResult.from_dict(
+        {
+            "status": "done",
+            "summary": "Implemented protocol",
+            "changed_files": ["services/agent_runtime/shared/external_executor_protocol.py"],
+            "verification": [{"summary": "pytest web-admin/api/tests/test_agent_runtime_v2.py"}],
+        }
+    )
+
+    assert stdout_event["type"] == "tool_result"
+    assert stdout_event["status"] == "in_progress"
+    assert failed_exit_event["type"] == "failed"
+    assert failed_exit_event["status"] == "failed"
+    assert result.succeeded is True
+    assert "Changed files:" in result.task_tree_verification_result()
+
+
+def test_agent_runtime_codex_runner_adapter_normalizes_stream_events():
+    from services.agent_runtime.integrations import CodexRunnerStreamAdapter
+    from services.agent_runtime.shared.external_executor_protocol import ExternalExecutorTaskInput
+
+    task_input = ExternalExecutorTaskInput.from_dict(
+        {
+            "project_id": "proj-1",
+            "chat_session_id": "chat-1",
+            "session_id": "ws-1",
+            "requirement_id": "req-1",
+            "task_tree_id": "tree-1",
+            "task_node_id": "node-1",
+            "executor_type": "codex_cli",
+            "workspace_path": "/tmp/workspace",
+            "user_goal": "修复测试",
+            "node_goal": "运行 Codex runner",
+        }
+    )
+    adapter = CodexRunnerStreamAdapter.from_task_input(task_input)
+
+    events = list(
+        adapter.iter_event_dicts(
+            [
+                {"type": "started", "exec_id": "exec-1"},
+                {"type": "stdout", "data": "pytest passed\n"},
+                {"type": "stderr", "data": "warning\n"},
+                {"type": "exit", "exec_id": "exec-1", "returncode": 0},
+                {"type": "exit", "exec_id": "exec-2", "returncode": 2},
+                "plain chunk",
+            ]
+        )
+    )
+
+    assert [event["task_node_id"] for event in events] == ["node-1"] * len(events)
+    assert [event["executor_type"] for event in events] == ["codex_cli"] * len(events)
+    assert events[0]["type"] == "started"
+    assert events[0]["status"] == "in_progress"
+    assert events[1]["type"] == "tool_result"
+    assert events[1]["message"] == "pytest passed"
+    assert events[1]["data"] == {"type": "stdout", "data": "pytest passed\n"}
+    assert events[2]["message"] == "warning"
+    assert events[3]["type"] == "completed"
+    assert events[3]["status"] == "completed"
+    assert events[4]["type"] == "failed"
+    assert events[4]["status"] == "failed"
+    assert events[5]["message"] == "plain chunk"
+
+
+def test_agent_runtime_codex_runner_adapter_outputs_ndjson_safe_events():
+    from services.agent_runtime.integrations import (
+        CodexRunnerStreamAdapter,
+        normalize_codex_runner_events,
+    )
+
+    payloads = [
+        {"type": "stdout", "data": "第一行\n"},
+        {"type": "exit", "returncode": 0},
+    ]
+    adapter = CodexRunnerStreamAdapter(task_node_id="node-1")
+    ndjson_lines = list(adapter.iter_ndjson_lines(payloads))
+    normalized = normalize_codex_runner_events(payloads, task_node_id="node-1")
+
+    assert [json.loads(line)["task_node_id"] for line in ndjson_lines] == [
+        "node-1",
+        "node-1",
+    ]
+    assert normalized[0]["message"] == "第一行"
+    assert normalized[1]["status"] == "completed"
+
+
+def test_agent_runtime_external_executor_protocol_is_canonical():
+    from services.agent_runtime.shared.external_executor_protocol import (
+        ExternalExecutorEvent,
+        ExternalExecutorResult,
+        ExternalExecutorTaskInput,
+    )
+    from services.agent_runtime.v2 import (
+        ExternalExecutorEvent as V2NamespaceExternalExecutorEvent,
+        ExternalExecutorResult as V2NamespaceExternalExecutorResult,
+        ExternalExecutorTaskInput as V2NamespaceExternalExecutorTaskInput,
+    )
+
+    assert V2NamespaceExternalExecutorEvent is ExternalExecutorEvent
+    assert V2NamespaceExternalExecutorResult is ExternalExecutorResult
+    assert V2NamespaceExternalExecutorTaskInput is ExternalExecutorTaskInput
+
+
 def test_agent_runtime_shared_task_run_is_canonical():
     from services.agent_runtime.core import (
         TaskRun as CoreTaskRun,
@@ -356,6 +528,62 @@ def test_agent_runtime_shared_completion_policy_is_canonical():
     assert V2NamespaceCompletionPolicy is CompletionPolicy
     assert LegacyCompletionDecision is CompletionDecision
     assert LegacyCompletionPolicy is CompletionPolicy
+
+
+def test_model_output_normalizer_parses_dsml_tool_calls():
+    from services.agent_runtime.shared.model_output_normalizer import (
+        normalize_model_output,
+    )
+
+    content = """
+<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="project_host_run_command">
+<｜｜DSML｜｜parameter name="command" string="true">lark-cli auth status</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="timeout_sec" string="false">10</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>
+""".strip()
+
+    result = normalize_model_output(
+        content=content,
+        structured_tool_calls=[],
+        allowed_tool_names={"project_host_run_command"},
+    )
+
+    assert result.visible_content == ""
+    assert result.leak_detected is True
+    assert result.leak_kinds == ["dsml_tool_calls"]
+    assert result.parsed_text_tool_call_count == 1
+    assert result.tool_calls[0].tool_name == "project_host_run_command"
+    assert json.loads(result.tool_calls[0].arguments) == {
+        "command": "lark-cli auth status",
+        "timeout_sec": 10,
+    }
+    assert "DSML" not in result.visible_content
+
+
+def test_model_output_normalizer_strips_xml_and_harmony_protocol():
+    from services.agent_runtime.shared.model_output_normalizer import (
+        normalize_model_output,
+    )
+
+    xml_result = normalize_model_output(
+        content='<tool_call>{"name":"project_host_run_command","arguments":{"command":"pwd"}}</tool_call>',
+        structured_tool_calls=[],
+        allowed_tool_names={"project_host_run_command"},
+    )
+    harmony_result = normalize_model_output(
+        content="assistant to=functions.project_host_run_command  <|commentary|>",
+        structured_tool_calls=[],
+        allowed_tool_names={"project_host_run_command"},
+    )
+
+    assert xml_result.visible_content == ""
+    assert xml_result.parsed_text_tool_call_count == 1
+    assert json.loads(xml_result.tool_calls[0].arguments) == {"command": "pwd"}
+    assert harmony_result.visible_content == ""
+    assert harmony_result.leak_detected is True
+    assert harmony_result.tool_calls == []
 
 
 def test_agent_runtime_v2_dynamic_tool_pool_relocation_is_canonical():
@@ -747,6 +975,103 @@ def test_tool_call_collector_assembles_streaming_chunks():
     assert calls[0].call_id == "call-1"
     assert calls[0].tool_name == "project_host_run_command"
     assert calls[0].arguments == "{\"command\": \"npm test\"}"
+
+
+@pytest.mark.asyncio
+async def test_query_engine_can_complete_from_failed_tool_with_useful_stdout(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_completion_stream(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-1",
+                            "function": {
+                                "name": "project_host_run_command",
+                                "arguments": "{\"command\": \"lark-cli doctor\"}",
+                            },
+                        }
+                    ]
+                }
+                return
+            yield {"content": "当前 lark-cli 登录人是刘蓝天；token 已过期，需要重新登录。"}
+
+    class _FakeToolExecutor:
+        async def execute_parallel(self, tool_calls, timeout=None):
+            return [
+                {
+                    "exit_code": 1,
+                    "stdout": json.dumps(
+                        {
+                            "checks": [
+                                {
+                                    "name": "token_exists",
+                                    "status": "pass",
+                                    "message": "token found for 刘蓝天 (ou_62ba6272243f844b5fa83abb0600358d)",
+                                },
+                                {
+                                    "name": "token_local",
+                                    "status": "fail",
+                                    "message": "token expired",
+                                },
+                            ],
+                            "ok": False,
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ]
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="/lark-cli 当前登录人是谁",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(_FakeLLM()),
+        tool_runner=ToolExecutionRunner(
+            _FakeToolExecutor(),
+            event_log=event_log,
+        ),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        max_model_steps=3,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "/lark-cli 当前登录人是谁"}],
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+        task_tree_verified=True,
+        goal_covered=True,
+    )
+
+    assert result.task_run.status == "completed"
+    assert result.completion_decision is not None
+    assert result.completion_decision.action == "complete"
+    assert "刘蓝天" in result.final_content
+    assert "token 已过期" in result.final_content
 
 
 @pytest.mark.asyncio
@@ -1148,8 +1473,11 @@ async def test_query_engine_waits_when_background_operation_has_interaction_sche
     assert result.completion_decision.action == "request_user"
     assert "background_operation_pending" in result.completion_decision.reasons
     assert "query_engine_waiting_operation" in [event["type"] for event in result.task_run.events]
-    assert result.final_content == "内部授权任务已创建，等待你在表单中选择授权范围。"
-    assert "执行" not in result.final_content
+    assert "等待用户操作" in result.final_content
+    assert "lark-cli auth login" in result.final_content
+    assert "表单" in result.final_content
+    assert "授权范围" in result.final_content
+    assert "下一步" in result.final_content
 
 
 @pytest.mark.asyncio
@@ -1225,9 +1553,417 @@ async def test_query_engine_waiting_operation_ignores_model_command_tutorial(tmp
     )
 
     assert result.task_run.status == "waiting_user"
-    assert result.final_content == "内部授权任务已创建，等待你打开授权链接并在浏览器完成授权。"
+    assert "等待用户操作" in result.final_content
+    assert "lark-cli auth login" in result.final_content
+    assert "授权链接" in result.final_content
+    assert "浏览器" in result.final_content
+    assert "下一步" in result.final_content
     assert "请执行" not in result.final_content
-    assert "lark-cli auth login" not in result.final_content
+
+
+@pytest.mark.asyncio
+async def test_query_engine_executes_dsml_text_tool_call_without_showing_protocol(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_completion_stream(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield {
+                    "content": """
+<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="project_host_run_command">
+<｜｜DSML｜｜parameter name="command" string="true">lark-cli auth status</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="timeout_sec" string="false">10</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>
+""".strip()
+                }
+                return
+            yield {"content": "已检查登录状态。"}
+
+    class _FakeToolExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute_parallel(self, tool_calls, timeout=None):
+            self.calls.extend(tool_calls)
+            return [
+                {
+                    "ok": True,
+                    "stdout": "{\"identity\":\"bot\",\"logged_in\":false}",
+                    "command": "lark-cli auth status",
+                }
+            ]
+
+    llm = _FakeLLM()
+    executor = _FakeToolExecutor()
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    transcript_store = TranscriptStore(tmp_path / "transcripts")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="/lark-cli 登录",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(llm),
+        tool_runner=ToolExecutionRunner(
+            executor,
+            event_log=event_log,
+        ),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=transcript_store,
+        max_model_steps=3,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "/lark-cli 登录"}],
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+        task_tree_verified=True,
+        goal_covered=True,
+    )
+
+    events = event_log.list_events(task_run.run_id)
+    normalized_events = [
+        item for item in events if item.event_type == "model_output_normalized"
+    ]
+    transcript = transcript_store.list_events(task_run.run_id)
+    first_model_output = next(item for item in transcript if item["type"] == "model_output")
+
+    assert result.task_run.status == "completed"
+    assert result.final_content == "已检查登录状态。"
+    assert len(executor.calls) == 1
+    first_tool_call = executor.calls[0]
+    assert first_tool_call["function"]["name"] == "project_host_run_command"
+    first_arguments = json.loads(first_tool_call["function"]["arguments"])
+    assert first_arguments["command"] == "lark-cli auth status"
+    assert first_arguments["timeout_sec"] == 10
+    assert first_arguments["_agent_runtime_tool_name"] == "project_host_run_command"
+    assert normalized_events
+    assert normalized_events[0].payload["parsed_text_tool_call_count"] == 1
+    assert "DSML" not in normalized_events[0].payload.get("content_preview", "")
+    assert first_model_output["payload"]["content"] == ""
+    assert "DSML" in first_model_output["payload"]["raw_content"]
+
+
+@pytest.mark.asyncio
+async def test_query_engine_executes_harmony_text_tool_call_without_showing_protocol(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_completion_stream(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield {
+                    "content": "assistant to=functions.project_host_run_command "
+                    '{"command":"lark-cli auth status","timeout_sec":10}'
+                }
+                return
+            yield {"content": "已检查飞书登录状态。"}
+
+    class _FakeToolExecutor:
+        def __init__(self):
+            self.calls = []
+
+        async def execute_parallel(self, tool_calls, timeout=None):
+            self.calls.extend(tool_calls)
+            return [
+                {
+                    "ok": True,
+                    "stdout": "{\"logged_in\":true}",
+                    "command": "lark-cli auth status",
+                }
+            ]
+
+    executor = _FakeToolExecutor()
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    transcript_store = TranscriptStore(tmp_path / "transcripts")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="/lark-cli 登录",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(_FakeLLM()),
+        tool_runner=ToolExecutionRunner(executor, event_log=event_log),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=transcript_store,
+        max_model_steps=3,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "/lark-cli 登录"}],
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+        task_tree_verified=True,
+        goal_covered=True,
+    )
+
+    transcript = transcript_store.list_events(task_run.run_id)
+    first_model_output = next(item for item in transcript if item["type"] == "model_output")
+    first_tool_call = executor.calls[0]
+    first_arguments = json.loads(first_tool_call["function"]["arguments"])
+
+    assert result.task_run.status == "completed"
+    assert result.final_content == "已检查飞书登录状态。"
+    assert len(executor.calls) == 1
+    assert first_tool_call["function"]["name"] == "project_host_run_command"
+    assert first_arguments["command"] == "lark-cli auth status"
+    assert first_arguments["timeout_sec"] == 10
+    assert first_arguments["_agent_runtime_tool_name"] == "project_host_run_command"
+    assert first_model_output["payload"]["content"] == ""
+    assert "to=functions" in first_model_output["payload"]["raw_content"]
+    assert "to=functions" not in result.final_content
+
+
+@pytest.mark.asyncio
+async def test_query_engine_does_not_complete_harmony_tool_call_leak(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {
+                "content": "assistant to=functions.project_host_run_command "
+                "command=lark-cli auth status"
+            }
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="/lark-cli 登录",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(_FakeLLM()),
+        tool_runner=None,
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        max_model_steps=1,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "/lark-cli 登录"}],
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+        task_tree_verified=True,
+        goal_covered=True,
+    )
+
+    events = event_log.list_events(task_run.run_id)
+
+    assert result.task_run.status == "failed"
+    assert result.completion_decision is not None
+    assert result.completion_decision.action == "fail"
+    assert result.final_content == ""
+    assert any(
+        item.event_type == "completion_decision"
+        and item.payload["reasons"] == ["protocol_leak_retry"]
+        for item in events
+    )
+    assert any(item.event_type == "model_output_normalized" for item in events)
+    assert "to=functions" not in result.final_content
+
+
+@pytest.mark.asyncio
+async def test_query_engine_auth_operation_queued_reports_actionable_waiting_state(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-1",
+                        "function": {
+                            "name": "project_host_run_command",
+                            "arguments": "{\"command\": \"lark-cli auth login --domain im\"}",
+                        },
+                    }
+                ],
+            }
+
+    class _FakeToolExecutor:
+        async def execute_parallel(self, tool_calls, timeout=None):
+            return [
+                {
+                    "ok": False,
+                    "source": "operation_wait_task",
+                    "operation_kind": "auth_login",
+                    "operation_label": "网页登录授权",
+                    "status": "queued",
+                    "task_id": "operation-wait-1",
+                    "command": "lark-cli auth login --domain im",
+                }
+            ]
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="/lark-cli 登录用户身份",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(_FakeLLM()),
+        tool_runner=ToolExecutionRunner(
+            _FakeToolExecutor(),
+            event_log=event_log,
+        ),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        max_model_steps=3,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "/lark-cli 登录用户身份"}],
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+    )
+
+    assert result.task_run.status == "waiting_user"
+    assert result.completion_decision is not None
+    assert result.completion_decision.action == "request_user"
+    assert "等待用户操作" in result.final_content
+    assert "网页登录授权" in result.final_content
+    assert "lark-cli auth login --domain im" in result.final_content
+    assert "operation-wait-1" in result.final_content
+    assert "queued" in result.final_content
+    assert "下一步" in result.final_content
+
+
+@pytest.mark.asyncio
+async def test_query_engine_reports_missing_host_workspace_as_environment_block(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.llm_step import LLMStep
+    from services.agent_runtime.v2.query_engine import QueryEngine
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-1",
+                        "function": {
+                            "name": "project_host_run_command",
+                            "arguments": "{\"command\": \"lark-cli auth login\"}",
+                        },
+                    }
+                ],
+            }
+
+    class _FakeToolExecutor:
+        async def execute_parallel(self, tool_calls, timeout=None):
+            return [
+                {
+                    "ok": False,
+                    "error": "Host workspace_path does not exist",
+                    "requested_workspace_path": "/Volumes/苹果1_5T/work/数字化转型/CRM",
+                    "command": "lark-cli auth login",
+                }
+            ]
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    event_log = RuntimeEventLog(tmp_path / "events")
+    task_run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="/lark-cli 登录",
+    )
+    engine = QueryEngine(
+        llm_step=LLMStep(_FakeLLM()),
+        tool_runner=ToolExecutionRunner(
+            _FakeToolExecutor(),
+            event_log=event_log,
+        ),
+        state_store=state_store,
+        event_log=event_log,
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        max_model_steps=3,
+    )
+
+    result = await engine.run(
+        task_run,
+        messages=[{"role": "user", "content": "/lark-cli 登录"}],
+        tools=[{"tool_name": "project_host_run_command"}],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+    )
+
+    assert result.task_run.status == "blocked"
+    assert result.completion_decision is not None
+    assert result.completion_decision.action == "blocked"
+    assert "host_workspace_missing" in result.completion_decision.reasons
+    assert "执行环境阻塞" in result.final_content
+    assert "不能继续等待授权" in result.final_content
+    assert "/Volumes/苹果1_5T/work/数字化转型/CRM" in result.final_content
+    assert "lark-cli auth login" in result.final_content
+    assert result.final_content != "等待你授权工具调用后继续。"
 
 
 @pytest.mark.asyncio
@@ -1569,6 +2305,53 @@ async def test_query_engine_continue_budget_exceeded_fails_not_running(tmp_path)
     assert result.completion_decision.action == "fail"
     assert "model_step_budget_exceeded" in result.completion_decision.reasons
     assert "query_engine_paused" not in [event["type"] for event in result.task_run.events]
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_v2_query_engine_requires_real_completion_evidence(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.v2.runtime import AgentTaskRuntime
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    class _FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_completion_stream(self, **kwargs):
+            self.calls += 1
+            yield {"content": f"第 {self.calls} 轮回答"}
+
+    llm = _FakeLLM()
+    runtime = AgentTaskRuntime(
+        llm_service=llm,
+        runtime_options={"max_model_steps": 2},
+        state_store=TaskRunStore(tmp_path / "runs"),
+        transcript_store=TranscriptStore(tmp_path / "transcripts"),
+        event_log=RuntimeEventLog(tmp_path / "events"),
+    )
+
+    chunks = []
+    async for chunk in runtime.run(
+        session_id="session-1",
+        user_message="修复项目里的问题",
+        tools=[],
+        provider_id="provider-1",
+        model_name="model-1",
+        temperature=0.1,
+        max_tokens=256,
+        project_id="proj-1",
+        employee_id="emp-1",
+        cancel_event=asyncio.Event(),
+        username="tester",
+        chat_session_id="chat-1",
+    ):
+        chunks.append(chunk)
+
+    assert llm.calls == 1
+    assert chunks[1]["completion_decision"]["action"] == "verify"
+    assert "verification_required" in chunks[1]["completion_decision"]["reasons"]
+    assert chunks[-1]["agent_runtime"]["status"] == "verifying"
 
 
 @pytest.mark.asyncio
@@ -2113,6 +2896,289 @@ def test_permission_policy_asks_when_workspace_untrusted(tmp_path):
     assert decision.allowed is False
 
 
+def test_background_process_registry_tracks_logs_cancel_and_resume_payload():
+    from services.agent_runtime.core.background_process import (
+        BackgroundProcessHandle,
+        BackgroundProcessRegistry,
+    )
+
+    registry = BackgroundProcessRegistry()
+    handle = registry.register(
+        BackgroundProcessHandle(
+            process_id="proc-1",
+            command="npm run build",
+            cwd="/workspace",
+            resume_token="resume-1",
+            cancel_token="cancel-1",
+            metadata={"run_id": "run-1"},
+        )
+    )
+
+    registry.append_log(handle.process_id, "building")
+    registry.append_log(handle.process_id, "done")
+    page = registry.read_log(handle.process_id, cursor=1, limit=1)
+    cancelled = registry.cancel(handle.process_id)
+    resume_payload = registry.resume_payload(handle.process_id)
+
+    assert handle.status == "running"
+    assert page["lines"] == ["done"]
+    assert page["next_cursor"] == 2
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+    assert cancelled.terminal is True
+    assert resume_payload == {
+        "process_id": "proc-1",
+        "status": "cancelled",
+        "resume_token": "resume-1",
+        "cancel_token": "cancel-1",
+        "log_cursor": 2,
+        "metadata": {"run_id": "run-1"},
+    }
+
+
+def test_gateway_message_builds_runtime_integration_envelope_for_cron_and_delivery():
+    from services.agent_runtime.integrations.gateway import RuntimeGatewayMessage
+
+    message = RuntimeGatewayMessage(
+        source="cron",
+        text="生成日报",
+        project_id="proj-1",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        channel_id="feishu-chat",
+        delivery_target="feishu:chat-1",
+        schedule="0 9 * * *",
+        context_from=("run-a", "", "run-b"),
+        metadata={"kind": "daily"},
+    )
+
+    envelope = message.envelope()
+    runtime_input = message.runtime_input()
+
+    assert envelope.resume_key == "proj-1:chat-1:session-1:cron"
+    assert runtime_input["message"] == "生成日报"
+    assert runtime_input["delivery_target"] == "feishu:chat-1"
+    assert runtime_input["schedule"] == "0 9 * * *"
+    assert runtime_input["context_from"] == ["run-a", "run-b"]
+    assert runtime_input["resume_key"] == envelope.resume_key
+
+
+def test_gateway_router_dispatches_mcp_and_message_inputs_through_same_shape():
+    from services.agent_runtime.integrations.gateway import RuntimeGatewayMessage, RuntimeGatewayRouter
+
+    router = RuntimeGatewayRouter()
+    seen_inputs = []
+
+    def handler(runtime_input):
+        seen_inputs.append(runtime_input)
+        return {
+            "text": "ok",
+            "events": [{"type": "runtime_started", "source": runtime_input["source"]}],
+            "metadata": {"resume_key": runtime_input["resume_key"]},
+        }
+
+    mcp_response = router.dispatch(
+        RuntimeGatewayMessage(
+            source="mcp",
+            text="调用 MCP 工具",
+            project_id="proj-1",
+            chat_session_id="chat-1",
+            metadata={"tool_name": "query_center.search"},
+        ),
+        handler,
+    )
+    feishu_response = router.dispatch(
+        RuntimeGatewayMessage(
+            source="feishu",
+            text="继续任务",
+            project_id="proj-1",
+            chat_session_id="chat-1",
+            delivery_target="feishu:chat-1",
+        ),
+        handler,
+    )
+
+    assert mcp_response.text == "ok"
+    assert feishu_response.events[0]["source"] == "feishu"
+    assert seen_inputs[0]["source"] == "mcp"
+    assert seen_inputs[1]["delivery_target"] == "feishu:chat-1"
+    assert seen_inputs[0]["resume_key"] == "proj-1:chat-1:mcp"
+
+
+def test_transcript_checkpoint_filters_tool_only_assistant_content(tmp_path):
+    from services.agent_runtime.core.context_checkpoint import ContextCheckpointBuilder
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+
+    store = TranscriptStore(tmp_path / "transcripts")
+    store.append("run-1", "user_input", {"content": "请运行测试并修复失败"})
+    store.append(
+        "run-1",
+        "model_output",
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "call_id": "call-1",
+                    "tool_name": "project_host_run_command",
+                    "arguments": '{"command": "pytest -q"}',
+                }
+            ],
+        },
+    )
+    store.append(
+        "run-1",
+        "tool_observation",
+        {
+            "call_id": "call-1",
+            "tool_name": "project_host_run_command",
+            "status": "failed",
+            "summary": "1 failed",
+        },
+    )
+    store.append("run-1", "model_output", {"content": "已定位失败用例。"})
+
+    checkpoint = ContextCheckpointBuilder(store).build("run-1", max_events=10)
+    resume_messages = checkpoint.to_resume_messages()
+
+    assert checkpoint.tool_call_count == 1
+    assert checkpoint.observation_count == 1
+    assert "pytest -q" in checkpoint.summary
+    assert "1 failed" in checkpoint.summary
+    assert resume_messages[0]["role"] == "system"
+    assert "checkpoint" in resume_messages[0]["content"].lower()
+    assert all(message.get("content") for message in resume_messages)
+    assert not any(message.get("content") == "" for message in resume_messages)
+
+
+def test_runtime_inspector_snapshot_includes_checkpoint(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.core.transcript_store import TranscriptStore
+    from services.agent_runtime.v2.run_inspector import AgentRuntimeInspector
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    transcript_store = TranscriptStore(tmp_path / "transcripts")
+    run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="继续开发 runtime",
+    )
+    transcript_store.append(run.run_id, "user_input", {"content": "继续开发 runtime"})
+    transcript_store.append(
+        run.run_id,
+        "tool_observation",
+        {"tool_name": "pytest", "status": "passed", "summary": "91 passed"},
+    )
+
+    snapshot = AgentRuntimeInspector(
+        state_store=state_store,
+        event_log=RuntimeEventLog(tmp_path / "events"),
+        transcript_store=transcript_store,
+    ).get_run_snapshot(run.run_id)
+
+    assert snapshot is not None
+    assert snapshot["checkpoint"]["latest_user_goal"] == "继续开发 runtime"
+    assert "91 passed" in snapshot["checkpoint"]["summary"]
+    assert snapshot["background_processes"] == []
+
+
+def test_runtime_inspector_snapshot_includes_background_processes(tmp_path):
+    from services.agent_runtime.core.background_process import (
+        BackgroundProcessHandle,
+        BackgroundProcessRegistry,
+    )
+    from services.agent_runtime.core.state_store import TaskRunStore
+    from services.agent_runtime.v2.run_inspector import AgentRuntimeInspector
+
+    state_store = TaskRunStore(tmp_path / "runs")
+    registry = BackgroundProcessRegistry()
+    run = state_store.create(
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        session_id="session-1",
+        user_goal="构建",
+    )
+    registry.register(
+        BackgroundProcessHandle(
+            process_id="proc-1",
+            command="npm run build",
+            metadata={"run_id": run.run_id},
+        )
+    )
+    registry.register(
+        BackgroundProcessHandle(
+            process_id="proc-other",
+            command="pytest",
+            metadata={"run_id": "other"},
+        )
+    )
+
+    snapshot = AgentRuntimeInspector(
+        state_store=state_store,
+        background_registry=registry,
+    ).get_run_snapshot(run.run_id)
+
+    assert snapshot is not None
+    assert [item["process_id"] for item in snapshot["background_processes"]] == [
+        "proc-1"
+    ]
+
+
+def test_context_checkpoint_is_exported_from_shared_and_v2():
+    from services.agent_runtime import shared
+    from services.agent_runtime import v2
+    from services.agent_runtime.core.background_process import (
+        BackgroundProcessHandle,
+        BackgroundProcessRegistry,
+    )
+    from services.agent_runtime.core.context_checkpoint import ContextCheckpointBuilder
+
+    assert shared.ContextCheckpointBuilder is ContextCheckpointBuilder
+    assert v2.ContextCheckpointBuilder is ContextCheckpointBuilder
+    assert shared.BackgroundProcessHandle is BackgroundProcessHandle
+    assert shared.BackgroundProcessRegistry is BackgroundProcessRegistry
+    assert v2.BackgroundProcessHandle is BackgroundProcessHandle
+    assert v2.BackgroundProcessRegistry is BackgroundProcessRegistry
+
+
+def test_permission_policy_uses_registry_metadata_without_lowering_command_risk(tmp_path):
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+
+    policy = PermissionPolicy(PermissionStore(tmp_path))
+    low_metadata = policy.evaluate(
+        run_id="run-1",
+        call_id="call-1",
+        tool_name="project_host_run_command",
+        args={"command": "sudo echo ok"},
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        workspace_trusted=True,
+        tool_entry={"risk_level": "low", "permission_scope": "project"},
+    )
+    high_metadata = policy.evaluate(
+        run_id="run-1",
+        call_id="call-2",
+        tool_name="custom_tool",
+        args={},
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        workspace_trusted=False,
+        tool_entry={"risk_level": "high", "permission_scope": "workspace"},
+    )
+
+    assert low_metadata.risk_level == "high"
+    assert low_metadata.behavior == "ask"
+    assert high_metadata.risk_level == "high"
+    assert high_metadata.behavior == "ask"
+    assert high_metadata.reason == "workspace is not trusted"
+
+
 def test_permission_action_allow_always_reuses_lark_auth_status_signature(tmp_path):
     from services.agent_runtime.core.event_log import RuntimeEventLog
     from services.agent_runtime.v2.permission_actions import PermissionActionService
@@ -2324,6 +3390,61 @@ async def test_tool_runner_executes_when_permission_rule_allows(tmp_path):
     assert executed_args["_agent_runtime_tool_name"] == "project_host_run_command"
     assert records[0].observation.status == "succeeded"
     assert records[0].raw_result["stdout"] == "allowed"
+
+
+@pytest.mark.asyncio
+async def test_tool_runner_records_registry_metadata_in_permission_events(tmp_path):
+    from services.agent_runtime.core.event_log import RuntimeEventLog
+    from services.agent_runtime.shared.tool_calls import CollectedToolCall
+    from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
+    from services.agent_runtime.v2.permission_policy import PermissionPolicy
+    from services.agent_runtime.v2.permission_store import PermissionStore
+
+    class _FakeToolExecutor:
+        async def execute_parallel(self, tool_calls, timeout=None):
+            return [{"exit_code": 0, "stdout": "should not run"}]
+
+    event_log = RuntimeEventLog(tmp_path / "events")
+    runner = ToolExecutionRunner(
+        _FakeToolExecutor(),
+        event_log=event_log,
+        permission_policy=PermissionPolicy(PermissionStore(tmp_path / "permissions")),
+        project_id="proj-1",
+        username="tester",
+        chat_session_id="chat-1",
+        workspace_trusted=False,
+        tool_entries=[
+            {
+                "tool_name": "custom_workspace_tool",
+                "risk_level": "high",
+                "permission_scope": "workspace",
+                "execution_backend": "local_connector",
+                "audit_policy": "full",
+            }
+        ],
+    )
+
+    records = await runner.execute(
+        run_id="run-1",
+        tool_calls=[
+            CollectedToolCall(
+                call_id="call-1",
+                tool_name="custom_workspace_tool",
+                arguments="{}",
+                raw={},
+            )
+        ],
+    )
+    permission_event = next(
+        item
+        for item in event_log.list_events("run-1")
+        if item.event_type == "permission_decision"
+    )
+
+    assert records[0].observation.status == "blocked"
+    assert records[0].raw_result["tool_entry"]["execution_backend"] == "local_connector"
+    assert records[0].raw_result["permission_decision"]["risk_level"] == "high"
+    assert permission_event.payload["tool_entry"]["audit_policy"] == "full"
 
 
 def test_trust_policy_marks_workspace_trusted(tmp_path):
@@ -3048,3 +4169,357 @@ async def test_event_stream_builds_agent_runtime_event_payload():
     assert payload["type"] == "agent_runtime_event"
     assert payload["event_type"] == "llm_step_completed"
     assert published == [payload]
+
+
+
+@pytest.mark.asyncio
+async def test_llm_step_consumes_provider_stream_adapter(monkeypatch):
+    from services.agent_runtime.shared.provider_events import (
+        ProviderStreamAdapter,
+        ProviderStreamEvent,
+        ProviderStreamEventType,
+    )
+    from services.agent_runtime.v2.llm_step import LLMStep
+
+    normalized_chunks = []
+
+    def _normalize_chunk(self, chunk):
+        normalized_chunks.append(
+            {
+                "provider_id": self.provider_id,
+                "model_name": self.model_name,
+                "chunk": dict(chunk),
+            }
+        )
+        return [
+            ProviderStreamEvent(
+                event_type=ProviderStreamEventType.CONTENT_DELTA,
+                provider_id=self.provider_id,
+                model_name=self.model_name,
+                text=f"normalized:{chunk.get('content')}",
+                raw=dict(chunk),
+            )
+        ]
+
+    monkeypatch.setattr(ProviderStreamAdapter, "normalize_chunk", _normalize_chunk)
+
+    class _FakeLLM:
+        async def chat_completion_stream(self, **kwargs):
+            yield {"content": "raw"}
+
+    result = await LLMStep(_FakeLLM()).run(
+        provider_id="provider-1",
+        model_name="model-1",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+
+    assert result.content == "normalized:raw"
+    assert result.provider_id == "provider-1"
+    assert result.model_name == "model-1"
+    assert normalized_chunks == [
+        {
+            "provider_id": "provider-1",
+            "model_name": "model-1",
+            "chunk": {"content": "raw"},
+        }
+    ]
+
+
+def test_provider_stream_adapter_normalizes_content_tool_usage_and_error_events():
+    from services.agent_runtime.shared.provider_events import (
+        ProviderStreamAdapter,
+        ProviderStreamEvent,
+        ProviderStreamEventType,
+    )
+
+    adapter = ProviderStreamAdapter(provider_id="provider-1", model_name="model-1")
+    events = adapter.normalize_chunks(
+        [
+            {"content": "你好"},
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-1",
+                        "function": {
+                            "name": "project_host_run_command",
+                            "arguments": "{\"command\":\"pwd\"}",
+                        },
+                    }
+                ]
+            },
+            {
+                "usage": {"prompt_tokens": 3, "completion_tokens": 5},
+                "provider_id": "provider-override",
+                "model_name": "model-override",
+            },
+            {"type": "error", "message": "rate limit", "retryable": True},
+        ]
+    )
+
+    assert [event.event_type for event in events] == [
+        ProviderStreamEventType.CONTENT_DELTA,
+        ProviderStreamEventType.TOOL_CALL_DELTA,
+        ProviderStreamEventType.USAGE,
+        ProviderStreamEventType.ERROR,
+    ]
+    assert isinstance(events[0], ProviderStreamEvent)
+    assert events[0].text == "你好"
+    assert events[1].tool_calls[0]["function"]["name"] == "project_host_run_command"
+    assert events[2].usage == {"prompt_tokens": 3, "completion_tokens": 5}
+    assert events[2].provider_id == "provider-override"
+    assert events[2].model_name == "model-override"
+    assert events[3].error["message"] == "rate limit"
+    assert events[3].retryable is True
+
+
+def test_provider_stream_adapter_normalizes_openai_choice_delta_chunks():
+    from services.agent_runtime.shared.provider_events import (
+        ProviderStreamAdapter,
+        ProviderStreamEventType,
+    )
+
+    adapter = ProviderStreamAdapter(provider_id="openai", model_name="gpt-test")
+    result = adapter.build_step_result(
+        adapter.normalize_chunks(
+            [
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "content": "查",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call-1",
+                                        "function": {
+                                            "name": "project_host_run_command",
+                                            "arguments": "{\"command\":",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "content": "询",
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {
+                                            "arguments": "\"pwd\"}",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {"total_tokens": 9},
+                },
+            ]
+        )
+    )
+    events = adapter.normalize_chunk(
+        {"choices": [{"delta": {"content": "x"}}]}
+    )
+
+    assert events[0].event_type == ProviderStreamEventType.CONTENT_DELTA
+    assert result.content == "查询"
+    assert result.usage == {"total_tokens": 9}
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].tool_name == "project_host_run_command"
+    assert result.tool_calls[0].arguments == "{\"command\":\"pwd\"}"
+
+
+def test_provider_stream_adapter_normalizes_responses_output_item_chunks():
+    from services.agent_runtime.shared.provider_events import ProviderStreamAdapter
+
+    adapter = ProviderStreamAdapter(provider_id="responses", model_name="gpt-responses")
+    events = adapter.normalize_chunks(
+        [
+            {
+                "type": "response.output_text.delta",
+                "delta": "授权",
+            },
+            {
+                "type": "response.function_call_arguments.delta",
+                "item_id": "call-1",
+                "name": "project_host_run_command",
+                "delta": "{\"command\":",
+            },
+            {
+                "type": "response.function_call_arguments.delta",
+                "item_id": "call-1",
+                "delta": "\"lark-cli auth status\"}",
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "usage": {"input_tokens": 4, "output_tokens": 7},
+                },
+            },
+        ]
+    )
+    result = adapter.build_step_result(events)
+
+    assert result.content == "授权"
+    assert result.usage == {"input_tokens": 4, "output_tokens": 7}
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].call_id == "call-1"
+    assert result.tool_calls[0].tool_name == "project_host_run_command"
+    assert result.tool_calls[0].arguments == "{\"command\":\"lark-cli auth status\"}"
+
+
+def test_provider_stream_adapter_exposes_capability_metadata():
+    from services.agent_runtime.shared.provider_events import (
+        ProviderCapabilityMetadata,
+        ProviderStreamAdapter,
+    )
+
+    openai_adapter = ProviderStreamAdapter(provider_id="openai", model_name="gpt-4o")
+    explicit_adapter = ProviderStreamAdapter(
+        provider_id="custom",
+        model_name="local-vision-json",
+        capabilities={
+            "native_tool_calls": True,
+            "vision": True,
+            "json_mode": True,
+            "stream_usage": False,
+        },
+    )
+    metadata = ProviderCapabilityMetadata(
+        provider_id="responses",
+        model_name="gpt-responses",
+        native_tool_calls=True,
+        reasoning=True,
+        json_mode=True,
+        stream_usage=True,
+    )
+    metadata_adapter = ProviderStreamAdapter(capabilities=metadata)
+
+    assert openai_adapter.capabilities.to_dict() == {
+        "provider_id": "openai",
+        "model_name": "gpt-4o",
+        "native_tool_calls": True,
+        "vision": True,
+        "reasoning": False,
+        "json_mode": True,
+        "stream_usage": True,
+    }
+    assert explicit_adapter.capabilities.provider_id == "custom"
+    assert explicit_adapter.capabilities.model_name == "local-vision-json"
+    assert explicit_adapter.capabilities.native_tool_calls is True
+    assert explicit_adapter.capabilities.vision is True
+    assert explicit_adapter.capabilities.json_mode is True
+    assert explicit_adapter.capabilities.stream_usage is False
+    assert metadata_adapter.capabilities is metadata
+
+
+
+def test_provider_stream_adapter_builds_llm_step_result_contract():
+    from services.agent_runtime.shared.provider_events import ProviderStreamAdapter
+
+    adapter = ProviderStreamAdapter(provider_id="provider-1", model_name="model-1")
+    result = adapter.build_step_result(
+        adapter.normalize_chunks(
+            [
+                {"content": "执行"},
+                {"content": "完成"},
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-1",
+                            "function": {
+                                "name": "project_host_run_command",
+                                "arguments": "{\"command\":\"pwd\"}",
+                            },
+                        }
+                    ]
+                },
+                {"usage": {"total_tokens": 12}},
+            ]
+        ),
+        max_tool_calls=3,
+    )
+
+    assert result.content == "执行完成"
+    assert result.provider_id == "provider-1"
+    assert result.model_name == "model-1"
+    assert result.usage == {"total_tokens": 12}
+    assert result.error is None
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].tool_name == "project_host_run_command"
+    assert result.tool_calls[0].arguments == "{\"command\":\"pwd\"}"
+
+
+
+def test_provider_stream_adapter_is_exported_from_shared_and_v2():
+    from services.agent_runtime.shared import (
+        ProviderCapabilityMetadata,
+        ProviderStreamAdapter,
+        ProviderStreamEvent,
+        ProviderStreamEventType,
+    )
+    from services.agent_runtime import v2
+
+    assert v2.ProviderCapabilityMetadata is ProviderCapabilityMetadata
+    assert v2.ProviderStreamAdapter is ProviderStreamAdapter
+    assert v2.ProviderStreamEvent is ProviderStreamEvent
+    assert v2.ProviderStreamEventType is ProviderStreamEventType
+
+
+def test_hermes_runtime_capability_catalog_covers_platform_features():
+    from services.agent_runtime.shared.runtime_capabilities import (
+        default_hermes_runtime_capability_catalog,
+    )
+
+    catalog = default_hermes_runtime_capability_catalog()
+    expected_ids = {
+        "agent_loop",
+        "provider_adapter",
+        "tool_registry",
+        "tool_permission_approval",
+        "builtin_tools",
+        "skills",
+        "memory",
+        "session_management",
+        "context_compression",
+        "mcp",
+        "gateway",
+        "cron",
+        "background_process",
+        "multi_platform_messages",
+        "configuration_system",
+        "error_recovery_state_machine",
+    }
+
+    assert set(catalog.ids()) == expected_ids
+    assert len(catalog.ids()) == len(set(catalog.ids()))
+    assert catalog.get("agent_loop").status == "partial"
+    assert catalog.get("context_compression").status == "planned"
+    assert catalog.summary()["capability_total"] == len(expected_ids)
+    assert catalog.by_phase()[1][0]["capability_id"] == "agent_loop"
+    assert "tools" in catalog.by_category()
+
+
+def test_hermes_runtime_capability_catalog_is_exported_from_shared_and_v2():
+    from services.agent_runtime.shared import (
+        RuntimeCapability,
+        RuntimeCapabilityCatalog,
+        default_hermes_runtime_capability_catalog,
+    )
+    from services.agent_runtime import v2
+
+    shared_catalog = default_hermes_runtime_capability_catalog()
+    v2_catalog = v2.default_hermes_runtime_capability_catalog()
+
+    assert isinstance(shared_catalog, RuntimeCapabilityCatalog)
+    assert isinstance(shared_catalog.get("agent_loop"), RuntimeCapability)
+    assert v2.RuntimeCapability is RuntimeCapability
+    assert v2.RuntimeCapabilityCatalog is RuntimeCapabilityCatalog
+    assert v2_catalog.ids() == shared_catalog.ids()

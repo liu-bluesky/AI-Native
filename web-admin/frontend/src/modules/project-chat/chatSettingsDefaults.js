@@ -2,6 +2,7 @@
 
 export const CHAT_SETTINGS_DEFAULTS = {
   chat_mode: "system",
+  external_agent_type: "codex_cli",
   local_connector_id: "",
   connector_workspace_path: "",
   connector_sandbox_mode: "workspace-write",

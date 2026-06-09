@@ -16,6 +16,7 @@ from services.agent_runtime.core.state_store import TaskRunStore
 from services.agent_runtime.shared.tool_execution_runner import ToolExecutionRunner
 from services.agent_runtime.core.transcript_store import TranscriptStore
 from services.agent_runtime.shared.trust_policy import TrustPolicy
+from services.agent_runtime.shared.verification_policy import VerificationPolicy
 from services.tool_executor import ToolExecutor
 
 
@@ -116,6 +117,16 @@ class AgentTaskRuntime:
             local_connector_sandbox_mode=local_connector_sandbox_mode,
             global_assistant_bridge_handler=global_assistant_bridge_handler,
         )
+
+    def _requires_completion_evidence(self, user_goal: str) -> bool:
+        return VerificationPolicy().build_state(user_goal=user_goal).required
+
+    def _completion_gate_inputs(self, user_goal: str) -> dict[str, bool]:
+        requires_evidence = self._requires_completion_evidence(user_goal)
+        return {
+            "task_tree_verified": not requires_evidence,
+            "goal_covered": not requires_evidence,
+        }
 
     def _fallback_content_from_observations(
         self,
@@ -469,6 +480,7 @@ class AgentTaskRuntime:
                 username=username,
                 chat_session_id=chat_session_id,
                 workspace_trusted=workspace_trusted,
+                tool_entries=tool_pool.available_entries(),
             ),
             state_store=self._state_store,
             transcript_store=self._transcript_store,
@@ -482,6 +494,7 @@ class AgentTaskRuntime:
         run_messages = list(messages or [])
         if not run_messages:
             run_messages = [{"role": "user", "content": user_message}]
+        completion_gate = self._completion_gate_inputs(user_message)
         result = await engine.run(
             task_run,
             messages=run_messages,
@@ -490,8 +503,7 @@ class AgentTaskRuntime:
             model_name=model_name,
             temperature=temperature,
             max_tokens=max_tokens,
-            task_tree_verified=True,
-            goal_covered=True,
+            **completion_gate,
         )
         yield {
             "type": "runtime_status",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from services.agent_runtime.shared.tool_calls import CollectedToolCall, ToolCallCollector
+from services.agent_runtime.shared.tool_calls import CollectedToolCall
 
 
 @dataclass
@@ -48,11 +48,16 @@ class LLMStep:
         timeout: int = 120,
         max_tool_calls: int = 6,
     ) -> LLMStepResult:
-        collector = ToolCallCollector()
-        content_parts: list[str] = []
-        usage: dict[str, Any] = {}
-        resolved_provider_id = str(provider_id or "").strip()
-        resolved_model_name = str(model_name or "").strip()
+        from services.agent_runtime.shared.provider_events import (
+            ProviderStreamAdapter,
+            ProviderStreamEvent,
+        )
+
+        adapter = ProviderStreamAdapter(
+            provider_id=provider_id,
+            model_name=model_name,
+        )
+        events: list[ProviderStreamEvent] = []
         try:
             async for chunk in self._llm_service.chat_completion_stream(
                 provider_id=provider_id,
@@ -65,46 +70,21 @@ class LLMStep:
             ):
                 if not isinstance(chunk, dict):
                     continue
-                if isinstance(chunk.get("usage"), dict):
-                    usage = dict(chunk["usage"])
-                    resolved_provider_id = str(chunk.get("provider_id") or resolved_provider_id).strip()
-                    resolved_model_name = str(chunk.get("model_name") or resolved_model_name).strip()
-                if str(chunk.get("type") or "").strip().lower() == "error":
-                    return LLMStepResult(
-                        content="".join(content_parts),
-                        tool_calls=collector.list_tool_calls(limit=max_tool_calls),
-                        usage=usage,
-                        provider_id=resolved_provider_id,
-                        model_name=resolved_model_name,
-                        error=dict(chunk),
-                    )
-                if "tool_calls" in chunk:
-                    collector.add_chunk(chunk)
-                if "content" in chunk:
-                    content_parts.append(str(chunk.get("content") or ""))
+                events.extend(adapter.normalize_chunk(chunk))
         except Exception as exc:
-            return LLMStepResult(
-                content="".join(content_parts),
-                tool_calls=collector.list_tool_calls(limit=max_tool_calls),
-                usage=usage,
-                provider_id=resolved_provider_id,
-                model_name=resolved_model_name,
-                error={
-                    "type": "error",
-                    "message": _format_llm_stream_exception_message(exc),
-                    "raw_error": str(exc),
-                    "error_type": exc.__class__.__name__,
-                    "provider_id": resolved_provider_id,
-                    "model_name": resolved_model_name,
-                },
+            events.extend(
+                adapter.normalize_chunk(
+                    {
+                        "type": "error",
+                        "message": _format_llm_stream_exception_message(exc),
+                        "raw_error": str(exc),
+                        "error_type": exc.__class__.__name__,
+                        "provider_id": adapter.provider_id,
+                        "model_name": adapter.model_name,
+                    }
+                )
             )
-        return LLMStepResult(
-            content="".join(content_parts),
-            tool_calls=collector.list_tool_calls(limit=max_tool_calls),
-            usage=usage,
-            provider_id=resolved_provider_id,
-            model_name=resolved_model_name,
-        )
+        return adapter.build_step_result(events, max_tool_calls=max_tool_calls)
 
     def _format_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         formatted: list[dict[str, Any]] = []

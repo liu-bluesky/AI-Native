@@ -52,6 +52,9 @@ class DynamicToolPool:
     def names(self) -> list[str]:
         return [item.tool_name for item in self.entries if item.tool_name]
 
+    def available_entries(self) -> list[RuntimeToolEntry]:
+        return list(self.entries)
+
     def openai_tools(self) -> list[dict[str, Any]]:
         return [item.openai_tool() for item in self.entries]
 

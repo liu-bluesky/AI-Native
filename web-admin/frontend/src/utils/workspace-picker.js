@@ -1,5 +1,6 @@
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/utils/api.js'
+import { pickNativeWorkspaceDirectory } from '@/utils/native-desktop-bridge.js'
 
 function normalizePathLike(value = '') {
   return String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
@@ -31,6 +32,16 @@ export async function pickWorkspaceDirectory(currentPath = '', options = {}) {
   const title = String(options?.title || '选择工作区目录').trim() || '选择工作区目录'
   const fallbackPlaceholder =
     String(options?.placeholder || '/Users/yourname/project').trim() || '/Users/yourname/project'
+
+  try {
+    const nativePicked = await pickNativeWorkspaceDirectory({
+      title,
+      initialPath,
+    })
+    if (nativePicked) return nativePicked
+  } catch (err) {
+    ElMessage.warning(err?.message || '桌面端目录选择器不可用，改用服务端选择器')
+  }
 
   try {
     const data = await api.post('/projects/workspace-directory/pick', {

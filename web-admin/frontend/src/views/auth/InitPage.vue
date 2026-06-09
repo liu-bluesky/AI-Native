@@ -43,6 +43,14 @@
           <div class="init-panel__text">账号固定为 admin，只需要设置超级管理员姓名和密码。</div>
         </div>
 
+        <div class="init-server">
+          <div>
+            <div class="init-server__label">当前服务端</div>
+            <div class="init-server__value">{{ activeServerOrigin }}</div>
+          </div>
+          <el-button text @click="router.replace('/login')">切换服务端</el-button>
+        </div>
+
         <el-form
           ref="formRef"
           :model="form"
@@ -101,17 +109,19 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import api from "@/utils/api.js";
 import { markSystemInitialized } from "@/router/index.js";
 import { getStoredToken } from "@/utils/auth-storage.js";
+import { resolveServerOrigin } from "@/utils/server-profile.js";
 
 const router = useRouter();
 const formRef = ref(null);
 const loading = ref(false);
 const checkingStatus = ref(false);
+const activeServerOrigin = computed(() => resolveServerOrigin() || "当前网页服务");
 
 const form = reactive({
   username: "admin",
@@ -378,6 +388,35 @@ onMounted(() => {
 
 .init-form {
   width: 100%;
+}
+
+.init-server {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid rgba(203, 213, 225, 0.8);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.86);
+}
+
+.init-server__label {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.init-server__value {
+  margin-top: 3px;
+  max-width: 260px;
+  overflow: hidden;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .init-account {

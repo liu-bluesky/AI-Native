@@ -8,8 +8,7 @@
 强制接入步骤：
 
 1. 先读取 `query://usage-guide`；当前是 Codex CLI 时，再读取 `query://client-profile/codex`。
-2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/active/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用。
-   需求一开始就要在当前 CLI 工作区完成本地初始化、创建 requirement 与 canonical session 状态。
+2. 初始化不是只检查技能；先以当前 CLI 工作区为准，显式初始化本地 `.ai-employee/`，至少确保 `.ai-employee/skills/`、`.ai-employee/query-mcp/active-sessions/`、`.ai-employee/query-mcp/session-history/` 与 `.ai-employee/requirements/<project_id>/` 可用；canonical session 状态只使用 `active-sessions/<chat_session_id>.json` 与 `session-history/<project_id>__<chat_session_id>.json`。
 3. 再检查 `.ai-employee/skills/query-mcp-workflow/` 是否已存在；缺失时先通过 MCP 从服务端技能库同步或创建到当前工作区，已存在则直接复用，禁止重复创建。
 4. 通用场景下，统一查询 MCP 工作流技能应位于当前项目根目录 `.ai-employee/skills/query-mcp-workflow/`；核心文件优先读取本地副本中的 `SKILL.md` 与 `manifest.json`。只有当前仓库本身就是统一查询 MCP 工作流技能的系统源仓时，才把 `mcp-skills/knowledge/skills/query-mcp-workflow.json` 与 `mcp-skills/knowledge/skill-packages/query-mcp-workflow/` 作为回源比对位置。
 5. 若系统曾把 `.ai-employee` 或 `query-mcp-workflow` 隐式落到其他子目录，只能视为历史状态，不能替代当前 CLI 工作区初始化；当前入口仍要在当前工作区补齐。
@@ -34,8 +33,8 @@
 - 建议把 URL 默认上下文里的 `project_id` 固定为 `proj-d16591a6`。
 - 涉及当前项目时，若项目和对象已明确，可直接 `get_manual_content(project_id="proj-d16591a6")` 或进入 `start_project_workflow(...)`；仅在缺少 ID 或需要跨项目定位时，再调用 `search_ids(keyword="<用户原始问题>", project_id="proj-d16591a6")`。
 - 若要创建或续接当前项目任务树，优先显式调用 `bind_project_context(project_id="proj-d16591a6", chat_session_id="<聊天会话ID>", root_goal="<用户原始问题>")`。
-- 若当前是新开的 CLI 会话且 URL 未附带 `chat_session_id`，先生成新的 `chat_session_id`，再调用 `bind_project_context(...)`。
-- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。
+- 当前页面已有 `chat_session_id=chat-session-5af9895ac171`；仅在明确要续接当前任务树时复用，否则新开的并行 CLI 应重新生成自己的 `chat_session_id`。
+- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`；不要新写 `.ai-employee/query-mcp/active/<project_id>.json`，它不能作为当前窗口状态。
 - requirement 本地对象与 query-mcp canonical 状态要同时维护；不要只写 session 文件而缺失 `.ai-employee/requirements/<project_id>/<chat_session_id>.json`。
 - 如果自动 bootstrap 把状态写到了别的服务子目录，不能把它当成当前仓库根目录已初始化；入口提示词必须以当前 CLI 工作区为准重新核对。
 - 若当前还没有 `session_id`，调用 `start_work_session` 后也要立刻持久化；中断恢复顺序固定为 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)`。

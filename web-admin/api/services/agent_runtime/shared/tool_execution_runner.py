@@ -8,6 +8,7 @@ from typing import Any
 
 from services.agent_runtime.core.event_log import RuntimeEventLog
 from services.agent_runtime.shared.tool_calls import CollectedToolCall
+from services.agent_runtime.shared.tool_registry import RuntimeToolEntry
 from services.agent_runtime.shared.tool_results import ToolObservation, ToolResultNormalizer
 from services.agent_runtime.v2.permission_policy import PermissionPolicy
 from services.agent_runtime.v2.permission_store import PermissionDecision
@@ -45,6 +46,7 @@ class ToolExecutionRunner:
         username: str = "",
         chat_session_id: str = "",
         workspace_trusted: bool = True,
+        tool_entries: list[RuntimeToolEntry | dict[str, Any]] | None = None,
     ):
         self._tool_executor = tool_executor
         self._event_log = event_log or RuntimeEventLog()
@@ -54,6 +56,7 @@ class ToolExecutionRunner:
         self._username = str(username or "").strip()
         self._chat_session_id = str(chat_session_id or "").strip()
         self._workspace_trusted = bool(workspace_trusted)
+        self._tool_entries = self._normalize_tool_entries(tool_entries)
 
     async def execute(
         self,
@@ -78,6 +81,7 @@ class ToolExecutionRunner:
                 args.setdefault("_agent_runtime_call_id", item.call_id)
                 args.setdefault("_agent_runtime_tool_name", item.tool_name)
                 executable_item = self._tool_call_with_arguments(item, args)
+            tool_entry = self._tool_entry_for(item.tool_name)
             decision = self._permission_policy.evaluate(
                 run_id=run_id,
                 call_id=item.call_id,
@@ -87,6 +91,7 @@ class ToolExecutionRunner:
                 username=self._username,
                 chat_session_id=self._chat_session_id,
                 workspace_trusted=self._workspace_trusted,
+                tool_entry=tool_entry,
             )
             self._event_log.append(
                 run_id,
@@ -96,6 +101,7 @@ class ToolExecutionRunner:
                     "decision": decision.to_dict(),
                     "args": dict(args or {}),
                     "args_parse_status": "ok" if args is not None else "invalid_json",
+                    "tool_entry": tool_entry,
                 },
             )
             if not decision.allowed:
@@ -106,6 +112,7 @@ class ToolExecutionRunner:
                         decision=decision,
                         args=args or {},
                         args_parse_status="ok" if args is not None else "invalid_json",
+                        tool_entry=tool_entry,
                     )
                 )
                 continue
@@ -127,6 +134,27 @@ class ToolExecutionRunner:
                     raw_result=raw_result,
                 )
         return [item for item in records if item is not None]
+
+    def _normalize_tool_entries(
+        self,
+        entries: list[RuntimeToolEntry | dict[str, Any]] | None,
+    ) -> dict[str, dict[str, Any]]:
+        normalized: dict[str, dict[str, Any]] = {}
+        for entry in entries or []:
+            if isinstance(entry, RuntimeToolEntry):
+                payload = entry.summary()
+            elif isinstance(entry, dict):
+                payload = dict(entry)
+            else:
+                continue
+            tool_name = str(payload.get("tool_name") or payload.get("name") or "").strip()
+            if not tool_name:
+                continue
+            normalized[tool_name] = payload
+        return normalized
+
+    def _tool_entry_for(self, tool_name: str) -> dict[str, Any]:
+        return dict(self._tool_entries.get(str(tool_name or "").strip(), {}))
 
     def _tool_call_with_arguments(
         self,
@@ -188,6 +216,7 @@ class ToolExecutionRunner:
         decision: PermissionDecision,
         args: dict[str, Any],
         args_parse_status: str,
+        tool_entry: dict[str, Any] | None = None,
     ) -> ToolExecutionRecord:
         payload: dict[str, Any] = {
             "status": "blocked",
@@ -197,6 +226,7 @@ class ToolExecutionRunner:
             "permission_decision": decision.to_dict(),
             "tool_args": dict(args),
             "args_parse_status": args_parse_status,
+            "tool_entry": dict(tool_entry or {}),
         }
         observation = self._normalizer.normalize(
             run_id=run_id,

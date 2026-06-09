@@ -66,6 +66,59 @@ def _sanitize_role(value: str) -> tuple[str, object]:
     return role, role_item
 
 
+def _sanitize_role_ids(values: list[str] | None, *, fallback_role: str = "user") -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values or []:
+        role_id = str(item or "").strip().lower()
+        if not role_id or role_id in seen:
+            continue
+        if role_store.get(role_id) is None:
+            raise HTTPException(400, f"Role not found: {role_id}")
+        seen.add(role_id)
+        normalized.append(role_id)
+    if normalized:
+        return normalized
+    role, _ = _sanitize_role(fallback_role)
+    return [role]
+
+
+def _role_names_payload(role_ids: list[str], roles: dict[str, object]) -> list[str]:
+    return [str(getattr(roles.get(role_id), "name", role_id) or role_id) for role_id in role_ids]
+
+
+def _existing_user_role_ids(user: User) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    raw_role_ids = list(getattr(user, "role_ids", []) or [])
+    for item in [*raw_role_ids, user.role]:
+        role_id = str(item or "").strip().lower()
+        if not role_id or role_id in seen:
+            continue
+        seen.add(role_id)
+        normalized.append(role_id)
+    return normalized or ["user"]
+
+
+def _user_role_payload(user: User, roles: dict[str, object] | None = None) -> dict:
+    known_roles = roles if roles is not None else {item.id: item for item in role_store.list_all()}
+    role_ids = _existing_user_role_ids(user)
+    role_names = _role_names_payload(role_ids, known_roles)
+    return {
+        "role": role_ids[0],
+        "role_name": role_names[0] if role_names else role_ids[0],
+        "role_ids": role_ids,
+        "role_names": role_names,
+        "roles": [
+            {
+                "id": role_id,
+                "name": role_name,
+            }
+            for role_id, role_name in zip(role_ids, role_names)
+        ],
+    }
+
+
 def _user_department_payload(username: str) -> dict:
     memberships = department_store.list_user_memberships(username)
     departments = {item.id: item for item in department_store.list_departments()}
@@ -95,8 +148,7 @@ async def list_users(auth_payload: dict = Depends(require_auth)):
         {
             "username": user.username,
             "display_name": str(user.display_name or "").strip(),
-            "role": user.role,
-            "role_name": getattr(roles.get(user.role), "name", user.role),
+            **_user_role_payload(user, roles),
             "created_by": str(getattr(user, "created_by", "") or "").strip(),
             "created_at": user.created_at,
             **_user_department_payload(user.username),
@@ -133,7 +185,7 @@ async def list_user_share_options(auth_payload: dict = Depends(require_auth)):
         {
             "username": user.username,
             "display_name": str(user.display_name or "").strip(),
-            "role": user.role,
+            **_user_role_payload(user),
             "created_at": user.created_at,
             **_user_department_payload(user.username),
         }
@@ -159,7 +211,7 @@ async def get_current_user_settings(auth_payload: dict = Depends(require_auth)):
         "settings": {
             "username": user.username,
             "display_name": str(user.display_name or "").strip(),
-            "role": user.role,
+            **_user_role_payload(user),
             "default_ai_provider_id": str(user.default_ai_provider_id or "").strip(),
             "created_at": user.created_at,
         },
@@ -214,7 +266,8 @@ async def create_user(req: UserCreateReq, auth_payload: dict = Depends(require_a
     _ensure_permission(auth_payload, "button.users.create")
     username = _sanitize_username(req.username)
     password = _sanitize_password(req.password)
-    role, role_item = _sanitize_role(req.role)
+    role_ids = _sanitize_role_ids(req.role_ids, fallback_role=req.role)
+    role, _ = _sanitize_role(role_ids[0])
     if user_store.get(username) is not None:
         raise HTTPException(409, "Username already exists")
     user = User(
@@ -222,7 +275,7 @@ async def create_user(req: UserCreateReq, auth_payload: dict = Depends(require_a
         password_hash=hash_password(password),
         display_name=_sanitize_display_name(req.display_name),
         role=role,
-        role_ids=req.role_ids or [role],
+        role_ids=role_ids,
         created_by=str(auth_payload.get("sub") or "").strip(),
     )
     user_store.save(user)
@@ -238,8 +291,7 @@ async def create_user(req: UserCreateReq, auth_payload: dict = Depends(require_a
         "user": {
             "username": user.username,
             "display_name": str(user.display_name or "").strip(),
-            "role": user.role,
-            "role_name": role_item.name,
+            **_user_role_payload(user),
             "created_at": user.created_at,
             **_user_department_payload(user.username),
         },
@@ -258,11 +310,16 @@ async def update_user(username: str, req: UserUpdateReq, auth_payload: dict = De
         raise HTTPException(404, "User not found")
     requested_role = str(req.role or "").strip().lower()
     if normalized_username == current_username:
+        requested_role_ids = _sanitize_role_ids(req.role_ids, fallback_role=existing.role) if req.role_ids else []
         if requested_role and requested_role != existing.role:
             raise HTTPException(400, "Cannot change current login user role")
-        role, role_item = _sanitize_role(existing.role)
+        if requested_role_ids and requested_role_ids != list(existing.role_ids or [existing.role]):
+            raise HTTPException(400, "Cannot change current login user role")
+        role, _ = _sanitize_role(existing.role)
+        role_ids = list(existing.role_ids or [role])
     else:
-        role, role_item = _sanitize_role(req.role)
+        role_ids = _sanitize_role_ids(req.role_ids, fallback_role=req.role or existing.role)
+        role, _ = _sanitize_role(role_ids[0])
     password_hash = existing.password_hash
     next_password = str(req.password or "")
     if next_password.strip():
@@ -276,7 +333,7 @@ async def update_user(username: str, req: UserUpdateReq, auth_payload: dict = De
             else existing.display_name
         ),
         role=role,
-        role_ids=req.role_ids or existing.role_ids or [role],
+        role_ids=role_ids,
         default_ai_provider_id=existing.default_ai_provider_id,
         created_by=existing.created_by,
         created_at=existing.created_at,
@@ -294,8 +351,7 @@ async def update_user(username: str, req: UserUpdateReq, auth_payload: dict = De
         "user": {
             "username": updated.username,
             "display_name": str(updated.display_name or "").strip(),
-            "role": updated.role,
-            "role_name": role_item.name,
+            **_user_role_payload(updated),
             "created_by": str(updated.created_by or "").strip(),
             "created_at": updated.created_at,
             **_user_department_payload(updated.username),

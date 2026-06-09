@@ -172,6 +172,8 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     assert runtime["bootstrap_checklist"] == [
         "read query://usage-guide",
         "read query://client-profile/codex",
+        "do not loop on list_mcp_resources; it is resource discovery only and may be called at most once per turn",
+        "for simple project queries with a known project_id, call the matching business tool directly instead of listing resources",
         "initialize local .ai-employee state in the current CLI workspace and ensure query-mcp-workflow is available there",
         "treat project-local .ai-employee/skills/query-mcp-workflow as the default skill location; use mcp-skills/knowledge only when maintaining the workflow source repo",
         "generate and persist chat_session_id",
@@ -188,6 +190,10 @@ def test_query_mcp_runtime_returns_contextual_urls_and_cli_prompt(tmp_path, monk
     ]
     assert "query://usage-guide" in runtime["cli_prompt"]
     assert "query://client-profile/codex" in runtime["cli_prompt"]
+    assert "`list_mcp_resources` 只用于发现资源目录" in runtime["cli_prompt"]
+    assert "同一轮最多调用一次" in runtime["cli_prompt"]
+    assert "直接调用对应业务工具" in runtime["cli_prompt"]
+    assert "list_project_members(project_id=...)" in runtime["cli_prompt"]
     assert "默认项目: `proj-1`" in runtime["cli_prompt"]
     assert "chat_session_id=chat-session-1" in runtime["cli_prompt"]
     assert "start_work_session" in runtime["cli_prompt"]
@@ -360,9 +366,9 @@ def test_query_mcp_runtime_upgrades_legacy_default_bootstrap_template(tmp_path, 
 - 涉及当前项目时，若项目和对象已明确，可直接 `get_manual_content(project_id="proj-d16591a6")` 或进入 `start_project_workflow(...)`；仅在缺少 ID 或需要跨项目定位时，再调用 `search_ids(keyword="<用户原始问题>", project_id="proj-d16591a6")`。
 - 若要创建或续接当前项目任务树，优先显式调用 `bind_project_context(project_id="proj-d16591a6", chat_session_id="<聊天会话ID>", root_goal="<用户原始问题>")`。
 - 当前页面已有 `chat_session_id=chat-session-8635d55008c7`；仅在明确要续接当前任务树时复用，否则新开的并行 CLI 应重新生成自己的 `chat_session_id`。
-- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/active/<project_id>.json` 与 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。
+- `chat_session_id` 生成后要立即持久化；优先写项目目录 `.ai-employee/query-mcp/active-sessions/<chat_session_id>.json`，并同步维护 `.ai-employee/query-mcp/session-history/<project_id>__<chat_session_id>.json`。
 - 若当前还没有 `session_id`，调用 `start_work_session` 后也要立刻持久化；中断恢复顺序固定为 `bind_project_context(...) -> resume_work_session(...) -> summarize_checkpoint(...)`。
-- 若项目工作区不可解析，再退回当前 CLI 自己的本地存储；不要新写 `current-session.json`、`chat_session_id.txt`、`session_id.txt`、`session.env` 这类 legacy 文件。
+- 若项目工作区不可解析，再退回当前 CLI 自己的本地存储；不要在项目工作区写入分叉会话状态文件。
 
 回答要求：
 
@@ -385,6 +391,8 @@ def test_query_mcp_runtime_upgrades_legacy_default_bootstrap_template(tmp_path, 
     assert "显式初始化本地 `.ai-employee/`" in runtime["cli_prompt"]
     assert "当前任务先在项目本地推进" in runtime["cli_prompt"]
     assert "不能替代当前 CLI 工作区初始化" in runtime["cli_prompt"]
+    assert "`list_mcp_resources` 只用于发现资源目录" in runtime["cli_prompt"]
+    assert "直接调用对应业务工具" in runtime["cli_prompt"]
 
 
 def test_query_mcp_runtime_upgrades_legacy_clarity_confirmation_lines(tmp_path, monkeypatch):
