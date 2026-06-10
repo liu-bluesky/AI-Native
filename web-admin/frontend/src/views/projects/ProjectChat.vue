@@ -15,315 +15,73 @@
         class="chat-shell"
         :class="{ 'chat-shell--local-runner': isLocalRunnerSurface }"
       >
-        <aside class="chat-conversation-sidebar">
-          <div class="chat-sidebar-brand-panel">
-            <div class="chat-sidebar-brand">
-              <div class="chat-sidebar-brand__mark">{{ chatSurfaceMark }}</div>
-              <div>
-                <div class="chat-sidebar-brand__name">{{ chatSurfaceName }}</div>
-                <div class="chat-sidebar-brand__meta">{{ chatSurfaceMeta }}</div>
-              </div>
-            </div>
-            <el-button
-              class="chat-page-settings-button"
-              @click="openSettingsCenter('chat')"
-              :icon="Setting"
-              circle
-              ref="chatSettingsButtonRef"
-            />
-          </div>
-
-          <div class="chat-sidebar-project-card">
-            <div class="chat-sidebar-card__label">项目</div>
-            <el-select
-              v-model="selectedProjectId"
-              class="chat-project-select"
-              popper-class="chat-project-select-dropdown"
-              filterable
-              fit-input-width
-              placeholder="搜索或选择项目"
-              :disabled="!projects.length"
-              ref="projectSwitcherRef"
-              @change="handleProjectCommand"
-            >
-              <el-option
-                v-for="item in projects"
-                :key="item.id"
-                :label="item.name || item.id"
-                :value="item.id"
-              >
-                <div class="chat-project-option">
-                  <span class="chat-project-option__name">{{
-                    item.name || item.id
-                  }}</span>
-                </div>
-              </el-option>
-            </el-select>
-          </div>
-
-          <div class="chat-conversation-sidebar__actions">
-            <el-button
-              class="chat-new-conversation-button"
-              @click="handleCreateNewConversation"
-              :loading="creatingChatSession"
-              :icon="DocumentCopy"
-            >
-              新对话
-            </el-button>
-            <el-button
-              text
-              class="chat-group-conversation-button"
-              @click="openGroupChatDialog"
-              :disabled="
-                chatLoading || creatingChatSession || !hasSelectedProject
-              "
-            >
-              机器人对话
-            </el-button>
-            <el-button
-              text
-              class="chat-clear-current-button"
-              @click="clearMessages"
-              :disabled="chatLoading || !currentChatSessionId"
-            >
-              清空对话
-            </el-button>
-          </div>
-
-          <div class="chat-session-panel">
-            <div class="chat-session-panel__head">
-              <div class="chat-session-panel__title">最近对话</div>
-            </div>
-
-            <div
-              class="chat-session-strip"
-              v-loading="chatSessionsLoading"
-              element-loading-text="正在加载历史会话..."
-            >
-              <div
-                v-if="!chatSessionsLoading && groupedChatSessions.length"
-                class="chat-session-groups"
-              >
-                <div
-                  v-for="group in groupedChatSessions"
-                  :key="group.label"
-                  class="chat-session-group"
-                >
-                  <div class="chat-session-group__title">{{ group.label }}</div>
-                  <div class="chat-session-list">
-                    <button
-                      v-for="session in group.items"
-                      :key="session.id"
-                      type="button"
-                      class="chat-session-chip"
-                      :class="{
-                        'is-active': currentChatSessionId === session.id,
-                      }"
-                      @click="selectChatSession(session.id)"
-                    >
-                      <div class="chat-session-chip__row">
-                        <span class="chat-session-chip__title">
-                          {{ session.title }}
-                        </span>
-                        <el-button
-                          v-if="isBotConversationSession(session)"
-                          text
-                          size="small"
-                          class="chat-session-chip__edit"
-                          :icon="EditPen"
-                          @click.stop="openGroupChatDialog(session)"
-                        />
-                        <el-button
-                          text
-                          size="small"
-                          class="chat-session-chip__delete"
-                          :icon="Delete"
-                          :loading="deletingChatSessionId === session.id"
-                          @click.stop="deleteChatSession(session)"
-                        />
-                      </div>
-                      <span
-                        v-if="formatChatSessionSourceLabel(session)"
-                        class="chat-session-chip__source"
-                      >
-                        {{ formatChatSessionSourceLabel(session) }}
-                      </span>
-                      <span class="chat-session-chip__meta">
-                        {{ formatChatSessionMeta(session) }}
-                      </span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div
-                v-else-if="!chatSessionsLoading"
-                class="chat-session-empty"
-              >
-                暂无历史会话
-              </div>
-            </div>
-          </div>
-
-          <div class="chat-sidebar-footer">
-            <div class="chat-sidebar-user">
-              <div class="chat-sidebar-user__avatar">
-                {{ currentUsernameInitial }}
-              </div>
-              <div class="chat-sidebar-user__meta">
-                <div class="chat-sidebar-user__name">{{ currentUsername }}</div>
-                <div class="chat-sidebar-user__role">当前账号</div>
-              </div>
-              <el-button
-                text
-                class="chat-sidebar-user__logout"
-                @click="logoutFromChat"
-                >退出</el-button
-              >
-            </div>
-          </div>
-        </aside>
+        <ProjectConversationSidebar
+          ref="conversationSidebarRef"
+          v-model:selected-project-id="selectedProjectId"
+          :projects="projects"
+          :surface-mark="chatSurfaceMark"
+          :surface-name="chatSurfaceName"
+          :surface-meta="chatSurfaceMeta"
+          :creating-session="creatingChatSession"
+          :chat-loading="chatLoading"
+          :has-selected-project="hasSelectedProject"
+          :current-session-id="currentChatSessionId"
+          :sessions-loading="chatSessionsLoading"
+          :session-groups="groupedChatSessions"
+          :deleting-session-id="deletingChatSessionId"
+          :username-initial="currentUsernameInitial"
+          :username="currentUsername"
+          @open-settings="openSettingsCenter"
+          @project-change="handleProjectCommand"
+          @create-conversation="handleCreateNewConversation"
+          @open-group-chat="openGroupChatDialog"
+          @clear-current="clearMessages"
+          @select-session="selectChatSession"
+          @edit-session="openGroupChatDialog"
+          @delete-session="deleteChatSession"
+          @logout="logoutFromChat"
+        />
 
         <div class="chat-stage">
-          <div class="chat-context-bar">
-            <div class="chat-context-bar__surface" ref="chatContextBarRef">
-              <div class="chat-context-bar__copy">
-                <div class="chat-context-bar__eyebrow">AI Operating System</div>
-                <div class="chat-context-bar__title">
-                  {{
-                    hasSelectedProject
-                      ? currentProjectLabel
-                      : chatSurfaceName
-                  }}
-                </div>
-                <div class="chat-context-bar__meta">
-                  <span>{{ chatModeLabel }}</span>
-                  <span v-if="currentChatSessionSourceLabel">
-                    {{ currentChatSessionSourceLabel }}
-                  </span>
-                  <span>{{ currentModelSummary }}</span>
-                  <span>{{ chatHeaderStatusText }}</span>
-                </div>
-              </div>
-              <div class="chat-context-bar__actions">
-                <el-button
-                  size="small"
-                  class="chat-context-bar__action-button chat-context-bar__action-button--guide"
-                  @click="startChatTour(true)"
-                  ref="chatGuideButtonRef"
-                >
-                  使用引导
-                </el-button>
-                <el-button
-                  v-if="hasSelectedProject"
-                  size="small"
-                  plain
-                  class="chat-context-bar__action-button"
-                  @click="openCurrentProjectDetail"
-                >
-                  项目详情
-                </el-button>
-                <el-button
-                  v-if="hasSelectedProject"
-                  size="small"
-                  plain
-                  class="chat-context-bar__action-button"
-                  @click="openCurrentMaterialLibrary"
-                >
-                  素材库
-                </el-button>
-                <el-button
-                  v-if="canTrustAgentRuntimeWorkspace"
-                  size="small"
-                  plain
-                  class="chat-context-bar__action-button"
-                  :loading="workspaceTrustSaving"
-                  @click="trustAgentRuntimeWorkspace"
-                >
-                  信任工作区
-                </el-button>
-                <el-button
-                  size="small"
-                  plain
-                  class="chat-context-bar__action-button"
-                  @click="openUnifiedMcpDialog"
-                >
-                  MCP 接入
-                </el-button>
-                <el-button
-                  size="small"
-                  plain
-                  class="chat-context-bar__action-button"
-                  @click="openSkillResourceCenter"
-                >
-                  技能资源
-                </el-button>
-              </div>
-            </div>
-          </div>
+          <ChatContextBar
+            ref="chatContextBarHostRef"
+            :has-selected-project="hasSelectedProject"
+            :project-label="currentProjectLabel"
+            :surface-name="chatSurfaceName"
+            :chat-mode-label="chatModeLabel"
+            :session-source-label="currentChatSessionSourceLabel"
+            :model-summary="currentModelSummary"
+            :status-text="chatHeaderStatusText"
+            :can-trust-workspace="canTrustAgentRuntimeWorkspace"
+            :workspace-trust-saving="workspaceTrustSaving"
+            @start-guide="startChatTour"
+            @open-project-detail="openCurrentProjectDetail"
+            @open-material-library="openCurrentMaterialLibrary"
+            @trust-workspace="trustAgentRuntimeWorkspace"
+            @open-mcp="openUnifiedMcpDialog"
+            @open-skill-resource="openSkillResourceCenter"
+          />
           <div class="chat-workbench">
-          <div class="chat-messages-shell">
-            <div
-              class="chat-messages"
-              ref="messagesContainer"
-              @scroll="handleMessagesScroll"
-              @click="handleMessageAreaClick"
-            >
-              <div class="message-list-inner">
-                <div
-                  v-if="chatHistoryLoading"
-                  class="chat-history-loading-state"
+            <div class="chat-messages-shell">
+              <div
+                class="chat-messages"
+                ref="messagesContainer"
+                @scroll="handleMessagesScroll"
+                @click="handleMessageAreaClick"
+              >
+                <ChatMessageList
+                  :history-loading="chatHistoryLoading"
+                  :messages="messages"
+                  :has-selected-project="hasSelectedProject"
+                  :has-accessible-projects="hasAccessibleProjects"
+                  :empty-state-title="emptyStateTitle"
+                  :empty-state-text="emptyStateText"
+                  :starter-prompts="starterPrompts"
+                  :history-has-more="chatHistoryHasMore"
+                  :history-loading-more="chatHistoryLoadingMore"
+                  @apply-starter-prompt="applyStarterPrompt"
+                  @load-older="loadOlderMessages"
                 >
-                  <div class="chat-history-loading-state__title">
-                    正在加载对话记录
-                  </div>
-                  <div class="chat-history-loading-state__text">
-                    历史消息同步中，请稍候。
-                  </div>
-                </div>
-                <div v-else-if="!messages.length" class="chat-empty-state">
-                  <div class="chat-empty-state__hero">
-                    <div class="chat-empty-badge">
-                      {{
-                        hasSelectedProject
-                          ? "Project Context Ready"
-                          : hasAccessibleProjects
-                            ? "General Chat"
-                            : "Access Pending"
-                      }}
-                    </div>
-                    <div class="chat-empty-title">{{ emptyStateTitle }}</div>
-                    <div class="chat-empty-text">{{ emptyStateText }}</div>
-                  </div>
-                  <div v-if="starterPrompts.length" class="chat-empty-actions">
-                    <button
-                      v-for="prompt in starterPrompts"
-                      :key="prompt"
-                      type="button"
-                      class="chat-empty-action"
-                      @click="applyStarterPrompt(prompt)"
-                    >
-                      {{ prompt }}
-                    </button>
-                  </div>
-                </div>
-                <template v-else>
-                  <div
-                    v-if="chatHistoryHasMore || chatHistoryLoadingMore"
-                    class="chat-history-loader"
-                  >
-                    <el-button
-                      text
-                      class="chat-history-loader__button"
-                      :loading="chatHistoryLoadingMore"
-                      @click="loadOlderMessages"
-                    >
-                      {{
-                        chatHistoryLoadingMore
-                          ? "正在加载更早消息..."
-                          : "加载更早消息"
-                      }}
-                    </el-button>
-                  </div>
                   <div
                     v-for="(item, idx) in messages"
                     :key="item.id || `message-${idx}`"
@@ -440,85 +198,93 @@
                               <span></span>
                             </div>
                             <div class="message-external-waiting__body">
-                              <strong>{{ externalAgentWaitingMessageTitle(item) }}</strong>
-                              <span>{{ externalAgentWaitingMessageDescription(item) }}</span>
+                              <strong>{{
+                                externalAgentWaitingMessageTitle(item)
+                              }}</strong>
+                              <span>{{
+                                externalAgentWaitingMessageDescription(item)
+                              }}</span>
                               <div class="message-external-waiting__bar">
                                 <i></i>
                               </div>
                             </div>
                           </div>
                           <template v-else-if="item.displayMode === 'terminal'">
-                          <div
-                            v-if="terminalInteractionFormForMessage(item, idx)"
-                            class="message-terminal-form"
-                            :class="{
-                              'is-submitted':
-                                terminalStructuredSubmissionHintForMessage(idx),
-                            }"
-                          >
-                            <div class="message-terminal-form__head">
-                              <div>
-                                <strong>{{
-                                  terminalStructuredInteraction.title
-                                }}</strong>
-                                <p>
-                                  {{
-                                    terminalStructuredInteraction.description
-                                  }}
-                                </p>
-                              </div>
-                              <el-tag size="small" effect="plain"
-                                >表单交互</el-tag
-                              >
-                            </div>
-                            <ElementEasyForm
-                              :form-json="terminalInteractionFormJson"
-                              class="message-terminal-form__easy-form"
-                            />
-                            <div class="message-terminal-form__actions">
-                              <el-button
-                                v-if="
-                                  !terminalStructuredSubmissionHintForMessage(
-                                    idx,
-                                  )
-                                "
-                                text
-                                @click="dismissTerminalStructuredInteraction"
-                              >
-                                使用终端兜底
-                              </el-button>
-                              <el-button
-                                type="primary"
-                                :disabled="
-                                  !canSubmitTerminalStructuredInteraction ||
-                                  Boolean(
-                                    terminalStructuredSubmissionHintForMessage(
-                                      idx,
-                                    ),
-                                  )
-                                "
-                                @click="submitTerminalStructuredInteraction"
-                              >
-                                {{
+                            <div
+                              v-if="
+                                terminalInteractionFormForMessage(item, idx)
+                              "
+                              class="message-terminal-form"
+                              :class="{
+                                'is-submitted':
                                   terminalStructuredSubmissionHintForMessage(
                                     idx,
-                                  )
-                                    ? "已提交，继续执行中"
-                                    : "确认并继续"
-                                }}
-                              </el-button>
+                                  ),
+                              }"
+                            >
+                              <div class="message-terminal-form__head">
+                                <div>
+                                  <strong>{{
+                                    terminalStructuredInteraction.title
+                                  }}</strong>
+                                  <p>
+                                    {{
+                                      terminalStructuredInteraction.description
+                                    }}
+                                  </p>
+                                </div>
+                                <el-tag size="small" effect="plain"
+                                  >表单交互</el-tag
+                                >
+                              </div>
+                              <ElementEasyForm
+                                :form-json="terminalInteractionFormJson"
+                                class="message-terminal-form__easy-form"
+                              />
+                              <div class="message-terminal-form__actions">
+                                <el-button
+                                  v-if="
+                                    !terminalStructuredSubmissionHintForMessage(
+                                      idx,
+                                    )
+                                  "
+                                  text
+                                  @click="dismissTerminalStructuredInteraction"
+                                >
+                                  使用终端兜底
+                                </el-button>
+                                <el-button
+                                  type="primary"
+                                  :disabled="
+                                    !canSubmitTerminalStructuredInteraction ||
+                                    Boolean(
+                                      terminalStructuredSubmissionHintForMessage(
+                                        idx,
+                                      ),
+                                    )
+                                  "
+                                  @click="submitTerminalStructuredInteraction"
+                                >
+                                  {{
+                                    terminalStructuredSubmissionHintForMessage(
+                                      idx,
+                                    )
+                                      ? "已提交，继续执行中"
+                                      : "确认并继续"
+                                  }}
+                                </el-button>
+                              </div>
                             </div>
-                          </div>
-                          <div
-                            v-if="
-                              terminalStructuredSubmissionHintForMessage(idx)
-                            "
-                            class="message-terminal-form__submitted"
-                          >
-                            {{
-                              terminalStructuredSubmissionHintForMessage(idx)
-                            }}
-                          </div>
+                            <div
+                              v-if="
+                                terminalStructuredSubmissionHintForMessage(idx)
+                              "
+                              class="message-terminal-form__submitted"
+                            >
+                              {{
+                                terminalStructuredSubmissionHintForMessage(idx)
+                              }}
+                            </div>
                           </template>
                           <div
                             v-if="shouldShowMessageProcess(item, idx)"
@@ -541,7 +307,11 @@
                               </span>
                               <span class="message-process-shell__meta">
                                 <el-button
-                                  v-if="operationPrimaryActionLabel(primaryMessageProcessOperation(item))"
+                                  v-if="
+                                    operationPrimaryActionLabel(
+                                      primaryMessageProcessOperation(item),
+                                    )
+                                  "
                                   size="small"
                                   type="primary"
                                   plain
@@ -561,9 +331,7 @@
                                 <span
                                   v-if="messageProcessStateLabel(item, idx)"
                                   class="message-process-shell__state"
-                                  :class="
-                                    `is-${messageProcessStateTone(item, idx)}`
-                                  "
+                                  :class="`is-${messageProcessStateTone(item, idx)}`"
                                 >
                                   {{ messageProcessStateLabel(item, idx) }}
                                 </span>
@@ -573,7 +341,9 @@
                                 >
                                   {{ messageProcessStepCount(item, idx) }} 项
                                 </span>
-                                <span>{{ item.processExpanded ? "收起" : "展开" }}</span>
+                                <span>{{
+                                  item.processExpanded ? "收起" : "展开"
+                                }}</span>
                               </span>
                             </button>
                             <div
@@ -581,7 +351,9 @@
                               class="message-process-shell__body"
                             >
                               <div
-                                v-if="messageLiveProgressItems(item, idx).length"
+                                v-if="
+                                  messageLiveProgressItems(item, idx).length
+                                "
                                 class="message-live-progress"
                               >
                                 <div class="message-live-progress__head">
@@ -595,9 +367,7 @@
                                   </div>
                                   <span
                                     class="message-live-progress__badge"
-                                    :class="
-                                      `is-${messageProcessStateTone(item, idx)}`
-                                    "
+                                    :class="`is-${messageProcessStateTone(item, idx)}`"
                                   >
                                     {{ messageProcessStateLabel(item, idx) }}
                                   </span>
@@ -614,13 +384,17 @@
                                   >
                                     <span class="message-live-progress__marker">
                                       <CircleCheck
-                                        v-if="progressItem.phase === 'completed'"
+                                        v-if="
+                                          progressItem.phase === 'completed'
+                                        "
                                         :size="13"
                                       />
                                       <span v-else></span>
                                     </span>
                                     <span class="message-live-progress__main">
-                                      <span class="message-live-progress__item-title">
+                                      <span
+                                        class="message-live-progress__item-title"
+                                      >
                                         {{ progressItem.title }}
                                       </span>
                                       <span
@@ -641,14 +415,20 @@
                                 class="message-operations"
                               >
                                 <article
-                                  v-for="operation in messageProcessOperations(item)"
+                                  v-for="operation in messageProcessOperations(
+                                    item,
+                                  )"
                                   :key="operation.id"
                                   class="message-operation-card"
                                   :class="`is-${operation.phase}`"
                                 >
                                   <div class="message-operation-card__head">
-                                    <div class="message-operation-card__title-wrap">
-                                      <span class="message-operation-card__title">
+                                    <div
+                                      class="message-operation-card__title-wrap"
+                                    >
+                                      <span
+                                        class="message-operation-card__title"
+                                      >
                                         {{ operation.title }}
                                       </span>
                                       <span
@@ -670,11 +450,15 @@
                                     {{ operationRiskLabel(operation) }}
                                   </div>
                                   <div
-                                    v-if="operationRuntimeMetaTags(operation).length"
+                                    v-if="
+                                      operationRuntimeMetaTags(operation).length
+                                    "
                                     class="message-operation-card__meta-tags"
                                   >
                                     <span
-                                      v-for="tag in operationRuntimeMetaTags(operation)"
+                                      v-for="tag in operationRuntimeMetaTags(
+                                        operation,
+                                      )"
                                       :key="tag"
                                       class="message-operation-card__meta-tag"
                                     >
@@ -686,21 +470,34 @@
                                     class="message-operation-card__plan"
                                   >
                                     <li
-                                      v-for="(step, stepIndex) in operationPlanSteps(operation)"
+                                      v-for="(
+                                        step, stepIndex
+                                      ) in operationPlanSteps(operation)"
                                       :key="String(step.step_id || stepIndex)"
                                       class="message-operation-card__plan-step"
                                       :class="`is-${planStepPhase(step)}`"
                                     >
-                                      <span class="message-operation-card__plan-check">
+                                      <span
+                                        class="message-operation-card__plan-check"
+                                      >
                                         <CircleCheck
-                                          v-if="planStepPhase(step) === 'completed'"
+                                          v-if="
+                                            planStepPhase(step) === 'completed'
+                                          "
                                           :size="13"
                                         />
                                         <span v-else>{{ stepIndex + 1 }}</span>
                                       </span>
-                                      <span class="message-operation-card__plan-main">
-                                        <span class="message-operation-card__plan-title">
-                                          {{ step.title || `步骤 ${stepIndex + 1}` }}
+                                      <span
+                                        class="message-operation-card__plan-main"
+                                      >
+                                        <span
+                                          class="message-operation-card__plan-title"
+                                        >
+                                          {{
+                                            step.title ||
+                                            `步骤 ${stepIndex + 1}`
+                                          }}
                                         </span>
                                         <span
                                           v-if="step.summary"
@@ -709,7 +506,9 @@
                                           {{ step.summary }}
                                         </span>
                                       </span>
-                                      <span class="message-operation-card__plan-status">
+                                      <span
+                                        class="message-operation-card__plan-status"
+                                      >
                                         {{ planStepStatusLabel(step) }}
                                       </span>
                                     </li>
@@ -750,12 +549,15 @@
                                     v-if="operationOutput(operation)"
                                     class="message-operation-card__output"
                                   >
-                                    <div class="message-operation-card__output-label">
+                                    <div
+                                      class="message-operation-card__output-label"
+                                    >
                                       输出摘要
                                     </div>
-                                    <pre class="message-operation-card__output-pre">{{
-                                      operationOutput(operation)
-                                    }}</pre>
+                                    <pre
+                                      class="message-operation-card__output-pre"
+                                      >{{ operationOutput(operation) }}</pre
+                                    >
                                   </div>
                                   <p
                                     v-if="operationActionHint(operation)"
@@ -781,7 +583,9 @@
                                         ),
                                     }"
                                   >
-                                    <div class="message-operation-card__form-head">
+                                    <div
+                                      class="message-operation-card__form-head"
+                                    >
                                       <div>
                                         <strong>{{
                                           operationInteractionTitle(operation)
@@ -806,7 +610,9 @@
                                       "
                                       class="message-operation-card__easy-form"
                                     />
-                                    <div class="message-operation-card__form-actions">
+                                    <div
+                                      class="message-operation-card__form-actions"
+                                    >
                                       <el-button
                                         v-if="
                                           operationInteractionCanFallbackToTerminal(
@@ -849,7 +655,7 @@
                                           operationInteractionSubmittedHint(
                                             operation,
                                           )
-                                            ? '已提交，继续执行中'
+                                            ? "已提交，继续执行中"
                                             : operationInteractionSubmitLabel(
                                                 operation,
                                               )
@@ -858,14 +664,23 @@
                                     </div>
                                   </div>
                                   <div
-                                    v-if="operationInteractionSubmittedHint(operation)"
+                                    v-if="
+                                      operationInteractionSubmittedHint(
+                                        operation,
+                                      )
+                                    "
                                     class="message-operation-card__submitted"
                                   >
-                                    {{ operationInteractionSubmittedHint(operation) }}
+                                    {{
+                                      operationInteractionSubmittedHint(
+                                        operation,
+                                      )
+                                    }}
                                   </div>
                                   <div
                                     v-if="
-                                      operationActionButtons(operation).length &&
+                                      operationActionButtons(operation)
+                                        .length &&
                                       !isMessageFooterActionOperation(
                                         item,
                                         operation,
@@ -902,12 +717,16 @@
                                 class="message-process-stream"
                               >
                                 <div
-                                  v-for="entry in messageProcessLogEntries(item)"
+                                  v-for="entry in messageProcessLogEntries(
+                                    item,
+                                  )"
                                   :key="entry.id"
                                   class="message-process-stream__item"
                                   :class="`is-${entry.level}`"
                                 >
-                                  <span class="message-process-stream__dot"></span>
+                                  <span
+                                    class="message-process-stream__dot"
+                                  ></span>
                                   <span class="message-process-stream__text">
                                     {{ entry.text }}
                                   </span>
@@ -988,11 +807,12 @@
                           >
                             <div class="message-footer-action__content">
                               <strong>{{
-                                messageFooterButtonActionOperation(item).title ||
-                                "需要你确认"
+                                messageFooterButtonActionOperation(item)
+                                  .title || "需要你确认"
                               }}</strong>
                               <span>{{
-                                messageFooterButtonActionOperation(item).summary ||
+                                messageFooterButtonActionOperation(item)
+                                  .summary ||
                                 operationActionHint(
                                   messageFooterButtonActionOperation(item),
                                 )
@@ -1458,1462 +1278,882 @@
                       </div>
                     </div>
                   </div>
-                </template>
+                </ChatMessageList>
               </div>
             </div>
-          </div>
 
-          <aside v-if="isLocalRunnerSurface" class="local-runner-panel">
-            <section class="local-runner-card local-runner-card--self-check">
-              <div class="local-runner-card__head">
-                <div>
-                  <div class="local-runner-card__eyebrow">Runner</div>
-                  <div class="local-runner-card__title">本机 Runner 自检</div>
-                </div>
-                <el-button
-                  size="small"
-                  :loading="nativeRunnerSelfChecking"
-                  :disabled="!nativeDesktopBridgeAvailable"
-                  @click="runNativeRunnerSelfCheck"
-                >
-                  运行自检
-                </el-button>
-              </div>
-              <div v-if="!nativeDesktopBridgeAvailable" class="local-runner-empty">
-                当前是网页模式；Tauri 桌面端启动后才会提供本机 Runner。
-              </div>
-              <div
-                v-else-if="nativeRunnerSelfCheckResults.length"
-                class="local-runner-self-check"
-              >
-                <div
-                  v-for="item in nativeRunnerSelfCheckResults"
-                  :key="item.id"
-                  class="local-runner-self-check__item"
-                  :class="`is-${item.tone}`"
-                >
+            <aside v-if="isLocalRunnerSurface" class="local-runner-panel">
+              <section class="local-runner-card local-runner-card--self-check">
+                <div class="local-runner-card__head">
                   <div>
-                    <strong>{{ item.label }}</strong>
-                    <span>{{ item.summary }}</span>
+                    <div class="local-runner-card__eyebrow">Runner</div>
+                    <div class="local-runner-card__title">本机 Runner 自检</div>
                   </div>
-                  <el-tag
-                    size="small"
-                    :type="runnerSelfCheckTagType(item)"
-                    effect="plain"
-                  >
-                    {{ runnerSelfCheckStatusLabel(item) }}
-                  </el-tag>
-                </div>
-              </div>
-              <div v-else class="local-runner-empty">
-                运行自检会检查原生桥、工作区和少量只读命令白名单。
-              </div>
-            </section>
-
-            <section class="local-runner-card local-runner-card--approval">
-              <div class="local-runner-card__head">
-                <div>
-                  <div class="local-runner-card__eyebrow">Approval Queue</div>
-                  <div class="local-runner-card__title">命令审批</div>
-                </div>
-                <div class="local-runner-card__actions">
                   <el-button
                     size="small"
-                    text
-                    :loading="nativeRunnerPermissionRecordsLoading"
+                    :loading="nativeRunnerSelfChecking"
                     :disabled="!nativeDesktopBridgeAvailable"
-                    @click="refreshNativeRunnerPermissionRecords"
+                    @click="runNativeRunnerSelfCheck"
                   >
-                    刷新
-                  </el-button>
-                  <el-tag
-                    size="small"
-                    :type="terminalApprovalPrompt ? 'warning' : 'success'"
-                    effect="plain"
-                  >
-                    {{ terminalApprovalPrompt ? "等待确认" : "空闲" }}
-                  </el-tag>
-                </div>
-              </div>
-              <div
-                v-if="terminalApprovalPrompt"
-                class="local-approval-panel"
-              >
-                <div class="local-approval-panel__title">
-                  {{ terminalApprovalPrompt.title }}
-                </div>
-                <p
-                  v-if="terminalApprovalPrompt.description"
-                  class="local-approval-panel__desc"
-                >
-                  {{ terminalApprovalPrompt.description }}
-                </p>
-                <pre
-                  v-if="terminalApprovalPrompt.message"
-                  class="local-approval-panel__message"
-                  >{{ terminalApprovalPrompt.message }}</pre
-                >
-                <div class="local-approval-panel__actions">
-                  <el-button
-                    size="small"
-                    type="danger"
-                    plain
-                    @click="sendTerminalApprovalChoice('3')"
-                  >
-                    取消
-                  </el-button>
-                  <el-button
-                    size="small"
-                    @click="sendTerminalApprovalChoice('2')"
-                  >
-                    本会话批准
-                  </el-button>
-                  <el-button
-                    size="small"
-                    type="primary"
-                    @click="sendTerminalApprovalChoice('1')"
-                  >
-                    批准一次
+                    运行自检
                   </el-button>
                 </div>
-              </div>
-              <div v-else class="local-runner-empty">
-                当前没有待确认命令；需要审批时会固定显示在这里。
-              </div>
-              <div
-                v-if="nativeRunnerPermissionRecords.length"
-                class="local-permission-records"
-              >
-                <div class="local-permission-records__title">最近审批记录</div>
                 <div
-                  v-for="record in nativeRunnerPermissionRecords"
-                  :key="record.decisionId"
-                  class="local-permission-record"
+                  v-if="!nativeDesktopBridgeAvailable"
+                  class="local-runner-empty"
                 >
-                  <div>
-                    <strong>{{ runnerPermissionDecisionLabel(record) }}</strong>
-                    <span>{{ runnerPermissionRecordSummary(record) }}</span>
-                  </div>
-                  <span>{{ runnerPermissionRecordTime(record) }}</span>
+                  当前是网页模式；Tauri 桌面端启动后才会提供本机 Runner。
                 </div>
-              </div>
-            </section>
-
-            <section class="local-runner-card local-runner-card--process">
-              <div class="local-runner-card__head">
-                <div>
-                  <div class="local-runner-card__eyebrow">Process</div>
-                  <div class="local-runner-card__title">执行过程</div>
-                </div>
-                <el-tag
-                  size="small"
-                  effect="plain"
-                  :type="localRunnerProcessStatusTagType"
-                >
-                  {{ terminalPanelStatusText }}
-                </el-tag>
-              </div>
-              <div class="local-process-summary">
-                <div>
-                  <span>会话</span>
-                  <strong>{{ hostTerminalSessionId || "未连接" }}</strong>
-                </div>
-                <div>
-                  <span>命令</span>
-                  <strong>{{ terminalActiveCommand || "等待任务" }}</strong>
-                </div>
-                <div>
-                  <span>日志</span>
-                  <strong>{{ terminalPanelLineCount }} 行</strong>
-                </div>
-              </div>
-              <div class="local-process-timeline">
                 <div
-                  v-for="item in localRunnerProcessItems"
-                  :key="item.id"
-                  class="local-process-timeline__item"
-                  :class="`is-${item.phase}`"
+                  v-else-if="nativeRunnerSelfCheckResults.length"
+                  class="local-runner-self-check"
                 >
-                  <span class="local-process-timeline__marker">
-                    <CircleCheck
-                      v-if="item.phase === 'completed'"
-                      :size="13"
-                    />
-                    <span v-else></span>
-                  </span>
-                  <span class="local-process-timeline__main">
-                    <span class="local-process-timeline__title">
-                      {{ item.title }}
-                    </span>
-                    <span
-                      v-if="item.summary"
-                      class="local-process-timeline__summary"
-                    >
-                      {{ item.summary }}
-                    </span>
-                  </span>
-                  <span class="local-process-timeline__phase">
-                    {{ item.phaseLabel }}
-                  </span>
-                </div>
-              </div>
-            </section>
-
-            <section class="local-runner-card local-runner-card--sessions">
-              <div class="local-runner-card__head">
-                <div>
-                  <div class="local-runner-card__eyebrow">Run History</div>
-                  <div class="local-runner-card__title">Runner 运行记录</div>
-                </div>
-                <el-button
-                  size="small"
-                  text
-                  :loading="nativeExternalAgentSessionRecordsLoading"
-                  :disabled="!nativeDesktopBridgeAvailable"
-                  @click="refreshNativeExternalAgentSessionRecords"
-                >
-                  刷新
-                </el-button>
-              </div>
-              <div v-if="!nativeDesktopBridgeAvailable" class="local-runner-empty">
-                当前是网页模式；Tauri 桌面端启动后才会提供本机运行记录。
-              </div>
-              <div
-                v-else-if="nativeExternalAgentSessionRecords.length"
-                class="local-runner-session-records"
-              >
-                <button
-                  v-for="record in nativeExternalAgentSessionRecords"
-                  :key="record.sessionId"
-                  type="button"
-                  class="local-runner-session-record"
-                  :class="{
-                    'is-active':
-                      selectedNativeExternalAgentRecordId === record.sessionId,
-                  }"
-                  @click="selectNativeExternalAgentSessionRecord(record)"
-                >
-                  <div class="local-runner-session-record__main">
-                    <strong>{{ record.summary || "Runner 会话" }}</strong>
-                    <span>{{ nativeExternalAgentRecordSummary(record) }}</span>
-                  </div>
-                  <div class="local-runner-session-record__meta">
+                  <div
+                    v-for="item in nativeRunnerSelfCheckResults"
+                    :key="item.id"
+                    class="local-runner-self-check__item"
+                    :class="`is-${item.tone}`"
+                  >
+                    <div>
+                      <strong>{{ item.label }}</strong>
+                      <span>{{ item.summary }}</span>
+                    </div>
                     <el-tag
                       size="small"
+                      :type="runnerSelfCheckTagType(item)"
                       effect="plain"
-                      :type="nativeExternalAgentRecordTagType(record)"
                     >
-                      {{ nativeExternalAgentRecordStatusLabel(record) }}
+                      {{ runnerSelfCheckStatusLabel(item) }}
                     </el-tag>
-                    <span>{{ nativeExternalAgentRecordTime(record) }}</span>
                   </div>
-                </button>
-              </div>
-              <div v-else class="local-runner-empty">
-                暂无 Runner 运行记录；从 AI 对话外部 Agent 模式发送任务后会出现在这里。
-              </div>
-            </section>
-
-            <section class="local-runner-card local-runner-card--workspace">
-              <div class="local-runner-card__head">
-                <div>
-                  <div class="local-runner-card__eyebrow">Workspace</div>
-                  <div class="local-runner-card__title">文件树 / 编辑器</div>
                 </div>
-                <el-button
-                  size="small"
-                  text
-                  :loading="workspaceFileTreeLoading"
-                  :disabled="!canUseWorkspaceFiles"
-                  @click="refreshWorkspaceFileTree"
-                >
-                  刷新
-                </el-button>
-              </div>
-              <div class="local-workspace-root">
-                {{ projectWorkspaceResolved || "未配置项目工作区" }}
-              </div>
-              <div
-                v-if="canUseWorkspaceFiles"
-                class="local-workspace-source"
-              >
-                {{ workspaceFileBridgeLabel }}
-              </div>
-              <div v-if="!canUseWorkspaceFiles" class="local-runner-empty">
-                先在设置中保存项目工作区后，才能直接浏览和编辑本机文件。
-              </div>
-              <template v-else>
-                <div class="local-file-browser">
-                  <div class="local-file-browser__toolbar">
+                <div v-else class="local-runner-empty">
+                  运行自检会检查原生桥、工作区和少量只读命令白名单。
+                </div>
+              </section>
+
+              <section class="local-runner-card local-runner-card--approval">
+                <div class="local-runner-card__head">
+                  <div>
+                    <div class="local-runner-card__eyebrow">Approval Queue</div>
+                    <div class="local-runner-card__title">命令审批</div>
+                  </div>
+                  <div class="local-runner-card__actions">
                     <el-button
                       size="small"
                       text
-                      :disabled="!workspaceFileTreePath"
-                      @click="openWorkspaceDirectory(workspaceParentPath)"
+                      :loading="nativeRunnerPermissionRecordsLoading"
+                      :disabled="!nativeDesktopBridgeAvailable"
+                      @click="refreshNativeRunnerPermissionRecords"
                     >
-                      上一级
+                      刷新
                     </el-button>
-                    <span>{{ workspaceFileTreePath || "." }}</span>
-                  </div>
-                  <div class="local-file-list">
-                    <button
-                      v-for="item in workspaceFileItems"
-                      :key="`${item.kind}:${item.path}`"
-                      type="button"
-                      class="local-file-item"
-                      :class="{
-                        'is-active': item.path === activeWorkspaceFilePath,
-                      }"
-                      @click="handleWorkspaceFileClick(item)"
+                    <el-tag
+                      size="small"
+                      :type="terminalApprovalPrompt ? 'warning' : 'success'"
+                      effect="plain"
                     >
-                      <span class="local-file-item__icon">
-                        {{ item.kind === "directory" ? "DIR" : "TXT" }}
-                      </span>
-                      <span class="local-file-item__name">{{ item.name }}</span>
-                    </button>
-                    <div
-                      v-if="!workspaceFileItems.length"
-                      class="local-runner-empty"
-                    >
-                      当前目录没有可展示文件。
-                    </div>
+                      {{ terminalApprovalPrompt ? "等待确认" : "空闲" }}
+                    </el-tag>
                   </div>
                 </div>
-                <div class="local-editor">
-                  <div class="local-editor__head">
-                    <span>{{ activeWorkspaceFilePath || "未选择文件" }}</span>
+                <div v-if="terminalApprovalPrompt" class="local-approval-panel">
+                  <div class="local-approval-panel__title">
+                    {{ terminalApprovalPrompt.title }}
+                  </div>
+                  <p
+                    v-if="terminalApprovalPrompt.description"
+                    class="local-approval-panel__desc"
+                  >
+                    {{ terminalApprovalPrompt.description }}
+                  </p>
+                  <pre
+                    v-if="terminalApprovalPrompt.message"
+                    class="local-approval-panel__message"
+                    >{{ terminalApprovalPrompt.message }}</pre
+                  >
+                  <div class="local-approval-panel__actions">
+                    <el-button
+                      size="small"
+                      type="danger"
+                      plain
+                      @click="sendTerminalApprovalChoice('3')"
+                    >
+                      取消
+                    </el-button>
+                    <el-button
+                      size="small"
+                      @click="sendTerminalApprovalChoice('2')"
+                    >
+                      本会话批准
+                    </el-button>
                     <el-button
                       size="small"
                       type="primary"
-                      :loading="workspaceFileSaving"
-                      :disabled="!activeWorkspaceFilePath || !workspaceFileDirty"
-                      @click="saveActiveWorkspaceFile"
+                      @click="sendTerminalApprovalChoice('1')"
                     >
-                      {{ workspaceFileReadOnly ? "准备写入" : "保存" }}
+                      批准一次
                     </el-button>
                   </div>
-                  <el-input
-                    v-model="workspaceFileDraft"
-                    type="textarea"
-                    resize="none"
-                    :autosize="{ minRows: 8, maxRows: 14 }"
-                    :disabled="!activeWorkspaceFilePath || workspaceFileLoading"
-                    :readonly="false"
-                    :placeholder="workspaceFileReadOnly ? '桌面端可编辑草稿；点击准备写入只生成确认摘要，不会直接保存。' : '从上方文件树选择文本文件后可在这里编辑。'"
-                    class="local-editor__textarea"
-                  />
                 </div>
-                <div class="local-diff-preview">
-                  <div class="local-diff-preview__head">
+                <div v-else class="local-runner-empty">
+                  当前没有待确认命令；需要审批时会固定显示在这里。
+                </div>
+                <div
+                  v-if="nativeRunnerPermissionRecords.length"
+                  class="local-permission-records"
+                >
+                  <div class="local-permission-records__title">
+                    最近审批记录
+                  </div>
+                  <div
+                    v-for="record in nativeRunnerPermissionRecords"
+                    :key="record.decisionId"
+                    class="local-permission-record"
+                  >
                     <div>
-                      <strong>差异预览</strong>
-                      <span>{{ workspaceDiffTargetLabel }}</span>
+                      <strong>{{
+                        runnerPermissionDecisionLabel(record)
+                      }}</strong>
+                      <span>{{ runnerPermissionRecordSummary(record) }}</span>
                     </div>
-                    <div class="local-runner-card__actions">
-                      <el-tag size="small" effect="plain">
-                        {{ workspaceDiffStatusLabel }}
+                    <span>{{ runnerPermissionRecordTime(record) }}</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="local-runner-card local-runner-card--process">
+                <div class="local-runner-card__head">
+                  <div>
+                    <div class="local-runner-card__eyebrow">Process</div>
+                    <div class="local-runner-card__title">执行过程</div>
+                  </div>
+                  <el-tag
+                    size="small"
+                    effect="plain"
+                    :type="localRunnerProcessStatusTagType"
+                  >
+                    {{ terminalPanelStatusText }}
+                  </el-tag>
+                </div>
+                <div class="local-process-summary">
+                  <div>
+                    <span>会话</span>
+                    <strong>{{ hostTerminalSessionId || "未连接" }}</strong>
+                  </div>
+                  <div>
+                    <span>命令</span>
+                    <strong>{{ terminalActiveCommand || "等待任务" }}</strong>
+                  </div>
+                  <div>
+                    <span>日志</span>
+                    <strong>{{ terminalPanelLineCount }} 行</strong>
+                  </div>
+                </div>
+                <div class="local-process-timeline">
+                  <div
+                    v-for="item in localRunnerProcessItems"
+                    :key="item.id"
+                    class="local-process-timeline__item"
+                    :class="`is-${item.phase}`"
+                  >
+                    <span class="local-process-timeline__marker">
+                      <CircleCheck
+                        v-if="item.phase === 'completed'"
+                        :size="13"
+                      />
+                      <span v-else></span>
+                    </span>
+                    <span class="local-process-timeline__main">
+                      <span class="local-process-timeline__title">
+                        {{ item.title }}
+                      </span>
+                      <span
+                        v-if="item.summary"
+                        class="local-process-timeline__summary"
+                      >
+                        {{ item.summary }}
+                      </span>
+                    </span>
+                    <span class="local-process-timeline__phase">
+                      {{ item.phaseLabel }}
+                    </span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="local-runner-card local-runner-card--sessions">
+                <div class="local-runner-card__head">
+                  <div>
+                    <div class="local-runner-card__eyebrow">Run History</div>
+                    <div class="local-runner-card__title">Runner 运行记录</div>
+                  </div>
+                  <el-button
+                    size="small"
+                    text
+                    :loading="nativeExternalAgentSessionRecordsLoading"
+                    :disabled="!nativeDesktopBridgeAvailable"
+                    @click="refreshNativeExternalAgentSessionRecords"
+                  >
+                    刷新
+                  </el-button>
+                </div>
+                <div
+                  v-if="!nativeDesktopBridgeAvailable"
+                  class="local-runner-empty"
+                >
+                  当前是网页模式；Tauri 桌面端启动后才会提供本机运行记录。
+                </div>
+                <div
+                  v-else-if="nativeExternalAgentSessionRecords.length"
+                  class="local-runner-session-records"
+                >
+                  <button
+                    v-for="record in nativeExternalAgentSessionRecords"
+                    :key="record.sessionId"
+                    type="button"
+                    class="local-runner-session-record"
+                    :class="{
+                      'is-active':
+                        selectedNativeExternalAgentRecordId ===
+                        record.sessionId,
+                    }"
+                    @click="selectNativeExternalAgentSessionRecord(record)"
+                  >
+                    <div class="local-runner-session-record__main">
+                      <strong>{{ record.summary || "Runner 会话" }}</strong>
+                      <span>{{
+                        nativeExternalAgentRecordSummary(record)
+                      }}</span>
+                    </div>
+                    <div class="local-runner-session-record__meta">
+                      <el-tag
+                        size="small"
+                        effect="plain"
+                        :type="nativeExternalAgentRecordTagType(record)"
+                      >
+                        {{ nativeExternalAgentRecordStatusLabel(record) }}
                       </el-tag>
+                      <span>{{ nativeExternalAgentRecordTime(record) }}</span>
+                    </div>
+                  </button>
+                </div>
+                <div v-else class="local-runner-empty">
+                  暂无 Runner 运行记录；从 AI 对话外部 Agent
+                  模式发送任务后会出现在这里。
+                </div>
+              </section>
+
+              <section class="local-runner-card local-runner-card--workspace">
+                <div class="local-runner-card__head">
+                  <div>
+                    <div class="local-runner-card__eyebrow">Workspace</div>
+                    <div class="local-runner-card__title">文件树 / 编辑器</div>
+                  </div>
+                  <el-button
+                    size="small"
+                    text
+                    :loading="workspaceFileTreeLoading"
+                    :disabled="!canUseWorkspaceFiles"
+                    @click="refreshWorkspaceFileTree"
+                  >
+                    刷新
+                  </el-button>
+                </div>
+                <div class="local-workspace-root">
+                  {{ projectWorkspaceResolved || "未配置项目工作区" }}
+                </div>
+                <div v-if="canUseWorkspaceFiles" class="local-workspace-source">
+                  {{ workspaceFileBridgeLabel }}
+                </div>
+                <div v-if="!canUseWorkspaceFiles" class="local-runner-empty">
+                  先在设置中保存项目工作区后，才能直接浏览和编辑本机文件。
+                </div>
+                <template v-else>
+                  <div class="local-file-browser">
+                    <div class="local-file-browser__toolbar">
                       <el-button
                         size="small"
                         text
-                        :loading="workspaceDiffLoading"
-                        :disabled="!canPreviewWorkspaceDiff"
-                        @click="refreshWorkspaceDiffPreview"
+                        :disabled="!workspaceFileTreePath"
+                        @click="openWorkspaceDirectory(workspaceParentPath)"
                       >
-                        预览
+                        上一级
                       </el-button>
+                      <span>{{ workspaceFileTreePath || "." }}</span>
+                    </div>
+                    <div class="local-file-list">
+                      <button
+                        v-for="item in workspaceFileItems"
+                        :key="`${item.kind}:${item.path}`"
+                        type="button"
+                        class="local-file-item"
+                        :class="{
+                          'is-active': item.path === activeWorkspaceFilePath,
+                        }"
+                        @click="handleWorkspaceFileClick(item)"
+                      >
+                        <span class="local-file-item__icon">
+                          {{ item.kind === "directory" ? "DIR" : "TXT" }}
+                        </span>
+                        <span class="local-file-item__name">{{
+                          item.name
+                        }}</span>
+                      </button>
+                      <div
+                        v-if="!workspaceFileItems.length"
+                        class="local-runner-empty"
+                      >
+                        当前目录没有可展示文件。
+                      </div>
                     </div>
                   </div>
-                  <div
-                    v-if="!canPreviewWorkspaceDiff"
-                    class="local-runner-empty"
-                  >
-                    差异预览需要 Tauri 桌面端原生桥和项目工作区。
+                  <div class="local-editor">
+                    <div class="local-editor__head">
+                      <span>{{ activeWorkspaceFilePath || "未选择文件" }}</span>
+                      <el-button
+                        size="small"
+                        type="primary"
+                        :loading="workspaceFileSaving"
+                        :disabled="
+                          !activeWorkspaceFilePath || !workspaceFileDirty
+                        "
+                        @click="saveActiveWorkspaceFile"
+                      >
+                        {{ workspaceFileReadOnly ? "准备写入" : "保存" }}
+                      </el-button>
+                    </div>
+                    <el-input
+                      v-model="workspaceFileDraft"
+                      type="textarea"
+                      resize="none"
+                      :autosize="{ minRows: 8, maxRows: 14 }"
+                      :disabled="
+                        !activeWorkspaceFilePath || workspaceFileLoading
+                      "
+                      :readonly="false"
+                      :placeholder="
+                        workspaceFileReadOnly
+                          ? '桌面端可编辑草稿；点击准备写入只生成确认摘要，不会直接保存。'
+                          : '从上方文件树选择文本文件后可在这里编辑。'
+                      "
+                      class="local-editor__textarea"
+                    />
                   </div>
-                  <div
-                    v-else-if="workspaceDiffPreview?.reason && !workspaceDiffPreview?.available"
-                    class="local-runner-empty"
-                  >
-                    {{ workspaceDiffPreview.reason }}
-                  </div>
-                  <pre
-                    v-else-if="workspaceDiffPreview?.diff || workspaceDiffPreview?.summary || workspaceDiffPreview?.status"
-                    class="local-diff-preview__output"
-                    >{{ [
-                      workspaceDiffPreview?.status,
-                      workspaceDiffPreview?.summary,
-                      workspaceDiffPreview?.diff,
-                    ].filter(Boolean).join("\n\n") }}</pre
-                  >
-                  <div v-else class="local-runner-empty">
-                    尚未生成差异预览；没有选中文件时会预览整个工作区。
-                  </div>
-                </div>
-              </template>
-            </section>
-
-            <section class="local-runner-card local-runner-card--terminal">
-              <div class="local-runner-card__head">
-                <div>
-                  <div class="local-runner-card__eyebrow">Terminal</div>
-                  <div class="local-runner-card__title">终端输出</div>
-                </div>
-                <el-tag size="small" effect="plain">
-                  {{ terminalPanelStatusText }}
-                </el-tag>
-              </div>
-              <pre class="local-terminal-output">{{ terminalPanelText }}</pre>
-            </section>
-          </aside>
-
-          <el-drawer
-            v-model="nativeExternalAgentSessionDetailVisible"
-            size="min(760px, calc(100vw - 24px))"
-            title="Runner 运行详情"
-            class="runner-session-drawer"
-          >
-            <div class="runner-session-detail">
-              <div class="runner-session-detail__hero">
-                <div>
-                  <div class="runner-session-detail__eyebrow">
-                    {{ nativeExternalAgentSession?.label || "External Agent" }}
-                  </div>
-                  <div class="runner-session-detail__title">
-                    {{
-                      nativeExternalAgentSession?.summary || "Runner 会话"
-                    }}
-                  </div>
-                  <div class="runner-session-detail__meta">
-                    <span>{{ nativeExternalAgentSession?.sessionId }}</span>
-                    <span>
-                      状态
-                      {{
-                        nativeExternalAgentRecordStatusLabel(
-                          nativeExternalAgentSession,
-                        )
-                      }}
-                    </span>
-                    <span>
-                      exit={{
-                        nativeExternalAgentSession?.exitCode ?? "-"
-                      }}
-                    </span>
-                  </div>
-                </div>
-                <el-tag
-                  size="small"
-                  effect="plain"
-                  :type="nativeExternalAgentRecordTagType(nativeExternalAgentSession)"
-                >
-                  {{ nativeExternalAgentRecordStatusLabel(nativeExternalAgentSession) }}
-                </el-tag>
-              </div>
-              <div class="runner-session-detail__actions">
-                <el-button
-                  size="small"
-                  :disabled="!nativeExternalAgentFinalAnswerText"
-                  @click="copyNativeExternalAgentFinalAnswer"
-                >
-                  复制最终回答
-                </el-button>
-                <el-button
-                  size="small"
-                  :disabled="!nativeExternalAgentFullLogText"
-                  @click="copyNativeExternalAgentFullLog"
-                >
-                  复制完整日志
-                </el-button>
-              </div>
-              <div class="runner-session-detail__grid">
-                <div>
-                  <span>执行器</span>
-                  <strong>{{ nativeExternalAgentSession?.agentType || "-" }}</strong>
-                </div>
-                <div>
-                  <span>工作区</span>
-                  <strong>{{ nativeExternalAgentSession?.workspacePath || "-" }}</strong>
-                </div>
-                <div>
-                  <span>命令</span>
-                  <strong>{{ nativeExternalAgentCommandText || "-" }}</strong>
-                </div>
-              </div>
-              <el-tabs
-                v-model="nativeExternalAgentDetailActiveTab"
-                class="runner-session-detail__tabs"
-              >
-                <el-tab-pane name="terminal">
-                  <template #label>
-                    <span>终端</span>
-                    <em>{{ nativeExternalAgentLogStats.total }}</em>
-                  </template>
-                  <section class="runner-session-detail__section runner-session-detail__terminal">
-                    <div class="runner-session-detail__section-head">
+                  <div class="local-diff-preview">
+                    <div class="local-diff-preview__head">
                       <div>
-                        <strong>运行终端</strong>
-                        <span>{{ nativeExternalAgentTerminalStatusText }}</span>
+                        <strong>差异预览</strong>
+                        <span>{{ workspaceDiffTargetLabel }}</span>
                       </div>
-                      <div class="runner-session-detail__terminal-actions">
+                      <div class="local-runner-card__actions">
+                        <el-tag size="small" effect="plain">
+                          {{ workspaceDiffStatusLabel }}
+                        </el-tag>
                         <el-button
-                          v-for="item in nativeExternalAgentTerminalControls"
-                          :key="item.key"
                           size="small"
                           text
-                          :type="item.type || 'default'"
-                          :disabled="!canWriteNativeExternalAgentStdin"
-                          :loading="nativeExternalAgentStdinSending"
-                          @click="sendNativeExternalAgentControl(item.content)"
+                          :loading="workspaceDiffLoading"
+                          :disabled="!canPreviewWorkspaceDiff"
+                          @click="refreshWorkspaceDiffPreview"
                         >
-                          {{ item.label }}
+                          预览
                         </el-button>
                       </div>
                     </div>
-                    <pre
-                      ref="nativeExternalAgentTerminalRef"
-                      class="runner-session-detail__terminal-output"
-                      :class="{ 'is-running': nativeExternalAgentSession?.status === 'running' }"
-                    >{{ nativeExternalAgentTerminalText || "Runner 启动后会在这里显示执行器输出" }}</pre>
-                  </section>
-                  <div
-                    v-if="nativeExternalAgentInteractionPrompt"
-                    class="runner-session-detail__interaction"
-                  >
-                    <div class="runner-session-detail__section-head">
-                      <strong>{{ nativeExternalAgentInteractionPrompt.title }}</strong>
-                      <span>{{ nativeExternalAgentInteractionPrompt.description }}</span>
+                    <div
+                      v-if="!canPreviewWorkspaceDiff"
+                      class="local-runner-empty"
+                    >
+                      差异预览需要 Tauri 桌面端原生桥和项目工作区。
                     </div>
-                    <ElementEasyForm
-                      :form-json="nativeExternalAgentInteractionFormJson"
-                      class="runner-session-detail__easy-form"
-                    />
-                    <div class="runner-session-detail__actions">
-                      <el-button size="small" text @click="dismissNativeExternalAgentInteraction">
-                        手动输入
-                      </el-button>
+                    <div
+                      v-else-if="
+                        workspaceDiffPreview?.reason &&
+                        !workspaceDiffPreview?.available
+                      "
+                      class="local-runner-empty"
+                    >
+                      {{ workspaceDiffPreview.reason }}
+                    </div>
+                    <pre
+                      v-else-if="
+                        workspaceDiffPreview?.diff ||
+                        workspaceDiffPreview?.summary ||
+                        workspaceDiffPreview?.status
+                      "
+                      class="local-diff-preview__output"
+                      >{{
+                        [
+                          workspaceDiffPreview?.status,
+                          workspaceDiffPreview?.summary,
+                          workspaceDiffPreview?.diff,
+                        ]
+                          .filter(Boolean)
+                          .join("\n\n")
+                      }}</pre
+                    >
+                    <div v-else class="local-runner-empty">
+                      尚未生成差异预览；没有选中文件时会预览整个工作区。
+                    </div>
+                  </div>
+                </template>
+              </section>
+
+              <section class="local-runner-card local-runner-card--terminal">
+                <div class="local-runner-card__head">
+                  <div>
+                    <div class="local-runner-card__eyebrow">Terminal</div>
+                    <div class="local-runner-card__title">终端输出</div>
+                  </div>
+                  <el-tag size="small" effect="plain">
+                    {{ terminalPanelStatusText }}
+                  </el-tag>
+                </div>
+                <pre class="local-terminal-output">{{ terminalPanelText }}</pre>
+              </section>
+            </aside>
+
+            <el-drawer
+              v-model="nativeExternalAgentSessionDetailVisible"
+              size="min(760px, calc(100vw - 24px))"
+              title="Runner 运行详情"
+              class="runner-session-drawer"
+            >
+              <div class="runner-session-detail">
+                <div class="runner-session-detail__hero">
+                  <div>
+                    <div class="runner-session-detail__eyebrow">
+                      {{
+                        nativeExternalAgentSession?.label || "External Agent"
+                      }}
+                    </div>
+                    <div class="runner-session-detail__title">
+                      {{ nativeExternalAgentSession?.summary || "Runner 会话" }}
+                    </div>
+                    <div class="runner-session-detail__meta">
+                      <span>{{ nativeExternalAgentSession?.sessionId }}</span>
+                      <span>
+                        状态
+                        {{
+                          nativeExternalAgentRecordStatusLabel(
+                            nativeExternalAgentSession,
+                          )
+                        }}
+                      </span>
+                      <span>
+                        exit={{ nativeExternalAgentSession?.exitCode ?? "-" }}
+                      </span>
+                    </div>
+                  </div>
+                  <el-tag
+                    size="small"
+                    effect="plain"
+                    :type="
+                      nativeExternalAgentRecordTagType(
+                        nativeExternalAgentSession,
+                      )
+                    "
+                  >
+                    {{
+                      nativeExternalAgentRecordStatusLabel(
+                        nativeExternalAgentSession,
+                      )
+                    }}
+                  </el-tag>
+                </div>
+                <div class="runner-session-detail__actions">
+                  <el-button
+                    size="small"
+                    :disabled="!nativeExternalAgentFinalAnswerText"
+                    @click="copyNativeExternalAgentFinalAnswer"
+                  >
+                    复制最终回答
+                  </el-button>
+                  <el-button
+                    size="small"
+                    :disabled="!nativeExternalAgentFullLogText"
+                    @click="copyNativeExternalAgentFullLog"
+                  >
+                    复制完整日志
+                  </el-button>
+                </div>
+                <div class="runner-session-detail__grid">
+                  <div>
+                    <span>执行器</span>
+                    <strong>{{
+                      nativeExternalAgentSession?.agentType || "-"
+                    }}</strong>
+                  </div>
+                  <div>
+                    <span>工作区</span>
+                    <strong>{{
+                      nativeExternalAgentSession?.workspacePath || "-"
+                    }}</strong>
+                  </div>
+                  <div>
+                    <span>命令</span>
+                    <strong>{{ nativeExternalAgentCommandText || "-" }}</strong>
+                  </div>
+                </div>
+                <el-tabs
+                  v-model="nativeExternalAgentDetailActiveTab"
+                  class="runner-session-detail__tabs"
+                >
+                  <el-tab-pane name="terminal">
+                    <template #label>
+                      <span>终端</span>
+                      <em>{{ nativeExternalAgentLogStats.total }}</em>
+                    </template>
+                    <section
+                      class="runner-session-detail__section runner-session-detail__terminal"
+                    >
+                      <div class="runner-session-detail__section-head">
+                        <div>
+                          <strong>运行终端</strong>
+                          <span>{{
+                            nativeExternalAgentTerminalStatusText
+                          }}</span>
+                        </div>
+                        <div class="runner-session-detail__terminal-actions">
+                          <el-button
+                            v-for="item in nativeExternalAgentTerminalControls"
+                            :key="item.key"
+                            size="small"
+                            text
+                            :type="item.type || 'default'"
+                            :disabled="!canWriteNativeExternalAgentStdin"
+                            :loading="nativeExternalAgentStdinSending"
+                            @click="
+                              sendNativeExternalAgentControl(item.content)
+                            "
+                          >
+                            {{ item.label }}
+                          </el-button>
+                        </div>
+                      </div>
+                      <pre
+                        ref="nativeExternalAgentTerminalRef"
+                        class="runner-session-detail__terminal-output"
+                        :class="{
+                          'is-running':
+                            nativeExternalAgentSession?.status === 'running',
+                        }"
+                        >{{
+                          nativeExternalAgentTerminalText ||
+                          "Runner 启动后会在这里显示执行器输出"
+                        }}</pre
+                      >
+                    </section>
+                    <div
+                      v-if="nativeExternalAgentInteractionPrompt"
+                      class="runner-session-detail__interaction"
+                    >
+                      <div class="runner-session-detail__section-head">
+                        <strong>{{
+                          nativeExternalAgentInteractionPrompt.title
+                        }}</strong>
+                        <span>{{
+                          nativeExternalAgentInteractionPrompt.description
+                        }}</span>
+                      </div>
+                      <ElementEasyForm
+                        :form-json="nativeExternalAgentInteractionFormJson"
+                        class="runner-session-detail__easy-form"
+                      />
+                      <div class="runner-session-detail__actions">
+                        <el-button
+                          size="small"
+                          text
+                          @click="dismissNativeExternalAgentInteraction"
+                        >
+                          手动输入
+                        </el-button>
+                        <el-button
+                          size="small"
+                          type="primary"
+                          :loading="nativeExternalAgentStdinSending"
+                          @click="submitNativeExternalAgentInteraction"
+                        >
+                          确认
+                        </el-button>
+                      </div>
+                    </div>
+                    <div
+                      v-if="canWriteNativeExternalAgentStdin"
+                      class="runner-session-detail__stdin"
+                    >
+                      <el-input
+                        v-model="nativeExternalAgentStdinDraft"
+                        size="small"
+                        placeholder="发送给 Runner 的输入"
+                        clearable
+                        @keyup.enter="sendNativeExternalAgentStdin"
+                      />
                       <el-button
                         size="small"
                         type="primary"
                         :loading="nativeExternalAgentStdinSending"
-                        @click="submitNativeExternalAgentInteraction"
+                        @click="sendNativeExternalAgentStdin"
                       >
-                        确认
+                        发送
                       </el-button>
                     </div>
-                  </div>
-                  <div
-                    v-if="canWriteNativeExternalAgentStdin"
-                    class="runner-session-detail__stdin"
-                  >
-                    <el-input
-                      v-model="nativeExternalAgentStdinDraft"
-                      size="small"
-                      placeholder="发送给 Runner 的输入"
-                      clearable
-                      @keyup.enter="sendNativeExternalAgentStdin"
-                    />
-                    <el-button
-                      size="small"
-                      type="primary"
-                      :loading="nativeExternalAgentStdinSending"
-                      @click="sendNativeExternalAgentStdin"
-                    >
-                      发送
-                    </el-button>
-                  </div>
-                </el-tab-pane>
-                <el-tab-pane name="final">
-                  <template #label>
-                    <span>最终回答</span>
-                  </template>
-                  <section class="runner-session-detail__section">
-                    <div class="runner-session-detail__section-head">
-                      <strong>最终回答</strong>
-                      <span>优先展示 Runner finalOutput</span>
-                    </div>
-                    <pre class="runner-session-detail__output">{{
-                      nativeExternalAgentFinalAnswerText || "暂无最终回答"
-                    }}</pre>
-                  </section>
-                </el-tab-pane>
-                <el-tab-pane name="files">
-                  <template #label>
-                    <span>文件</span>
-                    <em>{{ nativeExternalAgentFileEvidenceItems.length }}</em>
-                  </template>
-                  <div
-                    v-if="nativeExternalAgentFileEvidenceItems.length"
-                    class="runner-session-detail__evidence-list"
-                  >
-                    <article
-                      v-for="(item, index) in nativeExternalAgentFileEvidenceItems"
-                      :key="`runner-file-${index}`"
-                      class="runner-session-detail__evidence"
-                    >
-                      <span>{{ item.kind }}</span>
-                      <strong>{{ item.path || item.title }}</strong>
-                      <p v-if="item.summary">{{ item.summary }}</p>
-                      <small v-if="item.status">{{ item.status }}</small>
-                    </article>
-                  </div>
-                  <div v-else class="runner-session-detail__empty">
-                    当前 Runner 会话暂无文件、diff 或写入准备记录。
-                  </div>
-                </el-tab-pane>
-                <el-tab-pane name="verification">
-                  <template #label>
-                    <span>验证</span>
-                    <em>{{ nativeExternalAgentVerificationItems.length }}</em>
-                  </template>
-                  <div
-                    v-if="nativeExternalAgentVerificationItems.length"
-                    class="runner-session-detail__evidence-list"
-                  >
-                    <article
-                      v-for="(item, index) in nativeExternalAgentVerificationItems"
-                      :key="`runner-verification-${index}`"
-                      class="runner-session-detail__evidence"
-                    >
-                      <span>{{ item.kind }}</span>
-                      <strong>{{ item.title }}</strong>
-                      <p v-if="item.summary">{{ item.summary }}</p>
-                      <small v-if="runnerEvidenceMetaText(item)">
-                        {{ runnerEvidenceMetaText(item) }}
-                      </small>
-                    </article>
-                  </div>
-                  <div v-else class="runner-session-detail__empty">
-                    当前 Runner 会话暂无验证命令或自检结果。
-                  </div>
-                </el-tab-pane>
-                <el-tab-pane name="permissions">
-                  <template #label>
-                    <span>权限</span>
-                    <em>{{ nativeExternalAgentSessionPermissionRecords.length }}</em>
-                  </template>
-                  <div
-                    v-if="nativeExternalAgentSessionPermissionRecords.length"
-                    class="runner-session-detail__evidence-list"
-                  >
-                    <article
-                      v-for="record in nativeExternalAgentSessionPermissionRecords"
-                      :key="record.id || `${record.command}-${record.createdAtEpochMs}`"
-                      class="runner-session-detail__evidence"
-                    >
-                      <span>{{ runnerPermissionDecisionLabel(record) }}</span>
-                      <strong>{{ runnerPermissionRecordSummary(record) }}</strong>
-                      <small>{{ runnerPermissionRecordTime(record) }}</small>
-                    </article>
-                  </div>
-                  <div v-else class="runner-session-detail__empty">
-                    当前 Runner 会话暂无权限决策记录。
-                  </div>
-                </el-tab-pane>
-                <el-tab-pane name="diagnostics">
-                  <template #label>
-                    <span>诊断</span>
-                    <em>{{ nativeExternalAgentLogStats.stderr + nativeExternalAgentLogStats.system }}</em>
-                  </template>
-                  <div class="runner-session-detail__diagnostic-grid">
+                  </el-tab-pane>
+                  <el-tab-pane name="final">
+                    <template #label>
+                      <span>最终回答</span>
+                    </template>
+                    <section class="runner-session-detail__section">
+                      <div class="runner-session-detail__section-head">
+                        <strong>最终回答</strong>
+                        <span>优先展示 Runner finalOutput</span>
+                      </div>
+                      <pre class="runner-session-detail__output">{{
+                        nativeExternalAgentFinalAnswerText || "暂无最终回答"
+                      }}</pre>
+                    </section>
+                  </el-tab-pane>
+                  <el-tab-pane name="files">
+                    <template #label>
+                      <span>文件</span>
+                      <em>{{ nativeExternalAgentFileEvidenceItems.length }}</em>
+                    </template>
                     <div
-                      v-for="item in nativeExternalAgentDiagnosticItems"
-                      :key="item.label"
+                      v-if="nativeExternalAgentFileEvidenceItems.length"
+                      class="runner-session-detail__evidence-list"
                     >
-                      <span>{{ item.label }}</span>
-                      <strong>{{ item.value }}</strong>
+                      <article
+                        v-for="(
+                          item, index
+                        ) in nativeExternalAgentFileEvidenceItems"
+                        :key="`runner-file-${index}`"
+                        class="runner-session-detail__evidence"
+                      >
+                        <span>{{ item.kind }}</span>
+                        <strong>{{ item.path || item.title }}</strong>
+                        <p v-if="item.summary">{{ item.summary }}</p>
+                        <small v-if="item.status">{{ item.status }}</small>
+                      </article>
                     </div>
-                    <div>
-                      <span>logs</span>
-                      <strong>
-                        stdout={{ nativeExternalAgentLogStats.stdout }}
-                        stderr={{ nativeExternalAgentLogStats.stderr }}
-                        stdin={{ nativeExternalAgentLogStats.stdin }}
-                        system={{ nativeExternalAgentLogStats.system }}
-                      </strong>
+                    <div v-else class="runner-session-detail__empty">
+                      当前 Runner 会话暂无文件、diff 或写入准备记录。
                     </div>
-                  </div>
-                  <section class="runner-session-detail__section">
-                    <div class="runner-session-detail__section-head">
-                      <strong>stderr / system / stdin</strong>
-                      <span>默认归入诊断，不进入主回答</span>
+                  </el-tab-pane>
+                  <el-tab-pane name="verification">
+                    <template #label>
+                      <span>验证</span>
+                      <em>{{ nativeExternalAgentVerificationItems.length }}</em>
+                    </template>
+                    <div
+                      v-if="nativeExternalAgentVerificationItems.length"
+                      class="runner-session-detail__evidence-list"
+                    >
+                      <article
+                        v-for="(
+                          item, index
+                        ) in nativeExternalAgentVerificationItems"
+                        :key="`runner-verification-${index}`"
+                        class="runner-session-detail__evidence"
+                      >
+                        <span>{{ item.kind }}</span>
+                        <strong>{{ item.title }}</strong>
+                        <p v-if="item.summary">{{ item.summary }}</p>
+                        <small v-if="runnerEvidenceMetaText(item)">
+                          {{ runnerEvidenceMetaText(item) }}
+                        </small>
+                      </article>
                     </div>
-                    <pre class="runner-session-detail__output">{{
-                      nativeExternalAgentDiagnosticText || "无诊断日志"
-                    }}</pre>
-                  </section>
-                </el-tab-pane>
-              </el-tabs>
-            </div>
-          </el-drawer>
+                    <div v-else class="runner-session-detail__empty">
+                      当前 Runner 会话暂无验证命令或自检结果。
+                    </div>
+                  </el-tab-pane>
+                  <el-tab-pane name="permissions">
+                    <template #label>
+                      <span>权限</span>
+                      <em>{{
+                        nativeExternalAgentSessionPermissionRecords.length
+                      }}</em>
+                    </template>
+                    <div
+                      v-if="nativeExternalAgentSessionPermissionRecords.length"
+                      class="runner-session-detail__evidence-list"
+                    >
+                      <article
+                        v-for="record in nativeExternalAgentSessionPermissionRecords"
+                        :key="
+                          record.id ||
+                          `${record.command}-${record.createdAtEpochMs}`
+                        "
+                        class="runner-session-detail__evidence"
+                      >
+                        <span>{{ runnerPermissionDecisionLabel(record) }}</span>
+                        <strong>{{
+                          runnerPermissionRecordSummary(record)
+                        }}</strong>
+                        <small>{{ runnerPermissionRecordTime(record) }}</small>
+                      </article>
+                    </div>
+                    <div v-else class="runner-session-detail__empty">
+                      当前 Runner 会话暂无权限决策记录。
+                    </div>
+                  </el-tab-pane>
+                  <el-tab-pane name="diagnostics">
+                    <template #label>
+                      <span>诊断</span>
+                      <em>{{
+                        nativeExternalAgentLogStats.stderr +
+                        nativeExternalAgentLogStats.system
+                      }}</em>
+                    </template>
+                    <div class="runner-session-detail__diagnostic-grid">
+                      <div
+                        v-for="item in nativeExternalAgentDiagnosticItems"
+                        :key="item.label"
+                      >
+                        <span>{{ item.label }}</span>
+                        <strong>{{ item.value }}</strong>
+                      </div>
+                      <div>
+                        <span>logs</span>
+                        <strong>
+                          stdout={{
+                            nativeExternalAgentLogStats.stdout
+                          }}
+                          stderr={{
+                            nativeExternalAgentLogStats.stderr
+                          }}
+                          stdin={{
+                            nativeExternalAgentLogStats.stdin
+                          }}
+                          system={{ nativeExternalAgentLogStats.system }}
+                        </strong>
+                      </div>
+                    </div>
+                    <section class="runner-session-detail__section">
+                      <div class="runner-session-detail__section-head">
+                        <strong>stderr / system / stdin</strong>
+                        <span>默认归入诊断，不进入主回答</span>
+                      </div>
+                      <pre class="runner-session-detail__output">{{
+                        nativeExternalAgentDiagnosticText || "无诊断日志"
+                      }}</pre>
+                    </section>
+                  </el-tab-pane>
+                </el-tabs>
+              </div>
+            </el-drawer>
           </div>
 
-          <el-dialog
+          <TerminalApprovalDialog
             v-if="!isLocalRunnerSurface"
             v-model="terminalApprovalDialogVisible"
-            title="等待操作确认"
-            width="min(560px, calc(100vw - 32px))"
-            :close-on-click-modal="false"
-            :close-on-press-escape="false"
-            :show-close="false"
-            class="terminal-approval-dialog"
+            :prompt="terminalApprovalPrompt"
+            @choose="sendTerminalApprovalChoice"
+          />
+
+          <ChatComposer
+            ref="chatComposerRef"
+            v-model:draft-text="draftText"
+            v-model:input-focused="inputFocused"
+            v-model:selected-model-option-value="selectedModelOptionValue"
+            :show-agent-workflow-status-strip="showAgentWorkflowStatusStrip"
+            :agent-workflow-state="agentWorkflowState"
+            :agent-workflow-meta-items="agentWorkflowMetaItems"
+            :show-working-status-bar="showWorkingStatusBar"
+            :working-status-title="workingStatusTitle"
+            :working-status-elapsed-label="workingStatusElapsedLabel"
+            :working-status-meta-items="workingStatusMetaItems"
+            :is-dragging="isDragging"
+            :upload-files="uploadFiles"
+            :format-file-type="formatFileType"
+            :composer-placeholder="composerPlaceholder"
+            :is-composer-disabled="isComposerDisabled"
+            :is-slash-command-menu-visible="isSlashCommandMenuVisible"
+            :filtered-slash-commands="filteredSlashCommands"
+            :slash-command-highlight-index="slashCommandHighlightIndex"
+            :is-external-agent-mode="isExternalAgentMode"
+            :provider-model-groups="providerModelGroups"
+            :chat-loading="chatLoading"
+            :external-agent-display-label="externalAgentDisplayLabel"
+            :has-selected-project="hasSelectedProject"
+            :execution-runtime-tone-class="executionRuntimeToneClass"
+            :composer-execution-chip-label="composerExecutionChipLabel"
+            :execution-runtime-title="executionRuntimeTitle"
+            :execution-runtime-description="executionRuntimeDescription"
+            :composer-execution-status-tag-type="composerExecutionStatusTagType"
+            :composer-execution-status-label="composerExecutionStatusLabel"
+            :composer-execution-summary-items="composerExecutionSummaryItems"
+            :composer-execution-detail-available="
+              composerExecutionDetailAvailable
+            "
+            :native-executor-detecting="nativeExecutorDetecting"
+            :native-runner-self-checking="nativeRunnerSelfChecking"
+            :external-agent-warmup-loading="externalAgentWarmupLoading"
+            :execution-runtime-action-label="executionRuntimeActionLabel"
+            :selected-project-id="selectedProjectId"
+            :composer-hint-text="composerHintText"
+            :show-pause-generation-button="showPauseGenerationButton"
+            :can-send="canSend"
+            @focus-agent-workflow-operation="focusAgentWorkflowOperation"
+            @drag-over="handleDragOver"
+            @drag-leave="handleDragLeave"
+            @drop-files="handleDrop"
+            @remove-file="removeFile"
+            @editor-blur="handleEditorBlur"
+            @editor-keydown="handleEditorKeydown"
+            @editor-paste="handleEditorPaste"
+            @editor-composition-start="handleEditorCompositionStart"
+            @editor-composition-end="handleEditorCompositionEnd"
+            @apply-slash-command-selection="applySlashCommandSelection"
+            @open-settings="openSettingsCenter"
+            @open-execution-detail="openComposerExecutionDetail"
+            @execute-primary="handleComposerExecutionPrimaryAction"
+            @file-change="handleFileChange"
+            @stop-generation="stopGeneration"
+            @send="doSend"
           >
-            <div v-if="terminalApprovalPrompt" class="terminal-approval-card">
-              <div class="terminal-approval-card__title">
-                {{ terminalApprovalPrompt.title }}
-              </div>
-              <div
-                v-if="terminalApprovalPrompt.description"
-                class="terminal-approval-card__desc"
-              >
-                {{ terminalApprovalPrompt.description }}
-              </div>
-              <pre
-                v-if="terminalApprovalPrompt.message"
-                class="terminal-approval-card__message"
-                >{{ terminalApprovalPrompt.message }}</pre
-              >
-            </div>
-            <template #footer>
-              <div class="terminal-approval-dialog__footer">
-                <el-button
-                  type="danger"
-                  plain
-                  @click="sendTerminalApprovalChoice('3')"
-                >
-                  取消
-                </el-button>
-                <el-button @click="sendTerminalApprovalChoice('2')">
-                  本会话批准
-                </el-button>
-                <el-button
-                  type="primary"
-                  @click="sendTerminalApprovalChoice('1')"
-                >
-                  批准一次
-                </el-button>
-              </div>
+            <template #media-parameters>
+              <ChatMediaParameterPopover
+                v-model="mediaParameterPopoverVisible"
+                :visible="shouldShowMediaParameterTrigger"
+                :disabled="chatLoading"
+                :mode="currentModelParameterMode"
+                :trigger-label="currentMediaParameterTriggerLabel"
+                :panel-title="currentMediaParameterPanelTitle"
+                :model-summary="currentModelSummary"
+                :sections="currentModelParameterSections"
+                :show-four-views-option="shouldShowImageFourViewsOption"
+                :four-views-enabled="imageGenerateFourViewsEnabled"
+                @select-parameter="setCurrentModelParameterValue"
+                @toggle-four-views="toggleImageGenerateFourViews"
+              />
             </template>
-          </el-dialog>
+          </ChatComposer>
 
-          <!-- Composer Area -->
-          <div class="chat-composer">
-            <div class="chat-composer-panel">
-              <div
-                v-if="showAgentWorkflowStatusStrip"
-                class="agent-workflow-status"
-                :class="`is-${agentWorkflowState.phase}`"
-                role="status"
-                aria-live="polite"
-              >
-                <div class="agent-workflow-status__main">
-                  <span class="agent-workflow-status__dot"></span>
-                  <div class="agent-workflow-status__copy">
-                    <strong>{{ agentWorkflowState.title }}</strong>
-                    <span v-if="agentWorkflowState.detail">
-                      {{ agentWorkflowState.detail }}
-                    </span>
-                  </div>
-                </div>
-                <div class="agent-workflow-status__side">
-                  <span
-                    v-for="item in agentWorkflowMetaItems"
-                    :key="item"
-                    class="agent-workflow-status__item"
-                  >
-                    {{ item }}
-                  </span>
-                  <el-button
-                    v-if="agentWorkflowState.actionLabel"
-                    size="small"
-                    text
-                    @click="focusAgentWorkflowOperation"
-                  >
-                    {{ agentWorkflowState.actionLabel }}
-                  </el-button>
-                </div>
-              </div>
-              <div
-                v-else-if="showWorkingStatusBar"
-                class="chat-working-status"
-                role="status"
-                aria-live="polite"
-              >
-                <div class="chat-working-status__main">
-                  <span class="chat-working-status__dot"></span>
-                  <strong>{{ workingStatusTitle }}</strong>
-                  <span>{{ workingStatusElapsedLabel }}</span>
-                </div>
-                <div class="chat-working-status__meta">
-                  <span
-                    v-for="item in workingStatusMetaItems"
-                    :key="item"
-                    class="chat-working-status__item"
-                  >
-                    {{ item }}
-                  </span>
-                </div>
-              </div>
-              <div
-                class="chat-input-wrapper"
-                :class="{
-                  'is-focused': inputFocused,
-                  'is-dragover': isDragging,
-                }"
-                ref="chatComposerRef"
-                @dragover.prevent="handleDragOver"
-                @dragleave.prevent="handleDragLeave"
-                @drop.prevent="handleDrop"
-              >
-                <div v-if="uploadFiles.length > 0" class="upload-preview-area">
-                  <div
-                    v-for="(file, idx) in uploadFiles"
-                    :key="idx"
-                    class="preview-item"
-                  >
-                    <img v-if="file.url" :src="file.url" class="preview-img" />
-                    <div v-else class="preview-doc">
-                      <el-icon :size="24"><Document /></el-icon>
-                      <span class="doc-name">{{ file.name }}</span>
-                      <span class="doc-type">{{
-                        formatFileType(file.name)
-                      }}</span>
-                    </div>
-                    <div class="remove-mask" @click="removeFile(idx)">
-                      <el-icon><Delete /></el-icon>
-                    </div>
-                  </div>
-                </div>
-
-                <el-input
-                  v-model="draftText"
-                  type="textarea"
-                  :autosize="{ minRows: 2, maxRows: 8 }"
-                  :placeholder="composerPlaceholder"
-                  resize="none"
-                  :disabled="isComposerDisabled"
-                  @focus="inputFocused = true"
-                  @blur="handleEditorBlur"
-                  @keydown="handleEditorKeydown"
-                  @paste="handleEditorPaste"
-                  @compositionstart="handleEditorCompositionStart"
-                  @compositionend="handleEditorCompositionEnd"
-                  class="chat-textarea"
-                />
-
-                <div v-if="isSlashCommandMenuVisible" class="chat-slash-menu">
-                  <div class="chat-slash-menu__head">
-                    <span class="chat-slash-menu__title">可用命令</span>
-                    <span class="chat-slash-menu__summary">
-                      输入命令后回车发送，或先点选再补充内容
-                    </span>
-                  </div>
-                  <button
-                    v-for="(item, index) in filteredSlashCommands"
-                    :key="item.id"
-                    type="button"
-                    class="chat-slash-menu__item"
-                    :class="{
-                      'is-active': index === slashCommandHighlightIndex,
-                    }"
-                    @mousedown.prevent="applySlashCommandSelection(item)"
-                  >
-                    <div class="chat-slash-menu__item-main">
-                      <span class="chat-slash-menu__command">
-                        {{ item.command }}
-                      </span>
-                      <span class="chat-slash-menu__label">
-                        {{ item.label }}
-                      </span>
-                    </div>
-                    <div class="chat-slash-menu__description">
-                      {{ item.description }}
-                    </div>
-                  </button>
-                </div>
-
-                <div class="input-footer">
-                  <div class="footer-left">
-                    <el-select
-                      v-if="!isExternalAgentMode"
-                      v-model="selectedModelOptionValue"
-                      class="chat-model-select"
-                      popper-class="chat-model-select-dropdown"
-                      size="small"
-                      filterable
-                      placeholder="选择模型"
-                      :disabled="chatLoading || !providerModelGroups.length"
-                    >
-                      <el-option-group
-                        v-for="group in providerModelGroups"
-                        :key="group.providerId"
-                        :label="group.label"
-                      >
-                        <el-option
-                          v-for="option in group.options"
-                          :key="option.value"
-                          :label="option.label"
-                          :value="option.value"
-                        >
-                          <div class="chat-model-option">
-                            <div class="chat-model-option__main">
-                              <span class="chat-model-option__name">{{
-                                option.modelName
-                              }}</span>
-                              <span class="chat-model-option__provider">
-                                {{ option.providerLabel }}
-                              </span>
-                            </div>
-                            <span class="chat-model-option__type">
-                              {{ option.modelTypeLabel }}
-                            </span>
-                          </div>
-                        </el-option>
-                      </el-option-group>
-                    </el-select>
-                    <div v-else class="chat-model-pill">
-                      {{ externalAgentDisplayLabel }}
-                    </div>
-                    <el-popover
-                      v-if="hasSelectedProject"
-                      trigger="click"
-                      placement="top-start"
-                      :width="360"
-                      popper-class="execution-status-popover"
-                      :teleported="false"
-                    >
-                      <template #reference>
-                        <button
-                          type="button"
-                          class="execution-status-chip"
-                          :class="executionRuntimeToneClass"
-                        >
-                          <span class="execution-status-chip__dot"></span>
-                          <span>{{ composerExecutionChipLabel }}</span>
-                        </button>
-                      </template>
-                      <div class="execution-status-popover__body">
-                        <div class="execution-status-popover__head">
-                          <div>
-                            <strong>{{ executionRuntimeTitle }}</strong>
-                            <span>{{ executionRuntimeDescription }}</span>
-                          </div>
-                          <el-tag
-                            size="small"
-                            effect="plain"
-                            :type="composerExecutionStatusTagType"
-                          >
-                            {{ composerExecutionStatusLabel }}
-                          </el-tag>
-                        </div>
-                        <div class="execution-status-popover__grid">
-                          <div
-                            v-for="item in composerExecutionSummaryItems"
-                            :key="item.label"
-                          >
-                            <span>{{ item.label }}</span>
-                            <strong>{{ item.value }}</strong>
-                          </div>
-                        </div>
-                        <div class="execution-status-popover__actions">
-                          <el-button
-                            size="small"
-                            text
-                            @click="openSettingsCenter('chat')"
-                          >
-                            打开设置
-                          </el-button>
-                          <el-button
-                            size="small"
-                            text
-                            :disabled="!composerExecutionDetailAvailable"
-                            @click="openComposerExecutionDetail"
-                          >
-                            查看详情
-                          </el-button>
-                          <el-button
-                            size="small"
-                            type="primary"
-                            plain
-                            :loading="
-                              nativeExecutorDetecting ||
-                              nativeRunnerSelfChecking ||
-                              externalAgentWarmupLoading
-                            "
-                            @click="handleComposerExecutionPrimaryAction"
-                          >
-                            {{ executionRuntimeActionLabel }}
-                          </el-button>
-                        </div>
-                      </div>
-                    </el-popover>
-                    <el-upload
-                      action="#"
-                      :auto-upload="false"
-                      :show-file-list="false"
-                      accept="image/*"
-                      :multiple="true"
-                      :on-change="handleFileChange"
-                      :disabled="
-                        isExternalAgentMode || !selectedProjectId
-                      "
-                    >
-                      <el-tooltip content="添加图片" placement="top">
-                        <el-button text circle
-                          ><el-icon><Picture /></el-icon
-                        ></el-button>
-                      </el-tooltip>
-                    </el-upload>
-                    <el-upload
-                      action="#"
-                      :auto-upload="false"
-                      :show-file-list="false"
-                      accept=".wps,.doc,.docx,.pdf,.txt,.csv,.xlsx,.xls"
-                      :multiple="true"
-                      :on-change="handleFileChange"
-                      :disabled="
-                        isExternalAgentMode || !selectedProjectId
-                      "
-                    >
-                      <el-tooltip content="添加文档" placement="top">
-                        <el-button text circle
-                          ><el-icon><Document /></el-icon
-                        ></el-button>
-                      </el-tooltip>
-                    </el-upload>
-                    <el-popover
-                      v-if="shouldShowMediaParameterTrigger"
-                      v-model:visible="mediaParameterPopoverVisible"
-                      trigger="click"
-                      placement="top-start"
-                      :width="currentModelParameterMode === 'image' ? 460 : 420"
-                      :teleported="false"
-                    >
-                      <template #reference>
-                        <el-button
-                          class="chat-media-parameter-trigger"
-                          text
-                          :disabled="chatLoading"
-                        >
-                          <el-icon class="chat-media-parameter-trigger__icon">
-                            <component :is="currentMediaParameterTriggerIcon" />
-                          </el-icon>
-                          <span class="chat-media-parameter-trigger__label">
-                            {{ currentMediaParameterTriggerLabel }}
-                          </span>
-                        </el-button>
-                      </template>
-
-                      <div class="chat-media-parameter-panel">
-                        <div class="chat-media-parameter-panel__head">
-                          <div class="chat-media-parameter-panel__eyebrow">
-                            {{ currentMediaParameterTriggerLabel }}
-                          </div>
-                          <div class="chat-media-parameter-panel__title">
-                            {{ currentMediaParameterPanelTitle }}
-                          </div>
-                          <div class="chat-media-parameter-panel__summary">
-                            {{ currentModelSummary }}
-                          </div>
-                        </div>
-
-                        <div class="chat-media-parameter-panel__sections">
-                          <section
-                            v-for="section in currentModelParameterSections"
-                            :key="`popover-${section.key}`"
-                            class="chat-media-parameter-section"
-                          >
-                            <div class="chat-media-parameter-section__label">
-                              {{ section.label }}
-                            </div>
-                            <div
-                              v-if="section.helper"
-                              class="chat-media-parameter-section__helper"
-                            >
-                              {{ section.helper }}
-                            </div>
-                            <div
-                              class="chat-media-parameter-section__options"
-                              :class="{
-                                'is-aspect':
-                                  section.key === 'image_aspect_ratio' ||
-                                  section.key === 'video_aspect_ratio',
-                                'is-resolution':
-                                  section.key === 'image_resolution',
-                              }"
-                            >
-                              <button
-                                v-for="option in section.options"
-                                :key="`${section.key}-${option.id}`"
-                                type="button"
-                                class="chat-media-parameter-option"
-                                :class="{
-                                  'is-active':
-                                    option.value === section.modelValue,
-                                  'is-resolution':
-                                    section.key === 'image_resolution',
-                                }"
-                                @click="
-                                  setCurrentModelParameterValue(
-                                    section.key,
-                                    option.value,
-                                  )
-                                "
-                              >
-                                <span
-                                  class="chat-media-parameter-option__label"
-                                >
-                                  {{ option.label }}
-                                </span>
-                              </button>
-                            </div>
-                          </section>
-                        </div>
-
-                        <section
-                          v-if="shouldShowImageFourViewsOption"
-                          class="chat-media-parameter-section chat-media-parameter-section--toggle"
-                        >
-                          <div class="chat-media-parameter-section__label">
-                            四视图
-                          </div>
-                          <div class="chat-media-parameter-section__helper">
-                            勾选后会自动要求输出同一角色的正面、背面、左侧、右侧四视图。
-                          </div>
-                          <button
-                            type="button"
-                            class="chat-media-toggle-card"
-                            :class="{
-                              'is-active': imageGenerateFourViewsEnabled,
-                            }"
-                            @click="toggleImageGenerateFourViews"
-                          >
-                            <div class="chat-media-toggle-card__content">
-                              <span class="chat-media-toggle-card__title">
-                                自动生成四视图
-                              </span>
-                              <span class="chat-media-toggle-card__description">
-                                适合角色设定图和素材前置统一。
-                              </span>
-                            </div>
-                            <span
-                              class="chat-media-toggle-card__indicator"
-                              :class="{
-                                'is-active': imageGenerateFourViewsEnabled,
-                              }"
-                            >
-                              {{
-                                imageGenerateFourViewsEnabled
-                                  ? "已开启"
-                                  : "未开启"
-                              }}
-                            </span>
-                          </button>
-                        </section>
-                      </div>
-                    </el-popover>
-                  </div>
-                  <div class="footer-right">
-                    <span class="hint-text">{{ composerHintText }}</span>
-                    <el-tooltip
-                      v-if="showPauseGenerationButton"
-                      content="暂停当前回答"
-                      placement="top"
-                    >
-                      <el-button
-                        class="pause-generation-button"
-                        type="danger"
-                        plain
-                        @click="stopGeneration"
-                      >
-                        <el-icon><VideoPause /></el-icon>
-                        <span>暂停</span>
-                      </el-button>
-                    </el-tooltip>
-                    <el-button
-                      class="send-message-button"
-                      type="primary"
-                      :disabled="!canSend"
-                      @click="doSend"
-                      circle
-                    >
-                      <el-icon><Promotion /></el-icon>
-                    </el-button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <el-drawer
+          <ChatTaskTreePanel
             v-model="taskTreePanelVisible"
-            size="min(560px, calc(100vw - 24px))"
-            title="当前执行任务"
-            class="task-tree-drawer"
-          >
-            <div v-loading="taskTreeLoading" class="task-tree-panel">
-              <div class="task-tree-panel__hero">
-                <div>
-                  <div class="task-tree-panel__eyebrow">
-                    {{ taskTreeIsReadonly ? "Task Snapshot" : "Task Flow" }}
-                  </div>
-                  <div class="task-tree-panel__title">
-                    {{
-                      displayedChatTaskTree?.root_goal || "当前会话还没有任务树"
-                    }}
-                  </div>
-                  <div class="task-tree-panel__meta">
-                    <span
-                      >状态
-                      {{ displayedChatTaskTree?.status || "pending" }}</span
-                    >
-                    <span>进度 {{ taskTreeProgressLabel }}</span>
-                    <span v-if="displayedChatTaskTree?.stats?.leaf_total">
-                      已完成
-                      {{ displayedChatTaskTree?.stats?.done_leaf_total || 0 }} /
-                      {{ displayedChatTaskTree?.stats?.leaf_total || 0 }}
-                    </span>
-                    <span v-if="taskTreeIsReadonly">只读快照</span>
-                  </div>
-                </div>
-                <div
-                  v-if="hasChatTaskTree && !taskTreeIsReadonly"
-                  class="task-tree-panel__actions"
-                >
-                  <el-button
-                    text
-                    type="danger"
-                    :icon="Delete"
-                    :disabled="taskTreeSaving"
-                    @click="deleteCurrentTaskTree"
-                  >
-                    删除任务推进
-                  </el-button>
-                </div>
-              </div>
-
-              <TaskTreeFeedbackBanner
-                v-if="displayedChatTaskTreeHealth"
-                :health="displayedChatTaskTreeHealth"
-              />
-
-              <div v-if="hasChatTaskTree" class="task-tree-panel__body">
-                <div class="task-tree-panel__outline">
-                  <div class="task-tree-panel__section-head">
-                    <div>
-                      <div class="task-tree-panel__section-eyebrow">
-                        Task Nodes
-                      </div>
-                      <div class="task-tree-panel__section-title">执行路径</div>
-                    </div>
-                    <div class="task-tree-panel__section-meta">
-                      {{ displayedChatTaskTree?.stats?.leaf_total || 0 }}
-                      个执行节点
-                    </div>
-                  </div>
-                  <el-tree
-                    :data="taskTreeTreeData"
-                    node-key="id"
-                    default-expand-all
-                    highlight-current
-                    :expand-on-click-node="false"
-                    :current-node-key="selectedTaskTreeNodeId"
-                    class="task-tree-panel__tree"
-                    @node-click="handleTaskTreeNodeClick"
-                  >
-                    <template #default="{ data }">
-                      <div class="task-tree-node">
-                        <div class="task-tree-node__copy">
-                          <span
-                            class="task-tree-node__title"
-                            :title="data.title"
-                          >
-                            {{ data.title }}
-                          </span>
-                          <span
-                            v-if="isTaskTreeNodeCurrent(data)"
-                            class="task-tree-node__current"
-                          >
-                            当前
-                          </span>
-                        </div>
-                        <el-tag
-                          size="small"
-                          effect="plain"
-                          class="task-tree-node__status"
-                          :type="
-                            data.status === 'done'
-                              ? 'success'
-                              : data.status === 'blocked'
-                                ? 'danger'
-                                : data.status === 'verifying'
-                                  ? 'warning'
-                                  : data.status === 'in_progress'
-                                    ? ''
-                                    : 'info'
-                          "
-                        >
-                          {{ formatTaskTreeStatusLabel(data.status) }}
-                        </el-tag>
-                      </div>
-                    </template>
-                  </el-tree>
-                </div>
-
-                <div v-if="taskTreeSelectedNode" class="task-tree-editor">
-                  <div class="task-tree-editor__head">
-                    <div>
-                      <div class="task-tree-editor__eyebrow">需求详情</div>
-                      <div class="task-tree-editor__title">
-                        {{ taskTreeSelectedNode.title }}
-                      </div>
-                    </div>
-                    <div class="task-tree-editor__meta">
-                      <span class="task-tree-editor__pill">
-                        {{
-                          formatTaskTreeStatusLabel(taskTreeSelectedNode.status)
-                        }}
-                      </span>
-                      <span
-                        v-if="isTaskTreeNodeCurrent(taskTreeSelectedNode)"
-                        class="task-tree-editor__pill task-tree-editor__pill--current"
-                      >
-                        当前节点
-                      </span>
-                      <span
-                        v-if="taskTreeSelectedNodeChildCount"
-                        class="task-tree-editor__pill"
-                      >
-                        {{ taskTreeSelectedNodeChildCount }} 个子节点
-                      </span>
-                    </div>
-                  </div>
-                  <p
-                    v-if="taskTreeSelectedNode.description"
-                    class="task-tree-editor__desc"
-                  >
-                    {{ taskTreeSelectedNode.description }}
-                  </p>
-                  <div
-                    v-if="taskTreeSelectedNode.done_definition"
-                    class="task-tree-editor__section"
-                  >
-                    <div class="task-tree-editor__section-label">完成条件</div>
-                    <p>{{ taskTreeSelectedNode.done_definition }}</p>
-                  </div>
-                  <div
-                    v-if="taskTreeSelectedNode.verification_items?.length"
-                    class="task-tree-editor__section"
-                  >
-                    <div class="task-tree-editor__section-label">验证要求</div>
-                    <div class="task-tree-editor__checks">
-                      <div
-                        v-for="item in taskTreeSelectedNode.verification_items"
-                        :key="`${taskTreeSelectedNode.id}-${item}`"
-                        class="task-tree-editor__check"
-                      >
-                        <el-icon><CircleCheck /></el-icon>
-                        <span>{{ item }}</span>
-                      </div>
-                    </div>
-                  </div>
-                  <template v-if="taskTreeIsReadonly">
-                    <div
-                      v-if="taskTreeSelectedNode.verification_result"
-                      class="task-tree-editor__section task-tree-editor__section--result"
-                    >
-                      <div class="task-tree-editor__section-label">
-                        验证结果
-                      </div>
-                      <p>{{ taskTreeSelectedNode.verification_result }}</p>
-                    </div>
-                    <div
-                      v-if="taskTreeSelectedNode.summary_for_model"
-                      class="task-tree-editor__section"
-                    >
-                      <div class="task-tree-editor__section-label">
-                        节点摘要
-                      </div>
-                      <p>{{ taskTreeSelectedNode.summary_for_model }}</p>
-                    </div>
-                    <p
-                      v-if="
-                        !taskTreeSelectedNode.verification_result &&
-                        !taskTreeSelectedNode.summary_for_model
-                      "
-                      class="task-tree-editor__empty"
-                    >
-                      这个节点还没有补充验证结论。
-                    </p>
-                  </template>
-                  <template v-else>
-                    <div class="task-tree-editor__field">
-                      <div class="task-tree-editor__field-label">节点状态</div>
-                      <el-select
-                        v-model="taskTreeStatusDraft"
-                        class="task-tree-editor__select"
-                      >
-                        <el-option
-                          v-for="option in taskTreeStatusOptions"
-                          :key="option.value"
-                          :label="option.label"
-                          :value="option.value"
-                        />
-                      </el-select>
-                    </div>
-                    <div class="task-tree-editor__field">
-                      <div class="task-tree-editor__field-label">验证结果</div>
-                      <el-input
-                        v-model="taskTreeVerificationDraft"
-                        type="textarea"
-                        :rows="4"
-                        :placeholder="taskTreeVerificationPlaceholder"
-                      />
-                    </div>
-                    <div class="task-tree-editor__hint">
-                      {{ taskTreeSaveHint }}
-                    </div>
-                    <div class="task-tree-editor__field">
-                      <div class="task-tree-editor__field-label">节点摘要</div>
-                      <el-input
-                        v-model="taskTreeSummaryDraft"
-                        type="textarea"
-                        :rows="3"
-                        placeholder="给模型的当前节点摘要，可填写已完成范围、剩余风险或下一步。"
-                      />
-                    </div>
-                    <div class="task-tree-editor__actions">
-                      <el-button
-                        text
-                        :icon="List"
-                        @click="saveTaskTreeNode({ setCurrentOnly: true })"
-                      >
-                        设为当前
-                      </el-button>
-                      <el-button
-                        type="primary"
-                        :loading="taskTreeSaving"
-                        @click="saveTaskTreeNode()"
-                      >
-                        保存节点状态
-                      </el-button>
-                    </div>
-                  </template>
-                </div>
-                <div v-else class="task-tree-editor task-tree-editor--empty">
-                  <div class="task-tree-editor__eyebrow">需求详情</div>
-                  <div class="task-tree-editor__title">选择一个节点</div>
-                  <p class="task-tree-editor__empty">
-                    左侧只保留执行路径，点击节点后再看当前目标、验证要求和结果。
-                  </p>
-                </div>
-              </div>
-
-              <el-empty
-                v-else
-                description="发送首条任务消息后，系统会自动生成结构化执行树。"
-                :image-size="72"
-              />
-            </div>
-          </el-drawer>
+            v-model:status-draft="taskTreeStatusDraft"
+            v-model:verification-draft="taskTreeVerificationDraft"
+            v-model:summary-draft="taskTreeSummaryDraft"
+            :loading="taskTreeLoading"
+            :saving="taskTreeSaving"
+            :task-tree="displayedChatTaskTree"
+            :health="displayedChatTaskTreeHealth"
+            :has-task-tree="hasChatTaskTree"
+            :readonly="taskTreeIsReadonly"
+            :progress-label="taskTreeProgressLabel"
+            :tree-data="taskTreeTreeData"
+            :selected-node-id="selectedTaskTreeNodeId"
+            :selected-node="taskTreeSelectedNode"
+            :selected-node-child-count="taskTreeSelectedNodeChildCount"
+            :status-options="taskTreeStatusOptions"
+            :verification-placeholder="taskTreeVerificationPlaceholder"
+            :save-hint="taskTreeSaveHint"
+            @delete-current="deleteCurrentTaskTree"
+            @node-click="handleTaskTreeNodeClick"
+            @save-node="saveTaskTreeNode"
+          />
         </div>
       </div>
     </div>
@@ -2927,150 +2167,32 @@
     :chat-session-id="currentChatSessionId"
   />
 
-  <el-dialog
+  <GroupChatDialog
     v-model="groupChatDialogVisible"
     :title="groupChatDialogTitle"
-    width="min(520px, calc(100vw - 32px))"
-    destroy-on-close
-    class="group-chat-dialog"
+    :status="groupChatDialogStatus"
+    :draft="groupChatDraft"
+    :platform-options="groupChatPlatformOptions"
+    :connector-options="groupBotConnectorOptions"
+    :connector-hint="groupBotConnectorHint"
+    :resolve-identity-options="groupChatResolveIdentityOptions"
+    :editing-session-id="groupChatEditingSessionId"
+    :creating="groupChatCreating"
+    :resolving="groupChatResolving"
+    :editing-resolved="groupChatEditingResolved"
+    :can-submit="canSubmitGroupChatDialog"
+    @update:draft="groupChatDraft = $event"
     @closed="resetGroupChatDraft"
-  >
-    <el-form label-position="top" class="group-chat-dialog__form">
-      <el-alert
-        v-if="groupChatDialogStatus.text"
-        class="group-chat-dialog__status"
-        :title="groupChatDialogStatus.title"
-        :description="groupChatDialogStatus.text"
-        :type="groupChatDialogStatus.type"
-        show-icon
-        :closable="false"
-      />
-      <el-form-item label="平台">
-        <el-select v-model="groupChatDraft.platform" class="full-width">
-          <el-option
-            v-for="item in groupChatPlatformOptions"
-            :key="item.value"
-            :label="item.label"
-            :value="item.value"
-          />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="对话别名">
-        <el-input
-          v-model="groupChatDraft.title"
-          placeholder="例如：售前机器人 / 设计助手 / 客服机器人"
-          maxlength="80"
-          show-word-limit
-          @keyup.enter="submitGroupChatDialog"
-        />
-        <div class="group-chat-dialog__hint">
-          留空时使用“平台机器人对话”，设置后会显示为最近对话标题。
-        </div>
-      </el-form-item>
-      <el-form-item label="绑定机器人">
-        <el-select
-          v-model="groupChatDraft.connector_id"
-          class="full-width"
-          filterable
-          placeholder="选择当前群对话使用的机器人"
-          :disabled="!groupBotConnectorOptions.length"
-        >
-          <el-option
-            v-for="item in groupBotConnectorOptions"
-            :key="item.value"
-            :label="item.label"
-            :value="item.value"
-          >
-            <div class="group-chat-dialog__connector-option">
-              <strong>{{ item.name }}</strong>
-              <span>{{ item.description }}</span>
-            </div>
-          </el-option>
-        </el-select>
-        <div class="group-chat-dialog__hint">
-          {{ groupBotConnectorHint }}
-        </div>
-      </el-form-item>
-      <el-form-item label="群名称（可选）">
-        <el-input
-          v-model="groupChatDraft.external_chat_name"
-          placeholder="仅在你后续需要关联真实群消息时填写，例如：产品研发群 / 客户项目群"
-          maxlength="80"
-          show-word-limit
-          @keyup.enter="submitGroupChatDialog"
-        />
-        <div class="group-chat-dialog__hint">
-          不填写也能直接创建机器人对话。只有需要同步群消息时，才需要后续解析稳定群 ID；当前状态：{{
-            groupChatEditingResolved ? "已解析" : "未绑定群"
-          }}。
-        </div>
-      </el-form-item>
-      <el-form-item label="解析身份" v-if="groupChatDraft.external_chat_name">
-        <el-select
-          v-model="groupChatDraft.resolve_identity"
-          class="full-width"
-          placeholder="选择解析群 ID 时使用的身份"
-        >
-          <el-option
-            v-for="item in groupChatResolveIdentityOptions"
-            :key="item.value"
-            :label="item.label"
-            :value="item.value"
-          >
-            <div class="group-chat-dialog__connector-option">
-              <strong>{{ item.label }}</strong>
-              <span>{{ item.description }}</span>
-            </div>
-          </el-option>
-        </el-select>
-        <div class="group-chat-dialog__hint">
-          机器人身份搜索应用可见群；用户身份搜索当前登录用户可见群。解析失败时先切换身份再重试。
-        </div>
-      </el-form-item>
-    </el-form>
-    <template #footer>
-      <div class="group-chat-dialog__footer">
-        <el-button @click="groupChatDialogVisible = false">取消</el-button>
-        <el-button
-          v-if="groupChatEditingSessionId"
-          :loading="groupChatResolving"
-          :disabled="groupChatCreating || groupChatEditingResolved || !String(groupChatDraft.external_chat_name || '').trim()"
-          @click="resolveGroupChatSourceId"
-        >
-          {{ groupChatEditingResolved ? "已解析 ID" : "绑定群 ID" }}
-        </el-button>
-        <el-button
-          type="primary"
-          :loading="groupChatCreating"
-          :disabled="!canSubmitGroupChatDialog"
-          @click="submitGroupChatDialog"
-        >
-          {{ groupChatEditingSessionId ? "保存修改" : "创建机器人对话" }}
-        </el-button>
-      </div>
-    </template>
-  </el-dialog>
+    @resolve="resolveGroupChatSourceId"
+    @submit="submitGroupChatDialog"
+  />
 
-  <el-dialog
+  <CodePreviewDialog
     v-model="codePreviewVisible"
     :title="codePreviewTitle"
-    width="min(1200px, calc(100vw - 32px))"
-    destroy-on-close
-    class="code-preview-dialog"
-  >
-    <div class="code-preview-shell">
-      <div v-if="codePreviewError" class="code-preview-error">
-        {{ codePreviewError }}
-      </div>
-      <iframe
-        v-else
-        class="code-preview-frame"
-        :srcdoc="codePreviewSrcdoc"
-        sandbox="allow-scripts allow-forms allow-modals"
-        referrerpolicy="no-referrer"
-      />
-    </div>
-  </el-dialog>
+    :srcdoc="codePreviewSrcdoc"
+    :error="codePreviewError"
+  />
 
   <ProjectEmployeeDraftCreateDialog
     v-model="employeeDraftDialogVisible"
@@ -3112,194 +2234,25 @@
     @close="resetMaterialDialogState"
   />
 
-  <el-dialog
+  <SkillResourceDialog
     v-model="skillResourceDialogVisible"
-    title="技能资源"
-    width="min(880px, calc(100vw - 32px))"
-    destroy-on-close
-    class="skill-resource-dialog"
-  >
-    <div class="skill-resource-dialog__body">
-      <div class="skill-resource-dialog__hint">
-        对话里发现当前项目缺技能时，可以先选好本地下载目录，再打开下面的网站自己下载技能包或模板。保存后，当前对话会把这个目录当作优先参考的本地技能来源，但不会自动绑定到系统。
-      </div>
-
-      <div class="skill-resource-dialog__directory">
-        <div class="skill-resource-dialog__directory-head">
-          <div class="skill-resource-dialog__section-title">本地技能目录</div>
-          <div class="skill-resource-dialog__directory-actions">
-            <el-button
-              size="small"
-              @click="useWorkspaceAsSkillDirectory"
-              :disabled="!workspacePathResolved"
-            >
-              使用当前工作区
-            </el-button>
-            <el-button
-              size="small"
-              @click="pickSkillResourceDirectory"
-              :loading="skillResourceDirectoryPicking"
-            >
-              选择目录
-            </el-button>
-            <el-button
-              size="small"
-              text
-              @click="copySkillResourceDirectory"
-              :disabled="!skillResourceDirectoryResolved"
-            >
-              复制路径
-            </el-button>
-          </div>
-        </div>
-        <div
-          class="skill-resource-dialog__directory-value"
-          :class="{ 'is-empty': !skillResourceDirectoryResolved }"
-        >
-          {{
-            skillResourceDirectoryResolved ||
-            "还没有选择目录。建议先选择本地技能下载目录。"
-          }}
-        </div>
-        <div class="skill-resource-dialog__directory-meta">
-          优先使用当前项目工作区，也可以单独指定一个技能下载目录。
-        </div>
-      </div>
-
-      <div class="skill-resource-dialog__section-title">推荐网站</div>
-      <div class="skill-resource-search">
-        <el-input
-          v-model="skillResourceSearchQuery"
-          placeholder="搜索技能资源，例如 Java 开发、界面设计、浏览器调试"
-          clearable
-          @keyup.enter="searchSkillResources"
-        >
-          <template #append>
-            <el-button
-              :loading="skillResourceSearchLoading"
-              @click="searchSkillResources"
-            >
-              搜索
-            </el-button>
-          </template>
-        </el-input>
-        <div class="skill-resource-search__meta">
-          <span>支持中文搜索，结果会下载到下方选择的本地技能目录。</span>
-          <el-button
-            v-if="skillResourceSearchQuery || skillResourceSearchResults.length"
-            text
-            size="small"
-            @click="resetSkillResourceSearch"
-          >
-            清空结果
-          </el-button>
-        </div>
-        <div
-          v-if="skillResourceSearchResolvedQueries.length > 1"
-          class="skill-resource-search__expanded"
-        >
-          已自动扩展英文关键词：
-          {{ skillResourceSearchResolvedQueries.join(" / ") }}
-        </div>
-      </div>
-
-      <div
-        v-if="skillResourceSearchResults.length"
-        class="skill-resource-site-list skill-resource-site-list--search"
-      >
-        <article
-          v-for="site in skillResourceSearchResults"
-          :key="site.id || site.slug"
-          class="skill-resource-site-card"
-        >
-          <div class="skill-resource-site-card__head">
-            <div class="skill-resource-site-card__title-wrap">
-              <div class="skill-resource-site-card__title">
-                {{ site.title }}
-              </div>
-            </div>
-            <el-tag
-              v-if="site.latestVersionLabel"
-              size="small"
-              effect="plain"
-              type="success"
-            >
-              {{ site.latestVersionLabel }}
-            </el-tag>
-          </div>
-          <div v-if="site.description" class="skill-resource-site-card__desc">
-            {{ site.description }}
-          </div>
-          <div
-            v-if="site.localizedDescription"
-            class="skill-resource-site-card__desc skill-resource-site-card__desc--localized"
-          >
-            {{ site.localizedDescription }}
-          </div>
-          <div class="skill-resource-site-card__url">
-            {{ site.url }}
-          </div>
-          <div class="skill-resource-site-card__actions">
-            <el-link :href="site.url" target="_blank" rel="noopener noreferrer">
-              打开网站
-            </el-link>
-            <el-button
-              text
-              size="small"
-              type="success"
-              :loading="skillResourceInstallingSlug === site.slug"
-              :disabled="!site.canInstall"
-              @click="installSkillResource(site)"
-            >
-              下载到本地技能目录
-            </el-button>
-          </div>
-        </article>
-      </div>
-      <el-empty
-        v-else-if="skillResourceSearchQuery && !skillResourceSearchLoading"
-        description="没有找到匹配的技能资源"
-        :image-size="56"
-      />
-      <div
-        v-if="
-          skillResourceSearchQuery &&
-          !skillResourceSearchLoading &&
-          !skillResourceSearchResults.length &&
-          skillResourceSearchResolvedQueries.length > 1
-        "
-        class="skill-resource-search__expanded skill-resource-search__expanded--empty"
-      >
-        已尝试关键词：{{ skillResourceSearchResolvedQueries.join(" / ") }}
-      </div>
-
-      <div v-if="skillResourceSites.length" class="skill-resource-site-list">
-        <article
-          v-for="site in skillResourceSites"
-          :key="site.id"
-          class="skill-resource-site-card"
-        >
-          <div class="skill-resource-site-card__head">
-            <div class="skill-resource-site-card__title">{{ site.title }}</div>
-            <div class="skill-resource-site-card__badge">推荐</div>
-          </div>
-          <div v-if="site.description" class="skill-resource-site-card__desc">
-            {{ site.description }}
-          </div>
-          <div class="skill-resource-site-card__url">{{ site.url }}</div>
-          <div class="skill-resource-site-card__actions">
-            <el-link :href="site.url" target="_blank" rel="noopener noreferrer">
-              打开网站
-            </el-link>
-            <el-button text size="small" @click="copySkillResourceSite(site)">
-              复制地址
-            </el-button>
-          </div>
-        </article>
-      </div>
-      <el-empty v-else description="当前还没有配置技能网站" :image-size="56" />
-    </div>
-  </el-dialog>
+    v-model:search-query="skillResourceSearchQuery"
+    :workspace-path-resolved="workspacePathResolved"
+    :directory-resolved="skillResourceDirectoryResolved"
+    :directory-picking="skillResourceDirectoryPicking"
+    :search-loading="skillResourceSearchLoading"
+    :search-results="skillResourceSearchResults"
+    :resolved-queries="skillResourceSearchResolvedQueries"
+    :sites="skillResourceSites"
+    :installing-slug="skillResourceInstallingSlug"
+    @use-workspace="useWorkspaceAsSkillDirectory"
+    @pick-directory="pickSkillResourceDirectory"
+    @copy-directory="copySkillResourceDirectory"
+    @search="searchSkillResources"
+    @reset-search="resetSkillResourceSearch"
+    @install-site="installSkillResource"
+    @copy-site="copySkillResourceSite"
+  />
 
   <div
     v-if="isSettingsCenterRoute"
@@ -3308,7 +2261,9 @@
   >
     <div
       class="settings-center-shell"
-      :class="{ 'settings-center-shell--single': settingsInternalItems.length <= 1 }"
+      :class="{
+        'settings-center-shell--single': settingsInternalItems.length <= 1,
+      }"
     >
       <aside
         v-if="settingsInternalItems.length > 1"
@@ -3379,7 +2334,9 @@
 
       <section
         class="settings-center-stage"
-        :class="{ 'settings-center-stage--single': settingsInternalItems.length <= 1 }"
+        :class="{
+          'settings-center-stage--single': settingsInternalItems.length <= 1,
+        }"
       >
         <div class="settings-center-context-bar" ref="settingsContextBarRef">
           <div class="settings-center-context-bar__copy">
@@ -3542,7 +2499,10 @@
 
                       <div class="settings-execution-section">
                         <span>执行入口</span>
-                        <strong>选择这轮对话由服务端模型回答，还是交给外部 Agent 执行。</strong>
+                        <strong
+                          >选择这轮对话由服务端模型回答，还是交给外部 Agent
+                          执行。</strong
+                        >
                       </div>
 
                       <el-form-item label="执行方式">
@@ -3565,7 +2525,9 @@
                         class="settings-execution-section settings-execution-section--runtime"
                       >
                         <span>本机执行环境</span>
-                        <strong>工作区和权限都属于运行执行器的那台电脑；桌面端使用原生桥，浏览器兼容模式才需要本地连接器。</strong>
+                        <strong
+                          >工作区和权限都属于运行执行器的那台电脑；桌面端使用原生桥，浏览器兼容模式才需要本地连接器。</strong
+                        >
                       </div>
 
                       <div
@@ -3574,7 +2536,9 @@
                         :class="executionRuntimeToneClass"
                       >
                         <div class="settings-runtime-status-card__main">
-                          <span class="settings-runtime-status-card__dot"></span>
+                          <span
+                            class="settings-runtime-status-card__dot"
+                          ></span>
                           <div>
                             <strong>{{ executionRuntimeTitle }}</strong>
                             <span>{{ executionRuntimeDescription }}</span>
@@ -3582,19 +2546,30 @@
                         </div>
                         <div class="settings-runtime-status-card__grid">
                           <span>运行位置</span>
-                          <strong>{{ nativeDesktopBridgeAvailable ? "桌面端原生桥" : usingLocalConnector ? "本地连接器" : "网页模式" }}</strong>
+                          <strong>{{
+                            nativeDesktopBridgeAvailable
+                              ? "桌面端原生桥"
+                              : usingLocalConnector
+                                ? "本地连接器"
+                                : "网页模式"
+                          }}</strong>
                           <span>执行器</span>
                           <strong>{{ externalAgentDisplayLabel }}</strong>
                           <span>工作区</span>
                           <strong>{{ executionWorkspaceLabel }}</strong>
                           <span>权限</span>
-                          <strong>{{ projectChatSettings.connector_sandbox_mode || "workspace-write" }}</strong>
+                          <strong>{{
+                            projectChatSettings.connector_sandbox_mode ||
+                            "workspace-write"
+                          }}</strong>
                           <span>Codex</span>
                           <strong>{{ nativeExecutorLabel("codex") }}</strong>
                           <span>Hermes</span>
                           <strong>{{ nativeExecutorLabel("hermes") }}</strong>
                           <span>Claude Code</span>
-                          <strong>{{ nativeExecutorLabel("claudeCode") }}</strong>
+                          <strong>{{
+                            nativeExecutorLabel("claudeCode")
+                          }}</strong>
                           <span>原生桥</span>
                           <strong>{{ nativeDesktopRuntimeLabel }}</strong>
                         </div>
@@ -3633,26 +2608,33 @@
                           {{ nativeWorkspaceStatusLabel }}
                         </div>
                         <div class="settings-runtime-status-card__hint">
-                          Runner 会启动当前外部 Agent 的非交互进程并持续采集日志；聊天区暂停只会转入后台运行。
+                          Runner 会启动当前外部 Agent
+                          的非交互进程并持续采集日志；聊天区暂停只会转入后台运行。
                         </div>
                         <div
                           v-if="nativeExternalAgentSession"
                           class="settings-runtime-status-card__run-result"
                         >
                           <div class="settings-runtime-status-card__run-head">
-                            <strong>{{ nativeExternalAgentSession.summary || "Runner 会话" }}</strong>
+                            <strong>{{
+                              nativeExternalAgentSession.summary ||
+                              "Runner 会话"
+                            }}</strong>
                             <span>
                               {{ nativeExternalAgentSession.status }}
-                              · exit={{ nativeExternalAgentSession.exitCode ?? "-" }}
+                              · exit={{
+                                nativeExternalAgentSession.exitCode ?? "-"
+                              }}
                             </span>
                           </div>
-                          <pre
-                            v-if="nativeExternalAgentSessionOutput"
-                          >{{ nativeExternalAgentSessionOutput }}</pre>
+                          <pre v-if="nativeExternalAgentSessionOutput">{{
+                            nativeExternalAgentSessionOutput
+                          }}</pre>
                           <pre
                             v-if="nativeExternalAgentSessionError"
                             class="is-stderr"
-                          >{{ nativeExternalAgentSessionError }}</pre>
+                            >{{ nativeExternalAgentSessionError }}</pre
+                          >
                           <div
                             v-if="canWriteNativeExternalAgentStdin"
                             class="settings-runtime-status-card__stdin"
@@ -3690,12 +2672,17 @@
                             :class="`is-${item.tone}`"
                           >
                             <span>{{ item.label }}</span>
-                            <strong>{{ runnerSelfCheckStatusLabel(item) }}</strong>
+                            <strong>{{
+                              runnerSelfCheckStatusLabel(item)
+                            }}</strong>
                           </div>
                         </div>
                       </div>
 
-                      <el-form-item v-if="isExternalAgentMode" label="外部 Agent">
+                      <el-form-item
+                        v-if="isExternalAgentMode"
+                        label="外部 Agent"
+                      >
                         <el-select
                           v-model="projectChatSettings.external_agent_type"
                           class="full-width"
@@ -3712,18 +2699,25 @@
                       </el-form-item>
 
                       <el-form-item
-                        v-if="isExternalAgentMode && nativeDesktopBridgeAvailable"
+                        v-if="
+                          isExternalAgentMode && nativeDesktopBridgeAvailable
+                        "
                         label="本机运行方式"
                       >
                         <div class="workspace-path-editor">
                           <div class="workspace-path-hint">
-                            桌面端已接入 Tauri 原生桥，可直接选择本机目录并检测 Codex / Hermes；不需要再选择本地连接器。完整交互式执行仍需继续接入本地 Runner / PTY。
+                            桌面端已接入 Tauri 原生桥，可直接选择本机目录并检测
+                            Codex /
+                            Hermes；不需要再选择本地连接器。完整交互式执行仍需继续接入本地
+                            Runner / PTY。
                           </div>
                         </div>
                       </el-form-item>
 
                       <el-form-item
-                        v-if="isExternalAgentMode && !nativeDesktopBridgeAvailable"
+                        v-if="
+                          isExternalAgentMode && !nativeDesktopBridgeAvailable
+                        "
                         label="本地连接器"
                       >
                         <div class="workspace-path-editor">
@@ -3777,7 +2771,11 @@
 
                       <el-form-item
                         v-if="isExternalAgentMode"
-                        :label="nativeDesktopBridgeAvailable ? '本机工作区' : '连接器工作区'"
+                        :label="
+                          nativeDesktopBridgeAvailable
+                            ? '本机工作区'
+                            : '连接器工作区'
+                        "
                       >
                         <div class="workspace-path-editor">
                           <el-input
@@ -3790,7 +2788,11 @@
                               @click="promptProjectWorkspacePath"
                               :loading="workspacePathPicking"
                             >
-                              {{ nativeDesktopBridgeAvailable ? "选择本机目录" : "连接器选目录" }}
+                              {{
+                                nativeDesktopBridgeAvailable
+                                  ? "选择本机目录"
+                                  : "连接器选目录"
+                              }}
                             </el-button>
                             <el-button
                               type="primary"
@@ -3824,7 +2826,9 @@
 
                       <div class="settings-execution-section">
                         <span>协作策略</span>
-                        <strong>协作策略决定员工如何分工；本机执行环境仍需在上方单独检查。</strong>
+                        <strong
+                          >协作策略决定员工如何分工；本机执行环境仍需在上方单独检查。</strong
+                        >
                       </div>
 
                       <el-form-item label="协作模式">
@@ -3846,14 +2850,8 @@
                           class="full-width"
                         >
                           <el-option label="简洁 (Concise)" value="concise" />
-                          <el-option
-                            label="平衡 (Balanced)"
-                            value="balanced"
-                          />
-                          <el-option
-                            label="详细 (Detailed)"
-                            value="detailed"
-                          />
+                          <el-option label="平衡 (Balanced)" value="balanced" />
+                          <el-option label="详细 (Detailed)" value="detailed" />
                         </el-select>
                       </el-form-item>
 
@@ -3884,9 +2882,7 @@
                         label="先结论后步骤"
                       >
                         <el-switch
-                          v-model="
-                            projectChatSettings.prefer_conclusion_first
-                          "
+                          v-model="projectChatSettings.prefer_conclusion_first"
                         />
                       </el-form-item>
 
@@ -3929,146 +2925,146 @@
                             </template>
                           </p>
                         </div>
-                      <el-form-item
-                        v-if="hasSelectedProject && showLocalRuntimeSettings"
-                      >
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            项目工作区
-                            <el-tooltip
-                              content="当前项目在这台电脑上的真实目录。AI 直接执行本机命令、解析相对 AI 入口文件时都会以这里为基准。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <div class="workspace-path-editor">
-                          <el-input
-                            v-model="projectWorkspaceDraft"
-                            class="full-width"
-                            placeholder="/Volumes/苹果1_5T/self/ai-employee"
-                          />
-                          <div class="workspace-path-actions">
-                            <el-button
-                              @click="promptProjectWorkspaceDirectory"
-                              :loading="projectWorkspacePicking"
-                            >
-                              选择目录
-                            </el-button>
-                            <el-button
-                              type="primary"
-                              :loading="projectWorkspaceSaving"
-                              @click="saveProjectWorkspaceDirectory()"
-                            >
-                              保存工作区
-                            </el-button>
+                        <el-form-item
+                          v-if="hasSelectedProject && showLocalRuntimeSettings"
+                        >
+                          <template #label>
+                            <span class="label-with-tooltip">
+                              项目工作区
+                              <el-tooltip
+                                content="当前项目在这台电脑上的真实目录。AI 直接执行本机命令、解析相对 AI 入口文件时都会以这里为基准。"
+                                placement="top"
+                              >
+                                <el-icon class="label-icon"
+                                  ><InfoFilled
+                                /></el-icon>
+                              </el-tooltip>
+                            </span>
+                          </template>
+                          <div class="workspace-path-editor">
+                            <el-input
+                              v-model="projectWorkspaceDraft"
+                              class="full-width"
+                              placeholder="/Volumes/苹果1_5T/self/ai-employee"
+                            />
+                            <div class="workspace-path-actions">
+                              <el-button
+                                @click="promptProjectWorkspaceDirectory"
+                                :loading="projectWorkspacePicking"
+                              >
+                                选择目录
+                              </el-button>
+                              <el-button
+                                type="primary"
+                                :loading="projectWorkspaceSaving"
+                                @click="saveProjectWorkspaceDirectory()"
+                              >
+                                保存工作区
+                              </el-button>
+                            </div>
+                            <div class="workspace-path-hint">
+                              <template v-if="projectWorkspaceResolved">
+                                当前已保存：{{ projectWorkspaceResolved }}
+                              </template>
+                              <template v-else>
+                                当前项目还没有配置工作区路径，AI
+                                不能直接在本机执行项目命令。
+                              </template>
+                              <template v-if="projectWorkspaceDirty">
+                                当前输入尚未保存。
+                              </template>
+                            </div>
                           </div>
-                          <div class="workspace-path-hint">
-                            <template v-if="projectWorkspaceResolved">
-                              当前已保存：{{ projectWorkspaceResolved }}
-                            </template>
-                            <template v-else>
-                              当前项目还没有配置工作区路径，AI
-                              不能直接在本机执行项目命令。
-                            </template>
-                            <template v-if="projectWorkspaceDirty">
-                              当前输入尚未保存。
-                            </template>
-                          </div>
-                        </div>
-                      </el-form-item>
+                        </el-form-item>
 
-                      <el-form-item
-                        v-if="hasSelectedProject && showLocalRuntimeSettings"
-                      >
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            AI 入口文件
-                            <el-tooltip
-                              content="项目级规则入口。系统对话会优先读取它来理解规则、目录约定和实现约束。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <div class="workspace-path-editor">
-                          <el-input
-                            v-model="aiEntryFileDraft"
-                            class="full-width"
-                            placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
-                          />
-                          <div class="workspace-path-actions">
-                            <el-button
-                              @click="promptProjectAiEntryFile"
-                              :loading="aiEntryFilePicking"
-                            >
-                              选择文件
-                            </el-button>
-                            <el-button
-                              type="primary"
-                              :loading="aiEntryFileSaving"
-                              @click="saveProjectAiEntryFile()"
-                            >
-                              保存入口
-                            </el-button>
+                        <el-form-item
+                          v-if="hasSelectedProject && showLocalRuntimeSettings"
+                        >
+                          <template #label>
+                            <span class="label-with-tooltip">
+                              AI 入口文件
+                              <el-tooltip
+                                content="项目级规则入口。系统对话会优先读取它来理解规则、目录约定和实现约束。"
+                                placement="top"
+                              >
+                                <el-icon class="label-icon"
+                                  ><InfoFilled
+                                /></el-icon>
+                              </el-tooltip>
+                            </span>
+                          </template>
+                          <div class="workspace-path-editor">
+                            <el-input
+                              v-model="aiEntryFileDraft"
+                              class="full-width"
+                              placeholder="如 .ai/ENTRY.md 或 /abs/path/to/ENTRY.md"
+                            />
+                            <div class="workspace-path-actions">
+                              <el-button
+                                @click="promptProjectAiEntryFile"
+                                :loading="aiEntryFilePicking"
+                              >
+                                选择文件
+                              </el-button>
+                              <el-button
+                                type="primary"
+                                :loading="aiEntryFileSaving"
+                                @click="saveProjectAiEntryFile()"
+                              >
+                                保存入口
+                              </el-button>
+                            </div>
+                            <div class="workspace-path-hint">
+                              <template
+                                v-if="
+                                  projectWorkspaceDraftNormalized ||
+                                  projectWorkspacePath
+                                "
+                              >
+                                当前项目工作区：{{
+                                  projectWorkspaceDraftNormalized ||
+                                  projectWorkspacePath
+                                }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话统一复用。
+                              </template>
+                              <template v-else>
+                                当前项目还没有平台工作区路径时，建议直接填写相对路径或绝对路径。
+                              </template>
+                              <template v-if="aiEntryFileResolved">
+                                当前已保存：{{ aiEntryFileResolved }}
+                              </template>
+                              <template v-if="aiEntryFileDirty">
+                                当前输入尚未保存。
+                              </template>
+                            </div>
                           </div>
-                          <div class="workspace-path-hint">
-                            <template
-                              v-if="
-                                projectWorkspaceDraftNormalized ||
-                                projectWorkspacePath
-                              "
-                            >
-                              当前项目工作区：{{
-                                projectWorkspaceDraftNormalized ||
-                                projectWorkspacePath
-                              }}。若选择的文件位于该目录内，保存时会自动转成相对路径，便于系统对话统一复用。
-                            </template>
-                            <template v-else>
-                              当前项目还没有平台工作区路径时，建议直接填写相对路径或绝对路径。
-                            </template>
-                            <template v-if="aiEntryFileResolved">
-                              当前已保存：{{ aiEntryFileResolved }}
-                            </template>
-                            <template v-if="aiEntryFileDirty">
-                              当前输入尚未保存。
-                            </template>
-                          </div>
-                        </div>
-                      </el-form-item>
+                        </el-form-item>
 
-                      <el-form-item>
-                        <template #label>
-                          <span class="label-with-tooltip">
-                            系统提示词
-                            <el-tooltip
-                              content="(System Prompt) 设定 AI 的角色背景和最高优先级的行为准则。"
-                              placement="top"
-                            >
-                              <el-icon class="label-icon"
-                                ><InfoFilled
-                              /></el-icon>
-                            </el-tooltip>
-                          </span>
-                        </template>
-                        <el-input
-                          type="textarea"
-                          v-model="systemPrompt"
-                          :rows="3"
-                          :placeholder="
-                            isExternalAgentMode
-                              ? `补充给 ${externalAgentDisplayLabel} 的启动上下文...`
-                              : '你是项目开发助手...'
-                          "
-                          class="full-width"
-                        />
-                      </el-form-item>
+                        <el-form-item>
+                          <template #label>
+                            <span class="label-with-tooltip">
+                              系统提示词
+                              <el-tooltip
+                                content="(System Prompt) 设定 AI 的角色背景和最高优先级的行为准则。"
+                                placement="top"
+                              >
+                                <el-icon class="label-icon"
+                                  ><InfoFilled
+                                /></el-icon>
+                              </el-tooltip>
+                            </span>
+                          </template>
+                          <el-input
+                            type="textarea"
+                            v-model="systemPrompt"
+                            :rows="3"
+                            :placeholder="
+                              isExternalAgentMode
+                                ? `补充给 ${externalAgentDisplayLabel} 的启动上下文...`
+                                : '你是项目开发助手...'
+                            "
+                            class="full-width"
+                          />
+                        </el-form-item>
                       </section>
                     </el-form>
                   </el-tab-pane>
@@ -4339,164 +3335,167 @@
                             这里控制本轮对话可见的项目工具，不会修改模块定义本身。
                           </p>
                         </div>
-                      <el-form-item label="MCP 模块">
-                        <div class="mcp-source-switch">
-                          <button
-                            type="button"
-                            class="mcp-source-switch__item"
-                            :class="{
-                              'is-active': activeMcpSource === 'system',
-                            }"
-                            @click="activeMcpSource = 'system'"
-                          >
-                            系统提供 ({{ systemMcpTotal }})
-                          </button>
-                          <button
-                            v-if="hasSelectedProject"
-                            type="button"
-                            class="mcp-source-switch__item"
-                            :class="{
-                              'is-active': activeMcpSource === 'external',
-                            }"
-                            @click="activeMcpSource = 'external'"
-                          >
-                            外部 ({{ externalMcpTotal }})
-                          </button>
-                        </div>
-
-                        <div
-                          v-show="activeMcpSource === 'system'"
-                          class="mcp-source-panel"
-                        >
-                          <el-select
-                            v-model="activeSystemScope"
-                            size="small"
-                            class="full-width mcp-scope-select"
-                          >
-                            <el-option
-                              :label="`项目关联的所有 (${systemProjectRelatedModules.length})`"
-                              value="project_related"
-                            />
-                            <el-option
-                              :label="`系统本身提供的所有 (${systemGlobalModules.length})`"
-                              value="system_global"
-                            />
-                          </el-select>
-                          <div class="mcp-section-tip">
-                            系统提供的 MCP
-                            仅展示；此处勾选只控制当前项目对话可用工具，不修改模块定义。
-                          </div>
-                          <div
-                            v-if="
-                              activeSystemScope === 'project_related' &&
-                              projectToolModules.length
-                            "
-                            class="mcp-tool-actions"
-                          >
-                            <span class="mcp-tool-count"
-                              >本轮启用
-                              {{ selectedProjectToolNames.length }}/{{
-                                projectToolModules.length
-                              }}</span
+                        <el-form-item label="MCP 模块">
+                          <div class="mcp-source-switch">
+                            <button
+                              type="button"
+                              class="mcp-source-switch__item"
+                              :class="{
+                                'is-active': activeMcpSource === 'system',
+                              }"
+                              @click="activeMcpSource = 'system'"
                             >
-                            <div class="mcp-tool-buttons">
-                              <el-button
-                                text
-                                size="small"
-                                @click="selectAllProjectTools"
-                                >全选</el-button
+                              系统提供 ({{ systemMcpTotal }})
+                            </button>
+                            <button
+                              v-if="hasSelectedProject"
+                              type="button"
+                              class="mcp-source-switch__item"
+                              :class="{
+                                'is-active': activeMcpSource === 'external',
+                              }"
+                              @click="activeMcpSource = 'external'"
+                            >
+                              外部 ({{ externalMcpTotal }})
+                            </button>
+                          </div>
+
+                          <div
+                            v-show="activeMcpSource === 'system'"
+                            class="mcp-source-panel"
+                          >
+                            <el-select
+                              v-model="activeSystemScope"
+                              size="small"
+                              class="full-width mcp-scope-select"
+                            >
+                              <el-option
+                                :label="`项目关联的所有 (${systemProjectRelatedModules.length})`"
+                                value="project_related"
+                              />
+                              <el-option
+                                :label="`系统本身提供的所有 (${systemGlobalModules.length})`"
+                                value="system_global"
+                              />
+                            </el-select>
+                            <div class="mcp-section-tip">
+                              系统提供的 MCP
+                              仅展示；此处勾选只控制当前项目对话可用工具，不修改模块定义。
+                            </div>
+                            <div
+                              v-if="
+                                activeSystemScope === 'project_related' &&
+                                projectToolModules.length
+                              "
+                              class="mcp-tool-actions"
+                            >
+                              <span class="mcp-tool-count"
+                                >本轮启用
+                                {{ selectedProjectToolNames.length }}/{{
+                                  projectToolModules.length
+                                }}</span
                               >
-                              <el-button
-                                text
-                                size="small"
-                                @click="clearProjectTools"
-                                >清空</el-button
-                              >
+                              <div class="mcp-tool-buttons">
+                                <el-button
+                                  text
+                                  size="small"
+                                  @click="selectAllProjectTools"
+                                  >全选</el-button
+                                >
+                                <el-button
+                                  text
+                                  size="small"
+                                  @click="clearProjectTools"
+                                  >清空</el-button
+                                >
+                              </div>
+                            </div>
+                            <div class="mcp-module-list">
+                              <el-empty
+                                v-if="!activeSystemModules.length"
+                                description="暂无系统模块"
+                                :image-size="48"
+                              />
+                              <template v-else>
+                                <div
+                                  v-for="item in activeSystemModules.slice(
+                                    0,
+                                    12,
+                                  )"
+                                  :key="item.id || item.tool_name"
+                                  class="mcp-module-item"
+                                >
+                                  <div class="mcp-module-row">
+                                    <div class="mcp-module-head">
+                                      <el-checkbox
+                                        v-if="
+                                          item.scope === 'project_related' &&
+                                          item.tool_name
+                                        "
+                                        :model-value="
+                                          isProjectToolSelected(item.tool_name)
+                                        "
+                                        @change="
+                                          (val) =>
+                                            toggleProjectTool(
+                                              item.tool_name,
+                                              val,
+                                            )
+                                        "
+                                      />
+                                      <span class="mcp-module-name">{{
+                                        item.name || item.id || "-"
+                                      }}</span>
+                                    </div>
+                                    <el-tag
+                                      size="small"
+                                      :type="moduleTagType(item.module_type)"
+                                      >{{
+                                        moduleTypeLabel(item.module_type)
+                                      }}</el-tag
+                                    >
+                                  </div>
+                                  <div
+                                    v-if="item.description"
+                                    class="mcp-module-desc"
+                                  >
+                                    {{ item.description }}
+                                  </div>
+                                  <div
+                                    v-if="moduleMetaText(item)"
+                                    class="mcp-module-meta"
+                                  >
+                                    {{ moduleMetaText(item) }}
+                                  </div>
+                                </div>
+                                <div
+                                  v-if="activeSystemModules.length > 12"
+                                  class="mcp-module-more"
+                                >
+                                  其余
+                                  {{ activeSystemModules.length - 12 }}
+                                  个模块未展示
+                                </div>
+                              </template>
                             </div>
                           </div>
-                          <div class="mcp-module-list">
-                            <el-empty
-                              v-if="!activeSystemModules.length"
-                              description="暂无系统模块"
-                              :image-size="48"
+
+                          <div
+                            v-if="hasSelectedProject"
+                            v-show="activeMcpSource === 'external'"
+                            class="mcp-source-panel"
+                          >
+                            <ExternalMcpManager
+                              :project-id="selectedProjectId"
+                              @changed="handleExternalModulesChanged"
+                              @count-change="handleExternalModuleCountChange"
                             />
-                            <template v-else>
-                              <div
-                                v-for="item in activeSystemModules.slice(0, 12)"
-                                :key="item.id || item.tool_name"
-                                class="mcp-module-item"
-                              >
-                                <div class="mcp-module-row">
-                                  <div class="mcp-module-head">
-                                    <el-checkbox
-                                      v-if="
-                                        item.scope === 'project_related' &&
-                                        item.tool_name
-                                      "
-                                      :model-value="
-                                        isProjectToolSelected(item.tool_name)
-                                      "
-                                      @change="
-                                        (val) =>
-                                          toggleProjectTool(item.tool_name, val)
-                                      "
-                                    />
-                                    <span class="mcp-module-name">{{
-                                      item.name || item.id || "-"
-                                    }}</span>
-                                  </div>
-                                  <el-tag
-                                    size="small"
-                                    :type="moduleTagType(item.module_type)"
-                                    >{{
-                                      moduleTypeLabel(item.module_type)
-                                    }}</el-tag
-                                  >
-                                </div>
-                                <div
-                                  v-if="item.description"
-                                  class="mcp-module-desc"
-                                >
-                                  {{ item.description }}
-                                </div>
-                                <div
-                                  v-if="moduleMetaText(item)"
-                                  class="mcp-module-meta"
-                                >
-                                  {{ moduleMetaText(item) }}
-                                </div>
-                              </div>
-                              <div
-                                v-if="activeSystemModules.length > 12"
-                                class="mcp-module-more"
-                              >
-                                其余
-                                {{ activeSystemModules.length - 12 }}
-                                个模块未展示
-                              </div>
-                            </template>
                           </div>
-                        </div>
 
-                        <div
-                          v-if="hasSelectedProject"
-                          v-show="activeMcpSource === 'external'"
-                          class="mcp-source-panel"
-                        >
-                          <ExternalMcpManager
-                            :project-id="selectedProjectId"
-                            @changed="handleExternalModulesChanged"
-                            @count-change="handleExternalModuleCountChange"
-                          />
-                        </div>
-
-                        <div
-                          v-else
-                          class="mcp-section-tip"
-                        >
-                          先选择项目，才能管理当前项目的外部 MCP 模块。
-                        </div>
-                      </el-form-item>
+                          <div v-else class="mcp-section-tip">
+                            先选择项目，才能管理当前项目的外部 MCP 模块。
+                          </div>
+                        </el-form-item>
                       </section>
 
                       <section class="settings-parameter-section">
@@ -4505,160 +3504,163 @@
                             执行护栏
                           </div>
                           <p class="settings-parameter-section__desc">
-                            这些参数只约束 AI 的循环与工具预算。`工具执行超时 = 0`
-                            表示不限制。
+                            这些参数只约束 AI 的循环与工具预算。`工具执行超时 =
+                            0` 表示不限制。
                           </p>
                         </div>
                         <el-collapse class="settings-constraint-collapse">
                           <el-collapse-item title="高级护栏参数">
                             <div class="settings-constraint-grid">
-                            <el-form-item>
-                              <template #label>
-                                <span class="label-with-tooltip">
-                                  工具执行超时
-                                  <el-tooltip
-                                    content="单个工具允许执行的最长时间（秒）。填 0 表示不限制。"
-                                    placement="top"
-                                  >
-                                    <el-icon class="label-icon"
-                                      ><InfoFilled
-                                    /></el-icon>
-                                  </el-tooltip>
-                                </span>
-                              </template>
-                              <div class="settings-field-stack">
+                              <el-form-item>
+                                <template #label>
+                                  <span class="label-with-tooltip">
+                                    工具执行超时
+                                    <el-tooltip
+                                      content="单个工具允许执行的最长时间（秒）。填 0 表示不限制。"
+                                      placement="top"
+                                    >
+                                      <el-icon class="label-icon"
+                                        ><InfoFilled
+                                      /></el-icon>
+                                    </el-tooltip>
+                                  </span>
+                                </template>
+                                <div class="settings-field-stack">
+                                  <el-input-number
+                                    v-model="
+                                      projectChatSettings.tool_timeout_sec
+                                    "
+                                    :min="0"
+                                    :max="600"
+                                    class="full-width"
+                                  />
+                                  <div class="settings-inline-helper">
+                                    0 = 不限制。适合长时间
+                                    MCP、CLI、终端或批处理任务。
+                                  </div>
+                                </div>
+                              </el-form-item>
+
+                              <el-form-item>
+                                <template #label>
+                                  <span class="label-with-tooltip">
+                                    失败重试次数
+                                    <el-tooltip
+                                      content="工具执行失败时的自动重试次数。"
+                                      placement="top"
+                                    >
+                                      <el-icon class="label-icon"
+                                        ><InfoFilled
+                                      /></el-icon>
+                                    </el-tooltip>
+                                  </span>
+                                </template>
                                 <el-input-number
-                                  v-model="projectChatSettings.tool_timeout_sec"
+                                  v-model="projectChatSettings.tool_retry_count"
                                   :min="0"
-                                  :max="600"
+                                  :max="5"
                                   class="full-width"
                                 />
-                                <div class="settings-inline-helper">
-                                  0 = 不限制。适合长时间 MCP、CLI、终端或批处理任务。
-                                </div>
-                              </div>
-                            </el-form-item>
+                              </el-form-item>
 
-                            <el-form-item>
-                              <template #label>
-                                <span class="label-with-tooltip">
-                                  失败重试次数
-                                  <el-tooltip
-                                    content="工具执行失败时的自动重试次数。"
-                                    placement="top"
-                                  >
-                                    <el-icon class="label-icon"
-                                      ><InfoFilled
-                                    /></el-icon>
-                                  </el-tooltip>
-                                </span>
-                              </template>
-                              <el-input-number
-                                v-model="projectChatSettings.tool_retry_count"
-                                :min="0"
-                                :max="5"
-                                class="full-width"
-                              />
-                            </el-form-item>
-
-                            <el-form-item>
-                              <template #label>
-                                <span class="label-with-tooltip">
-                                  最大循环轮次
-                                  <el-tooltip
-                                    content="AI 与工具之间交互迭代的最大次数，防止陷入无限死循环。"
-                                    placement="top"
-                                  >
-                                    <el-icon class="label-icon"
-                                      ><InfoFilled
-                                    /></el-icon>
-                                  </el-tooltip>
-                                </span>
-                              </template>
-                              <el-input-number
-                                v-model="projectChatSettings.max_loop_rounds"
-                                :min="1"
-                                :max="60"
-                                class="full-width"
-                              />
-                            </el-form-item>
-
-                            <el-form-item>
-                              <template #label>
-                                <span class="label-with-tooltip">
-                                  最大工具轮次
-                                  <el-tooltip
-                                    content="一轮对话中，允许连续调用工具的最高批次数。"
-                                    placement="top"
-                                  >
-                                    <el-icon class="label-icon"
-                                      ><InfoFilled
-                                    /></el-icon>
-                                  </el-tooltip>
-                                </span>
-                              </template>
-                              <el-input-number
-                                v-model="projectChatSettings.max_tool_rounds"
-                                :min="1"
-                                :max="30"
-                                class="full-width"
-                              />
-                            </el-form-item>
-
-                            <el-form-item>
-                              <template #label>
-                                <span class="label-with-tooltip">
-                                  单批工具调用数
-                                  <el-tooltip
-                                    content="每次向模型请求时，AI 并行发起工具调用的最大数量。"
-                                    placement="top"
-                                  >
-                                    <el-icon class="label-icon"
-                                      ><InfoFilled
-                                    /></el-icon>
-                                  </el-tooltip>
-                                </span>
-                              </template>
-                              <el-input-number
-                                v-model="
-                                  projectChatSettings.max_tool_calls_per_round
-                                "
-                                :min="1"
-                                :max="30"
-                                class="full-width"
-                              />
-                            </el-form-item>
-
-                            <el-form-item>
-                              <template #label>
-                                <span class="label-with-tooltip">
-                                  熔断后策略
-                                  <el-tooltip
-                                    content="当超过上述最大轮次限制（熔断）后，系统采取的动作：直接中断(Stop)或要求强制总结(Finalize)。"
-                                    placement="top"
-                                  >
-                                    <el-icon class="label-icon"
-                                      ><InfoFilled
-                                    /></el-icon>
-                                  </el-tooltip>
-                                </span>
-                              </template>
-                              <el-select
-                                v-model="
-                                  projectChatSettings.tool_budget_strategy
-                                "
-                                class="full-width"
-                              >
-                                <el-option
-                                  label="强制收敛回答 (Finalize)"
-                                  value="finalize"
+                              <el-form-item>
+                                <template #label>
+                                  <span class="label-with-tooltip">
+                                    最大循环轮次
+                                    <el-tooltip
+                                      content="AI 与工具之间交互迭代的最大次数，防止陷入无限死循环。"
+                                      placement="top"
+                                    >
+                                      <el-icon class="label-icon"
+                                        ><InfoFilled
+                                      /></el-icon>
+                                    </el-tooltip>
+                                  </span>
+                                </template>
+                                <el-input-number
+                                  v-model="projectChatSettings.max_loop_rounds"
+                                  :min="1"
+                                  :max="60"
+                                  class="full-width"
                                 />
-                                <el-option
-                                  label="直接停止 (Stop)"
-                                  value="stop"
+                              </el-form-item>
+
+                              <el-form-item>
+                                <template #label>
+                                  <span class="label-with-tooltip">
+                                    最大工具轮次
+                                    <el-tooltip
+                                      content="一轮对话中，允许连续调用工具的最高批次数。"
+                                      placement="top"
+                                    >
+                                      <el-icon class="label-icon"
+                                        ><InfoFilled
+                                      /></el-icon>
+                                    </el-tooltip>
+                                  </span>
+                                </template>
+                                <el-input-number
+                                  v-model="projectChatSettings.max_tool_rounds"
+                                  :min="1"
+                                  :max="30"
+                                  class="full-width"
                                 />
-                              </el-select>
-                            </el-form-item>
+                              </el-form-item>
+
+                              <el-form-item>
+                                <template #label>
+                                  <span class="label-with-tooltip">
+                                    单批工具调用数
+                                    <el-tooltip
+                                      content="每次向模型请求时，AI 并行发起工具调用的最大数量。"
+                                      placement="top"
+                                    >
+                                      <el-icon class="label-icon"
+                                        ><InfoFilled
+                                      /></el-icon>
+                                    </el-tooltip>
+                                  </span>
+                                </template>
+                                <el-input-number
+                                  v-model="
+                                    projectChatSettings.max_tool_calls_per_round
+                                  "
+                                  :min="1"
+                                  :max="30"
+                                  class="full-width"
+                                />
+                              </el-form-item>
+
+                              <el-form-item>
+                                <template #label>
+                                  <span class="label-with-tooltip">
+                                    熔断后策略
+                                    <el-tooltip
+                                      content="当超过上述最大轮次限制（熔断）后，系统采取的动作：直接中断(Stop)或要求强制总结(Finalize)。"
+                                      placement="top"
+                                    >
+                                      <el-icon class="label-icon"
+                                        ><InfoFilled
+                                      /></el-icon>
+                                    </el-tooltip>
+                                  </span>
+                                </template>
+                                <el-select
+                                  v-model="
+                                    projectChatSettings.tool_budget_strategy
+                                  "
+                                  class="full-width"
+                                >
+                                  <el-option
+                                    label="强制收敛回答 (Finalize)"
+                                    value="finalize"
+                                  />
+                                  <el-option
+                                    label="直接停止 (Stop)"
+                                    value="stop"
+                                  />
+                                </el-select>
+                              </el-form-item>
                             </div>
                           </el-collapse-item>
                         </el-collapse>
@@ -4734,9 +3736,20 @@ import ExternalMcpManager from "@/components/ExternalMcpManager.vue";
 import ProjectEmployeeDraftCreateDialog from "@/components/ProjectEmployeeDraftCreateDialog.vue";
 import ProjectMaterialSaveDialog from "@/components/ProjectMaterialSaveDialog.vue";
 import UnifiedMcpAccessDialog from "@/components/UnifiedMcpAccessDialog.vue";
-import TaskTreeFeedbackBanner from "@/modules/task-tree-feedback/TaskTreeFeedbackBanner.vue";
+import ChatComposer from "@/modules/project-chat/components/composer/ChatComposer.vue";
+import ChatMediaParameterPopover from "@/modules/project-chat/components/composer/ChatMediaParameterPopover.vue";
+import ChatContextBar from "@/modules/project-chat/components/layout/ChatContextBar.vue";
+import ChatMessageList from "@/modules/project-chat/components/messages/ChatMessageList.vue";
+import GroupChatDialog from "@/modules/project-chat/components/sessions/GroupChatDialog.vue";
+import ProjectConversationSidebar from "@/modules/project-chat/components/sessions/ProjectConversationSidebar.vue";
+import ChatTaskTreePanel from "@/modules/project-chat/components/task-tree/ChatTaskTreePanel.vue";
+import TerminalApprovalDialog from "@/modules/project-chat/components/terminal/TerminalApprovalDialog.vue";
+import CodePreviewDialog from "@/modules/project-chat/components/code-preview/CodePreviewDialog.vue";
+import SkillResourceDialog from "@/modules/project-chat/components/skill-resource/SkillResourceDialog.vue";
+import { useProjectChatComposer } from "@/modules/project-chat/composables/useProjectChatComposer.js";
+import { useProjectChatPendingRequests } from "@/modules/project-chat/composables/useProjectChatPendingRequests.js";
+import { useProjectChatTransport } from "@/modules/project-chat/composables/useProjectChatTransport.js";
 import api from "@/utils/api.js";
-import { createProjectChatWsClient } from "@/utils/ws-chat.js";
 import { hasPermission, isSuperAdmin } from "@/utils/permissions.js";
 import {
   clearAuthSession,
@@ -4747,24 +3760,18 @@ import { fetchDictionary } from "@/utils/dictionaries.js";
 import { fetchAllVisibleProjects } from "@/utils/projects.js";
 import {
   Delete,
-  Picture,
-  Promotion,
-  Document,
   DocumentCopy,
   CollectionTag,
   EditPen,
   Files,
   RefreshRight,
-  VideoPause,
-  Setting,
   InfoFilled,
   CircleCheck,
   List,
 } from "@element-plus/icons-vue";
-import { marked } from "marked";
 import { extractTextFromFile } from "@/utils/file-extractor.js";
 import { buildRuntimeUrl } from "@/utils/runtime-url.js";
-import { formatDateGroupLabel, formatRelativeDateTime } from "@/utils/date.js";
+import { formatRelativeDateTime } from "@/utils/date.js";
 import { openRouteInDesktop } from "@/utils/desktop-app-bridge.js";
 import {
   buildModelTypeMetaMap,
@@ -4789,7 +3796,6 @@ import {
 import {
   pickWorkspaceDirectory,
   pickWorkspaceFile,
-  toWorkspaceRelativePath,
 } from "@/utils/workspace-picker.js";
 import {
   classifyNativeRunnerCommand,
@@ -4821,9 +3827,6 @@ import {
 } from "@/utils/chat-settings-route.js";
 import {
   CHAT_BASE_ROUTE_PATH,
-  CODE_COPIED_ICON_HTML,
-  CODE_COPY_ICON_HTML,
-  CODE_PREVIEW_ICON_HTML,
   EMPLOYEE_DRAFT_BLOCK_RE,
   HOST_RUN_COMMAND,
   HOST_RUN_COMMAND_ALIASES,
@@ -4831,88 +3834,197 @@ import {
   LARK_CLI_COMMAND_ALIASES,
   LARK_CLI_SKILL_ROOT_RELATIVE,
   PLUGIN_INSTALL_DRAFT_QUERY_KEY,
-  PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX,
-  PREVIEWABLE_CODE_LANGUAGES,
   PROJECT_STATS_COMMAND,
   PROJECT_STATS_COMMAND_ALIASES,
   PROJECT_STATS_REPORT_DAYS,
   STATISTICS_ANALYSIS_DRAFT_QUERY_KEY,
-  STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX,
-} from "@/modules/project-chat/projectChatConstants.js";
-import { CHAT_SETTINGS_DEFAULTS } from "@/modules/project-chat/chatSettingsDefaults.js";
+} from "@/modules/project-chat/constants/projectChatConstants.js";
+import {
+  escapeHtml,
+  isPreviewableCodeBlock,
+  normalizeCodeLanguage,
+  renderProjectChatMarkdown,
+} from "@/modules/project-chat/services/projectChatMarkdown.js";
+import {
+  buildCodePreviewTitle,
+  buildHtmlPreviewSrcdoc,
+  buildVuePreviewSrcdoc,
+} from "@/modules/project-chat/services/projectChatCodePreview.js";
+import {
+  installVettSkillResource,
+  searchSkillResourceItems,
+} from "@/modules/project-chat/services/projectChatSkillResources.js";
+import {
+  createProjectMaterial,
+} from "@/modules/project-chat/services/projectChatMaterialsApi.js";
+import {
+  submitAgentRuntimePermissionActionRequest,
+  trustAgentRuntimeWorkspaceRequest,
+} from "@/modules/project-chat/services/projectChatAgentRuntimeApi.js";
+import {
+  createEmployeeFromDraft as createEmployeeFromDraftRequest,
+  fetchEmployeeDraftCatalog,
+  generateEmployeeDraft,
+} from "@/modules/project-chat/services/projectChatEmployeeDraftApi.js";
+import {
+  fetchProjectChatProviders,
+  saveProjectChatSettings as saveProjectChatSettingsRequest,
+} from "@/modules/project-chat/services/projectChatSettingsApi.js";
+import {
+  formatAgentRuntimeEventPhase,
+  formatAgentRuntimeEventSummary,
+  formatAgentRuntimeTranscriptEntry,
+} from "@/modules/project-chat/mappers/agentRuntimeMappers.js";
+import {
+  buildMessageOperation,
+  findMessageOperationMatchIndex,
+  formatChatPlatformLabel,
+  formatChatSessionSourceLabel,
+  isGroupChatSession,
+  mapHistoryMessage,
+  mergeMessageOperations,
+  normalizeChatSession,
+  normalizeChatSourceContext,
+  normalizeOperationActionType,
+  normalizeOperationPhase,
+  normalizeProcessLogLevel,
+  normalizeStringList,
+  resolveChatSessionGroupLabel,
+} from "@/modules/project-chat/mappers/messageMappers.js";
+import {
+  attachmentTagType,
+  attachmentTypeLabel,
+  clipText,
+  collectArtifactImageUrls,
+  collectArtifactVideoUrls,
+  extractAttachments,
+  extractImages,
+  extractVideos,
+  formatFileType,
+  isAllowedFileType,
+  isImageFile,
+  mergeImageUrls,
+  mergeVideoUrls,
+} from "@/modules/project-chat/mappers/mediaMappers.js";
+import {
+  buildExternalAgentWarmupKey,
+  buildNativeExternalAgentCommandPreview,
+  buildNativeRunnerSelfCheckCommands,
+  formatDurationMs,
+  isLiveNativeExternalAgentStatus,
+  isNativeExternalAgentInternalDiagnostic,
+  nativeExternalAgentRecordStatusLabel,
+  nativeExternalAgentRecordSummary,
+  nativeExternalAgentRecordTagType,
+  nativeExternalAgentRecordTime,
+  normalizeNativeExternalAgentRuntimeSnapshot,
+  normalizeNativeExternalAgentSessionId,
+  normalizeNativeRunnerSelfCheckItem,
+  runnerPermissionDecisionLabel,
+  runnerPermissionRecordSummary,
+  runnerPermissionRecordTime,
+  runnerSelfCheckStatusLabel,
+  runnerSelfCheckTagType,
+  shouldShowNativeExternalAgentBlockedReason,
+} from "@/modules/project-chat/mappers/nativeAgentMappers.js";
+import {
+  buildNativeExternalAgentDiagnosticItems,
+  buildNativeExternalAgentDiagnosticText,
+  buildNativeExternalAgentFileEvidenceItems,
+  buildNativeExternalAgentFullLogText,
+  buildNativeExternalAgentSessionErrorText,
+  buildNativeExternalAgentSessionOutputText,
+  buildNativeExternalAgentStdoutText,
+  buildNativeExternalAgentVerificationItems,
+  calculateNativeExternalAgentLogStats,
+  filterNativeExternalAgentSessionPermissionRecords,
+  formatNativeExternalAgentTerminalStatusText,
+  resolveNativeExternalAgentFinalAnswerText,
+  runnerEvidenceMetaText,
+} from "@/modules/project-chat/mappers/native-agent/nativeAgentDetailMappers.js";
+import {
+  normalizeAiEntryFileForSave,
+} from "@/modules/project-chat/mappers/workspaceMappers.js";
+import {
+  chatRuntimeRemoteFingerprint,
+  chatRuntimeStorageKey,
+  clearPersistedChatRuntime as clearLocalPersistedChatRuntime,
+  readPersistedChatRuntime as readLocalPersistedChatRuntime,
+  writePersistedChatRuntime as writeLocalPersistedChatRuntime,
+} from "@/modules/project-chat/services/projectChatRuntimeStorage.js";
+import {
+  listProjectWorkspaceFiles,
+  readProjectWorkspaceFile,
+  saveProjectWorkspaceFile,
+} from "@/modules/project-chat/services/projectChatWorkspaceApi.js";
+import {
+  upsertProjectChatRequirementRecord as upsertProjectChatRequirementRecordRequest,
+} from "@/modules/project-chat/services/projectChatRequirementRecord.js";
+import {
+  clearChatSessionMemory,
+  clearSelectedProjectId,
+  clearTaskTreeSessionMemory,
+  clearWorkSessionMemory,
+  consumePluginInstallDraft,
+  consumeStatisticsAnalysisDraft,
+  hasSeenGuideTour,
+  markGuideTourSeen,
+  rememberChatSession,
+  readPreferredLocalConnectorId,
+  readPreferredLocalWorkspacePath,
+  readPreferredSkillResourceDirectory,
+  readSelectedProjectId,
+  resolveCurrentUsername,
+  restoreChatSession,
+  writePreferredLocalConnectorId,
+  writePreferredLocalWorkspacePath,
+  writePreferredSkillResourceDirectory,
+  writeSelectedProjectId,
+} from "@/modules/project-chat/services/projectChatStorage.js";
+import {
+  buildBackgroundTaskStateOperation,
+  buildWaitingBackgroundOperation,
+  formatGuardSummary,
+  interactionSubmitAckPayload,
+  interactionSubmitAckSummary,
+  isBackgroundOperationEvent,
+  isCompletedOperationEvent,
+  isInteractionSubmitAckDone,
+  isProjectChatHeartbeatEvent,
+  isResumeStartedEvent,
+  isTaskStateEvent,
+  isTerminalMirrorControlRequest,
+  isWaitingOperationEvent,
+  normalizeDoneEventExecutionState,
+  normalizeProjectChatWsEvent,
+} from "@/modules/project-chat/services/projectChatWsProtocol.js";
+import { CHAT_SETTINGS_DEFAULTS } from "@/modules/project-chat/constants/chatSettingsDefaults.js";
 import {
   isTaskTreeArchivedOrDone,
-  normalizeTaskTreePayload,
-  useProjectChatTaskTreeState,
-} from "@/modules/project-chat/useProjectChatTaskTreeState.js";
-import { HIGH_RISK_RULES } from "@/modules/project-chat/highRiskRules.js";
+  resolveTaskTreeEventPayload,
+} from "@/modules/project-chat/mappers/taskTreeMappers.js";
+import {
+  hasAuthorizationPromptText,
+  hasLarkAuthBusinessDomainPromptText,
+  hasTerminalChoiceControlSignal,
+  inferTerminalChoiceType,
+  parseTerminalChoiceLine,
+  stripTerminalControlSequences,
+  terminalChoiceDescription,
+  TERMINAL_CHOICE_FALLBACK_PROVIDERS,
+} from "@/modules/project-chat/mappers/terminalMappers.js";
+import { useProjectChatTaskTreeState } from "@/modules/project-chat/composables/useProjectChatTaskTreeState.js";
+import { useProjectChatTaskTreeActions } from "@/modules/project-chat/composables/useProjectChatTaskTreeActions.js";
+import { HIGH_RISK_RULES } from "@/modules/project-chat/constants/highRiskRules.js";
 import {
   CHAT_PARAMETER_SECTION_CONFIG,
   ROLE_LABEL_MAP,
   SETTINGS_CENTER_ITEM_DEFS,
   SETTINGS_CENTER_PANEL_META,
   SETTINGS_GUIDE_REASON_MAP,
-} from "@/modules/project-chat/settingsCenterConfig.js";
+} from "@/modules/project-chat/constants/settingsCenterConfig.js";
 
 const CREATE_CHAT_SESSION_QUERY_KEY = "create_chat_session";
-
-// 配置 marked 以支持代码高亮和换行
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-});
-
-function escapeHtml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function normalizeCodeLanguage(value) {
-  return String(value || "")
-    .trim()
-    .split(/\s+/)[0]
-    .toLowerCase();
-}
-
-const markdownRenderer = new marked.Renderer();
-
-function isPreviewableCodeBlock(content, language) {
-  const normalizedLanguage = normalizeCodeLanguage(language);
-  const text = String(content || "").trim();
-  if (!text) return false;
-  if (PREVIEWABLE_CODE_LANGUAGES.has(normalizedLanguage)) return true;
-  if (/<template[\s>]/i.test(text) || /<script[\s>]/i.test(text)) return true;
-  if (/<!doctype html/i.test(text) || /<html[\s>]/i.test(text)) return true;
-  return false;
-}
-
-markdownRenderer.code = ({ text, lang, escaped }) => {
-  const language = normalizeCodeLanguage(lang);
-  const languageLabel = escapeHtml(language || "code");
-  const codeHtml = escaped ? text : escapeHtml(text);
-  const actions = [];
-  if (isPreviewableCodeBlock(text, language)) {
-    actions.push(
-      `<button type="button" class="chat-code-block__preview" aria-label="预览代码" title="预览代码" data-code-lang="${escapeHtml(language || "")}">${CODE_PREVIEW_ICON_HTML}</button>`,
-    );
-  }
-  actions.push(
-    `<button type="button" class="chat-code-block__copy" aria-label="复制代码" title="复制代码" data-copy-label="复制代码" data-copied-label="已复制" data-copy-icon="${escapeHtml(CODE_COPY_ICON_HTML)}" data-copied-icon="${escapeHtml(CODE_COPIED_ICON_HTML)}">${CODE_COPY_ICON_HTML}</button>`,
-  );
-  return [
-    '<div class="chat-code-block">',
-    '<div class="chat-code-block__toolbar">',
-    `<span class="chat-code-block__lang">${languageLabel}</span>`,
-    `<div class="chat-code-block__actions">${actions.join("")}</div>`,
-    "</div>",
-    `<pre><code${language ? ` class="language-${escapeHtml(language)}"` : ""}>${codeHtml}</code></pre>`,
-    "</div>",
-  ].join("");
-};
 
 const route = useRoute();
 const router = useRouter();
@@ -4932,9 +4044,7 @@ const EMPLOYEE_DRAFT_AUTO_RULE_SOURCE_LABELS = {
 
 // 开放未选择项目时的通用对话模式，复用现有 sendGlobalChatWithoutProject 逻辑。
 const ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT = true;
-const LOCAL_CONNECTOR_STORAGE_PREFIX = "project_chat.local_connector";
 const PROJECT_CREATED_EVENT = "project-created";
-const GUIDE_TOUR_STORAGE_PREFIX = "project_chat.guide_tour";
 function formatRoleLabel(roleId) {
   const normalized = String(roleId || "")
     .trim()
@@ -4944,133 +4054,10 @@ function formatRoleLabel(roleId) {
   return normalized.replace(/[_-]+/g, " ");
 }
 
-function guideTourStorageKey(surface, username, roleId) {
-  return [
-    GUIDE_TOUR_STORAGE_PREFIX,
-    String(surface || "").trim() || "chat",
-    String(username || "").trim() || "anonymous",
-    String(roleId || "").trim() || "user",
-  ].join(".");
-}
-
-function resolveCurrentUsername() {
-  const profile = getStoredAuthProfile();
-  return (
-    String(profile.username || "anonymous").trim() ||
-    "anonymous"
-  );
-}
-
 function resolveTourTarget(targetRef) {
   const raw = targetRef?.value;
   if (!raw) return document.body;
   return raw.$el || raw;
-}
-
-function hasSeenGuideTour(surface, username, roleId) {
-  if (typeof window === "undefined") return true;
-  return (
-    localStorage.getItem(guideTourStorageKey(surface, username, roleId)) === "1"
-  );
-}
-
-function markGuideTourSeen(surface, username, roleId) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(guideTourStorageKey(surface, username, roleId), "1");
-}
-
-function localConnectorPreferenceStorageKey() {
-  return `${LOCAL_CONNECTOR_STORAGE_PREFIX}.selected.${resolveCurrentUsername()}`;
-}
-
-function localConnectorWorkspaceStorageKey(projectId, connectorId) {
-  return [
-    LOCAL_CONNECTOR_STORAGE_PREFIX,
-    "workspace",
-    resolveCurrentUsername(),
-    String(projectId || "").trim() || "default",
-    String(connectorId || "").trim() || "default",
-  ].join(".");
-}
-
-function readPreferredLocalConnectorId() {
-  return String(
-    localStorage.getItem(localConnectorPreferenceStorageKey()) || "",
-  ).trim();
-}
-
-function writePreferredLocalConnectorId(connectorId) {
-  const normalized = String(connectorId || "").trim();
-  const key = localConnectorPreferenceStorageKey();
-  if (normalized) {
-    localStorage.setItem(key, normalized);
-    return;
-  }
-  localStorage.removeItem(key);
-}
-
-function readPreferredLocalWorkspacePath(projectId, connectorId) {
-  const normalizedProjectId = String(projectId || "").trim();
-  const normalizedConnectorId = String(connectorId || "").trim();
-  if (!normalizedProjectId || !normalizedConnectorId) return "";
-  return String(
-    localStorage.getItem(
-      localConnectorWorkspaceStorageKey(
-        normalizedProjectId,
-        normalizedConnectorId,
-      ),
-    ) || "",
-  ).trim();
-}
-
-function writePreferredLocalWorkspacePath(
-  projectId,
-  connectorId,
-  workspacePath,
-) {
-  const normalizedProjectId = String(projectId || "").trim();
-  const normalizedConnectorId = String(connectorId || "").trim();
-  if (!normalizedProjectId || !normalizedConnectorId) return;
-  const normalizedWorkspacePath = String(workspacePath || "").trim();
-  const key = localConnectorWorkspaceStorageKey(
-    normalizedProjectId,
-    normalizedConnectorId,
-  );
-  if (normalizedWorkspacePath) {
-    localStorage.setItem(key, normalizedWorkspacePath);
-    return;
-  }
-  localStorage.removeItem(key);
-}
-
-function skillResourceDirectoryStorageKey(projectId) {
-  return [
-    LOCAL_CONNECTOR_STORAGE_PREFIX,
-    "skill_dir",
-    resolveCurrentUsername(),
-    String(projectId || "").trim() || "default",
-  ].join(".");
-}
-
-function readPreferredSkillResourceDirectory(projectId) {
-  return String(
-    localStorage.getItem(skillResourceDirectoryStorageKey(projectId)) || "",
-  ).trim();
-}
-
-function writePreferredSkillResourceDirectory(projectId, directoryPath) {
-  const normalized = String(directoryPath || "").trim();
-  const key = skillResourceDirectoryStorageKey(projectId);
-  if (normalized) {
-    localStorage.setItem(key, normalized);
-    return;
-  }
-  localStorage.removeItem(key);
-}
-
-function buildProjectProvidersRequestUrl(projectId) {
-  const normalizedProjectId = String(projectId || "").trim();
-  return `/projects/${encodeURIComponent(normalizedProjectId)}/chat/providers`;
 }
 
 function applyLocalConnectorRuntimeSettings(baseSettings) {
@@ -5272,16 +4259,40 @@ let terminalRestoreAttemptKey = "";
 let terminalStructuredInteractionRefreshPending = false;
 let externalAgentStatusRefreshKey = "";
 
-const wsConnected = ref(false);
-const wsClient = ref(null);
-const wsProjectId = ref("");
-const pendingRequests = reactive(new Map());
+const {
+  pendingRequests,
+  activeGenerationRequestId,
+  hasPendingRequestForChatSession,
+  getActiveRequestId,
+  trackPendingRequest,
+  clearTrackedPendingRequest,
+} = useProjectChatPendingRequests({
+  currentChatSessionId,
+});
+const {
+  wsConnected,
+  wsClient,
+  wsProjectId,
+  wsStatusText,
+  wsStatusType,
+  disconnectWs,
+  ensureWsClient,
+} = useProjectChatTransport({
+  getToken: getStoredToken,
+  onMessage: handleSocketMessage,
+  onDisconnect: (reason) => {
+    terminalMirrorConnected.value = false;
+    rejectPendingAgentPrepares(reason || "连接已断开");
+  },
+  onUnexpectedClose: (reason) => {
+    rejectPendingRequests(reason);
+    ElMessage.warning(`WebSocket 断开：${reason}`);
+  },
+});
 const chatSessionMessageCache = new Map();
-const chatSessionComposerCache = new Map();
 const queuedFollowupMessages = ref([]);
 let followupQueueDraining = false;
 let activeFollowupAssistantMessageId = "";
-const activeGenerationRequestId = ref("");
 const workingStatusStartedAt = ref(0);
 const workingStatusNow = ref(Date.now());
 const workingStatusStartedAtBySession = new Map();
@@ -5367,73 +4378,6 @@ const workspaceFileDraft = ref("");
 const workspaceFileOriginal = ref("");
 const workspaceDiffLoading = ref(false);
 const workspaceDiffPreview = ref(null);
-const LARK_AUTH_DOMAIN_OPTIONS = [
-  "approval",
-  "attendance",
-  "base",
-  "calendar",
-  "contact",
-  "docs",
-  "drive",
-  "im",
-  "mail",
-  "minutes",
-  "okr",
-  "sheets",
-  "task",
-  "vc",
-  "wiki",
-];
-
-function stripTerminalControlSequences(value) {
-  return String(value || "")
-    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
-    .replace(/\x1B/g, "");
-}
-
-function hasLarkAuthBusinessDomainPromptText(value) {
-  const text = stripTerminalControlSequences(value).toLowerCase();
-  return Boolean(/业务域/.test(text) && /选择|请选择|select|choose/.test(text));
-}
-
-function hasAuthorizationPromptText(payload = {}, detailText = "") {
-  return Boolean(
-    String(payload?.authorization_url || "").trim() ||
-      (payload?.interaction_schema && typeof payload.interaction_schema === "object"),
-  );
-}
-
-const TERMINAL_CHOICE_FALLBACK_PROVIDERS = [
-  {
-    key: "lark-auth-domain",
-    match({ text, activeCommand }) {
-      const terminalText = stripTerminalControlSequences(text).trim();
-      const command = String(activeCommand || "").trim();
-      const hasAuthLoginCommand = /\blark-cli\s+auth\s+login\b/.test(command);
-      const hasDomainPrompt =
-        /(?:请选择|选择|select|choose).{0,30}业务域|业务域.{0,30}(?:请选择|选择|select|choose|enter confirm)/i.test(
-          terminalText,
-        );
-      return Boolean(
-        hasDomainPrompt ||
-        (hasAuthLoginCommand &&
-          /业务域/.test(terminalText) &&
-          /选择|select|choose|enter confirm|上下键|方向键|回车/i.test(
-            terminalText,
-          )),
-      );
-    },
-    options() {
-      return LARK_AUTH_DOMAIN_OPTIONS.map((value) => ({
-        label: value,
-        value,
-        selected: false,
-        highlighted: false,
-      }));
-    },
-  },
-];
 const inlineEditingMessageIndex = ref(-1);
 const inlineEditingMessageId = ref("");
 const inlineEditingDraft = ref("");
@@ -5446,9 +4390,17 @@ const settingsTourCurrent = ref(0);
 
 const maxUploadLimit = ref(6);
 const chatMaxTokens = ref(512);
-const chatSettingsButtonRef = ref(null);
-const chatGuideButtonRef = ref(null);
-const chatContextBarRef = ref(null);
+const conversationSidebarRef = ref(null);
+const chatSettingsButtonRef = computed(
+  () => conversationSidebarRef.value?.settingsButtonRef || null,
+);
+const chatContextBarHostRef = ref(null);
+const chatGuideButtonRef = computed(
+  () => chatContextBarHostRef.value?.guideButtonRef || null,
+);
+const chatContextBarRef = computed(
+  () => chatContextBarHostRef.value?.contextBarRef || null,
+);
 const chatComposerRef = ref(null);
 const settingsSidebarRef = ref(null);
 const settingsGuideButtonRef = ref(null);
@@ -5463,7 +4415,7 @@ const mcpDialogProjectId = computed(() => {
   if (activeProjectId) return activeProjectId;
   const routeProjectId = String(routeChatTarget().projectId || "").trim();
   if (routeProjectId) return routeProjectId;
-  return String(localStorage.getItem("project_id") || "").trim();
+  return readSelectedProjectId();
 });
 const mcpDialogProjectLabel = computed(() => {
   const projectId = String(mcpDialogProjectId.value || "").trim();
@@ -5505,8 +4457,6 @@ const chatModeLabel = computed(() => {
   if (isExternalAgentMode.value) return "外部 Agent";
   return "系统对话";
 });
-const wsStatusText = computed(() => (wsConnected.value ? "已连接" : "未连接"));
-const wsStatusType = computed(() => (wsConnected.value ? "success" : "info"));
 const projectWorkspaceResolved = computed(() =>
   String(projectWorkspacePath.value || "").trim(),
 );
@@ -5517,25 +4467,25 @@ const workspacePathResolved = computed(() =>
   String(externalAgentInfo.value.workspace_path || "").trim(),
 );
 const agentRuntimeWorkspaceTrustPath = computed(() =>
-  String(projectWorkspaceResolved.value || workspacePathResolved.value || "").trim(),
+  String(
+    projectWorkspaceResolved.value || workspacePathResolved.value || "",
+  ).trim(),
 );
 const canTrustAgentRuntimeWorkspace = computed(
-  () => hasSelectedProject.value && Boolean(agentRuntimeWorkspaceTrustPath.value),
+  () =>
+    hasSelectedProject.value && Boolean(agentRuntimeWorkspaceTrustPath.value),
 );
 const workspacePathDraftNormalized = computed(() =>
   String(workspacePathDraft.value || "").trim(),
 );
-
-function normalizeNativeExternalAgentSessionId(value) {
-  if (value && typeof value === "object") {
-    return String(value.sessionId || value.session_id || "").trim();
-  }
-  return String(value || "").trim();
-}
-
-function isLiveNativeExternalAgentStatus(status) {
-  return ["running", "cancelling"].includes(String(status || "").trim());
-}
+const executionWorkspacePath = computed(() =>
+  String(
+    workspacePathDraftNormalized.value ||
+      workspacePathResolved.value ||
+      projectWorkspaceResolved.value ||
+      "",
+  ).trim(),
+);
 
 function setNativeExternalAgentLaunching(chatSessionId, launching) {
   const normalizedChatSessionId = String(chatSessionId || "").trim();
@@ -5596,15 +4546,18 @@ function getNativeExternalAgentRunnerSessionIdForChatSession(chatSessionId) {
   const normalizedChatSessionId = String(chatSessionId || "").trim();
   if (!normalizedChatSessionId) return "";
   const mapped = String(
-    nativeExternalAgentRunnerSessionByChatSessionId.get(normalizedChatSessionId) ||
-      "",
+    nativeExternalAgentRunnerSessionByChatSessionId.get(
+      normalizedChatSessionId,
+    ) || "",
   ).trim();
   if (mapped) return mapped;
   if (
     String(nativeExternalAgentChatSessionId.value || "").trim() ===
     normalizedChatSessionId
   ) {
-    return normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value);
+    return normalizeNativeExternalAgentSessionId(
+      nativeExternalAgentSession.value,
+    );
   }
   return "";
 }
@@ -5649,12 +4602,16 @@ function clearActiveNativeExternalAgentSessionBinding(
   const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
   const normalizedChatSessionId = String(
     chatSessionId ||
-      getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId) ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(
+        normalizedSessionId,
+      ) ||
       "",
   ).trim();
   if (!normalizedSessionId || !normalizedChatSessionId) return;
   const mappedSessionId = normalizeNativeExternalAgentSessionId(
-    nativeExternalAgentRunnerSessionByChatSessionId.get(normalizedChatSessionId),
+    nativeExternalAgentRunnerSessionByChatSessionId.get(
+      normalizedChatSessionId,
+    ),
   );
   if (mappedSessionId === normalizedSessionId) {
     nativeExternalAgentRunnerSessionByChatSessionId.delete(
@@ -5684,17 +4641,21 @@ function clearActiveExecutionTransportState(assistantIndex = -1) {
   if (
     !Number.isFinite(normalizedAssistantIndex) ||
     normalizedAssistantIndex < 0 ||
-    normalizedAssistantIndex === Number(activeTerminalMirrorAssistantIndex.value)
+    normalizedAssistantIndex ===
+      Number(activeTerminalMirrorAssistantIndex.value)
   ) {
     activeTerminalMirrorAssistantIndex.value = -1;
   }
 }
 
 function syncNativeExternalAgentRunningFlag() {
-  const currentChatSessionIdValue = String(currentChatSessionId.value || "").trim();
-  const currentRunnerSessionId = getNativeExternalAgentRunnerSessionIdForChatSession(
-    currentChatSessionIdValue,
-  );
+  const currentChatSessionIdValue = String(
+    currentChatSessionId.value || "",
+  ).trim();
+  const currentRunnerSessionId =
+    getNativeExternalAgentRunnerSessionIdForChatSession(
+      currentChatSessionIdValue,
+    );
   const currentSnapshot = currentRunnerSessionId
     ? nativeExternalAgentSessionsById.get(currentRunnerSessionId)
     : null;
@@ -5711,16 +4672,18 @@ function syncNativeExternalAgentRunningFlag() {
       (currentChatSessionIdValue &&
         String(nativeExternalAgentChatSessionId.value || "").trim() ===
           currentChatSessionIdValue &&
-        isLiveNativeExternalAgentStatus(nativeExternalAgentSession.value?.status)));
+        isLiveNativeExternalAgentStatus(
+          nativeExternalAgentSession.value?.status,
+        )));
 }
 
 function syncNativeExternalAgentSessionPanel(preferredSessionId = "") {
-  const normalizedPreferredSessionId = normalizeNativeExternalAgentSessionId(
-    preferredSessionId,
-  );
-  const currentRunnerSessionId = getNativeExternalAgentRunnerSessionIdForChatSession(
-    currentChatSessionId.value,
-  );
+  const normalizedPreferredSessionId =
+    normalizeNativeExternalAgentSessionId(preferredSessionId);
+  const currentRunnerSessionId =
+    getNativeExternalAgentRunnerSessionIdForChatSession(
+      currentChatSessionId.value,
+    );
   const selectedSessionId = String(
     selectedNativeExternalAgentRecordId.value || "",
   ).trim();
@@ -5753,16 +4716,10 @@ function syncNativeExternalAgentSessionPanel(preferredSessionId = "") {
 }
 
 const nativeExternalAgentSessionOutput = computed(() =>
-  nativeExternalAgentSessionLogs.value
-    .filter((item) => item.stream !== "stderr")
-    .map((item) => item.content)
-    .join(""),
+  buildNativeExternalAgentSessionOutputText(nativeExternalAgentSessionLogs.value),
 );
 const nativeExternalAgentSessionError = computed(() =>
-  nativeExternalAgentSessionLogs.value
-    .filter((item) => item.stream === "stderr")
-    .map((item) => item.content)
-    .join(""),
+  buildNativeExternalAgentSessionErrorText(nativeExternalAgentSessionLogs.value),
 );
 const nativeExternalAgentCommandText = computed(() => {
   return buildNativeExternalAgentCommandPreview(
@@ -5770,191 +4727,45 @@ const nativeExternalAgentCommandText = computed(() => {
   );
 });
 const nativeExternalAgentStdoutText = computed(() =>
-  nativeExternalAgentSessionLogs.value
-    .filter((item) => ["stdout", "pty"].includes(String(item.stream || "").trim()))
-    .map((item) => String(item.content || ""))
-    .join("")
-    .trim(),
+  buildNativeExternalAgentStdoutText(nativeExternalAgentSessionLogs.value),
 );
 const nativeExternalAgentDiagnosticText = computed(() =>
-  nativeExternalAgentSessionLogs.value
-    .filter((item) =>
-      ["stderr", "system", "stdin"].includes(String(item.stream || "").trim()),
-    )
-    .map((item) => {
-      const stream = String(item.stream || "system").trim();
-      return `[${stream}] ${String(item.content || "")}`;
-    })
-    .join("")
-    .trim(),
+  buildNativeExternalAgentDiagnosticText(nativeExternalAgentSessionLogs.value),
 );
 const nativeExternalAgentFinalAnswerText = computed(() => {
-  const explicit = String(nativeExternalAgentSession.value?.finalOutput || "").trim();
-  if (explicit) return explicit;
-  const finalLog = [...nativeExternalAgentSessionLogs.value]
-    .reverse()
-    .find((item) => String(item.stream || "").trim() === "final");
-  if (finalLog?.content && String(finalLog.content).trim()) {
-    return String(finalLog.content).trim();
-  }
-  return nativeExternalAgentStdoutText.value;
+  return resolveNativeExternalAgentFinalAnswerText(
+    nativeExternalAgentSession.value || {},
+    nativeExternalAgentSessionLogs.value,
+    nativeExternalAgentStdoutText.value,
+  );
 });
-function normalizeRunnerEvidenceArray(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) return value;
-  if (typeof value === "object") return [value];
-  const text = String(value || "").trim();
-  return text ? [text] : [];
-}
-
-function normalizeRunnerEvidenceItem(value, fallbackKind = "record") {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    const path = String(
-      value.path ||
-        value.file_path ||
-        value.filePath ||
-        value.name ||
-        value.relative_path ||
-        "",
-    ).trim();
-    const title = String(
-      value.title ||
-        value.command ||
-        value.summary ||
-        value.status ||
-        path ||
-        fallbackKind,
-    ).trim();
-    return {
-      kind: String(value.kind || value.type || fallbackKind).trim() || fallbackKind,
-      title,
-      path,
-      status: String(value.status || value.state || value.result || "").trim(),
-      summary: String(
-        value.summary ||
-          value.description ||
-          value.message ||
-          value.reason ||
-          value.diff_stat ||
-          value.output ||
-          "",
-      ).trim(),
-      exitCode:
-        (value.exit_code === null || value.exit_code === undefined) &&
-        (value.exitCode === null || value.exitCode === undefined)
-          ? ""
-          : String(value.exit_code ?? value.exitCode).trim(),
-    };
-  }
-  const text = String(value || "").trim();
-  return {
-    kind: fallbackKind,
-    title: text,
-    path: text,
-    status: "",
-    summary: "",
-    exitCode: "",
-  };
-}
-
-function runnerEvidenceMetaText(item) {
-  const status = String(item?.status || "").trim();
-  const exitCode = String(item?.exitCode || item?.exit_code || "").trim();
-  return [status, exitCode ? `exit=${exitCode}` : ""].filter(Boolean).join(" · ");
-}
-
 const nativeExternalAgentFileEvidenceItems = computed(() => {
-  const snapshot = nativeExternalAgentSession.value || {};
-  return [
-    ...normalizeRunnerEvidenceArray(snapshot.files),
-    ...normalizeRunnerEvidenceArray(snapshot.fileRecords || snapshot.file_records),
-    ...normalizeRunnerEvidenceArray(snapshot.fileEvents || snapshot.file_events),
-    ...normalizeRunnerEvidenceArray(snapshot.changedFiles || snapshot.changed_files),
-    ...normalizeRunnerEvidenceArray(snapshot.diffSummary || snapshot.diff_summary),
-  ]
-    .map((item) => normalizeRunnerEvidenceItem(item, "file"))
-    .filter((item) => item.title || item.path || item.summary)
-    .slice(0, 80);
+  return buildNativeExternalAgentFileEvidenceItems(
+    nativeExternalAgentSession.value || {},
+  );
 });
 
 const nativeExternalAgentVerificationItems = computed(() => {
-  const snapshot = nativeExternalAgentSession.value || {};
-  const explicit = [
-    ...normalizeRunnerEvidenceArray(snapshot.verification),
-    ...normalizeRunnerEvidenceArray(snapshot.verifications),
-    ...normalizeRunnerEvidenceArray(snapshot.validation),
-    ...normalizeRunnerEvidenceArray(snapshot.validations),
-    ...normalizeRunnerEvidenceArray(snapshot.checks),
-    ...normalizeRunnerEvidenceArray(snapshot.testResults || snapshot.test_results),
-  ]
-    .map((item) => normalizeRunnerEvidenceItem(item, "verification"))
-    .filter((item) => item.title || item.summary || item.status);
-  if (explicit.length) return explicit.slice(0, 80);
-  return (nativeRunnerSelfCheckResults.value || [])
-    .map((item) => ({
-      kind: "self-check",
-      title: String(item?.label || item?.title || item?.command || "Runner 自检").trim(),
-      path: "",
-      status: String(item?.status || item?.tone || "").trim(),
-      summary: String(item?.summary || item?.message || item?.reason || "").trim(),
-      exitCode:
-        item?.exitCode === null || item?.exitCode === undefined
-          ? ""
-          : String(item.exitCode).trim(),
-    }))
-    .filter((item) => item.title || item.summary || item.status);
+  return buildNativeExternalAgentVerificationItems(
+    nativeExternalAgentSession.value || {},
+    nativeRunnerSelfCheckResults.value || [],
+  );
 });
 
 const nativeExternalAgentSessionPermissionRecords = computed(() => {
-  const sessionId = String(nativeExternalAgentSession.value?.sessionId || "").trim();
-  const workspacePath = String(
-    nativeExternalAgentSession.value?.workspacePath || "",
-  ).trim();
-  return (nativeRunnerPermissionRecords.value || []).filter((record) => {
-    const recordSessionId = String(
-      record?.sessionId ||
-        record?.session_id ||
-        record?.runnerSessionId ||
-        record?.runner_session_id ||
-        "",
-    ).trim();
-    if (sessionId && recordSessionId) return recordSessionId === sessionId;
-    const recordWorkspace = String(
-      record?.workspacePath || record?.workspace_path || "",
-    ).trim();
-    if (workspacePath && recordWorkspace) return recordWorkspace === workspacePath;
-    return !recordSessionId && !recordWorkspace;
-  });
+  return filterNativeExternalAgentSessionPermissionRecords(
+    nativeExternalAgentSession.value || {},
+    nativeRunnerPermissionRecords.value || [],
+  );
 });
 
 const nativeExternalAgentDiagnosticItems = computed(() => {
-  const snapshot = nativeExternalAgentSession.value || {};
-  return [
-    ["session", snapshot.sessionId],
-    ["status", snapshot.status],
-    ["agent", snapshot.agentType],
-    ["exit", snapshot.exitCode ?? ""],
-    ["started", snapshot.startedAt || snapshot.started_at || ""],
-    ["ended", snapshot.endedAt || snapshot.ended_at || ""],
-    ["duration", snapshot.durationMs || snapshot.duration_ms || ""],
-    ["stdin", snapshot.stdinOpen ? "open" : "closed"],
-    ["blocked", snapshot.blockedReason],
-  ]
-    .map(([label, value]) => ({
-      label,
-      value: String(value ?? "").trim(),
-    }))
-    .filter((item) => item.value);
+  return buildNativeExternalAgentDiagnosticItems(
+    nativeExternalAgentSession.value || {},
+  );
 });
 const nativeExternalAgentFullLogText = computed(() =>
-  nativeExternalAgentSessionLogs.value
-    .map((item) => {
-      const stream = String(item.stream || "stdout").trim();
-      const content = String(item.content || "");
-      return `[${stream}] ${content}`;
-    })
-    .join("")
-    .trim(),
+  buildNativeExternalAgentFullLogText(nativeExternalAgentSessionLogs.value),
 );
 const nativeExternalAgentTerminalControls = [
   { key: "ctrl_c", label: "Ctrl+C", content: "\u0003", type: "danger" },
@@ -5964,21 +4775,17 @@ const nativeExternalAgentTerminalControls = [
   { key: "down", label: "↓", content: "\u001b[B" },
 ];
 const nativeExternalAgentTerminalStatusText = computed(() => {
-  const status = String(nativeExternalAgentSession.value?.status || "").trim();
-  if (status === "running" && canWriteNativeExternalAgentStdin.value) {
-    return "正在运行，可直接输入或使用控制键";
-  }
-  if (status === "running") return "正在运行，等待执行器返回最终响应";
-  if (status === "cancelling") return "正在取消";
-  if (status === "completed") return "已完成";
-  if (status === "failed") return "执行失败";
-  if (status === "cancelled") return "已取消";
-  return "等待启动";
+  return formatNativeExternalAgentTerminalStatusText(
+    nativeExternalAgentSession.value?.status,
+    canWriteNativeExternalAgentStdin.value,
+  );
 });
 const nativeExternalAgentTerminalText = computed(() => {
   const rows = nativeExternalAgentSessionLogs.value
     .map((item) => {
-      const stream = String(item.stream || "stdout").trim().toLowerCase();
+      const stream = String(item.stream || "stdout")
+        .trim()
+        .toLowerCase();
       const content = stripTerminalControlSequences(String(item.content || ""));
       if (!content.trim()) return "";
       if (stream === "final") return "";
@@ -5995,22 +4802,9 @@ const nativeExternalAgentTerminalText = computed(() => {
   return `[只显示最近输出]\n${text.slice(text.length - limit).trim()}`;
 });
 const nativeExternalAgentLogStats = computed(() => {
-  const rows = Array.isArray(nativeExternalAgentSessionLogs.value)
-    ? nativeExternalAgentSessionLogs.value
-    : [];
-  const byStream = rows.reduce((acc, item) => {
-    const stream = String(item?.stream || "stdout").trim().toLowerCase() || "stdout";
-    acc[stream] = Number(acc[stream] || 0) + 1;
-    return acc;
-  }, {});
-  return {
-    total: rows.length,
-    stdout: Number(byStream.stdout || 0) + Number(byStream.pty || 0),
-    stderr: Number(byStream.stderr || 0),
-    stdin: Number(byStream.stdin || 0),
-    system: Number(byStream.system || 0),
-    final: Number(byStream.final || 0),
-  };
+  return calculateNativeExternalAgentLogStats(
+    nativeExternalAgentSessionLogs.value,
+  );
 });
 const canWriteNativeExternalAgentStdin = computed(() => {
   const status = String(nativeExternalAgentSession.value?.status || "").trim();
@@ -6159,7 +4953,9 @@ const aiEntryFileResolved = computed(() =>
 const aiEntryFileDraftNormalized = computed(() =>
   String(aiEntryFileDraft.value || "").trim(),
 );
-const workspacePathConfigured = computed(() => !!workspacePathResolved.value);
+const workspacePathConfigured = computed(
+  () => Boolean(executionWorkspacePath.value),
+);
 const projectWorkspaceDirty = computed(
   () =>
     projectWorkspaceDraftNormalized.value !== projectWorkspaceResolved.value,
@@ -6167,24 +4963,24 @@ const projectWorkspaceDirty = computed(
 const canUseHostTerminal = computed(
   () =>
     hasSelectedProject.value &&
-    Boolean(
-      String(
-        projectWorkspaceDraftNormalized.value || projectWorkspaceResolved.value,
-      ).trim(),
-    ) &&
+    Boolean(executionWorkspacePath.value) &&
     Boolean(String(currentChatSessionId.value || "").trim()),
 );
 const canUseWorkspaceFiles = computed(
   () => hasSelectedProject.value && Boolean(projectWorkspaceResolved.value),
 );
-const workspaceFileReadOnly = computed(() => nativeDesktopBridgeAvailable.value);
+const workspaceFileReadOnly = computed(
+  () => nativeDesktopBridgeAvailable.value,
+);
 const workspaceFileBridgeLabel = computed(() =>
   nativeDesktopBridgeAvailable.value
     ? "桌面端原生只读文件桥：可浏览目录和预览 1MB 内文本文件，写入仍需后续权限流程。"
     : "服务端工作区文件接口：沿用当前项目工作区读写能力。",
 );
 const canPreviewWorkspaceDiff = computed(
-  () => nativeDesktopBridgeAvailable.value && Boolean(projectWorkspaceResolved.value),
+  () =>
+    nativeDesktopBridgeAvailable.value &&
+    Boolean(projectWorkspaceResolved.value),
 );
 const workspaceDiffTargetLabel = computed(() =>
   activeWorkspaceFilePath.value
@@ -6278,8 +5074,7 @@ const externalAgentDisplayLabel = computed(
       selectedExternalAgentOption.value?.label ||
         externalAgentInfo.value.label ||
         "外部 Agent",
-    ).trim() ||
-    "外部 Agent",
+    ).trim() || "外部 Agent",
 );
 const externalAgentAvailabilityLabel = computed(() => {
   if (externalAgentInfo.value.command_source === "local_connector_required") {
@@ -6306,7 +5101,10 @@ const externalAgentStatusSummary = computed(() => {
     String(externalAgentInfo.value.sandbox_mode || "workspace-write").trim() ||
       "workspace-write",
   ];
-  if (!nativeDesktopBridgeAvailable.value && externalAgentInfo.value.local_connector_name) {
+  if (
+    !nativeDesktopBridgeAvailable.value &&
+    externalAgentInfo.value.local_connector_name
+  ) {
     parts.push(externalAgentInfo.value.local_connector_name);
   }
   if (externalAgentInfo.value.thread_id) {
@@ -6317,7 +5115,10 @@ const externalAgentStatusSummary = computed(() => {
 const executionRuntimeTitle = computed(() => {
   if (!hasSelectedProject.value) return "未选择项目";
   if (!isExternalAgentMode.value) return "系统对话";
-  if (externalAgentConnectorRequired.value && !usingNativeDesktopRuntime.value) {
+  if (
+    externalAgentConnectorRequired.value &&
+    !usingNativeDesktopRuntime.value
+  ) {
     return "外部 Agent 未就绪";
   }
   if (!workspacePathConfigured.value) return "待选择本机工作区";
@@ -6364,7 +5165,8 @@ const executionRuntimeActionLabel = computed(() => {
   if (!hasSelectedProject.value) return "选择项目";
   if (!isExternalAgentMode.value) return "切换执行方式";
   if (externalAgentConnectorRequired.value) return "连接本机";
-  if (!workspacePathConfigured.value || workspacePathDirty.value) return "配置工作区";
+  if (!workspacePathConfigured.value || workspacePathDirty.value)
+    return "配置工作区";
   return nativeDesktopBridgeAvailable.value ? "检查环境" : "环境设置";
 });
 const composerExecutionStatusTagType = computed(() => {
@@ -6411,24 +5213,6 @@ const composerExecutionSummaryItems = computed(() => [
     label: "工作区",
     value: executionWorkspaceLabel.value,
   },
-  {
-    label: "权限",
-    value:
-      String(
-        projectChatSettings.value.connector_sandbox_mode ||
-          projectChatSettings.value.external_agent_sandbox_mode ||
-          externalAgentInfo.value.sandbox_mode ||
-          "",
-      ).trim() || "workspace-write",
-  },
-  {
-    label: "任务树",
-    value: hasChatTaskTree.value ? taskTreeProgressLabel.value : "未生成",
-  },
-  {
-    label: "终端",
-    value: terminalPanelStatusText.value,
-  },
 ]);
 const composerExecutionDetailAvailable = computed(
   () =>
@@ -6439,7 +5223,9 @@ const composerExecutionDetailAvailable = computed(
 );
 const nativeRunnerSelfCheckPassed = computed(() => {
   const results = nativeRunnerSelfCheckResults.value || [];
-  return results.length > 0 && results.every((item) => item?.tone === "success");
+  return (
+    results.length > 0 && results.every((item) => item?.tone === "success")
+  );
 });
 const externalAgentUnavailable = computed(() => {
   if (!isExternalAgentMode.value) return false;
@@ -6457,7 +5243,8 @@ const externalAgentUnavailable = computed(() => {
     .toLowerCase();
   return (
     externalAgentInfo.value.implemented === false ||
-    (!externalAgentInfo.value.available && !externalAgentInfo.value.installed) ||
+    (!externalAgentInfo.value.available &&
+      !externalAgentInfo.value.installed) ||
     commandSource === "missing" ||
     commandSource === "unavailable" ||
     commandSource === "unsupported" ||
@@ -6469,7 +5256,8 @@ const executionRuntimeToneClass = computed(() => {
   if (!isExternalAgentMode.value) return "is-system";
   if (externalAgentUnavailable.value) return "is-danger";
   if (
-    (externalAgentConnectorRequired.value && !usingNativeDesktopRuntime.value) ||
+    (externalAgentConnectorRequired.value &&
+      !usingNativeDesktopRuntime.value) ||
     !workspacePathConfigured.value ||
     workspacePathDirty.value
   ) {
@@ -6483,7 +5271,8 @@ const executionRuntimeToneClass = computed(() => {
   return "is-pending";
 });
 const composerExecutionChipLabel = computed(() => {
-  if (!isExternalAgentMode.value) return `系统对话 · ${currentModelSummary.value}`;
+  if (!isExternalAgentMode.value)
+    return `系统对话 · ${currentModelSummary.value}`;
   if (externalAgentInfo.value.ready) {
     return `${externalAgentDisplayLabel.value} · 本机就绪`;
   }
@@ -6495,7 +5284,8 @@ const composerExecutionChipLabel = computed(() => {
   if (!workspacePathConfigured.value) return "请选择工作区";
   if (workspacePathDirty.value) return "工作区未保存";
   if (externalAgentWarmupLoading.value) return "环境检查中";
-  if (externalAgentUnavailable.value) return `${externalAgentDisplayLabel.value} 不可用`;
+  if (externalAgentUnavailable.value)
+    return `${externalAgentDisplayLabel.value} 不可用`;
   return "外部 Agent 待检查";
 });
 const executionTaskTreeTitle = computed(() =>
@@ -6517,16 +5307,13 @@ const executionTaskNodes = computed(() => {
     .slice(0, 8);
 });
 const executionWorkspaceLabel = computed(() => {
-  return (
-    workspacePathDraftNormalized.value ||
-    workspacePathResolved.value ||
-    projectWorkspaceResolved.value ||
-    "未配置工作区"
-  );
+  return executionWorkspacePath.value || "未配置工作区";
 });
 const executionFileItems = computed(() =>
-  (Array.isArray(workspaceFileItems.value) ? workspaceFileItems.value : [])
-    .slice(0, 8),
+  (Array.isArray(workspaceFileItems.value)
+    ? workspaceFileItems.value
+    : []
+  ).slice(0, 8),
 );
 const executionLogItems = computed(() => {
   const items = [];
@@ -6570,8 +5357,12 @@ const executionLogItems = computed(() => {
 });
 const executionVerificationItems = computed(() => {
   const nodes = executionTaskNodes.value;
-  const doneCount = nodes.filter((node) => String(node?.status || "") === "done").length;
-  const verifyingCount = nodes.filter((node) => String(node?.status || "") === "verifying").length;
+  const doneCount = nodes.filter(
+    (node) => String(node?.status || "") === "done",
+  ).length;
+  const verifyingCount = nodes.filter(
+    (node) => String(node?.status || "") === "verifying",
+  ).length;
   return [
     {
       label: hasChatTaskTree.value
@@ -6580,11 +5371,16 @@ const executionVerificationItems = computed(() => {
       tone: doneCount && doneCount === nodes.length ? "success" : "muted",
     },
     {
-      label: verifyingCount ? `${verifyingCount} 个节点正在验证` : "暂无验证中的节点",
+      label: verifyingCount
+        ? `${verifyingCount} 个节点正在验证`
+        : "暂无验证中的节点",
       tone: verifyingCount ? "warning" : "muted",
     },
     {
-      label: terminalPanelStatus.value === "error" ? "终端验证异常" : "终端状态可查看",
+      label:
+        terminalPanelStatus.value === "error"
+          ? "终端验证异常"
+          : "终端状态可查看",
       tone: terminalPanelStatus.value === "error" ? "danger" : "muted",
     },
   ];
@@ -6596,8 +5392,8 @@ const executionPermissionItems = computed(() => [
       ? nativeDesktopBridgeAvailable.value
         ? "桌面端原生桥"
         : usingLocalConnector.value
-        ? "本地连接器"
-        : "外部 Agent"
+          ? "本地连接器"
+          : "外部 Agent"
       : "服务端模型",
   },
   {
@@ -6666,10 +5462,16 @@ const chatHeaderSubtext = computed(() => {
     externalAgentRuntimeLabel.value,
     nativeDesktopBridgeAvailable.value ? "桌面端原生桥" : "本地连接器",
   ];
-  if (!nativeDesktopBridgeAvailable.value && externalAgentConnectorRequired.value) {
+  if (
+    !nativeDesktopBridgeAvailable.value &&
+    externalAgentConnectorRequired.value
+  ) {
     parts.push("待选择连接器");
   }
-  if (!nativeDesktopBridgeAvailable.value && externalAgentInfo.value.local_connector_name) {
+  if (
+    !nativeDesktopBridgeAvailable.value &&
+    externalAgentInfo.value.local_connector_name
+  ) {
     parts.push(externalAgentInfo.value.local_connector_name);
   }
   if (shortThreadId.value) {
@@ -6686,7 +5488,10 @@ const currentUsernameInitial = computed(
       .toUpperCase() || "?",
 );
 const currentRoleId = computed(
-  () => String(getStoredAuthProfile().role || "user").trim().toLowerCase() || "user",
+  () =>
+    String(getStoredAuthProfile().role || "user")
+      .trim()
+      .toLowerCase() || "user",
 );
 const currentRoleLabel = computed(() => formatRoleLabel(currentRoleId.value));
 const {
@@ -6702,6 +5507,38 @@ const {
   taskTreeSaveHint,
   getTaskTreeChildNodes,
 } = useProjectChatTaskTreeState({ chatTaskTree, selectedTaskTreeNodeId });
+const {
+  applyTaskTreePayload,
+  applyWorkSessionPayload,
+  clearOngoingTaskRestoreNotice,
+  deleteCurrentTaskTree,
+  fetchChatTaskTree,
+  handleTaskTreeNodeClick,
+  openTaskTreePanel,
+  restoreOngoingTaskFromServer,
+  resumeOngoingTaskFromNotice,
+  saveTaskTreeNode,
+  setOngoingTaskRestoreNotice,
+} = useProjectChatTaskTreeActions({
+  chatTaskTree,
+  selectedTaskTreeNodeId,
+  taskTreeStatusDraft,
+  taskTreeVerificationDraft,
+  taskTreeSummaryDraft,
+  taskTreeLoading,
+  taskTreeSaving,
+  taskTreePanelVisible,
+  currentWorkSessionId,
+  ongoingTaskRestoreNotice,
+  selectedProjectId,
+  currentChatSessionId,
+  displayedChatTaskTree,
+  taskTreeIsReadonly,
+  taskTreeSelectedNode,
+  getTaskTreeChildNodes,
+  chatLoading,
+  fetchChatHistory,
+});
 const taskTreeStatusOptions = [
   { value: "pending", label: "待开始" },
   { value: "in_progress", label: "进行中" },
@@ -6709,22 +5546,6 @@ const taskTreeStatusOptions = [
   { value: "verifying", label: "验证中" },
   { value: "done", label: "已完成" },
 ];
-
-function formatTaskTreeStatusLabel(status) {
-  const normalized = String(status || "").trim();
-  const matched = taskTreeStatusOptions.find(
-    (option) => option.value === normalized,
-  );
-  return matched?.label || normalized || "待开始";
-}
-
-function isTaskTreeNodeCurrent(node) {
-  const currentNodeId = String(
-    displayedChatTaskTree.value?.current_node_id || "",
-  ).trim();
-  if (!currentNodeId) return false;
-  return currentNodeId === String(node?.id || "").trim();
-}
 
 function openTaskTreeDetail(node) {
   const nodeId = String(node?.id || "").trim();
@@ -6769,67 +5590,8 @@ const nativeWorkspaceStatusLabel = computed(() => {
   return workspace.reason || "";
 });
 
-function buildNativeRunnerSelfCheckCommands(workspacePath = "") {
-  const commands = [
-    { id: "node-version", label: "Node", command: "node", args: ["--version"] },
-    { id: "npm-version", label: "npm", command: "npm", args: ["--version"] },
-  ];
-  if (String(workspacePath || "").trim()) {
-    commands.push({
-      id: "git-status",
-      label: "Git 工作区",
-      command: "git",
-      args: ["status", "--short"],
-    });
-  }
-  return commands;
-}
-
-function normalizeNativeRunnerSelfCheckItem(definition, classification, result) {
-  const blockedReason = String(
-    result?.blockedReason || classification?.blockedReason || "",
-  ).trim();
-  const stderr = String(result?.stderr || "").trim();
-  const stdout = String(result?.stdout || "").trim();
-  const allowed = Boolean(classification?.allowed);
-  const exitCode = Number(result?.exitCode ?? -1);
-  const ok = allowed && result && !result.timedOut && exitCode === 0;
-  const summary = blockedReason || stderr || stdout.split(/\r?\n/)[0] || "";
-  return {
-    id: definition.id,
-    label: definition.label,
-    command: [definition.command, ...(definition.args || [])].join(" "),
-    allowed,
-    exitCode,
-    timedOut: Boolean(result?.timedOut),
-    riskLevel: String(classification?.riskLevel || result?.riskLevel || "").trim(),
-    summary: summary || (ok ? "命令执行成功" : "命令无输出"),
-    tone: ok ? "success" : blockedReason ? "blocked" : "warning",
-  };
-}
-
-function runnerSelfCheckStatusLabel(item) {
-  if (!item) return "未检查";
-  if (item.tone === "success") return "通过";
-  if (item.tone === "blocked") return "已拦截";
-  if (item.timedOut) return "超时";
-  if (Number(item.exitCode) !== 0) return `退出 ${item.exitCode}`;
-  return "需检查";
-}
-
-function runnerSelfCheckTagType(item) {
-  if (item?.tone === "success") return "success";
-  if (item?.tone === "blocked") return "danger";
-  return "warning";
-}
-
 function resolveNativeRuntimeWorkspacePath() {
-  return String(
-    workspacePathDraftNormalized.value ||
-      workspacePathResolved.value ||
-      projectWorkspaceResolved.value ||
-      "",
-  ).trim();
+  return executionWorkspacePath.value;
 }
 
 function resolveNativeAgentOptionByType(agentType = "") {
@@ -6874,7 +5636,7 @@ function applyNativeExecutorStatusToExternalAgentInfo(executorStatus) {
       is_dir: Boolean(executorStatus?.workspace?.isDirectory),
       read_ok: Boolean(
         executorStatus?.workspace?.exists &&
-          executorStatus?.workspace?.isDirectory,
+        executorStatus?.workspace?.isDirectory,
       ),
       write_ok: false,
       source: "native_desktop",
@@ -6890,79 +5652,15 @@ function applyNativeExecutorStatusToExternalAgentInfo(executorStatus) {
   });
 }
 
-function runnerPermissionDecisionLabel(record) {
-  const decision = String(record?.decision || "").trim();
-  if (decision === "approve_once") return "批准一次";
-  if (decision === "approve_session") return "本会话批准";
-  if (decision === "reject") return "已拒绝";
-  return "已记录";
-}
-
-function runnerPermissionRecordSummary(record) {
-  const command = [
-    String(record?.command || "").trim(),
-    ...(Array.isArray(record?.args) ? record.args : []),
-  ]
-    .filter(Boolean)
-    .join(" ");
-  const reason = String(record?.reason || "").trim();
-  return [command, reason].filter(Boolean).join(" · ") || "命令审批决定";
-}
-
-function runnerPermissionRecordTime(record) {
-  const timestamp = Number(record?.createdAtEpochMs || 0);
-  if (!timestamp) return "";
-  return formatRelativeDateTime(new Date(timestamp).toISOString());
-}
-
-function nativeExternalAgentRecordStatusLabel(record) {
-  const status = String(record?.status || "").trim();
-  if (status === "running") return "运行中";
-  if (status === "cancelling") return "取消中";
-  if (status === "completed") return "已完成";
-  if (status === "cancelled") return "已取消";
-  if (status === "failed") return "失败";
-  if (status === "blocked") return "已阻塞";
-  return status || "未知";
-}
-
-function nativeExternalAgentRecordTagType(record) {
-  const status = String(record?.status || "").trim();
-  if (status === "completed") return "success";
-  if (status === "running") return "warning";
-  if (status === "failed" || status === "blocked") return "danger";
-  return "info";
-}
-
-function nativeExternalAgentRecordSummary(record) {
-  const label = String(record?.label || record?.agentType || "外部 Agent").trim();
-  const exitCode =
-    record?.exitCode === null || record?.exitCode === undefined
-      ? "-"
-      : String(record.exitCode);
-  const workspace = String(record?.workspacePath || "").trim();
-  return [
-    label,
-    `exit=${exitCode}`,
-    workspace ? workspace.split("/").filter(Boolean).slice(-2).join("/") : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-}
-
-function nativeExternalAgentRecordTime(record) {
-  const timestamp = Number(record?.updatedAtEpochMs || record?.startedAtEpochMs || 0);
-  if (!timestamp) return "";
-  return formatRelativeDateTime(new Date(timestamp).toISOString());
-}
-
 async function refreshNativeExternalAgentSessionRecords(options = {}) {
   const silent = Boolean(options?.silent);
   nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
   if (!nativeDesktopBridgeAvailable.value) {
     nativeExternalAgentSessionRecords.value = [];
     if (!silent) {
-      ElMessage.info("当前是网页模式；桌面端原生桥接入后可读取 Runner 运行记录。");
+      ElMessage.info(
+        "当前是网页模式；桌面端原生桥接入后可读取 Runner 运行记录。",
+      );
     }
     return;
   }
@@ -7017,12 +5715,16 @@ function resolveNativeExternalAgentSessionIdFromMessage(message) {
   ).trim();
   if (directSessionId) return directSessionId;
   for (const operation of rawMessageOperations(message)) {
-    const operationId = String(operation?.operationId || operation?.id || "").trim();
+    const operationId = String(
+      operation?.operationId || operation?.id || "",
+    ).trim();
     if (operationId.startsWith("native-external-agent:")) {
       return operationId.replace("native-external-agent:", "").trim();
     }
     const meta =
-      operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
     const metaSessionId = String(
       meta.session_id ||
         meta.sessionId ||
@@ -7030,7 +5732,10 @@ function resolveNativeExternalAgentSessionIdFromMessage(message) {
         meta.runnerSessionId ||
         "",
     ).trim();
-    if (String(meta.source || "").trim() === "tauri_external_agent_runner" && metaSessionId) {
+    if (
+      String(meta.source || "").trim() === "tauri_external_agent_runner" &&
+      metaSessionId
+    ) {
       return metaSessionId;
     }
   }
@@ -7044,13 +5749,6 @@ async function openNativeExternalAgentSessionDetailFromMessage(message) {
     return;
   }
   await selectNativeExternalAgentSessionRecord({ sessionId });
-}
-
-function formatDurationMs(value) {
-  const duration = Number(value || 0);
-  if (!Number.isFinite(duration) || duration <= 0) return "0ms";
-  if (duration < 1000) return `${Math.round(duration)}ms`;
-  return `${(duration / 1000).toFixed(duration < 10_000 ? 1 : 0)}s`;
 }
 
 async function refreshNativeRunnerPermissionRecords() {
@@ -7075,7 +5773,8 @@ async function recordDesktopAuditEvent(payload = {}) {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) return null;
   const taskTree =
-    displayedChatTaskTree.value && typeof displayedChatTaskTree.value === "object"
+    displayedChatTaskTree.value &&
+    typeof displayedChatTaskTree.value === "object"
       ? displayedChatTaskTree.value
       : null;
   const selectedNode =
@@ -7189,7 +5888,9 @@ async function refreshNativeExecutorStatus(options = {}) {
     nativeExecutorStatus.value = null;
     nativeRuntimeInfo.value = null;
     if (!silent) {
-      ElMessage.info("当前是网页模式；桌面端原生桥接入后可直接检测 Codex / Hermes。");
+      ElMessage.info(
+        "当前是网页模式；桌面端原生桥接入后可直接检测 Codex / Hermes。",
+      );
     }
     return;
   }
@@ -7237,7 +5938,9 @@ async function runNativeRunnerSelfCheck(options = {}) {
     applyNativeExecutorStatusToExternalAgentInfo(executorStatus);
 
     const results = [];
-    for (const definition of buildNativeRunnerSelfCheckCommands(workspacePath)) {
+    for (const definition of buildNativeRunnerSelfCheckCommands(
+      workspacePath,
+    )) {
       const payload = {
         command: definition.command,
         args: definition.args,
@@ -7313,13 +6016,16 @@ async function refreshExternalAgentStatusSilently({ force = false } = {}) {
 
 function scheduleExternalAgentStatusRefresh(options = {}) {
   clearExternalAgentStatusRefreshTimer();
-  externalAgentStatusRefreshTimer = window.setTimeout(() => {
-    externalAgentStatusRefreshTimer = null;
-    void refreshExternalAgentStatusSilently(options).catch((err) => {
-      console.warn("silent external agent status refresh failed", err);
-      externalAgentStatusRefreshKey = "";
-    });
-  }, Number(options?.delayMs ?? 250));
+  externalAgentStatusRefreshTimer = window.setTimeout(
+    () => {
+      externalAgentStatusRefreshTimer = null;
+      void refreshExternalAgentStatusSilently(options).catch((err) => {
+        console.warn("silent external agent status refresh failed", err);
+        externalAgentStatusRefreshKey = "";
+      });
+    },
+    Number(options?.delayMs ?? 250),
+  );
 }
 
 async function prepareNativeExternalAgentLaunchPlan() {
@@ -7377,8 +6083,9 @@ function stopNativeExternalAgentSessionPolling(sessionId = "") {
     }
     if (
       nativeExternalAgentSessionPollTimer &&
-      normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value) ===
-        normalizedSessionId
+      normalizeNativeExternalAgentSessionId(
+        nativeExternalAgentSession.value,
+      ) === normalizedSessionId
     ) {
       window.clearTimeout(nativeExternalAgentSessionPollTimer);
       nativeExternalAgentSessionPollTimer = null;
@@ -7403,11 +6110,17 @@ function stopNativeExternalAgentSessionEventSubscription() {
     const result = unlisten();
     if (result && typeof result.catch === "function") {
       result.catch((err) => {
-        console.warn("unsubscribe native external agent session events failed", err);
+        console.warn(
+          "unsubscribe native external agent session events failed",
+          err,
+        );
       });
     }
   } catch (err) {
-    console.warn("unsubscribe native external agent session events failed", err);
+    console.warn(
+      "unsubscribe native external agent session events failed",
+      err,
+    );
   }
 }
 
@@ -7461,7 +6174,10 @@ function applyNativeExternalAgentSessionSnapshot(snapshot, options = {}) {
     ? snapshot.logs.filter((item) => !existingSeqs.has(item.seq))
     : [];
   if (Array.isArray(snapshot.logs) && !existingLogs.length) {
-    nativeExternalAgentSessionLogsById.set(sessionId, snapshot.logs.slice(-500));
+    nativeExternalAgentSessionLogsById.set(
+      sessionId,
+      snapshot.logs.slice(-500),
+    );
   }
   if (nextLogs.length) {
     nativeExternalAgentSessionLogsById.set(
@@ -7475,7 +6191,8 @@ function applyNativeExternalAgentSessionSnapshot(snapshot, options = {}) {
       getNativeExternalAgentRunnerSessionIdForChatSession(
         currentChatSessionId.value,
       ) ||
-    sessionId === String(selectedNativeExternalAgentRecordId.value || "").trim();
+    sessionId ===
+      String(selectedNativeExternalAgentRecordId.value || "").trim();
   if (shouldSyncPanel) {
     syncNativeExternalAgentSessionPanel(sessionId);
   } else {
@@ -7484,9 +6201,13 @@ function applyNativeExternalAgentSessionSnapshot(snapshot, options = {}) {
 }
 
 function isTerminalNativeExternalAgentSessionStatus(status) {
-  return ["blocked", "completed", "failed", "cancelled", "unavailable"].includes(
-    String(status || "").trim(),
-  );
+  return [
+    "blocked",
+    "completed",
+    "failed",
+    "cancelled",
+    "unavailable",
+  ].includes(String(status || "").trim());
 }
 
 function shouldApplyNativeExternalAgentSessionEvent(event) {
@@ -7518,13 +6239,20 @@ function finalizeNativeExternalAgentSessionOnce(snapshot, chatSessionId = "") {
 
 async function handleNativeExternalAgentSessionEvent(event) {
   const snapshot = event?.snapshot;
-  if (!snapshot?.sessionId || !shouldApplyNativeExternalAgentSessionEvent(event)) {
+  if (
+    !snapshot?.sessionId ||
+    !shouldApplyNativeExternalAgentSessionEvent(event)
+  ) {
     return;
   }
   const status = String(snapshot.status || "").trim();
   if (
-    nativeExternalAgentFastKilledSessionIds.has(String(snapshot.sessionId).trim()) ||
-    nativeExternalAgentCancelledSessionIds.has(String(snapshot.sessionId).trim())
+    nativeExternalAgentFastKilledSessionIds.has(
+      String(snapshot.sessionId).trim(),
+    ) ||
+    nativeExternalAgentCancelledSessionIds.has(
+      String(snapshot.sessionId).trim(),
+    )
   ) {
     const cancelledSnapshot = buildFastKilledNativeExternalAgentSnapshot(
       snapshot.sessionId,
@@ -7568,7 +6296,11 @@ function buildNativeExternalAgentLogPreview(limit = 12000, sessionId = "") {
       if (stream === "final") return "";
       if (isNativeExternalAgentInternalDiagnostic(stream, content)) return "";
       const prefix =
-        stream === "stderr" ? "[stderr] " : stream === "system" ? "[system] " : "";
+        stream === "stderr"
+          ? "[stderr] "
+          : stream === "system"
+            ? "[system] "
+            : "";
       return `${prefix}${content}`;
     })
     .join("");
@@ -7576,21 +6308,10 @@ function buildNativeExternalAgentLogPreview(limit = 12000, sessionId = "") {
   return `${text.slice(text.length - limit)}\n[output truncated]`;
 }
 
-function isNativeExternalAgentInternalDiagnostic(stream, content) {
-  const normalizedStream = String(stream || "").trim().toLowerCase();
-  const text = String(content || "").trim();
-  if (!text) return true;
-  if (normalizedStream !== "stderr") return false;
-  return (
-    /^tokens used\b/i.test(text) ||
-    /^codex$/i.test(text) ||
-    /failed to record rollout items/i.test(text) ||
-    /codex_core::session/i.test(text) ||
-    /^202\d-\d\d-\d\dT.*\bERROR\b/.test(text)
-  );
-}
-
-function buildNativeExternalAgentDiagnosticPreview(limit = 4000, sessionId = "") {
+function buildNativeExternalAgentDiagnosticPreview(
+  limit = 4000,
+  sessionId = "",
+) {
   const text = getNativeExternalAgentSessionLogs(sessionId)
     .filter((item) => {
       const stream = String(item.stream || "").trim();
@@ -7601,7 +6322,11 @@ function buildNativeExternalAgentDiagnosticPreview(limit = 4000, sessionId = "")
       const content = String(item.content || "");
       if (!content.trim()) return "";
       const prefix =
-        stream === "stderr" ? "[stderr] " : stream === "system" ? "[system] " : "";
+        stream === "stderr"
+          ? "[stderr] "
+          : stream === "system"
+            ? "[system] "
+            : "";
       return `${prefix}${content}`;
     })
     .join("");
@@ -7621,18 +6346,6 @@ function resolveNativeExternalAgentFinalOutput(snapshot) {
     return String(finalLog.content).trim();
   }
   return "";
-}
-
-function shouldShowNativeExternalAgentBlockedReason(snapshot, finalOutput = "") {
-  const blockedReason = String(snapshot?.blockedReason || "").trim();
-  if (!blockedReason) return false;
-  if (
-    finalOutput.trim() &&
-    /没有可恢复的本机进程句柄|已停止标记为运行中/.test(blockedReason)
-  ) {
-    return false;
-  }
-  return true;
 }
 
 function selectedExternalAgentEmployeeLabels() {
@@ -7702,36 +6415,21 @@ function buildNativeExternalAgentTaskPrompt({
   ].join("\n");
 }
 
-function buildNativeExternalAgentCommandPreview(snapshot) {
-  const command = String(snapshot?.command || "").trim();
-  const args = Array.isArray(snapshot?.args) ? snapshot.args : [];
-  if (!command) return "";
-  const visibleArgs = args.map((arg) => {
-    const value = String(arg || "");
-    if (
-      value.includes("用户本次任务：") ||
-      value.includes("你正在 AI 员工工厂桌面端中作为外部 Agent Runner")
-    ) {
-      return "<task-prompt>";
-    }
-    if (value.length > 240) return `${value.slice(0, 120)}...<truncated>`;
-    return value;
-  });
-  return [command, ...visibleArgs].filter(Boolean).join(" ");
-}
-
 function nativeExternalAgentRowsForSession(sessionId = "", chatSessionId = "") {
   const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
   const normalizedChatSessionId = String(
     chatSessionId ||
-      getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId) ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(
+        normalizedSessionId,
+      ) ||
       nativeExternalAgentChatSessionId.value ||
       currentChatSessionId.value ||
       "",
   ).trim();
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId || !normalizedChatSessionId) return messages.value;
-  if (isCurrentChatSession(projectId, normalizedChatSessionId)) return messages.value;
+  if (isCurrentChatSession(projectId, normalizedChatSessionId))
+    return messages.value;
   const rememberedRows = getRememberedChatSessionMessages(
     projectId,
     normalizedChatSessionId,
@@ -7750,7 +6448,10 @@ function persistNativeExternalAgentRowsForSession(chatSessionId = "") {
     persistCurrentChatRuntimeNow(projectId, normalizedChatSessionId);
     return;
   }
-  const rows = getRememberedChatSessionMessages(projectId, normalizedChatSessionId);
+  const rows = getRememberedChatSessionMessages(
+    projectId,
+    normalizedChatSessionId,
+  );
   if (!Array.isArray(rows)) return;
   const payload = {
     ...buildRuntimePayloadForRows(rows),
@@ -7770,13 +6471,13 @@ function findNativeExternalAgentMessage(sessionId = "") {
   const messageId = String(
     (normalizedSessionId
       ? getNativeExternalAgentMessageIdForRunnerSession(normalizedSessionId)
-      : "") || nativeExternalAgentMessageId.value || "",
+      : "") ||
+      nativeExternalAgentMessageId.value ||
+      "",
   ).trim();
   if (!messageId) return null;
   const rows = nativeExternalAgentRowsForSession(normalizedSessionId);
-  return rows.find(
-    (item) => String(item?.id || "").trim() === messageId,
-  );
+  return rows.find((item) => String(item?.id || "").trim() === messageId);
 }
 
 function applyNativeExternalAgentCancellingMessage(snapshot = null) {
@@ -7789,7 +6490,9 @@ function applyNativeExternalAgentCancellingMessage(snapshot = null) {
     upsertNativeExternalAgentMessageOperation(snapshot);
   }
   persistNativeExternalAgentRowsForSession(
-    getNativeExternalAgentChatSessionIdForRunnerSession(snapshot?.sessionId || ""),
+    getNativeExternalAgentChatSessionIdForRunnerSession(
+      snapshot?.sessionId || "",
+    ),
   );
 }
 
@@ -7800,7 +6503,9 @@ function upsertNativeExternalAgentMessageOperation(snapshot) {
   const operationPhase =
     status === "running"
       ? "running"
-      : status === "completed" || status === "cancelled" || status === "cancelling"
+      : status === "completed" ||
+          status === "cancelled" ||
+          status === "cancelling"
         ? "completed"
         : "failed";
   upsertMessageOperation(row, {
@@ -7812,11 +6517,11 @@ function upsertNativeExternalAgentMessageOperation(snapshot) {
         ? "正在处理"
         : status === "cancelling"
           ? "正在取消"
-        : status === "completed"
-          ? "已完成"
-          : status === "cancelled"
-            ? "已取消"
-            : "已结束",
+          : status === "completed"
+            ? "已完成"
+            : status === "cancelled"
+              ? "已取消"
+              : "已结束",
     detail: buildNativeExternalAgentLogPreview(6000, snapshot.sessionId),
     phase: operationPhase,
     actionType: "none",
@@ -7829,7 +6534,10 @@ function upsertNativeExternalAgentMessageOperation(snapshot) {
       command: buildNativeExternalAgentCommandPreview(snapshot),
       cwd: snapshot.workspacePath,
       exit_code: snapshot.exitCode,
-      output_preview: buildNativeExternalAgentLogPreview(4000, snapshot.sessionId),
+      output_preview: buildNativeExternalAgentLogPreview(
+        4000,
+        snapshot.sessionId,
+      ),
       error: snapshot.blockedReason || "",
     },
   });
@@ -7837,11 +6545,14 @@ function upsertNativeExternalAgentMessageOperation(snapshot) {
 
 function isNativeExternalAgentOperation(operation, sessionId = "") {
   const normalizedSessionId = String(sessionId || "").trim();
-  const operationId = String(operation?.operationId || operation?.id || "").trim();
+  const operationId = String(
+    operation?.operationId || operation?.id || "",
+  ).trim();
   if (
     operationId.startsWith("native-external-agent:") &&
     (!normalizedSessionId ||
-      operationId.replace("native-external-agent:", "").trim() === normalizedSessionId)
+      operationId.replace("native-external-agent:", "").trim() ===
+        normalizedSessionId)
   ) {
     return true;
   }
@@ -7857,7 +6568,11 @@ function isNativeExternalAgentOperation(operation, sessionId = "") {
       meta.runnerSessionId ||
       "",
   ).trim();
-  return !normalizedSessionId || !operationSessionId || operationSessionId === normalizedSessionId;
+  return (
+    !normalizedSessionId ||
+    !operationSessionId ||
+    operationSessionId === normalizedSessionId
+  );
 }
 
 function completeNativeExternalAgentRunningOperations(
@@ -7878,11 +6593,15 @@ function completeNativeExternalAgentRunningOperations(
       if (!isNativeExternalAgentOperation(operation, normalizedSessionId)) {
         return operation;
       }
-      const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+      const phase = normalizeOperationPhase(
+        operation?.phase || operation?.status,
+      );
       if (!["running", "pending"].includes(phase)) return operation;
       changed = true;
       const meta =
-        operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+        operation?.meta && typeof operation.meta === "object"
+          ? operation.meta
+          : {};
       return {
         ...operation,
         phase: "completed",
@@ -7921,7 +6640,9 @@ function markNativeExternalAgentOperationCancelledFast(
         return operation;
       }
       const meta =
-        operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+        operation?.meta && typeof operation.meta === "object"
+          ? operation.meta
+          : {};
       return {
         ...operation,
         phase: "completed",
@@ -7977,12 +6698,16 @@ function scheduleNativeExternalAgentDeferredCleanup(
     finalizeNativeExternalAgentSessionOnce(
       latestSnapshot,
       chatSessionId ||
-        getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId),
+        getNativeExternalAgentChatSessionIdForRunnerSession(
+          normalizedSessionId,
+        ),
     );
     clearActiveNativeExternalAgentSessionBinding(
       normalizedSessionId,
       chatSessionId ||
-        getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId),
+        getNativeExternalAgentChatSessionIdForRunnerSession(
+          normalizedSessionId,
+        ),
     );
     schedulePersistChatRuntime();
     void Promise.allSettled([
@@ -7993,12 +6718,17 @@ function scheduleNativeExternalAgentDeferredCleanup(
   nativeExternalAgentDeferredCleanupTimers.set(normalizedSessionId, timer);
 }
 
-function applyNativeExternalAgentFastKilledSession(sessionId = "", chatSessionId = "") {
+function applyNativeExternalAgentFastKilledSession(
+  sessionId = "",
+  chatSessionId = "",
+) {
   const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
   if (!normalizedSessionId) return null;
   const normalizedChatSessionId = String(
     chatSessionId ||
-      getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId) ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(
+        normalizedSessionId,
+      ) ||
       currentChatSessionId.value ||
       "",
   ).trim();
@@ -8006,7 +6736,9 @@ function applyNativeExternalAgentFastKilledSession(sessionId = "", chatSessionId
   nativeExternalAgentCancelledSessionIds.add(normalizedSessionId);
   stopNativeExternalAgentSessionPolling(normalizedSessionId);
   if (normalizedChatSessionId) {
-    const nextLaunching = new Set(nativeExternalAgentLaunchingChatSessionIds.value);
+    const nextLaunching = new Set(
+      nativeExternalAgentLaunchingChatSessionIds.value,
+    );
     nextLaunching.delete(normalizedChatSessionId);
     nativeExternalAgentLaunchingChatSessionIds.value = nextLaunching;
     const nextBackgrounded = new Set(
@@ -8015,7 +6747,8 @@ function applyNativeExternalAgentFastKilledSession(sessionId = "", chatSessionId
     nextBackgrounded.delete(normalizedChatSessionId);
     nativeExternalAgentBackgroundedChatSessionIds.value = nextBackgrounded;
   }
-  const snapshot = buildFastKilledNativeExternalAgentSnapshot(normalizedSessionId);
+  const snapshot =
+    buildFastKilledNativeExternalAgentSnapshot(normalizedSessionId);
   applyNativeExternalAgentSessionSnapshot(snapshot, {
     chatSessionId: normalizedChatSessionId,
     select: true,
@@ -8103,7 +6836,8 @@ function appendNativeExternalAgentMessages(
   }
   const targetRows = isCurrentChatSession(projectId, normalizedChatSessionId)
     ? messages.value
-    : getRememberedChatSessionMessages(projectId, normalizedChatSessionId) || [];
+    : getRememberedChatSessionMessages(projectId, normalizedChatSessionId) ||
+      [];
   targetRows.push(userMessage);
   targetRows.push(assistantMessage);
   if (!isCurrentChatSession(projectId, normalizedChatSessionId)) {
@@ -8126,7 +6860,10 @@ function appendNativeExternalAgentMessages(
       workspace_path: String(snapshot?.workspacePath || "").trim(),
       task_prompt_preview: clipText(taskPrompt, 1200),
       slash_command: String(runContext?.slashCommandKind || "").trim(),
-      attachment_names: normalizeStringList(runContext?.attachmentNames || [], 20),
+      attachment_names: normalizeStringList(
+        runContext?.attachmentNames || [],
+        20,
+      ),
       command: buildNativeExternalAgentCommandPreview(snapshot),
     },
   });
@@ -8176,14 +6913,18 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
   if (isCurrentChatSession(selectedProjectId.value, normalizedChatSessionId)) {
     scrollToBottom();
   }
-  const rows = nativeExternalAgentRowsForSession(sessionId, normalizedChatSessionId);
+  const rows = nativeExternalAgentRowsForSession(
+    sessionId,
+    normalizedChatSessionId,
+  );
   const assistantIndex = rows.findIndex(
     (item) => String(item?.id || "").trim() === String(row.id || "").trim(),
   );
-  const userMessage =
-    assistantIndex > 0 ? rows[assistantIndex - 1] : null;
+  const userMessage = assistantIndex > 0 ? rows[assistantIndex - 1] : null;
   const rootGoal =
-    userMessage?.role === "user" ? String(userMessage.content || "").trim() : "";
+    userMessage?.role === "user"
+      ? String(userMessage.content || "").trim()
+      : "";
   void upsertProjectChatRequirementRecord({
     chatSessionId: normalizedChatSessionId,
     status: status === "completed" ? "done" : "blocked",
@@ -8208,7 +6949,11 @@ function finalizeNativeExternalAgentMessage(snapshot, chatSessionId = "") {
       diagnostics: buildNativeExternalAgentDiagnosticPreview(3000, sessionId),
     },
   });
-  void persistNativeExternalAgentFinalMessages(snapshot, row, normalizedChatSessionId);
+  void persistNativeExternalAgentFinalMessages(
+    snapshot,
+    row,
+    normalizedChatSessionId,
+  );
 }
 
 async function persistNativeExternalAgentChatMessage(
@@ -8220,7 +6965,9 @@ async function persistNativeExternalAgentChatMessage(
   const projectId = String(selectedProjectId.value || "").trim();
   const normalizedChatSessionId = String(
     chatSessionId ||
-      getNativeExternalAgentChatSessionIdForRunnerSession(snapshot?.sessionId) ||
+      getNativeExternalAgentChatSessionIdForRunnerSession(
+        snapshot?.sessionId,
+      ) ||
       currentChatSessionId.value ||
       "",
   ).trim();
@@ -8287,10 +7034,11 @@ async function persistNativeExternalAgentFinalMessages(
     normalizedChatSessionId,
   );
   const assistantIndex = rows.findIndex(
-    (item) => String(item?.id || "").trim() === String(assistantMessage?.id || "").trim(),
+    (item) =>
+      String(item?.id || "").trim() ===
+      String(assistantMessage?.id || "").trim(),
   );
-  const userMessage =
-    assistantIndex > 0 ? rows[assistantIndex - 1] : null;
+  const userMessage = assistantIndex > 0 ? rows[assistantIndex - 1] : null;
   if (userMessage?.role === "user") {
     await persistNativeExternalAgentChatMessage(
       userMessage,
@@ -8313,10 +7061,9 @@ async function pollNativeExternalAgentSession(sessionId) {
   if (!normalizedSessionId) return;
   stopNativeExternalAgentSessionPolling(normalizedSessionId);
   try {
-    const lastSeq = getNativeExternalAgentSessionLogs(normalizedSessionId).reduce(
-      (maxSeq, item) => Math.max(maxSeq, Number(item.seq || 0)),
-      0,
-    );
+    const lastSeq = getNativeExternalAgentSessionLogs(
+      normalizedSessionId,
+    ).reduce((maxSeq, item) => Math.max(maxSeq, Number(item.seq || 0)), 0);
     const snapshot = await getNativeExternalAgentSession({
       sessionId: normalizedSessionId,
       sinceSeq: lastSeq,
@@ -8333,7 +7080,9 @@ async function pollNativeExternalAgentSession(sessionId) {
       syncChatLoadingWithCurrentSession();
       scheduleNativeExternalAgentDeferredCleanup(
         normalizedSessionId,
-        getNativeExternalAgentChatSessionIdForRunnerSession(normalizedSessionId),
+        getNativeExternalAgentChatSessionIdForRunnerSession(
+          normalizedSessionId,
+        ),
         cancelledSnapshot,
       );
       return;
@@ -8348,8 +7097,9 @@ async function pollNativeExternalAgentSession(sessionId) {
       );
       nativeExternalAgentSessionPollTimers.set(normalizedSessionId, timer);
       if (
-        normalizeNativeExternalAgentSessionId(nativeExternalAgentSession.value) ===
-        normalizedSessionId
+        normalizeNativeExternalAgentSessionId(
+          nativeExternalAgentSession.value,
+        ) === normalizedSessionId
       ) {
         nativeExternalAgentSessionPollTimer = timer;
       }
@@ -8368,7 +7118,10 @@ async function pollNativeExternalAgentSession(sessionId) {
   }
 }
 
-async function startNativeExternalAgentSession(chatSessionId = "", options = {}) {
+async function startNativeExternalAgentSession(
+  chatSessionId = "",
+  options = {},
+) {
   nativeDesktopBridgeAvailable.value = hasNativeDesktopBridge();
   if (!nativeDesktopBridgeAvailable.value) {
     ElMessage.info("当前是网页模式；桌面端原生桥接入后可启动 Runner。");
@@ -8413,7 +7166,9 @@ async function startNativeExternalAgentSession(chatSessionId = "", options = {})
     attachmentNames: options.attachmentNames || [],
     slashCommandKind: options.slashCommandKind || "",
   });
-  if (String(currentChatSessionId.value || "").trim() === effectiveChatSessionId) {
+  if (
+    String(currentChatSessionId.value || "").trim() === effectiveChatSessionId
+  ) {
     nativeExternalAgentRunning.value = true;
     nativeExternalAgentChatSessionId.value = effectiveChatSessionId;
     nativeExternalAgentSession.value = null;
@@ -8430,9 +7185,12 @@ async function startNativeExternalAgentSession(chatSessionId = "", options = {})
     applyNativeExternalAgentSessionSnapshot(snapshot, {
       chatSessionId: effectiveChatSessionId,
       select:
-        String(currentChatSessionId.value || "").trim() === effectiveChatSessionId,
+        String(currentChatSessionId.value || "").trim() ===
+        effectiveChatSessionId,
     });
-    selectedNativeExternalAgentRecordId.value = String(snapshot.sessionId || "").trim();
+    selectedNativeExternalAgentRecordId.value = String(
+      snapshot.sessionId || "",
+    ).trim();
     appendNativeExternalAgentMessages(
       displayPrompt || executionPrompt,
       snapshot,
@@ -8459,7 +7217,9 @@ async function startNativeExternalAgentSession(chatSessionId = "", options = {})
           ? executorStatusResult.value
           : null;
       if (nativeExecutorStatus.value) {
-        applyNativeExecutorStatusToExternalAgentInfo(nativeExecutorStatus.value);
+        applyNativeExecutorStatusToExternalAgentInfo(
+          nativeExecutorStatus.value,
+        );
       }
     });
     void recordNativeRunnerPermissionDecision({
@@ -8495,7 +7255,10 @@ async function startNativeExternalAgentSession(chatSessionId = "", options = {})
         `status=${snapshot.status || ""}`,
         workspacePath ? `workspace=${workspacePath}` : "",
       ].filter(Boolean),
-      risks: snapshot.status === "running" ? [] : [snapshot.blockedReason || "Runner 会话未启动"],
+      risks:
+        snapshot.status === "running"
+          ? []
+          : [snapshot.blockedReason || "Runner 会话未启动"],
     });
     if (snapshot.status === "running") {
       ElMessage.success("外部 Agent Runner 已启动");
@@ -8503,10 +7266,7 @@ async function startNativeExternalAgentSession(chatSessionId = "", options = {})
       return true;
     }
     syncChatLoadingWithCurrentSession();
-    finalizeNativeExternalAgentSessionOnce(
-      snapshot,
-      effectiveChatSessionId,
-    );
+    finalizeNativeExternalAgentSessionOnce(snapshot, effectiveChatSessionId);
     ElMessage.warning(
       snapshot.blockedReason || snapshot.summary || "外部 Agent Runner 未启动",
     );
@@ -8850,9 +7610,6 @@ const currentMediaParameterPanelTitle = computed(() =>
     ? "选择视频生成参数"
     : "选择图片生成参数",
 );
-const currentMediaParameterTriggerIcon = computed(() =>
-  currentModelParameterMode.value === "video" ? CollectionTag : Picture,
-);
 const shouldShowImageFourViewsOption = computed(
   () => currentModelParameterMode.value === "image",
 );
@@ -9136,7 +7893,9 @@ const canSubmitGroupChatDialog = computed(
       String(
         groupChatDraft.value.title ||
           groupBotConnectorOptions.value.find(
-            (item) => item.value === String(groupChatDraft.value.connector_id || "").trim(),
+            (item) =>
+              item.value ===
+              String(groupChatDraft.value.connector_id || "").trim(),
           )?.name ||
           "",
       ).trim(),
@@ -9192,7 +7951,9 @@ const externalAgentOptions = computed(() => {
       label: existing.label || String(item?.label || agentType).trim(),
       implemented: true,
       available: Boolean(existing.available || item?.available),
-      installed: Boolean(existing.installed || item?.installed || item?.available),
+      installed: Boolean(
+        existing.installed || item?.installed || item?.available,
+      ),
       reason: existing.reason || String(item?.reason || "").trim(),
     });
   }
@@ -9284,23 +8045,23 @@ const composerPlaceholder = computed(() =>
           ? "已有补充排队，继续输入可追加更多上下文。"
           : ["blocked", "failed"].includes(agentWorkflowState.value.phase)
             ? "当前执行未完成，可补充处理意见后重新发送。"
-    : isAwaitingCardActionInteraction.value
-      ? "请点击消息卡片中的授权按钮；授权后 AI 会自动继续执行。"
-      : isAwaitingUserInteraction.value
-        ? "当前有交互等待处理，可补充下一条消息，按 Enter 发送。"
-      : !hasAccessibleProjects.value
-        ? activeComposerAssistMeta.value?.id === "employee_create"
-          ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
-          : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-            ? "当前没有可访问项目，也可以直接开始通用对话；如需创建员工，可点击上方“创建员工”。"
-            : "当前没有可访问项目；如需创建员工，可先点击上方“创建员工”。"
-        : !hasSelectedProject.value
-          ? activeComposerAssistMeta.value?.id === "employee_create"
-            ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
-            : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
-              ? "直接输入问题开始通用对话；如需项目上下文，再从顶部选择项目。"
-              : "请先从顶部选择项目；如需快速创建员工，也可直接点击“创建员工”。"
-          : "输入你的问题，按 Enter 发送，Shift + Enter 换行。输入 / 可查看可用命令。",
+            : isAwaitingCardActionInteraction.value
+              ? "请点击消息卡片中的授权按钮；授权后 AI 会自动继续执行。"
+              : isAwaitingUserInteraction.value
+                ? "当前有交互等待处理，可补充下一条消息，按 Enter 发送。"
+                : !hasAccessibleProjects.value
+                  ? activeComposerAssistMeta.value?.id === "employee_create"
+                    ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
+                    : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+                      ? "当前没有可访问项目，也可以直接开始通用对话；如需创建员工，可点击上方“创建员工”。"
+                      : "当前没有可访问项目；如需创建员工，可先点击上方“创建员工”。"
+                  : !hasSelectedProject.value
+                    ? activeComposerAssistMeta.value?.id === "employee_create"
+                      ? "描述你要创建的员工角色，例如：帮我创建一个擅长 PRD 拆解和原型输出的产品经理员工。"
+                      : ENABLE_GLOBAL_CHAT_WITHOUT_PROJECT
+                        ? "直接输入问题开始通用对话；如需项目上下文，再从顶部选择项目。"
+                        : "请先从顶部选择项目；如需快速创建员工，也可直接点击“创建员工”。"
+                    : "输入你的问题，按 Enter 发送，Shift + Enter 换行。输入 / 可查看可用命令。",
 );
 const composerHintText = computed(() => {
   if (isTerminalInteractionMode.value) {
@@ -9404,7 +8165,9 @@ function completeFinishedMessageOperations(row, summary = "本轮执行已结束
   const finalSummary = String(summary || "").trim() || "本轮执行已结束";
   let changed = false;
   row.operations = row.operations.map((operation) => {
-    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    const phase = normalizeOperationPhase(
+      operation?.phase || operation?.status,
+    );
     if (!["running", "pending"].includes(phase)) {
       return operation;
     }
@@ -9602,7 +8365,9 @@ function findLatestAgentWorkflowOperation(phaseNames = []) {
     const operations = messageProcessOperations(row);
     for (let opIndex = operations.length - 1; opIndex >= 0; opIndex -= 1) {
       const operation = operations[opIndex];
-      const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+      const phase = normalizeOperationPhase(
+        operation?.phase || operation?.status,
+      );
       if (!phases.size || phases.has(phase)) {
         return { row, rowIndex, operation, phase };
       }
@@ -9677,30 +8442,28 @@ const agentWorkflowState = computed(() => {
   );
   const isRunning = Boolean(
     running ||
-      chatLoading.value ||
-      hasCurrentPendingRequest ||
-      currentChatSessionNativeExternalAgentRunning.value ||
-      backgroundTerminalCount.value > 0,
+    chatLoading.value ||
+    hasCurrentPendingRequest ||
+    currentChatSessionNativeExternalAgentRunning.value ||
+    backgroundTerminalCount.value > 0,
   );
   if (isRunning) {
     const isNativeExternalAgentRunning =
       currentChatSessionNativeExternalAgentRunning.value;
     return {
       phase: "running",
-      title:
-        isNativeExternalAgentRunning
-          ? "外部 Agent Runner 运行中"
-          : backgroundTerminalCount.value > 0 && !chatLoading.value
-            ? "项目终端运行中"
-            : "智能体执行中",
-      detail:
-        isNativeExternalAgentRunning
-          ? nativeExternalAgentSession.value?.summary ||
-            "外部 Agent 正在本机工作区执行。"
-          : summarizeAgentWorkflowOperation(running?.operation) ||
-            (queuedCount
-              ? "补充内容已排队，当前步骤结束后会自动合并。"
-              : "正在执行工具、命令或等待运行结果。"),
+      title: isNativeExternalAgentRunning
+        ? "外部 Agent Runner 运行中"
+        : backgroundTerminalCount.value > 0 && !chatLoading.value
+          ? "项目终端运行中"
+          : "智能体执行中",
+      detail: isNativeExternalAgentRunning
+        ? nativeExternalAgentSession.value?.summary ||
+          "外部 Agent 正在本机工作区执行。"
+        : summarizeAgentWorkflowOperation(running?.operation) ||
+          (queuedCount
+            ? "补充内容已排队，当前步骤结束后会自动合并。"
+            : "正在执行工具、命令或等待运行结果。"),
       actionLabel: running ? "查看轨迹" : "",
       waitingCount: 0,
       runningCount: 1,
@@ -9794,9 +8557,9 @@ const showWorkingStatusBar = computed(() => {
   if (isAwaitingUserInteraction.value) return false;
   return Boolean(
     chatLoading.value ||
-      hasPendingRequestForChatSession(currentChatSessionId.value) ||
-      currentChatSessionNativeExternalAgentRunning.value ||
-      backgroundTerminalCount.value > 0,
+    hasPendingRequestForChatSession(currentChatSessionId.value) ||
+    currentChatSessionNativeExternalAgentRunning.value ||
+    backgroundTerminalCount.value > 0,
   );
 });
 
@@ -9805,7 +8568,9 @@ const workingStatusElapsedSeconds = computed(() => {
   if (!startedAt) return 0;
   return Math.max(
     0,
-    Math.floor((Number(workingStatusNow.value || Date.now()) - startedAt) / 1000),
+    Math.floor(
+      (Number(workingStatusNow.value || Date.now()) - startedAt) / 1000,
+    ),
   );
 });
 
@@ -10041,7 +8806,7 @@ const terminalPanelStatusText = computed(() => {
   }
   if (!hasSelectedProject.value) return "未启用";
   if (!canUseHostTerminal.value) return "未配置";
-  return "未连接";
+  return "未启动";
 });
 const terminalPanelText = computed(() => {
   const lines = Array.isArray(terminalPanelLines.value)
@@ -10071,7 +8836,10 @@ const terminalPanelLineCount = computed(() =>
 const localRunnerProcessStatusTagType = computed(() => {
   if (terminalPanelStatus.value === "error") return "danger";
   if (terminalApprovalPrompt.value) return "warning";
-  if (terminalMirrorConnected.value || terminalPanelStatus.value === "running") {
+  if (
+    terminalMirrorConnected.value ||
+    terminalPanelStatus.value === "running"
+  ) {
     return "primary";
   }
   return "info";
@@ -10097,13 +8865,19 @@ const localRunnerProcessItems = computed(() => {
       },
     ];
   }
-  if (terminalMirrorConnected.value || terminalPanelStatus.value === "running") {
+  if (
+    terminalMirrorConnected.value ||
+    terminalPanelStatus.value === "running"
+  ) {
     return [
       {
         id: "terminal-running",
         phase: "running",
         title: terminalActiveCommand.value || "项目终端运行中",
-        summary: hostTerminalWorkspacePath.value || projectWorkspaceResolved.value || "",
+        summary:
+          hostTerminalWorkspacePath.value ||
+          projectWorkspaceResolved.value ||
+          "",
         phaseLabel: "进行中",
       },
     ];
@@ -10496,13 +9270,29 @@ function parseSlashCommandDraft(text) {
 }
 
 const messagesContainer = ref(null);
-const projectSwitcherRef = ref(null);
+const projectSwitcherRef = computed(
+  () => conversationSidebarRef.value?.projectSwitcherRef || null,
+);
 const draftText = ref("");
 const slashCommandHighlightIndex = ref(0);
 const editorComposing = ref(false);
 const uploadFiles = ref([]);
 const inputFocused = ref(false);
 const isDragging = ref(false);
+const {
+  rememberCurrentChatSessionComposerState,
+  applyChatSessionComposerState,
+  clearCurrentChatSessionComposerState,
+} = useProjectChatComposer({
+  selectedProjectId,
+  currentChatSessionId,
+  draftText,
+  uploadFiles,
+  activeComposerAssist,
+  singleRoundAnswerOnly,
+  slashCommandHighlightIndex,
+  getCacheKey: chatSessionMessageCacheKey,
+});
 
 const currentSlashDraftState = computed(() =>
   parseSlashCommandDraft(draftText.value),
@@ -10568,17 +9358,6 @@ const chatHistoryLoading = ref(false);
 const chatHistoryLoadingMore = ref(false);
 const chatHistoryReachedEnd = ref(false);
 let activeChatHistoryLoadingKey = "";
-const IMAGE_EXTENSIONS = new Set([
-  "png",
-  "jpg",
-  "jpeg",
-  "gif",
-  "bmp",
-  "webp",
-  "svg",
-  "heic",
-  "heif",
-]);
 const AGENTIC_OPERATION_TOOL_NAMES = ["project_host_run_command"];
 
 const ACTIONABLE_OPERATION_HINT_RE =
@@ -10590,54 +9369,6 @@ const EXPLANATION_ONLY_OPERATION_RE =
 const IMPERATIVE_OPERATION_RE =
   /(帮我|替我|你来|请你|直接|现在|马上|代办|执行|运行|跑一下|登录一下|登陆一下|授权一下|检查一下|检测一下|处理一下|做一下)/i;
 const LARK_OPERATION_RE = /(lark-cli|飞书|feishu|\blark\b)/i;
-
-function normalizeStringList(values, max = 200) {
-  if (!Array.isArray(values)) return [];
-  const set = new Set();
-  const items = [];
-  for (const item of values) {
-    const text = String(item || "").trim();
-    if (!text) continue;
-    const key = text.toLowerCase();
-    if (set.has(key)) continue;
-    set.add(key);
-    items.push(text);
-    if (items.length >= max) break;
-  }
-  return items;
-}
-
-function chatSessionStorageKey(projectId) {
-  const normalized = String(projectId || "").trim();
-  return normalized ? `project_chat_session_${normalized}` : "";
-}
-
-function taskTreeSessionStorageKey(projectId) {
-  const normalized = String(projectId || "").trim();
-  return normalized ? `project_chat_task_tree_session_${normalized}` : "";
-}
-
-function workSessionStorageKey(projectId) {
-  const normalized = String(projectId || "").trim();
-  return normalized ? `project_chat_work_session_${normalized}` : "";
-}
-
-function chatRuntimeStorageKey(projectId, chatSessionId) {
-  const normalizedProjectId = String(projectId || "").trim();
-  const normalizedChatSessionId = String(chatSessionId || "").trim();
-  if (!normalizedProjectId || !normalizedChatSessionId) return "";
-  return `project_chat_runtime_${normalizedProjectId}_${normalizedChatSessionId}`;
-}
-
-function chatRuntimeRemoteFingerprint(projectId, chatSessionId, payload) {
-  const key = chatRuntimeStorageKey(projectId, chatSessionId);
-  if (!key || !payload || typeof payload !== "object") return "";
-  try {
-    return `${key}:${JSON.stringify(payload)}`;
-  } catch (_error) {
-    return key;
-  }
-}
 
 function rememberRemotePersistedChatRuntime(projectId, chatSessionId, payload) {
   lastChatRuntimeRemotePersistKey = chatRuntimeStorageKey(
@@ -10677,23 +9408,6 @@ function clearRemotePersistedChatRuntimeState(projectId, chatSessionId = "") {
   }
 }
 
-function rememberChatSession(projectId, sessionId) {
-  const key = chatSessionStorageKey(projectId);
-  if (!key) return;
-  const normalized = String(sessionId || "").trim();
-  if (normalized) {
-    localStorage.setItem(key, normalized);
-  } else {
-    localStorage.removeItem(key);
-  }
-}
-
-function restoreChatSession(projectId) {
-  const key = chatSessionStorageKey(projectId);
-  if (!key) return "";
-  return String(localStorage.getItem(key) || "").trim();
-}
-
 function chatSessionMessageCacheKey(projectId, chatSessionId) {
   const normalizedProjectId = String(projectId || "").trim();
   const normalizedChatSessionId = String(chatSessionId || "").trim();
@@ -10730,84 +9444,17 @@ function getRememberedChatSessionMessages(projectId, chatSessionId) {
   return Array.isArray(rows) ? rows : null;
 }
 
-function normalizeComposerUploadItem(item) {
-  if (!item || typeof item !== "object") return null;
-  return {
-    ...item,
-    name: String(item.name || item.raw?.name || "").trim(),
-    kind: String(item.kind || "").trim(),
-    url: String(item.url || "").trim(),
-    raw: item.raw || null,
-  };
-}
-
-function rememberChatSessionComposerState(projectId, chatSessionId, state) {
-  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
-  if (!key || !state || typeof state !== "object") return;
-  chatSessionComposerCache.set(key, {
-    draftText: String(state.draftText || ""),
-    uploadFiles: Array.isArray(state.uploadFiles)
-      ? state.uploadFiles.map(normalizeComposerUploadItem).filter(Boolean)
-      : [],
-    activeComposerAssist: String(state.activeComposerAssist || "").trim(),
-    singleRoundAnswerOnly: Boolean(state.singleRoundAnswerOnly),
-  });
-}
-
-function rememberCurrentChatSessionComposerState() {
-  const projectId = String(selectedProjectId.value || "").trim();
-  const chatSessionId = String(currentChatSessionId.value || "").trim();
-  if (!projectId || !chatSessionId) return;
-  rememberChatSessionComposerState(projectId, chatSessionId, {
-    draftText: draftText.value,
-    uploadFiles: uploadFiles.value,
-    activeComposerAssist: activeComposerAssist.value,
-    singleRoundAnswerOnly: singleRoundAnswerOnly.value,
-  });
-}
-
-function applyChatSessionComposerState(projectId, chatSessionId) {
-  const key = chatSessionMessageCacheKey(projectId, chatSessionId);
-  const state = key ? chatSessionComposerCache.get(key) : null;
-  draftText.value = String(state?.draftText || "");
-  uploadFiles.value = Array.isArray(state?.uploadFiles)
-    ? state.uploadFiles.map(normalizeComposerUploadItem).filter(Boolean)
-    : [];
-  activeComposerAssist.value = String(state?.activeComposerAssist || "").trim();
-  singleRoundAnswerOnly.value = Boolean(state?.singleRoundAnswerOnly);
-  slashCommandHighlightIndex.value = 0;
-}
-
-function clearCurrentChatSessionComposerState() {
-  const projectId = String(selectedProjectId.value || "").trim();
-  const chatSessionId = String(currentChatSessionId.value || "").trim();
-  if (!projectId || !chatSessionId) return;
-  rememberChatSessionComposerState(projectId, chatSessionId, {
-    draftText: "",
-    uploadFiles: [],
-    activeComposerAssist: activeComposerAssist.value,
-    singleRoundAnswerOnly: singleRoundAnswerOnly.value,
-  });
-}
-
-function hasPendingRequestForChatSession(chatSessionId) {
-  const normalizedSessionId = String(chatSessionId || "").trim();
-  if (!normalizedSessionId) return false;
-  for (const pending of pendingRequests.values()) {
-    if (String(pending?.chatSessionId || "").trim() === normalizedSessionId) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function isNativeExternalAgentRunningForChatSession(chatSessionId) {
   const normalizedSessionId = String(chatSessionId || "").trim();
   if (!normalizedSessionId) return false;
-  if (nativeExternalAgentBackgroundedChatSessionIds.value.has(normalizedSessionId)) {
+  if (
+    nativeExternalAgentBackgroundedChatSessionIds.value.has(normalizedSessionId)
+  ) {
     return false;
   }
-  if (nativeExternalAgentLaunchingChatSessionIds.value.has(normalizedSessionId)) {
+  if (
+    nativeExternalAgentLaunchingChatSessionIds.value.has(normalizedSessionId)
+  ) {
     return true;
   }
   const runnerSessionId =
@@ -10883,82 +9530,12 @@ function resolvePendingRequestRow(pending) {
   return rows[Number(pending.assistantIndex ?? -1)] || null;
 }
 
-function rememberTaskTreeSession(projectId, sessionId) {
-  const key = taskTreeSessionStorageKey(projectId);
-  if (!key) return;
-  const normalized = String(sessionId || "").trim();
-  if (normalized) {
-    localStorage.setItem(key, normalized);
-  } else {
-    localStorage.removeItem(key);
-  }
-}
-
-function restoreTaskTreeSession(projectId) {
-  const key = taskTreeSessionStorageKey(projectId);
-  if (!key) return "";
-  return String(localStorage.getItem(key) || "").trim();
-}
-
-function rememberWorkSession(projectId, sessionId) {
-  const key = workSessionStorageKey(projectId);
-  if (!key) return;
-  const normalized = String(sessionId || "").trim();
-  if (normalized) {
-    localStorage.setItem(key, normalized);
-  } else {
-    localStorage.removeItem(key);
-  }
-}
-
-function restoreWorkSession(projectId) {
-  const key = workSessionStorageKey(projectId);
-  if (!key) return "";
-  return String(localStorage.getItem(key) || "").trim();
-}
-
-function clearChatSessionMemory(projectId) {
-  const key = chatSessionStorageKey(projectId);
-  if (key) {
-    localStorage.removeItem(key);
-  }
-}
-
-function clearTaskTreeSessionMemory(projectId) {
-  const key = taskTreeSessionStorageKey(projectId);
-  if (key) {
-    localStorage.removeItem(key);
-  }
-}
-
-function clearWorkSessionMemory(projectId) {
-  const key = workSessionStorageKey(projectId);
-  if (key) {
-    localStorage.removeItem(key);
-  }
-}
-
 function readPersistedChatRuntime(projectId, chatSessionId) {
-  const key = chatRuntimeStorageKey(projectId, chatSessionId);
-  if (!key) return null;
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch (_error) {
-    return null;
-  }
+  return readLocalPersistedChatRuntime(projectId, chatSessionId);
 }
 
 function writePersistedChatRuntime(projectId, chatSessionId, payload) {
-  const key = chatRuntimeStorageKey(projectId, chatSessionId);
-  if (!key) return;
-  if (!payload || typeof payload !== "object") {
-    localStorage.removeItem(key);
-    return;
-  }
-  localStorage.setItem(key, JSON.stringify(payload));
+  writeLocalPersistedChatRuntime(projectId, chatSessionId, payload);
 }
 
 function clearPersistedChatRuntime(projectId, chatSessionId = "") {
@@ -10969,27 +9546,7 @@ function clearPersistedChatRuntime(projectId, chatSessionId = "") {
     normalizedProjectId,
     normalizedChatSessionId,
   );
-  if (normalizedChatSessionId) {
-    const key = chatRuntimeStorageKey(
-      normalizedProjectId,
-      normalizedChatSessionId,
-    );
-    if (key) {
-      localStorage.removeItem(key);
-    }
-    return;
-  }
-  const prefix = `project_chat_runtime_${normalizedProjectId}_`;
-  const keys = [];
-  for (let index = 0; index < localStorage.length; index += 1) {
-    const key = String(localStorage.key(index) || "").trim();
-    if (key.startsWith(prefix)) {
-      keys.push(key);
-    }
-  }
-  for (const key of keys) {
-    localStorage.removeItem(key);
-  }
+  clearLocalPersistedChatRuntime(normalizedProjectId, normalizedChatSessionId);
 }
 
 async function fetchPersistedChatRuntime(projectId, chatSessionId) {
@@ -11116,30 +9673,6 @@ function normalizeRuntimeMessageSnapshot(row) {
   };
 }
 
-function normalizeNativeExternalAgentRuntimeSnapshot(value) {
-  if (!value || typeof value !== "object") return null;
-  const session =
-    value.session && typeof value.session === "object" ? value.session : null;
-  const sessionId = String(
-    value.session_id ||
-      value.sessionId ||
-      session?.sessionId ||
-      session?.session_id ||
-      "",
-  ).trim();
-  if (!sessionId) return null;
-  return {
-    session_id: sessionId,
-    chat_session_id: String(
-      value.chat_session_id || value.chatSessionId || "",
-    ).trim(),
-    message_id: String(value.message_id || value.messageId || "").trim(),
-    running: Boolean(value.running),
-    session,
-    logs: Array.isArray(value.logs) ? value.logs.slice(-500) : [],
-  };
-}
-
 function buildNativeExternalAgentRuntimeSnapshotForSession(sessionId = "") {
   const normalizedSessionId = normalizeNativeExternalAgentSessionId(sessionId);
   if (!normalizedSessionId) return null;
@@ -11157,7 +9690,9 @@ function buildNativeExternalAgentRuntimeSnapshotForSession(sessionId = "") {
   });
 }
 
-function buildNativeExternalAgentRuntimeSnapshotForChatSession(chatSessionId = "") {
+function buildNativeExternalAgentRuntimeSnapshotForChatSession(
+  chatSessionId = "",
+) {
   const runnerSessionId =
     getNativeExternalAgentRunnerSessionIdForChatSession(chatSessionId);
   if (runnerSessionId) {
@@ -11170,7 +9705,9 @@ function buildNativeExternalAgentRuntimeSnapshotForChatSession(chatSessionId = "
       normalizedChatSessionId
   ) {
     return normalizeNativeExternalAgentRuntimeSnapshot({
-      session_id: String(nativeExternalAgentSession.value?.sessionId || "").trim(),
+      session_id: String(
+        nativeExternalAgentSession.value?.sessionId || "",
+      ).trim(),
       chat_session_id: normalizedChatSessionId,
       message_id: String(nativeExternalAgentMessageId.value || "").trim(),
       running: isLiveNativeExternalAgentStatus(
@@ -11191,7 +9728,9 @@ function buildNativeExternalAgentRuntimeSnapshotForChatSession(chatSessionId = "
 
 function listNativeExternalAgentRuntimeSnapshotsForCurrentProject() {
   return Array.from(nativeExternalAgentSessionsById.keys())
-    .map((sessionId) => buildNativeExternalAgentRuntimeSnapshotForSession(sessionId))
+    .map((sessionId) =>
+      buildNativeExternalAgentRuntimeSnapshotForSession(sessionId),
+    )
     .filter(Boolean);
 }
 
@@ -11223,10 +9762,12 @@ function buildPersistedChatRuntimePayload() {
       active_assistant_index: activeIndex,
       active_assistant_message_id: String(activeRow?.id || "").trim(),
     },
-    native_external_agent: buildNativeExternalAgentRuntimeSnapshotForChatSession(
-      currentChatSessionId.value,
-    ),
-    native_external_agents: listNativeExternalAgentRuntimeSnapshotsForCurrentProject(),
+    native_external_agent:
+      buildNativeExternalAgentRuntimeSnapshotForChatSession(
+        currentChatSessionId.value,
+      ),
+    native_external_agents:
+      listNativeExternalAgentRuntimeSnapshotsForCurrentProject(),
   };
 }
 
@@ -11340,7 +9881,9 @@ async function restoreNativeExternalAgentRuntime(
     })
     .filter((item) => {
       const snapshotChatSessionId = String(item.chat_session_id || "").trim();
-      return !snapshotChatSessionId || snapshotChatSessionId === activeChatSessionId;
+      return (
+        !snapshotChatSessionId || snapshotChatSessionId === activeChatSessionId
+      );
     });
   for (const runtimeSnapshot of runtimeSnapshots) {
     rememberNativeExternalAgentSessionBinding({
@@ -11360,7 +9903,8 @@ async function restoreNativeExternalAgentRuntime(
         runtimeSnapshot.session,
       );
     }
-    const restoredMessage = findNativeExternalAgentRuntimeMessage(runtimeSnapshot);
+    const restoredMessage =
+      findNativeExternalAgentRuntimeMessage(runtimeSnapshot);
     const restoredSessionId =
       String(runtimeSnapshot?.session_id || "").trim() ||
       resolveNativeExternalAgentSessionIdFromMessage(restoredMessage);
@@ -11465,7 +10009,11 @@ async function restoreInteractiveChatRuntime(
     terminal.host_terminal_workspace_path || "",
   ).trim();
   activeTerminalMirrorAssistantIndex.value = -1;
-  await restoreNativeExternalAgentRuntime(projectId, chatSessionId, runtimePayload);
+  await restoreNativeExternalAgentRuntime(
+    projectId,
+    chatSessionId,
+    runtimePayload,
+  );
   await nextTick();
   scrollTerminalPanelBottom();
 }
@@ -11499,92 +10047,22 @@ function persistCurrentChatRuntimeNow(projectId = "", chatSessionId = "") {
     chatSessionId || currentChatSessionId.value || "",
   ).trim();
   if (!normalizedProjectId || !normalizedChatSessionId) return;
-  if (!isCurrentChatSession(normalizedProjectId, normalizedChatSessionId)) return;
+  if (!isCurrentChatSession(normalizedProjectId, normalizedChatSessionId))
+    return;
   if (chatRuntimePersistTimer) {
     clearTimeout(chatRuntimePersistTimer);
     chatRuntimePersistTimer = null;
   }
   const payload = buildPersistedChatRuntimePayload();
-  writePersistedChatRuntime(normalizedProjectId, normalizedChatSessionId, payload);
-  void persistChatRuntimeToServer(
+  writePersistedChatRuntime(
     normalizedProjectId,
     normalizedChatSessionId,
     payload,
   );
-}
-
-function normalizeChatSourceContext(item) {
-  const source =
-    item?.source_context && typeof item.source_context === "object"
-      ? item.source_context
-      : item || {};
-  const normalized = {
-    source_type: String(source.source_type || "").trim(),
-    platform: String(source.platform || "").trim(),
-    connector_id: String(source.connector_id || "").trim(),
-    resolve_identity: String(source.resolve_identity || "").trim(),
-    external_chat_id: String(source.external_chat_id || "").trim(),
-    external_chat_name: String(source.external_chat_name || "").trim(),
-    external_message_id: String(source.external_message_id || "").trim(),
-    sender_id: String(source.sender_id || "").trim(),
-    sender_name: String(source.sender_name || "").trim(),
-    thread_key: String(source.thread_key || "").trim(),
-    chat_mode: String(source.chat_mode || "").trim(),
-    external_agent_type: String(source.external_agent_type || "").trim(),
-    agent_session_id: String(source.agent_session_id || "").trim(),
-    session_id: String(source.session_id || "").trim(),
-    thread_id: String(source.thread_id || "").trim(),
-  };
-  [
-    "assistant_workflow",
-    "archive_workflow",
-    "pending_interaction",
-    "interaction_submission",
-    "agent_runtime_v2",
-    "agent_runtime_trace",
-  ].forEach((key) => {
-    if (source[key] && typeof source[key] === "object") {
-      normalized[key] = cloneInteractionValue(source[key]);
-    }
-  });
-  return normalized;
-}
-
-function normalizeChatSession(item) {
-  const sourceContext = normalizeChatSourceContext(item || {});
-  return {
-    id: String(item?.id || "").trim(),
-    title: String(item?.title || "新对话").trim() || "新对话",
-    preview: String(item?.preview || "").trim(),
-    message_count: Number(item?.message_count || 0),
-    source_type: sourceContext.source_type,
-    platform: sourceContext.platform,
-    connector_id: sourceContext.connector_id,
-    external_chat_id: sourceContext.external_chat_id,
-    external_chat_name: sourceContext.external_chat_name,
-    thread_key: sourceContext.thread_key,
-    source_context: sourceContext,
-    created_at: String(item?.created_at || "").trim(),
-    updated_at: String(item?.updated_at || "").trim(),
-    last_message_at: String(item?.last_message_at || "").trim(),
-  };
-}
-
-function isGroupChatSession(session) {
-  const source = normalizeChatSourceContext(session || {});
-  return Boolean(
-    source.external_chat_name ||
-    source.external_chat_id,
-  );
-}
-
-function isBotConversationSession(session) {
-  const source = normalizeChatSourceContext(session || {});
-  return Boolean(
-    source.platform ||
-    source.connector_id ||
-    source.external_chat_name ||
-    source.external_chat_id,
+  void persistChatRuntimeToServer(
+    normalizedProjectId,
+    normalizedChatSessionId,
+    payload,
   );
 }
 
@@ -11596,57 +10074,6 @@ const chatHistoryHasMore = computed(() => {
   }
   return chatHistoryLoadedCount.value >= CHAT_HISTORY_PAGE_SIZE;
 });
-
-function formatChatSessionMeta(session) {
-  const count = Number(session?.message_count || 0);
-  const time = formatChatSessionTime(
-    session?.last_message_at ||
-      session?.updated_at ||
-      session?.created_at ||
-      "",
-  );
-  return `${count} 条 · ${time}`;
-}
-
-function formatChatSessionTime(value) {
-  return formatRelativeDateTime(value, { fallback: "刚刚" });
-}
-
-function formatChatPlatformLabel(platform) {
-  const normalized = String(platform || "")
-    .trim()
-    .toLowerCase();
-  if (normalized === "feishu") return "飞书";
-  if (normalized === "wechat") return "微信/企微";
-  if (normalized === "qq") return "QQ";
-  return normalized;
-}
-
-function formatChatSessionSourceLabel(session) {
-  const source = normalizeChatSourceContext(session || {});
-  const sourceType = String(source.source_type || "").trim().toLowerCase();
-  const groupName = source.external_chat_name;
-  const platformLabel = formatChatPlatformLabel(source.platform);
-  if (!groupName && !platformLabel) return "";
-  if (sourceType === "manual_ai_chat" && platformLabel && !groupName) {
-    return `${platformLabel}机器人对话`;
-  }
-  const suffix = source.external_chat_id ? "已解析" : "待解析 ID";
-  if (groupName && platformLabel)
-    return `${platformLabel}群 · ${groupName} · ${suffix}`;
-  if (groupName) return `群 · ${groupName} · ${suffix}`;
-  return `${platformLabel}群 · ${suffix}`;
-}
-
-function resolveChatSessionGroupLabel(session) {
-  const source = String(
-    session?.last_message_at ||
-      session?.updated_at ||
-      session?.created_at ||
-      "",
-  ).trim();
-  return formatDateGroupLabel(source, { fallback: "更早" });
-}
 
 function extractEmployeeDraftPayload(text) {
   const content = String(text || "");
@@ -12214,7 +10641,11 @@ function normalizeProjectChatSettings(raw) {
   };
 }
 
-function resolveNumericChatSetting(value, fallback, { min = 0, max = null } = {}) {
+function resolveNumericChatSetting(
+  value,
+  fallback,
+  { min = 0, max = null } = {},
+) {
   const parsed = Number(value);
   const fallbackValue = Number(fallback);
   const safeFallback = Number.isFinite(fallbackValue) ? fallbackValue : 0;
@@ -12248,218 +10679,12 @@ function normalizeChatSelectedEmployeeIds(
   return validSelected.length >= available.length ? [] : validSelected;
 }
 
-function normalizeWorkSessionSummary(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const sessionId = String(raw.session_id || "").trim();
-  if (!sessionId) return null;
-  return {
-    session_id: sessionId,
-    latest_status: String(raw.latest_status || "")
-      .trim()
-      .toLowerCase(),
-    goal: String(raw.goal || "").trim(),
-    task_tree_session_id: String(raw.task_tree_session_id || "").trim(),
-    task_tree_chat_session_id: String(
-      raw.task_tree_chat_session_id || "",
-    ).trim(),
-    task_node_title: String(raw.task_node_title || "").trim(),
-    updated_at: String(raw.updated_at || "").trim(),
-    created_at: String(raw.created_at || "").trim(),
-    phases: Array.isArray(raw.phases)
-      ? raw.phases.map((item) => String(item || "").trim()).filter(Boolean)
-      : [],
-    steps: Array.isArray(raw.steps)
-      ? raw.steps.map((item) => String(item || "").trim()).filter(Boolean)
-      : [],
-  };
-}
-
-function resolveTaskTreeEventPayload(payload) {
-  if (!payload || typeof payload !== "object") {
-    return payload ?? null;
-  }
-  if (payload.task_tree && typeof payload.task_tree === "object") {
-    return payload.task_tree;
-  }
-  if (
-    payload.history_task_tree &&
-    typeof payload.history_task_tree === "object"
-  ) {
-    return payload.history_task_tree;
-  }
-  if (
-    Object.prototype.hasOwnProperty.call(payload, "task_tree") ||
-    Object.prototype.hasOwnProperty.call(payload, "history_task_tree")
-  ) {
-    return null;
-  }
-  return payload;
-}
-
-function applyTaskTreePayload(payload) {
-  const normalized = normalizeTaskTreePayload(payload);
-  chatTaskTree.value = normalized;
-  const projectId = String(selectedProjectId.value || "").trim();
-  if (projectId) {
-    if (normalized?.id && !isTaskTreeArchivedOrDone(normalized)) {
-      rememberTaskTreeSession(projectId, normalized.id);
-    } else if (normalized?.id && isTaskTreeArchivedOrDone(normalized)) {
-      clearTaskTreeSessionMemory(projectId);
-      clearWorkSessionMemory(projectId);
-      currentWorkSessionId.value = "";
-      clearOngoingTaskRestoreNotice();
-    }
-  }
-  if (!normalized) {
-    selectedTaskTreeNodeId.value = "";
-    taskTreeStatusDraft.value = "pending";
-    taskTreeVerificationDraft.value = "";
-    taskTreeSummaryDraft.value = "";
-    return;
-  }
-  const nextNodeId =
-    String(selectedTaskTreeNodeId.value || "").trim() ||
-    String(normalized.current_node_id || "").trim() ||
-    String(normalized.nodes?.[0]?.id || "").trim();
-  const targetNode =
-    normalized.nodes.find(
-      (item) => String(item?.id || "").trim() === nextNodeId,
-    ) ||
-    normalized.current_node ||
-    normalized.nodes?.[0] ||
-    null;
-  selectedTaskTreeNodeId.value = String(targetNode?.id || "").trim();
-  taskTreeStatusDraft.value = String(targetNode?.status || "pending").trim();
-  taskTreeVerificationDraft.value = String(
-    targetNode?.verification_result || "",
-  ).trim();
-  taskTreeSummaryDraft.value = String(
-    targetNode?.summary_for_model || "",
-  ).trim();
-}
-
-function clearOngoingTaskRestoreNotice() {
-  ongoingTaskRestoreNotice.value = null;
-}
-
-function setOngoingTaskRestoreNotice(taskTree, workSession) {
-  const chatSessionId = String(taskTree?.chat_session_id || "").trim();
-  if (!chatSessionId) {
-    clearOngoingTaskRestoreNotice();
-    return;
-  }
-  ongoingTaskRestoreNotice.value = {
-    chat_session_id: chatSessionId,
-    task_tree_session_id: String(taskTree?.id || "").trim(),
-    work_session_id: String(workSession?.session_id || "").trim(),
-    title:
-      String(taskTree?.title || taskTree?.root_goal || "").trim() ||
-      "已恢复进行中的任务",
-    current_node_title: String(
-      taskTree?.current_node?.title || taskTree?.root_goal || "",
-    ).trim(),
-    updated_at: String(
-      workSession?.updated_at ||
-        taskTree?.updated_at ||
-        taskTree?.created_at ||
-        "",
-    ).trim(),
-    latest_status: String(workSession?.latest_status || "").trim(),
-  };
-}
-
 function formatCompactSessionId(value) {
   const normalized = String(value || "").trim();
   if (!normalized || normalized.length <= 22) {
     return normalized;
   }
   return `${normalized.slice(0, 14)}...${normalized.slice(-6)}`;
-}
-
-function applyWorkSessionPayload(raw, options = {}) {
-  const normalized = normalizeWorkSessionSummary(raw);
-  const projectId = String(
-    options.projectId || selectedProjectId.value || "",
-  ).trim();
-  if (!projectId || !normalized?.session_id) {
-    return null;
-  }
-  currentWorkSessionId.value = normalized.session_id;
-  rememberWorkSession(projectId, normalized.session_id);
-  const taskTree =
-    options.taskTree && typeof options.taskTree === "object"
-      ? options.taskTree
-      : displayedChatTaskTree.value;
-  const noticeSessionId = String(
-    ongoingTaskRestoreNotice.value?.chat_session_id || "",
-  ).trim();
-  const taskChatSessionId = String(taskTree?.chat_session_id || "").trim();
-  if (
-    noticeSessionId &&
-    taskChatSessionId &&
-    noticeSessionId === taskChatSessionId
-  ) {
-    setOngoingTaskRestoreNotice(taskTree, normalized);
-  }
-  return normalized;
-}
-
-async function syncOngoingWorkSessionFromTaskTree(
-  projectId,
-  taskTree,
-  options = {},
-) {
-  const normalizedProjectId = String(projectId || "").trim();
-  const taskTreeSessionId = String(taskTree?.id || "").trim();
-  const taskTreeChatSessionId = String(taskTree?.chat_session_id || "").trim();
-  if (!normalizedProjectId || !taskTreeSessionId) {
-    if (options.clearIfMissing !== false) {
-      currentWorkSessionId.value = "";
-      clearWorkSessionMemory(normalizedProjectId);
-    }
-    return null;
-  }
-  try {
-    const data = await api.get(
-      `/projects/${encodeURIComponent(normalizedProjectId)}/work-sessions`,
-      {
-        params: {
-          task_tree_session_id: taskTreeSessionId,
-          task_tree_chat_session_id: taskTreeChatSessionId,
-          limit: 1,
-        },
-      },
-    );
-    const workSession = normalizeWorkSessionSummary(data?.items?.[0]);
-    if (workSession?.session_id) {
-      currentWorkSessionId.value = workSession.session_id;
-      rememberWorkSession(normalizedProjectId, workSession.session_id);
-      return workSession;
-    }
-    if (options.clearIfMissing !== false) {
-      currentWorkSessionId.value = "";
-      clearWorkSessionMemory(normalizedProjectId);
-    }
-    return null;
-  } catch (err) {
-    if (!options.silent) {
-      ElMessage.error(err?.detail || err?.message || "恢复工作轨迹失败");
-    }
-    return null;
-  }
-}
-
-function syncTaskTreeDrafts(node) {
-  const targetNode =
-    node && typeof node === "object" ? node : taskTreeSelectedNode.value;
-  selectedTaskTreeNodeId.value = String(targetNode?.id || "").trim();
-  taskTreeStatusDraft.value = String(targetNode?.status || "pending").trim();
-  taskTreeVerificationDraft.value = String(
-    targetNode?.verification_result || "",
-  ).trim();
-  taskTreeSummaryDraft.value = String(
-    targetNode?.summary_for_model || "",
-  ).trim();
 }
 
 function normalizeDictionaryBackedChatSettings(raw) {
@@ -12573,7 +10798,7 @@ function formatContent(text) {
   );
   if (!displayText) return "";
   try {
-    return marked.parse(displayText, { renderer: markdownRenderer });
+    return renderProjectChatMarkdown(displayText);
   } catch (e) {
     return displayText;
   }
@@ -12595,7 +10820,9 @@ function stripInternalProtocolContentForDisplay(text) {
       /(^|[\n\r.!?:])[ \t]*<function\b[^>]*\bname\s*=[^>]*>[\s\S]*?<\/function>/gi,
       "$1",
     );
-  const harmonyMatch = output.match(/(?:^|[\s>|])to=functions\.[A-Za-z_][\w.]*/i);
+  const harmonyMatch = output.match(
+    /(?:^|[\s>|])to=functions\.[A-Za-z_][\w.]*/i,
+  );
   if (harmonyMatch && typeof harmonyMatch.index === "number") {
     const prefix = output.slice(0, harmonyMatch.index).trim();
     output = ["assistant", "commentary", "<|channel|>commentary"].includes(
@@ -12837,10 +11064,7 @@ async function openWorkspaceDirectory(path = "") {
           workspacePath: projectWorkspaceResolved.value,
           path: String(path || "").trim(),
         })
-      : await api.get(
-          `/projects/${encodeURIComponent(projectId)}/workspace/files`,
-          { params: { path: String(path || "").trim() } },
-    );
+      : await listProjectWorkspaceFiles(projectId, path);
     workspaceFileTreePath.value = String(data?.path || "").trim();
     workspaceFileItems.value = Array.isArray(data?.items) ? data.items : [];
     if (nativeDesktopBridgeAvailable.value) {
@@ -12934,10 +11158,7 @@ async function openWorkspaceFile(path = "") {
           workspacePath: projectWorkspaceResolved.value,
           path: normalizedPath,
         })
-      : await api.get(
-          `/projects/${encodeURIComponent(projectId)}/workspace/file`,
-          { params: { path: normalizedPath } },
-        );
+      : await readProjectWorkspaceFile(projectId, normalizedPath);
     activeWorkspaceFilePath.value = String(data?.path || normalizedPath).trim();
     workspaceFileDraft.value = String(data?.content || "");
     workspaceFileOriginal.value = workspaceFileDraft.value;
@@ -13090,7 +11311,9 @@ async function prepareDesktopWorkspaceFileWrite(path) {
       status: "failed",
       content: `桌面端写入前确认失败：${normalizedPath}`,
       changed_files: [normalizedPath],
-      risks: [String(err?.message || "准备写入确认失败").trim()].filter(Boolean),
+      risks: [String(err?.message || "准备写入确认失败").trim()].filter(
+        Boolean,
+      ),
     });
     return false;
   } finally {
@@ -13108,13 +11331,10 @@ async function saveActiveWorkspaceFile() {
   }
   workspaceFileSaving.value = true;
   try {
-    const data = await api.put(
-      `/projects/${encodeURIComponent(projectId)}/workspace/file`,
-      {
-        path,
-        content: workspaceFileDraft.value,
-      },
-    );
+    const data = await saveProjectWorkspaceFile(projectId, {
+      path,
+      content: workspaceFileDraft.value,
+    });
     activeWorkspaceFilePath.value = String(data?.path || path).trim();
     workspaceFileOriginal.value = workspaceFileDraft.value;
     await openWorkspaceDirectory(workspaceFileTreePath.value);
@@ -13273,9 +11493,7 @@ async function sendTerminalMirrorContent(content, options = {}) {
 
 async function sendTerminalApprovalChoice(choice) {
   const activePrompt = terminalApprovalPrompt.value;
-  const activePromptKey = String(
-    activePrompt?.key || "",
-  ).trim();
+  const activePromptKey = String(activePrompt?.key || "").trim();
   if (activePromptKey) {
     terminalApprovalHandledKey.value = activePromptKey;
   }
@@ -13343,16 +11561,6 @@ function messageStatusNotes(row) {
     : [];
 }
 
-function normalizeProcessLogLevel(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (["info", "success", "warning", "error"].includes(normalized)) {
-    return normalized;
-  }
-  return "info";
-}
-
 function appendMessageProcessLog(row, source = {}) {
   if (!row) return null;
   const text = String(source?.text || source?.content || "").trim();
@@ -13387,57 +11595,6 @@ function appendMessageProcessLog(row, source = {}) {
   return entry;
 }
 
-function normalizePersistedProcessLogEntries(value) {
-  return Array.isArray(value)
-    ? value
-        .map((item, index) => ({
-          id: String(item?.id || `persisted-process-log-${index}`).trim(),
-          text: String(item?.text || item?.content || "").trim(),
-          level: normalizeProcessLogLevel(item?.level),
-          createdAt: String(item?.createdAt || item?.created_at || "").trim(),
-        }))
-        .filter((item) => item.text)
-    : [];
-}
-
-function normalizePersistedOperations(value) {
-  return Array.isArray(value)
-    ? value.map((item) => buildMessageOperation(item)).filter((item) => item.title)
-    : [];
-}
-
-function buildPendingInteractionOperation(value) {
-  if (!value || typeof value !== "object") return null;
-  const operationId = String(value.operation_id || value.operationId || "").trim();
-  if (!operationId) return null;
-  return buildMessageOperation({
-    operationId,
-    kind: String(value.kind || "request").trim() || "request",
-    title: String(value.title || "需要你继续操作").trim(),
-    summary: String(value.summary || "等待你完成当前交互").trim(),
-    detail: String(value.detail || "").trim(),
-    phase: String(value.phase || "waiting_user").trim(),
-    actionType: String(value.action_type || value.actionType || "interaction_form").trim(),
-    meta: {
-      task_id: String(value.task_id || "").trim(),
-      chat_session_id: String(value.chat_session_id || "").trim(),
-      resume_command: String(value.resume_command || "").trim(),
-      authorization_url: String(value.authorization_url || "").trim(),
-      workflow_kind: String(value.workflow_kind || "").trim(),
-      workflow_id: String(value.workflow_id || "").trim(),
-      interaction_id: String(value.interaction_id || operationId).trim(),
-      interaction_schema:
-        value.interaction_schema && typeof value.interaction_schema === "object"
-          ? cloneInteractionValue(value.interaction_schema)
-          : null,
-      workflow_state:
-        value.workflow_state && typeof value.workflow_state === "object"
-          ? cloneInteractionValue(value.workflow_state)
-          : {},
-    },
-  });
-}
-
 function isCompletedDoneProcessLog(entry) {
   const text = String(entry?.text || entry?.content || "").trim();
   if (!text) return false;
@@ -13446,8 +11603,7 @@ function isCompletedDoneProcessLog(entry) {
 
 function shouldHideProcessLogEntry(row, entry) {
   return (
-    hasNonTerminalUserWaitingOperation(row) &&
-    isCompletedDoneProcessLog(entry)
+    hasNonTerminalUserWaitingOperation(row) && isCompletedDoneProcessLog(entry)
   );
 }
 
@@ -13486,16 +11642,18 @@ function rawMessageOperations(row) {
 function isVisibleProcessOperation(operation) {
   if (!operation) return false;
   const meta =
-    operation?.meta && typeof operation.meta === "object"
-      ? operation.meta
-      : {};
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   if (String(meta.hide_in_message_process || "").trim() === "true") {
     return false;
   }
   if (String(meta.source || "").trim() === "tauri_external_agent_runner") {
     return false;
   }
-  if (String(operation?.operationId || operation?.id || "").startsWith("native-external-agent:")) {
+  if (
+    String(operation?.operationId || operation?.id || "").startsWith(
+      "native-external-agent:",
+    )
+  ) {
     return false;
   }
   const kind = String(operation?.kind || "")
@@ -13511,20 +11669,18 @@ function isVisibleProcessOperation(operation) {
   }
   if (
     kind === "request" &&
-    (
-      phase !== "pending" ||
+    (phase !== "pending" ||
       String(meta.agent_runtime_event || "").trim() === "true" ||
       String(meta.agent_runtime_permission || "").trim() === "true" ||
-      String(meta.run_id || "").trim()
-    )
+      String(meta.run_id || "").trim())
   ) {
     return true;
   }
   return Boolean(
     operationCommand(operation) ||
-      operationOutput(operation) ||
-      String(operation?.summary || "").trim() ||
-      String(operation?.detail || "").trim(),
+    operationOutput(operation) ||
+    String(operation?.summary || "").trim() ||
+    String(operation?.detail || "").trim(),
   );
 }
 
@@ -13552,7 +11708,10 @@ function shouldShowInlineThinkingState(row, idx) {
 function messageBodyHtml(row, idx) {
   const content = formatContent(row?.content);
   if (content) return content;
-  if (shouldShowInlineThinkingState(row, idx) && !shouldShowMessageProcess(row, idx)) {
+  if (
+    shouldShowInlineThinkingState(row, idx) &&
+    !shouldShowMessageProcess(row, idx)
+  ) {
     return "思考中...";
   }
   return "";
@@ -13671,15 +11830,11 @@ function messageLiveProgressOperationTitle(operation) {
     .toLowerCase();
   const title = String(operation?.title || "").trim();
   const meta =
-    operation?.meta && typeof operation.meta === "object"
-      ? operation.meta
-      : {};
+    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   if (
     kind === "request" &&
-    (
-      String(meta.agent_runtime_event || "").trim() === "true" ||
-      String(meta.run_id || "").trim()
-    )
+    (String(meta.agent_runtime_event || "").trim() === "true" ||
+      String(meta.run_id || "").trim())
   ) {
     return title || "Agent Runtime";
   }
@@ -13708,8 +11863,11 @@ function messageLiveProgressItems(row, idx) {
   const seen = new Set();
   for (const operation of messageOperations(row)) {
     if (!isVisibleProcessOperation(operation)) continue;
-    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
-    const id = String(operation?.id || "").trim() || `operation-${items.length}`;
+    const phase = normalizeOperationPhase(
+      operation?.phase || operation?.status,
+    );
+    const id =
+      String(operation?.id || "").trim() || `operation-${items.length}`;
     const title = messageLiveProgressOperationTitle(operation);
     const summary = messageLiveProgressOperationSummary(operation);
     const signature = `${title}\n${summary}\n${phase}`;
@@ -13755,10 +11913,7 @@ function messageLiveProgressItems(row, idx) {
               : "进行中",
     });
   }
-  if (
-    !items.length &&
-    shouldShowInlineThinkingState(row, idx)
-  ) {
+  if (!items.length && shouldShowInlineThinkingState(row, idx)) {
     items.push({
       id: "thinking",
       phase: "running",
@@ -13770,185 +11925,6 @@ function messageLiveProgressItems(row, idx) {
   return items.slice(-8);
 }
 
-function normalizeOperationPhase(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (
-    [
-      "pending",
-      "running",
-      "waiting_user",
-      "blocked",
-      "completed",
-      "failed",
-    ].includes(normalized)
-  ) {
-    return normalized;
-  }
-  return "pending";
-}
-
-function normalizeOperationActionType(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (
-    ["open_url", "approve", "enter_text", "select", "none"].includes(normalized)
-  ) {
-    return normalized;
-  }
-  return "none";
-}
-
-function buildMessageOperation(source = {}) {
-  const rawOperationId = String(
-    source.operationId || source.operation_id || source.id || "",
-  ).trim();
-  const rawKind = String(source.kind || source.operation_kind || "task").trim();
-  const title = String(source.title || "执行步骤").trim() || "执行步骤";
-  const summary = String(source.summary || "").trim();
-  const detail = String(source.detail || "").trim();
-  const phase = normalizeOperationPhase(source.phase || source.status);
-  const actionType = normalizeOperationActionType(
-    source.actionType || source.action_type,
-  );
-  const meta =
-    source.meta && typeof source.meta === "object"
-      ? { ...source.meta }
-      : {
-          request_id: String(
-            source.requestId || source.request_id || "",
-          ).trim(),
-          approval_id: String(
-            source.approvalId || source.approval_id || "",
-          ).trim(),
-          review_id: String(source.reviewId || source.review_id || "").trim(),
-          prompt_key: String(
-            source.promptKey || source.prompt_key || source.key || "",
-          ).trim(),
-          message: String(source.message || "").trim(),
-          description: String(source.description || "").trim(),
-          approval_mode: String(
-            source.approvalMode || source.approval_mode || "",
-          ).trim(),
-          diff_summary:
-            source.diffSummary && typeof source.diffSummary === "object"
-              ? source.diffSummary
-              : source.diff_summary && typeof source.diff_summary === "object"
-                ? source.diff_summary
-                : null,
-          risk_signals: Array.isArray(source.riskSignals || source.risk_signals)
-            ? source.riskSignals || source.risk_signals
-            : [],
-        };
-  return {
-    id:
-      rawOperationId ||
-      `${rawKind}:${title}:${summary}:${detail}:${phase}:${actionType}`,
-    operationId: rawOperationId || "",
-    kind: rawKind,
-    title,
-    summary,
-    detail,
-    phase,
-    actionType,
-    createdAt: String(
-      source.createdAt || source.created_at || nowText(),
-    ).trim(),
-    updatedAt: String(
-      source.updatedAt || source.updated_at || nowText(),
-    ).trim(),
-    meta,
-  };
-}
-
-function findMessageOperationMatchIndex(items, operation) {
-  const operationPermissionMeta =
-    operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
-  if (String(operationPermissionMeta.agent_runtime_permission || "").trim() === "true") {
-    const runId = String(operationPermissionMeta.run_id || "").trim();
-    const signature = String(operationPermissionMeta.command_signature || "").trim();
-    if (runId && signature) {
-      const byCommandSignature = items.findIndex((item) => {
-        const meta = item?.meta && typeof item.meta === "object" ? item.meta : {};
-        return (
-          String(meta.agent_runtime_permission || "").trim() === "true" &&
-          String(meta.run_id || "").trim() === runId &&
-          String(meta.command_signature || "").trim() === signature
-        );
-      });
-      if (byCommandSignature >= 0) return byCommandSignature;
-    }
-  }
-  const taskId = String(operationPermissionMeta.task_id || "").trim();
-  const chatSessionId = String(operationPermissionMeta.chat_session_id || "").trim();
-  const canonicalTaskKind = String(operation?.kind || "")
-    .trim()
-    .toLowerCase();
-  const operationWorkflowKind = String(operationPermissionMeta.workflow_kind || "")
-    .trim()
-    .toLowerCase();
-  if (taskId && ["auth", "request", "approval"].includes(canonicalTaskKind)) {
-    const byTaskId = items.findIndex((item) => {
-      const meta = item?.meta && typeof item.meta === "object" ? item.meta : {};
-      const itemTaskId = String(meta.task_id || "").trim();
-      if (!itemTaskId || itemTaskId !== taskId) return false;
-      const itemChatSessionId = String(meta.chat_session_id || "").trim();
-      if (chatSessionId && itemChatSessionId && itemChatSessionId !== chatSessionId) {
-        return false;
-      }
-      const itemKind = String(item?.kind || "")
-        .trim()
-        .toLowerCase();
-      const itemWorkflowKind = String(meta.workflow_kind || "")
-        .trim()
-        .toLowerCase();
-      return (
-        itemKind === canonicalTaskKind ||
-        itemKind === "auth" ||
-        canonicalTaskKind === "auth" ||
-        itemWorkflowKind === operationWorkflowKind ||
-        itemWorkflowKind === "auth_login" ||
-        operationWorkflowKind === "auth_login"
-      );
-    });
-    if (byTaskId >= 0) return byTaskId;
-  }
-  const byId = items.findIndex((item) => item.id === operation.id);
-  if (byId >= 0) return byId;
-  const operationId = String(operation?.operationId || "").trim();
-  if (operationId) {
-    const byOperationId = items.findIndex(
-      (item) => String(item?.operationId || "").trim() === operationId,
-    );
-    if (byOperationId >= 0) return byOperationId;
-  }
-  const operationKind = String(operation?.kind || "")
-    .trim()
-    .toLowerCase();
-  if (operationKind !== "request") return -1;
-  const requestId = String(operation?.meta?.request_id || "").trim();
-  if (requestId) {
-    const byRequestId = items.findIndex(
-      (item) =>
-        String(item?.kind || "")
-          .trim()
-          .toLowerCase() === "request" &&
-        String(item?.meta?.request_id || "").trim() === requestId,
-    );
-    if (byRequestId >= 0) return byRequestId;
-  }
-  return items.findIndex(
-    (item) =>
-      String(item?.kind || "")
-        .trim()
-        .toLowerCase() === "request" &&
-      String(item?.title || "").trim() ===
-        String(operation?.title || "").trim(),
-  );
-}
-
 function agentRuntimeCommandSignatureFromArgs(args = {}) {
   const command = String(args?.command || "").trim();
   if (!command) return "";
@@ -13956,7 +11932,9 @@ function agentRuntimeCommandSignatureFromArgs(args = {}) {
     .split(" ")
     .map((item) => String(item || "").trim())
     .filter(Boolean);
-  const larkCliIndex = tokens.findIndex((item) => item.split("/").pop() === "lark-cli");
+  const larkCliIndex = tokens.findIndex(
+    (item) => item.split("/").pop() === "lark-cli",
+  );
   if (
     larkCliIndex >= 0 &&
     tokens[larkCliIndex + 1] === "auth" &&
@@ -13968,7 +11946,11 @@ function agentRuntimeCommandSignatureFromArgs(args = {}) {
   return normalized;
 }
 
-function agentRuntimePermissionOperationId(runId, callId, commandSignature = "") {
+function agentRuntimePermissionOperationId(
+  runId,
+  callId,
+  commandSignature = "",
+) {
   const normalizedRunId = String(runId || "").trim();
   const normalizedCallId = String(callId || "").trim();
   const normalizedSignature = String(commandSignature || "").trim();
@@ -13976,70 +11958,6 @@ function agentRuntimePermissionOperationId(runId, callId, commandSignature = "")
     return `agent-runtime-permission:${normalizedRunId}:command:${normalizedSignature}`;
   }
   return `agent-runtime-permission:${normalizedRunId}:${normalizedCallId}`;
-}
-
-function mergeMessageOperations(existingOperations, nextOperations) {
-  const merged = Array.isArray(existingOperations)
-    ? existingOperations.slice()
-    : [];
-  (Array.isArray(nextOperations) ? nextOperations : []).forEach((operation) => {
-    const matchIndex = findMessageOperationMatchIndex(merged, operation);
-    if (matchIndex >= 0) {
-      const existingMeta =
-        merged[matchIndex]?.meta && typeof merged[matchIndex].meta === "object"
-          ? merged[matchIndex].meta
-          : {};
-      const operationMeta =
-        operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
-      merged[matchIndex] = {
-        ...merged[matchIndex],
-        ...operation,
-        id: merged[matchIndex].operationId
-          ? merged[matchIndex].id
-          : operation.id,
-        operationId:
-          merged[matchIndex].operationId || operation.operationId || "",
-        createdAt: merged[matchIndex].createdAt || operation.createdAt,
-        updatedAt: operation.updatedAt || nowText(),
-        meta: {
-          ...existingMeta,
-          ...operationMeta,
-          command:
-            String(operationMeta.command || "").trim() ||
-            String(existingMeta.command || "").trim(),
-          cwd:
-            String(operationMeta.cwd || "").trim() ||
-            String(existingMeta.cwd || "").trim(),
-          arguments_preview:
-            String(operationMeta.arguments_preview || "").trim() ||
-            String(existingMeta.arguments_preview || "").trim(),
-          output_preview:
-            String(operationMeta.output_preview || "").trim() ||
-            String(existingMeta.output_preview || "").trim(),
-          stdout_preview:
-            String(operationMeta.stdout_preview || "").trim() ||
-            String(existingMeta.stdout_preview || "").trim(),
-          stderr_preview:
-            String(operationMeta.stderr_preview || "").trim() ||
-            String(existingMeta.stderr_preview || "").trim(),
-          error:
-            String(operationMeta.error || "").trim() ||
-            String(existingMeta.error || "").trim(),
-          risk_level:
-            String(operationMeta.risk_level || "").trim() ||
-            String(existingMeta.risk_level || "").trim(),
-          authorization_url:
-            String(operationMeta.authorization_url || "").trim() ||
-            String(existingMeta.authorization_url || "").trim(),
-          interaction_schema:
-            operationMeta.interaction_schema || existingMeta.interaction_schema || null,
-        },
-      };
-    } else {
-      merged.push(operation);
-    }
-  });
-  return merged.slice(-24);
 }
 
 function upsertMessageOperation(row, source = {}) {
@@ -14053,7 +11971,9 @@ function upsertMessageOperation(row, source = {}) {
         ? items[matchIndex].meta
         : {};
     const operationMeta =
-      operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+      operation?.meta && typeof operation.meta === "object"
+        ? operation.meta
+        : {};
     items[matchIndex] = {
       ...items[matchIndex],
       ...operation,
@@ -14092,7 +12012,9 @@ function upsertMessageOperation(row, source = {}) {
           String(operationMeta.authorization_url || "").trim() ||
           String(existingMeta.authorization_url || "").trim(),
         interaction_schema:
-          operationMeta.interaction_schema || existingMeta.interaction_schema || null,
+          operationMeta.interaction_schema ||
+          existingMeta.interaction_schema ||
+          null,
       },
     };
   } else {
@@ -14127,7 +12049,9 @@ function appendAgentRuntimePermissionOperations(row, eventData = {}) {
         ? raw.permission_decision
         : null;
     if (!decision) return;
-    const behavior = String(decision.behavior || "").trim().toLowerCase();
+    const behavior = String(decision.behavior || "")
+      .trim()
+      .toLowerCase();
     if (!["ask", "deny"].includes(behavior)) return;
     const callId = String(
       observation?.call_id || decision.call_id || "",
@@ -14137,11 +12061,11 @@ function appendAgentRuntimePermissionOperations(row, eventData = {}) {
     ).trim();
     if (!runId || !callId || !toolName) return;
     const toolArgs =
-      raw?.tool_args && typeof raw.tool_args === "object"
-        ? raw.tool_args
-        : {};
+      raw?.tool_args && typeof raw.tool_args === "object" ? raw.tool_args : {};
     const toolEntry =
-      raw?.tool_entry && typeof raw.tool_entry === "object" ? raw.tool_entry : {};
+      raw?.tool_entry && typeof raw.tool_entry === "object"
+        ? raw.tool_entry
+        : {};
     const commandSignature = agentRuntimeCommandSignatureFromArgs(toolArgs);
     const permissionPatch = {
       title: behavior === "deny" ? "工具调用已拒绝" : "工具调用需要授权",
@@ -14181,380 +12105,41 @@ function appendAgentRuntimePermissionOperations(row, eventData = {}) {
     ) {
       return;
     }
-    const existingPermission = (Array.isArray(row?.operations) ? row.operations : []).find(
-      (operation) => {
-        const meta =
-          operation?.meta && typeof operation.meta === "object"
-            ? operation.meta
-            : {};
-        const sameCommand =
-          commandSignature &&
-          String(meta.command_signature || "").trim() === commandSignature;
-        return (
-          String(meta.agent_runtime_permission || "").trim() === "true" &&
-          String(meta.run_id || "").trim() === runId &&
-          (String(meta.call_id || "").trim() === callId || sameCommand) &&
-          normalizeOperationPhase(operation?.phase) !== "waiting_user"
-        );
-      },
-    );
+    const existingPermission = (
+      Array.isArray(row?.operations) ? row.operations : []
+    ).find((operation) => {
+      const meta =
+        operation?.meta && typeof operation.meta === "object"
+          ? operation.meta
+          : {};
+      const sameCommand =
+        commandSignature &&
+        String(meta.command_signature || "").trim() === commandSignature;
+      return (
+        String(meta.agent_runtime_permission || "").trim() === "true" &&
+        String(meta.run_id || "").trim() === runId &&
+        (String(meta.call_id || "").trim() === callId || sameCommand) &&
+        normalizeOperationPhase(operation?.phase) !== "waiting_user"
+      );
+    });
     if (existingPermission) return;
     upsertMessageOperation(row, {
-      operationId: agentRuntimePermissionOperationId(runId, callId, commandSignature),
+      operationId: agentRuntimePermissionOperationId(
+        runId,
+        callId,
+        commandSignature,
+      ),
       kind: "approval",
       ...permissionPatch,
     });
   });
 }
 
-function formatAgentRuntimeEventSummary(eventData = {}) {
-  const eventType = String(eventData?.event_type || "").trim();
-  const payload = agentRuntimeEventPayload(eventData);
-  if (eventType === "run_started") return "运行任务已启动";
-  if (eventType === "query_engine_started") return "模型与工具循环已启动";
-  if (eventType === "llm_step_completed") {
-    const stepIndex = String(payload?.step_index || "").trim();
-    const toolCount = Number(payload?.tool_call_count || 0);
-    return `模型步骤${stepIndex ? ` ${stepIndex}` : ""}完成${
-      toolCount ? `，发现 ${toolCount} 个工具调用` : ""
-    }`;
-  }
-  if (eventType === "model_output_normalized") {
-    const parsedCount = Number(payload?.parsed_text_tool_call_count || 0);
-    const strippedCount = Number(payload?.stripped_protocol_block_count || 0);
-    if (parsedCount > 0) {
-      return `已从模型文本中解析 ${parsedCount} 个工具调用`;
-    }
-    if (strippedCount > 0 || payload?.leak_detected) {
-      return "已隐藏模型输出中的内部工具协议";
-    }
-    return "模型输出已完成可见内容清洗";
-  }
-  if (eventType === "tool_call_started") {
-    const toolName = String(payload?.tool_name || "").trim();
-    return toolName ? `开始调用工具：${toolName}` : "开始调用工具";
-  }
-  if (eventType === "permission_decision") {
-    const decision =
-      payload?.decision && typeof payload.decision === "object"
-        ? payload.decision
-        : {};
-    const behavior = String(decision?.behavior || "").trim().toLowerCase();
-    if (behavior === "ask") return "工具调用等待授权";
-    if (behavior === "deny") return "工具调用被权限策略拒绝";
-    return "工具调用权限已确认";
-  }
-  if (eventType === "tool_observation_created") {
-    const toolName = String(payload?.tool_name || "").trim();
-    const status = String(payload?.status || "").trim();
-    return [toolName ? `工具返回结果：${toolName}` : "工具返回结果", status]
-      .filter(Boolean)
-      .join(" · ");
-  }
-  if (eventType === "tool_round_completed") return "工具执行轮次已处理，正在判断下一步";
-  if (eventType === "completion_decision") {
-    const action = String(payload?.action || "").trim();
-    return action ? `完成策略判断：${action}` : "完成策略已判断";
-  }
-  if (eventType === "query_engine_waiting_operation") {
-    return "操作仍在进行中，等待完成后恢复";
-  }
-  if (eventType === "query_engine_blocked") return "运行任务已暂停";
-  if (eventType === "query_engine_completed") return "运行任务已完成";
-  if (eventType === "query_engine_failed") return "运行任务失败";
-  if (eventType === "run_finished") return "运行任务已结束";
-  return eventType || "运行时事件";
-}
-
-function formatAgentRuntimeEventPhase(eventData = {}) {
-  const eventType = String(eventData?.event_type || "").trim();
-  const payload = agentRuntimeEventPayload(eventData);
-  if (eventType === "completion_decision") {
-    const action = String(payload?.action || "").trim().toLowerCase();
-    if (action === "complete") return "completed";
-    if (action === "fail") return "failed";
-    if (action === "blocked") return "blocked";
-    if (action === "request_user") return "waiting_user";
-    if (action === "wait_background") return "running";
-  }
-  if (["query_engine_completed", "run_finished"].includes(eventType)) {
-    return "completed";
-  }
-  if (["query_engine_failed", "run_failed"].includes(eventType)) {
-    return "failed";
-  }
-  if (eventType === "query_engine_blocked") return "blocked";
-  if (eventType === "permission_decision") {
-    const decision =
-      payload?.decision && typeof payload.decision === "object"
-        ? payload.decision
-        : {};
-    const behavior = String(decision?.behavior || "").trim().toLowerCase();
-    if (behavior === "ask") return "waiting_user";
-    if (behavior === "deny") return "blocked";
-    if (["allow_once", "allow_session", "allow_always", "allow"].includes(behavior)) {
-      return "completed";
-    }
-  }
-  return "running";
-}
-
-function compactAgentRuntimeJson(value, maxChars = 240) {
-  try {
-    return clipText(JSON.stringify(value), maxChars).replace(/\n/g, " ");
-  } catch (_error) {
-    return "";
-  }
-}
-
-function agentRuntimeEventPayload(eventData = {}) {
-  const event =
-    eventData?.event && typeof eventData.event === "object"
-      ? eventData.event
-      : {};
-  if (event?.payload && typeof event.payload === "object") {
-    return event.payload;
-  }
-  if (eventData?.payload && typeof eventData.payload === "object") {
-    return eventData.payload;
-  }
-  return {};
-}
-
-function agentRuntimeToolCallPayload(payload = {}) {
-  const toolCall =
-    payload?.tool_call && typeof payload.tool_call === "object"
-      ? payload.tool_call
-      : payload;
-  return toolCall && typeof toolCall === "object" ? toolCall : {};
-}
-
-function agentRuntimeToolNameFromPayload(payload = {}) {
-  const toolCall = agentRuntimeToolCallPayload(payload);
-  return String(
-    payload?.tool_name ||
-      toolCall?.tool_name ||
-      toolCall?.name ||
-      toolCall?.function?.name ||
-      "",
-  ).trim();
-}
-
-function agentRuntimeToolArgsFromPayload(payload = {}) {
-  const directArgs =
-    payload?.args && typeof payload.args === "object" && !Array.isArray(payload.args)
-      ? payload.args
-      : null;
-  if (directArgs) return directArgs;
-  const toolCall = agentRuntimeToolCallPayload(payload);
-  const rawArguments =
-    String(toolCall?.arguments || toolCall?.function?.arguments || "").trim();
-  if (!rawArguments || rawArguments[0] !== "{") return {};
-  try {
-    const parsed = JSON.parse(rawArguments);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed
-      : {};
-  } catch (_error) {
-    return {};
-  }
-}
-
-function agentRuntimeObservationPreview(payload = {}) {
-  const rawResult =
-    payload?.raw_result && typeof payload.raw_result === "object"
-      ? payload.raw_result
-      : {};
-  const structuredPreview = structuredCommandResultPreview(rawResult);
-  if (structuredPreview) return structuredPreview;
-  const candidates = [
-    rawResult?.error,
-    rawResult?.stderr,
-    payload?.error,
-    payload?.stderr_preview,
-    payload?.message,
-    rawResult?.message,
-    payload?.summary,
-    payload?.output_preview,
-    payload?.stdout_preview,
-    rawResult?.stdout,
-    payload?.result,
-  ];
-  return clipText(
-    candidates
-      .map((item) =>
-        typeof item === "string"
-          ? item.trim()
-          : item === null || item === undefined
-            ? ""
-            : compactAgentRuntimeJson(item, 180),
-      )
-      .filter(Boolean)
-      .join("\n"),
-    360,
-  );
-}
-
-function parseJsonObjectText(value) {
-  const text = String(value || "").trim();
-  if (!text || text[0] !== "{") return null;
-  try {
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed
-      : null;
-  } catch (_error) {
-    return null;
-  }
-}
-
-function structuredCommandResultPreview(rawResult = {}) {
-  if (!rawResult || typeof rawResult !== "object") return "";
-  const stdout = String(rawResult?.stdout || "").trim();
-  const parsed = parseJsonObjectText(stdout);
-  if (!parsed) return "";
-  const lines = [];
-  const addField = (label, ...keys) => {
-    for (const key of keys) {
-      const value = parsed?.[key];
-      if (value === null || value === undefined || value === "") continue;
-      lines.push(`${label}: ${String(value).trim()}`);
-      return;
-    }
-  };
-  addField("status", "status", "login_status");
-  addField("user", "name", "user_name", "display_name", "email");
-  addField("identity", "identity", "as", "login_identity");
-  addField("brand", "brand");
-  addField("expires_at", "expires_at", "expire_at", "expired_at");
-  addField("refresh_expires_at", "refresh_expires_at", "refresh_expire_at");
-  if (lines.length) {
-    return lines.slice(0, 8).join("\n  └ ");
-  }
-  return "";
-}
-
-function formatAgentRuntimeToolCallTranscript(payload = {}) {
-  const toolName = agentRuntimeToolNameFromPayload(payload) || "tool";
-  const args = agentRuntimeToolArgsFromPayload(payload);
-  const command = String(args?.command || "").trim();
-  if (toolName === "project_host_run_command" && command) {
-    const cwd = String(args?.cwd || "").trim();
-    return {
-      level: "info",
-      text: cwd ? `Ran ${command}\n  └ cwd=${cwd}` : `Ran ${command}`,
-    };
-  }
-  const argsPreview = Object.keys(args).length
-    ? compactAgentRuntimeJson(args, 260)
-    : "";
-  return {
-    level: "info",
-    text: argsPreview ? `Called ${toolName}(${argsPreview})` : `Called ${toolName}`,
-  };
-}
-
-function formatAgentRuntimeTranscriptEntry(eventData = {}) {
-  const eventType = String(eventData?.event_type || "").trim();
-  const payload = agentRuntimeEventPayload(eventData);
-  if (eventType === "llm_step_completed") {
-    const contentPreview = String(payload?.content_preview || "").trim();
-    const toolCallCount = Number(payload?.tool_call_count || 0);
-    return contentPreview && toolCallCount > 0
-      ? { level: "info", text: contentPreview }
-      : null;
-  }
-  if (eventType === "model_output_normalized") {
-    const parsedCount = Number(payload?.parsed_text_tool_call_count || 0);
-    const strippedCount = Number(payload?.stripped_protocol_block_count || 0);
-    const leakKinds = Array.isArray(payload?.leak_kinds)
-      ? payload.leak_kinds.map((item) => String(item || "").trim()).filter(Boolean)
-      : [];
-    if (parsedCount > 0) {
-      return {
-        level: "info",
-        text: `Parsed ${parsedCount} text tool call${
-          parsedCount === 1 ? "" : "s"
-        } and hid internal protocol.`,
-      };
-    }
-    if (strippedCount > 0 || payload?.leak_detected) {
-      return {
-        level: "warning",
-        text: leakKinds.length
-          ? `Hidden internal tool protocol\n  └ ${leakKinds.join(", ")}`
-          : "Hidden internal tool protocol",
-      };
-    }
-    return null;
-  }
-  if (eventType === "tool_call_started") {
-    return formatAgentRuntimeToolCallTranscript(payload);
-  }
-  if (eventType === "permission_decision") {
-    const decision =
-      payload?.decision && typeof payload.decision === "object"
-        ? payload.decision
-        : {};
-    const behavior = String(decision?.behavior || "").trim().toLowerCase();
-    const toolName = agentRuntimeToolNameFromPayload(payload) || "tool";
-    if (behavior === "ask") {
-      return { level: "warning", text: `Waiting for approval: ${toolName}` };
-    }
-    if (behavior === "deny") {
-      const reason = String(decision?.reason || "").trim();
-      return {
-        level: "error",
-        text: reason
-          ? `Blocked ${toolName}\n  └ ${reason}`
-          : `Blocked ${toolName}`,
-      };
-    }
-    return null;
-  }
-  if (eventType === "permission_action_applied") {
-    const action = String(payload?.action || "").trim().toLowerCase();
-    if (!action) return null;
-    return {
-      level: action === "deny" ? "error" : "info",
-      text: action === "deny" ? "Approval denied" : "Approval applied",
-    };
-  }
-  if (eventType === "tool_observation_created") {
-    const toolName = agentRuntimeToolNameFromPayload(payload) || "tool";
-    const status = String(payload?.status || "").trim();
-    const level =
-      ["failed", "error", "blocked"].includes(status.toLowerCase())
-        ? "error"
-        : "success";
-    const preview = agentRuntimeObservationPreview(payload);
-    return {
-      level,
-      text: preview
-        ? `Result ${toolName}${status ? ` · ${status}` : ""}\n  └ ${preview}`
-        : `Result ${toolName}${status ? ` · ${status}` : ""}`,
-    };
-  }
-  if (eventType === "query_engine_waiting_operation") {
-    return {
-      level: "warning",
-      text: "Waiting for the current operation to finish before continuing.",
-    };
-  }
-  if (eventType === "query_engine_blocked") {
-    return { level: "warning", text: "Execution paused before the next step." };
-  }
-  if (eventType === "query_engine_failed" || eventType === "run_failed") {
-    const error = String(payload?.error || payload?.message || "").trim();
-    return {
-      level: "error",
-      text: error ? `Execution failed\n  └ ${error}` : "Execution failed",
-    };
-  }
-  return null;
-}
-
-function completeAgentRuntimeOperations(row, runId, summary = "运行任务已结束") {
+function completeAgentRuntimeOperations(
+  row,
+  runId,
+  summary = "运行任务已结束",
+) {
   if (!row || !Array.isArray(row.operations) || !row.operations.length) {
     return false;
   }
@@ -14572,7 +12157,9 @@ function completeAgentRuntimeOperations(row, runId, summary = "运行任务已�
     ) {
       return operation;
     }
-    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    const phase = normalizeOperationPhase(
+      operation?.phase || operation?.status,
+    );
     if (["completed", "failed", "blocked"].includes(phase)) {
       return operation;
     }
@@ -14593,78 +12180,6 @@ function completeAgentRuntimeOperations(row, runId, summary = "运行任务已�
     };
   });
   return changed;
-}
-
-function normalizeDoneEventExecutionState(eventData = {}) {
-  if (isInteractionSubmitAckDone(eventData)) {
-    return {
-      phase: "running",
-      level: "info",
-      summary: interactionSubmitAckSummary(eventData),
-      keepExecutionOpen: false,
-      suppressRequestOperation: true,
-    };
-  }
-  const guardSummary = formatGuardSummary(eventData);
-  const completedReason = String(eventData?.completed_reason || "")
-    .trim()
-    .toLowerCase();
-  if (completedReason === "waiting_user_action") {
-    return {
-      phase: "waiting_user",
-      level: "info",
-      summary:
-        String(eventData?.guard_message || eventData?.summary || "").trim() ||
-        "等待你完成当前操作",
-      keepExecutionOpen: false,
-    };
-  }
-  if (completedReason === "background_task_pending") {
-    return {
-      phase: "running",
-      level: "info",
-      summary:
-        String(eventData?.guard_message || eventData?.summary || "").trim() ||
-        "后台任务仍在继续执行",
-      keepExecutionOpen: true,
-    };
-  }
-  return {
-    phase: guardSummary ? "blocked" : "completed",
-    level: guardSummary ? "warning" : "success",
-    summary: guardSummary || "本轮执行已结束",
-    keepExecutionOpen: false,
-  };
-}
-
-function isInteractionSubmitAckDone(eventData = {}) {
-  const requestKind = String(eventData?.request_kind || "")
-    .trim()
-    .toLowerCase();
-  const completedReason = String(
-    eventData?.completed_reason || eventData?.guard_reason || "",
-  )
-    .trim()
-    .toLowerCase();
-  return (
-    requestKind === "interaction_submit_ack" ||
-    completedReason === "interaction_submit_ack" ||
-    eventData?.suppress_request_operation === true
-  );
-}
-
-function interactionSubmitAckPayload(eventData = {}) {
-  return eventData?.interaction_ack && typeof eventData.interaction_ack === "object"
-    ? eventData.interaction_ack
-    : {};
-}
-
-function interactionSubmitAckSummary(eventData = {}) {
-  const ack = interactionSubmitAckPayload(eventData);
-  return (
-    String(ack.summary || eventData?.summary || eventData?.guard_message || "").trim() ||
-    "已提交结构化交互，正在继续执行"
-  );
 }
 
 function applyInteractionSubmitAckToSourceOperation(eventData = {}) {
@@ -14700,7 +12215,9 @@ function applyInteractionSubmitAckToSourceOperation(eventData = {}) {
     meta: {
       ...existingMeta,
       task_id: String(existingMeta.task_id || taskId).trim(),
-      chat_session_id: String(existingMeta.chat_session_id || chatSessionId).trim(),
+      chat_session_id: String(
+        existingMeta.chat_session_id || chatSessionId,
+      ).trim(),
       interaction_ack: true,
       interaction_submitted: true,
     },
@@ -14718,9 +12235,12 @@ function removeTransientInteractionAckRow(row, pending) {
   const index = messages.value.findIndex((item) => item === row);
   if (index < 0) return false;
   const hasVisibleContent = Boolean(String(row.content || "").trim());
-  const hasOperations = Array.isArray(row.operations) && row.operations.length > 0;
-  const hasProcessLog = Array.isArray(row.processLog) && row.processLog.length > 0;
-  const hasStatusNotes = Array.isArray(row.statusNotes) && row.statusNotes.length > 0;
+  const hasOperations =
+    Array.isArray(row.operations) && row.operations.length > 0;
+  const hasProcessLog =
+    Array.isArray(row.processLog) && row.processLog.length > 0;
+  const hasStatusNotes =
+    Array.isArray(row.statusNotes) && row.statusNotes.length > 0;
   if (hasVisibleContent || hasOperations || hasProcessLog || hasStatusNotes) {
     row.meta = {
       ...(row.meta && typeof row.meta === "object" ? row.meta : {}),
@@ -14746,7 +12266,9 @@ function removeTransientInteractionAckRow(row, pending) {
 function hasOpenAgentRuntimeExecution(row) {
   if (!row || !Array.isArray(row.operations)) return false;
   return row.operations.some((operation) => {
-    const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+    const phase = normalizeOperationPhase(
+      operation?.phase || operation?.status,
+    );
     if (!["running", "waiting_user", "pending"].includes(phase)) return false;
     const meta =
       operation?.meta && typeof operation.meta === "object"
@@ -14780,8 +12302,11 @@ function completeBackgroundPendingRequestOperation(
         ? operation.meta
         : {};
     if (
-      String(operation?.kind || "").trim().toLowerCase() !== "request" ||
-      normalizeOperationPhase(operation?.phase || operation?.status) !== "running" ||
+      String(operation?.kind || "")
+        .trim()
+        .toLowerCase() !== "request" ||
+      normalizeOperationPhase(operation?.phase || operation?.status) !==
+        "running" ||
       String(meta.completed_reason || "").trim() !== "background_task_pending"
     ) {
       return operation;
@@ -14908,13 +12433,18 @@ function operationPlanSteps(operation) {
     return [];
   }
   const steps = operationMeta(operation).steps;
-  return Array.isArray(steps) ? steps.filter((step) => step && typeof step === "object") : [];
+  return Array.isArray(steps)
+    ? steps.filter((step) => step && typeof step === "object")
+    : [];
 }
 
 function planStepPhase(step = {}) {
-  const status = String(step?.status || "").trim().toLowerCase();
+  const status = String(step?.status || "")
+    .trim()
+    .toLowerCase();
   if (["completed", "done", "skipped"].includes(status)) return "completed";
-  if (["running", "in_progress", "verifying"].includes(status)) return "running";
+  if (["running", "in_progress", "verifying"].includes(status))
+    return "running";
   if (["blocked", "failed"].includes(status)) return status;
   return "pending";
 }
@@ -14931,14 +12461,21 @@ function planStepStatusLabel(step = {}) {
 function updatePlanOperationStep(row, planId, stepId, patch = {}) {
   const normalizedPlanId = String(planId || "").trim();
   const normalizedStepId = String(stepId || "").trim();
-  if (!row || !normalizedPlanId || !normalizedStepId || !Array.isArray(row.operations)) {
+  if (
+    !row ||
+    !normalizedPlanId ||
+    !normalizedStepId ||
+    !Array.isArray(row.operations)
+  ) {
     return false;
   }
   let changed = false;
   row.operations = row.operations.map((operation) => {
     const meta = operationMeta(operation);
     if (
-      String(operation?.kind || "").trim().toLowerCase() !== "plan" ||
+      String(operation?.kind || "")
+        .trim()
+        .toLowerCase() !== "plan" ||
       String(meta.plan_id || "").trim() !== normalizedPlanId
     ) {
       return operation;
@@ -14948,7 +12485,9 @@ function updatePlanOperationStep(row, planId, stepId, patch = {}) {
       (step) => String(step?.step_id || "").trim() === normalizedStepId,
     );
     const targetStep = targetIndex >= 0 ? steps[targetIndex] : null;
-    const targetStage = String(targetStep?.stage_key || "").trim().toLowerCase();
+    const targetStage = String(targetStep?.stage_key || "")
+      .trim()
+      .toLowerCase();
     const targetLooksLikeVerify =
       normalizedStepId.endsWith("-verify") ||
       ["verification", "verify"].includes(targetStage);
@@ -14977,9 +12516,17 @@ function updatePlanOperationStep(row, planId, stepId, patch = {}) {
       };
     });
     if (!changed) return operation;
-    const hasRunning = nextSteps.some((step) => String(step?.status || "").trim() === "running");
-    const hasFailed = nextSteps.some((step) => ["failed", "blocked"].includes(String(step?.status || "").trim()));
-    const allDone = nextSteps.length > 0 && nextSteps.every((step) => ["completed", "skipped"].includes(String(step?.status || "").trim()));
+    const hasRunning = nextSteps.some(
+      (step) => String(step?.status || "").trim() === "running",
+    );
+    const hasFailed = nextSteps.some((step) =>
+      ["failed", "blocked"].includes(String(step?.status || "").trim()),
+    );
+    const allDone =
+      nextSteps.length > 0 &&
+      nextSteps.every((step) =>
+        ["completed", "skipped"].includes(String(step?.status || "").trim()),
+      );
     return {
       ...operation,
       summary: allDone
@@ -15032,10 +12579,14 @@ function applyVerificationFinishedEvent(row, eventData = {}, requestId = "") {
   if (!row) return;
   const planId = String(eventData?.plan_id || "").trim();
   const stepId = String(eventData?.step_id || "").trim();
-  const status = String(eventData?.status || "").trim().toLowerCase();
+  const status = String(eventData?.status || "")
+    .trim()
+    .toLowerCase();
   const passed = status === "passed";
   const evidence = Array.isArray(eventData?.evidence)
-    ? eventData.evidence.map((item) => String(item || "").trim()).filter(Boolean)
+    ? eventData.evidence
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
     : [];
   const summary =
     String(eventData?.summary || "").trim() ||
@@ -15051,7 +12602,9 @@ function applyVerificationFinishedEvent(row, eventData = {}, requestId = "") {
     kind: "verification",
     title: "验证结果",
     summary,
-    detail: evidence.length ? evidence.map((item, index) => `${index + 1}. ${item}`).join("\n") : "",
+    detail: evidence.length
+      ? evidence.map((item, index) => `${index + 1}. ${item}`).join("\n")
+      : "",
     phase: passed ? "completed" : "blocked",
     actionType: "none",
     meta: {
@@ -15089,10 +12642,11 @@ function projectChatActionOperationId(eventData = {}) {
 
 function applyPlannedActionEvent(row, eventData = {}, requestId = "") {
   if (!row) return;
-  const eventType = String(eventData?.type || "").trim().toLowerCase();
+  const eventType = String(eventData?.type || "")
+    .trim()
+    .toLowerCase();
   const isCommand =
-    eventType === "command_planned" ||
-    Boolean(eventCommand(eventData));
+    eventType === "command_planned" || Boolean(eventCommand(eventData));
   const toolName =
     String(eventData?.tool_name || (isCommand ? "命令" : "工具")).trim() ||
     (isCommand ? "命令" : "工具");
@@ -15152,8 +12706,8 @@ function messageOperations(row) {
 }
 
 function messageProcessOperations(row) {
-  return messageOperations(row).filter(
-    (item) => isVisibleProcessOperation(item),
+  return messageOperations(row).filter((item) =>
+    isVisibleProcessOperation(item),
   );
 }
 
@@ -15245,13 +12799,13 @@ function isCurrentChatTaskTreeDone() {
 function hasLiveExecutionActivity() {
   return Boolean(
     chatLoading.value ||
-      hasPendingRequestForChatSession(currentChatSessionId.value) ||
-      Boolean(getActiveRequestId()) ||
-      externalAgentWarmupLoading.value ||
-      currentChatSessionNativeExternalAgentRunning.value ||
-      backgroundTerminalCount.value > 0 ||
-      terminalMirrorConnected.value ||
-      terminalPanelStatus.value === "running",
+    hasPendingRequestForChatSession(currentChatSessionId.value) ||
+    Boolean(getActiveRequestId()) ||
+    externalAgentWarmupLoading.value ||
+    currentChatSessionNativeExternalAgentRunning.value ||
+    backgroundTerminalCount.value > 0 ||
+    terminalMirrorConnected.value ||
+    terminalPanelStatus.value === "running",
   );
 }
 
@@ -15260,7 +12814,11 @@ function operationBelongsToCurrentChat(operation) {
     operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
   const operationChatSessionId = String(meta.chat_session_id || "").trim();
   const currentSessionId = String(currentChatSessionId.value || "").trim();
-  return !operationChatSessionId || !currentSessionId || operationChatSessionId === currentSessionId;
+  return (
+    !operationChatSessionId ||
+    !currentSessionId ||
+    operationChatSessionId === currentSessionId
+  );
 }
 
 function shouldHideStaleRunningOperation(operation) {
@@ -15299,35 +12857,26 @@ function operationRiskLabel(operation) {
 function operationRuntimeMetaTags(operation) {
   const meta = operationMeta(operation);
   const tags = [];
-  const backend = runtimeMetaValueLabel(
-    meta.execution_backend,
-    {
-      project_host: "项目主机",
-      local_connector: "本机连接器",
-      browser: "浏览器",
-      mcp: "MCP",
-      project: "项目工具",
-      cli: "CLI",
-    },
-  );
-  const scope = runtimeMetaValueLabel(
-    meta.permission_scope,
-    {
-      project: "项目范围",
-      workspace: "工作区范围",
-      global: "全局范围",
-      host: "主机范围",
-      local: "本机范围",
-    },
-  );
-  const audit = runtimeMetaValueLabel(
-    meta.audit_policy,
-    {
-      full: "完整审计",
-      standard: "标准审计",
-      summary: "摘要审计",
-    },
-  );
+  const backend = runtimeMetaValueLabel(meta.execution_backend, {
+    project_host: "项目主机",
+    local_connector: "本机连接器",
+    browser: "浏览器",
+    mcp: "MCP",
+    project: "项目工具",
+    cli: "CLI",
+  });
+  const scope = runtimeMetaValueLabel(meta.permission_scope, {
+    project: "项目范围",
+    workspace: "工作区范围",
+    global: "全局范围",
+    host: "主机范围",
+    local: "本机范围",
+  });
+  const audit = runtimeMetaValueLabel(meta.audit_policy, {
+    full: "完整审计",
+    standard: "标准审计",
+    summary: "摘要审计",
+  });
   if (backend) tags.push(backend);
   if (scope) tags.push(scope);
   if (audit) tags.push(audit);
@@ -15335,7 +12884,9 @@ function operationRuntimeMetaTags(operation) {
 }
 
 function runtimeMetaValueLabel(value, labels = {}) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (!normalized) return "";
   return labels[normalized] || normalized;
 }
@@ -15427,8 +12978,7 @@ function findAssistantRowByOperationTaskId(taskId, chatSessionId = "") {
     if (String(row?.role || "").trim() !== "assistant") continue;
     const operations = messageOperations(row);
     const matched = operations.find((item) => {
-      const meta =
-        item?.meta && typeof item.meta === "object" ? item.meta : {};
+      const meta = item?.meta && typeof item.meta === "object" ? item.meta : {};
       const operationTaskId = String(meta.task_id || "").trim();
       const operationChatSessionId = String(meta.chat_session_id || "").trim();
       return (
@@ -15436,7 +12986,9 @@ function findAssistantRowByOperationTaskId(taskId, chatSessionId = "") {
         (normalizedChatSessionId &&
           operationChatSessionId === normalizedChatSessionId &&
           ["auth", "request", "approval"].includes(
-            String(item?.kind || "").trim().toLowerCase(),
+            String(item?.kind || "")
+              .trim()
+              .toLowerCase(),
           ))
       );
     });
@@ -15507,7 +13059,11 @@ function completePendingExternalOperationRequestByRow(
         new Error(normalizedMessage || "操作未完成"),
       );
     } else {
-      resolvePendingRequest(requestId, pending, row.content || normalizedMessage);
+      resolvePendingRequest(
+        requestId,
+        pending,
+        row.content || normalizedMessage,
+      );
     }
   }
   if (changed) {
@@ -15555,7 +13111,10 @@ function cloneInteractionValue(value) {
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, cloneInteractionValue(item)]),
+      Object.entries(value).map(([key, item]) => [
+        key,
+        cloneInteractionValue(item),
+      ]),
     );
   }
   return value;
@@ -15570,11 +13129,15 @@ function normalizeInteractionSchema(rawSchema) {
       ? cloneInteractionValue(rawSchema.model)
       : {};
   return {
-    title: String(rawSchema.title || rawSchema.label || "需要你继续操作").trim(),
+    title: String(
+      rawSchema.title || rawSchema.label || "需要你继续操作",
+    ).trim(),
     description: String(
       rawSchema.description || rawSchema.summary || "请完成下列表单后继续。",
     ).trim(),
-    submitLabel: String(rawSchema.submit_label || rawSchema.submitLabel || "确认并继续").trim(),
+    submitLabel: String(
+      rawSchema.submit_label || rawSchema.submitLabel || "确认并继续",
+    ).trim(),
     fallbackLabel: String(
       rawSchema.fallback_label || rawSchema.fallbackLabel || "使用终端兜底",
     ).trim(),
@@ -15587,7 +13150,9 @@ function normalizeInteractionSchema(rawSchema) {
       rawSchema.response_template || rawSchema.responseTemplate || "",
     ).trim(),
     terminalSubmitContent: String(
-      rawSchema.terminal_submit_content || rawSchema.terminalSubmitContent || "",
+      rawSchema.terminal_submit_content ||
+        rawSchema.terminalSubmitContent ||
+        "",
     ).trim(),
     rowAttrs:
       rawSchema.rowAttrs && typeof rawSchema.rowAttrs === "object"
@@ -15668,9 +13233,7 @@ function agentRuntimeResumeAuthStatusLabel(rawResult = {}) {
       payload = {};
     }
   }
-  const statusValue = String(
-    payload.status || payload.login_status || "",
-  )
+  const statusValue = String(payload.status || payload.login_status || "")
     .trim()
     .toLowerCase();
   if (
@@ -15722,7 +13285,9 @@ function agentRuntimeResumeFallbackContent(resume) {
   const stderr = String(rawResult.stderr || rawResult.error || "").trim();
   const output = stdout || stderr;
   if (signature === "lark-cli auth status") {
-    const lines = [`登录状态：${agentRuntimeResumeAuthStatusLabel(rawResult)}。`];
+    const lines = [
+      `登录状态：${agentRuntimeResumeAuthStatusLabel(rawResult)}。`,
+    ];
     if (command) {
       lines.push(`已执行命令：\`${command}\`。`);
     }
@@ -15774,7 +13339,9 @@ function agentRuntimeResumeIsStableToolAnswer(resume, fallbackContent) {
       : {};
   const args = agentRuntimeResumeToolArgs(toolCall);
   const command = String(args.command || rawResult.command || "").trim();
-  return agentRuntimeCommandSignatureFromArgs({ command }) === "lark-cli auth status";
+  return (
+    agentRuntimeCommandSignatureFromArgs({ command }) === "lark-cli auth status"
+  );
 }
 
 function agentRuntimeResumeFinalContent(resume) {
@@ -15793,13 +13360,17 @@ function agentRuntimeResumeFinalContent(resume) {
 }
 
 function agentRuntimeResumeStatus(resume) {
-  const status = String(resume?.status || "").trim().toLowerCase();
+  const status = String(resume?.status || "")
+    .trim()
+    .toLowerCase();
   if (status) return status;
   const continuation =
     resume?.continuation && typeof resume.continuation === "object"
       ? resume.continuation
       : null;
-  return String(continuation?.status || "").trim().toLowerCase();
+  return String(continuation?.status || "")
+    .trim()
+    .toLowerCase();
 }
 
 function agentRuntimeResumeMissingFinalAnswer(resume) {
@@ -15860,7 +13431,10 @@ function completeAgentRuntimeOperationsForRun(row, runId) {
   });
 }
 
-function closeOpenAgentRuntimeOperationsForCompletedTurn(sourceRow, summary = "") {
+function closeOpenAgentRuntimeOperationsForCompletedTurn(
+  sourceRow,
+  summary = "",
+) {
   const finalSummary = String(summary || "").trim() || "本轮执行已结束";
   const sourceIndex = messages.value.findIndex((item) => item === sourceRow);
   const sourceChatSessionId = String(currentChatSessionId.value || "").trim();
@@ -15875,10 +13449,14 @@ function closeOpenAgentRuntimeOperationsForCompletedTurn(sourceRow, summary = ""
     }
     let rowChanged = false;
     row.operations = row.operations.map((operation) => {
-      const phase = normalizeOperationPhase(operation?.phase || operation?.status);
+      const phase = normalizeOperationPhase(
+        operation?.phase || operation?.status,
+      );
       if (!["running", "pending"].includes(phase)) return operation;
       const meta =
-        operation?.meta && typeof operation.meta === "object" ? operation.meta : {};
+        operation?.meta && typeof operation.meta === "object"
+          ? operation.meta
+          : {};
       const operationChatSessionId = String(meta.chat_session_id || "").trim();
       const isRuntimeOperation =
         String(meta.agent_runtime_event || "").trim() === "true" ||
@@ -15924,11 +13502,16 @@ function closeOpenAgentRuntimeOperationsForCompletedTurn(sourceRow, summary = ""
   return changed;
 }
 
-function findMessageRowByAgentRuntimePermission(runId, callId, commandSignature = "") {
+function findMessageRowByAgentRuntimePermission(
+  runId,
+  callId,
+  commandSignature = "",
+) {
   const normalizedRunId = String(runId || "").trim();
   const normalizedCallId = String(callId || "").trim();
   const normalizedSignature = String(commandSignature || "").trim();
-  if (!normalizedRunId || (!normalizedCallId && !normalizedSignature)) return null;
+  if (!normalizedRunId || (!normalizedCallId && !normalizedSignature))
+    return null;
   return (
     messages.value.find((item) =>
       Array.isArray(item?.operations)
@@ -15942,7 +13525,8 @@ function findMessageRowByAgentRuntimePermission(runId, callId, commandSignature 
               String(meta.run_id || "").trim() === normalizedRunId &&
               (String(meta.call_id || "").trim() === normalizedCallId ||
                 (normalizedSignature &&
-                  String(meta.command_signature || "").trim() === normalizedSignature))
+                  String(meta.command_signature || "").trim() ===
+                    normalizedSignature))
             );
           })
         : false,
@@ -15950,7 +13534,12 @@ function findMessageRowByAgentRuntimePermission(runId, callId, commandSignature 
   );
 }
 
-function findAgentRuntimePermissionOperation(row, runId, callId, commandSignature = "") {
+function findAgentRuntimePermissionOperation(
+  row,
+  runId,
+  callId,
+  commandSignature = "",
+) {
   const normalizedRunId = String(runId || "").trim();
   const normalizedCallId = String(callId || "").trim();
   const normalizedSignature = String(commandSignature || "").trim();
@@ -15966,7 +13555,8 @@ function findAgentRuntimePermissionOperation(row, runId, callId, commandSignatur
         String(meta.run_id || "").trim() === normalizedRunId &&
         (String(meta.call_id || "").trim() === normalizedCallId ||
           (normalizedSignature &&
-            String(meta.command_signature || "").trim() === normalizedSignature))
+            String(meta.command_signature || "").trim() ===
+              normalizedSignature))
       );
     }) || null
   );
@@ -15980,8 +13570,7 @@ function latestAgentRuntimePermissionOperation(operation) {
       meta.run_id,
       meta.call_id,
       meta.command_signature,
-    ) ||
-    findMessageRowByOperationId(operation?.id);
+    ) || findMessageRowByOperationId(operation?.id);
   return (
     findAgentRuntimePermissionOperation(
       row,
@@ -15998,7 +13587,8 @@ function updateAgentRuntimePermissionOperations(row, runId, callId, patch) {
   const normalizedSignature = String(
     patch?.meta?.command_signature || patch?.command_signature || "",
   ).trim();
-  if (!row || !normalizedRunId || (!normalizedCallId && !normalizedSignature)) return false;
+  if (!row || !normalizedRunId || (!normalizedCallId && !normalizedSignature))
+    return false;
   const items = Array.isArray(row.operations) ? row.operations.slice() : [];
   let changed = false;
   row.operations = items.map((operation) => {
@@ -16133,7 +13723,9 @@ function syncOperationInteractionModel(operation) {
 function operationInteractionSubmittedHint(operation) {
   const interactionId = operationInteractionId(operation);
   if (!interactionId) return "";
-  return String(operationInteractionSubmissionHints.value[interactionId] || "").trim();
+  return String(
+    operationInteractionSubmissionHints.value[interactionId] || "",
+  ).trim();
 }
 
 function setOperationInteractionSubmittedHint(operation, text) {
@@ -16172,8 +13764,9 @@ function operationInteractionTitle(operation) {
 function operationInteractionDescription(operation) {
   const schema = operationInteractionSchema(operation);
   return (
-    String(schema?.description || operation?.summary || "请完成当前交互后继续。").trim() ||
-    "请完成当前交互后继续。"
+    String(
+      schema?.description || operation?.summary || "请完成当前交互后继续。",
+    ).trim() || "请完成当前交互后继续。"
   );
 }
 
@@ -16184,7 +13777,9 @@ function operationInteractionSubmitLabel(operation) {
 
 function operationInteractionFallbackLabel(operation) {
   const schema = operationInteractionSchema(operation);
-  return String(schema?.fallbackLabel || "使用终端兜底").trim() || "使用终端兜底";
+  return (
+    String(schema?.fallbackLabel || "使用终端兜底").trim() || "使用终端兜底"
+  );
 }
 
 function messageOperationInteractionFormJson(operation) {
@@ -16206,7 +13801,8 @@ function messageOperationInteractionFormJson(operation) {
 
 function isEmptyInteractionValue(value) {
   if (Array.isArray(value)) return value.length === 0;
-  if (value && typeof value === "object") return Object.keys(value).length === 0;
+  if (value && typeof value === "object")
+    return Object.keys(value).length === 0;
   return String(value ?? "").trim() === "";
 }
 
@@ -16219,7 +13815,9 @@ function canSubmitOperationInteraction(operation) {
     .map((item) => String(item.prop || "").trim())
     .filter(Boolean);
   if (requiredProps.length) {
-    return requiredProps.every((prop) => !isEmptyInteractionValue(model?.[prop]));
+    return requiredProps.every(
+      (prop) => !isEmptyInteractionValue(model?.[prop]),
+    );
   }
   return schema.schema.some((item) => {
     const prop = String(item?.prop || "").trim();
@@ -16235,10 +13833,13 @@ function formatOperationInteractionPayload(operation) {
     return schema.terminalSubmitContent;
   }
   if (schema.responseTemplate) {
-    return schema.responseTemplate.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (_match, token) => {
-      const value = model?.[token];
-      return Array.isArray(value) ? value.join("、") : String(value ?? "");
-    });
+    return schema.responseTemplate.replace(
+      /\{\{\s*([\w.-]+)\s*\}\}/g,
+      (_match, token) => {
+        const value = model?.[token];
+        return Array.isArray(value) ? value.join("、") : String(value ?? "");
+      },
+    );
   }
   const actionTitle = operationInteractionTitle(operation);
   const lines = [`${actionTitle}：`];
@@ -16401,76 +14002,6 @@ function dismissTerminalStructuredInteraction() {
     terminalStructuredInteraction.value,
   );
   terminalStructuredInteraction.value = null;
-}
-
-function inferTerminalChoiceType(text, options) {
-  if (/至少选择|多选|复选|toggle|select all|ctrl\+a|space|空格/i.test(text)) {
-    return "checkbox";
-  }
-  if ((options || []).filter((item) => item.selected).length > 1) {
-    return "checkbox";
-  }
-  return "radio";
-}
-
-function terminalChoiceDescription(type) {
-  if (type === "checkbox") {
-    return "已识别到终端里的多选题，直接勾选选项后确认即可，不需要手动按方向键。";
-  }
-  return "已识别到终端里的单选题，直接选择一项后确认即可，不需要手动按方向键。";
-}
-
-function hasTerminalChoiceControlSignal(lines, text) {
-  const terminalText = String(text || "").trim();
-  if (!terminalText) return false;
-  const hasVisibleChoiceMarker = (lines || []).some((line) =>
-    /^\s*(?:[>❯]\s*)?(?:\[[ xX]\]|[◉●○◯◎✓✔])\s*\S+/u.test(String(line || "")),
-  );
-  if (hasVisibleChoiceMarker) return true;
-  return /enter confirm|enter to (?:select|confirm)|use .*arrow|arrow keys|press .*enter|上下键|方向键|回车(?:确认|选择)|空格(?:选择|切换)|select one|choose one|choose from|请选择以下/i.test(
-    terminalText,
-  );
-}
-
-function isPlainTerminalChoiceLabel(value) {
-  const text = String(value || "").trim();
-  if (!text) return false;
-  if (/\s/.test(text)) return false;
-  if (/[，。；：、,.!?！？*`#()[\]{}<>]/.test(text)) return false;
-  return (
-    /^[A-Za-z][\w:-]{1,40}$/.test(text) || /^[\u4e00-\u9fff]{1,12}$/u.test(text)
-  );
-}
-
-function parseTerminalChoiceLine(line) {
-  const raw = String(line || "").trim();
-  if (!raw) return null;
-  if (
-    /toggle|enter confirm|ctrl\+a|filter|请至少选择|选择要|select all/i.test(
-      raw,
-    )
-  ) {
-    return null;
-  }
-  if (/^(?:[#>$]|---|\/|```|[-*+]\s+|\d+[.)、]\s+|\*\s*请)/.test(raw)) {
-    return null;
-  }
-  const match = raw.match(
-    /^(?<cursor>[>❯])?\s*(?<marker>\[[ xX]\]|[◉●○◯◎✓✔•])?\s*(?<label>[A-Za-z][\w:-]{1,80}|[\u4e00-\u9fff][^\s]{0,40})(?:\s.*)?$/u,
-  );
-  if (!match?.groups?.label) return null;
-  const cursor = String(match.groups.cursor || "").trim();
-  const marker = String(match.groups.marker || "").trim();
-  const label = String(match.groups.label || "").trim();
-  if (!label || ["RUN", "pwd", "echo", "login", "auth"].includes(label))
-    return null;
-  if (!cursor && !marker && !isPlainTerminalChoiceLabel(raw)) return null;
-  return {
-    label,
-    value: label,
-    selected: /\[[xX]\]|[◉●✓✔]/.test(marker),
-    highlighted: Boolean(cursor),
-  };
 }
 
 function detectTerminalChoiceInteraction(row, assistantIndex) {
@@ -16865,7 +14396,7 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
     ),
     prefer_conclusion_first: Boolean(
       projectChatSettings.value.prefer_conclusion_first ??
-        CHAT_SETTINGS_DEFAULTS.prefer_conclusion_first,
+      CHAT_SETTINGS_DEFAULTS.prefer_conclusion_first,
     ),
     enabled_project_tool_names: normalizeStringList(
       selectedProjectToolNames.value || [],
@@ -16876,7 +14407,9 @@ async function sendInteractionSubmitRequest(operation, payloadText) {
       operation?.operationId || interactionId,
     ).trim(),
     interaction_title: operationInteractionTitle(operation),
-    interaction_action_type: normalizeOperationActionType(operation?.actionType),
+    interaction_action_type: normalizeOperationActionType(
+      operation?.actionType,
+    ),
     interaction_message: payloadText,
     interaction_schema: schema ? cloneInteractionValue(schema) : null,
     interaction_data: model,
@@ -16931,18 +14464,15 @@ async function submitOperationInteraction(operation) {
       : "已提交结构化表单，等待后续授权或操作完成。",
   );
   dismissOperationInteractionForm(operation);
-  upsertMessageOperation(
-    findMessageRowByOperationId(operation.id),
-    {
-      ...operation,
-      phase: "running",
-      summary: operationInteractionCanFallbackToTerminal(operation)
-        ? "已提交结构化交互，等待终端后续输出"
-        : "已提交结构化交互，等待后续授权或操作完成",
-      detail: "",
-      actionType: "none",
-    },
-  );
+  upsertMessageOperation(findMessageRowByOperationId(operation.id), {
+    ...operation,
+    phase: "running",
+    summary: operationInteractionCanFallbackToTerminal(operation)
+      ? "已提交结构化交互，等待终端后续输出"
+      : "已提交结构化交互，等待后续授权或操作完成",
+    detail: "",
+    actionType: "none",
+  });
 }
 
 async function handleOperationPrimaryAction(operation) {
@@ -17130,8 +14660,7 @@ function markAgentRuntimePermissionActionPending(operation, action) {
       meta.run_id,
       meta.call_id,
       meta.command_signature,
-    ) ||
-    findMessageRowByOperationId(operation?.id);
+    ) || findMessageRowByOperationId(operation?.id);
   if (!row) return null;
   const nextSummary =
     action === "deny"
@@ -17161,8 +14690,7 @@ function restoreAgentRuntimePermissionAction(operation) {
       meta.run_id,
       meta.call_id,
       meta.command_signature,
-    ) ||
-    findMessageRowByOperationId(operation?.id);
+    ) || findMessageRowByOperationId(operation?.id);
   if (!row) return;
   updateAgentRuntimePermissionOperations(row, meta.run_id, meta.call_id, {
     phase: "waiting_user",
@@ -17203,30 +14731,31 @@ async function submitAgentRuntimePermissionAction(operation, actionKey) {
   }
   const originalOperation = { ...currentOperation };
   const row =
-    findMessageRowByAgentRuntimePermission(runId, callId, meta.command_signature) ||
-    findMessageRowByOperationId(currentOperation.id);
+    findMessageRowByAgentRuntimePermission(
+      runId,
+      callId,
+      meta.command_signature,
+    ) || findMessageRowByOperationId(currentOperation.id);
   markAgentRuntimePermissionActionPending(currentOperation, action);
   try {
-    const response = await api.post(
-      `/projects/${encodeURIComponent(projectId)}/agent-runtime-v2/permission-actions`,
-      {
-        action,
-        run_id: runId,
-        call_id: callId,
-        tool_name: toolName,
-        args: meta.tool_args && typeof meta.tool_args === "object" ? meta.tool_args : {},
-        chat_session_id: String(
-          meta.chat_session_id || currentChatSessionId.value || "",
-        ).trim(),
-        assistant_message_id: String(
-          meta.assistant_message_id ||
-            row?.id ||
-            "",
-        ).trim(),
-      },
-    );
+    const response = await submitAgentRuntimePermissionActionRequest(projectId, {
+      action,
+      run_id: runId,
+      call_id: callId,
+      tool_name: toolName,
+      args:
+        meta.tool_args && typeof meta.tool_args === "object"
+          ? meta.tool_args
+          : {},
+      chat_session_id: String(
+        meta.chat_session_id || currentChatSessionId.value || "",
+      ).trim(),
+      assistant_message_id: String(meta.assistant_message_id || row?.id || "").trim(),
+    });
     const resume =
-      response?.resume && typeof response.resume === "object" ? response.resume : null;
+      response?.resume && typeof response.resume === "object"
+        ? response.resume
+        : null;
     const resumed = Boolean(resume?.resumed);
     const observations = Array.isArray(resume?.observations)
       ? resume.observations
@@ -17240,9 +14769,15 @@ async function submitAgentRuntimePermissionAction(operation, actionKey) {
     const missingFinalAnswer = agentRuntimeResumeMissingFinalAnswer(resume);
     const resumeDetail =
       continuationContent ||
-      (missingFinalAnswer ? agentRuntimeMissingFinalAnswerMessage() : observationSummary);
+      (missingFinalAnswer
+        ? agentRuntimeMissingFinalAnswerMessage()
+        : observationSummary);
     const currentRow =
-      findMessageRowByAgentRuntimePermission(runId, callId, meta.command_signature) ||
+      findMessageRowByAgentRuntimePermission(
+        runId,
+        callId,
+        meta.command_signature,
+      ) ||
       findMessageRowByOperationId(currentOperation.id) ||
       row;
     upsertMessageOperation(currentRow, {
@@ -17262,7 +14797,8 @@ async function submitAgentRuntimePermissionAction(operation, actionKey) {
       actionType: "none",
     });
     const assistantMessage =
-      response?.assistant_message && typeof response.assistant_message === "object"
+      response?.assistant_message &&
+      typeof response.assistant_message === "object"
         ? response.assistant_message
         : null;
     if (assistantMessage) {
@@ -17282,7 +14818,7 @@ async function submitAgentRuntimePermissionAction(operation, actionKey) {
             ? "已继续运行"
             : missingFinalAnswer
               ? "工具已执行，但模型未返回最终回答"
-            : "已恢复执行"
+              : "已恢复执行"
           : "已保存授权",
     );
   } catch (err) {
@@ -17316,7 +14852,9 @@ function applyAgentRuntimePermissionActionResult(eventData = {}) {
   const continuationContent = agentRuntimeResumeFinalContent(resume);
   const continuation = continuationContent ? resume?.continuation : null;
   const missingFinalAnswer = agentRuntimeResumeMissingFinalAnswer(resume);
-  const action = String(eventData?.action || "").trim().toLowerCase();
+  const action = String(eventData?.action || "")
+    .trim()
+    .toLowerCase();
   const nextPermissionState = {
     title: action === "deny" ? "工具调用已拒绝" : "工具调用授权",
     summary:
@@ -17331,7 +14869,9 @@ function applyAgentRuntimePermissionActionResult(eventData = {}) {
           : "已保存授权，运行时正在继续执行",
     detail:
       continuationContent ||
-      (missingFinalAnswer ? agentRuntimeMissingFinalAnswerMessage() : observationSummary),
+      (missingFinalAnswer
+        ? agentRuntimeMissingFinalAnswerMessage()
+        : observationSummary),
     phase:
       action === "deny" || missingFinalAnswer
         ? "blocked"
@@ -17343,9 +14883,18 @@ function applyAgentRuntimePermissionActionResult(eventData = {}) {
       command_signature: commandSignature,
     },
   };
-  updateAgentRuntimePermissionOperations(row, runId, callId, nextPermissionState);
+  updateAgentRuntimePermissionOperations(
+    row,
+    runId,
+    callId,
+    nextPermissionState,
+  );
   upsertMessageOperation(row, {
-    operationId: agentRuntimePermissionOperationId(runId, callId, commandSignature),
+    operationId: agentRuntimePermissionOperationId(
+      runId,
+      callId,
+      commandSignature,
+    ),
     kind: "approval",
     ...nextPermissionState,
     meta: {
@@ -17359,7 +14908,8 @@ function applyAgentRuntimePermissionActionResult(eventData = {}) {
     },
   });
   const assistantMessage =
-    eventData?.assistant_message && typeof eventData.assistant_message === "object"
+    eventData?.assistant_message &&
+    typeof eventData.assistant_message === "object"
       ? eventData.assistant_message
       : null;
   if (assistantMessage) {
@@ -17412,7 +14962,9 @@ function applyAgentRuntimeOperationResumeResult(eventData = {}) {
       : "操作完成，等待运行时继续执行",
     detail:
       continuationContent ||
-      (missingFinalAnswer ? agentRuntimeMissingFinalAnswerMessage() : observationSummary) ||
+      (missingFinalAnswer
+        ? agentRuntimeMissingFinalAnswerMessage()
+        : observationSummary) ||
       String(resume?.reason || "").trim(),
     phase: missingFinalAnswer ? "blocked" : resumed ? "completed" : "running",
     actionType: "none",
@@ -17430,24 +14982,23 @@ function applyAgentRuntimeOperationResumeResult(eventData = {}) {
 
 async function trustAgentRuntimeWorkspace() {
   const projectId = String(selectedProjectId.value || "").trim();
-  const workspacePath = String(agentRuntimeWorkspaceTrustPath.value || "").trim();
+  const workspacePath = String(
+    agentRuntimeWorkspaceTrustPath.value || "",
+  ).trim();
   if (!projectId || !workspacePath) {
     ElMessage.warning("缺少工作区路径");
     return;
   }
   workspaceTrustSaving.value = true;
   try {
-    await api.post(
-      `/projects/${encodeURIComponent(projectId)}/agent-runtime-v2/workspace-trust`,
-      {
-        workspace_path: workspacePath,
-        trusted: true,
-        metadata: {
-          chat_session_id: String(currentChatSessionId.value || "").trim(),
-          source: "project-chat",
-        },
+    await trustAgentRuntimeWorkspaceRequest(projectId, {
+      workspace_path: workspacePath,
+      trusted: true,
+      metadata: {
+        chat_session_id: String(currentChatSessionId.value || "").trim(),
+        source: "project-chat",
       },
-    );
+    });
     ElMessage.success("已信任当前工作区");
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "信任工作区失败");
@@ -17558,7 +15109,9 @@ function appendToolStartLogs(row, eventData) {
   if (planId && stepId) {
     updatePlanOperationStep(row, planId, stepId, {
       status: "running",
-      summary: command ? `正在执行命令：${command}` : `正在调用工具：${toolName}`,
+      summary: command
+        ? `正在执行命令：${command}`
+        : `正在调用工具：${toolName}`,
     });
   }
   const operationId = projectChatActionOperationId(eventData);
@@ -17607,9 +15160,10 @@ function appendToolResultLogs(row, eventData) {
   if (planId && stepId) {
     updatePlanOperationStep(row, planId, stepId, {
       status: normalizedStatus === "error" ? "failed" : "completed",
-      summary: normalizedStatus === "error"
-        ? "工具或命令执行未完成"
-        : "工具或命令执行完成",
+      summary:
+        normalizedStatus === "error"
+          ? "工具或命令执行未完成"
+          : "工具或命令执行完成",
     });
   }
   const operationId = projectChatActionOperationId(eventData);
@@ -17619,9 +15173,7 @@ function appendToolResultLogs(row, eventData) {
       ? `${label} ${
           normalizedStatus === "error" ? "执行未完成" : "已完成"
         }：${outputPreview}`
-      : `${label} ${
-          normalizedStatus === "error" ? "执行未完成" : "已完成"
-        }`,
+      : `${label} ${normalizedStatus === "error" ? "执行未完成" : "已完成"}`,
   });
   upsertMessageOperation(row, {
     operationId,
@@ -17672,48 +15224,12 @@ function operationExitCode(operation) {
 function operationOutput(operation) {
   const meta = operationMeta(operation);
   return clipText(
-    [
-      meta.stdout_preview,
-      meta.stderr_preview,
-      meta.output_preview,
-      meta.error,
-    ]
+    [meta.stdout_preview, meta.stderr_preview, meta.output_preview, meta.error]
       .map((item) => String(item || "").trim())
       .filter(Boolean)
       .join("\n"),
     900,
   );
-}
-
-function formatGuardSummary(eventData) {
-  const completedReason = String(eventData?.completed_reason || "")
-    .trim()
-    .toLowerCase();
-  const reason = String(eventData?.guard_reason || "").trim();
-  const message = String(eventData?.guard_message || "").trim();
-  const details =
-    eventData?.guard_details && typeof eventData.guard_details === "object"
-      ? eventData.guard_details
-      : {};
-  if (completedReason === "background_task_pending") return "";
-  if (completedReason === "waiting_user_action") return "";
-  if (message) return message;
-  if (reason === "tool_budget_exceeded") {
-    return `工具调用达到预算上限（${Number(details.tool_rounds || 0)}/${Number(details.max_tool_rounds || 0)} 轮）`;
-  }
-  if (reason === "repeated_tool_signature") {
-    return `检测到重复工具调用且没有正文输出（${Number(details.repeated_tool_signature_rounds || 0)}/${Number(details.repeated_tool_call_threshold || 0)} 次）`;
-  }
-  if (reason === "tool_only_loops") {
-    return `连续多轮只有工具调用没有正文输出（${Number(details.tool_only_loops || 0)}/${Number(details.tool_only_threshold || 0)} 轮）`;
-  }
-  if (reason === "missing_final_response_after_tool") {
-    return "工具执行已经完成，但模型没有继续生成最终回答。本轮未完成，请重新运行或检查模型续写链路。";
-  }
-  if (reason === "max_loops") {
-    return `达到最大处理轮次（${Number(details.loop_count || 0)}/${Number(details.max_loops || 0)} 轮）`;
-  }
-  return "";
 }
 
 function buildProjectHostCommandOutput(eventData) {
@@ -17932,10 +15448,13 @@ async function copyNativeExternalAgentFullLog() {
 }
 
 async function sendNativeExternalAgentStdin() {
-  await sendNativeExternalAgentInputContent(nativeExternalAgentStdinDraft.value, {
-    appendNewline: true,
-    clearDraft: true,
-  });
+  await sendNativeExternalAgentInputContent(
+    nativeExternalAgentStdinDraft.value,
+    {
+      appendNewline: true,
+      clearDraft: true,
+    },
+  );
 }
 
 async function sendNativeExternalAgentControl(content) {
@@ -17948,7 +15467,9 @@ async function sendNativeExternalAgentControl(content) {
 }
 
 async function sendNativeExternalAgentInputContent(content, options = {}) {
-  const sessionId = String(nativeExternalAgentSession.value?.sessionId || "").trim();
+  const sessionId = String(
+    nativeExternalAgentSession.value?.sessionId || "",
+  ).trim();
   const input = String(content || "");
   if (!sessionId) {
     ElMessage.warning("当前没有 Runner 会话");
@@ -18005,10 +15526,14 @@ async function submitNativeExternalAgentInteraction() {
     const upCount = Math.max(0, Number(interaction.highlightedIndex || 0));
     content += "\u001b[A".repeat(upCount);
     if (isMulti) {
-      const choices = Array.isArray(nativeExternalAgentInteractionModel.value?.choices)
+      const choices = Array.isArray(
+        nativeExternalAgentInteractionModel.value?.choices,
+      )
         ? nativeExternalAgentInteractionModel.value.choices
         : [];
-      const selectedSet = new Set(choices.map((item) => String(item || "").trim()));
+      const selectedSet = new Set(
+        choices.map((item) => String(item || "").trim()),
+      );
       interaction.options.forEach((option, index) => {
         const shouldSelect = selectedSet.has(option.value);
         if (Boolean(option.selected) !== shouldSelect) {
@@ -18036,7 +15561,9 @@ async function submitNativeExternalAgentInteraction() {
     }
     content += "\r";
   } else if (kind === "text") {
-    content = String(nativeExternalAgentInteractionModel.value?.text || "").trim();
+    content = String(
+      nativeExternalAgentInteractionModel.value?.text || "",
+    ).trim();
     if (!content) {
       ElMessage.warning("请输入内容");
       return;
@@ -18571,269 +16098,6 @@ function handleMessageAction(item, messageIndex, actionKey) {
   }
 }
 
-function buildCodePreviewTitle(language, content) {
-  const normalizedLanguage = normalizeCodeLanguage(language);
-  if (normalizedLanguage === "vue" || /<template[\s>]/i.test(content)) {
-    return "Vue 组件预览";
-  }
-  if (normalizedLanguage === "html" || normalizedLanguage === "htm") {
-    return "HTML 预览";
-  }
-  return "代码预览";
-}
-
-function extractSfcTemplate(content) {
-  const match = String(content || "").match(
-    /<template[^>]*>([\s\S]*?)<\/template>/i,
-  );
-  return String(match?.[1] || "").trim();
-}
-
-function extractSfcStyles(content) {
-  const styles = [];
-  const regex = /<style[^>]*>([\s\S]*?)<\/style>/gi;
-  for (const match of String(content || "").matchAll(regex)) {
-    const text = String(match?.[1] || "").trim();
-    if (text) styles.push(text);
-  }
-  return styles;
-}
-
-function extractSfcScript(content) {
-  const setupMatch = String(content || "").match(
-    /<script\b[^>]*setup[^>]*>([\s\S]*?)<\/script>/i,
-  );
-  if (setupMatch) return String(setupMatch[1] || "");
-  const normalMatch = String(content || "").match(
-    /<script\b[^>]*>([\s\S]*?)<\/script>/i,
-  );
-  return String(normalMatch?.[1] || "");
-}
-
-function collectScriptRefInitializers(scriptContent) {
-  const refs = [];
-  const regex =
-    /const\s+([A-Za-z_$][\w$]*)\s*=\s*ref(?:<[^>]+>)?\s*\(([\s\S]*?)\)\s*(?:;|\n)/g;
-  for (const match of String(scriptContent || "").matchAll(regex)) {
-    const name = String(match?.[1] || "").trim();
-    const expression = String(match?.[2] || "").trim();
-    if (!name) continue;
-    refs.push({ name, expression });
-  }
-  return refs;
-}
-
-function collectScriptReactiveInitializers(scriptContent) {
-  const reactives = [];
-  const regex =
-    /const\s+([A-Za-z_$][\w$]*)\s*=\s*reactive\s*\((\{[\s\S]*?\})\s*\)\s*(?:;|\n)/g;
-  for (const match of String(scriptContent || "").matchAll(regex)) {
-    const name = String(match?.[1] || "").trim();
-    const expression = String(match?.[2] || "").trim();
-    if (!name) continue;
-    reactives.push({ name, expression });
-  }
-  return reactives;
-}
-
-function collectScriptFunctionNames(scriptContent) {
-  const names = new Set();
-  const regex = /(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g;
-  for (const match of String(scriptContent || "").matchAll(regex)) {
-    const name = String(match?.[1] || "").trim();
-    if (!name) continue;
-    names.add(name);
-  }
-  return Array.from(names);
-}
-
-function collectTemplateModelPaths(template) {
-  const paths = new Set();
-  const regex = /v-model(?:\.[^=]+)?="([^"]+)"/g;
-  for (const match of String(template || "").matchAll(regex)) {
-    const path = String(match?.[1] || "").trim();
-    if (!path) continue;
-    paths.add(path);
-  }
-  return Array.from(paths);
-}
-
-function transformVueTemplateToStaticHtml(template) {
-  let html = String(template || "").trim();
-  if (!html) return "";
-
-  html = html.replace(/<template[^>]*>|<\/template>/gi, "");
-  html = html.replace(/<script[\s\S]*?<\/script>/gi, "");
-
-  html = html.replace(/{{[\s\S]*?}}/g, "示例内容");
-  html = html.replace(/\s(?:v-|:|@)[^=\s>]+(?:=(["'])[\s\S]*?\1)?/g, "");
-
-  html = html.replace(
-    /<el-form-item\b([^>]*)>/gi,
-    '<div class="preview-form-item"$1>',
-  );
-  html = html.replace(/<\/el-form-item>/gi, "</div>");
-  html = html.replace(/<el-form\b([^>]*)>/gi, '<form class="preview-form"$1>');
-  html = html.replace(/<\/el-form>/gi, "</form>");
-  html = html.replace(/<el-alert\b([^>]*)>/gi, '<div class="preview-alert"$1>');
-  html = html.replace(/<\/el-alert>/gi, "</div>");
-  html = html.replace(
-    /<el-checkbox\b([^>]*)>/gi,
-    '<label class="preview-checkbox"$1><input type="checkbox" />',
-  );
-  html = html.replace(/<\/el-checkbox>/gi, "</label>");
-  html = html.replace(
-    /<el-button\b([^>]*)>/gi,
-    '<button type="button" class="preview-button"$1>',
-  );
-  html = html.replace(/<\/el-button>/gi, "</button>");
-  html = html.replace(
-    /<el-input-number\b([^>]*)\/>/gi,
-    '<input type="number" class="preview-input" $1 />',
-  );
-  html = html.replace(/<el-input\b([^>]*)\/>/gi, (_match, attrs) => {
-    const typeMatch = String(attrs || "").match(/\btype=(['"])(.*?)\1/i);
-    const type = String(typeMatch?.[2] || "text").trim() || "text";
-    return `<input class="preview-input" type="${escapeHtml(type)}" ${attrs || ""} />`;
-  });
-  html = html.replace(
-    /<el-input\b([^>]*)>([\s\S]*?)<\/el-input>/gi,
-    (_match, attrs) => {
-      const typeMatch = String(attrs || "").match(/\btype=(['"])(.*?)\1/i);
-      const type = String(typeMatch?.[2] || "text").trim() || "text";
-      if (type === "textarea") {
-        return `<textarea class="preview-textarea" ${attrs || ""}></textarea>`;
-      }
-      return `<input class="preview-input" type="${escapeHtml(type)}" ${attrs || ""} />`;
-    },
-  );
-  html = html.replace(
-    /<el-select\b([^>]*)>([\s\S]*?)<\/el-select>/gi,
-    '<select class="preview-select"$1>$2</select>',
-  );
-  html = html.replace(
-    /<el-option\b([^>]*)>([\s\S]*?)<\/el-option>/gi,
-    (_match, attrs, inner) => {
-      const labelMatch = String(attrs || "").match(/\blabel=(['"])(.*?)\1/i);
-      const label = String(labelMatch?.[2] || inner || "选项").trim() || "选项";
-      return `<option>${escapeHtml(label)}</option>`;
-    },
-  );
-  html = html.replace(
-    /<el-radio-group\b([^>]*)>/gi,
-    '<div class="preview-radio-group"$1>',
-  );
-  html = html.replace(/<\/el-radio-group>/gi, "</div>");
-  html = html.replace(
-    /<el-radio\b([^>]*)>([\s\S]*?)<\/el-radio>/gi,
-    '<label class="preview-radio"$1><input type="radio" />$2</label>',
-  );
-  html = html.replace(
-    /<el-switch\b([^>]*)\/?>/gi,
-    '<label class="preview-switch"$1><span class="preview-switch__track"></span></label>',
-  );
-  html = html.replace(/<el-icon\b[^>]*>[\s\S]*?<\/el-icon>/gi, "");
-
-  html = html.replace(
-    /<el-[a-z0-9-]+\b([^>]*)>/gi,
-    '<div class="preview-block"$1>',
-  );
-  html = html.replace(/<\/el-[a-z0-9-]+>/gi, "</div>");
-
-  html = html.replace(
-    /\s(?:clearable|show-password|filterable|multiple|text|circle|plain|border|show-icon|destroy-on-close|closable)(?=[\s>])/gi,
-    "",
-  );
-  return html;
-}
-
-function buildStaticVuePreviewHtml(template) {
-  const html = transformVueTemplateToStaticHtml(template);
-  if (!html) return "";
-  return ['<div class="preview-static-shell">', html, "</div>"].join("");
-}
-
-function buildHtmlPreviewSrcdoc(content) {
-  const html = String(content || "").trim();
-  if (!html) return "";
-  if (/<!doctype html/i.test(html) || /<html[\s>]/i.test(html)) {
-    return html;
-  }
-  return [
-    "<!doctype html>",
-    '<html lang="zh-CN">',
-    "<head>",
-    '<meta charset="UTF-8" />',
-    '<meta name="viewport" content="width=device-width, initial-scale=1.0" />',
-    "<style>html,body{margin:0;padding:0;min-height:100%;background:#f7f7f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','PingFang SC','Microsoft YaHei',sans-serif;}body{padding:24px;}</style>",
-    "</head>",
-    "<body>",
-    html,
-    "</body>",
-    "</html>",
-  ].join("");
-}
-
-function buildVuePreviewSrcdoc(content) {
-  const template = extractSfcTemplate(content) || String(content || "").trim();
-  if (!template) return "";
-  const styles = extractSfcStyles(content).join("\n\n");
-  const scriptContent = extractSfcScript(content);
-  const refInitializers = collectScriptRefInitializers(scriptContent);
-  const reactiveInitializers = collectScriptReactiveInitializers(scriptContent);
-  const functionNames = collectScriptFunctionNames(scriptContent);
-  const modelPaths = collectTemplateModelPaths(template);
-  const staticPreviewHtml = buildStaticVuePreviewHtml(template);
-
-  return [
-    "<!doctype html>",
-    '<html lang="zh-CN">',
-    "<head>",
-    '<meta charset="UTF-8" />',
-    '<meta name="viewport" content="width=device-width, initial-scale=1.0" />',
-    '<link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />',
-    "<style>",
-    "html,body{margin:0;padding:0;min-height:100%;background:#f7f7f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans','PingFang SC','Microsoft YaHei',sans-serif;}",
-    "body{padding:24px;box-sizing:border-box;}",
-    "#app{min-height:calc(100vh - 48px);}",
-    ".preview-static-shell{min-height:calc(100vh - 48px);}",
-    ".preview-form{display:block;}",
-    ".preview-form-item{display:flex;flex-direction:column;gap:8px;margin-bottom:18px;}",
-    ".preview-input,.preview-textarea,.preview-select{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #dcdfe6;border-radius:8px;background:#fff;color:#1f2937;font-size:14px;line-height:1.5;}",
-    ".preview-textarea{min-height:96px;resize:vertical;}",
-    ".preview-button{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 18px;border-radius:10px;border:1px solid #0f172a;background:#0f172a;color:#fff;font-size:14px;font-weight:600;cursor:default;}",
-    ".preview-checkbox,.preview-radio{display:inline-flex;align-items:center;gap:8px;color:#4b5563;font-size:14px;}",
-    ".preview-switch{display:inline-flex;align-items:center;width:42px;height:24px;padding:2px;border-radius:999px;background:rgba(226,232,240,.92);box-sizing:border-box;}",
-    ".preview-switch__track{display:block;width:20px;height:20px;border-radius:50%;background:#0f172a;margin-left:auto;}",
-    ".preview-alert{margin-bottom:16px;padding:10px 12px;border-radius:10px;border:1px solid rgba(56,189,248,.18);background:rgba(239,249,255,.88);color:#0f172a;font-size:13px;line-height:1.6;}",
-    ".preview-block{display:block;}",
-    ".preview-error{padding:16px;border-radius:16px;background:#fff1f2;border:1px solid rgba(244,63,94,.18);color:#9f1239;font-size:14px;line-height:1.7;white-space:pre-wrap;}",
-    styles,
-    "</style>",
-    "</head>",
-    "<body>",
-    `<div id="app">${staticPreviewHtml}</div>`,
-    '<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"><\\/script>',
-    '<script src="https://unpkg.com/element-plus/dist/index.full.min.js"><\\/script>',
-    "<script>",
-    `const previewTemplate = ${JSON.stringify(template)};`,
-    `const previewRefs = ${JSON.stringify(refInitializers)};`,
-    `const previewReactives = ${JSON.stringify(reactiveInitializers)};`,
-    `const previewFunctions = ${JSON.stringify(functionNames)};`,
-    `const previewModelPaths = ${JSON.stringify(modelPaths)};`,
-    `function evaluateLiteral(source, fallback){ if(!source){ return fallback; } try { return (new Function("return (" + source + ")"))(); } catch { return fallback; } }`,
-    `function inferLeafDefault(path){ const leaf = String(path.split('.').pop() || '').toLowerCase(); if(/^(is|has|can|show|enable|loading|locked|disabled|visible|checked|remember|submitting)/.test(leaf)){ return false; } if(/count|size|total|days|length|index|step/.test(leaf)){ return 0; } return ''; }`,
-    `function ensurePath(root, path){ const parts = String(path || '').split('.').map((item) => item.trim()).filter(Boolean); if(!parts.length){ return; } let current = root; for(let i = 0; i < parts.length; i += 1){ const key = parts[i]; const isLast = i === parts.length - 1; if(isLast){ if(current[key] === undefined){ current[key] = inferLeafDefault(path); } break; } if(!current[key] || typeof current[key] !== 'object' || Array.isArray(current[key])){ current[key] = {}; } current = current[key]; } }`,
-    `function noop(){ return undefined; }`,
-    `const component = { setup(){ const ctx = {}; for(const item of previewReactives){ ctx[item.name] = Vue.reactive(evaluateLiteral(item.expression, {})); } for(const item of previewRefs){ ctx[item.name] = Vue.ref(evaluateLiteral(item.expression, inferLeafDefault(item.name))); } if(!ctx.form){ ctx.form = Vue.reactive({}); } if(!ctx.rules){ ctx.rules = Vue.reactive({}); } for(const path of previewModelPaths){ const rootName = String(path.split('.')[0] || '').trim(); if(!rootName){ continue; } const rootValue = ctx[rootName]; if(rootValue && typeof rootValue === 'object' && !('value' in rootValue)){ ensurePath(rootValue, path.split('.').slice(1).join('.')); continue; } if(rootValue && typeof rootValue === 'object' && 'value' in rootValue){ if(rootValue.value === undefined || rootValue.value === null || typeof rootValue.value !== 'object'){ rootValue.value = {}; } ensurePath(rootValue.value, path.split('.').slice(1).join('.')); continue; } if(path.includes('.')){ ctx[rootName] = Vue.reactive({}); ensurePath(ctx[rootName], path.split('.').slice(1).join('.')); } else if(ctx[rootName] === undefined){ ctx[rootName] = Vue.ref(inferLeafDefault(path)); } } for(const name of previewFunctions){ if(!ctx[name]){ ctx[name] = noop; } } return ctx; }, template: previewTemplate };`,
-    `function showError(error){ const el = document.getElementById('app'); if(el){ el.innerHTML = '<div class="preview-error">' + String(error && error.message ? error.message : error) + '</div>'; } }`,
-    `window.setTimeout(() => { if(!window.Vue || !window.ElementPlus){ return; } try { const app = Vue.createApp(component); app.use(ElementPlus); app.config.errorHandler = (error) => { showError(error); }; app.mount('#app'); } catch (error) { showError(error); } }, 80);`,
-    "<\\/script>",
-    "</body>",
-    "</html>",
-  ].join("");
-}
-
 function openCodePreview(content, language) {
   const text = String(content || "").trim();
   if (!text) {
@@ -18970,8 +16234,7 @@ function bindMessageListResizeObserver() {
   disconnectMessageListResizeObserver();
   const container = messagesContainer.value;
   if (!container || typeof ResizeObserver === "undefined") return;
-  const target =
-    container.querySelector?.(".message-list-inner") || container;
+  const target = container.querySelector?.(".message-list-inner") || container;
   updateMessagesBottomStickiness(container);
   messageListResizeObserver = new ResizeObserver(() => {
     if (!shouldStickMessagesToBottom.value) return;
@@ -19028,64 +16291,6 @@ function replaceRouteWithChatSession(chatSessionId) {
   delete nextQuery[CREATE_CHAT_SESSION_QUERY_KEY];
   delete nextQuery.message_id;
   void router.replace({ query: nextQuery }).catch(() => {});
-}
-
-function consumeStatisticsAnalysisDraft(storageKey) {
-  const normalizedKey = String(storageKey || "").trim();
-  if (
-    !normalizedKey ||
-    !normalizedKey.startsWith(STATISTICS_ANALYSIS_DRAFT_STORAGE_PREFIX)
-  ) {
-    return null;
-  }
-  try {
-    const raw = window.localStorage.getItem(normalizedKey);
-    if (!raw) return null;
-    window.localStorage.removeItem(normalizedKey);
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    return {
-      prompt: String(parsed.prompt || "").trim(),
-      scope: String(parsed.scope || "").trim(),
-      project_id: String(parsed.project_id || "").trim(),
-      link: String(parsed.link || "").trim(),
-    };
-  } catch {
-    try {
-      window.localStorage.removeItem(normalizedKey);
-    } catch {
-      // ignore cleanup errors
-    }
-    return null;
-  }
-}
-
-function consumePluginInstallDraft(storageKey) {
-  const normalizedKey = String(storageKey || "").trim();
-  if (
-    !normalizedKey ||
-    !normalizedKey.startsWith(PLUGIN_INSTALL_DRAFT_STORAGE_PREFIX)
-  ) {
-    return null;
-  }
-  try {
-    const raw = window.localStorage.getItem(normalizedKey);
-    if (!raw) return null;
-    window.localStorage.removeItem(normalizedKey);
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    return {
-      prompt: String(parsed.prompt || "").trim(),
-      source: String(parsed.source || "").trim(),
-    };
-  } catch {
-    try {
-      window.localStorage.removeItem(normalizedKey);
-    } catch {
-      // ignore cleanup errors
-    }
-    return null;
-  }
 }
 
 async function focusChatComposerTextarea() {
@@ -19215,186 +16420,19 @@ watch(
   { flush: "post" },
 );
 
-function extractImages(message) {
-  if (!message || !Array.isArray(message.images)) return [];
-  return message.images
-    .map((item) => String(item || "").trim())
-    .filter(Boolean);
-}
-
-function extractVideos(message) {
-  if (!message || !Array.isArray(message.videos)) return [];
-  return message.videos
-    .map((item) => String(item || "").trim())
-    .filter(Boolean);
-}
-
-function mergeMediaUrls(...groups) {
-  const urls = [];
-  const seen = new Set();
-  for (const group of groups) {
-    for (const item of Array.isArray(group) ? group : []) {
-      const url = String(item || "").trim();
-      if (!url || seen.has(url)) continue;
-      seen.add(url);
-      urls.push(url);
-    }
-  }
-  return urls;
-}
-
-function mergeImageUrls(...groups) {
-  return mergeMediaUrls(...groups);
-}
-
-function mergeVideoUrls(...groups) {
-  return mergeMediaUrls(...groups);
-}
-
-function inferArtifactAssetType(item) {
-  const explicit = String(item?.asset_type || item?.assetType || "")
-    .trim()
-    .toLowerCase();
-  if (["image", "video"].includes(explicit)) return explicit;
-  const mimeType = String(
-    item?.mime_type || item?.mimeType || item?.content_type || "",
-  )
-    .trim()
-    .toLowerCase();
-  if (mimeType.startsWith("video/")) return "video";
-  const contentUrl = String(
-    item?.content_url ||
-      item?.contentUrl ||
-      item?.video_url ||
-      item?.videoUrl ||
-      item?.url ||
-      "",
-  ).trim();
-  if (/\.(mp4|mov|m4v|webm|avi|mkv)(?:[?#].*)?$/i.test(contentUrl)) {
-    return "video";
-  }
-  return "image";
-}
-
-function collectArtifactImageUrls(payload) {
-  const directImages = Array.isArray(payload?.images) ? payload.images : [];
-  const artifacts = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
-  return mergeImageUrls(
-    directImages,
-    artifacts.flatMap((item) =>
-      inferArtifactAssetType(item) === "video"
-        ? []
-        : [
-            item?.preview_url,
-            item?.content_url,
-            item?.previewUrl,
-            item?.contentUrl,
-            item?.url,
-          ],
-    ),
-  );
-}
-
-function collectArtifactVideoUrls(payload) {
-  const directVideos = Array.isArray(payload?.videos) ? payload.videos : [];
-  const artifacts = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
-  return mergeVideoUrls(
-    directVideos,
-    artifacts.flatMap((item) =>
-      inferArtifactAssetType(item) === "video"
-        ? [
-            item?.content_url,
-            item?.contentUrl,
-            item?.video_url,
-            item?.videoUrl,
-            item?.url,
-          ]
-        : [],
-    ),
-  );
-}
-
-function fileExtension(name) {
-  const text = String(name || "").trim();
-  const idx = text.lastIndexOf(".");
-  if (idx < 0 || idx === text.length - 1) return "";
-  return text.slice(idx + 1).toLowerCase();
-}
-
-function isImageFile(file) {
-  const mime = String(file?.type || "").toLowerCase();
-  if (mime.startsWith("image/")) return true;
-  return IMAGE_EXTENSIONS.has(fileExtension(file?.name || ""));
-}
-
-function isAllowedFileType(file) {
-  const rules = allowedFileTypes.value;
-  if (!rules.length) return true;
-  const mime = String(file?.type || "").toLowerCase();
-  const ext = `.${fileExtension(file?.name || "")}`;
-  for (const rule of rules) {
-    if (!rule) continue;
-    if (rule === "image/*" && isImageFile(file)) return true;
-    if (rule.endsWith("/*") && mime.startsWith(rule.slice(0, -1))) return true;
-    if (rule.startsWith(".") && rule === ext) return true;
-    if (rule === mime) return true;
-  }
-  return false;
-}
-
-function formatFileType(name) {
-  const ext = fileExtension(name);
-  return ext ? ext.toUpperCase() : "FILE";
-}
-
-function clipText(text, maxChars) {
-  const value = String(text || "").trim();
-  if (!value) return "";
-  if (value.length <= maxChars) return value;
-  return `${value.slice(0, maxChars)}\n（内容已截断）`;
-}
-
 async function upsertProjectChatRequirementRecord({
   chatSessionId = "",
-  status = "in_progress",
-  rootGoal = "",
-  title = "",
-  messageId = "",
-  assistantMessageId = "",
-  resultSummary = "",
-  verificationResult = "",
-  runnerSessionId = "",
-  runnerAgentType = "",
-  source = "project_chat",
-  sourceContext = {},
+  ...payload
 } = {}) {
   const projectId = String(selectedProjectId.value || "").trim();
   const activeChatSessionId = String(
     chatSessionId || currentChatSessionId.value || "",
   ).trim();
-  const normalizedRootGoal = String(rootGoal || title || "").trim();
-  if (!projectId || !activeChatSessionId || !normalizedRootGoal) return null;
   try {
-    return await api.post(
-      `/projects/${encodeURIComponent(projectId)}/chat/requirement-record`,
-      {
-        chat_session_id: activeChatSessionId,
-        message_id: String(messageId || "").trim(),
-        assistant_message_id: String(assistantMessageId || "").trim(),
-        root_goal: clipText(normalizedRootGoal, 1000),
-        title: clipText(title || normalizedRootGoal, 160),
-        status: String(status || "in_progress").trim(),
-        result_summary: clipText(resultSummary, 1800),
-        verification_result: clipText(verificationResult, 1800),
-        runner_session_id: String(runnerSessionId || "").trim(),
-        runner_agent_type: String(runnerAgentType || "").trim(),
-        source: String(source || "project_chat").trim(),
-        source_context:
-          sourceContext && typeof sourceContext === "object"
-            ? sourceContext
-            : {},
-      },
-    );
+    return await upsertProjectChatRequirementRecordRequest(projectId, {
+      ...payload,
+      chatSessionId: activeChatSessionId,
+    });
   } catch (err) {
     console.warn("upsert project chat requirement record failed", err);
     return null;
@@ -19627,7 +16665,7 @@ async function submitMaterialDialog(formPayload) {
   }
   materialDialogSaving.value = true;
   try {
-    await api.post(`/projects/${projectId}/materials`, {
+    await createProjectMaterial(projectId, {
       asset_type: formPayload.asset_type,
       title: formPayload.title,
       summary: formPayload.summary,
@@ -19661,12 +16699,9 @@ async function ensureEmployeeDraftCatalog(force = false) {
   ) {
     return employeeDraftCatalog.value;
   }
-  const [skillsRes, rulesRes] = await Promise.all([
-    api.get("/skills"),
-    api.get("/rules"),
-  ]);
+  const { skills, rules } = await fetchEmployeeDraftCatalog();
   employeeDraftCatalog.value = {
-    skills: (skillsRes.skills || [])
+    skills: (skills || [])
       .filter(isReusableEmployeeDraftSkill)
       .map((skill) => ({
         id: String(skill.id || "").trim(),
@@ -19674,7 +16709,7 @@ async function ensureEmployeeDraftCatalog(force = false) {
         description: String(skill.description || "").trim(),
         tags: Array.isArray(skill.tags) ? skill.tags : [],
       })),
-    rules: (rulesRes.rules || []).map((rule) => ({
+    rules: (rules || []).map((rule) => ({
       id: String(rule.id || "").trim(),
       title: String(rule.title || rule.id || "").trim(),
       domain: String(rule.domain || "").trim(),
@@ -19838,318 +16873,6 @@ function normalizeEmployeeDraftExternalSkillSite(raw) {
   };
 }
 
-function buildVettSkillPageUrl(slug) {
-  const normalized = String(slug || "")
-    .trim()
-    .replace(/^\/+|\/+$/g, "");
-  return normalized ? `https://vett.sh/skills/${normalized}` : "";
-}
-
-const skillResourceIntentAliasGroups = [
-  {
-    match: [
-      "java开发",
-      "java后端",
-      "java",
-      "后端",
-      "backend",
-      "spring",
-      "springboot",
-      "spring boot",
-      "jvm",
-    ],
-    queries: ["java", "spring", "spring boot", "backend", "jvm"],
-  },
-  {
-    match: [
-      "界面设计",
-      "ui设计",
-      "界面",
-      "ui",
-      "视觉",
-      "交互",
-      "排版",
-      "设计系统",
-      "frontend",
-      "interface",
-      "design system",
-      "design-system",
-    ],
-    queries: ["ui", "frontend", "design", "interface", "design system"],
-  },
-  {
-    match: [
-      "css",
-      "样式",
-      "布局",
-      "响应式",
-      "动画",
-      "style",
-      "responsive",
-      "animation",
-    ],
-    queries: ["css", "style", "responsive", "animation"],
-  },
-  {
-    match: ["vue", "vue3", "composition api", "composition-api"],
-    queries: ["vue", "vue3", "composition api"],
-  },
-  {
-    match: [
-      "浏览器",
-      "调试",
-      "性能",
-      "chrome",
-      "devtools",
-      "browser",
-      "performance",
-    ],
-    queries: ["chrome", "devtools", "browser", "performance"],
-  },
-  {
-    match: [
-      "架构",
-      "架构设计",
-      "技术选型",
-      "系统设计",
-      "architect",
-      "architecture",
-      "system design",
-      "software architect",
-    ],
-    queries: [
-      "software architect",
-      "architecture",
-      "architect",
-      "system design",
-    ],
-  },
-  {
-    match: [
-      "node",
-      "nodejs",
-      "node.js",
-      "javascript",
-      "js",
-      "工程实践",
-      "工具链",
-    ],
-    queries: ["nodejs", "node", "javascript", "js"],
-  },
-];
-
-function normalizeSearchAliasKey(value) {
-  return normalizeMatchKey(value).replace(/[\s._/+-]+/g, "");
-}
-
-function pushSkillResourceSearchQuery(buffer, seen, value) {
-  const text = String(value || "").trim();
-  const key = normalizeMatchKey(text);
-  if (!text || !key || seen.has(key)) {
-    return;
-  }
-  seen.add(key);
-  buffer.push(text);
-}
-
-function buildSkillResourceSearchQueries(query) {
-  const rawQuery = String(query || "").trim();
-  const normalized = normalizeMatchKey(rawQuery);
-  const compact = normalizeSearchAliasKey(rawQuery);
-  const queries = [];
-  const seen = new Set();
-  pushSkillResourceSearchQuery(queries, seen, rawQuery);
-  const asciiTokens = rawQuery.match(/[A-Za-z][A-Za-z0-9.+#-]*/g) || [];
-  asciiTokens.forEach((token) =>
-    pushSkillResourceSearchQuery(queries, seen, token),
-  );
-  skillResourceIntentAliasGroups.forEach((group) => {
-    const matched = group.match.some((token) => {
-      const compactToken = normalizeSearchAliasKey(token);
-      return (
-        (normalized && normalized.includes(normalizeMatchKey(token))) ||
-        (compact && compactToken && compact.includes(compactToken))
-      );
-    });
-    if (!matched) {
-      return;
-    }
-    group.queries.forEach((token) =>
-      pushSkillResourceSearchQuery(queries, seen, token),
-    );
-  });
-  return queries.slice(0, 6);
-}
-
-function inferChineseSkillSummary(raw) {
-  const name = String(raw?.name || raw?.slug || "").trim();
-  const slug = String(raw?.slug || "")
-    .trim()
-    .toLowerCase();
-  const description = String(raw?.description || "").trim();
-  const joined = `${name} ${slug} ${description}`.toLowerCase();
-  if (joined.includes("ui") || joined.includes("interface")) {
-    return "适合界面审美、排版层级、交互一致性和设计系统类员工。";
-  }
-  if (
-    joined.includes("css") ||
-    joined.includes("style") ||
-    joined.includes("responsive")
-  ) {
-    return "适合布局系统、响应式、动画和样式治理相关任务。";
-  }
-  if (joined.includes("vue")) {
-    return "适合 Vue 组件设计、Composition API 和工程实践相关任务。";
-  }
-  if (
-    joined.includes("chrome") ||
-    joined.includes("devtools") ||
-    joined.includes("browser")
-  ) {
-    return "适合浏览器调试、渲染链路分析和性能定位相关任务。";
-  }
-  if (joined.includes("architect") || joined.includes("architecture")) {
-    return "适合系统拆分、技术选型、边界设计和架构治理相关任务。";
-  }
-  if (
-    joined.includes("node") ||
-    joined.includes("javascript") ||
-    joined.includes("js")
-  ) {
-    return "适合 JS 工具链、构建脚本、运行时治理和工程交付相关任务。";
-  }
-  if (joined.includes("frontend") || joined.includes("design")) {
-    return "适合前端界面、组件设计和交付规范相关任务。";
-  }
-  return "适合相关技能补强场景，建议结合原始说明和来源页面进一步判断是否匹配当前任务。";
-}
-
-function resolveLocalizedSkillSummary(raw, url) {
-  const normalizedUrl = String(url || "").trim();
-  const matched = (employeeDraftExternalSkillSites.value || []).find(
-    (item) => String(item?.url || "").trim() === normalizedUrl,
-  );
-  if (matched?.description) {
-    return String(matched.description || "").trim();
-  }
-  return inferChineseSkillSummary(raw);
-}
-
-function normalizeSkillResourceSearchItem(raw) {
-  const latestVersion =
-    raw?.latest_version && typeof raw.latest_version === "object"
-      ? raw.latest_version
-      : {};
-  const risk = String(latestVersion.risk || "")
-    .trim()
-    .toLowerCase();
-  const scanStatus = String(latestVersion.scan_status || "")
-    .trim()
-    .toLowerCase();
-  const policyAction = String(latestVersion.policy_action || "")
-    .trim()
-    .toLowerCase();
-  const latestVersionNumber = String(latestVersion.version || "").trim();
-  const installCount =
-    Number(raw?.install_count ?? raw?.installCount ?? 0) || 0;
-  const pageUrl =
-    buildVettSkillPageUrl(raw?.slug) || String(raw?.source_url || "").trim();
-  return {
-    id: String(raw?.id || "").trim(),
-    slug: String(raw?.slug || "").trim(),
-    title: String(raw?.name || raw?.slug || "").trim(),
-    description: String(raw?.description || "").trim(),
-    url: pageUrl,
-    localizedDescription: resolveLocalizedSkillSummary(raw, pageUrl),
-    latestVersionLabel: latestVersionNumber ? `v${latestVersionNumber}` : "",
-    canInstall:
-      !!latestVersionNumber &&
-      scanStatus === "completed" &&
-      policyAction !== "deny" &&
-      policyAction !== "blocked",
-    requiresReview: policyAction === "review",
-    risk,
-    scanStatus,
-    version: latestVersionNumber,
-    installCount,
-  };
-}
-
-function scoreSkillResourceSearchItem(
-  item,
-  rawQuery,
-  matchedQuery,
-  queryIndex,
-) {
-  const joined = normalizeMatchKey(
-    `${item?.title || ""} ${item?.slug || ""} ${item?.description || ""}`,
-  );
-  const raw = normalizeMatchKey(rawQuery);
-  const matched = normalizeMatchKey(matchedQuery);
-  let score = 120 - queryIndex * 12;
-  if (matched && joined.includes(matched)) {
-    score += 36;
-  }
-  if (raw && joined.includes(raw)) {
-    score += 48;
-  }
-  if (matched && normalizeMatchKey(item?.title || "") === matched) {
-    score += 18;
-  }
-  if (item?.canInstall) {
-    score += 6;
-  }
-  if ((skillResourceSites.value || []).some((site) => site.url === item?.url)) {
-    score += 14;
-  }
-  score += Math.min(18, Math.log10((Number(item?.installCount) || 0) + 1) * 8);
-  return score;
-}
-
-function mergeSkillResourceSearchResults(groups, rawQuery) {
-  const merged = new Map();
-  groups.forEach(({ query, items, index }) => {
-    items.forEach((rawItem) => {
-      const item = normalizeSkillResourceSearchItem(rawItem);
-      if (!item.slug || !item.url) {
-        return;
-      }
-      const score = scoreSkillResourceSearchItem(item, rawQuery, query, index);
-      const existing = merged.get(item.slug);
-      if (!existing || score > existing.searchScore) {
-        merged.set(item.slug, {
-          ...item,
-          searchScore: score,
-          matchedQuery: query,
-        });
-      }
-    });
-  });
-  return Array.from(merged.values())
-    .sort((left, right) => {
-      if (right.searchScore !== left.searchScore) {
-        return right.searchScore - left.searchScore;
-      }
-      if (right.installCount !== left.installCount) {
-        return right.installCount - left.installCount;
-      }
-      return left.title.localeCompare(right.title);
-    })
-    .slice(0, 18);
-}
-
-async function fetchSkillResourceSearchItems(query) {
-  const data = await api.get("/skill-resources", {
-    params: {
-      source: "vett",
-      q: query,
-      limit: 8,
-      offset: 0,
-    },
-  });
-  return Array.isArray(data?.items) ? data.items : [];
-}
-
 const employeeDraftDialogMatchedSkillIds = computed(() => {
   const payload = employeeDraftDialogPayload.value;
   if (!payload) return [];
@@ -20253,43 +16976,6 @@ function openCurrentProjectDetail() {
   );
 }
 
-async function deleteCurrentTaskTree() {
-  const projectId = String(selectedProjectId.value || "").trim();
-  const chatSessionId = String(currentChatSessionId.value || "").trim();
-  if (!projectId || !chatSessionId) {
-    ElMessage.warning("当前没有可删除的任务推进");
-    return;
-  }
-  try {
-    await ElMessageBox.confirm(
-      "删除后只会清空当前会话的任务推进，不会删除聊天记录。是否继续？",
-      "删除任务推进",
-      {
-        confirmButtonText: "删除",
-        cancelButtonText: "取消",
-        type: "warning",
-      },
-    );
-  } catch {
-    return;
-  }
-  taskTreeSaving.value = true;
-  try {
-    await api.delete(
-      `/projects/${encodeURIComponent(projectId)}/chat/task-tree`,
-      {
-        params: { chat_session_id: chatSessionId },
-      },
-    );
-    applyTaskTreePayload(null);
-    ElMessage.success("当前会话的任务推进已删除");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "删除任务推进失败");
-  } finally {
-    taskTreeSaving.value = false;
-  }
-}
-
 function openUnifiedMcpDialog() {
   unifiedMcpDialogVisible.value = true;
 }
@@ -20363,37 +17049,17 @@ async function searchSkillResources() {
     skillResourceSearchResolvedQueries.value = [];
     return;
   }
-  const expandedQueries = buildSkillResourceSearchQueries(query);
-  skillResourceSearchResolvedQueries.value = expandedQueries;
   skillResourceSearchLoading.value = true;
   try {
-    const settled = await Promise.allSettled(
-      expandedQueries.map((searchQuery) =>
-        fetchSkillResourceSearchItems(searchQuery),
-      ),
-    );
-    const groups = settled
-      .map((entry, index) => {
-        if (entry.status !== "fulfilled") {
-          return null;
-        }
-        return {
-          query: expandedQueries[index],
-          index,
-          items: Array.isArray(entry.value) ? entry.value : [],
-        };
-      })
-      .filter(Boolean);
-    if (!groups.length) {
-      const failed = settled.find((entry) => entry.status === "rejected");
-      throw failed?.reason || new Error("搜索技能资源失败");
-    }
-    skillResourceSearchResults.value = mergeSkillResourceSearchResults(
-      groups,
-      query,
-    );
+    const { resolvedQueries, results } = await searchSkillResourceItems(query, {
+      externalSkillSites: employeeDraftExternalSkillSites.value,
+      preferredSites: skillResourceSites.value,
+    });
+    skillResourceSearchResolvedQueries.value = resolvedQueries;
+    skillResourceSearchResults.value = results;
   } catch (err) {
     skillResourceSearchResults.value = [];
+    skillResourceSearchResolvedQueries.value = [];
     ElMessage.error(err?.detail || err?.message || "搜索技能资源失败");
   } finally {
     skillResourceSearchLoading.value = false;
@@ -20427,10 +17093,9 @@ async function installSkillResource(site) {
   }
   skillResourceInstallingSlug.value = slug;
   try {
-    const result = await api.post(`/skill-resources/vett/${slug}/install`, {
+    const result = await installVettSkillResource(slug, {
       version,
-      install_dir: installDir,
-      import_to_library: false,
+      installDir,
     });
     const resolvedInstallDir = String(result?.install_dir || installDir).trim();
     ElMessage.success(
@@ -20580,35 +17245,6 @@ async function confirmEmployeeDraftCreation(options = {}) {
   }
 }
 
-function normalizeAttachment(name) {
-  const normalizedName = String(name || "").trim();
-  if (!normalizedName) return null;
-  const ext = fileExtension(normalizedName);
-  const kind = IMAGE_EXTENSIONS.has(ext) ? "image" : "document";
-  return {
-    name: normalizedName,
-    kind,
-    ext,
-  };
-}
-
-function extractAttachments(message) {
-  const values = Array.isArray(message?.attachments) ? message.attachments : [];
-  return values.map(normalizeAttachment).filter(Boolean);
-}
-
-function attachmentTagType(kind) {
-  return kind === "image" ? "success" : "info";
-}
-
-function attachmentTypeLabel(attachment) {
-  const ext = String(attachment?.ext || "")
-    .trim()
-    .toUpperCase();
-  if (ext) return ext;
-  return attachment?.kind === "image" ? "图片" : "文档";
-}
-
 function applyStarterPrompt(prompt) {
   draftText.value = String(prompt || "").trim();
   rememberCurrentChatSessionComposerState();
@@ -20618,7 +17254,7 @@ function handleFileChange(file) {
   const raw = file.raw;
   if (!raw) return;
   const isImage = isImageFile(raw);
-  if (!isAllowedFileType(raw)) {
+  if (!isAllowedFileType(raw, allowedFileTypes.value)) {
     ElMessage.error("文件类型不在当前项目对话设置允许范围内");
     return;
   }
@@ -20810,7 +17446,9 @@ function enqueueFollowupMessage() {
       actionType: "none",
       meta: {
         followup_queue_id: queueItem.id,
-        followup_queue_ids: queueItems.map((item) => String(item?.id || "").trim()).filter(Boolean),
+        followup_queue_ids: queueItems
+          .map((item) => String(item?.id || "").trim())
+          .filter(Boolean),
         assistant_message_id: assistantMessageId,
         queued_at: queueItem.queuedAt,
       },
@@ -20922,7 +17560,10 @@ function buildMergedFollowupPrompt(queueItems = [], docsText = "") {
     .join("\n");
 }
 
-async function sendMergedFollowupRequest(queueItems = [], assistantMessageId = "") {
+async function sendMergedFollowupRequest(
+  queueItems = [],
+  assistantMessageId = "",
+) {
   if (!queueItems.length || !selectedProjectId.value) return;
   let activeChatSessionId = String(currentChatSessionId.value || "").trim();
   if (!activeChatSessionId) return;
@@ -21405,17 +18046,15 @@ async function fetchChatParameterOptions() {
 async function fetchProjects() {
   projects.value = await fetchAllVisibleProjects();
   if (!projects.value.length) {
-    localStorage.removeItem("project_id");
+    clearSelectedProjectId();
     return;
   }
-  const savedProjectId = String(
-    localStorage.getItem("project_id") || "",
-  ).trim();
+  const savedProjectId = readSelectedProjectId();
   if (
     savedProjectId &&
     !(projects.value || []).some((item) => item.id === savedProjectId)
   ) {
-    localStorage.removeItem("project_id");
+    clearSelectedProjectId();
   }
 }
 
@@ -21501,15 +18140,13 @@ async function refreshLocalConnectorCatalog(silent = true) {
 
 function syncProjectFromRoute() {
   const { projectId: routeProjectId } = routeChatTarget();
-  const savedProjectId = String(
-    localStorage.getItem("project_id") || "",
-  ).trim();
+  const savedProjectId = readSelectedProjectId();
   const initialProjectId = resolveAvailableProjectId(
     routeProjectId || savedProjectId,
   );
   if (initialProjectId) {
     selectedProjectId.value = initialProjectId;
-    localStorage.setItem("project_id", initialProjectId);
+    writeSelectedProjectId(initialProjectId);
     return initialProjectId;
   }
   clearSelectedProjectState();
@@ -21520,11 +18157,11 @@ async function handleProjectCreated(event) {
   const createdProjectId = String(event?.detail?.projectId || "").trim();
   await fetchProjects();
   const nextProjectId = resolveAvailableProjectId(
-    createdProjectId || localStorage.getItem("project_id") || "",
+    createdProjectId || readSelectedProjectId(),
   );
   if (!nextProjectId) return;
   if (nextProjectId === String(selectedProjectId.value || "").trim()) {
-    localStorage.setItem("project_id", nextProjectId);
+    writeSelectedProjectId(nextProjectId);
     return;
   }
   selectedProjectId.value = nextProjectId;
@@ -21568,7 +18205,7 @@ async function fetchProvidersByProject(projectId) {
   }
   let hydrated = false;
   try {
-    const data = await api.get(buildProjectProvidersRequestUrl(projectId));
+    const data = await fetchProjectChatProviders(projectId);
     const rawSettings =
       data?.chat_settings && typeof data.chat_settings === "object"
         ? data.chat_settings
@@ -21689,7 +18326,7 @@ async function fetchProvidersByProject(projectId) {
 async function handleQuickCreateEmployee(payload) {
   employeeCreateSubmitting.value = true;
   try {
-    const employeeRes = await api.post("/employees/create-from-draft", {
+    const employeeRes = await createEmployeeFromDraftRequest({
       name: payload.name,
       description: payload.description || "",
       goal: payload.goal || "",
@@ -21868,10 +18505,7 @@ async function saveProjectChatSettings(silent = false) {
   settingsSaving.value = true;
   try {
     const payload = buildProjectChatSettingsPayload();
-    const data = await api.put(
-      `/projects/${encodeURIComponent(projectId)}/chat/settings`,
-      { settings: payload },
-    );
+    const data = await saveProjectChatSettingsRequest(projectId, payload);
     projectChatSettings.value = applyLocalConnectorRuntimeSettings(
       data?.settings || payload,
     );
@@ -21895,47 +18529,6 @@ async function saveProjectChatSettings(silent = false) {
   } finally {
     settingsSaving.value = false;
   }
-}
-
-function mapHistoryMessage(item) {
-  const attachments = Array.isArray(item?.attachments) ? item.attachments : [];
-  const images = Array.isArray(item?.images) ? item.images : [];
-  const videos = Array.isArray(item?.videos) ? item.videos : [];
-  const sourceContext = normalizeChatSourceContext(item || {});
-  const runtimeTrace =
-    sourceContext.agent_runtime_trace &&
-    typeof sourceContext.agent_runtime_trace === "object"
-      ? sourceContext.agent_runtime_trace
-      : {};
-  const processLog = normalizePersistedProcessLogEntries(
-    runtimeTrace.process_log,
-  );
-  const operations = mergeMessageOperations(
-    normalizePersistedOperations(runtimeTrace.operations),
-    [buildPendingInteractionOperation(sourceContext.pending_interaction)].filter(Boolean),
-  );
-  return {
-    id: String(item?.id || ""),
-    role: String(item?.role || "assistant"),
-    content: String(item?.content || ""),
-    displayMode: String(item?.display_mode || "").trim(),
-    terminalLog: Array.isArray(runtimeTrace.terminal_log)
-      ? runtimeTrace.terminal_log
-          .map((line) => String(line || "").trim())
-          .filter(Boolean)
-      : [],
-    processExpanded: Boolean(processLog.length || operations.length),
-    audit: null,
-    taskTreeAudit: null,
-    processLog,
-    statusNotes: [],
-    operations,
-    images: images,
-    videos: videos,
-    attachments,
-    source_context: sourceContext,
-    time: String(item?.created_at || ""),
-  };
 }
 
 function upsertChatSessionFromRealtime(sessionPayload) {
@@ -21968,252 +18561,6 @@ function appendRealtimeChatMessage(eventData) {
   if (applyRealtimeChatMessagePayload(eventData)) {
     scrollToBottom();
   }
-}
-
-async function fetchChatTaskTree(
-  projectId,
-  chatSessionId = currentChatSessionId.value,
-  options = {},
-) {
-  const normalizedProjectId = String(projectId || "").trim();
-  const normalizedChatSessionId = String(chatSessionId || "").trim();
-  if (!normalizedProjectId) {
-    applyTaskTreePayload(null);
-    return null;
-  }
-  taskTreeLoading.value = true;
-  try {
-    const params = {};
-    if (normalizedChatSessionId) {
-      params.chat_session_id = normalizedChatSessionId;
-    }
-    const data = await api.get(
-      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/task-tree`,
-      { params },
-    );
-    const payload = normalizeTaskTreePayload(data?.task_tree);
-    applyTaskTreePayload(payload);
-    if (payload?.id && !isTaskTreeArchivedOrDone(payload)) {
-      await syncOngoingWorkSessionFromTaskTree(normalizedProjectId, payload, {
-        silent: true,
-      });
-    }
-    return payload;
-  } catch (err) {
-    applyTaskTreePayload(null);
-    if (!options.silent) {
-      ElMessage.error(err?.detail || err?.message || "加载任务树失败");
-    }
-    return null;
-  } finally {
-    taskTreeLoading.value = false;
-  }
-}
-
-async function restoreOngoingTaskFromServer(projectId, options = {}) {
-  const normalizedProjectId = String(projectId || "").trim();
-  currentWorkSessionId.value = "";
-  if (!normalizedProjectId) {
-    return null;
-  }
-  taskTreeLoading.value = true;
-  try {
-    const ongoing = await api.get(
-      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/task-tree/ongoing`,
-    );
-    const ongoingTaskTree = normalizeTaskTreePayload(ongoing?.task_tree);
-    const ongoingChatSessionId = String(
-      ongoing?.chat_session_id || ongoingTaskTree?.chat_session_id || "",
-    ).trim();
-    if (
-      ongoing?.can_continue &&
-      ongoingTaskTree?.id &&
-      ongoingChatSessionId &&
-      !isTaskTreeArchivedOrDone(ongoingTaskTree)
-    ) {
-      const ongoingSessionId = String(
-        ongoing?.session_id || ongoing?.work_session?.session_id || "",
-      ).trim();
-      const workSession =
-        normalizeWorkSessionSummary(ongoing?.work_session) ||
-        (ongoingSessionId
-          ? {
-              session_id: ongoingSessionId,
-              latest_status: "",
-              goal: "",
-              task_tree_session_id: String(ongoingTaskTree.id || "").trim(),
-              task_tree_chat_session_id: ongoingChatSessionId,
-              task_node_title: String(
-                ongoingTaskTree?.current_node?.title || "",
-              ).trim(),
-              updated_at: String(
-                ongoingTaskTree?.updated_at ||
-                  ongoingTaskTree?.created_at ||
-                  "",
-              ).trim(),
-              created_at: String(ongoingTaskTree?.created_at || "").trim(),
-              phases: [],
-              steps: [],
-            }
-          : null);
-      setOngoingTaskRestoreNotice(ongoingTaskTree, workSession);
-      return {
-        chatSessionId: ongoingChatSessionId,
-        taskTree: ongoingTaskTree,
-        workSession,
-      };
-    }
-
-    const taskSessionId = restoreTaskTreeSession(normalizedProjectId);
-    if (!taskSessionId) {
-      return null;
-    }
-    const data = await api.get(
-      `/projects/${encodeURIComponent(normalizedProjectId)}/chat/task-tree`,
-      {
-        params: { session_id: taskSessionId },
-      },
-    );
-    const payload = normalizeTaskTreePayload(data?.task_tree);
-    if (!payload?.id || isTaskTreeArchivedOrDone(payload)) {
-      clearTaskTreeSessionMemory(normalizedProjectId);
-      clearWorkSessionMemory(normalizedProjectId);
-      currentWorkSessionId.value = "";
-      return null;
-    }
-    const chatSessionId = String(payload.chat_session_id || "").trim();
-    if (!chatSessionId) {
-      clearTaskTreeSessionMemory(normalizedProjectId);
-      clearWorkSessionMemory(normalizedProjectId);
-      currentWorkSessionId.value = "";
-      return null;
-    }
-    const restoredWorkSessionId = restoreWorkSession(normalizedProjectId);
-    const workSession = restoredWorkSessionId
-      ? {
-          session_id: restoredWorkSessionId,
-          latest_status: "",
-          goal: "",
-          task_tree_session_id: String(payload.id || "").trim(),
-          task_tree_chat_session_id: chatSessionId,
-          task_node_title: String(payload?.current_node?.title || "").trim(),
-          updated_at: String(
-            payload?.updated_at || payload?.created_at || "",
-          ).trim(),
-          created_at: String(payload?.created_at || "").trim(),
-          phases: [],
-          steps: [],
-        }
-      : null;
-    setOngoingTaskRestoreNotice(payload, workSession);
-    return {
-      chatSessionId,
-      taskTree: payload,
-      workSession,
-    };
-  } catch (err) {
-    if (Number(err?.status || 0) === 404) {
-      clearTaskTreeSessionMemory(normalizedProjectId);
-      clearWorkSessionMemory(normalizedProjectId);
-      currentWorkSessionId.value = "";
-    }
-    if (!options.silent) {
-      ElMessage.error(err?.detail || err?.message || "恢复进行中任务失败");
-    }
-    return null;
-  } finally {
-    taskTreeLoading.value = false;
-  }
-}
-
-async function resumeOngoingTaskFromNotice() {
-  const projectId = String(selectedProjectId.value || "").trim();
-  const chatSessionId = String(
-    ongoingTaskRestoreNotice.value?.chat_session_id || "",
-  ).trim();
-  if (!projectId || !chatSessionId) return;
-  if (chatLoading.value) {
-    ElMessage.warning("当前回答进行中，暂时不能恢复其他任务");
-    return;
-  }
-  await fetchChatHistory(projectId, chatSessionId);
-  await fetchChatTaskTree(projectId, chatSessionId, { silent: true });
-}
-
-async function openTaskTreePanel() {
-  taskTreePanelVisible.value = true;
-  const projectId = String(selectedProjectId.value || "").trim();
-  const chatSessionId = String(currentChatSessionId.value || "").trim();
-  if (!projectId || !chatSessionId) {
-    applyTaskTreePayload(null);
-    return;
-  }
-  await fetchChatTaskTree(projectId, chatSessionId, { silent: true });
-}
-
-async function saveTaskTreeNode({ setCurrentOnly = false } = {}) {
-  if (taskTreeIsReadonly.value) {
-    ElMessage.info("已归档任务树仅支持查看，不支持继续修改");
-    return;
-  }
-  const projectId = String(selectedProjectId.value || "").trim();
-  const chatSessionId = String(currentChatSessionId.value || "").trim();
-  const nodeId = String(selectedTaskTreeNodeId.value || "").trim();
-  const targetNode = taskTreeSelectedNode.value;
-  if (!projectId || !chatSessionId || !nodeId) {
-    ElMessage.warning("请先选择一个任务节点");
-    return;
-  }
-  const nextStatus = String(taskTreeStatusDraft.value || "pending").trim();
-  const verificationResult = String(
-    taskTreeVerificationDraft.value || "",
-  ).trim();
-  if (!setCurrentOnly && nextStatus === "done") {
-    const childNodes = getTaskTreeChildNodes(nodeId);
-    if (
-      childNodes.length &&
-      childNodes.some((item) => String(item?.status || "").trim() !== "done")
-    ) {
-      ElMessage.warning("父节点下还有未完成的子任务，不能直接标记完成");
-      return;
-    }
-    if (!verificationResult) {
-      ElMessage.warning(
-        childNodes.length
-          ? "父节点完成前必须填写整体验证结果"
-          : "叶子节点完成前必须填写验证结果",
-      );
-      return;
-    }
-  }
-  taskTreeSaving.value = true;
-  try {
-    const payload = {
-      chat_session_id: chatSessionId,
-      is_current: true,
-    };
-    if (!setCurrentOnly) {
-      payload.status = nextStatus;
-      payload.verification_result = verificationResult;
-      payload.summary_for_model = String(
-        taskTreeSummaryDraft.value || "",
-      ).trim();
-    }
-    const data = await api.patch(
-      `/projects/${encodeURIComponent(projectId)}/chat/task-tree/nodes/${encodeURIComponent(nodeId)}`,
-      payload,
-    );
-    applyTaskTreePayload(resolveTaskTreeEventPayload(data));
-    ElMessage.success(setCurrentOnly ? "已切换当前执行节点" : "任务节点已更新");
-  } catch (err) {
-    ElMessage.error(err?.detail || err?.message || "更新任务节点失败");
-  } finally {
-    taskTreeSaving.value = false;
-  }
-}
-
-function handleTaskTreeNodeClick(node) {
-  syncTaskTreeDrafts(node);
 }
 
 async function fetchChatSessions(
@@ -22256,8 +18603,7 @@ async function fetchChatSessions(
         ? ""
         : String(
             chatSessions.value.find(
-              (item) =>
-                !excludedSessionIds.has(String(item?.id || "").trim()),
+              (item) => !excludedSessionIds.has(String(item?.id || "").trim()),
             )?.id || "",
           ).trim();
     const resolved =
@@ -22370,9 +18716,10 @@ async function fetchChatHistory(
       const liveRows = hasPendingRequestForChatSession(normalizedSessionId)
         ? getRememberedChatSessionMessages(projectId, normalizedSessionId)
         : null;
-      messages.value = Array.isArray(liveRows) && liveRows.length
-        ? liveRows
-        : applyPersistedChatRuntimeRows(historyRows, runtimePayload);
+      messages.value =
+        Array.isArray(liveRows) && liveRows.length
+          ? liveRows
+          : applyPersistedChatRuntimeRows(historyRows, runtimePayload);
     }
     rememberChatSessionMessages(projectId, normalizedSessionId, messages.value);
     chatHistoryLoadedCount.value = messages.value.length;
@@ -23047,28 +19394,11 @@ function isIntentOnlyReply(text) {
 }
 
 async function handleSocketMessage(eventData) {
-  const eventType = String(eventData?.type || "")
-    .trim()
-    .toLowerCase();
-  const requestId = String(eventData?.request_id || "").trim();
-  if (eventType === "ready" || eventType === "pong") {
+  const { eventType, requestId } = normalizeProjectChatWsEvent(eventData);
+  if (isProjectChatHeartbeatEvent(eventType)) {
     return;
   }
-  if (
-    [
-      "operation_waiting",
-      "operation_completed",
-      "operation_resume_started",
-      "authorization_waiting",
-      "authorization_completed",
-      "authorization_resume_started",
-      "operation_task_state",
-      "login_task_state",
-      "workflow_state",
-    ].includes(
-      eventType,
-    )
-  ) {
+  if (isBackgroundOperationEvent(eventType)) {
     const matched = findAssistantRowByOperationTaskId(
       String(eventData?.task_id || "").trim(),
       String(eventData?.chat_session_id || "").trim(),
@@ -23077,145 +19407,43 @@ async function handleSocketMessage(eventData) {
       const taskId = String(eventData?.task_id || "").trim();
       const chatSessionId = String(eventData?.chat_session_id || "").trim();
       const resumeCommand = String(eventData?.resume_command || "").trim();
-      if (["workflow_state", "login_task_state", "operation_task_state"].includes(eventType)) {
-        const taskStatus = String(eventData?.status || "").trim();
-        const workflowKind = String(eventData?.workflow_kind || "").trim();
-        const authorizationUrl = String(eventData?.authorization_url || "").trim();
-        const interactionSchema =
-          eventData?.interaction_schema && typeof eventData.interaction_schema === "object"
-            ? eventData.interaction_schema
-            : null;
-        const rawActionType = String(eventData?.action_type || "").trim();
-        const actionType =
-          rawActionType === "open_url" && !authorizationUrl
-            ? "none"
-            : rawActionType ||
-              (authorizationUrl ? "open_url" : interactionSchema ? "interaction_form" : "none");
-        const isAuthWorkflow = workflowKind === "auth_login" || Boolean(authorizationUrl);
-        const hasActionableAuthLink = Boolean(authorizationUrl);
-        const rawDetail = stripTerminalControlSequences(
-          String(eventData?.detail || eventData?.message || "").trim(),
-        ).trim();
-        const hasAuthPrompt = isAuthWorkflow && hasAuthorizationPromptText(eventData, rawDetail);
-        const isTerminalFailure =
-          ["failed", "timeout", "cancelled"].includes(taskStatus) && !hasAuthPrompt;
-        const normalizedOperationId =
-          eventType === "workflow_state" || eventType === "operation_task_state"
-            ? isAuthWorkflow
-              ? `auth:${taskId || String(eventData?.workflow_id || "active").trim()}`
-              : `workflow:${workflowKind || "generic"}:${String(eventData?.workflow_id || taskId || "active").trim()}`
-            : `auth:${taskId || "active"}`;
-        upsertMessageOperation(matched.row, {
-          operationId: normalizedOperationId,
-          kind:
-            isAuthWorkflow ? "auth" : "request",
-          title:
-            String(eventData?.status_label || eventData?.workflow_label || "后台工作流").trim() ||
-            "后台工作流",
-          summary:
-            hasAuthPrompt && ["failed", "timeout", "cancelled"].includes(taskStatus)
-              ? "等待你在浏览器完成授权"
-              : interactionSchema && taskStatus === "waiting_user_action"
-                ? "等待你选择授权业务域"
-                : String(eventData?.summary || "").trim() || "工作流已创建，等待后续结果",
-          detail: rawDetail,
-          phase:
-            (taskStatus === "waiting_user_action" || hasAuthPrompt) &&
-            (!isAuthWorkflow || hasActionableAuthLink || interactionSchema || hasAuthPrompt)
-              ? "waiting_user"
-              : isTerminalFailure
-                ? "failed"
-                : taskStatus === "succeeded"
-                  ? "completed"
-                  : "running",
-          actionType,
-          meta: {
-            task_id: taskId,
-            chat_session_id: chatSessionId,
-            resume_command: resumeCommand,
-            authorization_url: authorizationUrl,
-            interaction_schema: interactionSchema,
-            task_status: taskStatus,
-            workflow_kind: workflowKind,
-            workflow_id: String(eventData?.workflow_id || "").trim(),
-            workflow_state:
-              eventData && typeof eventData === "object" ? { ...eventData } : {},
-          },
-        });
+      if (isTaskStateEvent(eventType)) {
+        const { context, taskStatus, operation } =
+          buildBackgroundTaskStateOperation({
+            eventData,
+            eventType,
+            taskId,
+            chatSessionId,
+            resumeCommand,
+          });
+        upsertMessageOperation(matched.row, operation);
         if (
-          ["succeeded", "failed", "timeout", "cancelled"].includes(taskStatus) &&
-          !hasAuthPrompt &&
+          ["succeeded", "failed", "timeout", "cancelled"].includes(
+            taskStatus,
+          ) &&
+          !context.hasAuthPrompt &&
           !resumeCommand
         ) {
           completePendingExternalOperationRequestByRow(
             matched.row,
             String(eventData?.summary || eventData?.message || "").trim() ||
-              (taskStatus === "succeeded"
-                ? "操作已完成"
-                : "操作未完成"),
+              (taskStatus === "succeeded" ? "操作已完成" : "操作未完成"),
             { reject: taskStatus !== "succeeded" },
           );
         }
-      } else if (eventType === "authorization_waiting" || eventType === "operation_waiting") {
-        const authorizationUrl = String(
-          eventData?.authorization_url || "",
-        ).trim();
-        const workflowKind = String(eventData?.workflow_kind || "").trim();
-        const interactionSchema =
-          eventData?.interaction_schema && typeof eventData.interaction_schema === "object"
-            ? eventData.interaction_schema
-            : null;
-        const rawActionType = String(eventData?.action_type || "").trim();
-        const actionType =
-          rawActionType === "open_url" && !authorizationUrl
-            ? "none"
-            : rawActionType ||
-              (authorizationUrl ? "open_url" : interactionSchema ? "interaction_form" : "none");
-        const isAuthWorkflow = workflowKind === "auth_login" || Boolean(authorizationUrl);
-        const hasActionableAuthLink = Boolean(authorizationUrl);
-        const rawDetail = stripTerminalControlSequences(
-          String(eventData?.detail || "").trim() ||
-            [authorizationUrl, String(eventData?.message || "").trim()]
-              .filter(Boolean)
-              .join("\n"),
-        ).trim();
-        upsertMessageOperation(matched.row, {
-          operationId:
-            isAuthWorkflow
-              ? `auth:${taskId || "active"}`
-              : `workflow:${workflowKind || "external_operation"}:${taskId || "active"}`,
-          kind: isAuthWorkflow ? "auth" : "request",
-          title:
-            String(eventData?.status_label || eventData?.workflow_label || "等待操作").trim() ||
-            "等待操作",
-          summary:
-            isAuthWorkflow && hasActionableAuthLink
-              ? "等待你在浏览器完成授权"
-              : interactionSchema
-                ? "等待你选择授权业务域"
-              : isAuthWorkflow
-                ? "授权流程已启动，等待结构化授权链接返回"
-                : "等待你完成操作",
-          detail: rawDetail,
-          phase:
-            isAuthWorkflow && !hasActionableAuthLink && !interactionSchema
-              ? "running"
-              : "waiting_user",
-          actionType,
-          meta: {
-            task_id: taskId,
-            chat_session_id: chatSessionId,
-            resume_command: resumeCommand,
-            authorization_url: authorizationUrl,
-            interaction_schema: interactionSchema,
-            workflow_kind: workflowKind,
-            workflow_state:
-              eventData && typeof eventData === "object" ? { ...eventData } : {},
-          },
+      } else if (isWaitingOperationEvent(eventType)) {
+        const { operation } = buildWaitingBackgroundOperation({
+          eventData,
+          taskId,
+          chatSessionId,
+          resumeCommand,
         });
-      } else if (eventType === "authorization_completed" || eventType === "operation_completed") {
+        upsertMessageOperation(matched.row, operation);
+      } else if (isCompletedOperationEvent(eventType)) {
         const workflowKind = String(eventData?.workflow_kind || "").trim();
-        const isAuthOperation = eventType === "authorization_completed" || workflowKind === "auth_login";
+        const isAuthOperation =
+          eventType === "authorization_completed" ||
+          workflowKind === "auth_login";
         const completionSummary = resumeCommand
           ? isAuthOperation
             ? "授权完成，正在自动继续"
@@ -23237,10 +19465,9 @@ async function handleSocketMessage(eventData) {
                 : "操作完成。"),
         ).trim();
         upsertMessageOperation(matched.row, {
-          operationId:
-            isAuthOperation
-              ? `auth:${taskId || "active"}`
-              : `workflow:${workflowKind || "external_operation"}:${taskId || "active"}`,
+          operationId: isAuthOperation
+            ? `auth:${taskId || "active"}`
+            : `workflow:${workflowKind || "external_operation"}:${taskId || "active"}`,
           kind: isAuthOperation ? "auth" : "request",
           title: isAuthOperation ? "授权状态" : "操作状态",
           summary: completionSummary,
@@ -23266,9 +19493,11 @@ async function handleSocketMessage(eventData) {
         if (!resumeCommand) {
           completePendingExternalOperationRequest(matched, completionMessage);
         }
-      } else if (eventType === "authorization_resume_started" || eventType === "operation_resume_started") {
+      } else if (isResumeStartedEvent(eventType)) {
         const workflowKind = String(eventData?.workflow_kind || "").trim();
-        const isAuthOperation = eventType === "authorization_resume_started" || workflowKind === "auth_login";
+        const isAuthOperation =
+          eventType === "authorization_resume_started" ||
+          workflowKind === "auth_login";
         completeBackgroundPendingRequestOperation(matched.row, {
           taskId,
           chatSessionId,
@@ -23278,19 +19507,23 @@ async function handleSocketMessage(eventData) {
         });
         const existingResumeRunning = messageOperations(matched.row).some(
           (item) =>
-            String(item?.kind || "").trim().toLowerCase() === "request" &&
+            String(item?.kind || "")
+              .trim()
+              .toLowerCase() === "request" &&
             String(item?.summary || "").includes("授权完成，正在自动继续"),
         );
         upsertMessageOperation(matched.row, {
-          operationId:
-            isAuthOperation
-              ? `auth:${taskId || "active"}`
-              : `workflow:${workflowKind || "external_operation"}:${taskId || "active"}`,
+          operationId: isAuthOperation
+            ? `auth:${taskId || "active"}`
+            : `workflow:${workflowKind || "external_operation"}:${taskId || "active"}`,
           kind: isAuthOperation ? "auth" : "request",
           title: isAuthOperation ? "授权状态" : "操作状态",
-          summary: isAuthOperation ? "授权完成，已转入自动继续" : "操作完成，已转入自动继续",
+          summary: isAuthOperation
+            ? "授权完成，已转入自动继续"
+            : "操作完成，已转入自动继续",
           detail: String(
-            eventData?.message || "操作完成，系统正在自动继续上一条待执行命令。",
+            eventData?.message ||
+              "操作完成，系统正在自动继续上一条待执行命令。",
           ).trim(),
           phase: "completed",
           meta: {
@@ -23307,7 +19540,8 @@ async function handleSocketMessage(eventData) {
             ? "授权完成，正在自动继续"
             : "操作完成，正在自动继续",
           detail: String(
-            eventData?.message || "操作完成，系统正在自动继续上一条待执行命令。",
+            eventData?.message ||
+              "操作完成，系统正在自动继续上一条待执行命令。",
           ).trim(),
           phase: "running",
           actionType: "none",
@@ -23319,7 +19553,9 @@ async function handleSocketMessage(eventData) {
         });
         matched.row.processExpanded = true;
         const projectId = String(selectedProjectId.value || "").trim();
-        const currentSessionId = String(currentChatSessionId.value || "").trim();
+        const currentSessionId = String(
+          currentChatSessionId.value || "",
+        ).trim();
         if (
           projectId &&
           chatSessionId &&
@@ -23362,7 +19598,10 @@ async function handleSocketMessage(eventData) {
               ),
               attachmentNames: [],
               base64Images: [],
-              historyRows: toHistoryRows(messages.value.slice(0, -1), historyLimit.value),
+              historyRows: toHistoryRows(
+                messages.value.slice(0, -1),
+                historyLimit.value,
+              ),
               effectiveAutoUseTools: true,
               effectiveToolPriority: mergeToolPriority(
                 projectChatSettings.value.tool_priority || [],
@@ -23384,10 +19623,7 @@ async function handleSocketMessage(eventData) {
       return;
     }
   }
-  if (
-    eventType === "error" &&
-    /^(?:mirror-input|mirror-start|mirror-stop)-/.test(requestId)
-  ) {
+  if (eventType === "error" && isTerminalMirrorControlRequest(requestId)) {
     const message = String(eventData?.message || "项目终端请求失败").trim();
     appendTerminalPanelLine(`! ${message}`);
     const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
@@ -23485,14 +19721,18 @@ async function handleSocketMessage(eventData) {
           eventData?.chat_session_id ||
           "active",
       ).trim();
-      const mirrorRow = messages.value[activeTerminalMirrorAssistantIndex.value];
+      const mirrorRow =
+        messages.value[activeTerminalMirrorAssistantIndex.value];
       if (mirrorRow) {
         upsertMessageOperation(mirrorRow, {
           operationId: `terminal:${sessionKey}`,
           kind: "terminal",
           title:
-            String(eventData?.status_label || eventData?.workflow_label || "项目终端").trim() ||
-            "项目终端",
+            String(
+              eventData?.status_label ||
+                eventData?.workflow_label ||
+                "项目终端",
+            ).trim() || "项目终端",
           summary:
             String(eventData?.summary || "").trim() || "终端工作流进行中",
           detail: String(eventData?.detail || eventData?.message || "").trim(),
@@ -23601,7 +19841,10 @@ async function handleSocketMessage(eventData) {
     scrollToBottom();
     return;
   }
-  if (eventType === "chat_message_created" || eventType === "chat_message_updated") {
+  if (
+    eventType === "chat_message_created" ||
+    eventType === "chat_message_updated"
+  ) {
     appendRealtimeChatMessage(eventData);
     return;
   }
@@ -23913,9 +20156,10 @@ async function handleSocketMessage(eventData) {
   if (eventType === "external_executor_event") {
     row.displayMode = "terminal";
     row.processExpanded = true;
-    const event = eventData?.event && typeof eventData.event === "object"
-      ? eventData.event
-      : {};
+    const event =
+      eventData?.event && typeof eventData.event === "object"
+        ? eventData.event
+        : {};
     const executorType = String(event.executor_type || "external_agent").trim();
     const eventStatus = String(event.status || "in_progress").trim();
     const eventMessage = String(event.message || "").trim();
@@ -23961,7 +20205,11 @@ async function handleSocketMessage(eventData) {
     appendMessageProcessLog(row, {
       level: "warning",
       text: clipText(
-        String(eventData?.stderr_preview || eventData?.message || "执行过程中出现提示").trim(),
+        String(
+          eventData?.stderr_preview ||
+            eventData?.message ||
+            "执行过程中出现提示",
+        ).trim(),
         220,
       ),
     });
@@ -23975,7 +20223,9 @@ async function handleSocketMessage(eventData) {
   if (eventType === "command_start") {
     row.processExpanded = true;
     const command = eventCommand(eventData);
-    const cwd = String(eventData?.cwd || eventData?.workspace_path || "").trim();
+    const cwd = String(
+      eventData?.cwd || eventData?.workspace_path || "",
+    ).trim();
     const toolName = String(eventData?.tool_name || "命令").trim() || "命令";
     const planId = String(eventData?.plan_id || "").trim();
     const stepId = String(eventData?.step_id || "").trim();
@@ -23987,10 +20237,7 @@ async function handleSocketMessage(eventData) {
     }
     appendMessageProcessLog(row, {
       level: "info",
-      text:
-        command
-          ? `开始执行命令：${command}`
-          : "开始执行命令",
+      text: command ? `开始执行命令：${command}` : "开始执行命令",
     });
     upsertMessageOperation(row, {
       operationId: projectChatActionOperationId(eventData),
@@ -24021,11 +20268,17 @@ async function handleSocketMessage(eventData) {
         .toLowerCase() || "completed";
     const outputPreview = String(eventData?.output_preview || "").trim();
     const command = eventCommand(eventData);
-    const cwd = String(eventData?.cwd || eventData?.workspace_path || "").trim();
+    const cwd = String(
+      eventData?.cwd || eventData?.workspace_path || "",
+    ).trim();
     const toolName = String(eventData?.tool_name || "命令").trim() || "命令";
     const planId = String(eventData?.plan_id || "").trim();
     const stepId = String(eventData?.step_id || "").trim();
-    if (outputPreview && isMcpApprovalCancelledMessage(outputPreview) && pending) {
+    if (
+      outputPreview &&
+      isMcpApprovalCancelledMessage(outputPreview) &&
+      pending
+    ) {
       pending.mcpApprovalCancelled = true;
     }
     const exitCode = eventData?.exit_code;
@@ -24128,16 +20381,15 @@ async function handleSocketMessage(eventData) {
     const statusText = String(eventData?.status || "")
       .trim()
       .toLowerCase();
-    const taskStatus = String(
-      eventData?.task_status || eventData?.status || "",
-    )
+    const taskStatus = String(eventData?.task_status || eventData?.status || "")
       .trim()
       .toLowerCase();
     const outputPreview = String(eventData?.output_preview || "").trim();
     const taskId = String(eventData?.task_id || "").trim();
     const authorizationUrl = String(eventData?.authorization_url || "").trim();
     const interactionSchema =
-      eventData?.interaction_schema && typeof eventData.interaction_schema === "object"
+      eventData?.interaction_schema &&
+      typeof eventData.interaction_schema === "object"
         ? eventData.interaction_schema
         : null;
     const nextStep = String(eventData?.next_step || "").trim();
@@ -24152,27 +20404,36 @@ async function handleSocketMessage(eventData) {
       ) &&
       taskId
     ) {
-      const workflowKind = String(eventData?.operation_kind || eventData?.workflow_kind || "").trim();
+      const workflowKind = String(
+        eventData?.operation_kind || eventData?.workflow_kind || "",
+      ).trim();
       const isAuthOperation =
         workflowKind === "auth_login" ||
         String(eventData?.source || "").trim() === "cli_plugin_login_task" ||
         Boolean(authorizationUrl);
-      const hasAuthPrompt = isAuthOperation && hasAuthorizationPromptText(eventData, rawDetail);
-      let summary = isAuthOperation ? "授权任务已创建，等待后续结果" : "操作已创建，等待后续结果";
+      const hasAuthPrompt =
+        isAuthOperation && hasAuthorizationPromptText(eventData, rawDetail);
+      let summary = isAuthOperation
+        ? "授权任务已创建，等待后续结果"
+        : "操作已创建，等待后续结果";
       let phase = "running";
       if (taskStatus === "queued") {
-        summary = isAuthOperation ? "授权任务已创建，等待返回授权链接" : "操作已创建，等待后续结果";
+        summary = isAuthOperation
+          ? "授权任务已创建，等待返回授权链接"
+          : "操作已创建，等待后续结果";
       } else if (taskStatus === "running") {
-        summary = isAuthOperation ? "授权流程已启动，正在等待后续结果" : "操作已启动，正在等待后续结果";
+        summary = isAuthOperation
+          ? "授权流程已启动，正在等待后续结果"
+          : "操作已启动，正在等待后续结果";
       } else if (taskStatus === "waiting_user_action") {
         summary =
           isAuthOperation && authorizationUrl
             ? "等待你在浏览器完成授权"
             : interactionSchema
               ? "等待你选择授权业务域"
-            : isAuthOperation
-              ? "授权流程已启动，等待结构化授权链接返回"
-              : "等待你完成操作";
+              : isAuthOperation
+                ? "授权流程已启动，等待结构化授权链接返回"
+                : "等待你完成操作";
         phase =
           isAuthOperation && !authorizationUrl && !interactionSchema
             ? "running"
@@ -24190,15 +20451,24 @@ async function handleSocketMessage(eventData) {
         }
       }
       upsertMessageOperation(row, {
-        operationId: isAuthOperation ? `auth:${taskId}` : `workflow:${workflowKind || "external_operation"}:${taskId}`,
+        operationId: isAuthOperation
+          ? `auth:${taskId}`
+          : `workflow:${workflowKind || "external_operation"}:${taskId}`,
         kind: isAuthOperation ? "auth" : "request",
         title:
-          String(eventData?.status_label || eventData?.operation_label || (isAuthOperation ? "网页登录授权" : "操作")).trim() ||
-          (isAuthOperation ? "网页登录授权" : "操作"),
+          String(
+            eventData?.status_label ||
+              eventData?.operation_label ||
+              (isAuthOperation ? "网页登录授权" : "操作"),
+          ).trim() || (isAuthOperation ? "网页登录授权" : "操作"),
         summary,
         detail: rawDetail,
         phase,
-        actionType: authorizationUrl ? "open_url" : interactionSchema ? "interaction_form" : "none",
+        actionType: authorizationUrl
+          ? "open_url"
+          : interactionSchema
+            ? "interaction_form"
+            : "none",
         meta: {
           task_id: taskId,
           authorization_url: authorizationUrl,
@@ -24273,12 +20543,15 @@ async function handleSocketMessage(eventData) {
       }
       const doneState = normalizeDoneEventExecutionState(eventData);
       const doneContent = String(eventData?.content || "").trim();
-      const hasFinalAnswer = Boolean(doneContent || String(row.content || "").trim());
+      const hasFinalAnswer = Boolean(
+        doneContent || String(row.content || "").trim(),
+      );
       const planId = String(eventData?.plan_id || "").trim();
       const stepId = String(eventData?.step_id || "").trim();
       if (planId && stepId) {
         updatePlanOperationStep(row, planId, stepId, {
-          status: doneState.phase === "completed" ? "completed" : doneState.phase,
+          status:
+            doneState.phase === "completed" ? "completed" : doneState.phase,
           summary: doneState.summary,
         });
       }
@@ -24316,7 +20589,9 @@ async function handleSocketMessage(eventData) {
             completed_reason: String(eventData?.completed_reason || "").trim(),
             task_id: String(eventData?.task_id || "").trim(),
             chat_session_id: String(eventData?.chat_session_id || "").trim(),
-            authorization_url: String(eventData?.authorization_url || "").trim(),
+            authorization_url: String(
+              eventData?.authorization_url || "",
+            ).trim(),
             action_type: String(eventData?.action_type || "").trim(),
             plan_id: planId,
             step_id: stepId,
@@ -24460,7 +20735,10 @@ function resolvePendingRequest(requestId, pending, content = "") {
   if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
     clearWorkingStatusStartForChatSession(pending.chatSessionId);
   }
-  persistRememberedChatSessionMessages(pending.projectId, pending.chatSessionId);
+  persistRememberedChatSessionMessages(
+    pending.projectId,
+    pending.chatSessionId,
+  );
   syncChatLoadingWithCurrentSession();
   pending.resolve(String(content || "").trim());
 }
@@ -24472,7 +20750,10 @@ function rejectPendingRequest(requestId, pending, error) {
   if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
     clearWorkingStatusStartForChatSession(pending.chatSessionId);
   }
-  persistRememberedChatSessionMessages(pending.projectId, pending.chatSessionId);
+  persistRememberedChatSessionMessages(
+    pending.projectId,
+    pending.chatSessionId,
+  );
   syncChatLoadingWithCurrentSession();
   pending.reject(
     error instanceof Error ? error : new Error(String(error || "未知错误")),
@@ -24493,7 +20774,10 @@ function rejectPendingRequests(reason) {
     if (!hasPendingRequestForChatSession(pending.chatSessionId)) {
       clearWorkingStatusStartForChatSession(pending.chatSessionId);
     }
-    persistRememberedChatSessionMessages(pending.projectId, pending.chatSessionId);
+    persistRememberedChatSessionMessages(
+      pending.projectId,
+      pending.chatSessionId,
+    );
   }
   syncChatLoadingWithCurrentSession();
 }
@@ -24512,30 +20796,6 @@ function rejectPendingAgentPrepares(reason) {
     session_id: "",
   };
   externalAgentWarmupKey.value = "";
-}
-
-function buildExternalAgentWarmupKey(projectId) {
-  return JSON.stringify({
-    projectId: String(projectId || "").trim(),
-    agentType: String(
-      projectChatSettings.value.external_agent_type || "codex_cli",
-    ).trim(),
-    localConnectorId: String(
-      projectChatSettings.value.local_connector_id || "",
-    ).trim(),
-    workspacePath: String(
-      workspacePathDraftNormalized.value || workspacePathResolved.value || "",
-    ).trim(),
-    sandboxMode: String(
-      projectChatSettings.value.external_agent_sandbox_mode ||
-        "workspace-write",
-    ).trim(),
-    skillResourceDirectory: String(
-      skillResourceDirectoryResolved.value || "",
-    ).trim(),
-    systemPrompt: String(systemPrompt.value || "").trim(),
-    employeeIds: normalizeStringList(selectedEmployeeIds.value || []),
-  });
 }
 
 async function promptProjectWorkspacePath() {
@@ -24594,16 +20854,6 @@ async function promptProjectWorkspacePath() {
   }
 }
 
-function normalizeAiEntryFileForSave(value) {
-  const rawValue = String(value || "").trim();
-  if (!rawValue) return "";
-  const normalizedRelative = toWorkspaceRelativePath(
-    rawValue,
-    projectWorkspaceDraftNormalized.value || projectWorkspacePath.value,
-  );
-  return String(normalizedRelative || rawValue).trim();
-}
-
 async function promptProjectWorkspaceDirectory() {
   const projectId = String(selectedProjectId.value || "").trim();
   if (!projectId) {
@@ -24652,7 +20902,10 @@ async function promptProjectAiEntryFile() {
     if (!pickedPath) {
       return;
     }
-    aiEntryFileDraft.value = normalizeAiEntryFileForSave(pickedPath);
+    aiEntryFileDraft.value = normalizeAiEntryFileForSave(
+      pickedPath,
+      projectWorkspaceDraftNormalized.value || projectWorkspacePath.value,
+    );
   } catch (err) {
     ElMessage.error(err?.detail || err?.message || "打开文件选择器失败");
   } finally {
@@ -24718,6 +20971,7 @@ async function saveProjectAiEntryFile(aiEntryFileOverride = null) {
         : aiEntryFileOverride;
     const aiEntryFile = normalizeAiEntryFileForSave(
       normalizedOverride ?? aiEntryFileDraft.value ?? "",
+      projectWorkspaceDraftNormalized.value || projectWorkspacePath.value,
     );
     const data = await api.patch(
       `/projects/${encodeURIComponent(projectId)}/chat/ai-entry-file`,
@@ -24772,10 +21026,7 @@ async function saveProjectWorkspacePath(workspacePathOverride = null) {
     clearAutoSaveTimer();
     autoSaveState.value = "saving";
     const payload = buildProjectChatSettingsPayload();
-    const data = await api.put(
-      `/projects/${encodeURIComponent(projectId)}/chat/settings`,
-      { settings: payload },
-    );
+    const data = await saveProjectChatSettingsRequest(projectId, payload);
     projectChatSettings.value = applyLocalConnectorRuntimeSettings(
       data?.settings || payload,
     );
@@ -24839,7 +21090,10 @@ async function testProjectWorkspacePath() {
     if (nativeDesktopBridgeAvailable.value) {
       await refreshNativeExecutorStatus();
       const workspace = nativeExecutorStatus.value?.workspace;
-      if (workspace?.configured && (!workspace.exists || !workspace.isDirectory)) {
+      if (
+        workspace?.configured &&
+        (!workspace.exists || !workspace.isDirectory)
+      ) {
         throw new Error(nativeWorkspaceStatusLabel.value || "工作区不可访问");
       }
       ElMessage.success("工作区可用，桌面端已完成本机路径检查");
@@ -24889,7 +21143,18 @@ async function prepareExternalAgentSession({
     );
   }
 
-  const warmupKey = buildExternalAgentWarmupKey(projectId);
+  const warmupKey = buildExternalAgentWarmupKey({
+    projectId,
+    agentType: projectChatSettings.value.external_agent_type || "codex_cli",
+    localConnectorId: projectChatSettings.value.local_connector_id || "",
+    workspacePath: workspacePathDraftNormalized.value || workspacePathResolved.value,
+    sandboxMode:
+      projectChatSettings.value.external_agent_sandbox_mode ||
+      "workspace-write",
+    skillResourceDirectory: skillResourceDirectoryResolved.value || "",
+    systemPrompt: systemPrompt.value || "",
+    employeeIds: selectedEmployeeIds.value || [],
+  });
   if (
     !force &&
     externalAgentInfo.value.ready &&
@@ -24956,62 +21221,6 @@ async function prepareExternalAgentSession({
   }
 }
 
-function disconnectWs(reason = "") {
-  if (wsClient.value) {
-    wsClient.value.close(1000, reason || "client close");
-  }
-  terminalMirrorConnected.value = false;
-  wsClient.value = null;
-  wsConnected.value = false;
-  wsProjectId.value = "";
-  rejectPendingAgentPrepares(reason || "连接已断开");
-}
-
-async function ensureWsClient(projectId) {
-  const normalizedProjectId = String(projectId || "").trim();
-  if (!normalizedProjectId) {
-    throw new Error("缺少项目 ID");
-  }
-  if (
-    wsClient.value &&
-    wsProjectId.value === normalizedProjectId &&
-    wsClient.value.isOpen()
-  ) {
-    return wsClient.value;
-  }
-  disconnectWs("switch project");
-
-  const token = getStoredToken();
-  if (!token) {
-    throw new Error("登录状态失效，请重新登录");
-  }
-  wsProjectId.value = normalizedProjectId;
-  const client = createProjectChatWsClient({
-    projectId: normalizedProjectId,
-    token,
-    onOpen: () => {
-      wsConnected.value = true;
-    },
-    onMessage: handleSocketMessage,
-    onError: () => {
-      wsConnected.value = false;
-    },
-    onClose: (event) => {
-      wsConnected.value = false;
-      wsClient.value = null;
-      const code = Number(event?.code || 1000);
-      if (code === 1000) return;
-      const reason = String(event?.reason || "").trim() || `连接关闭(${code})`;
-      rejectPendingRequests(reason);
-      ElMessage.warning(`WebSocket 断开：${reason}`);
-    },
-  });
-  wsClient.value = client;
-  await client.ready;
-  wsConnected.value = true;
-  return client;
-}
-
 async function sendProjectChatRequest({
   projectId,
   activeChatSessionId,
@@ -25034,7 +21243,9 @@ async function sendProjectChatRequest({
 }) {
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const client = await ensureWsClient(projectId);
-  const requestChatMode = isExternalAgentMode.value ? "external_agent" : "system";
+  const requestChatMode = isExternalAgentMode.value
+    ? "external_agent"
+    : "system";
   let pendingState = null;
   const donePromise = new Promise((resolve, reject) => {
     pendingState = {
@@ -25063,7 +21274,8 @@ async function sendProjectChatRequest({
     message_id: String(userMessageId || "").trim(),
     assistant_message_id: String(assistantMessage?.id || "").trim(),
     chat_session_id: activeChatSessionId,
-    request_kind: String(requestKind || "user_message").trim() || "user_message",
+    request_kind:
+      String(requestKind || "user_message").trim() || "user_message",
     chat_mode: requestChatMode,
     chat_surface: chatSurface.value,
     source_context: activeSessionSourceContext,
@@ -25197,8 +21409,7 @@ async function sendProjectChatRequest({
   ) {
     assistantMessage.content = "模型未返回内容。";
   } else if (!String(assistantMessage?.content || "").trim()) {
-    assistantMessage.content =
-      "模型未返回最终回答，请检查本轮执行过程。";
+    assistantMessage.content = "模型未返回最终回答，请检查本轮执行过程。";
   }
   if (typeof onAfterDone === "function") {
     await onAfterDone();
@@ -25209,54 +21420,6 @@ async function sendProjectChatRequest({
   };
 }
 
-function getActiveRequestId() {
-  const currentSessionId = String(currentChatSessionId.value || "").trim();
-  if (currentSessionId) {
-    const currentEntries = Array.from(pendingRequests.entries()).filter(
-      ([, pending]) =>
-        String(pending?.chatSessionId || "").trim() === currentSessionId,
-    );
-    if (currentEntries.length > 0) {
-      return currentEntries[currentEntries.length - 1][0];
-    }
-  }
-  const activeRequestId = String(activeGenerationRequestId.value || "").trim();
-  if (
-    activeRequestId &&
-    pendingRequests.has(activeRequestId) &&
-    !currentSessionId
-  ) {
-    return activeRequestId;
-  }
-  if (currentSessionId) return null;
-  const entries = Array.from(pendingRequests.entries());
-  if (entries.length > 0) {
-    return entries[entries.length - 1][0];
-  }
-  return null;
-}
-
-function trackPendingRequest(requestId) {
-  const normalizedRequestId = String(requestId || "").trim();
-  if (normalizedRequestId) {
-    activeGenerationRequestId.value = normalizedRequestId;
-  }
-}
-
-function clearTrackedPendingRequest(requestId) {
-  const normalizedRequestId = String(requestId || "").trim();
-  const activeRequestId = String(activeGenerationRequestId.value || "").trim();
-  if (
-    normalizedRequestId &&
-    activeRequestId &&
-    activeRequestId !== normalizedRequestId &&
-    pendingRequests.has(activeRequestId)
-  ) {
-    return;
-  }
-  activeGenerationRequestId.value = getActiveRequestId() || "";
-}
-
 function resolvePendingRequestFast(requestId, pending, content = "") {
   if (!pending || !requestId) return;
   pendingRequests.delete(requestId);
@@ -25265,7 +21428,10 @@ function resolvePendingRequestFast(requestId, pending, content = "") {
     clearWorkingStatusStartForChatSession(pending.chatSessionId);
   }
   syncChatLoadingWithCurrentSession();
-  persistRememberedChatSessionMessages(pending.projectId, pending.chatSessionId);
+  persistRememberedChatSessionMessages(
+    pending.projectId,
+    pending.chatSessionId,
+  );
   pending.resolve(String(content || "").trim());
 }
 
@@ -25414,7 +21580,9 @@ async function generateEmployeeDraftWithoutProject() {
     rootGoal: displayUserMessageContent,
     messageId: userMessage.id,
     assistantMessageId: assistantMessage.id,
-    source: isExternalAgentMode.value ? "external_agent_connector" : "project_chat",
+    source: isExternalAgentMode.value
+      ? "external_agent_connector"
+      : "project_chat",
     sourceContext: {
       chat_mode: isExternalAgentMode.value ? "external_agent" : "system",
       surface: chatSurface.value,
@@ -25431,7 +21599,7 @@ async function generateEmployeeDraftWithoutProject() {
 
   try {
     await ensureEmployeeDraftCatalog();
-    const response = await api.post("/employees/generate-draft", {
+    const response = await generateEmployeeDraft({
       message: String(
         [text, "", buildEmployeeDraftAssistContext()]
           .filter(Boolean)
@@ -25580,7 +21748,9 @@ async function doSend(options = {}) {
         return;
       }
       if (!canSupersedePendingInteraction(activePendingInteraction.value)) {
-        ElMessage.warning("这一步需要你在消息卡片确认；确认后系统会自动继续执行");
+        ElMessage.warning(
+          "这一步需要你在消息卡片确认；确认后系统会自动继续执行",
+        );
         return;
       }
       releasePendingInteractionForFollowup(text);
@@ -25918,7 +22088,9 @@ async function doSend(options = {}) {
       assistantMessageId: assistantMessage.id,
       resultSummary: finalAssistantContent,
       verificationResult: "AI 对话已返回最终回答并写入当前聊天。",
-      source: isExternalAgentMode.value ? "external_agent_connector" : "project_chat",
+      source: isExternalAgentMode.value
+        ? "external_agent_connector"
+        : "project_chat",
       sourceContext: {
         chat_mode: isExternalAgentMode.value ? "external_agent" : "system",
         surface: chatSurface.value,
@@ -25937,7 +22109,9 @@ async function doSend(options = {}) {
       assistantMessageId: assistantMessage.id,
       resultSummary: assistantMessage.content,
       verificationResult: err?.message || "AI 对话请求失败。",
-      source: isExternalAgentMode.value ? "external_agent_connector" : "project_chat",
+      source: isExternalAgentMode.value
+        ? "external_agent_connector"
+        : "project_chat",
       sourceContext: {
         chat_mode: isExternalAgentMode.value ? "external_agent" : "system",
         surface: chatSurface.value,
@@ -26192,7 +22366,7 @@ function clearSelectedProjectState() {
   clearTaskTreeSessionMemory(selectedProjectId.value);
   clearWorkSessionMemory(selectedProjectId.value);
   selectedProjectId.value = "";
-  localStorage.removeItem("project_id");
+  clearSelectedProjectId();
   currentChatSessionId.value = "";
   currentWorkSessionId.value = "";
   clearOngoingTaskRestoreNotice();
@@ -26231,9 +22405,12 @@ async function loadSelectedProjectConversation(projectId) {
     await fetchProvidersByProject(normalizedProjectId);
     if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
       return;
-    const restoredTask = routeChatSessionId || shouldCreateWindowSession
-      ? null
-      : await restoreOngoingTaskFromServer(normalizedProjectId, { silent: true });
+    const restoredTask =
+      routeChatSessionId || shouldCreateWindowSession
+        ? null
+        : await restoreOngoingTaskFromServer(normalizedProjectId, {
+            silent: true,
+          });
     if (normalizedProjectId !== String(selectedProjectId.value || "").trim())
       return;
     let chatSessionId = await fetchChatSessions(
@@ -26335,9 +22512,9 @@ async function loadSelectedProjectConversation(projectId) {
 watch(selectedProjectId, async (value) => {
   const projectId = String(value || "").trim();
   if (projectId) {
-    localStorage.setItem("project_id", projectId);
+    writeSelectedProjectId(projectId);
   } else {
-    localStorage.removeItem("project_id");
+    clearSelectedProjectId();
   }
   clearOngoingTaskRestoreNotice();
   currentWorkSessionId.value = "";
@@ -26370,7 +22547,7 @@ watch(selectedProjectId, async (value) => {
       const fallbackProjectId = resolveAvailableProjectId();
       if (fallbackProjectId && fallbackProjectId !== projectId) {
         selectedProjectId.value = fallbackProjectId;
-        localStorage.setItem("project_id", fallbackProjectId);
+        writeSelectedProjectId(fallbackProjectId);
       } else if (!fallbackProjectId) {
         clearSelectedProjectState();
       }
@@ -26406,7 +22583,12 @@ watch(
     String(route.query.message_id || "").trim(),
   ],
   async (
-    [routeProjectId, routeChatSessionId, routeCreateChatSession, routeMessageId],
+    [
+      routeProjectId,
+      routeChatSessionId,
+      routeCreateChatSession,
+      routeMessageId,
+    ],
     previous,
   ) => {
     const previousKey = Array.isArray(previous) ? previous.join("|") : "";
@@ -26470,7 +22652,9 @@ onMounted(async () => {
       fetchChatParameterOptions(),
       fetchGlobalProviders(),
     ]);
-    const projectIdBeforeRouteSync = String(selectedProjectId.value || "").trim();
+    const projectIdBeforeRouteSync = String(
+      selectedProjectId.value || "",
+    ).trim();
     const initialProjectId = syncProjectFromRoute();
     if (
       initialProjectId &&
@@ -26528,9580 +22712,18 @@ onUnmounted(() => {
 });
 </script>
 
-<style scoped>
-.chat-parameter-ribbon {
-  display: grid;
-  gap: 6px;
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  background:
-    linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.92),
-      rgba(248, 250, 252, 0.9)
-    ),
-    rgba(255, 255, 255, 0.88);
-}
-
-.chat-parameter-ribbon__title {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: #526071;
-}
-
-.chat-parameter-ribbon__items {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
-}
-
-.chat-parameter-ribbon__item {
-  display: grid;
-  gap: 4px;
-  padding: 7px 8px;
-  border-radius: 10px;
-  background: rgba(248, 250, 252, 0.78);
-  border: 1px solid rgba(148, 163, 184, 0.12);
-}
-
-.chat-parameter-ribbon__label {
-  font-size: 11px;
-  font-weight: 600;
-  color: #0f172a;
-  line-height: 1.3;
-}
-
-.chat-parameter-ribbon__helper {
-  min-height: 0;
-  font-size: 10px;
-  line-height: 1.35;
-  color: #64748b;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.chat-parameter-ribbon__control {
-  width: 100%;
-}
-
-.chat-parameter-ribbon__control :deep(.el-select__wrapper) {
-  min-height: 30px;
-  padding-top: 0;
-  padding-bottom: 0;
-  border-radius: 10px;
-}
-
-.chat-parameter-ribbon__control :deep(.el-segmented) {
-  min-height: 30px;
-}
-
-.chat-parameter-ribbon__control :deep(.el-segmented__item) {
-  min-height: 26px;
-  font-size: 11px;
-}
-
-.chat-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 20px;
-  padding: 18px max(20px, calc((100% - 1240px) / 2)) 12px;
-  background: transparent;
-  border-bottom: none;
-  z-index: 10;
-  position: relative;
-}
-
-.chat-header-left {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.chat-title-block {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.chat-title-subtext {
-  font-size: 12px;
-  line-height: 1.4;
-  color: #6b7280;
-  font-weight: 500;
-}
-
-.chat-status-pills {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-left: auto;
-}
-
-.chat-shell {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  gap: 18px;
-  padding: 18px max(20px, calc((100% - 1240px) / 2)) 18px;
-  align-items: stretch;
-  overflow: hidden;
-}
-
-.chat-workbench {
-  min-width: 0;
-  min-height: 0;
-  flex: 1 1 auto;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0;
-  padding: 0;
-  overflow: hidden;
-}
-
-.chat-stage {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  height: 100%;
-  border: 1px solid rgba(255, 255, 255, 0.92);
-  border-radius: 32px;
-  background: radial-gradient(
-    circle at top,
-    rgba(255, 255, 255, 0.98),
-    rgba(248, 250, 252, 0.94) 56%,
-    rgba(244, 247, 251, 0.96)
-  );
-  box-shadow:
-    0 24px 64px rgba(15, 23, 42, 0.08),
-    0 4px 14px rgba(15, 23, 42, 0.04);
-  overflow: hidden;
-}
-
-.execution-status-chip__dot {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #94a3b8;
-}
-
-.execution-status-chip.is-muted {
-  border-color: rgba(148, 163, 184, 0.28);
-  background: rgba(248, 250, 252, 0.94);
-  color: #475569;
-}
-
-.execution-status-chip.is-muted .execution-status-chip__dot {
-  background: #94a3b8;
-}
-
-.execution-status-chip.is-ready {
-  border-color: rgba(34, 197, 94, 0.26);
-  background: rgba(240, 253, 244, 0.94);
-  color: #166534;
-}
-
-.execution-status-chip.is-ready .execution-status-chip__dot {
-  background: #22c55e;
-}
-
-.execution-status-chip.is-warning {
-  border-color: rgba(245, 158, 11, 0.32);
-  background: rgba(255, 251, 235, 0.94);
-  color: #92400e;
-}
-
-.execution-status-chip.is-warning .execution-status-chip__dot {
-  background: #f59e0b;
-}
-
-.execution-status-chip.is-pending {
-  border-color: rgba(168, 85, 247, 0.24);
-  background: rgba(250, 245, 255, 0.92);
-  color: #6b21a8;
-}
-
-.execution-status-chip.is-pending .execution-status-chip__dot {
-  background: #a855f7;
-}
-
-.execution-status-chip.is-running {
-  border-color: rgba(14, 165, 233, 0.28);
-  background: rgba(240, 249, 255, 0.94);
-  color: #075985;
-}
-
-.execution-status-chip.is-running .execution-status-chip__dot {
-  background: #0ea5e9;
-}
-
-.execution-status-chip.is-system {
-  border-color: rgba(99, 102, 241, 0.22);
-  background: rgba(238, 242, 255, 0.9);
-  color: #3730a3;
-}
-
-.execution-status-chip.is-system .execution-status-chip__dot {
-  background: #6366f1;
-}
-
-.execution-status-chip.is-danger {
-  border-color: rgba(239, 68, 68, 0.28);
-  background: rgba(254, 242, 242, 0.94);
-  color: #b91c1c;
-}
-
-.execution-status-chip.is-danger .execution-status-chip__dot {
-  background: #ef4444;
-}
-
-.chat-conversation-sidebar {
-  width: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  border-radius: 28px;
-  padding: 16px;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.96),
-    rgba(248, 250, 252, 0.92)
-  );
-  backdrop-filter: blur(14px);
-  box-shadow:
-    0 16px 36px rgba(15, 23, 42, 0.05),
-    0 2px 8px rgba(15, 23, 42, 0.03);
-}
-
-.chat-project-panel {
-  margin-bottom: 16px;
-  padding: 14px;
-  border: 1px solid rgba(191, 219, 254, 0.72);
-  border-radius: 22px;
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(59, 130, 246, 0.12),
-      transparent 32%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(248, 250, 252, 0.98),
-      rgba(255, 255, 255, 0.94)
-    );
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
-}
-
-.chat-project-panel__eyebrow {
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #64748b;
-}
-
-.chat-project-panel__title {
-  margin-top: 10px;
-  font-size: 16px;
-  line-height: 1.35;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.chat-project-panel__desc {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #64748b;
-}
-
-.chat-project-panel__select {
-  margin-top: 12px;
-}
-
-.chat-project-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.chat-project-option__name {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-project-option__id {
-  flex-shrink: 0;
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.chat-conversation-sidebar__head {
-  margin-bottom: 14px;
-}
-
-.chat-conversation-sidebar__title {
-  margin-top: 6px;
-  font-size: 20px;
-  line-height: 1.2;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.chat-conversation-sidebar__desc {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #64748b;
-}
-
-.chat-conversation-sidebar__actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.chat-quick-bar__eyebrow {
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #94a3b8;
-}
-
-.chat-quick-bar__title {
-  margin-top: 6px;
-  font-size: 20px;
-  line-height: 1.2;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.chat-quick-bar__desc {
-  margin-top: 4px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #64748b;
-}
-
-.chat-new-conversation-button {
-  justify-content: center;
-  height: 38px !important;
-  border-radius: 999px !important;
-  border-color: rgba(15, 23, 42, 0.08) !important;
-  background: linear-gradient(180deg, #111827, #1f2937) !important;
-  color: #f8fafc !important;
-  font-weight: 600;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16) !important;
-}
-
-.chat-group-conversation-button {
-  justify-content: center;
-  height: 34px !important;
-  border-radius: 999px !important;
-  color: #2563eb !important;
-  font-weight: 600;
-}
-
-.chat-stage-toolbar {
-  flex-shrink: 0;
-  padding: 18px 20px 14px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.84);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.84),
-    rgba(248, 250, 252, 0.72)
-  );
-}
-
-.chat-top-summary {
-  margin-bottom: 12px;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.chat-top-summary .chat-side-summary__row {
-  min-width: 0;
-  padding: 12px 14px;
-  border-radius: 18px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
-}
-
-.chat-side-summary__row {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.chat-side-summary__label {
-  font-size: 11px;
-  line-height: 1;
-  color: #94a3b8;
-  letter-spacing: 0.04em;
-}
-
-.chat-side-summary__value {
-  font-size: 13px;
-  line-height: 1.45;
-  font-weight: 600;
-  color: #0f172a;
-  word-break: break-word;
-}
-
-.chat-quick-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 12px;
-  align-items: stretch;
-}
-
-.chat-quick-field,
-.chat-quick-mode-note {
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 18px;
-  background: rgba(248, 250, 252, 0.7);
-  padding: 12px 14px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
-}
-
-.chat-quick-label {
-  margin-bottom: 8px;
-  font-size: 12px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #64748b;
-}
-
-.chat-quick-mode-text {
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  font-size: 13px;
-  line-height: 1.6;
-  color: #334155;
-}
-
-.chat-quick-mode-group {
-  width: 100%;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.chat-quick-mode-group :deep(.el-radio-button__inner) {
-  width: 100%;
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-}
-
-.chat-session-strip {
-  min-height: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-}
-
-.chat-session-list {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 10px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-right: 4px;
-}
-
-.chat-session-chip {
-  width: 100%;
-  padding: 12px 14px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.82);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  cursor: pointer;
-  color: #0f172a;
-  transition:
-    transform 0.18s ease,
-    border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    background-color 0.18s ease;
-}
-
-.chat-session-chip:hover {
-  transform: translateY(-1px);
-  border-color: rgba(148, 163, 184, 0.92);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
-}
-
-.chat-session-chip.is-active {
-  border-color: rgba(37, 99, 235, 0.26);
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(59, 130, 246, 0.12),
-      transparent 38%
-    ),
-    #ffffff;
-  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.08);
-}
-
-.chat-session-chip__title {
-  display: block;
-  flex: 1;
-  min-width: 0;
-  width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1.3;
-}
-
-.chat-session-chip__source {
-  display: block;
-  margin-top: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  line-height: 1.4;
-  color: #2563eb;
-  font-weight: 600;
-}
-
-.chat-session-chip__meta {
-  font-size: 12px;
-  line-height: 1.4;
-  color: #64748b;
-}
-
-.group-chat-dialog__hint {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #64748b;
-}
-
-.group-chat-dialog__status {
-  margin-bottom: 14px;
-}
-
-.group-chat-dialog__connector-option {
-  display: grid;
-  gap: 2px;
-  line-height: 1.35;
-}
-
-.group-chat-dialog__connector-option strong {
-  color: #0f172a;
-  font-size: 13px;
-}
-
-.group-chat-dialog__connector-option span {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.group-chat-dialog__footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.chat-session-empty {
-  display: flex;
-  align-items: center;
-  min-height: 56px;
-  padding: 0 4px;
-  font-size: 13px;
-  color: #94a3b8;
-}
-
-.chat-terminal-dock {
-  margin: 0 0 12px;
-}
-
-.terminal-panel {
-  width: 100%;
-  border: 1px solid rgba(203, 213, 225, 0.92);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.88);
-  color: #334155;
-  overflow: hidden;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
-}
-
-.terminal-panel.is-collapsed {
-  margin-bottom: 0;
-}
-
-.terminal-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.92);
-  background: rgba(248, 250, 252, 0.92);
-}
-
-.terminal-panel-title {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.terminal-panel-inline-hint {
-  font-size: 12px;
-  font-weight: 500;
-  color: #64748b;
-}
-
-.terminal-panel-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.terminal-panel-body {
-  max-height: 220px;
-  overflow: auto;
-  padding: 14px;
-}
-
-.terminal-panel-hint {
-  margin-bottom: 10px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: rgba(241, 245, 249, 0.92);
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.terminal-approval-card {
-  margin-bottom: 12px;
-  padding: 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(251, 191, 36, 0.3);
-  background: rgba(120, 53, 15, 0.35);
-}
-
-.terminal-approval-card__title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #fde68a;
-}
-
-.terminal-approval-card__desc {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.55;
-  color: #fef3c7;
-}
-
-.terminal-approval-card__message {
-  margin: 10px 0 0;
-  padding: 10px;
-  border-radius: 10px;
-  background: rgba(15, 23, 42, 0.28);
-  color: #f8fafc;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.terminal-panel-pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-  color: #1e293b;
-}
-
-.terminal-panel-pre.is-interactive {
-  cursor: text;
-}
-
-.message-terminal-form {
-  margin: 12px 0 12px;
-  padding: 14px;
-  border: 1px solid rgba(59, 130, 246, 0.18);
-  border-radius: 14px;
-  background: linear-gradient(
-    135deg,
-    rgba(239, 246, 255, 0.96),
-    rgba(255, 255, 255, 0.94)
-  );
-}
-
-.message-terminal-form.is-submitted {
-  border-color: rgba(34, 197, 94, 0.28);
-  background: linear-gradient(
-    135deg,
-    rgba(240, 253, 244, 0.96),
-    rgba(255, 255, 255, 0.94)
-  );
-}
-
-.message-terminal-form.is-submitted :deep(.el-checkbox),
-.message-terminal-form.is-submitted :deep(.el-radio) {
-  pointer-events: none;
-}
-
-.message-terminal-form__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.message-terminal-form__head strong {
-  color: #0f172a;
-  font-size: 14px;
-}
-
-.message-terminal-form__head p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.message-terminal-form__easy-form :deep(.el-form-item) {
-  margin-bottom: 10px;
-}
-
-.message-terminal-form__easy-form :deep(.el-checkbox-group),
-.message-terminal-form__easy-form :deep(.el-radio-group) {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
-}
-
-.message-terminal-form__easy-form :deep(.el-checkbox),
-.message-terminal-form__easy-form :deep(.el-radio) {
-  height: auto;
-  margin: 0;
-  padding: 8px 10px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.86);
-}
-
-.message-terminal-form__actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.message-terminal-form__submitted {
-  margin: 10px 0 12px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: rgba(240, 253, 244, 0.92);
-  border: 1px solid rgba(34, 197, 94, 0.22);
-  color: #166534;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.terminal-approval-dialog__footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.chat-header-left h2 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: #0f172a;
-}
-
-.chat-header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.chat-settings-button {
-  width: 34px;
-  height: 34px;
-}
-
-.chat-create-employee-button {
-  width: auto !important;
-  min-width: 104px;
-  height: 34px !important;
-  padding: 0 14px !important;
-  border-radius: 999px !important;
-  border-color: rgba(59, 130, 246, 0.16) !important;
-  background: linear-gradient(180deg, #ffffff 0%, #f5f9ff 100%) !important;
-  color: #2563eb !important;
-  font-weight: 600;
-  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.08) !important;
-}
-
-.chat-create-employee-button:hover {
-  border-color: rgba(37, 99, 235, 0.26) !important;
-  background: linear-gradient(180deg, #ffffff 0%, #edf5ff 100%) !important;
-}
-
-.chat-status-pills :deep(.el-tag) {
-  height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  border-color: rgba(226, 232, 240, 0.92);
-  background: rgba(255, 255, 255, 0.94);
-  color: #4b5563;
-}
-
-.settings-dialog-body {
-  max-height: 70vh;
-  overflow-y: auto;
-  padding: 8px 16px;
-}
-
-.settings-summary-card {
-  display: grid;
-  gap: 18px;
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  margin: 0 0 18px;
-  padding: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  border-radius: 28px;
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(103, 232, 249, 0.12),
-      transparent 36%
-    ),
-    radial-gradient(
-      circle at top left,
-      rgba(125, 211, 252, 0.12),
-      transparent 28%
-    ),
-    rgba(255, 255, 255, 0.66);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
-}
-
-.settings-summary-title {
-  color: #0f172a;
-  font-size: 13px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.settings-summary-copy {
-  display: grid;
-  gap: 8px;
-  max-width: 760px;
-}
-
-.settings-summary-headline {
-  color: #0f172a;
-  font-size: clamp(26px, 3vw, 34px);
-  line-height: 1.08;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  font-family:
-    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
-
-.settings-summary-text {
-  margin-top: 0;
-  font-size: 14px;
-  line-height: 1.65;
-  color: #475569;
-}
-
-.settings-summary-overview {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.settings-summary-overview-card {
-  display: grid;
-  gap: 8px;
-  padding: 16px;
-  border-radius: 22px;
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  background: rgba(255, 255, 255, 0.76);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
-  min-width: 0;
-}
-
-.settings-summary-overview-card__label {
-  color: #7c8aa0;
-  font-size: 11px;
-  line-height: 1.4;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.settings-summary-overview-card__value {
-  color: #0f172a;
-  font-size: 15px;
-  line-height: 1.5;
-  font-weight: 700;
-  word-break: break-word;
-}
-
-.settings-summary-overview-card__meta {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-.model-parameter-note {
-  display: grid;
-  gap: 6px;
-  padding: 14px 16px;
-  margin-bottom: 16px;
-  border-radius: 18px;
-  border: 1px solid rgba(203, 213, 225, 0.72);
-  background: rgba(248, 250, 252, 0.9);
-}
-
-.model-parameter-note__title {
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1.5;
-}
-
-.model-parameter-note__text {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.settings-form {
-  flex: 1;
-  width: 100%;
-  max-width: none;
-  padding-bottom: 6px;
-}
-
-.settings-form .el-form-item {
-  margin-bottom: 0;
-  padding: 16px 0 0;
-  border: 0;
-  border-top: 1px solid rgba(226, 232, 240, 0.82);
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-.settings-form .el-form-item:first-child {
-  padding-top: 0;
-  border-top: 0;
-}
-
-.settings-mode-group {
-  width: 100%;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.settings-mode-group :deep(.el-radio-button__inner) {
-  width: 100%;
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-}
-
-.settings-employee-option {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 4px 0;
-}
-
-.settings-employee-option__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.settings-employee-option__name {
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.settings-employee-option__meta {
-  font-size: 12px;
-  line-height: 1.5;
-  color: #64748b;
-}
-
-.external-agent-download-card {
-  margin-top: 10px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px dashed rgba(148, 163, 184, 0.32);
-  background: rgba(248, 250, 252, 0.9);
-}
-
-.external-agent-download-card__text {
-  font-size: 12px;
-  line-height: 1.6;
-  color: #64748b;
-}
-
-.external-agent-download-card__subtitle {
-  margin-top: 10px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.external-agent-download-card__actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-}
-
-.settings-section-title {
-  margin: 6px 0 14px;
-  font-size: 13px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.settings-subtle-card {
-  margin-top: 8px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px dashed rgba(148, 163, 184, 0.32);
-  background: rgba(248, 250, 252, 0.9);
-}
-
-.settings-subtle-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: #334155;
-}
-
-.settings-subtle-text {
-  margin-top: 4px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #64748b;
-}
-
-.settings-form :deep(.el-form-item__label) {
-  padding-bottom: 12px;
-  font-weight: 600;
-  font-size: 13px;
-  color: #0f172a;
-  display: flex;
-  align-items: center;
-}
-
-.settings-form :deep(.el-input__wrapper),
-.settings-form :deep(.el-select__wrapper),
-.settings-form :deep(.el-input-number .el-input__wrapper),
-.settings-form :deep(.el-cascader .el-input__wrapper),
-.settings-form :deep(.el-mentions),
-.settings-form :deep(.el-textarea__inner) {
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.86);
-}
-
-.settings-form :deep(.el-input__wrapper),
-.settings-form :deep(.el-select__wrapper),
-.settings-form :deep(.el-input-number .el-input__wrapper),
-.settings-form :deep(.el-cascader .el-input__wrapper),
-.settings-form :deep(.el-mentions) {
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
-}
-
-.settings-form :deep(.el-textarea__inner) {
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
-  min-height: 104px;
-}
-
-.settings-form :deep(.el-input__wrapper.is-focus),
-.settings-form :deep(.el-select__wrapper.is-focused),
-.settings-form :deep(.el-input-number .el-input__wrapper.is-focus),
-.settings-form :deep(.el-cascader .el-input__wrapper.is-focus),
-.settings-form :deep(.el-mentions.is-focus),
-.settings-form :deep(.el-textarea__inner:focus) {
-  box-shadow:
-    inset 0 0 0 1px rgba(56, 189, 248, 0.24),
-    0 0 0 4px rgba(103, 232, 249, 0.12);
-}
-
-.label-with-tooltip {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.label-icon {
-  color: var(--el-text-color-secondary);
-  font-size: 14px;
-  cursor: help;
-  transition: color 0.2s;
-}
-
-.label-icon:hover {
-  color: var(--el-color-primary);
-}
-
-.full-width {
-  width: 100%;
-}
-
-.settings-summary-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  flex-wrap: wrap;
-  gap: 8px 10px;
-}
-
-.settings-summary-status {
-  font-size: 12px;
-  line-height: 1.5;
-  color: #64748b;
-}
-
-.settings-summary-sync-button {
-  min-height: 36px !important;
-  padding: 0 14px !important;
-  border-radius: 999px !important;
-  border-color: rgba(15, 23, 42, 0.08) !important;
-  background: rgba(255, 255, 255, 0.72) !important;
-  color: #374151 !important;
-  font-weight: 600;
-  box-shadow: none !important;
-  transition:
-    transform 0.22s ease,
-    box-shadow 0.22s ease,
-    border-color 0.22s ease,
-    background-position 0.32s ease,
-    color 0.22s ease;
-}
-
-.settings-summary-sync-button:hover {
-  border-color: rgba(56, 189, 248, 0.24) !important;
-  background: rgba(255, 255, 255, 0.92) !important;
-  color: #0f172a !important;
-}
-
-.settings-summary-sync-button--hero {
-  border-color: transparent !important;
-  background: linear-gradient(
-    135deg,
-    #020617 0%,
-    #0f172a 34%,
-    #1e293b 68%,
-    #0f766e 100%
-  ) !important;
-  background-size: 180% 180% !important;
-  background-position: 0% 50% !important;
-  color: #fff !important;
-  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.14) !important;
-}
-
-.settings-summary-sync-button--hero:hover {
-  border-color: transparent !important;
-  background-position: 100% 50% !important;
-  color: #fff !important;
-  transform: translateY(-1px);
-  box-shadow:
-    0 24px 36px rgba(15, 23, 42, 0.18),
-    0 0 0 1px rgba(125, 211, 252, 0.18) !important;
-}
-
-.settings-chat-layout,
-.settings-center-context-bar {
-  width: min(100%, var(--settings-center-max-width));
-}
-
-.settings-chat-layout {
-  display: grid;
-  grid-template-columns: var(--settings-chat-sidebar-width) minmax(0, 1fr);
-  gap: var(--settings-center-shell-gap);
-  min-height: 0;
-}
-
-.settings-chat-sidebar,
-.settings-chat-main {
-  min-width: 0;
-}
-
-.settings-chat-sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.settings-chat-sidebar-card,
-.settings-chat-main-card {
-  border: 1px solid var(--settings-surface-border);
-  box-shadow: var(--settings-surface-shadow);
-  backdrop-filter: blur(20px);
-}
-
-.settings-chat-sidebar-card {
-  padding: 22px 20px;
-  border-radius: 28px;
-  background: rgba(255, 255, 255, 0.62);
-}
-
-.settings-chat-sidebar-card--hero {
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(103, 232, 249, 0.14),
-      transparent 34%
-    ),
-    radial-gradient(
-      circle at top left,
-      rgba(125, 211, 252, 0.14),
-      transparent 26%
-    ),
-    rgba(255, 255, 255, 0.58);
-}
-
-.settings-chat-sidebar-card--note {
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(148, 163, 184, 0.12),
-      transparent 34%
-    ),
-    rgba(255, 255, 255, 0.64);
-}
-
-.settings-chat-sidebar-card__eyebrow,
-.settings-chat-section-label {
-  color: #7c8aa0;
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.settings-chat-sidebar-card__title {
-  margin-top: 10px;
-  color: #0f172a;
-  font-size: clamp(26px, 3vw, 34px);
-  line-height: 1.06;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  font-family:
-    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
-
-.settings-chat-sidebar-card__text,
-.settings-chat-sidebar-card__note {
-  margin: 10px 0 0;
-  color: #475569;
-  font-size: 14px;
-  line-height: 1.7;
-}
-
-.settings-chat-sidebar-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
-}
-
-.settings-chat-sidebar-card__meta span {
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  background: rgba(255, 255, 255, 0.72);
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.4;
-  font-weight: 600;
-}
-
-.settings-chat-sidebar-card__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 18px;
-}
-
-.settings-chat-sidebar-card__status {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.settings-chat-fact-list {
-  display: grid;
-  gap: 10px;
-  margin-top: 16px;
-}
-
-.settings-chat-fact {
-  display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  background: rgba(255, 255, 255, 0.68);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
-}
-
-.settings-chat-fact__label {
-  color: #7c8aa0;
-  font-size: 11px;
-  line-height: 1.4;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.settings-chat-fact__value {
-  color: #0f172a;
-  font-size: 14px;
-  line-height: 1.6;
-  font-weight: 600;
-  word-break: break-word;
-}
-
-.settings-chat-overview-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 16px;
-}
-
-.settings-chat-overview-item {
-  display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  background: rgba(255, 255, 255, 0.68);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
-  min-width: 0;
-}
-
-.settings-chat-overview-item__label {
-  color: #7c8aa0;
-  font-size: 11px;
-  line-height: 1.4;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.settings-chat-overview-item__value {
-  color: #0f172a;
-  font-size: 14px;
-  line-height: 1.6;
-  font-weight: 600;
-  word-break: break-word;
-}
-
-.settings-chat-state-note {
-  margin: 16px 0 0;
-  padding-top: 14px;
-  border-top: 1px solid rgba(226, 232, 240, 0.82);
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.settings-chat-main-card {
-  display: grid;
-  gap: 18px;
-  padding: 22px;
-  border-radius: var(--settings-surface-radius);
-  background: rgba(255, 255, 255, 0.6);
-  max-height: calc(100vh - 176px);
-  overflow-y: auto;
-  scrollbar-gutter: stable;
-}
-
-.settings-parameter-section {
-  display: grid;
-  gap: 16px;
-  margin-bottom: 18px;
-  padding: 20px 22px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  border-radius: 24px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.72));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
-}
-
-.settings-parameter-section:last-child {
-  margin-bottom: 0;
-}
-
-.settings-parameter-section__header {
-  display: grid;
-  gap: 6px;
-}
-
-.settings-parameter-section__title {
-  color: #0f172a;
-  font-size: 15px;
-  line-height: 1.4;
-  font-weight: 700;
-}
-
-.settings-parameter-section__desc {
-  margin: 0;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.settings-field-stack {
-  display: grid;
-  gap: 8px;
-}
-
-.settings-inline-helper {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.settings-tools-overview {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.settings-tools-overview__item {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  padding: 14px 16px;
-  border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  background: rgba(255, 255, 255, 0.76);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
-}
-
-.settings-tools-overview__label {
-  color: #7c8aa0;
-  font-size: 11px;
-  line-height: 1.4;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.settings-tools-overview__value {
-  color: #0f172a;
-  font-size: 15px;
-  line-height: 1.5;
-  font-weight: 700;
-  word-break: break-word;
-}
-
-.settings-tools-overview__meta {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-.mcp-source-tabs :deep(.el-tabs__header) {
-  margin: 0 0 8px 0;
-}
-
-.mcp-source-tabs :deep(.el-tabs__nav-wrap::after) {
-  height: 1px;
-}
-
-.mcp-source-switch {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding: 6px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
-}
-
-.mcp-source-switch__item {
-  border: 0;
-  border-radius: 999px;
-  min-height: 36px;
-  padding: 0 16px;
-  background: transparent;
-  color: #64748b;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background-color 0.18s ease,
-    box-shadow 0.18s ease,
-    color 0.18s ease,
-    transform 0.18s ease;
-}
-
-.mcp-source-switch__item:hover {
-  color: #0f172a;
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.mcp-source-switch__item.is-active {
-  color: #fff;
-  background: linear-gradient(180deg, #0f172a, #1e293b);
-  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.14);
-}
-
-.mcp-source-panel {
-  width: 100%;
-}
-
-.mcp-scope-select {
-  margin-bottom: 8px;
-}
-
-.mcp-tool-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.mcp-tool-count {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.mcp-tool-buttons {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.mcp-external-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-
-.mcp-section-tip {
-  margin-bottom: 8px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  line-height: 18px;
-}
-
-.mcp-section-tip.compact {
-  margin-bottom: 0;
-}
-
-.mcp-module-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 4px;
-}
-
-.mcp-module-list {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  background: var(--el-bg-color);
-  padding: 8px;
-  max-height: 220px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.settings-constraint-collapse {
-  margin-top: 14px;
-  border: 1px solid rgba(226, 232, 240, 0.88);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.68);
-  overflow: hidden;
-}
-
-.settings-constraint-collapse :deep(.el-collapse-item__header) {
-  height: 46px;
-  padding: 0 16px;
-  border-bottom: 0;
-  background: rgba(248, 250, 252, 0.78);
-  color: #0f172a;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.settings-constraint-collapse :deep(.el-collapse-item__wrap) {
-  border-bottom: 0;
-  background: transparent;
-}
-
-.settings-constraint-collapse :deep(.el-collapse-item__content) {
-  padding: 16px;
-}
-
-.settings-constraint-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.settings-constraint-grid .el-form-item {
-  margin-bottom: 0;
-  padding: 14px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.7);
-  box-shadow: none;
-}
-
-.mcp-module-item {
-  border: 1px solid var(--el-border-color-extra-light);
-  border-radius: 6px;
-  padding: 8px;
-  background: var(--el-fill-color-extra-light);
-}
-
-.mcp-module-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.mcp-module-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.mcp-module-name {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--el-text-color-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mcp-module-desc {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  line-height: 18px;
-  word-break: break-word;
-}
-
-.mcp-module-meta {
-  margin-top: 4px;
-  font-size: 11px;
-  color: var(--el-text-color-placeholder);
-  line-height: 16px;
-  word-break: break-word;
-}
-
-.mcp-module-more {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-  padding: 4px 0;
-}
-
-.sidebar-footer {
-  margin-top: 16px;
-}
-
-.chat-layout {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-  background:
-    radial-gradient(
-      circle at top left,
-      rgba(255, 255, 255, 0.98),
-      transparent 28%
-    ),
-    linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
-}
-
-.chat-main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.chat-messages {
-  flex: 1;
-  min-height: 220px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 34px max(28px, calc((100% - 820px) / 2)) 28px;
-  scroll-behavior: smooth;
-}
-
-.chat-empty-state {
-  width: 100%;
-  max-width: 720px;
-  margin: auto;
-  padding: 48px 0 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-}
-
-.chat-empty-badge {
-  padding: 6px 11px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.94);
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  color: #374151;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.chat-empty-title {
-  margin-top: 20px;
-  font-size: 38px;
-  line-height: 1.15;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  color: #111827;
-}
-
-.chat-empty-text {
-  margin-top: 14px;
-  max-width: 600px;
-  font-size: 14px;
-  line-height: 1.75;
-  color: #6b7280;
-}
-
-.chat-empty-actions {
-  margin-top: 24px;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
-}
-
-.chat-empty-action {
-  padding: 12px 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(255, 255, 255, 0.96);
-  color: #111827;
-  font-size: 13px;
-  line-height: 1.4;
-  cursor: pointer;
-  transition:
-    transform 0.18s ease,
-    border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    background-color 0.18s ease;
-}
-
-.chat-empty-action:hover {
-  transform: translateY(-1px);
-  border-color: rgba(156, 163, 175, 0.92);
-  background: #ffffff;
-  box-shadow: 0 10px 24px rgba(17, 24, 39, 0.06);
-}
-
-.chat-history-loader {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 6px;
-}
-
-.chat-history-loader__button {
-  min-height: 32px;
-  padding: 0 14px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  color: #4b5563;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
-}
-
-.chat-sidebar-project-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 8px;
-}
-
-.message-list-inner {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  max-width: 900px;
-  margin: 0 auto;
-  width: 100%;
-}
-
-.message-row {
-  display: block;
-}
-
-.message-row.is-highlighted .message-bubble {
-  border-color: rgba(37, 99, 235, 0.38) !important;
-  box-shadow:
-    0 0 0 3px rgba(59, 130, 246, 0.14),
-    0 18px 36px rgba(37, 99, 235, 0.08);
-}
-
-.message-row-process {
-  align-items: stretch;
-}
-
-.message-row.is-user {
-  flex-direction: initial;
-}
-
-.message-avatar {
-  display: none;
-}
-
-.message-avatar :deep(.el-avatar) {
-  width: 32px !important;
-  height: 32px !important;
-  font-size: 12px;
-}
-
-.avatar-user {
-  background: #e5e7eb;
-  color: #374151;
-  font-weight: 700;
-  box-shadow: none;
-}
-
-.avatar-ai {
-  background: linear-gradient(135deg, #111827 0%, #374151 100%);
-  color: #f9fafb;
-  font-weight: 700;
-  box-shadow: none;
-}
-
-.message-content-wrapper {
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.message-content-wrapper-process {
-  max-width: 100%;
-  width: 100%;
-}
-
-.message-row.is-ai .message-content-wrapper {
-  max-width: 100%;
-}
-
-.message-row.is-ai .message-bubble > .message-text,
-.message-row.is-ai .message-bubble > .message-status-notes,
-.message-row.is-ai .message-bubble > .message-process,
-.message-row.is-ai .message-bubble > .message-audit,
-.message-row.is-ai .message-bubble > .message-employee-draft,
-.message-row.is-ai .message-bubble > .message-images,
-.message-row.is-ai .message-bubble > .message-videos,
-.message-row.is-ai .message-bubble > .message-attachments {
-  max-width: 680px;
-}
-
-.message-row.is-user .message-content-wrapper {
-  align-items: stretch;
-  max-width: 100%;
-}
-
-.message-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
-  color: #6b7280;
-}
-
-.role-name {
-  font-weight: 600;
-  color: #111827;
-}
-
-.message-time {
-  opacity: 1;
-  color: #9ca3af;
-}
-
-.message-bubble {
-  padding: 20px 22px;
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.98);
-  color: #111827;
-  line-height: 1.7;
-  font-size: 15px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  box-shadow:
-    0 12px 28px rgba(15, 23, 42, 0.04),
-    0 2px 6px rgba(15, 23, 42, 0.02);
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.message-row.message-row-process .message-bubble.message-bubble-process {
-  padding: 0;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-  border-radius: 0;
-}
-
-.message-text {
-  word-break: break-word;
-}
-
-.message-external-waiting {
-  width: min(480px, 100%);
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 12px;
-  align-items: center;
-  padding: 14px;
-  border: 1px solid rgba(14, 165, 233, 0.18);
-  border-radius: 16px;
-  background:
-    linear-gradient(135deg, rgba(240, 249, 255, 0.96), rgba(248, 250, 252, 0.98));
-}
-
-.message-external-waiting__visual {
-  width: 40px;
-  height: 40px;
-  display: grid;
-  grid-template-columns: repeat(3, 6px);
-  justify-content: center;
-  align-items: center;
-  gap: 4px;
-  border-radius: 14px;
-  background: #0f172a;
-}
-
-.message-external-waiting__visual span {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: #38bdf8;
-  animation: externalModelPulse 0.9s ease-in-out infinite;
-}
-
-.message-external-waiting__visual span:nth-child(2) {
-  animation-delay: 0.14s;
-}
-
-.message-external-waiting__visual span:nth-child(3) {
-  animation-delay: 0.28s;
-}
-
-.message-external-waiting__body {
-  min-width: 0;
-  display: grid;
-  gap: 5px;
-}
-
-.message-external-waiting__body strong {
-  color: #0f172a;
-  font-size: 13px;
-  line-height: 1.35;
-}
-
-.message-external-waiting__body span {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.message-external-waiting__bar {
-  position: relative;
-  height: 4px;
-  margin-top: 3px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(14, 165, 233, 0.12);
-}
-
-.message-external-waiting__bar i {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 42%;
-  border-radius: inherit;
-  background: #0ea5e9;
-  animation: externalModelSweep 1.25s ease-in-out infinite;
-}
-
-.message-status-notes {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.message-status-note {
-  padding: 10px 12px;
-  border-radius: 16px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  background: rgba(248, 250, 252, 0.92);
-  color: #4b5563;
-  font-size: 13px;
-  line-height: 1.65;
-}
-
-.message-operations {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.message-form-json-artifacts {
-  display: grid;
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.message-form-json-card {
-  display: grid;
-  gap: 12px;
-  max-width: 760px;
-  padding: 14px;
-  border-radius: 18px;
-  border: 1px solid rgba(37, 99, 235, 0.16);
-  background:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.98),
-      rgba(248, 250, 252, 0.94)
-    ),
-    rgba(255, 255, 255, 0.96);
-}
-
-.message-form-json-card__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.message-form-json-card__head strong {
-  color: #0f172a;
-  font-size: 14px;
-  line-height: 1.4;
-}
-
-.message-form-json-card__head p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.message-form-json-card__preview {
-  max-height: 420px;
-  overflow: auto;
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: #fff;
-}
-
-.message-form-json-card__easy-form :deep(.el-row) {
-  row-gap: 2px;
-}
-
-.message-operation-card {
-  display: grid;
-  gap: 8px;
-  padding: 12px 14px;
-  border-radius: 18px;
-  border: 1px solid rgba(191, 219, 254, 0.6);
-  background:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.98),
-      rgba(248, 250, 252, 0.96)
-    ),
-    rgba(255, 255, 255, 0.96);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 8px 18px rgba(15, 23, 42, 0.04);
-}
-
-.message-operation-card__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.message-operation-card__title-wrap {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.message-operation-card__title {
-  font-size: 13px;
-  line-height: 1.4;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.message-operation-card__summary {
-  font-size: 12px;
-  line-height: 1.5;
-  color: #64748b;
-}
-
-.message-operation-card__badge {
-  flex-shrink: 0;
-  padding: 4px 9px;
-  border-radius: 999px;
-  background: rgba(226, 232, 240, 0.82);
-  color: #334155;
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-}
-
-.message-operation-card__detail,
-.message-operation-card__action,
-.message-operation-card__risk {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.message-operation-card__detail {
-  color: #334155;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.message-operation-card__plan {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.message-operation-card__plan-step {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 9px;
-  min-width: 0;
-  padding: 8px 9px;
-  border-radius: 8px;
-  border: 1px solid rgba(203, 213, 225, 0.72);
-  background: rgba(248, 250, 252, 0.86);
-}
-
-.message-operation-card__plan-check {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.68);
-  background: #ffffff;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 800;
-}
-
-.message-operation-card__plan-main {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.message-operation-card__plan-title {
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.45;
-  font-weight: 700;
-  word-break: break-word;
-}
-
-.message-operation-card__plan-summary {
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.45;
-  word-break: break-word;
-}
-
-.message-operation-card__plan-status {
-  align-self: center;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.message-operation-card__plan-step.is-running {
-  border-color: rgba(59, 130, 246, 0.38);
-  background: rgba(239, 246, 255, 0.9);
-}
-
-.message-operation-card__plan-step.is-running .message-operation-card__plan-check {
-  border-color: rgba(59, 130, 246, 0.62);
-  color: #2563eb;
-}
-
-.message-operation-card__plan-step.is-completed {
-  border-color: rgba(34, 197, 94, 0.32);
-  background: rgba(240, 253, 244, 0.86);
-}
-
-.message-operation-card__plan-step.is-completed .message-operation-card__plan-check {
-  border-color: rgba(34, 197, 94, 0.46);
-  background: #16a34a;
-  color: #ffffff;
-}
-
-.message-operation-card__plan-step.is-blocked,
-.message-operation-card__plan-step.is-failed {
-  border-color: rgba(239, 68, 68, 0.34);
-  background: rgba(254, 242, 242, 0.9);
-}
-
-.message-operation-card__plan-step.is-blocked .message-operation-card__plan-check,
-.message-operation-card__plan-step.is-failed .message-operation-card__plan-check {
-  border-color: rgba(239, 68, 68, 0.52);
-  color: #dc2626;
-}
-
-.message-operation-card__command,
-.message-operation-card__output {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  padding: 10px 11px;
-  border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(15, 23, 42, 0.96);
-  color: #e5e7eb;
-}
-
-.message-operation-card__command-meta,
-.message-operation-card__output-label {
-  color: #94a3b8;
-  font-size: 11px;
-  line-height: 1.4;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-}
-
-.message-operation-card__command-pre,
-.message-operation-card__output-pre {
-  margin: 0;
-  max-height: 220px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: #f8fafc;
-  font-size: 12px;
-  line-height: 1.55;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-}
-
-.message-operation-card__action {
-  color: #0f766e;
-  font-weight: 600;
-}
-
-.message-operation-card__risk {
-  width: fit-content;
-  max-width: 100%;
-  padding: 5px 9px;
-  border-radius: 8px;
-  font-weight: 700;
-  word-break: break-word;
-}
-
-.message-operation-card__risk.is-medium {
-  border: 1px solid rgba(245, 158, 11, 0.34);
-  background: rgba(255, 251, 235, 0.92);
-  color: #92400e;
-}
-
-.message-operation-card__risk.is-high {
-  border: 1px solid rgba(239, 68, 68, 0.34);
-  background: rgba(254, 242, 242, 0.95);
-  color: #b91c1c;
-}
-
-.message-operation-card__meta-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-width: 0;
-}
-
-.message-operation-card__meta-tag {
-  max-width: 100%;
-  padding: 3px 7px;
-  border-radius: 7px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(248, 250, 252, 0.86);
-  color: #475569;
-  font-size: 11px;
-  line-height: 1.35;
-  font-weight: 700;
-  word-break: break-word;
-}
-
-.message-operation-card__actions {
-  display: flex;
-  justify-content: flex-start;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.message-operation-card__form {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  border-radius: 16px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.message-operation-card__form.is-submitted {
-  opacity: 0.9;
-}
-
-.message-operation-card__form-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.message-operation-card__form-head strong {
-  display: block;
-  font-size: 13px;
-  line-height: 1.4;
-  color: #0f172a;
-}
-
-.message-operation-card__form-head p {
-  margin: 4px 0 0;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #64748b;
-}
-
-.message-operation-card__easy-form :deep(.el-form-item) {
-  margin-bottom: 12px;
-}
-
-.message-operation-card__easy-form :deep(.el-input__wrapper),
-.message-operation-card__easy-form :deep(.el-textarea__inner),
-.message-operation-card__easy-form :deep(.el-select__wrapper) {
-  border-radius: 14px;
-}
-
-.message-operation-card__form-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.message-operation-card__submitted {
-  font-size: 12px;
-  line-height: 1.6;
-  color: #0f766e;
-  font-weight: 600;
-}
-
-.message-operation-card.is-running {
-  border-color: rgba(59, 130, 246, 0.42);
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(59, 130, 246, 0.12),
-      transparent 34%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.98),
-      rgba(239, 246, 255, 0.96)
-    );
-}
-
-.message-operation-card.is-running .message-operation-card__badge {
-  background: rgba(219, 234, 254, 0.95);
-  color: #1d4ed8;
-}
-
-.message-operation-card.is-waiting_user {
-  border-color: rgba(245, 158, 11, 0.45);
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(251, 191, 36, 0.16),
-      transparent 38%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(255, 251, 235, 0.98),
-      rgba(255, 247, 237, 0.96)
-    );
-}
-
-.message-operation-card.is-waiting_user .message-operation-card__badge {
-  background: rgba(254, 240, 138, 0.92);
-  color: #92400e;
-}
-
-.message-operation-card.is-blocked {
-  border-color: rgba(248, 113, 113, 0.42);
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(248, 113, 113, 0.12),
-      transparent 36%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(255, 250, 250, 0.98),
-      rgba(254, 242, 242, 0.96)
-    );
-}
-
-.message-operation-card.is-blocked .message-operation-card__badge {
-  background: rgba(254, 202, 202, 0.92);
-  color: #b91c1c;
-}
-
-.message-operation-card.is-completed {
-  border-color: rgba(16, 185, 129, 0.38);
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(52, 211, 153, 0.14),
-      transparent 36%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(240, 253, 244, 0.98),
-      rgba(236, 253, 245, 0.96)
-    );
-}
-
-.message-operation-card.is-completed .message-operation-card__badge {
-  background: rgba(167, 243, 208, 0.92);
-  color: #047857;
-}
-
-.message-operation-card.is-failed {
-  border-color: rgba(239, 68, 68, 0.4);
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(248, 113, 113, 0.16),
-      transparent 36%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(254, 242, 242, 0.98),
-      rgba(255, 241, 242, 0.96)
-    );
-}
-
-.message-operation-card.is-failed .message-operation-card__badge {
-  background: rgba(254, 205, 211, 0.92);
-  color: #be123c;
-}
-
-.message-inline-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  width: min(100%, 680px);
-}
-
-.message-inline-editor__input {
-  width: 100%;
-}
-
-.message-inline-editor :deep(.el-textarea__wrapper) {
-  padding: 0;
-  border-radius: 20px;
-  background: transparent;
-  box-shadow: none;
-}
-
-.message-inline-editor :deep(.el-textarea__inner) {
-  min-height: 132px !important;
-  border-radius: 20px;
-  border: 1px solid rgba(148, 163, 184, 0.26);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.94),
-    rgba(250, 250, 252, 0.9)
-  );
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(15, 23, 42, 0.02);
-  padding: 15px 16px;
-  color: #1f2937;
-  line-height: 1.8;
-  transition:
-    border-color 0.18s ease,
-    background-color 0.18s ease,
-    box-shadow 0.18s ease;
-}
-
-.message-inline-editor :deep(.el-textarea__inner::placeholder) {
-  color: #9ca3af;
-}
-
-.message-inline-editor :deep(.el-textarea__inner:focus) {
-  border-color: rgba(59, 130, 246, 0.28);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.98),
-    rgba(252, 252, 253, 0.94)
-  );
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.82),
-    0 0 0 4px rgba(255, 255, 255, 0.42);
-}
-
-.message-inline-editor__footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.message-inline-editor__actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-left: auto;
-}
-
-.message-inline-editor__hint {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #6b7280;
-}
-
-.message-inline-editor__hint-label {
-  color: #9ca3af;
-}
-
-.message-inline-editor__shortcut {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(255, 255, 255, 0.5);
-  color: #6b7280;
-}
-
-.message-inline-editor__shortcut kbd {
-  min-width: 24px;
-  height: 22px;
-  padding: 0 7px;
-  border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(255, 255, 255, 0.96);
-  color: #374151;
-  font-size: 11px;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  line-height: 20px;
-  text-align: center;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-}
-
-.message-inline-editor__button {
-  min-height: 34px !important;
-  padding: 0 14px !important;
-  border-radius: 999px !important;
-  box-shadow: none !important;
-  font-weight: 500;
-}
-
-.message-inline-editor__button--ghost {
-  color: #6b7280 !important;
-}
-
-.message-inline-editor__button--ghost:hover {
-  color: #111827 !important;
-  background: rgba(15, 23, 42, 0.04) !important;
-}
-
-.message-inline-editor__button--soft {
-  border-color: rgba(148, 163, 184, 0.22) !important;
-  background: rgba(255, 255, 255, 0.68) !important;
-  color: #374151 !important;
-}
-
-.message-inline-editor__button--soft:hover {
-  border-color: rgba(59, 130, 246, 0.18) !important;
-  background: rgba(255, 255, 255, 0.9) !important;
-  color: #1f2937 !important;
-}
-
-.message-inline-editor__button--primary {
-  border-color: transparent !important;
-  background: #111827 !important;
-  color: #f9fafb !important;
-}
-
-.message-inline-editor__button--primary:hover {
-  background: #1f2937 !important;
-  color: #ffffff !important;
-}
-
-.message-text-terminal {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.message-process {
-  margin-bottom: 14px;
-  border: 1px solid rgba(229, 231, 235, 0.95);
-  border-radius: 16px;
-  background: #f8fafc;
-  overflow: hidden;
-}
-
-.message-process-shell {
-  margin-bottom: 14px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  border-radius: 18px;
-  background:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.94),
-      rgba(248, 250, 252, 0.94)
-    );
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
-  overflow: hidden;
-}
-
-.message-process-shell__toggle {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 13px 16px;
-  border: 0;
-  background: transparent;
-  color: #111827;
-  text-align: left;
-  cursor: pointer;
-}
-
-.message-process-shell__title-wrap {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.message-process-shell__eyebrow {
-  font-size: 11px;
-  line-height: 1;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: #7c8aa0;
-}
-
-.message-process-shell__title {
-  font-size: 13px;
-  line-height: 1.45;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.message-process-shell__meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-  color: #4b5563;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.message-process-shell__primary-action {
-  margin-right: 2px;
-}
-
-.message-process-shell__count {
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(56, 189, 248, 0.12);
-  color: #0369a1;
-  font-weight: 600;
-}
-
-.message-process-shell__body {
-  padding: 0 16px 16px;
-}
-
-.message-process-shell__summary {
-  display: grid;
-  gap: 8px;
-  padding: 0 16px 16px;
-}
-
-.message-process-shell__summary-actions {
-  display: flex;
-  justify-content: flex-start;
-  padding: 0 16px 16px;
-}
-
-.message-process-shell__summary-item {
-  display: grid;
-  grid-template-columns: 8px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.message-process-shell__summary-dot {
-  width: 8px;
-  height: 8px;
-  margin-top: 6px;
-  border-radius: 999px;
-  background: #94a3b8;
-}
-
-.message-process-shell__summary-item.is-info .message-process-shell__summary-dot {
-  background: #0ea5e9;
-}
-
-.message-process-shell__summary-item.is-success .message-process-shell__summary-dot {
-  background: #10b981;
-}
-
-.message-process-shell__summary-item.is-warning .message-process-shell__summary-dot {
-  background: #f59e0b;
-}
-
-.message-process-shell__summary-item.is-error .message-process-shell__summary-dot {
-  background: #ef4444;
-}
-
-.message-live-progress {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 12px;
-  padding: 12px;
-  border-radius: 8px;
-  border: 1px solid rgba(203, 213, 225, 0.76);
-  background: rgba(255, 255, 255, 0.78);
-}
-
-.message-live-progress__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-}
-
-.message-live-progress__eyebrow {
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.2;
-  font-weight: 700;
-}
-
-.message-live-progress__title {
-  margin-top: 3px;
-  color: #0f172a;
-  font-size: 13px;
-  line-height: 1.45;
-  font-weight: 700;
-  word-break: break-word;
-}
-
-.message-live-progress__badge {
-  flex-shrink: 0;
-  padding: 4px 8px;
-  border-radius: 999px;
-  color: #475569;
-  background: rgba(148, 163, 184, 0.12);
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 800;
-  white-space: nowrap;
-}
-
-.message-live-progress__badge.is-running {
-  color: #0369a1;
-  background: rgba(14, 165, 233, 0.12);
-}
-
-.message-live-progress__badge.is-waiting {
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.14);
-}
-
-.message-live-progress__badge.is-success {
-  color: #047857;
-  background: rgba(16, 185, 129, 0.14);
-}
-
-.message-live-progress__badge.is-danger {
-  color: #b91c1c;
-  background: rgba(239, 68, 68, 0.12);
-}
-
-.message-live-progress__list {
-  display: grid;
-  gap: 7px;
-}
-
-.message-live-progress__item {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 9px;
-  min-width: 0;
-  padding: 8px;
-  border-radius: 8px;
-  background: rgba(248, 250, 252, 0.72);
-}
-
-.message-live-progress__marker {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  margin-top: 1px;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.56);
-  background: #ffffff;
-  color: #64748b;
-}
-
-.message-live-progress__marker > span {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: currentColor;
-}
-
-.message-live-progress__main {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.message-live-progress__item-title {
-  color: #1e293b;
-  font-size: 12px;
-  line-height: 1.45;
-  font-weight: 700;
-  word-break: break-word;
-  white-space: pre-wrap;
-}
-
-.message-live-progress__item-summary {
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.45;
-  word-break: break-word;
-  white-space: pre-wrap;
-}
-
-.message-live-progress__phase {
-  align-self: center;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 800;
-  white-space: nowrap;
-}
-
-.message-live-progress__item.is-running {
-  background: rgba(239, 246, 255, 0.88);
-}
-
-.message-live-progress__item.is-running .message-live-progress__marker,
-.message-live-progress__item.is-running .message-live-progress__phase {
-  color: #2563eb;
-}
-
-.message-live-progress__item.is-waiting_user {
-  background: rgba(255, 251, 235, 0.9);
-}
-
-.message-live-progress__item.is-waiting_user .message-live-progress__marker,
-.message-live-progress__item.is-waiting_user .message-live-progress__phase {
-  color: #b45309;
-}
-
-.message-live-progress__item.is-completed {
-  background: rgba(240, 253, 244, 0.86);
-}
-
-.message-live-progress__item.is-completed .message-live-progress__marker {
-  border-color: rgba(34, 197, 94, 0.48);
-  background: #16a34a;
-  color: #ffffff;
-}
-
-.message-live-progress__item.is-completed .message-live-progress__phase {
-  color: #047857;
-}
-
-.message-live-progress__item.is-blocked,
-.message-live-progress__item.is-failed {
-  background: rgba(254, 242, 242, 0.88);
-}
-
-.message-live-progress__item.is-blocked .message-live-progress__marker,
-.message-live-progress__item.is-blocked .message-live-progress__phase,
-.message-live-progress__item.is-failed .message-live-progress__marker,
-.message-live-progress__item.is-failed .message-live-progress__phase {
-  color: #dc2626;
-}
-
-.message-footer-action {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 10px 0 0;
-  padding: 10px 12px;
-  border: 1px solid rgba(59, 130, 246, 0.22);
-  border-radius: 8px;
-  background: rgba(59, 130, 246, 0.06);
-}
-
-.message-footer-action--form {
-  display: grid;
-  align-items: stretch;
-  gap: 12px;
-  padding: 14px;
-  border-color: rgba(14, 165, 233, 0.28);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(240, 249, 255, 0.72)),
-    rgba(240, 249, 255, 0.72);
-}
-
-.message-footer-action__content {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-  color: #1e293b;
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.message-footer-action__content strong,
-.message-footer-action__content span {
-  overflow-wrap: anywhere;
-}
-
-.message-footer-action__content span {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.message-footer-action__form-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.message-footer-action__easy-form :deep(.el-form-item) {
-  margin-bottom: 12px;
-}
-
-.message-footer-action__easy-form :deep(.el-input__wrapper),
-.message-footer-action__easy-form :deep(.el-textarea__inner),
-.message-footer-action__easy-form :deep(.el-select__wrapper) {
-  border-radius: 14px;
-}
-
-.message-footer-action__form-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.message-footer-action__buttons {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.message-process-shell__terminal-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-  font-size: 12px;
-  color: #475569;
-  font-weight: 600;
-}
-
-.message-process-shell__thinking {
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(248, 250, 252, 0.94);
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.message-process-stream {
-  display: grid;
-  gap: 10px;
-  margin-top: 12px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(248, 250, 252, 0.82);
-  border: 1px solid rgba(226, 232, 240, 0.82);
-}
-
-.message-process-stream__item {
-  display: grid;
-  grid-template-columns: 10px minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
-  min-width: 0;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.message-process-stream__dot {
-  width: 10px;
-  height: 10px;
-  margin-top: 5px;
-  border-radius: 999px;
-  background: #94a3b8;
-  box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.12);
-}
-
-.message-process-stream__item.is-info .message-process-stream__dot {
-  background: #0ea5e9;
-  box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.14);
-}
-
-.message-process-stream__item.is-success .message-process-stream__dot {
-  background: #10b981;
-  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.14);
-}
-
-.message-process-stream__item.is-warning .message-process-stream__dot {
-  background: #f59e0b;
-  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14);
-}
-
-.message-process-stream__item.is-error .message-process-stream__dot {
-  background: #ef4444;
-  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.14);
-}
-
-.message-process-stream__text {
-  min-width: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 12.5px;
-}
-
-.message-process-shell__state {
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.12);
-  color: #475569;
-  font-weight: 600;
-}
-
-.message-process-shell__state.is-running {
-  background: rgba(14, 165, 233, 0.12);
-  color: #0369a1;
-}
-
-.message-process-shell__state.is-waiting {
-  background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
-}
-
-.message-process-shell__state.is-success {
-  background: rgba(16, 185, 129, 0.14);
-  color: #047857;
-}
-
-.message-process-shell__state.is-danger {
-  background: rgba(239, 68, 68, 0.12);
-  color: #b91c1c;
-}
-
-.message-process-shell__state.is-neutral {
-  background: rgba(148, 163, 184, 0.12);
-  color: #475569;
-}
-
-.message-process-toggle {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 11px 14px;
-  border: 0;
-  background: transparent;
-  color: #111827;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.message-process-count {
-  margin-left: 6px;
-  font-size: 12px;
-  color: #6b7280;
-  font-weight: 500;
-}
-
-.message-process-meta {
-  color: #4b5563;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.message-process-pre {
-  padding: 0 14px 14px;
-  color: #374151;
-  font-size: 12px;
-  line-height: 1.6;
-  max-height: 280px;
-  overflow: auto;
-}
-
-.message-process--nested {
-  margin: 12px 0 0;
-  border-color: rgba(226, 232, 240, 0.92);
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: none;
-}
-
-.message-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  opacity: 1;
-  padding-left: 4px;
-}
-
-.message-action-button {
-  color: #9ca3af;
-  border-radius: 999px;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-}
-
-.message-action-button:hover {
-  color: #111827;
-  background: rgba(17, 24, 39, 0.05);
-}
-
-.message-audit {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  background: #f9fafb;
-  border: 1px solid rgba(229, 231, 235, 0.95);
-}
-
-.message-task-tree-audit {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  background: #fffaf0;
-  border: 1px solid rgba(245, 158, 11, 0.24);
-}
-
-.message-task-tree-audit.is-attention {
-  background: #fffaf0;
-  border-color: rgba(245, 158, 11, 0.28);
-}
-
-.message-task-tree-audit.has-severity-high {
-  background: #fff7f5;
-  border-color: rgba(239, 68, 68, 0.22);
-}
-
-.message-task-tree-audit.has-severity-low {
-  background: #f8fbff;
-  border-color: rgba(56, 189, 248, 0.2);
-}
-
-.message-task-tree-audit__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.message-task-tree-audit__head-main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.message-task-tree-audit__title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #92400e;
-}
-
-.message-task-tree-audit.has-severity-high .message-task-tree-audit__title {
-  color: #b42318;
-}
-
-.message-task-tree-audit.has-severity-low .message-task-tree-audit__title {
-  color: #0f4c81;
-}
-
-.message-task-tree-audit__signal-tags {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.message-task-tree-audit__text,
-.message-task-tree-audit__meta {
-  margin-top: 8px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #78350f;
-}
-
-.message-task-tree-audit.has-severity-high .message-task-tree-audit__text,
-.message-task-tree-audit.has-severity-high .message-task-tree-audit__meta,
-.message-task-tree-audit.has-severity-high .message-task-tree-audit__action,
-.message-task-tree-audit.has-severity-high .message-task-tree-audit__evidence {
-  color: #7a271a;
-}
-
-.message-task-tree-audit.has-severity-low .message-task-tree-audit__text,
-.message-task-tree-audit.has-severity-low .message-task-tree-audit__meta,
-.message-task-tree-audit.has-severity-low .message-task-tree-audit__action,
-.message-task-tree-audit.has-severity-low .message-task-tree-audit__evidence {
-  color: #0f3d5e;
-}
-
-.message-task-tree-audit__action {
-  margin-top: 8px;
-  font-size: 12px;
-  line-height: 1.6;
-  font-weight: 600;
-  color: #92400e;
-}
-
-.message-task-tree-audit__evidence {
-  margin-top: 8px;
-}
-
-.message-task-tree-audit__evidence-label {
-  font-size: 11px;
-  line-height: 1.4;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #7c8aa0;
-}
-
-.message-task-tree-audit__evidence-list {
-  margin: 6px 0 0;
-  padding-left: 16px;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.message-task-tree-audit__evidence-list li + li {
-  margin-top: 2px;
-}
-
-.message-task-tree-audit__tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.message-tool-summary {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  background: #fffdf5;
-  border: 1px solid rgba(245, 223, 77, 0.35);
-}
-
-.message-tool-summary__title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #111827;
-}
-
-.message-tool-summary__count {
-  margin-left: 6px;
-  color: #6b7280;
-  font-weight: 500;
-}
-
-.message-tool-summary__tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.message-audit-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #111827;
-}
-
-.message-audit-section {
-  margin-top: 8px;
-}
-
-.message-audit-label {
-  font-size: 12px;
-  color: #6b7280;
-  margin-bottom: 6px;
-}
-
-.message-audit-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.message-audit-text {
-  font-size: 12px;
-  color: #374151;
-}
-
-.message-audit-pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #374151;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-}
-
-.message-employee-draft {
-  margin-top: 12px;
-  padding: 14px 14px 12px;
-  border-radius: 18px;
-  border: 1px solid rgba(37, 99, 235, 0.14);
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(59, 130, 246, 0.1),
-      transparent 38%
-    ),
-    linear-gradient(180deg, rgba(248, 250, 252, 0.98), #ffffff);
-}
-
-.message-employee-draft__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.message-employee-draft__eyebrow {
-  color: #2563eb;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.message-employee-draft__title {
-  margin-top: 4px;
-  color: #111827;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.35;
-}
-
-.message-employee-draft__pills {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.employee-draft-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(255, 255, 255, 0.86);
-  color: #334155;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.message-employee-draft__desc {
-  margin-top: 10px;
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.message-employee-draft__meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.message-employee-draft__meta-item {
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(226, 232, 240, 0.9);
-}
-
-.meta-label {
-  display: block;
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-
-.meta-value {
-  color: #1f2937;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.message-employee-draft__tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.message-employee-draft__workflow {
-  margin-top: 12px;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(226, 232, 240, 0.9);
-}
-
-.employee-draft-workflow-list {
-  margin: 8px 0 0;
-  padding-left: 18px;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.message-employee-draft__actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.message-employee-draft__success {
-  color: #15803d;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.employee-draft-dialog {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.employee-draft-dialog__summary {
-  padding: 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(37, 99, 235, 0.12);
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(59, 130, 246, 0.08),
-      transparent 42%
-    ),
-    linear-gradient(180deg, rgba(248, 250, 252, 0.96), #ffffff);
-}
-
-.employee-draft-dialog__title {
-  color: #0f172a;
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
-.employee-draft-dialog__desc {
-  margin-top: 8px;
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.employee-draft-dialog__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  margin-top: 12px;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.employee-draft-dialog__section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.employee-draft-dialog__section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.employee-draft-dialog__section-title {
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.employee-draft-dialog__section-hint {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
-.employee-draft-dialog__grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.employee-draft-dialog__panel {
-  min-height: 112px;
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: #f8fafc;
-}
-
-.employee-draft-dialog__panel-title {
-  margin-bottom: 10px;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.employee-draft-dialog__subsection {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px dashed rgba(203, 213, 225, 0.92);
-}
-
-.employee-draft-dialog__subsection-title {
-  margin-bottom: 10px;
-  color: #92400e;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.employee-draft-dialog__tag-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-width: 0;
-}
-
-.employee-draft-dialog__empty {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.7;
-  overflow-wrap: anywhere;
-}
-
-.employee-draft-dialog__switches {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  width: 100%;
-  min-width: 0;
-}
-
-.skill-resource-dialog__body {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.skill-resource-dialog__hint {
-  padding: 14px 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(59, 130, 246, 0.14);
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(59, 130, 246, 0.08),
-      transparent 42%
-    ),
-    linear-gradient(180deg, rgba(248, 250, 252, 0.96), #ffffff);
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.7;
-  overflow-wrap: anywhere;
-}
-
-.skill-resource-dialog__section-title {
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.skill-resource-dialog__directory {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: #f8fafc;
-}
-
-.skill-resource-dialog__directory-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.skill-resource-dialog__directory-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.skill-resource-dialog__directory-value {
-  min-height: 52px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: rgba(255, 255, 255, 0.96);
-  color: #111827;
-  font-size: 13px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-}
-
-.skill-resource-dialog__directory-value.is-empty {
-  color: #94a3b8;
-  font-family: inherit;
-}
-
-.skill-resource-dialog__directory-meta {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
-.skill-resource-search {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.skill-resource-search__meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.skill-resource-search__expanded {
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.7;
-  overflow-wrap: anywhere;
-}
-
-.skill-resource-search__expanded--empty {
-  margin-top: -4px;
-  margin-bottom: 8px;
-}
-
-.skill-resource-site-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
-  max-height: min(52vh, 520px);
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.skill-resource-site-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  padding: 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.98),
-    rgba(248, 250, 252, 0.94)
-  );
-}
-
-.skill-resource-site-list--search {
-  max-height: min(46vh, 420px);
-}
-
-.skill-resource-site-card__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.skill-resource-site-card__title-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.skill-resource-site-card__title {
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.skill-resource-site-card__badge {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(59, 130, 246, 0.12);
-  color: #2563eb;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.6;
-}
-
-.skill-resource-site-card__desc {
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.7;
-  overflow-wrap: anywhere;
-}
-
-.skill-resource-site-card__desc--localized {
-  color: #0f172a;
-  font-weight: 500;
-}
-
-.skill-resource-site-card__url {
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
-.skill-resource-site-card__actions {
-  margin-top: auto;
-  padding-top: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.employee-draft-external-preview {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.employee-draft-external-preview__hint {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.employee-draft-external-preview__frame {
-  width: 100%;
-  min-height: 72vh;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  border-radius: 18px;
-  background: #ffffff;
-}
-
-.message-text :deep(p) {
-  margin-top: 0;
-  margin-bottom: 0.8em;
-}
-.message-text :deep(p:last-child) {
-  margin-bottom: 0;
-}
-.message-text :deep(pre) {
-  background: #1e1e1e;
-  color: #d4d4d4;
-  padding: 16px;
-  border-radius: 8px;
-  overflow-x: auto;
-  margin: 12px 0;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 13px;
-  line-height: 1.5;
-}
-.message-text :deep(code) {
-  background: rgba(15, 23, 42, 0.08);
-  padding: 3px 6px;
-  border-radius: 6px;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 13px;
-}
-.message-text :deep(pre code) {
-  padding: 0;
-  background: transparent;
-  color: inherit;
-}
-
-.message-text :deep(.chat-code-block) {
-  margin: 12px 0;
-  border-radius: 14px;
-  overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  background: #0f172a;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
-}
-
-.message-text :deep(.chat-code-block__toolbar) {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 12px;
-  background: rgba(15, 23, 42, 0.96);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
-}
-
-.message-text :deep(.chat-code-block__lang) {
-  font-size: 12px;
-  line-height: 1;
-  color: rgba(226, 232, 240, 0.72);
-  text-transform: lowercase;
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-}
-
-.message-text :deep(.chat-code-block__actions) {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.message-text :deep(.chat-code-block__copy),
-.message-text :deep(.chat-code-block__preview) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  background: rgba(15, 23, 42, 0.2);
-  color: #e2e8f0;
-  border-radius: 999px;
-  padding: 0;
-  cursor: pointer;
-  transition:
-    background-color 0.18s ease,
-    border-color 0.18s ease,
-    color 0.18s ease;
-}
-
-.message-text :deep(.chat-code-block__icon) {
-  display: inline-flex;
-  width: 15px;
-  height: 15px;
-}
-
-.message-text :deep(.chat-code-block__icon svg) {
-  width: 100%;
-  height: 100%;
-}
-
-.message-text :deep(.chat-code-block__copy:hover),
-.message-text :deep(.chat-code-block__preview:hover) {
-  background: rgba(148, 163, 184, 0.16);
-  border-color: rgba(148, 163, 184, 0.42);
-}
-
-.message-text :deep(.chat-code-block__copy[data-copied="true"]) {
-  color: #bbf7d0;
-  border-color: rgba(34, 197, 94, 0.34);
-  background: rgba(34, 197, 94, 0.14);
-}
-
-.message-text :deep(.chat-code-block pre) {
-  margin: 0;
-  padding: 14px 16px 16px;
-  border-radius: 0;
-  border: 0;
-  box-shadow: none;
-  background: #0b1120;
-}
-
-.code-preview-shell {
-  min-height: 72vh;
-  border-radius: 18px;
-  overflow: hidden;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.92), #ffffff);
-}
-
-.code-preview-frame {
-  width: 100%;
-  min-height: 72vh;
-  border: 0;
-  background: #ffffff;
-}
-
-.code-preview-error {
-  padding: 18px 20px;
-  color: #9f1239;
-  font-size: 14px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-}
-
-.message-row.is-user .message-bubble {
-  background: linear-gradient(
-    180deg,
-    rgba(245, 247, 250, 0.96),
-    rgba(255, 255, 255, 0.98)
-  );
-  color: #111827;
-  border-color: rgba(226, 232, 240, 0.95);
-}
-
-.message-row.is-user .message-text :deep(code) {
-  background: rgba(17, 24, 39, 0.08);
-  color: inherit;
-}
-
-.message-row.is-ai .message-bubble {
-  background: rgba(255, 255, 255, 0.98);
-}
-
-.message-images {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.message-videos {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 10px;
-}
-
-.message-attachments {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.attachment-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.attachment-name {
-  font-size: 12px;
-  color: var(--el-text-color-regular);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.preview-image {
-  width: 140px;
-  height: 140px;
-  border-radius: 8px;
-  cursor: pointer;
-  border: 1px solid var(--el-border-color-lighter);
-}
-
-.preview-video {
-  width: min(100%, 320px);
-  max-height: 240px;
-  border-radius: 12px;
-  border: 1px solid var(--el-border-color-lighter);
-  background: #020617;
-}
-
-.chat-composer {
-  flex-shrink: 0;
-  padding: 10px max(24px, calc((100% - 820px) / 2)) 24px;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0),
-    rgba(248, 250, 252, 0.92) 18%,
-    rgba(255, 255, 255, 0.98) 100%
-  );
-  display: flex;
-  justify-content: center;
-  border-top: 1px solid rgba(226, 232, 240, 0.92);
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-}
-
-@media (max-height: 820px) {
-  .chat-shell {
-    padding-top: 12px;
-    padding-bottom: 12px;
-  }
-
-  .chat-messages {
-    min-height: 160px;
-    padding-top: 22px;
-    padding-bottom: 18px;
-  }
-
-  .chat-composer {
-    padding-top: 8px;
-    padding-bottom: 14px;
-  }
-}
-
-.chat-input-wrapper {
-  width: 100%;
-  max-width: 840px;
-  border: 1px solid rgba(203, 213, 225, 0.95);
-  border-radius: 30px;
-  background: rgba(255, 255, 255, 0.98);
-  transition:
-    border-color 0.2s,
-    box-shadow 0.2s,
-    background-color 0.2s;
-  box-shadow:
-    0 18px 36px rgba(15, 23, 42, 0.06),
-    0 3px 8px rgba(15, 23, 42, 0.03);
-  display: flex;
-  flex-direction: column;
-}
-
-.chat-input-wrapper.is-focused {
-  border-color: rgba(17, 24, 39, 0.18);
-  box-shadow: 0 16px 40px rgba(17, 24, 39, 0.1);
-}
-
-.chat-input-wrapper.is-dragover {
-  border-color: var(--el-color-primary);
-  background-color: var(--el-color-primary-light-9);
-  border-style: dashed;
-}
-
-.upload-preview-area {
-  display: flex;
-  gap: 12px;
-  padding: 12px 16px 0;
-  flex-wrap: wrap;
-}
-
-.preview-item {
-  position: relative;
-  width: 56px;
-  height: 56px;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid var(--el-border-color-lighter);
-}
-
-.preview-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.preview-doc {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  background: var(--el-fill-color-light);
-  color: var(--el-text-color-regular);
-  padding: 4px;
-  box-sizing: border-box;
-}
-
-.doc-name {
-  font-size: 10px;
-  margin-top: 2px;
-  text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  width: 100%;
-}
-
-.doc-type {
-  font-size: 9px;
-  line-height: 1;
-  margin-top: 2px;
-  padding: 2px 4px;
-  border-radius: 8px;
-  background: var(--el-color-primary-light-8);
-  color: var(--el-color-primary);
-}
-
-.remove-mask {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 20px;
-  height: 20px;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  border-bottom-left-radius: 6px;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.preview-item:hover .remove-mask {
-  opacity: 1;
-}
-
-.chat-textarea :deep(.el-textarea__inner) {
-  border: none !important;
-  box-shadow: none !important;
-  background: transparent !important;
-  padding: 18px 18px 10px;
-  font-size: 15px;
-  line-height: 1.7;
-  resize: none;
-  color: #111827;
-}
-
-.chat-textarea :deep(.el-textarea__inner)::placeholder {
-  color: #9ca3af;
-}
-
-.input-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 14px 14px;
-}
-
-.footer-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-left: 2px;
-  min-width: 0;
-}
-
-.footer-left :deep(.el-button) {
-  width: 34px;
-  height: 34px;
-  color: #6b7280;
-}
-
-.chat-model-select {
-  width: 236px;
-  max-width: min(46vw, 320px);
-  min-width: 0;
-}
-
-.chat-model-select :deep(.el-select__wrapper) {
-  min-height: 34px;
-  border-radius: 999px;
-  box-shadow: none;
-  background: rgba(248, 250, 252, 0.92);
-}
-
-:deep(.chat-model-select-dropdown .el-select-dropdown__item) {
-  height: auto;
-  min-height: 46px;
-  line-height: 1.4;
-  padding-top: 8px;
-  padding-bottom: 8px;
-}
-
-:deep(.chat-model-select-dropdown .el-select-dropdown__item.is-hovering) {
-  background: rgba(59, 130, 246, 0.08);
-}
-
-:deep(.chat-model-select-dropdown .el-select-group__wrap:not(:last-of-type)) {
-  margin-bottom: 4px;
-}
-
-.chat-model-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  min-width: 0;
-}
-
-.chat-model-option__main {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  gap: 2px;
-}
-
-.chat-model-option__name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.chat-model-option__provider {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.chat-model-option__type {
-  flex-shrink: 0;
-  white-space: nowrap;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(226, 232, 240, 0.88);
-  color: #475569;
-  font-size: 11px;
-  line-height: 1.2;
-  font-weight: 700;
-}
-
-.chat-model-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: rgba(241, 245, 249, 0.92);
-  color: #334155;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.execution-status-chip {
-  min-width: 0;
-  max-width: 260px;
-  min-height: 34px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 11px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 999px;
-  background: rgba(248, 250, 252, 0.92);
-  color: #334155;
-  font-size: 12px;
-  line-height: 1.3;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.execution-status-chip span:last-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-:deep(.execution-status-popover) {
-  padding: 0;
-}
-
-.execution-status-popover__body {
-  min-width: 0;
-  display: grid;
-  gap: 12px;
-  padding: 12px;
-}
-
-.execution-status-popover__head {
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.execution-status-popover__head > div {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.execution-status-popover__head strong {
-  min-width: 0;
-  color: #0f172a;
-  font-size: 13px;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-}
-
-.execution-status-popover__head span {
-  min-width: 0;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.execution-status-popover__grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.execution-status-popover__grid > div {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-  padding: 8px 9px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 10px;
-  background: rgba(248, 250, 252, 0.72);
-}
-
-.execution-status-popover__grid span {
-  min-width: 0;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.execution-status-popover__grid strong {
-  min-width: 0;
-  overflow: hidden;
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.execution-status-popover__actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.footer-right {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-}
-
-.hint-text {
-  font-size: 12px;
-  color: #6b7280;
-  white-space: nowrap;
-}
-
-.send-message-button {
-  width: 38px;
-  height: 38px;
-  border: 0;
-  background: #111827;
-  box-shadow: none;
-}
-
-.send-message-button:disabled {
-  box-shadow: none;
-  background: #d1d5db;
-  color: #f9fafb;
-}
-
-.external-agent-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  color: var(--el-text-color-regular);
-}
-
-.external-agent-status-card {
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.92);
-  overflow: hidden;
-}
-
-.external-agent-status-toggle {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-}
-
-.external-agent-status-head {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.external-agent-status-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #0f172a;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-.external-agent-status-tags {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.external-agent-status-meta {
-  flex-shrink: 0;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.external-agent-support-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.external-agent-support-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
-  background: var(--el-fill-color-light);
-  border-radius: 8px;
-  font-size: 12px;
-}
-
-.workspace-guide-banner {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  margin: 14px max(20px, calc((100% - 920px) / 2)) 0;
-}
-
-.workspace-guide-banner--warning {
-  border: 1px solid var(--el-color-warning-light-5);
-  background: var(--el-color-warning-light-9);
-}
-
-.workspace-guide-banner--info {
-  border: 1px solid var(--el-color-primary-light-5);
-  background: var(--el-color-primary-light-9);
-}
-
-.workspace-guide-content {
-  min-width: 0;
-}
-
-.workspace-guide-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-
-.workspace-guide-text {
-  margin-top: 4px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--el-text-color-regular);
-}
-
-.workspace-guide-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  flex-shrink: 0;
-}
-
-.workspace-path-editor {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.workspace-path-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.workspace-path-hint {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.5;
-}
-
-.external-agent-support-item code {
-  font-family:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  color: var(--el-text-color-secondary);
-  word-break: break-all;
-}
-
-.external-agent-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.external-agent-command {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-  word-break: break-all;
-}
-
-.pause-generation-button {
-  border-radius: 999px;
-  padding: 8px 14px;
-  font-weight: 600;
-}
-
-.chat-layout {
-  position: relative;
-  background:
-    radial-gradient(
-      circle at top left,
-      rgba(255, 255, 255, 0.98),
-      transparent 24%
-    ),
-    linear-gradient(180deg, #f6f7fb 0%, #eef2f7 100%);
-}
-
-.chat-page-actions {
-  position: absolute;
-  top: 18px;
-  right: max(20px, calc((100% - 1240px) / 2));
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.chat-page-settings-button {
-  width: 44px;
-  height: 44px;
-  border: 1px solid rgba(148, 163, 184, 0.26) !important;
-  background: rgba(255, 255, 255, 0.84) !important;
-  color: #111827 !important;
-  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08) !important;
-  backdrop-filter: blur(16px);
-}
-
-.chat-page-settings-button:hover {
-  border-color: rgba(59, 130, 246, 0.22) !important;
-  background: rgba(255, 255, 255, 0.94) !important;
-  color: #2563eb !important;
-}
-
-.chat-shell {
-  gap: 16px;
-  padding: 76px max(20px, calc((100% - 1240px) / 2)) 18px;
-}
-
-.chat-conversation-sidebar {
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  border-radius: 28px;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.96),
-    rgba(245, 247, 250, 0.92)
-  );
-  box-shadow:
-    0 20px 40px rgba(15, 23, 42, 0.06),
-    0 2px 10px rgba(15, 23, 42, 0.03);
-  padding: 14px;
-}
-
-.chat-sidebar-top {
-  margin-bottom: 10px;
-}
-
-.chat-project-switcher {
-  position: relative;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 14px 48px 14px 14px;
-  border: 1px solid rgba(191, 219, 254, 0.72);
-  border-radius: 22px;
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(59, 130, 246, 0.14),
-      transparent 36%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(248, 250, 252, 0.98),
-      rgba(255, 255, 255, 0.94)
-    );
-  text-align: left;
-  cursor: pointer;
-  transition:
-    transform 0.18s ease,
-    border-color 0.18s ease,
-    box-shadow 0.18s ease;
-}
-
-.chat-project-switcher::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  right: 18px;
-  width: 9px;
-  height: 9px;
-  border-right: 2px solid #64748b;
-  border-bottom: 2px solid #64748b;
-  transform: translateY(-62%) rotate(45deg);
-}
-
-.chat-project-switcher:hover {
-  transform: translateY(-1px);
-  border-color: rgba(59, 130, 246, 0.3);
-  box-shadow: 0 12px 28px rgba(59, 130, 246, 0.1);
-}
-
-.chat-project-switcher.is-empty {
-  border-color: rgba(226, 232, 240, 0.92);
-  background: rgba(255, 255, 255, 0.96);
-}
-
-.chat-project-switcher__name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 15px;
-  line-height: 1.35;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.chat-project-switcher__meta {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #64748b;
-}
-
-:deep(.chat-project-switcher-menu) {
-  padding: 6px;
-  border-radius: 18px;
-  border: 1px solid rgba(226, 232, 240, 0.96);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.1);
-}
-
-:deep(.chat-project-switcher-menu .el-dropdown-menu__item) {
-  padding: 0;
-  border-radius: 14px;
-}
-
-:deep(
-  .chat-project-switcher-menu .el-dropdown-menu__item:not(.is-disabled):hover
-) {
-  background: rgba(59, 130, 246, 0.08);
-}
-
-.chat-project-option {
-  min-width: 250px;
-  padding: 12px 14px;
-}
-
-.chat-conversation-sidebar__actions {
-  margin-bottom: 10px;
-  gap: 8px;
-}
-
-.chat-new-conversation-button {
-  height: 42px !important;
-  border-radius: 18px !important;
-  border: 1px solid rgba(17, 24, 39, 0.06) !important;
-  background: linear-gradient(180deg, #111827, #1f2937) !important;
-  color: #f8fafc !important;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16) !important;
-}
-
-.chat-clear-current-button {
-  justify-content: flex-start !important;
-  padding-left: 6px !important;
-  color: #667085 !important;
-}
-
-.chat-session-strip {
-  padding: 0 2px 2px;
-}
-
-.chat-session-groups {
-  gap: 12px;
-}
-
-.chat-session-group {
-  gap: 6px;
-}
-
-.chat-session-group__title {
-  padding: 0 6px;
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  color: #94a3b8;
-  letter-spacing: 0.04em;
-}
-
-.chat-session-list {
-  gap: 6px;
-  padding-right: 0;
-}
-
-.chat-session-chip {
-  border: 0;
-  border-radius: 16px;
-  background: transparent;
-  box-shadow: none;
-  padding: 11px 12px;
-}
-
-.chat-session-chip:hover {
-  transform: none;
-  border-color: transparent;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: none;
-}
-
-.chat-session-chip.is-active {
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(59, 130, 246, 0.12),
-      transparent 40%
-    ),
-    rgba(219, 234, 254, 0.88);
-}
-
-.chat-session-chip__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-}
-
-.chat-session-chip__title {
-  display: block;
-  flex: 1;
-  min-width: 0;
-  width: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.chat-session-chip__delete {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  color: #98a2b3;
-  opacity: 0;
-  transition:
-    opacity 0.18s ease,
-    color 0.18s ease;
-}
-
-.chat-session-chip__edit {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  color: #64748b;
-  opacity: 0;
-  transition:
-    opacity 0.18s ease,
-    color 0.18s ease;
-}
-
-.chat-session-chip:hover .chat-session-chip__delete,
-.chat-session-chip.is-active .chat-session-chip__delete,
-.chat-session-chip:hover .chat-session-chip__edit,
-.chat-session-chip.is-active .chat-session-chip__edit {
-  opacity: 1;
-}
-
-.chat-session-chip__edit:hover {
-  color: #2563eb;
-}
-
-.chat-session-chip__delete:hover {
-  color: #ef4444;
-}
-
-.chat-session-chip__meta {
-  font-size: 11px;
-  color: #8a94a6;
-}
-
-.chat-stage {
-  border: 1px solid rgba(255, 255, 255, 0.96);
-  border-radius: 34px;
-  background: radial-gradient(
-    circle at top,
-    rgba(255, 255, 255, 0.98),
-    rgba(248, 250, 252, 0.96) 58%,
-    rgba(244, 247, 251, 0.98)
-  );
-  box-shadow:
-    0 26px 64px rgba(15, 23, 42, 0.08),
-    0 4px 14px rgba(15, 23, 42, 0.04);
-  overflow: hidden;
-}
-
-.workspace-guide-banner {
-  margin-top: 16px;
-  margin-left: max(24px, calc((100% - 860px) / 2));
-  margin-right: max(24px, calc((100% - 860px) / 2));
-}
-
-.chat-messages {
-  padding: 28px max(28px, calc((100% - 860px) / 2)) 18px;
-  background: transparent;
-}
-
-.message-list-inner {
-  max-width: 860px;
-  gap: 26px;
-}
-
-.chat-empty-state {
-  max-width: 760px;
-  min-height: calc(100vh - 368px);
-  justify-content: center;
-  padding: 4px 0 8px;
-}
-
-.chat-empty-badge {
-  border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.96);
-  background: rgba(255, 255, 255, 0.86);
-  color: #6b7280;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.chat-empty-title {
-  margin-top: 16px;
-  font-size: 40px;
-  font-weight: 700;
-  line-height: 1.18;
-  letter-spacing: -0.03em;
-  color: #111827;
-}
-
-.chat-empty-text {
-  margin-top: 12px;
-  max-width: 560px;
-  color: #6b7280;
-  font-size: 14px;
-  line-height: 1.8;
-}
-
-.message-row {
-  width: 100%;
-}
-
-.message-row.is-user {
-  justify-content: flex-end;
-}
-
-.message-row.is-user .message-content-wrapper {
-  max-width: min(560px, 72%);
-}
-
-.message-row.is-user .message-meta {
-  justify-content: flex-end;
-  padding-right: 4px;
-}
-
-.message-row.is-user .role-name {
-  display: none;
-}
-
-.message-row.is-user .message-bubble {
-  padding: 14px 18px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  border-radius: 22px;
-  background: linear-gradient(
-    180deg,
-    rgba(245, 247, 250, 0.98),
-    rgba(255, 255, 255, 0.96)
-  );
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
-}
-
-.message-row.is-ai {
-  justify-content: flex-start;
-}
-
-.message-row.is-ai .message-content-wrapper {
-  max-width: 100%;
-}
-
-.message-row.is-ai .message-meta {
-  justify-content: flex-start;
-  gap: 8px;
-  padding-left: 2px;
-}
-
-.message-row.is-ai .message-bubble {
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-.message-row.is-ai .message-text {
-  color: #2b3340;
-  font-size: 15px;
-  line-height: 1.9;
-}
-
-.message-actions {
-  padding-left: 0;
-}
-
-.chat-composer {
-  padding: 14px max(28px, calc((100% - 860px) / 2)) 22px;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0),
-    rgba(248, 250, 252, 0.92) 16%,
-    rgba(255, 255, 255, 0.98) 100%
-  );
-  border-top: 0;
-}
-
-.chat-input-wrapper {
-  max-width: 860px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow:
-    0 20px 40px rgba(15, 23, 42, 0.06),
-    0 4px 12px rgba(15, 23, 42, 0.03);
-}
-
-.chat-textarea :deep(.el-textarea__inner) {
-  padding-top: 16px;
-  padding-bottom: 8px;
-}
-
-.input-footer {
-  padding-top: 4px;
-}
-
-.settings-center-page {
-  --settings-center-max-width: 1440px;
-  --settings-center-shell-gap: 24px;
-  --settings-center-shell-padding-inline: 24px;
-  --settings-center-sidebar-width: 332px;
-  --settings-chat-sidebar-width: 360px;
-  --settings-surface-radius: 30px;
-  --settings-surface-shadow:
-    0 24px 64px rgba(15, 23, 42, 0.08), 0 14px 34px rgba(15, 23, 42, 0.06);
-  --settings-surface-border: rgba(255, 255, 255, 0.82);
-  min-height: 100vh;
-  height: 100vh;
-  overflow: hidden;
-  background:
-    radial-gradient(
-      circle at 18% 0%,
-      rgba(125, 211, 252, 0.16),
-      transparent 26%
-    ),
-    radial-gradient(
-      circle at 82% 14%,
-      rgba(103, 232, 249, 0.12),
-      transparent 22%
-    ),
-    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%);
-}
-
-.settings-center-shell {
-  display: grid;
-  grid-template-columns: var(--settings-center-sidebar-width) minmax(0, 1fr);
-  gap: var(--settings-center-shell-gap);
-  height: 100%;
-  padding: 18px var(--settings-center-shell-padding-inline) 22px;
-  background: transparent;
-}
-
-.settings-center-shell--single {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.settings-center-sidebar {
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-}
-
-.settings-center-sidebar-card {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  min-height: 0;
-  margin-bottom: 40px;
-  padding: 18px 16px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.78);
-  border-radius: var(--settings-surface-radius);
-  background: rgba(255, 255, 255, 0.58);
-  box-shadow: var(--settings-surface-shadow);
-  backdrop-filter: blur(20px);
-  overflow-y: auto;
-}
-
-.settings-center-brand-panel {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 2px 4px 16px;
-}
-
-.settings-center-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.settings-center-brand__mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #0f172a, #1e293b);
-  color: #fff;
-  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.16);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.settings-center-brand__name {
-  color: #0f172a;
-  font-size: 17px;
-  line-height: 1.2;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  font-family:
-    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
-
-.settings-center-brand__meta {
-  margin-top: 4px;
-  color: #7c8aa0;
-  font-size: 12px;
-  line-height: 1.3;
-}
-
-.settings-center-nav-group + .settings-center-nav-group {
-  margin-top: 18px;
-}
-
-.settings-center-nav-group__title {
-  padding: 0 8px 10px;
-  color: #7c8aa0;
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.settings-center-sidebar__nav {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.settings-center-nav-item {
-  width: 100%;
-  padding: 13px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.34);
-  text-align: left;
-  cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76);
-  transition:
-    transform 0.18s ease,
-    background-color 0.18s ease,
-    border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    color 0.18s ease;
-}
-
-.settings-center-nav-item:hover {
-  transform: translateY(-1px);
-  border-color: rgba(56, 189, 248, 0.16);
-  background: rgba(255, 255, 255, 0.7);
-  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.06);
-}
-
-.settings-center-nav-item.is-active {
-  border-color: rgba(255, 255, 255, 0.84);
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(103, 232, 249, 0.12),
-      transparent 46%
-    ),
-    rgba(255, 255, 255, 0.84);
-  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.08);
-}
-
-.settings-center-nav-item__row {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  width: 100%;
-}
-
-.settings-center-nav-item__label {
-  display: block;
-  flex: 1;
-  min-width: 0;
-  font-size: 14px;
-  line-height: 1.35;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.settings-center-nav-item__desc {
-  display: block;
-  margin-top: 6px;
-  color: #7c8aa0;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.settings-center-account {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: auto;
-  padding: 18px 8px 2px;
-  border-top: 1px solid rgba(15, 23, 42, 0.06);
-}
-
-.settings-center-account__avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 16px;
-  background: linear-gradient(180deg, #0f172a, #1e293b);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 700;
-  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.16);
-}
-
-.settings-center-account__meta {
-  min-width: 0;
-  flex: 1;
-}
-
-.settings-center-account__name {
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.settings-center-account__role {
-  margin-top: 4px;
-  color: #7c8aa0;
-  font-size: 12px;
-}
-
-.settings-center-account__logout {
-  flex-shrink: 0;
-  color: #7c8aa0 !important;
-}
-
-.settings-center-stage {
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  padding: 4px 0 8px;
-  border-radius: 34px;
-  background: transparent;
-  box-shadow: none;
-}
-
-.settings-center-stage--single {
-  width: min(100%, 1180px);
-  margin: 0 auto;
-}
-
-.settings-center-context-bar {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 6px 2px 0;
-  text-align: left;
-}
-
-.settings-center-close-button {
-  flex-shrink: 0;
-  min-height: 34px;
-  padding: 0 12px !important;
-  border-radius: 999px !important;
-  color: #64748b !important;
-  border: 1px solid rgba(255, 255, 255, 0.76) !important;
-  background: rgba(255, 255, 255, 0.68) !important;
-}
-
-.settings-center-close-button:hover {
-  background: rgba(255, 255, 255, 0.9) !important;
-  color: #0f172a !important;
-}
-
-.settings-center-context-bar__title {
-  color: #0f172a;
-  font-size: 19px;
-  font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: -0.02em;
-}
-
-.settings-center-context-bar__desc {
-  max-width: 720px;
-  color: #475569;
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.settings-center-context-bar__meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 8px;
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.settings-center-context-bar__meta span {
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  background: rgba(255, 255, 255, 0.68);
-}
-
-.settings-center-context-bar__meta span:not(:last-child)::after {
-  display: none;
-}
-
-.settings-center-stage__body {
-  flex: 1;
-  min-height: 0;
-  padding: 14px 0 28px;
-  overflow-x: hidden;
-  overflow-y: auto;
-}
-
-.settings-center-stage__body--chat {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  padding-top: 18px;
-}
-
-.settings-tabs {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-}
-
-.settings-chat-layout--single {
-  display: block;
-}
-
-.settings-chat-main--wide {
-  width: 100%;
-}
-
-.settings-chat-hero-card {
-  display: grid;
-  gap: 10px;
-  padding: 22px 24px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  border-radius: 30px;
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(103, 232, 249, 0.12),
-      transparent 34%
-    ),
-    radial-gradient(
-      circle at top left,
-      rgba(125, 211, 252, 0.12),
-      transparent 28%
-    ),
-    rgba(255, 255, 255, 0.74);
-  box-shadow: var(--settings-surface-shadow);
-  backdrop-filter: blur(20px);
-}
-
-.settings-chat-hero-card__eyebrow {
-  color: #7c8aa0;
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.settings-chat-hero-card__title {
-  color: #0f172a;
-  font-size: clamp(28px, 3vw, 36px);
-  line-height: 1.06;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  font-family:
-    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
-
-.settings-chat-hero-card__text {
-  margin: 0;
-  max-width: 860px;
-  color: #475569;
-  font-size: 14px;
-  line-height: 1.7;
-}
-
-.settings-chat-hero-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.settings-chat-hero-card__meta span {
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  background: rgba(255, 255, 255, 0.72);
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.4;
-  font-weight: 600;
-}
-
-.settings-chat-quick-overview {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.settings-chat-quick-overview__card {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  padding: 16px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.74);
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.05);
-  backdrop-filter: blur(18px);
-}
-
-.settings-chat-quick-overview__label {
-  color: #7c8aa0;
-  font-size: 11px;
-  line-height: 1.4;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.settings-chat-quick-overview__value {
-  color: #0f172a;
-  font-size: 15px;
-  line-height: 1.5;
-  font-weight: 700;
-  word-break: break-word;
-}
-
-.settings-chat-quick-overview__meta {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-.settings-parameter-section--compact {
-  gap: 14px;
-}
-
-.settings-form--quick :deep(.el-form-item) {
-  margin-bottom: 0;
-  padding-top: 0;
-  border-top: 0;
-}
-
-.settings-quick-form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px 18px;
-}
-
-.settings-execution-section,
-.settings-runtime-status-card {
-  grid-column: 1 / -1;
-}
-
-.settings-execution-section {
-  display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.84);
-}
-
-.settings-execution-section span {
-  color: #0f172a;
-  font-size: 13px;
-  line-height: 1.35;
-  font-weight: 800;
-}
-
-.settings-execution-section strong {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.55;
-  font-weight: 500;
-}
-
-.settings-runtime-status-card {
-  display: grid;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: 14px;
-  background: #f8fafc;
-}
-
-.settings-runtime-status-card.is-muted {
-  border-color: rgba(148, 163, 184, 0.28);
-  background: rgba(248, 250, 252, 0.92);
-}
-
-.settings-runtime-status-card.is-ready {
-  border-color: rgba(34, 197, 94, 0.24);
-  background: rgba(240, 253, 244, 0.86);
-}
-
-.settings-runtime-status-card.is-warning {
-  border-color: rgba(245, 158, 11, 0.3);
-  background: rgba(255, 251, 235, 0.88);
-}
-
-.settings-runtime-status-card.is-pending {
-  border-color: rgba(168, 85, 247, 0.22);
-  background: rgba(250, 245, 255, 0.86);
-}
-
-.settings-runtime-status-card.is-running {
-  border-color: rgba(14, 165, 233, 0.26);
-  background: rgba(240, 249, 255, 0.88);
-}
-
-.settings-runtime-status-card.is-system {
-  border-color: rgba(99, 102, 241, 0.22);
-  background: rgba(238, 242, 255, 0.86);
-}
-
-.settings-runtime-status-card.is-danger {
-  border-color: rgba(239, 68, 68, 0.24);
-  background: rgba(254, 242, 242, 0.88);
-}
-
-.settings-runtime-status-card__main {
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-}
-
-.settings-runtime-status-card__main > div {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.settings-runtime-status-card__main strong {
-  color: #0f172a;
-  font-size: 13px;
-  line-height: 1.4;
-}
-
-.settings-runtime-status-card__main span:last-child {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-}
-
-.settings-runtime-status-card__dot {
-  flex: 0 0 auto;
-  width: 9px;
-  height: 9px;
-  margin-top: 4px;
-  border-radius: 999px;
-  background: #94a3b8;
-}
-
-.settings-runtime-status-card.is-ready .settings-runtime-status-card__dot {
-  background: #22c55e;
-}
-
-.settings-runtime-status-card.is-warning .settings-runtime-status-card__dot {
-  background: #f59e0b;
-}
-
-.settings-runtime-status-card.is-running .settings-runtime-status-card__dot {
-  background: #0ea5e9;
-}
-
-.settings-runtime-status-card.is-system .settings-runtime-status-card__dot {
-  background: #6366f1;
-}
-
-.settings-runtime-status-card.is-pending .settings-runtime-status-card__dot {
-  background: #a855f7;
-}
-
-.settings-runtime-status-card.is-danger .settings-runtime-status-card__dot {
-  background: #ef4444;
-}
-
-.settings-runtime-status-card__grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.settings-runtime-status-card__grid span,
-.settings-runtime-status-card__grid strong {
-  min-width: 0;
-  padding: 8px 9px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.82);
-  font-size: 12px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
-.settings-runtime-status-card__grid span {
-  color: #64748b;
-}
-
-.settings-runtime-status-card__grid strong {
-  color: #0f172a;
-}
-
-.settings-runtime-status-card__actions {
-  display: flex;
-  justify-content: flex-start;
-  gap: 8px;
-}
-
-.settings-runtime-status-card__hint {
-  min-width: 0;
-  padding: 9px 10px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.74);
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.settings-runtime-status-card__run-result {
-  min-width: 0;
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.78);
-}
-
-.settings-runtime-status-card__run-head {
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.settings-runtime-status-card__run-head strong {
-  min-width: 0;
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
-.settings-runtime-status-card__run-head span {
-  flex: 0 0 auto;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.settings-runtime-status-card__run-result pre {
-  max-height: 220px;
-  margin: 0;
-  padding: 10px;
-  overflow: auto;
-  border-radius: 8px;
-  background: #0f172a;
-  color: #e2e8f0;
-  font-size: 11px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.settings-runtime-status-card__run-result pre.is-stderr {
-  background: #3f1d1d;
-  color: #fee2e2;
-}
-
-.settings-tabs :deep(.el-tabs__header) {
-  margin: 0 0 20px;
-  padding-bottom: 0;
-  background: transparent;
-}
-
-.settings-tabs :deep(.el-tabs__nav-wrap::after) {
-  display: none;
-}
-
-.settings-tabs :deep(.el-tabs__nav-wrap),
-.settings-tabs :deep(.el-tabs__nav-scroll) {
-  display: flex;
-  align-items: center;
-}
-
-.settings-tabs :deep(.el-tabs__nav) {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
-}
-
-.settings-tabs :deep(.el-tabs__item) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 38px;
-  line-height: 1.2;
-  padding: 0 16px;
-  border: 0;
-  border-bottom: 0;
-  border-radius: 999px;
-  color: #64748b;
-  font-size: 13px;
-  font-weight: 600;
-  text-align: center;
-  background: transparent;
-}
-
-.settings-tabs
-  :deep(.el-tabs--top > .el-tabs__header .el-tabs__item:nth-child(2)),
-.settings-tabs
-  :deep(.el-tabs--top > .el-tabs__header .el-tabs__item:last-child),
-.settings-tabs
-  :deep(.el-tabs--bottom > .el-tabs__header .el-tabs__item:nth-child(2)),
-.settings-tabs
-  :deep(.el-tabs--bottom > .el-tabs__header .el-tabs__item:last-child) {
-  padding-left: 16px;
-  padding-right: 16px;
-}
-
-.settings-tabs :deep(.el-tabs__item.is-active) {
-  color: #fff;
-  border-bottom-color: transparent;
-  background: linear-gradient(180deg, #0f172a, #1e293b);
-  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.14);
-}
-
-.settings-tabs :deep(.el-tabs__active-bar) {
-  display: none;
-}
-
-.settings-tabs :deep(.el-tabs__content) {
-  height: 100%;
-  overflow: visible;
-}
-
-.settings-tabs :deep(.el-tab-pane) {
-  width: min(100%, 940px);
-}
-
-.chat-model-select {
-  width: 188px;
-}
-
-.chat-model-select :deep(.el-select__wrapper) {
-  background: #f3f5f8;
-}
-
-.chat-stage {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  padding: 10px 0 0 20px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-  overflow: hidden;
-}
-
-.chat-context-bar {
-  padding: 0 0 8px;
-}
-
-.chat-context-bar__surface {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 14px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.78);
-  border-radius: 26px;
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(103, 232, 249, 0.12),
-      transparent 34%
-    ),
-    radial-gradient(
-      circle at top left,
-      rgba(125, 211, 252, 0.12),
-      transparent 26%
-    ),
-    rgba(255, 255, 255, 0.54);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
-}
-
-.chat-context-bar__copy {
-  min-width: 0;
-  flex: 1;
-}
-
-.chat-context-bar__eyebrow {
-  color: var(--page-text-soft, #7c8aa0);
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.chat-context-bar__title {
-  margin-top: 6px;
-  color: #0f172a;
-  font-size: clamp(24px, 2.7vw, 32px);
-  font-weight: 600;
-  line-height: 1.04;
-  letter-spacing: -0.03em;
-  font-family:
-    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
-
-.chat-context-bar__meta {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: 4px 8px;
-  margin-top: 8px;
-  color: var(--page-text-soft, #7c8aa0);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.chat-context-bar__meta span:not(:last-child)::after {
-  content: "·";
-  margin-left: 10px;
-  color: #c0c4cc;
-}
-
-.chat-context-bar__actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-  width: auto;
-  flex-shrink: 0;
-  align-self: flex-end;
-}
-
-.chat-context-bar__action-button {
-  border-radius: 999px !important;
-  border-color: rgba(15, 23, 42, 0.08) !important;
-  background: rgba(255, 255, 255, 0.86) !important;
-  color: #334155 !important;
-  font-weight: 600;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
-}
-
-.chat-context-bar__action-button:hover {
-  border-color: rgba(56, 189, 248, 0.24) !important;
-  color: #0f172a !important;
-  background: #ffffff !important;
-}
-
-.workspace-guide-banner {
-  margin: 8px auto 12px;
-  width: min(100%, 780px);
-  border-radius: 14px;
-}
-
-.chat-restore-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin: 0 0 12px;
-  padding: 14px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  border-radius: 24px;
-  background:
-    radial-gradient(
-      circle at top left,
-      rgba(103, 232, 249, 0.14),
-      transparent 34%
-    ),
-    linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.82),
-      rgba(248, 250, 252, 0.68)
-    );
-  box-shadow:
-    0 14px 34px rgba(15, 23, 42, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.88);
-  backdrop-filter: blur(18px);
-}
-
-.chat-restore-banner__copy {
-  min-width: 0;
-  flex: 1;
-}
-
-.chat-restore-banner__eyebrow {
-  color: #7c8aa0;
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.chat-restore-banner__title {
-  margin-top: 6px;
-  color: #0f172a;
-  font-size: 16px;
-  line-height: 1.4;
-  font-weight: 600;
-}
-
-.chat-restore-banner__meta {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 8px;
-  margin-top: 8px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.chat-restore-banner__meta span:not(:last-child)::after {
-  content: "·";
-  margin-left: 10px;
-  color: #cbd5e1;
-}
-
-.chat-restore-banner__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.chat-restore-banner__button {
-  border-radius: 999px !important;
-  border-color: rgba(15, 23, 42, 0.1) !important;
-  background: rgba(255, 255, 255, 0.82) !important;
-  color: #334155 !important;
-}
-
-.chat-restore-banner__dismiss {
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: #7c8aa0;
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.chat-restore-banner__dismiss:hover {
-  color: #0f172a;
-}
-
-.chat-messages-shell {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.chat-messages {
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: calc(100vh - 310px);
-  padding: 14px 20px 22px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-gutter: stable;
-  scroll-padding-bottom: 28px;
-  scroll-behavior: smooth;
-  background: transparent;
-}
-
-.message-list-inner {
-  max-width: none;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-  width: 100%;
-  min-height: min-content;
-}
-
-.chat-empty-state {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  align-items: center;
-  justify-content: center;
-  min-height: 100%;
-  padding: 32px 0 18px;
-  text-align: center;
-  background: transparent;
-  border: 0;
-}
-
-.chat-history-loading-state {
-  display: flex;
-  flex: 1 1 auto;
-  min-height: 100%;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 32px 18px;
-  text-align: center;
-  color: var(--page-text-soft, #7c8aa0);
-}
-
-.chat-history-loading-state__title {
-  color: #0f172a;
-  font-size: 15px;
-  line-height: 1.4;
-  font-weight: 700;
-}
-
-.chat-history-loading-state__text {
-  margin-top: 8px;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.chat-empty-state__hero {
-  width: min(720px, 100%);
-  max-width: 100%;
-  padding: 40px 42px 36px;
-  border: 1px solid rgba(255, 255, 255, 0.76);
-  border-radius: 34px;
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(103, 232, 249, 0.12),
-      transparent 34%
-    ),
-    rgba(255, 255, 255, 0.58);
-  box-shadow:
-    0 24px 64px rgba(15, 23, 42, 0.08),
-    0 14px 34px rgba(15, 23, 42, 0.06);
-  backdrop-filter: blur(20px);
-}
-
-.chat-empty-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  background: rgba(255, 255, 255, 0.72);
-  color: var(--page-text-soft, #7c8aa0);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.chat-empty-title {
-  margin-top: 18px;
-  color: #0f172a;
-  font-size: clamp(34px, 5vw, 48px);
-  font-weight: 600;
-  line-height: 1.06;
-  letter-spacing: -0.03em;
-  font-family:
-    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
-
-.chat-empty-text {
-  display: block;
-  max-width: 560px;
-  margin-top: 12px;
-  color: #475569;
-  font-size: 14px;
-  line-height: 1.8;
-}
-
-.chat-empty-actions {
-  display: grid;
-  width: min(720px, 100%);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 18px;
-}
-
-.chat-empty-action {
-  min-width: 0;
-  padding: 16px 18px;
-  border-radius: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  background: rgba(255, 255, 255, 0.82);
-  color: #0f172a;
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.06);
-  font-weight: 600;
-  line-height: 1.5;
-  transition:
-    transform 0.2s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
-    background-color 0.2s ease;
-}
-
-.chat-empty-action:hover {
-  transform: translateY(-2px);
-  border-color: rgba(56, 189, 248, 0.22);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 22px 34px rgba(15, 23, 42, 0.08);
-}
-
-.message-row.is-user .message-meta,
-.message-row.is-ai .message-meta {
-  display: none;
-}
-
-.message-process {
-  border-radius: 12px;
-  background: #f3f4f6;
-}
-
-.message-audit,
-.message-employee-draft {
-  border-radius: 14px;
-  box-shadow: none;
-}
-
-.chat-composer {
-  flex-shrink: 0;
-  display: flex;
-  justify-content: center;
-  padding: 0 20px 20px;
-  position: static;
-  bottom: auto;
-  z-index: auto;
-  background: transparent;
-  border-top: 0;
-}
-
-.chat-composer-panel {
-  width: 100%;
-  max-width: none;
-  min-width: 0;
-  margin: 0;
-  border-radius: 30px;
-  background: transparent;
-}
-
-.chat-working-status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 0 4px 10px;
-  padding: 9px 12px;
-  border: 1px solid rgba(14, 165, 233, 0.18);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.74);
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.4;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
-  backdrop-filter: blur(18px);
-}
-
-.agent-workflow-status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 0 4px 10px;
-  padding: 10px 12px;
-  border: 1px solid rgba(14, 165, 233, 0.18);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.78);
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.4;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
-  backdrop-filter: blur(18px);
-}
-
-.agent-workflow-status__main,
-.agent-workflow-status__side {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.agent-workflow-status__main {
-  flex: 1 1 auto;
-}
-
-.agent-workflow-status__side {
-  flex: 0 0 auto;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-}
-
-.agent-workflow-status__dot {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #0ea5e9;
-  box-shadow: 0 0 0 5px rgba(14, 165, 233, 0.12);
-}
-
-.agent-workflow-status.is-running .agent-workflow-status__dot {
-  animation: workingPulse 1.4s ease-in-out infinite;
-}
-
-.agent-workflow-status__copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.agent-workflow-status__copy strong {
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.agent-workflow-status__copy span {
-  color: #64748b;
-  overflow-wrap: anywhere;
-}
-
-.agent-workflow-status__item {
-  padding: 3px 7px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.12);
-  color: #475569;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.agent-workflow-status.is-waiting_user {
-  border-color: rgba(245, 158, 11, 0.3);
-  background: rgba(255, 251, 235, 0.86);
-}
-
-.agent-workflow-status.is-waiting_user .agent-workflow-status__dot {
-  background: #f59e0b;
-  box-shadow: 0 0 0 5px rgba(245, 158, 11, 0.14);
-}
-
-.agent-workflow-status.is-blocked,
-.agent-workflow-status.is-failed {
-  border-color: rgba(239, 68, 68, 0.26);
-  background: rgba(254, 242, 242, 0.88);
-}
-
-.agent-workflow-status.is-blocked .agent-workflow-status__dot,
-.agent-workflow-status.is-failed .agent-workflow-status__dot {
-  background: #ef4444;
-  box-shadow: 0 0 0 5px rgba(239, 68, 68, 0.12);
-}
-
-.agent-workflow-status.is-queued {
-  border-color: rgba(99, 102, 241, 0.22);
-  background: rgba(238, 242, 255, 0.84);
-}
-
-.agent-workflow-status.is-queued .agent-workflow-status__dot {
-  background: #6366f1;
-  box-shadow: 0 0 0 5px rgba(99, 102, 241, 0.12);
-}
-
-.chat-working-status__main,
-.chat-working-status__meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
-.chat-working-status__main {
-  color: #0f172a;
-  font-weight: 600;
-}
-
-.chat-working-status__main strong {
-  font-size: 12px;
-}
-
-.chat-working-status__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: #0ea5e9;
-  box-shadow: 0 0 0 5px rgba(14, 165, 233, 0.12);
-  animation: workingPulse 1.4s ease-in-out infinite;
-}
-
-.chat-working-status__meta {
-  flex: 1 1 auto;
-  justify-content: flex-end;
-  color: #64748b;
-}
-
-.chat-working-status__item {
-  white-space: nowrap;
-}
-
-.chat-working-status__item + .chat-working-status__item::before {
-  content: "·";
-  margin-right: 8px;
-  color: rgba(100, 116, 139, 0.55);
-}
-
-@keyframes workingPulse {
-  0%,
-  100% {
-    opacity: 0.56;
-    transform: scale(0.92);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@keyframes externalModelPulse {
-  0%,
-  100% {
-    opacity: 0.36;
-    transform: translateY(2px);
-  }
-  50% {
-    opacity: 1;
-    transform: translateY(-2px);
-  }
-}
-
-@keyframes externalModelSweep {
-  0% {
-    transform: translateX(-110%);
-  }
-  55%,
-  100% {
-    transform: translateX(240%);
-  }
-}
-
-.chat-input-wrapper {
-  position: relative;
-  width: 100%;
-  max-width: none;
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  border-radius: 30px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: none;
-  backdrop-filter: blur(20px);
-}
-
-.chat-input-wrapper.is-focused {
-  border-color: rgba(56, 189, 248, 0.26);
-  box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.16);
-}
-
-.chat-textarea :deep(.el-textarea__inner) {
-  min-height: 92px !important;
-  padding: 20px 22px 10px;
-  color: #0f172a;
-  border: 0 !important;
-  box-shadow: none !important;
-  background: transparent !important;
-}
-
-.chat-textarea :deep(.el-textarea__inner)::placeholder {
-  color: #a3a3a3;
-}
-
-.chat-slash-menu {
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  bottom: calc(100% + 10px);
-  z-index: 12;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: min(360px, 52vh);
-  padding: 12px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
-  backdrop-filter: blur(18px);
-}
-
-.chat-slash-menu__head {
-  position: sticky;
-  top: -12px;
-  z-index: 1;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 4px 8px;
-  background: rgba(255, 255, 255, 0.96);
-}
-
-.chat-slash-menu__title {
-  color: #0f172a;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.chat-slash-menu__summary {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.chat-slash-menu__item {
-  display: grid;
-  flex: 0 0 auto;
-  gap: 6px;
-  width: 100%;
-  padding: 12px 14px;
-  border: 1px solid transparent;
-  border-radius: 16px;
-  background: rgba(248, 250, 252, 0.9);
-  text-align: left;
-  cursor: pointer;
-  transition:
-    border-color 0.18s ease,
-    background-color 0.18s ease,
-    transform 0.18s ease,
-    box-shadow 0.18s ease;
-}
-
-.chat-slash-menu__item:hover,
-.chat-slash-menu__item.is-active {
-  border-color: rgba(56, 189, 248, 0.28);
-  background: rgba(240, 249, 255, 0.96);
-  box-shadow: 0 10px 24px rgba(14, 116, 144, 0.08);
-  transform: translateY(-1px);
-}
-
-.chat-slash-menu__item-main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.chat-slash-menu__command {
-  flex-shrink: 0;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.08);
-  color: #0f172a;
-  font-family: "SFMono-Regular", "JetBrains Mono", "Cascadia Code", monospace;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.chat-slash-menu__label {
-  color: #0f172a;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.chat-slash-menu__description {
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.input-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 12px 12px;
-}
-
-.footer-left,
-.footer-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.task-tree-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.task-tree-panel__hero,
-.task-tree-panel__outline,
-.task-tree-editor {
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  border-radius: 26px;
-  background: rgba(255, 255, 255, 0.76);
-  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.08);
-  backdrop-filter: blur(18px);
-}
-
-.task-tree-panel__hero {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 20px;
-}
-
-.task-tree-health-card {
-  padding: 16px 18px;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 22px;
-  background: rgba(248, 250, 252, 0.84);
-}
-
-.task-tree-health-card.is-danger {
-  border-color: rgba(239, 68, 68, 0.22);
-  background: rgba(255, 247, 245, 0.94);
-}
-
-.task-tree-health-card.is-warning {
-  border-color: rgba(245, 158, 11, 0.22);
-  background: rgba(255, 251, 235, 0.94);
-}
-
-.task-tree-health-card.is-info {
-  border-color: rgba(56, 189, 248, 0.18);
-  background: rgba(248, 251, 255, 0.94);
-}
-
-.task-tree-health-card.is-success {
-  border-color: rgba(16, 185, 129, 0.18);
-  background: rgba(240, 253, 250, 0.94);
-}
-
-.task-tree-health-card__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.task-tree-health-card__eyebrow {
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: rgba(71, 85, 105, 0.82);
-}
-
-.task-tree-health-card__title {
-  margin-top: 8px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.task-tree-health-card__summary,
-.task-tree-health-card__meta,
-.task-tree-health-card__issues {
-  margin-top: 10px;
-  color: rgba(51, 65, 85, 0.86);
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.task-tree-health-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-}
-
-.task-tree-health-card__issues {
-  margin-bottom: 0;
-  padding-left: 18px;
-}
-
-.task-tree-panel__eyebrow,
-.task-tree-panel__section-eyebrow,
-.task-tree-editor__eyebrow {
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: rgba(71, 85, 105, 0.82);
-}
-
-.task-tree-panel__title,
-.task-tree-panel__section-title,
-.task-tree-editor__title {
-  margin-top: 8px;
-  font-size: 20px;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.task-tree-panel__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  margin-top: 10px;
-  font-size: 12px;
-  color: rgba(51, 65, 85, 0.84);
-}
-
-.task-tree-panel__outline,
-.task-tree-editor {
-  padding: 18px;
-}
-
-.task-tree-panel__outline {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.task-tree-panel__section-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.task-tree-panel__section-meta {
-  color: #7c8aa0;
-  font-size: 12px;
-  line-height: 1.5;
-  text-align: right;
-}
-
-.task-tree-panel__tree {
-  background: transparent;
-  max-height: min(52vh, 420px);
-  overflow: auto;
-  padding-right: 4px;
-}
-
-.task-tree-panel__outline :deep(.el-tree-node__content) {
-  height: auto;
-  min-height: 34px;
-  padding: 4px 0;
-  border-radius: 14px;
-}
-
-.task-tree-panel__outline :deep(.el-tree-node__content:hover) {
-  background: rgba(240, 249, 255, 0.8);
-}
-
-.task-tree-panel__outline
-  :deep(.el-tree-node.is-current > .el-tree-node__content) {
-  background: rgba(240, 249, 255, 0.96);
-}
-
-.task-tree-editor__desc {
-  margin-top: 8px;
-  font-size: 13px;
-  line-height: 1.7;
-  color: rgba(51, 65, 85, 0.86);
-}
-
-.task-tree-panel__body {
-  display: grid;
-  grid-template-columns: minmax(0, 240px) minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
-}
-
-.task-tree-node {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  min-width: 0;
-}
-
-.task-tree-node__copy {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.task-tree-node__title {
-  display: block;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  line-height: 1.35;
-  color: #0f172a;
-}
-
-.task-tree-node__current {
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: rgba(240, 249, 255, 0.96);
-  font-size: 11px;
-  color: #0f766e;
-  white-space: nowrap;
-}
-
-.task-tree-node__status {
-  flex-shrink: 0;
-}
-
-.task-tree-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.task-tree-editor__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.task-tree-editor__meta {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.task-tree-editor__pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: rgba(241, 245, 249, 0.92);
-  color: #475569;
-  font-size: 12px;
-  line-height: 1;
-}
-
-.task-tree-editor__pill--current {
-  background: rgba(240, 249, 255, 0.96);
-  color: #0f766e;
-}
-
-.task-tree-editor__section {
-  padding: 14px 16px;
-  border-radius: 18px;
-  background: rgba(248, 250, 252, 0.88);
-}
-
-.task-tree-editor__section--result {
-  background: rgba(236, 253, 245, 0.72);
-}
-
-.task-tree-editor__section-label,
-.task-tree-editor__field-label {
-  margin-bottom: 8px;
-  color: #7c8aa0;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.task-tree-editor__section p,
-.task-tree-editor__empty {
-  margin: 0;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.task-tree-editor__checks {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.task-tree-editor__check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: rgba(51, 65, 85, 0.88);
-}
-
-.task-tree-editor__field {
-  display: flex;
-  flex-direction: column;
-}
-
-.task-tree-editor__select {
-  width: 180px;
-}
-
-.task-tree-editor__hint {
-  padding: 12px 14px;
-  border-radius: 16px;
-  background: rgba(240, 249, 255, 0.86);
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.task-tree-editor__actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.task-tree-editor--empty {
-  justify-content: center;
-  min-height: 240px;
-}
-
-.footer-left :deep(.el-button) {
-  color: #71717a;
-  width: 34px;
-  height: 34px;
-}
-
-.chat-media-parameter-trigger {
-  width: auto !important;
-  min-width: 0;
-  padding: 0 12px !important;
-  border-radius: 999px !important;
-  border: 1px solid rgba(15, 23, 42, 0.06) !important;
-  background: rgba(255, 255, 255, 0.78) !important;
-  color: #374151 !important;
-  gap: 6px;
-}
-
-.chat-media-parameter-trigger:hover {
-  border-color: rgba(56, 189, 248, 0.22) !important;
-  background: rgba(240, 249, 255, 0.96) !important;
-  color: #0f172a !important;
-}
-
-.chat-media-parameter-trigger__icon {
-  font-size: 14px;
-}
-
-.chat-media-parameter-trigger__label {
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1;
-}
-
-.chat-media-parameter-panel {
-  display: grid;
-  gap: 16px;
-}
-
-.chat-media-parameter-panel__head {
-  display: grid;
-  gap: 4px;
-}
-
-.chat-media-parameter-panel__eyebrow {
-  font-size: 11px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #7c8aa0;
-}
-
-.chat-media-parameter-panel__title {
-  color: #0f172a;
-  font-size: 18px;
-  line-height: 1.2;
-  font-weight: 600;
-}
-
-.chat-media-parameter-panel__summary {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.chat-media-parameter-panel__sections {
-  display: grid;
-  gap: 14px;
-}
-
-.chat-media-parameter-section {
-  display: grid;
-  gap: 8px;
-}
-
-.chat-media-parameter-section--toggle {
-  margin-top: 2px;
-  padding-top: 2px;
-}
-
-.chat-media-parameter-section__label {
-  color: #0f172a;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-.chat-media-parameter-section__helper {
-  color: #7c8aa0;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.chat-media-parameter-section__options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.chat-media-parameter-section__options.is-aspect {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.chat-media-parameter-section__options.is-resolution {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.chat-media-parameter-option {
-  min-height: 40px;
-  padding: 0 12px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 14px;
-  background: rgba(248, 250, 252, 0.9);
-  color: #475569;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.3;
-  cursor: pointer;
-  transition:
-    border-color 0.2s ease,
-    background-color 0.2s ease,
-    color 0.2s ease,
-    box-shadow 0.2s ease,
-    transform 0.2s ease;
-}
-
-.chat-media-parameter-option:hover {
-  border-color: rgba(56, 189, 248, 0.22);
-  background: rgba(255, 255, 255, 0.96);
-  color: #0f172a;
-  transform: translateY(-1px);
-}
-
-.chat-media-parameter-option.is-active {
-  border-color: rgba(56, 189, 248, 0.24);
-  background: rgba(240, 249, 255, 0.96);
-  color: #0f172a;
-  box-shadow: 0 10px 24px rgba(56, 189, 248, 0.12);
-}
-
-.chat-media-parameter-option.is-resolution {
-  min-height: 44px;
-  justify-content: center;
-}
-
-.chat-media-parameter-option__label {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  text-align: center;
-}
-
-.chat-media-toggle-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  width: 100%;
-  padding: 14px 16px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 18px;
-  background: rgba(248, 250, 252, 0.9);
-  color: #0f172a;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    border-color 0.2s ease,
-    background-color 0.2s ease,
-    box-shadow 0.2s ease,
-    transform 0.2s ease;
-}
-
-.chat-media-toggle-card:hover {
-  border-color: rgba(56, 189, 248, 0.22);
-  background: rgba(255, 255, 255, 0.96);
-  transform: translateY(-1px);
-}
-
-.chat-media-toggle-card.is-active {
-  border-color: rgba(56, 189, 248, 0.24);
-  background: rgba(240, 249, 255, 0.96);
-  box-shadow: 0 10px 24px rgba(56, 189, 248, 0.12);
-}
-
-.chat-media-toggle-card__content {
-  display: grid;
-  gap: 4px;
-}
-
-.chat-media-toggle-card__title {
-  font-size: 13px;
-  line-height: 1.3;
-  font-weight: 600;
-}
-
-.chat-media-toggle-card__description {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.chat-media-toggle-card__indicator {
-  flex-shrink: 0;
-  min-width: 64px;
-  padding: 7px 10px;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.06);
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1;
-  text-align: center;
-}
-
-.chat-media-toggle-card__indicator.is-active {
-  background: linear-gradient(180deg, #0f172a, #1e293b);
-  color: #ffffff;
-}
-
-.chat-model-select {
-  width: clamp(196px, 24vw, 248px);
-  flex: 0 1 248px;
-  min-width: 0;
-}
-
-.chat-model-select :deep(.el-select__wrapper),
-.chat-model-pill {
-  min-height: 32px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.66);
-  box-shadow: none;
-}
-
-.chat-model-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 12px;
-  border-radius: 999px;
-  color: #52525b;
-  font-size: 12px;
-}
-
-.hint-text {
-  display: none;
-}
-
-.send-message-button {
-  width: 36px;
-  height: 36px;
-  background: linear-gradient(180deg, #0f172a, #1e293b) !important;
-  border: 0 !important;
-  box-shadow: 0 14px 24px rgba(15, 23, 42, 0.18) !important;
-}
-
-.send-message-button:disabled {
-  background: #d4d4d8 !important;
-}
-
-.message-row {
-  position: relative;
-  display: flex;
-  width: 100%;
-}
-
-.message-row.is-ai .message-content-wrapper {
-  width: 100%;
-  max-width: min(920px, 100%);
-  align-items: flex-start;
-}
-
-.message-row.is-ai .message-bubble > .message-text,
-.message-row.is-ai .message-bubble > .message-status-notes,
-.message-row.is-ai .message-bubble > .message-process,
-.message-row.is-ai .message-bubble > .message-audit,
-.message-row.is-ai .message-bubble > .message-employee-draft,
-.message-row.is-ai .message-bubble > .message-images,
-.message-row.is-ai .message-bubble > .message-videos,
-.message-row.is-ai .message-bubble > .message-attachments {
-  max-width: min(920px, 100%);
-}
-
-.message-row.is-user {
-  justify-content: flex-end;
-}
-
-.message-row.is-user .message-content-wrapper {
-  width: auto;
-  max-width: min(880px, 84%);
-  align-items: flex-end;
-}
-
-.message-row.is-user .message-bubble {
-  padding: 14px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.88);
-  border-radius: 24px;
-  background:
-    radial-gradient(
-      circle at top left,
-      rgba(125, 211, 252, 0.14),
-      transparent 54%
-    ),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 250, 252, 0.8));
-  box-shadow: none;
-  width: fit-content;
-  min-width: 0;
-  max-width: 100%;
-  backdrop-filter: blur(16px);
-}
-
-.message-row.is-user .message-bubble.message-bubble--editing {
-  width: min(100%, 680px);
-  min-width: min(320px, 100%);
-  padding: 14px;
-  border-color: rgba(255, 255, 255, 0.9);
-  background:
-    radial-gradient(
-      circle at top left,
-      rgba(125, 211, 252, 0.12),
-      transparent 56%
-    ),
-    rgba(255, 255, 255, 0.78);
-}
-
-.message-row.is-user .message-inline-editor {
-  width: 100%;
-}
-
-.message-row.is-user .message-text {
-  color: #0f172a;
-  font-size: 15px;
-  line-height: 1.8;
-}
-
-.message-row.is-ai .message-bubble {
-  padding: 16px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  border-radius: 26px;
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(103, 232, 249, 0.08),
-      transparent 42%
-    ),
-    rgba(255, 255, 255, 0.56);
-  box-shadow: none;
-  display: flex;
-  flex-direction: column;
-  width: min(100%, 920px);
-  max-width: 100%;
-  backdrop-filter: blur(18px);
-}
-
-.message-row.is-ai .message-text {
-  color: #24303d;
-  font-size: 15px;
-  line-height: 1.85;
-}
-
-.message-text :deep(p) {
-  margin-bottom: 0.9em;
-}
-
-.message-text :deep(ul),
-.message-text :deep(ol) {
-  margin: 0.5em 0 0.9em;
-  padding-left: 1.3em;
-}
-
-.message-process {
-  margin-bottom: 12px;
-  border: 1px solid #e5e7eb;
-  border-radius: 14px;
-  background: rgba(245, 246, 248, 0.86);
-}
-
-.message-process-toggle {
-  padding: 10px 12px;
-  color: #374151;
-  font-size: 12px;
-}
-
-.message-process-pre {
-  padding: 0 12px 12px;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.message-audit {
-  margin-top: 14px;
-  padding: 12px 14px;
-  border: 1px solid #eceef2;
-  border-radius: 16px;
-  background: rgba(250, 250, 250, 0.86);
-}
-
-.message-audit-title {
-  color: #374151;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.message-audit-label,
-.message-audit-text,
-.message-audit-pre {
-  color: #6b7280;
-}
-
-.message-employee-draft {
-  margin-top: 14px;
-  padding: 14px;
-  border: 1px solid #e7eaf0;
-  border-radius: 18px;
-  background: rgba(250, 251, 252, 0.88);
-}
-
-.message-employee-draft__title {
-  font-size: 15px;
-}
-
-.message-employee-draft__desc,
-.meta-value,
-.employee-draft-workflow-list {
-  color: #4b5563;
-}
-
-.message-employee-draft__meta-item,
-.message-employee-draft__workflow {
-  background: #ffffff;
-  border-color: #eceef2;
-}
-
-.message-images {
-  margin-top: 10px;
-  gap: 10px;
-}
-
-.message-videos {
-  margin-top: 10px;
-  gap: 12px;
-}
-
-.preview-image {
-  border-radius: 14px;
-  border: 1px solid #eceef2;
-}
-
-.preview-video {
-  border-radius: 16px;
-  border: 1px solid #eceef2;
-  background: #020617;
-}
-
-.message-attachments {
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.attachment-item {
-  padding: 8px 10px;
-  border: 1px solid #eceef2;
-  border-radius: 12px;
-  background: #fafafa;
-}
-
-.message-actions {
-  margin-top: 8px;
-  padding-left: 0;
-  gap: 6px;
-}
-
-.message-row.is-user .message-actions {
-  justify-content: flex-end;
-}
-
-.message-action-button {
-  width: 28px;
-  height: 28px;
-  color: #a1a1aa;
-}
-
-.message-action-button:hover {
-  color: #52525b;
-  background: rgba(15, 23, 42, 0.05);
-}
-
-.chat-layout {
-  position: relative;
-  min-height: 100vh;
-  height: 100vh;
-  height: 100dvh;
-  overflow: hidden;
-  color: var(--page-text, #0f172a);
-  background: var(
-    --page-bg,
-    linear-gradient(180deg, #f5f4ef 0%, #f8fafc 38%, #edf2f7 100%)
-  );
-}
-
-.chat-layout__ambient,
-.chat-layout__mesh {
-  position: absolute;
-  pointer-events: none;
-}
-
-.chat-layout__ambient {
-  width: 32rem;
-  height: 32rem;
-  border-radius: 50%;
-  filter: blur(72px);
-  opacity: 0.72;
-  animation: glowPulse 18s ease-in-out infinite;
-}
-
-.chat-layout__ambient--left {
-  top: -11rem;
-  left: -14rem;
-  background: rgba(125, 211, 252, 0.34);
-}
-
-.chat-layout__ambient--right {
-  top: 2rem;
-  right: -11rem;
-  background: rgba(103, 232, 249, 0.22);
-  animation-delay: -5s;
-}
-
-.chat-layout__mesh {
-  inset: 0;
-  opacity: 0.28;
-  background:
-    linear-gradient(rgba(15, 23, 42, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
-  background-size: 88px 88px;
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.68), transparent 78%);
-}
-
-.chat-main {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  padding: 0 20px 20px;
-  box-sizing: border-box;
-  overflow-x: hidden;
-  overflow-y: hidden;
-}
-
-.chat-shell {
-  display: grid;
-  width: 100%;
-  max-width: none;
-  margin: 0 auto;
-  grid-template-columns: 332px minmax(0, 1fr);
-  gap: 24px;
-  height: 100%;
-  min-height: 0;
-  padding: 18px 0 22px;
-  box-sizing: border-box;
-  align-items: stretch;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-}
-
-.chat-shell--local-runner {
-  grid-template-columns: 300px minmax(0, 1fr) 380px;
-}
-
-.chat-workbench {
-  min-width: 0;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0;
-  padding: 0;
-  overflow: hidden;
-}
-
-.chat-shell--local-runner .chat-workbench {
-  grid-template-columns: minmax(0, 1fr);
-  padding-right: 0;
-}
-
-.chat-conversation-sidebar {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  max-height: 100%;
-  min-height: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-}
-
-.local-runner-panel {
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  overflow: hidden;
-}
-
-.local-runner-card {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.78);
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.62);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.84),
-    0 16px 30px rgba(15, 23, 42, 0.05);
-  backdrop-filter: blur(18px);
-}
-
-.local-runner-card--workspace {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.local-runner-card--self-check {
-  flex: 0 0 auto;
-}
-
-.local-runner-card--sessions {
-  flex: 0 0 auto;
-}
-
-.local-runner-card--process {
-  flex: 0 0 auto;
-}
-
-.local-runner-card--terminal {
-  flex: 0 0 auto;
-}
-
-.local-runner-card__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.local-runner-card__actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
-}
-
-.local-runner-card__eyebrow {
-  color: #7c8aa0;
-  font-size: 10px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.local-runner-card__title {
-  margin-top: 6px;
-  color: #0f172a;
-  font-size: 15px;
-  line-height: 1.3;
-  font-weight: 700;
-}
-
-.local-process-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.local-process-summary > div {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-  padding: 9px 10px;
-  border-radius: 13px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(248, 250, 252, 0.7);
-}
-
-.local-process-summary span {
-  min-width: 0;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.local-process-summary strong {
-  min-width: 0;
-  overflow: hidden;
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.local-process-timeline {
-  max-height: 180px;
-  display: grid;
-  gap: 8px;
-  overflow: auto;
-  padding-right: 2px;
-}
-
-.local-process-timeline__item {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 8px;
-  padding: 8px 0;
-  border-top: 1px solid rgba(15, 23, 42, 0.06);
-}
-
-.local-process-timeline__item:first-child {
-  border-top: 0;
-}
-
-.local-process-timeline__marker {
-  width: 18px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 1px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.14);
-  color: #64748b;
-}
-
-.local-process-timeline__marker > span {
-  width: 7px;
-  height: 7px;
-  border-radius: inherit;
-  background: currentColor;
-}
-
-.local-process-timeline__item.is-running .local-process-timeline__marker {
-  background: rgba(14, 165, 233, 0.14);
-  color: #0284c7;
-}
-
-.local-process-timeline__item.is-waiting_user .local-process-timeline__marker,
-.local-process-timeline__item.is-blocked .local-process-timeline__marker {
-  background: rgba(245, 158, 11, 0.16);
-  color: #b45309;
-}
-
-.local-process-timeline__item.is-completed .local-process-timeline__marker {
-  background: rgba(16, 185, 129, 0.16);
-  color: #047857;
-}
-
-.local-process-timeline__item.is-failed .local-process-timeline__marker {
-  background: rgba(239, 68, 68, 0.14);
-  color: #dc2626;
-}
-
-.local-process-timeline__main {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.local-process-timeline__title,
-.local-process-timeline__summary {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.local-process-timeline__title {
-  color: #0f172a;
-  font-size: 12px;
-  font-weight: 650;
-  line-height: 1.42;
-}
-
-.local-process-timeline__summary {
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.42;
-}
-
-.local-process-timeline__phase {
-  align-self: start;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.06);
-  color: #475569;
-  font-size: 10.5px;
-  font-weight: 650;
-  line-height: 1.45;
-  white-space: nowrap;
-}
-
-.local-runner-empty {
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px dashed rgba(148, 163, 184, 0.32);
-  color: #64748b;
-  background: rgba(248, 250, 252, 0.7);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.local-runner-self-check,
-.settings-runtime-status-card__runner {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.local-runner-self-check__item,
-.settings-runtime-status-card__runner-item {
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 9px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(248, 250, 252, 0.74);
-}
-
-.local-runner-self-check__item > div {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.local-runner-self-check__item strong,
-.settings-runtime-status-card__runner-item strong {
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.local-runner-self-check__item span,
-.settings-runtime-status-card__runner-item span {
-  min-width: 0;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.local-runner-self-check__item.is-success {
-  border-color: rgba(34, 197, 94, 0.2);
-  background: rgba(240, 253, 244, 0.78);
-}
-
-.settings-runtime-status-card__runner-item.is-success {
-  border-color: rgba(34, 197, 94, 0.2);
-  background: rgba(240, 253, 244, 0.78);
-}
-
-.local-runner-self-check__item.is-blocked {
-  border-color: rgba(239, 68, 68, 0.22);
-  background: rgba(254, 242, 242, 0.78);
-}
-
-.settings-runtime-status-card__runner-item.is-blocked {
-  border-color: rgba(239, 68, 68, 0.22);
-  background: rgba(254, 242, 242, 0.78);
-}
-
-.settings-runtime-status-card__runner-item.is-warning {
-  border-color: rgba(245, 158, 11, 0.24);
-  background: rgba(255, 251, 235, 0.78);
-}
-
-.local-approval-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-
-.local-approval-panel__title {
-  color: #0f172a;
-  font-size: 13px;
-  line-height: 1.45;
-  font-weight: 700;
-}
-
-.local-approval-panel__desc {
-  margin: 0;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.local-permission-records {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 2px;
-}
-
-.local-permission-records__title {
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.4;
-  font-weight: 700;
-}
-
-.local-permission-record {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: start;
-  padding: 9px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(248, 250, 252, 0.74);
-}
-
-.local-permission-record > div {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.local-runner-session-records {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 220px;
-  overflow: auto;
-}
-
-.local-runner-session-record {
-  width: 100%;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: start;
-  padding: 9px 10px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.74);
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.local-runner-session-record:hover,
-.local-runner-session-record.is-active {
-  border-color: rgba(37, 99, 235, 0.34);
-  background: rgba(239, 246, 255, 0.82);
-}
-
-.local-runner-session-record__main,
-.local-runner-session-record__meta {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.local-runner-session-record__main strong {
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.local-runner-session-record__main span,
-.local-runner-session-record__meta span {
-  min-width: 0;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.local-runner-session-record__meta {
-  align-items: flex-end;
-}
-
-.runner-session-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.runner-session-detail__hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 14px;
-  background: rgba(248, 250, 252, 0.82);
-}
-
-.runner-session-detail__eyebrow {
-  color: #7c8aa0;
-  font-size: 10px;
-  line-height: 1;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.runner-session-detail__title {
-  margin-top: 6px;
-  color: #0f172a;
-  font-size: 16px;
-  line-height: 1.35;
-  font-weight: 800;
-}
-
-.runner-session-detail__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.runner-session-detail__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.runner-session-detail__grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.runner-session-detail__grid > div {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.runner-session-detail__grid span {
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.3;
-}
-
-.runner-session-detail__grid strong {
-  min-width: 0;
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.runner-session-detail__tabs {
-  min-width: 0;
-}
-
-.runner-session-detail__tabs :deep(.el-tabs__header) {
-  margin-bottom: 12px;
-}
-
-.runner-session-detail__tabs :deep(.el-tabs__item) {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 128px;
-  font-size: 12px;
-  line-height: 1.3;
-}
-
-.runner-session-detail__tabs :deep(.el-tabs__item span) {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.runner-session-detail__tabs :deep(.el-tabs__item em) {
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: rgba(37, 99, 235, 0.1);
-  color: #1d4ed8;
-  font-size: 10px;
-  line-height: 18px;
-  font-style: normal;
-  font-weight: 700;
-  text-align: center;
-}
-
-.runner-session-detail__evidence-list {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
-}
-
-.runner-session-detail__evidence {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(92px, auto) minmax(0, 1fr);
-  gap: 6px 10px;
-  align-items: start;
-  padding: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.76);
-}
-
-.runner-session-detail__evidence span {
-  min-width: 0;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-}
-
-.runner-session-detail__evidence strong {
-  min-width: 0;
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
-.runner-session-detail__evidence p {
-  grid-column: 2;
-  min-width: 0;
-  margin: 0;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-}
-
-.runner-session-detail__evidence small {
-  grid-column: 2;
-  min-width: 0;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
-.runner-session-detail__empty {
-  min-height: 88px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 14px;
-  border: 1px dashed rgba(148, 163, 184, 0.34);
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.72);
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.55;
-  text-align: center;
-}
-
-.runner-session-detail__diagnostic-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.runner-session-detail__diagnostic-grid > div {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.74);
-}
-
-.runner-session-detail__diagnostic-grid span {
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.3;
-}
-
-.runner-session-detail__diagnostic-grid strong {
-  min-width: 0;
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.runner-session-detail__stdin,
-.settings-runtime-status-card__stdin {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.runner-session-detail__interaction {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid rgba(37, 99, 235, 0.18);
-  border-radius: 12px;
-  background: rgba(239, 246, 255, 0.72);
-}
-
-.runner-session-detail__interaction .runner-session-detail__section-head {
-  flex-direction: column;
-  gap: 4px;
-}
-
-.runner-session-detail__interaction .runner-session-detail__section-head span {
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.runner-session-detail__easy-form :deep(.el-form-item) {
-  margin-bottom: 0;
-}
-
-.runner-session-detail__stdin .el-input,
-.settings-runtime-status-card__stdin .el-input {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.runner-session-detail__section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.runner-session-detail__section-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  color: #0f172a;
-  font-size: 13px;
-  line-height: 1.4;
-}
-
-.runner-session-detail__section-head > div {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.runner-session-detail__section-head span {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.runner-session-detail__output {
-  min-height: 96px;
-  max-height: 260px;
-  margin: 0;
-  padding: 12px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  border-radius: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: #0f172a;
-  color: #e2e8f0;
-  font-size: 12px;
-  line-height: 1.65;
-}
-
-.runner-session-detail__terminal {
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.1);
-  background: rgba(248, 250, 252, 0.78);
-}
-
-.runner-session-detail__terminal-actions {
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: row;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
-}
-
-.runner-session-detail__terminal-output {
-  min-height: 260px;
-  max-height: 460px;
-  margin: 0;
-  padding: 12px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  border-radius: 12px;
-  border: 1px solid rgba(15, 23, 42, 0.16);
-  background: #0b1020;
-  color: #dbeafe;
-  font-family:
-    "SFMono-Regular", "JetBrains Mono", "Cascadia Code", monospace;
-  font-size: 12px;
-  line-height: 1.58;
-}
-
-.runner-session-detail__terminal-output.is-running {
-  border-color: rgba(37, 99, 235, 0.28);
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.14);
-}
-
-.local-permission-record strong {
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.local-permission-record span {
-  min-width: 0;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.local-approval-panel__message,
-.local-terminal-output {
-  margin: 0;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  border-radius: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: #0f172a;
-  color: #dbeafe;
-  font-family:
-    "SFMono-Regular", "JetBrains Mono", "Cascadia Code", monospace;
-  font-size: 11px;
-  line-height: 1.55;
-}
-
-.local-approval-panel__message {
-  max-height: 150px;
-  padding: 10px;
-}
-
-.local-terminal-output {
-  max-height: 180px;
-  padding: 11px;
-}
-
-.local-approval-panel__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.local-workspace-root {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.78);
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.local-workspace-source {
-  min-width: 0;
-  padding: 9px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(14, 165, 233, 0.16);
-  background: rgba(240, 249, 255, 0.74);
-  color: #0369a1;
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.local-file-browser {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.local-file-browser__toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.local-file-browser__toolbar span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.local-file-list {
-  min-height: 120px;
-  max-height: 240px;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 14px;
-  background: rgba(248, 250, 252, 0.72);
-}
-
-.local-file-item {
-  width: 100%;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 9px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: #334155;
-  text-align: left;
-  cursor: pointer;
-}
-
-.local-file-item:hover,
-.local-file-item.is-active {
-  background: rgba(219, 234, 254, 0.72);
-}
-
-.local-file-item__icon {
-  flex: 0 0 auto;
-  color: #0f766e;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-}
-
-.local-file-item__name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.local-editor {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.local-diff-preview {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-
-.local-diff-preview__head {
-  min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.local-diff-preview__head > div:first-child {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.local-diff-preview__head strong {
-  color: #0f172a;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.local-diff-preview__head span {
-  min-width: 0;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-}
-
-.local-diff-preview__output {
-  min-height: 90px;
-  max-height: 260px;
-  margin: 0;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  border-radius: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: #0f172a;
-  color: #dbeafe;
-  padding: 11px;
-  font-family:
-    "SFMono-Regular", "JetBrains Mono", "Cascadia Code", monospace;
-  font-size: 11px;
-  line-height: 1.55;
-}
-
-.local-editor__head {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  color: #334155;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.local-editor__head span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.local-editor__textarea :deep(.el-textarea__inner) {
-  font-family:
-    "SFMono-Regular", "JetBrains Mono", "Cascadia Code", monospace;
-  font-size: 12px;
-  line-height: 1.55;
-  border-radius: 14px;
-}
-
-.chat-sidebar-brand-panel {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 2px 16px;
-}
-
-.chat-sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.chat-sidebar-brand__mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 11px;
-  background: #0f172a;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.chat-sidebar-brand__name {
-  color: #0f172a;
-  font-size: 16px;
-  line-height: 1.2;
-  font-weight: 600;
-  font-family:
-    "Avenir Next", "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
-
-.chat-sidebar-brand__meta {
-  margin-top: 2px;
-  color: var(--page-text-soft, #7c8aa0);
-  font-size: 11px;
-  line-height: 1.3;
-}
-
-.chat-page-settings-button {
-  flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  border: 1px solid rgba(255, 255, 255, 0.72) !important;
-  background: rgba(255, 255, 255, 0.66) !important;
-  color: #475569 !important;
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.05) !important;
-}
-
-.chat-page-settings-button:hover {
-  border-color: rgba(56, 189, 248, 0.28) !important;
-  background: rgba(255, 255, 255, 0.86) !important;
-  color: #0f172a !important;
-}
-
-.chat-sidebar-project-card {
-  margin-top: 2px;
-  padding: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  border-radius: 24px;
-  background:
-    radial-gradient(
-      circle at top right,
-      rgba(103, 232, 249, 0.14),
-      transparent 38%
-    ),
-    rgba(255, 255, 255, 0.68);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.84),
-    0 14px 28px rgba(15, 23, 42, 0.05);
-  backdrop-filter: blur(18px);
-}
-
-.chat-sidebar-project-card :deep(.chat-project-dropdown) {
-  display: block;
-  width: 100%;
-}
-
-.chat-sidebar-project-card :deep(.chat-project-select) {
-  display: block;
-  width: 100%;
-}
-
-.chat-project-select :deep(.el-select__wrapper) {
-  min-height: 48px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.76);
-  box-shadow: 0 14px 24px rgba(15, 23, 42, 0.04);
-}
-
-.chat-project-select :deep(.el-select__wrapper.is-focused),
-.chat-project-select :deep(.el-select__wrapper:hover) {
-  border-color: rgba(56, 189, 248, 0.22);
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow:
-    0 14px 24px rgba(15, 23, 42, 0.04),
-    0 0 0 3px rgba(103, 232, 249, 0.1);
-}
-
-.chat-project-select :deep(.el-select__placeholder),
-.chat-project-select :deep(.el-select__selected-item) {
-  min-width: 0;
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.chat-sidebar-card__label {
-  margin: 0 0 10px;
-  color: var(--page-text-soft, #7c8aa0);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.chat-project-switcher {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  position: relative;
-  min-width: 0;
-  height: 48px;
-  padding: 0 40px 0 14px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.76);
-  box-shadow: 0 14px 24px rgba(15, 23, 42, 0.04);
-}
-
-.chat-project-switcher::after {
-  transform: translateY(-50%) rotate(45deg);
-}
-
-.chat-project-switcher:hover {
-  border-color: rgba(56, 189, 248, 0.22);
-  background: rgba(255, 255, 255, 0.9);
-}
-
-.chat-project-switcher__name {
-  display: block;
-  width: 100%;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  line-height: 1.2;
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-:deep(.chat-project-switcher-menu) {
-  max-width: calc(100vw - 24px);
-  padding: 6px;
-  box-sizing: border-box;
-}
-
-:deep(.chat-project-switcher-menu .el-dropdown-menu__item) {
-  max-width: 100%;
-}
-
-:deep(.chat-project-select-dropdown) {
-  max-width: calc(100vw - 24px);
-  border-radius: 16px;
-}
-
-:deep(.chat-project-select-dropdown .el-select-dropdown__wrap) {
-  max-height: 280px;
-}
-
-:deep(.chat-project-select-dropdown .el-select-dropdown__item) {
-  height: auto;
-  min-height: 42px;
-  line-height: 1.4;
-  padding: 0 12px;
-}
-
-.chat-project-option {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  min-width: 0;
-  padding: 11px 14px;
-  box-sizing: border-box;
-}
-
-.chat-project-option--empty {
-  justify-content: center;
-}
-
-.chat-project-option--empty .chat-project-option__name {
-  color: #9ca3af;
-}
-
-.chat-project-option__name {
-  min-width: 0;
-  width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-conversation-sidebar__actions {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-  margin-top: 14px;
-  padding: 0;
-}
-
-.chat-new-conversation-button {
-  width: 100%;
-  height: 42px !important;
-  border-radius: 999px !important;
-  border: 0 !important;
-  background: linear-gradient(180deg, #0f172a, #1e293b) !important;
-  color: #fff !important;
-  font-weight: 600;
-  box-shadow: 0 18px 28px rgba(15, 23, 42, 0.14) !important;
-}
-
-.chat-clear-current-button {
-  justify-content: flex-start;
-  min-height: 32px !important;
-  padding: 0 6px !important;
-  color: var(--page-text-soft, #7c8aa0) !important;
-}
-
-.chat-session-panel {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  margin-top: 14px;
-  padding: 14px 12px 10px;
-  flex: 1;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  border-radius: 28px;
-  background: rgba(255, 255, 255, 0.66);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.82),
-    0 18px 32px rgba(15, 23, 42, 0.05);
-  backdrop-filter: blur(18px);
-}
-
-.chat-session-panel__head {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 10px;
-  padding: 0 6px 10px;
-}
-
-.chat-session-panel__title {
-  color: #475569;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.chat-session-strip {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-}
-
-.chat-session-strip :deep(.el-loading-mask) {
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.chat-session-groups {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  height: 100%;
-  overflow: auto;
-  padding-right: 4px;
-}
-
-.chat-session-group__title {
-  padding: 0 6px 4px;
-  color: var(--page-text-soft, #7c8aa0);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-
-.chat-session-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.chat-session-chip {
-  padding: 12px 14px;
-  border: 1px solid rgba(15, 23, 42, 0.04);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.68);
-  text-align: left;
-  transition:
-    transform 0.18s ease,
-    border-color 0.18s ease,
-    background-color 0.18s ease,
-    box-shadow 0.18s ease;
-}
-
-.chat-session-chip:hover {
-  transform: translateY(-1px);
-  border-color: rgba(56, 189, 248, 0.18);
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
-}
-
-.chat-session-chip.is-active {
-  border-color: rgba(15, 23, 42, 0.08);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
-}
-
-.chat-session-chip__title {
-  display: block;
-  flex: 1;
-  min-width: 0;
-  width: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #111827;
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.chat-session-chip__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-}
-
-.chat-session-chip__delete {
-  opacity: 0;
-  color: #a1a1aa;
-}
-
-.chat-session-chip__edit {
-  opacity: 0;
-  color: #94a3b8;
-}
-
-.chat-session-chip:hover .chat-session-chip__delete,
-.chat-session-chip.is-active .chat-session-chip__delete,
-.chat-session-chip:hover .chat-session-chip__edit,
-.chat-session-chip.is-active .chat-session-chip__edit {
-  opacity: 1;
-}
-
-.chat-session-chip__meta {
-  color: #9ca3af;
-  font-size: 11px;
-}
-
-.chat-session-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 160px;
-  color: var(--page-text-soft, #7c8aa0);
-  font-size: 12px;
-}
-
-.chat-sidebar-footer {
-  margin-top: 14px;
-  padding: 0;
-}
-
-.chat-sidebar-user {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.66);
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.05);
-  backdrop-filter: blur(18px);
-}
-
-.chat-sidebar-user__avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 999px;
-  background: #e4e4e7;
-  color: #52525b;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.chat-sidebar-user__name {
-  color: #27272a;
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.chat-sidebar-user__role {
-  margin-top: 2px;
-  color: #9ca3af;
-  font-size: 11px;
-}
-
-.chat-sidebar-user__meta {
-  min-width: 0;
-  flex: 1;
-}
-
-.chat-sidebar-user__logout {
-  flex-shrink: 0;
-  color: #8b8d93 !important;
-}
-
-@keyframes glowPulse {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 0.64;
-  }
-  50% {
-    transform: scale(1.08);
-    opacity: 0.88;
-  }
-}
-
-@media (max-width: 1120px) {
-  .chat-layout {
-    min-height: 100%;
-    height: auto;
-    overflow: visible;
-  }
-
-  .settings-center-page {
-    --settings-center-max-width: 100%;
-    --settings-chat-sidebar-width: minmax(0, 1fr);
-  }
-
-  .chat-shell {
-    width: 100%;
-    grid-template-columns: 1fr;
-    min-height: auto;
-    height: auto;
-    gap: 20px;
-    padding: 14px 0 0;
-  }
-
-  .chat-shell--local-runner {
-    grid-template-columns: 1fr;
-  }
-
-  .chat-workbench {
-    grid-template-columns: minmax(0, 1fr);
-    padding-right: 0;
-  }
-
-  .chat-conversation-sidebar {
-    order: 2;
-    padding: 0;
-    border: 0;
-  }
-
-  .chat-stage {
-    order: 1;
-    min-height: auto;
-    padding: 0;
-  }
-
-  .local-runner-panel {
-    order: 3;
-    overflow: visible;
-  }
-
-  .local-file-list,
-  .local-terminal-output {
-    max-height: 260px;
-  }
-
-  .chat-main {
-    height: auto;
-    min-height: 0;
-    padding: 0 14px 18px;
-    overflow: visible;
-  }
-
-  .chat-messages {
-    padding: 10px 14px 18px;
-    scroll-padding-bottom: 22px;
-  }
-
-  .chat-context-bar__surface {
-    flex-direction: column;
-    align-items: flex-start;
-    padding: 16px 16px;
-  }
-
-  .chat-context-bar__actions {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .chat-empty-title {
-    font-size: 36px;
-  }
-
-  .chat-empty-state {
-    min-height: 360px;
-  }
-
-  .chat-empty-actions {
-    grid-template-columns: 1fr;
-  }
-
-  .workspace-guide-banner {
-    width: calc(100% - 36px);
-  }
-
-  .settings-center-shell {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 14px;
-    padding: 14px;
-  }
-
-  .settings-center-shell--single {
-    grid-template-rows: minmax(0, 1fr);
-  }
-
-  .settings-center-sidebar {
-    min-height: auto;
-  }
-
-  .settings-center-sidebar-card {
-    padding: 16px;
-    border-radius: 26px;
-  }
-
-  .settings-center-sidebar__nav {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
-    gap: 8px;
-  }
-
-  .settings-center-stage {
-    height: auto;
-    min-height: 0;
-    padding-top: 4px;
-    border-radius: 28px;
-  }
-
-  .settings-center-stage--single {
-    width: 100%;
-  }
-
-  .settings-center-context-bar {
-    flex-direction: column;
-  }
-
-  .settings-center-context-bar__actions {
-    width: 100%;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-
-  .settings-center-context-bar__title {
-    font-size: 18px;
-  }
-
-  .settings-chat-main-card {
-    padding: 18px;
-  }
-
-  .settings-chat-quick-overview {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .settings-quick-form-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .settings-runtime-status-card__grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .runner-session-detail__grid,
-  .runner-session-detail__diagnostic-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .settings-summary-overview,
-  .settings-tools-overview {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .message-employee-draft__meta {
-    grid-template-columns: 1fr;
-  }
-
-  .employee-draft-dialog__grid {
-    grid-template-columns: 1fr;
-  }
-
-  .input-footer {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .execution-status-chip {
-    max-width: 100%;
-  }
-
-  .skill-resource-dialog__directory-head {
-    flex-direction: column;
-    align-items: stretch;
-  }
-}
-
-@media (max-width: 640px) {
-  .chat-main {
-    padding: 0 10px 14px;
-  }
-
-  .chat-messages {
-    padding: 8px 10px 16px;
-    scroll-padding-bottom: 20px;
-  }
-
-  .chat-composer {
-    padding: 0 14px 16px;
-  }
-
-  .chat-shell {
-    width: 100%;
-    gap: 16px;
-    padding: 8px 0 0;
-  }
-
-  .chat-composer-panel {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .agent-workflow-status {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .agent-workflow-status__side {
-    justify-content: flex-start;
-  }
-
-  .chat-project-switcher {
-    padding: 13px 40px 13px 13px;
-    border-radius: 16px;
-  }
-
-  :deep(.chat-project-switcher-menu) {
-    min-width: min(320px, calc(100vw - 24px));
-  }
-
-  .message-row {
-    gap: 0;
-  }
-
-  .message-avatar {
-    display: none;
-  }
-
-  .message-bubble {
-    padding: 16px;
-    border-radius: 20px;
-  }
-
-  .message-row.is-user .message-bubble.message-bubble--editing {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .message-inline-editor__footer {
-    align-items: flex-start;
-  }
-
-  .message-inline-editor__actions {
-    width: 100%;
-    margin-left: 0;
-    justify-content: flex-start;
-  }
-
-  .message-row.is-ai .message-content-wrapper,
-  .message-row.is-user .message-content-wrapper {
-    width: 100%;
-    max-width: 100%;
-  }
-
-  .message-row.is-user .message-bubble {
-    width: 100%;
-    min-width: 0;
-  }
-
-  .message-actions {
-    opacity: 1;
-    flex-wrap: wrap;
-  }
-
-  .chat-conversation-sidebar__actions {
-    justify-content: flex-start;
-  }
-
-  .message-employee-draft__head,
-  .message-employee-draft__actions {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .employee-draft-dialog__section-head {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .chat-context-bar__meta {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .chat-context-bar__meta span:not(:last-child)::after {
-    display: none;
-  }
-
-  .chat-empty-title {
-    font-size: 32px;
-  }
-
-  .chat-empty-state__hero {
-    padding: 30px 22px 28px;
-  }
-
-  .chat-context-bar__surface {
-    padding: 14px;
-    border-radius: 22px;
-  }
-
-  .chat-restore-banner {
-    flex-direction: column;
-    align-items: flex-start;
-    padding: 14px;
-    border-radius: 22px;
-  }
-
-  .chat-restore-banner__actions,
-  .chat-restore-banner__meta {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .chat-restore-banner__meta span:not(:last-child)::after {
-    display: none;
-  }
-
-  .chat-context-bar__title {
-    font-size: 30px;
-  }
-
-  .chat-empty-actions {
-    width: 100%;
-  }
-
-  .input-footer {
-    align-items: stretch;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-
-  .chat-model-select {
-    width: 100%;
-    max-width: none;
-  }
-
-  .footer-left {
-    width: 100%;
-    flex-wrap: wrap;
-    justify-content: flex-start;
-  }
-
-  .footer-right {
-    width: 100%;
-    justify-content: flex-end;
-  }
-
-  .skill-resource-dialog__directory-actions {
-    width: 100%;
-  }
-
-  .skill-resource-site-list {
-    grid-template-columns: 1fr;
-  }
-
-  .settings-center-brand__name {
-    font-size: 14px;
-  }
-
-  .settings-center-nav-item {
-    padding: 12px;
-    border-radius: 18px;
-  }
-
-  .settings-chat-sidebar-card,
-  .settings-chat-main-card {
-    padding: 16px;
-    border-radius: 24px;
-  }
-
-  .settings-chat-hero-card {
-    padding: 18px;
-    border-radius: 24px;
-  }
-
-  .settings-chat-sidebar-card__title {
-    font-size: 28px;
-  }
-
-  .settings-chat-hero-card__title {
-    font-size: 28px;
-  }
-
-  .settings-chat-sidebar-card__actions,
-  .settings-chat-overview-grid,
-  .settings-chat-quick-overview,
-  .settings-summary-overview,
-  .settings-tools-overview {
-    width: 100%;
-  }
-
-  .settings-chat-sidebar-card__actions > * {
-    width: 100%;
-  }
-
-  .settings-summary-sync-button,
-  .settings-summary-sync-button--hero {
-    width: 100%;
-  }
-
-  .settings-center-context-bar__meta {
-    gap: 6px;
-  }
-
-  .settings-summary-card {
-    padding: 18px;
-  }
-
-  .settings-summary-headline {
-    font-size: 28px;
-  }
-
-  .settings-summary-overview,
-  .settings-chat-overview-grid,
-  .settings-chat-quick-overview,
-  .settings-tools-overview,
-  .settings-constraint-grid,
-  .runner-session-detail__grid,
-  .runner-session-detail__diagnostic-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .runner-session-detail__hero,
-  .runner-session-detail__section-head {
-    flex-direction: column;
-  }
-
-  .runner-session-detail__tabs :deep(.el-tabs__nav) {
-    max-width: 100%;
-  }
-
-  .runner-session-detail__tabs :deep(.el-tabs__item) {
-    max-width: 112px;
-    padding: 0 10px;
-  }
-
-  .runner-session-detail__evidence {
-    grid-template-columns: 1fr;
-  }
-
-  .runner-session-detail__evidence p,
-  .runner-session-detail__evidence small {
-    grid-column: 1;
-  }
-
-  .runner-session-detail__stdin {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .settings-form .el-form-item {
-    padding-top: 14px;
-  }
-
-  .settings-tabs :deep(.el-tabs__header) {
-    margin-bottom: 16px;
-  }
-
-  .settings-tabs :deep(.el-tabs__nav) {
-    width: 100%;
-    gap: 6px;
-    flex-wrap: wrap;
-    border-radius: 22px;
-  }
-
-  .settings-tabs :deep(.el-tabs__item) {
-    flex: 1 1 auto;
-    min-width: max-content;
-  }
-
-  .settings-chat-sidebar-card__actions {
-    justify-content: flex-start;
-  }
-
-  .task-tree-panel__hero,
-  .task-tree-panel__section-head,
-  .task-tree-editor__head {
-    flex-direction: column;
-  }
-
-  .task-tree-panel__body {
-    grid-template-columns: 1fr;
-  }
-
-  .task-tree-panel__section-meta,
-  .task-tree-editor__meta {
-    justify-content: flex-start;
-    text-align: left;
-  }
-
-  .task-tree-editor__select {
-    width: 100%;
-  }
-
-  .task-tree-editor__actions {
-    flex-direction: column;
-    align-items: stretch;
-  }
-}
-</style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-01.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-02.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-03.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-04.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-05.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-06.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-07.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-08.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-09.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-10.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-11.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-12.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-13.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-14.css"></style>
+<style scoped src="../../modules/project-chat/styles/project-chat-style-15.css"></style>

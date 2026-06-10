@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "check:file-size": "node ./scripts/check-file-size.mjs",
     "test:pause-state": "node ./scripts/check-project-chat-pause-state.mjs",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
@@ -30,6 +31,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",
     "@vitejs/plugin-vue": "^5.2.0",
+    "sass": "^1.100.0",
     "vite": "^5.0.10"
   }
 }
